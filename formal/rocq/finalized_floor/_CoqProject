@@ -22,6 +22,7 @@
 #   CliqueOracle -> Foundation   (agreeing sets, quorum finalization, L-ANC, L-SNAP)
 #   Floor -> CliqueOracle        (frontier-cache transparency: warm up-walk == cold walk)
 #   Merge                        (semilattice merge algebra: determinism + no-lost-write)
+#   OccurrenceDisposition         (exact-source rejection + order independence)
 #   Recovery                     (record-driven recovery: no-double-apply, T-NDA)
 #   MainTheorem -> all           (end-to-end capstone, axiom-free)
 
@@ -32,6 +33,7 @@ theories/CliqueOracle.v
 theories/Floor.v
 theories/GuardBridge.v
 theories/Merge.v
+theories/OccurrenceDisposition.v
 theories/Recovery.v
 theories/Selection.v
 theories/IntegerAdd.v

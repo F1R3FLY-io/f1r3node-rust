@@ -14,6 +14,7 @@
 #   • slashing/MC_JustificationProjection.tla / .cfg
 #   • slashing/MC_WithdrawFlow.tla / .cfg
 #   • block_admission/MC_BlockAdmission.tla / .cfg
+#   • deploy_occurrence/MC_DeployOccurrence.tla / .cfg
 #
 # A non-zero exit code from TLC for any post-fix configuration is a CI
 # failure; the pre-fix configurations (e.g. MC_ConcurrentTracker_pre_fix)
@@ -83,6 +84,7 @@ POST_FIX_CONFIGS=(
     slashing/MC_JustificationProjection
     slashing/MC_WithdrawFlow
     block_admission/MC_BlockAdmission
+    deploy_occurrence/MC_DeployOccurrence
 )
 
 if [[ "${RUN_EXHAUSTIVE_TLA:-0}" == "1" ]]; then

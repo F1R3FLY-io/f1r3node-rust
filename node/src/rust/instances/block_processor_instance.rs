@@ -8,8 +8,8 @@ use casper::rust::blocks::block_processor::BlockProcessor;
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::errors::CasperError;
 use casper::rust::metrics_constants::{
-    BLOCK_PROCESSING_ACTIVE_METRIC, BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC,
-    BLOCK_PROCESSOR_METRICS_SOURCE,
+    BLOCKS_IN_PROCESSING_SIZE_METRIC, BLOCK_PROCESSING_ACTIVE_METRIC,
+    BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC, BLOCK_PROCESSOR_METRICS_SOURCE, PROCESS_RSS_KB_METRIC,
 };
 use casper::rust::{ProposeFunction, ValidBlockProcessing};
 use comm::rust::transport::transport_layer::TransportLayer;
@@ -405,6 +405,20 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                     }
 
                     maybe_trim_allocator_after_block();
+                    metrics::gauge!(
+                        BLOCKS_IN_PROCESSING_SIZE_METRIC,
+                        "source" => BLOCK_PROCESSOR_METRICS_SOURCE
+                    )
+                    .set(blocks_in_processing.len() as f64);
+                    if let Some(rss_kb) =
+                        casper::rust::util::rholang::mem_profiler::read_vm_rss_kb_always()
+                    {
+                        metrics::gauge!(
+                            PROCESS_RSS_KB_METRIC,
+                            "source" => BLOCK_PROCESSOR_METRICS_SOURCE
+                        )
+                        .set(rss_kb as f64);
+                    }
 
                     drop(permit);
                 });

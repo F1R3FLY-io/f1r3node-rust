@@ -597,6 +597,9 @@ pub mod test_helpers {
                 deploy_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
                     InMemoryKeyValueStore::new(),
                 )))),
+                deploy_occurrence_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(
+                    Arc::new(InMemoryKeyValueStore::new()),
+                ))),
                 floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
                 frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             };

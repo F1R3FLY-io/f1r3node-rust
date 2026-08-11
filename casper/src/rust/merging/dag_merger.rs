@@ -1,11 +1,12 @@
 // See casper/src/main/scala/coop/rchain/casper/merging/DagMerger.scala
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use models::rhoapi::ListParWithRandom;
 use models::rust::block_hash::BlockHash;
+use models::rust::casper::protocol::casper_message::{RejectedDeploy, RejectedDeployReason};
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
@@ -29,7 +30,7 @@ pub fn cost_optimal_rejection_alg() -> impl Fn(&DeployChainIndex) -> u64 {
             .0
             .iter()
             .map(|deploy| deploy.cost)
-            .sum();
+            .fold(0, u64::saturating_add);
         if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
             tracing::debug!(target: "f1r3fly.merge.step", step = "cost_optimal_rejection_alg.RESULT",
                 src_block = %hex::encode(&deploy_chain_index.source_block_hash[..]),
@@ -563,14 +564,7 @@ pub fn merge(
     rejection_cost_f: impl Fn(&DeployChainIndex) -> u64,
     scope: Option<HashSet<BlockHash>>,
     disable_late_block_filtering: bool,
-) -> Result<
-    (
-        Blake2b256Hash,
-        Vec<(Bytes, BlockHash)>,
-        Vec<(Bytes, BlockHash)>,
-    ),
-    CasperError,
-> {
+) -> Result<(Blake2b256Hash, Vec<RejectedDeploy>, Vec<(Bytes, BlockHash)>), CasperError> {
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
         tracing::debug!(target: "f1r3fly.merge.step", step = "merge.ENTER",
             lfb = %hex::encode(&lfb[..]),
@@ -688,7 +682,7 @@ pub fn merge(
     // fresher copy elsewhere. These are treated the same as conflict-rejected
     // deploys downstream — added to the rejected-deploy buffer so the
     // recovery path can re-propose them in a subsequent block.
-    let mut collateral_lost_pairs: Vec<(Bytes, BlockHash)> = Vec::new();
+    let mut dedup_rejections: Vec<RejectedDeploy> = Vec::new();
 
     // Deploy de-duplication. When the same deploy ID appears in chains from
     // multiple blocks in scope — for example, because a previously-rejected
@@ -787,15 +781,16 @@ pub fn merge(
                     }
                     None => true,
                 };
-                if is_collateral {
-                    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
-                        tracing::debug!(target: "f1r3fly.merge.step", step = "merge.dedup.collateral_lost",
-                            deploy_id = %hex::encode(&deploy.deploy_id[..8.min(deploy.deploy_id.len())]),
-                            src_block = %hex::encode(&chain.source_block_hash[..]));
-                    }
-                    collateral_lost_pairs
-                        .push((deploy.deploy_id.clone(), chain.source_block_hash.clone()));
-                }
+                let reason = if is_collateral {
+                    RejectedDeployReason::CollateralChainDrop
+                } else {
+                    RejectedDeployReason::DuplicateOccurrence
+                };
+                dedup_rejections.push(RejectedDeploy::occurrence(
+                    deploy.deploy_id.clone(),
+                    chain.source_block_hash.clone(),
+                    reason,
+                ));
             }
         }
 
@@ -833,7 +828,7 @@ pub fn merge(
                 pre_dedup_count - post_dedup_count,
                 pre_dedup_count,
                 post_dedup_count,
-                collateral_lost_pairs.len(),
+                dedup_rejections.len(),
             );
         }
     }
@@ -862,7 +857,7 @@ pub fn merge(
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
         tracing::debug!(target: "f1r3fly.merge.step", step = "merge.resolve_inputs",
             n_actual_chains = actual_set_vec.len(), n_late = late_set_vec.len(),
-            collateral_lost = collateral_lost_pairs.len());
+            dedup_rejections = dedup_rejections.len());
         for (i, chain) in actual_set_vec.iter().enumerate() {
             let sigs: Vec<String> = chain
                 .deploys_with_cost
@@ -1000,6 +995,25 @@ pub fn merge(
     };
 
     let state_changes_fn = |chain: &DeployChainIndex| Ok(chain.state_changes.clone());
+
+    let has_exact_state_witness_fn = |chain: &DeployChainIndex| chain.has_exact_state_witness;
+
+    let exact_effect_changes_fn = |chain: &DeployChainIndex| {
+        chain
+            .exact_effect_changes
+            .iter()
+            .map(|(execution_index, (state_change, mergeable_channels))| {
+                (
+                    conflict_set_merger::CausalEffectId {
+                        source_block_hash: chain.source_block_hash.to_vec(),
+                        execution_index: *execution_index,
+                    },
+                    state_change.clone(),
+                    mergeable_channels.clone(),
+                )
+            })
+            .collect()
+    };
 
     let mergeable_channels_fn =
         |chain: &DeployChainIndex| chain.event_log_index.number_channels_data.clone();
@@ -1489,6 +1503,8 @@ pub fn merge(
     let new_state = conflict_set_merger::compute_merged_state(
         &resolved,
         &state_changes_fn,
+        &has_exact_state_witness_fn,
+        &exact_effect_changes_fn,
         &mergeable_channels_fn,
         &compute_trie_actions_fn,
         &apply_trie_actions_fn,
@@ -1517,7 +1533,7 @@ pub fn merge(
         })
         .collect();
 
-    let mut rejected_user_deploys: Vec<(Bytes, BlockHash)> = all_pairs
+    let rejected_user_pairs: Vec<(Bytes, BlockHash)> = all_pairs
         .iter()
         .filter(|(id, _)| !is_system_deploy_id(id))
         .cloned()
@@ -1527,24 +1543,24 @@ pub fn merge(
         .filter(|(id, _)| is_slash_deploy_id(id))
         .collect();
 
-    // Fold dedup collateral into the rejected-user list so the buffer can
-    // recover deploys whose chain was dropped for reasons other than
-    // cost-optimal rejection. Keep the list unique per deploy_id — a deploy
-    // already present from conflict rejection takes precedence.
-    if !collateral_lost_pairs.is_empty() {
-        let existing_ids: HashSet<Bytes> = rejected_user_deploys
-            .iter()
-            .map(|(id, _)| id.clone())
-            .collect();
-        for pair in collateral_lost_pairs {
-            if !existing_ids.contains(&pair.0) {
-                rejected_user_deploys.push(pair);
-            }
-        }
+    let mut rejected_by_occurrence: BTreeMap<(Bytes, BlockHash), RejectedDeployReason> =
+        BTreeMap::new();
+    for (sig, source_block_hash) in rejected_user_pairs {
+        rejected_by_occurrence.insert(
+            (sig, source_block_hash),
+            RejectedDeployReason::MergeConflict,
+        );
     }
+    for rejected in dedup_rejections {
+        rejected_by_occurrence.insert((rejected.sig, rejected.source_block_hash), rejected.reason);
+    }
+    let rejected_user_deploys: Vec<RejectedDeploy> = rejected_by_occurrence
+        .into_iter()
+        .map(|((sig, source_block_hash), reason)| {
+            RejectedDeploy::occurrence(sig, source_block_hash, reason)
+        })
+        .collect();
 
-    // Deterministic ordering across validators.
-    rejected_user_deploys.sort();
     rejected_slashes.sort();
 
     tracing::debug!(
@@ -1562,7 +1578,7 @@ pub fn merge(
     if !rejected_user_deploys.is_empty() {
         let rejected_str: Vec<_> = rejected_user_deploys
             .iter()
-            .map(|(sig, _)| hex::encode(&sig[..std::cmp::min(8, sig.len())]))
+            .map(|rejected| hex::encode(&rejected.sig[..std::cmp::min(8, rejected.sig.len())]))
             .collect();
         tracing::info!(
             "DagMerger rejected {} user deploys: {}",

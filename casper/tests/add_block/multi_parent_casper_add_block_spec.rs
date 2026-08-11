@@ -750,6 +750,8 @@ async fn multi_parent_casper_should_prepare_to_slash_a_block_that_includes_an_in
             system_deploy_error: None,
             cosigners: Vec::new(),
             cosigner_threshold: 0,
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
         })
         .collect();
 

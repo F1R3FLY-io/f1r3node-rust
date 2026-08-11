@@ -2,12 +2,15 @@
 
 use models::rust::casper::protocol::casper_message::Event;
 use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
+use rspace_plus_plus::rspace::merger::state_change::StateChange;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd)]
 pub struct DeployIndex {
     pub deploy_id: prost::bytes::Bytes,
     pub cost: u64,
     pub event_log_index: EventLogIndex,
+    pub execution_index: u32,
+    pub state_changes: Option<StateChange>,
 }
 
 impl DeployIndex {
@@ -38,6 +41,8 @@ impl DeployIndex {
             deploy_id: sig,
             cost,
             event_log_index,
+            execution_index: 0,
+            state_changes: None,
         }
     }
 }

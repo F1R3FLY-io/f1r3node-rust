@@ -186,6 +186,8 @@ async fn test_case(
                     deploy_id: sig_bs,
                     cost: deploy.cost,
                     event_log_index,
+                    execution_index: 0,
+                    state_changes: None,
                 }
             })
             .collect();
@@ -411,6 +413,8 @@ async fn test_case(
     let final_hash = conflict_set_merger::compute_merged_state(
         &resolved,
         &state_changes,
+        &|_| false,
+        &|_| Vec::new(),
         &mergeable_channels,
         &compute_trie_actions,
         &apply_trie_actions,

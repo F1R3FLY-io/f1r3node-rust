@@ -71,6 +71,9 @@ pub struct JustificationInfoJson {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RejectedDeployInfoJson {
     pub sig: String,
+    #[serde(rename = "sourceBlockHash", skip_serializing_if = "String::is_empty")]
+    pub source_block_hash: String,
+    pub reason: String,
 }
 
 /// Convert LightBlockInfo to JSON-serializable format
@@ -114,7 +117,11 @@ impl From<LightBlockInfo> for LightBlockInfoSerde {
             rejected_deploys: block
                 .rejected_deploys
                 .iter()
-                .map(|r| RejectedDeployInfoJson { sig: r.sig.clone() })
+                .map(|r| RejectedDeployInfoJson {
+                    sig: r.sig.clone(),
+                    source_block_hash: r.source_block_hash.clone(),
+                    reason: r.reason.clone(),
+                })
                 .collect(),
             is_finalized: block.is_finalized,
         }
@@ -162,7 +169,11 @@ impl From<LightBlockInfoSerde> for LightBlockInfo {
             rejected_deploys: json
                 .rejected_deploys
                 .into_iter()
-                .map(|r| RejectedDeployInfo { sig: r.sig })
+                .map(|r| RejectedDeployInfo {
+                    sig: r.sig,
+                    source_block_hash: r.source_block_hash,
+                    reason: r.reason,
+                })
                 .collect(),
             is_finalized: json.is_finalized,
         }
@@ -267,6 +278,8 @@ mod tests {
             }],
             rejected_deploys: vec![RejectedDeployInfo {
                 sig: "rejected_sig".to_string(),
+                source_block_hash: "source_block_hash".to_string(),
+                reason: "merge_conflict".to_string(),
             }],
             is_finalized: false,
         }

@@ -204,6 +204,8 @@ fn processed_deploy_to_cosigned_legacy_uplift() {
         system_deploy_error: None,
         cosigners: Vec::new(),
         cosigner_threshold: 0,
+        pre_state_hash: Bytes::new(),
+        post_state_hash: Bytes::new(),
     };
     let cosigned = pd.to_cosigned().expect("legacy uplift must succeed");
     assert_eq!(cosigned.signers().len(), 1);
@@ -249,6 +251,8 @@ fn processed_deploy_to_cosigned_multi_sig_reconstruction() {
         system_deploy_error: None,
         cosigners: extras,
         cosigner_threshold: 0,
+        pre_state_hash: Bytes::new(),
+        post_state_hash: Bytes::new(),
     };
     let reconstructed = pd
         .to_cosigned()
@@ -305,6 +309,8 @@ fn processed_deploy_proto_round_trip_preserves_cosigners() {
         system_deploy_error: None,
         cosigners: extras,
         cosigner_threshold: 0,
+        pre_state_hash: Bytes::new(),
+        post_state_hash: Bytes::new(),
     };
     let pd_proto = pd_before.clone().to_proto();
     // Cosigners should be in the inner DeployDataProto (D3: no primary_phlo_share).
@@ -335,6 +341,8 @@ fn legacy_single_sig_processed_deploy_proto_round_trip_unchanged() {
         system_deploy_error: None,
         cosigners: Vec::new(),
         cosigner_threshold: 0,
+        pre_state_hash: Bytes::new(),
+        post_state_hash: Bytes::new(),
     };
     let pd_proto = pd_before.clone().to_proto();
     let inner_deploy = pd_proto.deploy.as_ref().expect("proto deploy field");

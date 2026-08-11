@@ -92,6 +92,8 @@ pub fn processed_deploy(seed: u8, cost: u64, failed: bool) -> ProcessedDeploy {
         system_deploy_error: failed.then(|| "fuzz failure".to_string()),
         cosigners: Vec::new(),
         cosigner_threshold: 0,
+        pre_state_hash: Vec::<u8>::new().into(),
+        post_state_hash: Vec::<u8>::new().into(),
     }
 }
 

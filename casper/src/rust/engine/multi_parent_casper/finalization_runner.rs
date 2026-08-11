@@ -410,6 +410,7 @@ pub(crate) async fn compute_last_finalized_block(
     let new_finalized_hash_opt = Finalizer::run(
         &dag,
         ftt,
+        &last_finalized_block_hash,
         last_finalized_block_height,
         new_lfb_found_effect,
         finalizer_conf,

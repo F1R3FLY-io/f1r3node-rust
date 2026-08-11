@@ -19,9 +19,10 @@
 //! demand `Σ Δ_s` fits the EFFECTIVE supply (§7.7 reject-both / no-partial: on the
 //! first unfunded candidate, reject it AND all after it in the group). It returns
 //! the admitted envelopes (in canonical order, fed straight to execution), the
-//! rejected primary signatures (unioned into the block's `rejected_deploys`), and
-//! the per-pool SETTLEMENT DEBIT `Σ Δ_s` (the amount `CloseBlockDeploy` subtracts
-//! from `Σ⟦s⟧` so `post = pre − Σ Δ_admitted`).
+//! rejected primary signatures (returned for local selection telemetry; they are
+//! not merge-rejection tombstones), and the per-pool SETTLEMENT DEBIT `Σ Δ_s`
+//! (the amount `CloseBlockDeploy` subtracts from `Σ⟦s⟧` so
+//! `post = pre − Σ Δ_admitted`).
 //!
 //! It does NOT execute anything (it is a pure O(AST) static analysis) and it does
 //! NOT mutate RSpace — the single consensus decrement is the settlement debit,
@@ -102,8 +103,8 @@ pub struct AdmissionOutcome {
     /// `compute_deploys_checkpoint_cosigned` so execution order matches the
     /// order the funding decision was made in.
     pub admitted: Vec<Cosigned<DeployData>>,
-    /// The PRIMARY signatures of gate-rejected deploys, unioned into the
-    /// block's `rejected_deploys` at packaging.
+    /// The PRIMARY signatures of gate-rejected deploys. They remain in local
+    /// deploy storage and are not packaged as source-specific merge rejections.
     pub rejected: Vec<Bytes>,
     /// The per-pool settlement debit (the COST, BURNED from `Σ⟦c⟧`), keyed by
     /// `SigKey` (= `Sig::lane_hash`). Threaded to
@@ -883,9 +884,9 @@ where
 /// REPLAY recompute of the WD-D2 settlement-debit map from the block's ADMITTED
 /// deploys (`block.body.deploys`), for the replay-symmetric settlement debit.
 ///
-/// `block.body.deploys` contains EXACTLY the gate-admitted envelopes (rejected
-/// deploys carry only a sig in `rejected_deploys`, not a body). So the per-pool
-/// settlement debit is simply `Σ Δ_s` over the admitted deploys in each PRESENT
+/// `block.body.deploys` contains exactly the gate-admitted envelopes. Funding-
+/// gate exclusions are not packaged as merge-rejection tombstones. The per-pool
+/// settlement debit is therefore `Σ Δ_s` over the admitted deploys in each present
 /// pool — the SAME quantity `admit_by_funding` accumulated on the play path
 /// (where `debits[pool].amount = Σ Δ_s over the admitted prefix`), recomputed
 /// here from the block alone. This recompute is MARGIN-FREE: the admission

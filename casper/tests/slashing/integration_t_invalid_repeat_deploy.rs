@@ -82,6 +82,8 @@ async fn integration_t_invalid_repeat_deploy() {
         system_deploy_error: None,
         cosigners: Vec::new(),
         cosigner_threshold: 0,
+        pre_state_hash: Vec::<u8>::new().into(),
+        post_state_hash: Vec::<u8>::new().into(),
     };
     let mutated = propose_with_block_mutation(&mut nodes[0], vec![d2], move |b| {
         b.body.deploys = vec![d1_processed];

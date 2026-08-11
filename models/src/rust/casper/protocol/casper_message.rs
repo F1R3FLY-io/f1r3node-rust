@@ -11,6 +11,7 @@ use shared::rust::{Byte, ByteVector};
 use crate::casper::system_deploy_data_proto::SystemDeploy;
 use crate::casper::*;
 use crate::rhoapi::PCost;
+use crate::rust::block_hash::BlockHash;
 use crate::rust::casper::pretty_printer::PrettyPrinter;
 
 // TODO: Use type ByteString from models crate
@@ -422,15 +423,101 @@ impl Header {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum RejectedDeployReason {
+    #[default]
+    Unspecified,
+    MergeConflict,
+    DuplicateOccurrence,
+    CollateralChainDrop,
+}
+
+impl RejectedDeployReason {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::MergeConflict => "merge_conflict",
+            Self::DuplicateOccurrence => "duplicate_occurrence",
+            Self::CollateralChainDrop => "collateral_chain_drop",
+        }
+    }
+
+    fn from_proto(value: i32) -> Self {
+        match RejectedDeployReasonProto::try_from(value)
+            .unwrap_or(RejectedDeployReasonProto::RejectedDeployReasonUnspecified)
+        {
+            RejectedDeployReasonProto::RejectedDeployReasonUnspecified => Self::Unspecified,
+            RejectedDeployReasonProto::RejectedDeployReasonMergeConflict => Self::MergeConflict,
+            RejectedDeployReasonProto::RejectedDeployReasonDuplicateOccurrence => {
+                Self::DuplicateOccurrence
+            }
+            RejectedDeployReasonProto::RejectedDeployReasonCollateralChainDrop => {
+                Self::CollateralChainDrop
+            }
+        }
+    }
+
+    fn to_proto(self) -> i32 {
+        match self {
+            Self::Unspecified => RejectedDeployReasonProto::RejectedDeployReasonUnspecified as i32,
+            Self::MergeConflict => {
+                RejectedDeployReasonProto::RejectedDeployReasonMergeConflict as i32
+            }
+            Self::DuplicateOccurrence => {
+                RejectedDeployReasonProto::RejectedDeployReasonDuplicateOccurrence as i32
+            }
+            Self::CollateralChainDrop => {
+                RejectedDeployReasonProto::RejectedDeployReasonCollateralChainDrop as i32
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RejectedDeploy {
     pub sig: ByteString,
+    pub source_block_hash: BlockHash,
+    pub reason: RejectedDeployReason,
 }
 
 impl RejectedDeploy {
-    pub fn from_proto(proto: RejectedDeployProto) -> Self { Self { sig: proto.sig } }
+    pub fn legacy(sig: ByteString) -> Self {
+        Self {
+            sig,
+            source_block_hash: ByteString::new(),
+            reason: RejectedDeployReason::Unspecified,
+        }
+    }
 
-    pub fn to_proto(self) -> RejectedDeployProto { RejectedDeployProto { sig: self.sig } }
+    pub fn occurrence(
+        sig: ByteString,
+        source_block_hash: BlockHash,
+        reason: RejectedDeployReason,
+    ) -> Self {
+        Self {
+            sig,
+            source_block_hash,
+            reason,
+        }
+    }
+
+    pub fn has_provenance(&self) -> bool { !self.source_block_hash.is_empty() }
+
+    pub fn from_proto(proto: RejectedDeployProto) -> Self {
+        Self {
+            sig: proto.sig,
+            source_block_hash: proto.source_block_hash,
+            reason: RejectedDeployReason::from_proto(proto.reason),
+        }
+    }
+
+    pub fn to_proto(self) -> RejectedDeployProto {
+        RejectedDeployProto {
+            sig: self.sig,
+            source_block_hash: self.source_block_hash,
+            reason: self.reason.to_proto(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -580,6 +667,8 @@ pub struct ProcessedDeploy {
     /// must verify. Round-trips through `DeployDataProto.cosigner_threshold`
     /// (proto field 16).
     pub cosigner_threshold: i32,
+    pub pre_state_hash: ByteString,
+    pub post_state_hash: ByteString,
 }
 
 impl ProcessedDeploy {
@@ -597,6 +686,8 @@ impl ProcessedDeploy {
             system_deploy_error: None,
             cosigners: Vec::new(),
             cosigner_threshold: 0,
+            pre_state_hash: ByteString::new(),
+            post_state_hash: ByteString::new(),
         }
     }
 
@@ -639,6 +730,8 @@ impl ProcessedDeploy {
             // empty_from_cosigned has no view of the runtime threshold —
             // callers needing M-of-N must set the field after construction.
             cosigner_threshold: 0,
+            pre_state_hash: ByteString::new(),
+            post_state_hash: ByteString::new(),
         }
     }
 
@@ -747,6 +840,8 @@ impl ProcessedDeploy {
             },
             cosigners,
             cosigner_threshold,
+            pre_state_hash: proto.pre_state_hash,
+            post_state_hash: proto.post_state_hash,
         })
     }
 
@@ -763,6 +858,8 @@ impl ProcessedDeploy {
             deploy_log: self.deploy_log.into_iter().map(|e| e.to_proto()).collect(),
             errored: self.is_failed,
             system_deploy_error: self.system_deploy_error.unwrap_or_default(),
+            pre_state_hash: self.pre_state_hash,
+            post_state_hash: self.post_state_hash,
         }
     }
 }
@@ -927,10 +1024,14 @@ pub enum ProcessedSystemDeploy {
     Succeeded {
         event_list: Vec<Event>,
         system_deploy: SystemDeployData,
+        pre_state_hash: ByteString,
+        post_state_hash: ByteString,
     },
     Failed {
         event_list: Vec<Event>,
         error_msg: String,
+        pre_state_hash: ByteString,
+        post_state_hash: ByteString,
     },
 }
 
@@ -947,7 +1048,23 @@ impl ProcessedSystemDeploy {
             ProcessedSystemDeploy::Failed {
                 event_list,
                 error_msg,
+                ..
             } => if_failed(event_list, error_msg),
+        }
+    }
+
+    pub fn state_hashes(&self) -> (&ByteString, &ByteString) {
+        match self {
+            ProcessedSystemDeploy::Succeeded {
+                pre_state_hash,
+                post_state_hash,
+                ..
+            }
+            | ProcessedSystemDeploy::Failed {
+                pre_state_hash,
+                post_state_hash,
+                ..
+            } => (pre_state_hash, post_state_hash),
         }
     }
 
@@ -964,11 +1081,15 @@ impl ProcessedSystemDeploy {
                             psd.system_deploy
                                 .ok_or_else(|| "Missing system deploy field".to_string())?,
                         )?,
+                        pre_state_hash: psd.pre_state_hash,
+                        post_state_hash: psd.post_state_hash,
                     })
                 } else {
                     Ok(ProcessedSystemDeploy::Failed {
                         event_list: deploy_log,
                         error_msg: psd.error_msg,
+                        pre_state_hash: psd.pre_state_hash,
+                        post_state_hash: psd.post_state_hash,
                     })
                 }
             }
@@ -981,6 +1102,8 @@ impl ProcessedSystemDeploy {
             ProcessedSystemDeploy::Succeeded {
                 event_list,
                 system_deploy,
+                pre_state_hash,
+                post_state_hash,
             } => ProcessedSystemDeployProto {
                 system_deploy: Some(SystemDeployData::to_proto(system_deploy)),
                 deploy_log: event_list
@@ -988,10 +1111,14 @@ impl ProcessedSystemDeploy {
                     .map(|arg0: Event| Event::to_proto(&arg0))
                     .collect(),
                 error_msg: "".to_string(),
+                pre_state_hash,
+                post_state_hash,
             },
             ProcessedSystemDeploy::Failed {
                 event_list,
                 error_msg,
+                pre_state_hash,
+                post_state_hash,
             } => ProcessedSystemDeployProto {
                 system_deploy: None,
                 deploy_log: event_list
@@ -999,6 +1126,8 @@ impl ProcessedSystemDeploy {
                     .map(|arg0: Event| Event::to_proto(&arg0))
                     .collect(),
                 error_msg,
+                pre_state_hash,
+                post_state_hash,
             },
         }
     }
@@ -2046,6 +2175,7 @@ mod tests {
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
     use crypto::rust::signatures::signed::Signed;
+    use prost::bytes::Bytes;
 
     use super::*;
 
@@ -2063,6 +2193,34 @@ mod tests {
         let alg: Box<dyn SignaturesAlg> = Box::new(Secp256k1);
         let (sk, _) = alg.new_key_pair();
         Signed::create(data, alg, sk).expect("signed deploy")
+    }
+
+    #[test]
+    fn rejected_deploy_occurrence_round_trips_through_proto() {
+        let rejected = RejectedDeploy::occurrence(
+            Bytes::from_static(b"deploy"),
+            Bytes::from_static(b"source"),
+            RejectedDeployReason::DuplicateOccurrence,
+        );
+
+        assert_eq!(
+            RejectedDeploy::from_proto(rejected.clone().to_proto()),
+            rejected
+        );
+    }
+
+    #[test]
+    fn legacy_rejected_deploy_proto_remains_readable() {
+        let proto = RejectedDeployProto {
+            sig: Bytes::from_static(b"deploy"),
+            source_block_hash: Bytes::new(),
+            reason: 0,
+        };
+
+        assert_eq!(
+            RejectedDeploy::from_proto(proto),
+            RejectedDeploy::legacy(Bytes::from_static(b"deploy"))
+        );
     }
 
     /// Consensus-fork guard for the Workstream-B ground-`g` / quote-`#P`
@@ -2365,6 +2523,8 @@ mod tests {
             system_deploy_error: None,
             cosigners: Vec::new(),
             cosigner_threshold: 2,
+            pre_state_hash: ByteString::new(),
+            post_state_hash: ByteString::new(),
         };
 
         let decoded = ProcessedDeploy::from_proto(processed.clone().to_proto()).unwrap();

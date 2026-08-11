@@ -4284,7 +4284,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     if !rejected.is_empty() {
         let rejected_sigs: Vec<String> = rejected
             .iter()
-            .map(|d| hex::encode(&d[..std::cmp::min(8, d.len())]))
+            .map(|d| hex::encode(&d.sig[..std::cmp::min(8, d.sig.len())]))
             .collect();
         tracing::warn!(
             "CONFLICT DETECTED: {} deploys rejected: {:?}",
@@ -4985,7 +4985,8 @@ new deployId(`rho:system:deployId`) in {
     .await
     .expect("merge [C, D]");
 
-    let rejected_set: HashSet<prost::bytes::Bytes> = rejected.iter().cloned().collect();
+    let rejected_set: HashSet<prost::bytes::Bytes> =
+        rejected.iter().map(|item| item.sig.clone()).collect();
     let ba_rejected = rejected_set.contains(&pd_a[0].deploy.sig);
     let bb_rejected = rejected_set.contains(&pd_b[0].deploy.sig);
     let bc_rejected = rejected_set.contains(&pd_c[0].deploy.sig);

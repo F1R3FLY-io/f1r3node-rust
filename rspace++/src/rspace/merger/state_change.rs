@@ -525,6 +525,25 @@ impl StateChange {
     }
 
     pub fn combine(self, other: Self) -> Self {
+        self.merge(other, true, false)
+            .expect("legacy StateChange merge cannot fail")
+    }
+
+    pub fn join(self, other: Self) -> Self {
+        self.merge(other, false, false)
+            .expect("legacy StateChange join cannot fail")
+    }
+
+    pub fn additive_join(self, other: Self) -> Result<Self, HistoryError> {
+        self.merge(other, false, true)
+    }
+
+    fn merge(
+        self,
+        other: Self,
+        normalize_channels: bool,
+        additive_channels: bool,
+    ) -> Result<Self, HistoryError> {
         tracing::debug!(
             target: "f1r3fly.merge.step",
             step = "StateChange::combine.ENTER",
@@ -534,6 +553,7 @@ impl StateChange {
             other_datums = other.datums_changes.len(),
             other_conts = other.cont_changes.len(),
             other_joins = other.consume_channels_to_join_serialized_map.len(),
+            normalize_channels,
             "combining two StateChanges (multiset union per channel)",
         );
 
@@ -558,7 +578,13 @@ impl StateChange {
                             "datum channel present on both sides -> accumulating",
                         );
                     }
-                    let merged = current.combine(value);
+                    let merged = if additive_channels {
+                        current.additive_join(value)
+                    } else if normalize_channels {
+                        current.combine(value)
+                    } else {
+                        current.join(value)
+                    };
                     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
                         tracing::debug!(
                             target: "f1r3fly.merge.step",
@@ -606,7 +632,13 @@ impl StateChange {
                             "cont consume present on both sides -> accumulating",
                         );
                     }
-                    let merged = current.combine(value);
+                    let merged = if additive_channels {
+                        current.additive_join(value)
+                    } else if normalize_channels {
+                        current.combine(value)
+                    } else {
+                        current.join(value)
+                    };
                     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
                         tracing::debug!(
                             target: "f1r3fly.merge.step",
@@ -638,9 +670,24 @@ impl StateChange {
             }
         }
 
-        // Combine join maps (newer values take precedence)
         for (key, value) in other.consume_channels_to_join_serialized_map {
-            consume_channels_to_join_serialized_map.insert(key, value);
+            if additive_channels {
+                match consume_channels_to_join_serialized_map.entry(key) {
+                    dashmap::mapref::entry::Entry::Occupied(entry) => {
+                        if entry.get() != &value {
+                            return Err(HistoryError::MergeError(format!(
+                                "inconsistent serialized join for consume channels {:?}",
+                                entry.key()
+                            )));
+                        }
+                    }
+                    dashmap::mapref::entry::Entry::Vacant(entry) => {
+                        entry.insert(value);
+                    }
+                }
+            } else {
+                consume_channels_to_join_serialized_map.insert(key, value);
+            }
         }
 
         if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
@@ -670,10 +717,26 @@ impl StateChange {
             "combined StateChange",
         );
 
-        Self {
+        Ok(Self {
             datums_changes,
             cont_changes,
             consume_channels_to_join_serialized_map,
+        })
+    }
+
+    pub fn normalized(self) -> Self {
+        for mut entry in self.datums_changes.iter_mut() {
+            let current = std::mem::replace(entry.value_mut(), ChannelChange::empty());
+            *entry.value_mut() = current.canonicalized();
         }
+        for mut entry in self.cont_changes.iter_mut() {
+            let current = std::mem::replace(entry.value_mut(), ChannelChange::empty());
+            *entry.value_mut() = current.canonicalized();
+        }
+        self.datums_changes
+            .retain(|_, change| !(change.added.is_empty() && change.removed.is_empty()));
+        self.cont_changes
+            .retain(|_, change| !(change.added.is_empty() && change.removed.is_empty()));
+        self
     }
 }

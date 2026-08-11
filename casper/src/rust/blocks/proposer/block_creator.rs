@@ -443,17 +443,10 @@ async fn prepare_user_deploys_with_policy(
         .map(|h| h.min(earliest_block_number))
         .unwrap_or(earliest_block_number);
 
-    // Terminal purge: a rejected-buffer entry is dropped only once its sig is
-    // canonically WON inside the FINALIZED ancestry (latest finalized
-    // disposition is a win) AND that finalized win sits strictly above every
-    // rejection visible from the current parents. A win that is merely
-    // canonical-but-unfinalized can still be orphaned, so the entry must
-    // survive until finality; symmetrically, a finalized win with a visible
-    // rejection at or above its height is not terminal — block finalization
-    // does not finalize effects, and the pending rejection can finalize and
-    // drop the win from canonical state (finalized-win blindness,
-    // finalized_win_pending_rejection_spec). The buffer is the only
-    // re-proposable copy of merge-rejected work.
+    // Terminal purge requires a finalized active occurrence and no visible
+    // exact tombstone for that source. Legacy rejection records retain their
+    // height-based compatibility rule. An unfinalized win can still be orphaned,
+    // so the buffer survives until this source-aware terminal condition holds.
     let finalized_won_buffered: Vec<Signed<DeployData>> = if buffered_deploys.is_empty() {
         Vec::new()
     } else {
@@ -1749,16 +1742,6 @@ fn drain_selected_recovered_deploys_from_deploy_storage(
     }
 
     Ok(removed_from_storage)
-}
-
-fn filter_unprocessed_rejected_deploys(
-    rejected_deploys: Vec<Bytes>,
-    processed_deploy_sigs: &HashSet<Bytes>,
-) -> Vec<Bytes> {
-    rejected_deploys
-        .into_iter()
-        .filter(|sig| !processed_deploy_sigs.contains(sig))
-        .collect()
 }
 
 /// Removes the ordinary deploy-storage copies of recovered deploys whose sig
@@ -3377,27 +3360,6 @@ pub async fn create(
         processed_system_deploys,
         new_bonds,
     ) = checkpoint_data;
-    let processed_deploy_sigs: HashSet<Bytes> = processed_deploys
-        .iter()
-        .map(|pd| pd.deploy.sig.clone())
-        .collect();
-    let mut rejected_deploys =
-        filter_unprocessed_rejected_deploys(rejected_deploys, &processed_deploy_sigs);
-
-    // Union the WD-D2 gate-rejected user signatures into the block's
-    // `rejected_deploys`. These are deploys the funding gate declined (unfunded
-    // / reject-both / malformed) — they never executed, so recording their sigs
-    // here lets the merge engine and downstream validators recognize them as
-    // intentionally-rejected (not lost). Dedup against the merge-rejected set so
-    // a sig rejected by both paths appears once.
-    if !gate_rejected_sigs.is_empty() {
-        let existing: HashSet<Bytes> = rejected_deploys.iter().cloned().collect();
-        for sig in gate_rejected_sigs {
-            if !existing.contains(&sig) {
-                rejected_deploys.push(sig);
-            }
-        }
-    }
     let block_bonds = {
         let parent_hashes: Vec<BlockHash> = parents.iter().map(|p| p.block_hash.clone()).collect();
         let latest_messages: BTreeMap<Validator, BlockHash> = casper_snapshot
@@ -3539,7 +3501,7 @@ fn package_block(
     pre_state_hash: Bytes,
     post_state_hash: Bytes,
     deploys: Vec<ProcessedDeploy>,
-    rejected_deploys: Vec<Bytes>,
+    rejected_deploys: Vec<RejectedDeploy>,
     system_deploys: Vec<ProcessedSystemDeploy>,
     bonds_map: Vec<Bond>,
     shard_id: String,
@@ -3552,15 +3514,10 @@ fn package_block(
         block_number: block_data.block_number,
     };
 
-    let rejected_deploys_wrapped: Vec<RejectedDeploy> = rejected_deploys
-        .into_iter()
-        .map(|r| RejectedDeploy { sig: r })
-        .collect();
-
     let body = Body {
         state,
         deploys,
-        rejected_deploys: rejected_deploys_wrapped,
+        rejected_deploys,
         system_deploys,
         extra_bytes: Bytes::new(),
     };
@@ -4799,21 +4756,6 @@ mod tests {
 
         snapshot.last_finalized_block = parent_hash;
         assert!(!parent_frontier_extends_lfb(&snapshot, &block_store).expect("lfb parent"));
-    }
-
-    #[test]
-    fn processed_deploys_are_not_packaged_as_rejected_deploys() {
-        let processed_sig = Bytes::from_static(b"processed");
-        let other_sig = Bytes::from_static(b"other");
-        let fresh_sig = Bytes::from_static(b"fresh");
-        let processed_deploy_sigs: HashSet<Bytes> = [processed_sig.clone()].into_iter().collect();
-
-        let filtered = filter_unprocessed_rejected_deploys(
-            vec![processed_sig, other_sig.clone(), fresh_sig.clone()],
-            &processed_deploy_sigs,
-        );
-
-        assert_eq!(filtered, vec![other_sig, fresh_sig]);
     }
 
     /// A bonded validator that PoS still considers active is slashable

@@ -34,7 +34,7 @@ pub async fn step(
     let dag = block_dag_storage
         .get_representation()
         .expect("dag representation");
-    let (post_b1_state_hash, post_b1_processed_deploys) = compute_block_checkpoint(
+    let (pre_state_hash, post_state_hash, processed_deploys) = compute_block_checkpoint(
         block_store,
         block,
         &mk_casper_snapshot(dag),
@@ -42,12 +42,13 @@ pub async fn step(
     )
     .await?;
 
-    inject_post_state_hash(
+    inject_state_hashes(
         block_store,
         block_dag_storage,
         block,
-        post_b1_state_hash,
-        post_b1_processed_deploys,
+        pre_state_hash,
+        post_state_hash,
+        processed_deploys,
     )
 }
 
@@ -56,14 +57,14 @@ async fn compute_block_checkpoint(
     block: &BlockMessage,
     casper_snapshot: &CasperSnapshot,
     runtime_manager: &mut RuntimeManager,
-) -> Result<(StateHash, Vec<ProcessedDeploy>), CasperError> {
+) -> Result<(StateHash, StateHash, Vec<ProcessedDeploy>), CasperError> {
     let parents = proto_util::get_parents(block_store, block);
     let deploys = proto_util::deploys(block)
         .into_iter()
         .map(|d| d.deploy)
         .collect();
 
-    let (_, post_state_hash, processed_deploys, _, _, _) = compute_deploys_checkpoint(
+    let (pre_state_hash, post_state_hash, processed_deploys, _, _, _) = compute_deploys_checkpoint(
         block_store,
         parents,
         deploys,
@@ -76,17 +77,19 @@ async fn compute_block_checkpoint(
     )
     .await?;
 
-    Ok((post_state_hash, processed_deploys))
+    Ok((pre_state_hash, post_state_hash, processed_deploys))
 }
 
-fn inject_post_state_hash(
+fn inject_state_hashes(
     block_store: &mut KeyValueBlockStore,
     block_dag_storage: &mut IndexedBlockDagStorage,
     block: &BlockMessage,
+    pre_state_hash: StateHash,
     post_state_hash: StateHash,
     processed_deploys: Vec<ProcessedDeploy>,
 ) -> Result<(), CasperError> {
     let mut updated_block = block.clone();
+    updated_block.body.state.pre_state_hash = pre_state_hash;
     updated_block.body.state.post_state_hash = post_state_hash;
     updated_block.body.deploys = processed_deploys;
     block_store.put(block.block_hash.clone(), &updated_block)?;

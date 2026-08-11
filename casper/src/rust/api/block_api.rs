@@ -174,6 +174,23 @@ impl std::fmt::Display for BlockNotFoundError {
 impl std::error::Error for BlockNotFoundError {}
 
 #[derive(Debug)]
+pub struct BlockPendingAdmissionError {
+    pub hash: String,
+}
+
+impl std::fmt::Display for BlockPendingAdmissionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Block {} was received and is pending DAG admission",
+            self.hash
+        )
+    }
+}
+
+impl std::error::Error for BlockPendingAdmissionError {}
+
+#[derive(Debug)]
 pub struct DeployExpiredError {
     pub message: String,
 }
@@ -320,6 +337,8 @@ impl BlockAPI {
         deploy_sigs.insert(deploy_id.to_vec());
 
         while let Some(blocks_on_height) = candidate_blocks.pop() {
+            let mut blocks_on_height = blocks_on_height;
+            blocks_on_height.sort();
             for hash in blocks_on_height {
                 match casper
                     .block_store()
@@ -1447,7 +1466,49 @@ impl BlockAPI {
 
         if let Some(casper) = eng.with_casper() {
             let dag = casper.block_dag().await?;
-            let maybe_block_hash = dag.lookup_by_deploy_id(deploy_id)?;
+            let canonical_status = crate::rust::api::deploy_finalization_status::resolve(
+                &dag,
+                casper.block_store(),
+                casper.casper_shard_conf().deploy_lifespan,
+                deploy_id,
+            )?;
+            let canonical_block_hash = match canonical_status.state {
+                crate::rust::api::deploy_finalization_status::DeployFinalizationState::Finalized
+                | crate::rust::api::deploy_finalization_status::DeployFinalizationState::Failed => {
+                    canonical_status.latest_block_hash
+                }
+                crate::rust::api::deploy_finalization_status::DeployFinalizationState::Pending
+                | crate::rust::api::deploy_finalization_status::DeployFinalizationState::Expired => {
+                    None
+                }
+            };
+            let occurrence_hashes = dag.lookup_deploy_occurrences(deploy_id)?;
+            let mut occurrence_blocks = occurrence_hashes
+                .into_iter()
+                .filter_map(|hash| casper.block_store().get(&hash).ok().flatten())
+                .filter(|block| {
+                    block
+                        .body
+                        .deploys
+                        .iter()
+                        .any(|processed| processed.deploy.sig.as_ref() == deploy_id.as_slice())
+                })
+                .collect::<Vec<_>>();
+            occurrence_blocks.sort_by(|left, right| {
+                right
+                    .body
+                    .state
+                    .block_number
+                    .cmp(&left.body.state.block_number)
+                    .then_with(|| left.block_hash.cmp(&right.block_hash))
+            });
+            let maybe_block_hash = canonical_block_hash
+                .or_else(|| {
+                    occurrence_blocks
+                        .first()
+                        .map(|block| block.block_hash.clone())
+                })
+                .or(dag.lookup_by_deploy_id(deploy_id)?);
 
             match maybe_block_hash {
                 Some(block_hash) => {
@@ -1535,10 +1596,9 @@ impl BlockAPI {
                 let block_info = BlockAPI::get_full_block_info(casper, &block).await?;
                 Ok(block_info)
             } else {
-                Err(eyre::eyre!(
-                    "Error: Block with hash {} received but not added yet",
-                    hash
-                ))
+                Err(eyre::Report::new(BlockPendingAdmissionError {
+                    hash: hash.to_string(),
+                }))
             }
         }
 
@@ -1680,6 +1740,8 @@ impl BlockAPI {
                 .iter()
                 .map(|r| RejectedDeployInfo {
                     sig: PrettyPrinter::build_string_no_limit(&r.sig),
+                    source_block_hash: PrettyPrinter::build_string_no_limit(&r.source_block_hash),
+                    reason: r.reason.label().to_string(),
                 })
                 .collect(),
             is_finalized,

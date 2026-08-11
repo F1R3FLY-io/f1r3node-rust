@@ -1689,6 +1689,8 @@ mod merge_recovery_validation_tests {
                 issuer_public_key: PublicKey::new(issuer),
                 target_activation_epoch,
             },
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
         }
     }
 

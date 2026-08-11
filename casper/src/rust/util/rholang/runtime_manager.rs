@@ -14,7 +14,8 @@ use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::block::state_hash::{StateHash, StateHashSerde};
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
-    Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
+    Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy,
+    SystemDeployData,
 };
 use models::rust::validator::Validator;
 use prost::Message;
@@ -103,7 +104,7 @@ pub struct ParentsPostStateCacheKey {
 
 pub type ParentsPostStateCacheVal = (
     StateHash,
-    Vec<prost::bytes::Bytes>,
+    Vec<RejectedDeploy>,
     Vec<crate::rust::merging::rejected_slash::RejectedSlash>,
 );
 
@@ -189,6 +190,8 @@ impl RuntimeManager {
                 }
                 None => bytes.push(0),
             }
+            push_len_prefixed(&mut bytes, &pd.pre_state_hash);
+            push_len_prefixed(&mut bytes, &pd.post_state_hash);
         }
         bytes.extend_from_slice(&(sys_processed.len() as u64).to_le_bytes());
         for psd in sys_processed {
@@ -196,9 +199,13 @@ impl RuntimeManager {
                 ProcessedSystemDeploy::Succeeded {
                     event_list,
                     system_deploy,
+                    pre_state_hash,
+                    post_state_hash,
                 } => {
                     bytes.push(0);
                     push_event_log(&mut bytes, event_list);
+                    push_len_prefixed(&mut bytes, pre_state_hash);
+                    push_len_prefixed(&mut bytes, post_state_hash);
                     match system_deploy {
                         SystemDeployData::Slash {
                             invalid_block_hash,
@@ -256,10 +263,14 @@ impl RuntimeManager {
                 ProcessedSystemDeploy::Failed {
                     event_list,
                     error_msg,
+                    pre_state_hash,
+                    post_state_hash,
                 } => {
                     bytes.push(1);
                     push_event_log(&mut bytes, event_list);
                     push_len_prefixed(&mut bytes, error_msg.as_bytes());
+                    push_len_prefixed(&mut bytes, pre_state_hash);
+                    push_len_prefixed(&mut bytes, post_state_hash);
                 }
             }
         }
@@ -1624,6 +1635,8 @@ mod tests {
             system_deploy_error: None,
             cosigners: Vec::new(),
             cosigner_threshold: 0,
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
         }
     }
 
@@ -1666,6 +1679,8 @@ mod tests {
                 issuer_public_key: PublicKey::from_bytes(&[tag, tag + 1]),
                 target_activation_epoch: tag as i64,
             },
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
         }
     }
 
@@ -1865,14 +1880,31 @@ mod tests {
     }
 
     #[test]
+    fn replay_payload_hash_changes_when_user_state_witness_changes() {
+        let deploy = signed_deploy();
+        let left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
+        let mut right = processed_deploy(deploy, 3, vec![produce_event(1)]);
+        right.post_state_hash = vec![9; 32].into();
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[left], &[], false),
+            RuntimeManager::replay_payload_hash(&[right], &[], false)
+        );
+    }
+
+    #[test]
     fn replay_payload_hash_changes_when_system_deploy_log_changes() {
         let left = ProcessedSystemDeploy::Succeeded {
             event_list: vec![produce_event(1)],
             system_deploy: SystemDeployData::Empty,
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
         };
         let right = ProcessedSystemDeploy::Succeeded {
             event_list: vec![produce_event(2)],
             system_deploy: SystemDeployData::Empty,
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
         };
 
         assert_ne!(
@@ -1886,10 +1918,14 @@ mod tests {
         let left = ProcessedSystemDeploy::Succeeded {
             event_list: vec![produce_event(1), produce_event(2)],
             system_deploy: SystemDeployData::Empty,
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
         };
         let right = ProcessedSystemDeploy::Succeeded {
             event_list: vec![produce_event(2), produce_event(1)],
             system_deploy: SystemDeployData::Empty,
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
         };
 
         assert_eq!(
@@ -1903,10 +1939,35 @@ mod tests {
         let left = ProcessedSystemDeploy::Succeeded {
             event_list: vec![produce_event(1)],
             system_deploy: SystemDeployData::Empty,
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
         };
         let right = ProcessedSystemDeploy::Succeeded {
             event_list: vec![produce_event(1)],
             system_deploy: SystemDeployData::CloseBlockSystemDeployData,
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
+        };
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[], &[left], false),
+            RuntimeManager::replay_payload_hash(&[], &[right], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_changes_when_system_state_witness_changes() {
+        let left = ProcessedSystemDeploy::Succeeded {
+            event_list: vec![produce_event(1)],
+            system_deploy: SystemDeployData::Empty,
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
+        };
+        let right = ProcessedSystemDeploy::Succeeded {
+            event_list: vec![produce_event(1)],
+            system_deploy: SystemDeployData::Empty,
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: vec![9; 32].into(),
         };
 
         assert_ne!(
@@ -1931,10 +1992,14 @@ mod tests {
         let left = ProcessedSystemDeploy::Failed {
             event_list: vec![produce_event(1)],
             error_msg: "left".to_string(),
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
         };
         let right = ProcessedSystemDeploy::Failed {
             event_list: vec![produce_event(1)],
             error_msg: "right".to_string(),
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
         };
 
         assert_ne!(

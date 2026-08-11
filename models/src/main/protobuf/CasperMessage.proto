@@ -301,6 +301,8 @@ message ProcessedDeployProto {
     // itself remains available at runtime via RuntimeBudget diagnostics.
     reserved 7, 8;
     reserved "costTraceDigest", "costTraceEventCount";
+    bytes preStateHash             = 9;
+    bytes postStateHash            = 10;
 }
 
 message SlashSystemDeployDataProto {
@@ -347,6 +349,8 @@ message ProcessedSystemDeployProto {
     SystemDeployDataProto systemDeploy = 1 [(scalapb.field).no_box = true];
     repeated EventProto deployLog      = 2;
     string errorMsg                    = 3;
+    bytes preStateHash                 = 4;
+    bytes postStateHash                = 5;
 }
 
 message BodyProto {
@@ -359,6 +363,15 @@ message BodyProto {
 
 message RejectedDeployProto{
   bytes sig = 1;
+  bytes sourceBlockHash = 2;
+  RejectedDeployReasonProto reason = 3;
+}
+
+enum RejectedDeployReasonProto {
+  REJECTED_DEPLOY_REASON_UNSPECIFIED = 0;
+  REJECTED_DEPLOY_REASON_MERGE_CONFLICT = 1;
+  REJECTED_DEPLOY_REASON_DUPLICATE_OCCURRENCE = 2;
+  REJECTED_DEPLOY_REASON_COLLATERAL_CHAIN_DROP = 3;
 }
 
 message JustificationProto {

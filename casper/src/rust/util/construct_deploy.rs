@@ -128,5 +128,7 @@ pub fn basic_processed_deploy(
         system_deploy_error: None,
         cosigners: Vec::new(),
         cosigner_threshold: 0,
+        pre_state_hash: prost::bytes::Bytes::new(),
+        post_state_hash: prost::bytes::Bytes::new(),
     })
 }

@@ -46,12 +46,86 @@ pub struct ReplayRuntimeOps {
     pub runtime_ops: RuntimeOps,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effect_state_witness_requires_complete_contiguous_boundaries() {
+        let empty = StateHash::new();
+        let pre = StateHash::from(vec![1; 32]);
+        let post = StateHash::from(vec![2; 32]);
+
+        assert!(
+            !ReplayRuntimeOps::validate_effect_pre_state("legacy", &empty, &empty, &pre).unwrap()
+        );
+        assert!(ReplayRuntimeOps::validate_effect_pre_state("exact", &pre, &post, &pre).unwrap());
+        assert!(
+            ReplayRuntimeOps::validate_effect_pre_state("partial", &pre, &empty, &pre).is_err()
+        );
+        assert!(ReplayRuntimeOps::validate_effect_pre_state("gap", &post, &pre, &pre).is_err());
+        assert!(ReplayRuntimeOps::validate_effect_post_state("exact", &post, &post).is_ok());
+        assert!(ReplayRuntimeOps::validate_effect_post_state("forged", &pre, &post).is_err());
+    }
+}
+
 impl ReplayRuntimeOps {
     pub fn new(runtime_ops: RuntimeOps) -> Self { Self { runtime_ops } }
 
     pub fn new_from_runtime(runtime: RhoRuntimeImpl) -> Self {
         Self {
             runtime_ops: RuntimeOps::new(runtime),
+        }
+    }
+
+    fn validate_effect_pre_state(
+        effect: &str,
+        recorded_pre: &StateHash,
+        recorded_post: &StateHash,
+        current_root: &StateHash,
+    ) -> Result<bool, CasperError> {
+        match (recorded_pre.is_empty(), recorded_post.is_empty()) {
+            (true, true) => Ok(false),
+            (false, false) if recorded_pre == current_root => Ok(true),
+            (false, false) => Err(CasperError::ReplayFailure(
+                ReplayFailure::effect_state_mismatch(
+                    effect.to_string(),
+                    "pre".to_string(),
+                    hex::encode(recorded_pre),
+                    hex::encode(current_root),
+                ),
+            )),
+            _ => Err(CasperError::ReplayFailure(
+                ReplayFailure::effect_state_mismatch(
+                    effect.to_string(),
+                    "witness".to_string(),
+                    "both pre-state and post-state hashes".to_string(),
+                    format!(
+                        "pre_present={}, post_present={}",
+                        !recorded_pre.is_empty(),
+                        !recorded_post.is_empty()
+                    ),
+                ),
+            )),
+        }
+    }
+
+    fn validate_effect_post_state(
+        effect: &str,
+        recorded_post: &StateHash,
+        actual_post: &StateHash,
+    ) -> Result<(), CasperError> {
+        if recorded_post == actual_post {
+            Ok(())
+        } else {
+            Err(CasperError::ReplayFailure(
+                ReplayFailure::effect_state_mismatch(
+                    effect.to_string(),
+                    "post".to_string(),
+                    hex::encode(recorded_post),
+                    hex::encode(actual_post),
+                ),
+            ))
         }
     }
 
@@ -204,8 +278,22 @@ impl ReplayRuntimeOps {
         tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", n_user = terms.len(), "replay.replay_deploys: USER-deploy phase");
         let user_deploys_start = Instant::now();
         let mut deploy_results = Vec::new();
+        let mut current_root = start_hash.clone();
         for term in terms {
+            let effect = format!("user:{}", hex::encode(&term.deploy.sig));
+            let validate_witness = Self::validate_effect_pre_state(
+                &effect,
+                &term.pre_state_hash,
+                &term.post_state_hash,
+                &current_root,
+            )?;
             let result = self.replay_deploy_e(with_cost_accounting, &term).await?;
+            let checkpoint = self.runtime_ops.runtime.create_checkpoint().await;
+            let actual_post = checkpoint.root.to_bytes_prost();
+            if validate_witness {
+                Self::validate_effect_post_state(&effect, &term.post_state_hash, &actual_post)?;
+            }
+            current_root = actual_post;
             deploy_results.push(result);
         }
         metrics::histogram!(BLOCK_REPLAY_PHASE_USER_DEPLOYS_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
@@ -215,7 +303,15 @@ impl ReplayRuntimeOps {
         tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", n_system = system_deploys.len(), "replay.replay_deploys: SYSTEM-deploy phase (closeBlock etc.)");
         let system_deploys_start = Instant::now();
         let mut system_deploy_results = Vec::new();
-        for system_deploy in system_deploys {
+        for (index, system_deploy) in system_deploys.into_iter().enumerate() {
+            let effect = format!("system:{}", index);
+            let (recorded_pre, recorded_post) = system_deploy.state_hashes();
+            let validate_witness = Self::validate_effect_pre_state(
+                &effect,
+                recorded_pre,
+                recorded_post,
+                &current_root,
+            )?;
             let result = self
                 .replay_block_system_deploy(
                     block_data,
@@ -225,6 +321,12 @@ impl ReplayRuntimeOps {
                     client_fuel_allocations,
                 )
                 .await?;
+            let checkpoint = self.runtime_ops.runtime.create_checkpoint().await;
+            let actual_post = checkpoint.root.to_bytes_prost();
+            if validate_witness {
+                Self::validate_effect_post_state(&effect, recorded_post, &actual_post)?;
+            }
+            current_root = actual_post;
             system_deploy_results.push(result);
         }
         metrics::histogram!(BLOCK_REPLAY_PHASE_SYSTEM_DEPLOYS_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)

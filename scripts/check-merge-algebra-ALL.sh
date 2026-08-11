@@ -10,13 +10,14 @@
 #      are axiom-free ("Closed under the global context"), then re-checks them
 #      with the TRUSTED kernel (coqchk). Any failure here fails the gate.
 #      SKIPPED only while no theories/*.v exist yet (scaffold phase).
-#   2. Z3    (fail-soft) — keep_one_total_order (the 5-key strict total order +
+#   2. Z3    (fail-soft) — keep_one_total_order (the composite-key strict total order +
 #      argmax uniqueness + the "without key 5, distinct chains tie" fork probe)
-#      and channel_netting_monoid (max-union commutes but is NON-associative =
-#      Finding A; the sum-union FIX is associative). SKIPPED if no python3 z3.
+#      and channel_netting_monoid (exact causal deduplication plus additive
+#      multiset projection, with max-union and replicated whole-block deltas as
+#      negative models). SKIPPED if no python3 z3.
 #   3. Rust  (fail-soft) — the modality companions: rspace_plus_plus merger tests
-#      (GAP-1 combine commutativity + the Finding-A non-associativity pin +
-#      the sum-union order-independence; GAP-3 removed-predicate subsumption +
+#      (GAP-1 additive composition, causal multiplicity, and the legacy negative
+#      model; GAP-3 removed-predicate subsumption +
 #      the §3c produce-only over-fill ESCAPE of the retained detector;
 #      P2 split-hides-no-conflict), the casper merging P3 proptest
 #      (cmp is a strict total order whose Equal-class is the injective key), and
@@ -109,7 +110,7 @@ elif command -v python3 >/dev/null 2>&1 && python3 -c 'import z3' >/dev/null 2>&
     fail "Z3 keep_one_total_order.py failed (see /tmp/ma_z3_ko.log)"
   fi
   if python3 "$Z3_DIR/channel_netting_monoid.py" >/tmp/ma_z3_cn.log 2>&1; then
-    pass "Z3 channel-netting monoid (max-union NON-assoc / sum-union assoc)"
+    pass "Z3 exact causal channel netting (dedup by identity, additive multiset projection)"
   else
     fail "Z3 channel_netting_monoid.py failed (see /tmp/ma_z3_cn.log)"
   fi
@@ -120,12 +121,12 @@ fi
 echo "== [3/4] Rust modality companions (fail-soft) =="
 if command -v cargo >/dev/null 2>&1; then
   if cargo test -p rspace_plus_plus --lib merger:: >/tmp/ma_rust_rspace.log 2>&1; then
-    pass "Rust rspace_plus_plus merger:: (GAP-1 combine, Finding-A pin ignored, GAP-3 subsumption + §3c produce-only escape, P2)"
+    pass "Rust rspace_plus_plus merger:: (GAP-1 additive composition and causal multiplicity, GAP-3 subsumption + §3c produce-only escape, P2)"
   else
     fail "Rust rspace_plus_plus merger:: tests failed (see /tmp/ma_rust_rspace.log)"; tail -20 /tmp/ma_rust_rspace.log | sed 's/^/      /'
   fi
   if cargo test -p casper --lib merging:: >/tmp/ma_rust_casper.log 2>&1; then
-    pass "Rust casper merging:: (P3 cmp strict-total-order, Equal-class = injective key)"
+    pass "Rust casper merging:: (P3 strict-total-order plus exact causal-effect deduplication)"
   else
     fail "Rust casper merging:: tests failed (see /tmp/ma_rust_casper.log)"; tail -20 /tmp/ma_rust_casper.log | sed 's/^/      /'
   fi

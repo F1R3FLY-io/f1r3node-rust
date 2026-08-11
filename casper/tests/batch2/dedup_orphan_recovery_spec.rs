@@ -340,7 +340,10 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         rejected_slashes.len()
     );
 
-    let rejected_set: HashSet<prost::bytes::Bytes> = rejected_sigs.iter().cloned().collect();
+    let rejected_set: HashSet<prost::bytes::Bytes> = rejected_sigs
+        .iter()
+        .map(|rejected| rejected.sig.clone())
+        .collect();
     let v_orphaned = rejected_set.contains(&sig_v);
     let w_orphaned = rejected_set.contains(&sig_w);
     assert!(
@@ -355,16 +358,16 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         w_orphaned,
         rejected_sigs
             .iter()
-            .map(|s| hex::encode(&s[..std::cmp::min(8, s.len())]))
+            .map(|s| hex::encode(&s.sig[..std::cmp::min(8, s.sig.len())]))
             .collect::<Vec<_>>()
     );
     assert!(
-        !rejected_set.contains(&sig_x),
-        "the shared deploy_x is not orphaned — it has a fresher copy in \
-         the retained chain, so it must NOT be in collateral_lost_pairs. \
-         If this fires, the orphan classification in dag_merger is \
-         flagging shared deploys as collateral, which would cause them to \
-         be re-proposed unnecessarily"
+        rejected_sigs.iter().any(|rejected| {
+            rejected.sig == sig_x
+                && rejected.reason
+                    == models::rust::casper::protocol::casper_message::RejectedDeployReason::DuplicateOccurrence
+        }),
+        "the stale source occurrence of deploy_x must be recorded without making the retained occurrence recoverable"
     );
 
     // The orphaned sig must be admitted to the buffer. The catchup gate

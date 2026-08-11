@@ -6,6 +6,7 @@ use crypto::rust::signatures::signed::Signed;
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use proptest::test_runner::TestRunner;
+use prost::bytes::Bytes as ByteString;
 use rand::prelude::*;
 
 use super::block::state_hash::{self, StateHash};
@@ -87,6 +88,8 @@ pub fn processed_deploy_gen() -> impl Strategy<Value = ProcessedDeploy> {
         system_deploy_error: None,
         cosigners: Vec::new(),
         cosigner_threshold: 0,
+        pre_state_hash: ByteString::new(),
+        post_state_hash: ByteString::new(),
     })
 }
 

@@ -20,6 +20,13 @@ pub enum ReplayFailure {
         replay_cost: u64,
     },
 
+    EffectStateMismatch {
+        effect: String,
+        boundary: String,
+        expected: String,
+        actual: String,
+    },
+
     /// Cost-Accounted Rho Stage B (Decision 6.3): the per-validator supply
     /// balance `Σ⟦v⟧` written by `CloseBlockDeploy::post_eval` on replay did not
     /// match the expected `new_n` (write-readback integrity). A divergence here
@@ -98,6 +105,20 @@ impl ReplayFailure {
         }
     }
 
+    pub fn effect_state_mismatch(
+        effect: String,
+        boundary: String,
+        expected: String,
+        actual: String,
+    ) -> Self {
+        ReplayFailure::EffectStateMismatch {
+            effect,
+            boundary,
+            expected,
+            actual,
+        }
+    }
+
     pub fn replay_supply_mismatch(
         validator: String,
         expected_balance: i64,
@@ -171,6 +192,16 @@ impl std::fmt::Display for ReplayFailure {
                     initial_cost, replay_cost
                 )
             }
+            ReplayFailure::EffectStateMismatch {
+                effect,
+                boundary,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "Effect state mismatch: effect={}, boundary={}, expected={}, actual={}",
+                effect, boundary, expected, actual
+            ),
             ReplayFailure::ReplaySupplyMismatch {
                 validator,
                 expected_balance,

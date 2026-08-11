@@ -36,6 +36,25 @@ impl std::fmt::Display for DeployFinalizationCorruption {
 
 impl std::error::Error for DeployFinalizationCorruption {}
 
+#[derive(Debug)]
+pub struct DeployDispositionAmbiguity {
+    pub sig: Bytes,
+    pub active_occurrences: Vec<BlockHash>,
+}
+
+impl std::fmt::Display for DeployDispositionAmbiguity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "deploy {} has {} active finalized occurrences",
+            hex::encode(&self.sig),
+            self.active_occurrences.len()
+        )
+    }
+}
+
+impl std::error::Error for DeployDispositionAmbiguity {}
+
 /// Terminal or transitional state of a deploy as observed from the local DAG.
 ///
 /// Clients poll `deploy_finalization_status` by deploy signature to learn
@@ -109,6 +128,9 @@ struct ResolverState {
     clean_finalized_event: Option<(i64, BlockHash)>,
     latest_event: Option<(i64, BlockHash)>,
     latest_rejected_event: Option<(i64, BlockHash)>,
+    occurrences: Vec<(i64, BlockHash, bool)>,
+    source_aware_rejections: Vec<(i64, BlockHash, BlockHash)>,
+    legacy_rejections: Vec<(i64, BlockHash)>,
 }
 
 impl ResolverState {
@@ -126,6 +148,9 @@ impl ResolverState {
             clean_finalized_event: None,
             latest_event: None,
             latest_rejected_event: None,
+            occurrences: Vec::new(),
+            source_aware_rejections: Vec::new(),
+            legacy_rejections: Vec::new(),
         }
     }
 }
@@ -161,10 +186,22 @@ fn run_prelude(
     block_store: &KeyValueBlockStore,
     sig: &[u8],
 ) -> ApiErr<PreludeOutcome> {
-    let Some(first_seen_block_hash) = dag
-        .lookup_by_deploy_id(&sig.to_vec())
-        .map_err(|e| eyre::eyre!("deploy index lookup failed: {}", e))?
-    else {
+    let deploy_id = sig.to_vec();
+    let occurrences = dag
+        .lookup_deploy_occurrences(&deploy_id)
+        .map_err(|e| eyre::eyre!("deploy occurrence index lookup failed: {}", e))?;
+    let first_seen_block_hash = occurrences
+        .into_iter()
+        .min_by(|left, right| {
+            dag.block_number(left)
+                .unwrap_or(i64::MAX)
+                .cmp(&dag.block_number(right).unwrap_or(i64::MAX))
+                .then_with(|| left.cmp(right))
+        })
+        .or(dag
+            .lookup_by_deploy_id(&deploy_id)
+            .map_err(|e| eyre::eyre!("deploy index lookup failed: {}", e))?);
+    let Some(first_seen_block_hash) = first_seen_block_hash else {
         return Ok(PreludeOutcome::Unknown);
     };
 
@@ -324,10 +361,13 @@ fn bfs_finalized_window(
 
         for pd in &candidate_block.body.deploys {
             if active_sigs.contains(&pd.deploy.sig) {
-                seen_sigs_here.insert(pd.deploy.sig.clone());
                 let state = per_sig
                     .get_mut(&pd.deploy.sig)
                     .expect("active_sigs and per_sig must agree on key set");
+                state
+                    .occurrences
+                    .push((height, candidate_hash.clone(), pd.is_failed));
+                seen_sigs_here.insert(pd.deploy.sig.clone());
                 if pd.is_failed {
                     if state
                         .failed_finalized_event
@@ -353,6 +393,17 @@ fn bfs_finalized_window(
                 let state = per_sig
                     .get_mut(&rd.sig)
                     .expect("active_sigs and per_sig must agree on key set");
+                if rd.has_provenance() {
+                    state.source_aware_rejections.push((
+                        height,
+                        candidate_hash.clone(),
+                        rd.source_block_hash.clone(),
+                    ));
+                } else {
+                    state
+                        .legacy_rejections
+                        .push((height, candidate_hash.clone()));
+                }
                 state.rejection_count = state.rejection_count.saturating_add(1);
                 if state
                     .latest_rejected_event
@@ -380,6 +431,25 @@ fn bfs_finalized_window(
     }
 
     Ok(())
+}
+
+fn reduce_source_aware_occurrences(
+    occurrences: &[(i64, BlockHash, bool)],
+    rejected_sources: &HashSet<BlockHash>,
+    latest_legacy_rejection_height: Option<i64>,
+) -> Vec<(i64, BlockHash, bool)> {
+    let mut active_occurrences: Vec<_> = occurrences
+        .iter()
+        .filter(|(height, source_block, _)| {
+            !rejected_sources.contains(source_block)
+                && latest_legacy_rejection_height
+                    .is_none_or(|legacy_height| *height > legacy_height)
+        })
+        .cloned()
+        .collect();
+    active_occurrences
+        .sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+    active_occurrences
 }
 
 /// Apply the per-sig post-loop rules: canonical-descendant invalidation
@@ -447,6 +517,88 @@ fn finalize_sig_state(
     let canonical_block = |block: &BlockHash| -> ApiErr<bool> {
         Ok(block == &lfb_hash || dag.is_in_main_chain(block, &lfb_hash)?)
     };
+
+    if !state.source_aware_rejections.is_empty() {
+        let mut rejected_sources = HashSet::new();
+        let mut rejection_count = 0u32;
+        let mut latest_rejection: Option<(i64, BlockHash)> = None;
+        for (height, recording_block, source_block) in &state.source_aware_rejections {
+            if canonical_block(recording_block)? {
+                rejected_sources.insert(source_block.clone());
+                rejection_count = rejection_count.saturating_add(1);
+                if latest_rejection
+                    .as_ref()
+                    .is_none_or(|(current_height, current_hash)| {
+                        height > current_height
+                            || (height == current_height && recording_block < current_hash)
+                    })
+                {
+                    latest_rejection = Some((*height, recording_block.clone()));
+                }
+            }
+        }
+
+        let mut latest_legacy_rejection_height = None;
+        for (height, recording_block) in &state.legacy_rejections {
+            if canonical_block(recording_block)? {
+                latest_legacy_rejection_height = Some(
+                    latest_legacy_rejection_height
+                        .map_or(*height, |current: i64| current.max(*height)),
+                );
+                rejection_count = rejection_count.saturating_add(1);
+                if latest_rejection
+                    .as_ref()
+                    .is_none_or(|(current_height, current_hash)| {
+                        height > current_height
+                            || (height == current_height && recording_block < current_hash)
+                    })
+                {
+                    latest_rejection = Some((*height, recording_block.clone()));
+                }
+            }
+        }
+
+        let active_occurrences = reduce_source_aware_occurrences(
+            &state.occurrences,
+            &rejected_sources,
+            latest_legacy_rejection_height,
+        );
+        if active_occurrences.len() > 1 {
+            return Err(eyre::Report::new(DeployDispositionAmbiguity {
+                sig: state.sig_bytes,
+                active_occurrences: active_occurrences
+                    .into_iter()
+                    .map(|(_, hash, _)| hash)
+                    .collect(),
+            }));
+        }
+
+        let lfb_height = dag.block_number(&lfb_hash).ok_or_else(|| {
+            eyre::eyre!(
+                "deploy_finalization_status: LFB {} has no block_number entry",
+                PrettyPrinter::build_string_bytes(&lfb_hash),
+            )
+        })?;
+        let active = active_occurrences.first();
+        let expired =
+            lfb_height > state.valid_after_block_number + deploy_lifespan && active.is_none();
+        let final_state = match active {
+            Some((_, _, true)) => DeployFinalizationState::Failed,
+            Some(_) => DeployFinalizationState::Finalized,
+            None if expired => DeployFinalizationState::Expired,
+            None => DeployFinalizationState::Pending,
+        };
+        let latest_block_hash = active
+            .map(|(_, hash, _)| hash.clone())
+            .or_else(|| latest_rejection.map(|(_, hash)| hash))
+            .or_else(|| Some(state.first_seen_block_hash));
+
+        return Ok(DeployFinalizationStatus {
+            state: final_state,
+            rejection_count,
+            latest_block_hash,
+        });
+    }
 
     // Resolve clean event with two invalidation rules:
     //
@@ -703,6 +855,8 @@ pub fn resolve_batch(
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     #[test]
@@ -731,6 +885,51 @@ mod tests {
                     b
                 );
             }
+        }
+    }
+
+    #[test]
+    fn source_tombstone_removes_only_its_exact_occurrence() {
+        let source_a = Bytes::from_static(b"a");
+        let source_b = Bytes::from_static(b"b");
+        let occurrences = vec![(1, source_a.clone(), false), (1, source_b.clone(), false)];
+        let active =
+            reduce_source_aware_occurrences(&occurrences, &HashSet::from([source_b]), None);
+
+        assert_eq!(active, vec![(1, source_a, false)]);
+    }
+
+    #[test]
+    fn legacy_rejection_only_applies_to_prior_occurrences() {
+        let before = Bytes::from_static(b"before");
+        let after = Bytes::from_static(b"after");
+        let occurrences = vec![(1, before, false), (3, after.clone(), false)];
+        let active = reduce_source_aware_occurrences(&occurrences, &HashSet::new(), Some(2));
+
+        assert_eq!(active, vec![(3, after, false)]);
+    }
+
+    proptest! {
+        #[test]
+        fn occurrence_reduction_is_independent_of_observation_order(
+            sources in prop::collection::btree_set(any::<u8>(), 1..16),
+            rejected in prop::collection::btree_set(any::<u8>(), 0..16),
+        ) {
+            let occurrences: Vec<_> = sources
+                .iter()
+                .map(|source| (i64::from(*source), Bytes::from(vec![*source]), source % 2 == 0))
+                .collect();
+            let rejected_sources: HashSet<_> = rejected
+                .iter()
+                .map(|source| Bytes::from(vec![*source]))
+                .collect();
+            let mut reversed = occurrences.clone();
+            reversed.reverse();
+
+            prop_assert_eq!(
+                reduce_source_aware_occurrences(&occurrences, &rejected_sources, None),
+                reduce_source_aware_occurrences(&reversed, &rejected_sources, None)
+            );
         }
     }
 }

@@ -430,26 +430,29 @@ impl RuntimeOps {
         log_mem_step("after_reset");
 
         let mut res = Vec::with_capacity(terms.len());
+        let mut current_root = start_hash.clone();
         for (idx, cosigned) in terms.into_iter().enumerate() {
             if mem_profile_enabled {
                 let before = format!("before_deploy_{}", idx + 1);
                 log_mem_step(&before);
             }
-            res.push(
-                self.play_deploy_with_cost_accounting_cosigned(cosigned)
-                    .await?,
-            );
+            let (mut processed, mergeable) = self
+                .play_deploy_with_cost_accounting_cosigned(cosigned)
+                .await?;
+            let checkpoint = self.runtime.create_checkpoint().await;
+            let next_root = checkpoint.root.to_bytes_prost();
+            processed.pre_state_hash = current_root;
+            processed.post_state_hash = next_root.clone();
+            current_root = next_root;
+            res.push((processed, mergeable));
             if mem_profile_enabled {
                 let after = format!("after_deploy_{}", idx + 1);
                 log_mem_step(&after);
             }
         }
 
-        log_mem_step("before_final_checkpoint");
-        let final_checkpoint = self.runtime.create_checkpoint().await;
-        let final_root = final_checkpoint.root.to_bytes_prost();
         log_mem_step("after_final_checkpoint");
-        Ok((final_root, res))
+        Ok((current_root, res))
     }
 
     pub async fn play_deploys_for_state(
@@ -470,8 +473,15 @@ impl RuntimeOps {
         }
 
         let mut res = Vec::with_capacity(terms.len());
+        let mut current_root = start_hash.clone();
         for deploy in terms {
-            res.push(self.play_deploy_with_cost_accounting(deploy).await?);
+            let (mut processed, mergeable) = self.play_deploy_with_cost_accounting(deploy).await?;
+            let checkpoint = self.runtime.create_checkpoint().await;
+            let next_root = checkpoint.root.to_bytes_prost();
+            processed.pre_state_hash = current_root;
+            processed.post_state_hash = next_root.clone();
+            current_root = next_root;
+            res.push((processed, mergeable));
         }
 
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
@@ -480,21 +490,19 @@ impl RuntimeOps {
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "before_final_checkpoint_create_checkpoint", rss_kb);
         }
-        let final_checkpoint = self.runtime.create_checkpoint().await;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_final_checkpoint_create_checkpoint", rss_kb);
         }
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "before_final_checkpoint_root_to_bytes", rss_kb);
         }
-        let final_root = final_checkpoint.root.to_bytes_prost();
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_final_checkpoint_root_to_bytes", rss_kb);
         }
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_final_checkpoint", rss_kb);
         }
-        Ok((final_root, res))
+        Ok((current_root, res))
     }
 
     /**
@@ -512,12 +520,18 @@ impl RuntimeOps {
             .await?;
 
         let mut res = Vec::with_capacity(terms.len());
+        let mut current_root = start_hash.clone();
         for deploy in terms {
-            res.push(self.process_deploy_with_mergeable_data(deploy).await?);
+            let (mut processed, mergeable) =
+                self.process_deploy_with_mergeable_data(deploy).await?;
+            let checkpoint = self.runtime.create_checkpoint().await;
+            let next_root = checkpoint.root.to_bytes_prost();
+            processed.pre_state_hash = current_root;
+            processed.post_state_hash = next_root.clone();
+            current_root = next_root;
+            res.push((processed, mergeable));
         }
-
-        let final_checkpoint = self.runtime.create_checkpoint().await;
-        Ok((final_checkpoint.root.to_bytes_prost(), res))
+        Ok((current_root, res))
     }
 
     /**
@@ -663,6 +677,8 @@ impl RuntimeOps {
             system_deploy_error: None,
             cosigners: extracted_cosigners,
             cosigner_threshold: extracted_threshold,
+            pre_state_hash: StateHash::new(),
+            post_state_hash: StateHash::new(),
         };
 
         if !eval_succeeded {
@@ -824,6 +840,7 @@ impl RuntimeOps {
                 }) = system_deploy.as_any().downcast_ref::<SlashDeploy>()
                 {
                     Ok(SystemDeployResult::play_succeeded(
+                        state_hash.clone(),
                         final_state_hash,
                         event_log,
                         SystemDeployData::create_slash(
@@ -838,6 +855,7 @@ impl RuntimeOps {
                     system_deploy.as_any().downcast_ref::<CloseBlockDeploy>()
                 {
                     Ok(SystemDeployResult::play_succeeded(
+                        state_hash.clone(),
                         final_state_hash,
                         event_log,
                         SystemDeployData::create_close(),
@@ -867,6 +885,7 @@ impl RuntimeOps {
                         })
                         .collect();
                     Ok(SystemDeployResult::play_succeeded(
+                        state_hash.clone(),
                         final_state_hash,
                         event_log,
                         SystemDeployData::create_redeem(
@@ -882,6 +901,7 @@ impl RuntimeOps {
                     ))
                 } else {
                     Ok(SystemDeployResult::play_succeeded(
+                        state_hash.clone(),
                         final_state_hash,
                         event_log,
                         SystemDeployData::Empty,

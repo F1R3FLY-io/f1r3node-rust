@@ -18,9 +18,8 @@ use models::rhoapi::PCost;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy,
+    BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy,
 };
-use prost::bytes::Bytes;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::history::Either;
 
@@ -157,6 +156,8 @@ impl TestContext {
                 system_deploy_error: None,
                 cosigners: Vec::new(),
                 cosigner_threshold: 0,
+                pre_state_hash: Vec::<u8>::new().into(),
+                post_state_hash: Vec::<u8>::new().into(),
             })
             .collect()
     }
@@ -228,7 +229,7 @@ impl TestContext {
             StateHash,
             StateHash,
             Vec<ProcessedDeploy>,
-            Vec<Bytes>,
+            Vec<RejectedDeploy>,
             Vec<ProcessedSystemDeploy>,
             Vec<Bond>,
         ),

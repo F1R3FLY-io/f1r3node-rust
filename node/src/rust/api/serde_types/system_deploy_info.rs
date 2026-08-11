@@ -65,14 +65,30 @@ impl From<JustificationInfoSerde> for JustificationInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RejectedDeployInfoSerde {
     pub sig: String,
+    #[serde(default, rename = "sourceBlockHash")]
+    pub source_block_hash: String,
+    #[serde(default)]
+    pub reason: String,
 }
 
 impl From<RejectedDeployInfo> for RejectedDeployInfoSerde {
-    fn from(data: RejectedDeployInfo) -> Self { Self { sig: data.sig } }
+    fn from(data: RejectedDeployInfo) -> Self {
+        Self {
+            sig: data.sig,
+            source_block_hash: data.source_block_hash,
+            reason: data.reason,
+        }
+    }
 }
 
 impl From<RejectedDeployInfoSerde> for RejectedDeployInfo {
-    fn from(data: RejectedDeployInfoSerde) -> Self { Self { sig: data.sig } }
+    fn from(data: RejectedDeployInfoSerde) -> Self {
+        Self {
+            sig: data.sig,
+            source_block_hash: data.source_block_hash,
+            reason: data.reason,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
