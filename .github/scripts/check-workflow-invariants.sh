@@ -356,14 +356,36 @@ else
 	ok "soak canaries are isolated and scheduled routing maps daily to dev and weekend to master"
 fi
 
+# Charts are cosmetic and must never block the publish that makes soak
+# history durable (PR #232 review): a manifest-listed SVG that cannot be
+# fetched or fails the content sniff is dropped with a warning, and the
+# carried manifest is re-filtered so it only advertises files the deploy
+# actually ships. Hostile FILENAMES in a manifest remain fatal — that is a
+# poisoned manifest, not a cosmetic blip.
 for publisher in \
 	.github/workflows/merge-recovery-soak.yml \
 	.github/workflows/soak-checkpoint-publish.yml \
 	.github/workflows/soak-dashboard-pages.yml; do
-	if grep -Fq 'published ${m} lists ${f}, but that SVG returned 404; refusing to publish an incomplete chart set' "$publisher"; then
-		ok "$publisher rejects manifest-listed SVGs that return 404"
+	if grep -Fq 'dropping chart ${f} (HTTP ${code}) rather than blocking the publish' "$publisher" &&
+		grep -Fq 'mv -f "site/data/${m}.filtered" "site/data/${m}"' "$publisher" &&
+		grep -Fq 'lists a suspicious filename; refusing to republish it' "$publisher"; then
+		ok "$publisher drops unfetchable chart SVGs and re-filters the manifest instead of blocking the publish"
 	else
-		err "$publisher may publish an incomplete chart set when a manifest-listed SVG returns 404"
+		err "$publisher must drop unfetchable manifest-listed SVGs (warning + manifest re-filter) while keeping hostile filenames fatal"
+	fi
+done
+
+# The renderers must stage chart output outside site/ and only copy a fully
+# successful series in, so a mid-render crash can never publish a truncated
+# SVG over the carried set.
+for renderer_wf in \
+	.github/workflows/merge-recovery-soak.yml \
+	.github/workflows/soak-dashboard-pages.yml; do
+	if grep -Fq -- '--out-dir "chart-stage-$2"' "$renderer_wf" &&
+		grep -Fq 'cp "chart-stage-$2"/* site/data/' "$renderer_wf"; then
+		ok "$renderer_wf stages chart renders before publishing them"
+	else
+		err "$renderer_wf renders charts directly into site/data, risking a partially overwritten chart set on failure"
 	fi
 done
 
