@@ -19,6 +19,28 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
 // Note: Deploy and Propose services are defined in the models crate
 // These would be imported from models::casper::v1::{deploy_service_v1_server, propose_service_v1_server}
 
+/// Shared transport configuration for both the internal and external gRPC servers.
+fn configure_server(
+    max_message_size: usize,
+    keep_alive_time: Duration,
+    keep_alive_timeout: Duration,
+    tcp_keepalive_time: Duration,
+    request_timeout: Duration,
+    max_connection_age: Duration,
+    max_connection_age_grace: Duration,
+) -> TonicServer {
+    TonicServer::builder()
+        .tcp_keepalive(Some(tcp_keepalive_time))
+        .max_frame_size(Some(max_message_size as u32))
+        .http2_keepalive_interval(Some(keep_alive_time))
+        .http2_keepalive_timeout(Some(keep_alive_timeout))
+        .http2_adaptive_window(Some(true))
+        .timeout(request_timeout)
+        .max_connection_age(max_connection_age)
+        .max_connection_age_grace(max_connection_age_grace)
+        .concurrency_limit_per_connection(1024)
+}
+
 /// Create an internal gRPC server with all services (Repl, Propose, Deploy, Lsp)
 ///
 /// This function creates a gRPC server that includes all available services:
@@ -37,10 +59,10 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
 /// * `max_message_size` - Maximum inbound message size in bytes
 /// * `keep_alive_time` - Duration for keep-alive ping interval
 /// * `keep_alive_timeout` - Duration to wait for keep-alive ping acknowledgment
-/// * `permit_keep_alive_time` - Duration to wait for keep-alive ping without data (not directly supported in tonic)
-/// * `max_connection_idle` - Maximum time a connection can be idle
-/// * `max_connection_age` - Maximum age of a connection (not directly supported in tonic)
-/// * `max_connection_age_grace` - Grace period for closing connections after max_connection_age (not directly supported in tonic)
+/// * `tcp_keepalive_time` - TCP keep-alive duration
+/// * `request_timeout` - Per-request timeout
+/// * `max_connection_age` - Maximum age of a connection before it is recycled
+/// * `max_connection_age_grace` - Grace period for closing connections after max_connection_age
 pub async fn acquire_internal_server(
     repl_grpc_service: ReplGrpcServiceImpl,
     deploy_grpc_service: DeployGrpcServiceV1Impl,
@@ -49,10 +71,10 @@ pub async fn acquire_internal_server(
     max_message_size: usize,
     keep_alive_time: Duration,
     keep_alive_timeout: Duration,
-    permit_keep_alive_time: Duration,
-    max_connection_idle: Duration,
+    tcp_keepalive_time: Duration,
+    request_timeout: Duration,
     max_connection_age: Duration,
-    _max_connection_age_grace: Duration,
+    max_connection_age_grace: Duration,
 ) -> Result<tonic::transport::server::Router, Box<dyn std::error::Error + Send + Sync>> {
     // Create adapter wrappers that implement the proto-generated server traits
     // Note: These adapters need to be implemented separately to bridge between
@@ -67,20 +89,20 @@ pub async fn acquire_internal_server(
         .build_v1()?;
 
     // Build the server router with all services
-    let router = TonicServer::builder()
-        .tcp_keepalive(Some(permit_keep_alive_time))
-        .max_frame_size(Some(max_message_size as u32))
-        .http2_keepalive_interval(Some(keep_alive_time))
-        .http2_keepalive_timeout(Some(keep_alive_timeout))
-        .http2_adaptive_window(Some(true))
-        .timeout(max_connection_idle)
-        .max_connection_age(max_connection_age)
-        .concurrency_limit_per_connection(1024)
-        .add_service(repl_server)
-        .add_service(lsp_server)
-        .add_service(deploy_server)
-        .add_service(propose_server)
-        .add_service(reflection_service);
+    let router = configure_server(
+        max_message_size,
+        keep_alive_time,
+        keep_alive_timeout,
+        tcp_keepalive_time,
+        request_timeout,
+        max_connection_age,
+        max_connection_age_grace,
+    )
+    .add_service(repl_server)
+    .add_service(lsp_server)
+    .add_service(deploy_server)
+    .add_service(propose_server)
+    .add_service(reflection_service);
 
     Ok(router)
 }
@@ -97,19 +119,19 @@ pub async fn acquire_internal_server(
 /// * `max_message_size` - Maximum inbound message size in bytes
 /// * `keep_alive_time` - Duration for keep-alive ping interval
 /// * `keep_alive_timeout` - Duration to wait for keep-alive ping acknowledgment
-/// * `permit_keep_alive_time` - Duration to wait for keep-alive ping without data (not directly supported in tonic)
-/// * `max_connection_idle` - Maximum time a connection can be idle
-/// * `max_connection_age` - Maximum age of a connection (not directly supported in tonic)
-/// * `max_connection_age_grace` - Grace period for closing connections after max_connection_age (not directly supported in tonic)
+/// * `tcp_keepalive_time` - TCP keep-alive duration
+/// * `request_timeout` - Per-request timeout
+/// * `max_connection_age` - Maximum age of a connection before it is recycled
+/// * `max_connection_age_grace` - Grace period for closing connections after max_connection_age
 pub fn acquire_external_server(
     deploy_grpc_service: DeployGrpcServiceV1Impl,
     max_message_size: usize,
     keep_alive_time: Duration,
     keep_alive_timeout: Duration,
-    permit_keep_alive_time: Duration,
-    max_connection_idle: Duration,
+    tcp_keepalive_time: Duration,
+    request_timeout: Duration,
     max_connection_age: Duration,
-    _max_connection_age_grace: Duration,
+    max_connection_age_grace: Duration,
 ) -> Result<tonic::transport::server::Router, Box<dyn std::error::Error + Send + Sync>> {
     // Create adapter wrappers that implement the proto-generated server traits
     // Note: These adapters need to be implemented separately to bridge between
@@ -121,17 +143,102 @@ pub fn acquire_external_server(
         .build_v1()?;
 
     // Build the server router with all services
-    let router = TonicServer::builder()
-        .tcp_keepalive(Some(permit_keep_alive_time))
-        .max_frame_size(Some(max_message_size as u32))
-        .http2_keepalive_interval(Some(keep_alive_time))
-        .http2_keepalive_timeout(Some(keep_alive_timeout))
-        .http2_adaptive_window(Some(true))
-        .timeout(max_connection_idle)
-        .max_connection_age(max_connection_age)
-        .concurrency_limit_per_connection(1024)
-        .add_service(deploy_server)
-        .add_service(reflection_service);
+    let router = configure_server(
+        max_message_size,
+        keep_alive_time,
+        keep_alive_timeout,
+        tcp_keepalive_time,
+        request_timeout,
+        max_connection_age,
+        max_connection_age_grace,
+    )
+    .add_service(deploy_server)
+    .add_service(reflection_service);
 
     Ok(router)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use tonic::transport::server::TcpIncoming;
+    use tonic::transport::Endpoint;
+
+    use super::{configure_server, FILE_DESCRIPTOR_SET};
+
+    const RESUMED_AFTER_COMPLETION: &str = "resumed after completion";
+    const MAX_CONNECTION_AGE: Duration = Duration::from_millis(300);
+    const MAX_CONNECTION_AGE_GRACE: Duration = Duration::from_secs(5);
+    const CONNECTIONS: usize = 4;
+
+    /// A connection reaching `max_connection_age` must not panic the task serving
+    /// it. tonic's serve loop polls its connection-timeout future again after the
+    /// graceful-shutdown branch runs, so that future must never be able to
+    /// complete without also terminating the loop.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn connection_age_expiry_does_not_panic_the_serving_task() {
+        let captured: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&captured);
+        let original = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
+            let rendered = info.to_string();
+            if rendered.contains(RESUMED_AFTER_COMPLETION) {
+                if let Ok(mut hits) = sink.lock() {
+                    hits.push(rendered);
+                }
+            }
+            original(info);
+        }));
+
+        let incoming =
+            TcpIncoming::bind("127.0.0.1:0".parse().unwrap()).expect("bind ephemeral port");
+        let addr = incoming.local_addr().expect("resolve bound address");
+
+        let reflection_service = tonic_reflection::server::Builder::configure()
+            .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
+            .build_v1()
+            .expect("build reflection service");
+
+        let router = configure_server(
+            4 * 1024 * 1024,
+            Duration::from_secs(10),
+            Duration::from_secs(5),
+            Duration::from_secs(10),
+            Duration::from_secs(30),
+            MAX_CONNECTION_AGE,
+            MAX_CONNECTION_AGE_GRACE,
+        )
+        .add_service(reflection_service);
+
+        let server = tokio::spawn(async move { router.serve_with_incoming(incoming).await });
+
+        let mut channels = Vec::with_capacity(CONNECTIONS);
+        for _ in 0..CONNECTIONS {
+            channels.push(
+                Endpoint::from_shared(format!("http://{addr}"))
+                    .expect("valid endpoint")
+                    .connect()
+                    .await
+                    .expect("connect to test server"),
+            );
+        }
+
+        tokio::time::sleep(MAX_CONNECTION_AGE * 4).await;
+
+        drop(channels);
+        server.abort();
+
+        let panics = captured.lock().expect("panic capture not poisoned").clone();
+        let _ = panic::take_hook();
+
+        assert!(
+            panics.is_empty(),
+            "serving task panicked when connections reached max_connection_age \
+             ({} panic(s) across {CONNECTIONS} connections): {panics:#?}",
+            panics.len(),
+        );
+    }
 }

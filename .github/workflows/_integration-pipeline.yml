@@ -38,13 +38,13 @@ env:
   # AES/SSE2 CPU features for gxhash (required by PathMap crate)
   RUSTFLAGS: "-C target-feature=+aes,+sse2"
   DOCKER_IMAGE_NAME: "f1r3flyindustries/f1r3fly-rust"
-  # Pinned F1R3FLY-io/system-integration commit (main). The full SHA is the
+  # Pinned F1R3FLY-io/system-integration commit. The full SHA is the
   # supply-chain guarantee for the secret-bearing launch job: immutable, so a
   # repo takeover cannot move it. Bump ONLY via a reviewed PR after diffing
   # the old..new range in system-integration; never replace with a tag/branch.
   # MUST be kept identical to .github/oci-validation.env (the Full OCI
   # Validation workflow sources that file) — bump both in the same commit.
-  SYSTEM_INTEGRATION_REF: a2c690a171acb2f3d7006cad8a26273487f74ae5
+  SYSTEM_INTEGRATION_REF: 087487981ae5c5e08ce12c524dd772ca67a308a6
   # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
   # install.sh checksum fails closed if the tag is ever moved; OCI_CLI_VERSION
   # pins what the installer pulls from PyPI (without it the installer floats to
