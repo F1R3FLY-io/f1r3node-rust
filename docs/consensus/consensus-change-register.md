@@ -3564,7 +3564,7 @@ material now lives.
 | `CBR-029` | `d8e95fb0` | The pretty printer renders a receive's `where` guard | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-031` | `0b270eca` | A `matches` pattern's `=x` reaches the enclosing `locally_free` | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-032` | `084c93b5` | The binder shift emitted the shifted position as the value | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
-| `CBR-033` | `8fc9afc9` | A resting send carries its reason — a diagnostic proven off the byte path | `OPTIMIZATION_MEASURED_NEUTRAL` | entry body at the pre-refactor revision (git history) |
+| `CBR-033` | `8fc9afc9`, `7983bf4b` | A resting send or continuation carries its reason — a diagnostic proven off the byte path | `OPTIMIZATION_MEASURED_NEUTRAL` | entry body at the pre-refactor revision (git history); living evidence continuation below |
 | `CBR-034` | `7c0cfd0a` | `TreeHashMap` `update`-after-`delete` resurrected the key — the updater tested the leaf, not the key | `BUG_FIX_RULED_NONCONSENSUS` | the "re-prices an existing operation" claim dissolved under the token model — the added contains is a diagnostic Primitive; the genesis-term movement is common to genesis-contract bug fixes |
 | `CBR-035` | `87ee699c` | A walk elimination in the generated `Clone` — behaviourally byte-identical | `OPTIMIZATION_MEASURED_NEUTRAL` | entry body at the pre-refactor revision (git history) |
 | `CBR-036` | `88ec2734`, `9442f76b` | The DESCEND BUDGET — one `descend` walks `k+1` cut-set levels; 5.91× fewer trampoline re-entries | `OPTIMIZATION_MEASURED_NEUTRAL` | entry body at the pre-refactor revision (git history) |
@@ -3603,6 +3603,31 @@ maximum-matching result, relation schedule, free-map aggregation, matching prior
 surface unchanged. Its behavioral movement is corrective: an input that could repeat without
 progress now produces the exact multiset remainder and terminates. Under the owner-ruled inclusion
 criterion, that is permanently recorded evidence of a bug fix, not a new active consensus choice.
+
+**CBR-033 living evidence continuation (2026-08-11; pgmcp #5301).** `7983bf4b` makes the
+read-only hot-store snapshot total over the union of datum and continuation key domains. A datum
+keeps its one-channel key, while an ordinary or installed joined continuation keeps its complete
+ordered channel vector; no `get_data` call, history fill, store action, checkpoint write, or
+consensus-path invocation is introduced. The reason analysis can consequently distinguish a
+source continuation waiting for data, a partially supplied join, and a fully supplied join whose
+candidates still refuse. Idle installed platform services remain absent from the report until data
+addresses them, and a datum on a visible join channel is not simultaneously reported as having no
+reader. The CLI
+and REPL service preserve the pre-existing unmatched-send rendering as their first section and
+append the derived reason from the same snapshot.
+
+The three-arm fixed-seed treatment evaluates the same resting program without observation, with
+the pure reason analysis and reason-only renderer, and with the adopted combined renderer; all
+three arms produce the identical post-state root. The focused gates pass 1/1 hot-store union,
+14/14 reason-classification, 6/6 storage-printer, and 1/1 node REPL tests. The complete RSpace and
+Rholang package suites also pass; their largest runners are 139/139 and 546/546 respectively.
+Every validation ran in a memory-bounded scope with swap disabled. The final focused runs measured
+507,736 KiB, 1,369,760 KiB, and 2,875,128 KiB maximum per-process resident-set size for RSpace,
+Rholang, and node respectively, with zero swaps. No normalized value, protobuf or bincode byte,
+event or post-state hash, accepted program, COMM choice, D3 communication-prefix count, charge,
+settlement, EPathMap mode, EPM1 snapshot, PathMap topology, or zipper/algebra/lattice operation
+moves. The extension therefore remains `OPTIMIZATION_MEASURED_NEUTRAL` and creates no active
+may-change-consensus entry.
 
 **CBR-023 living-set continuation (2026-08-11, SS-G49; pgmcp #5298).**
 `mettail-rust@1fa828bd` retains one matcher-owned Dovetail positional set automaton and compiles its
