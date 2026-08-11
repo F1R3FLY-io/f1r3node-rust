@@ -177,6 +177,7 @@ jq -n \
         iterations_per_hour: $passive.iterations_per_hour,
         rss_peak_mb: $passive.rss_peak_mb,
         cpu_peak_pct: $passive.cpu_peak_pct,
+        cpu_peak_core_grid_pct: $passive.cpu_peak_core_grid_pct,
         finalization_p50_ms: $passive.finalization_p50_ms,
         finalization_p95_ms: $passive.finalization_p95_ms,
         finalization_p99_ms: $passive.finalization_p99_ms,

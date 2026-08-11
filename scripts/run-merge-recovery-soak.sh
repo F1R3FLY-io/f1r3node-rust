@@ -217,19 +217,99 @@ iteration_rss_peak_mb() {
 # iteration_rss_peak_mb — reuses the copy that function already left in
 # iteration_dir rather than re-finding and re-copying it. Must run after
 # iteration_rss_peak_mb. Empty output when absent.
+#
+# Deliberately NOT the max of the per-node peaks below: this sums cpu_percent
+# ACROSS nodes at each timestamp and peaks that total — "how hot did the whole
+# shard run at once" — so its value can exceed every individual node's peak
+# (two nodes at 10% and 20% in the same sample yield 30). The per-node
+# extractor answers the different question "how hot did each node get".
+#
+# LC_ALL=C on every awk that prints "%.1f": a comma-decimal LC_NUMERIC locale
+# would emit "30,0", which downstream jq rejects — and because these values
+# ride --argjson into metrics.json, that would silently cost the iteration its
+# entire metrics file, not just this field.
 iteration_cpu_peak_percent() {
 	local iteration_dir="$1" ts_csv="$iteration_dir/resource-timeseries.csv"
 	[ -s "$ts_csv" ] || return 0
-	awk -F, 'NR > 1 && $2 != "__system__" { sum[$1] += $4 }
+	LC_ALL=C awk -F, 'NR > 1 && $2 != "__system__" { sum[$1] += $4 }
            END { max = 0; for (t in sum) if (sum[t] > max) max = sum[t]
                  if (max > 0) printf "%.1f\n", max }' "$ts_csv" 2>/dev/null
+}
+
+# The same CSV split back out per node: each node's own peak cpu_percent over
+# the iteration, as a JSON object {node: pct}. This is the dashboard CPU
+# grid's AGGREGATE fallback — one "all cores combined" value per node — used
+# by the summary rollup for nodes the per-core extractor below has no data
+# for (pre-emission harness, provider without the per-core hook). The harness
+# prefixes container names with "rnode.<network>." — stripped here so grid
+# columns read "validator1", not a Docker network id. Node names are then
+# sanitized to a safe character class ([-A-Za-z0-9._], anything else becomes
+# "_") so a hostile or malformed name can neither break the hand-built JSON
+# nor silently collide with another name the way character DELETION could.
+# '{}' when absent, and the caller validates the output is JSON before
+# trusting it (fail-soft like every metric here).
+iteration_cpu_peak_per_node_percent() {
+	local iteration_dir="$1" ts_csv="$iteration_dir/resource-timeseries.csv"
+	[ -s "$ts_csv" ] || {
+		printf '{}'
+		return 0
+	}
+	LC_ALL=C awk -F, 'NR > 1 && $2 != "__system__" && $4 ~ /^[0-9]+([.][0-9]+)?$/ {
+	           n = $2; sub(/^rnode\.[^.]*\./, "", n)
+	           if (!(n in peak) || $4 + 0 > peak[n]) peak[n] = $4 + 0 }
+	         END { printf "{"; sep = ""
+	               for (n in peak) {
+	                 k = n; gsub(/[^A-Za-z0-9._-]/, "_", k)
+	                 printf "%s\"%s\":%.1f", sep, k, peak[n]; sep = "," }
+	               printf "}" }' "$ts_csv" 2>/dev/null || printf '{}'
+}
+
+# Real core rows for the same grid: the harness monitor's per-core telemetry
+# (resource-percore-timeseries.csv, columns elapsed_s,node,core,cpu_percent —
+# a separate file from resource-timeseries.csv precisely so the aggregate
+# extractors above cannot double-count), reduced to each (node, core) cell's
+# peak over the iteration as nested JSON {node: {core: pct}}. '{}' when the
+# harness predates per-core emission or the provider has no per-core hook;
+# the summary rollup then keeps that node's "all" fallback row. Same name
+# prefix stripping and JSON validation contract as the per-node extractor.
+iteration_cpu_peak_per_node_core_percent() {
+	local iteration_dir="$1" pc_csv="$iteration_dir/resource-percore-timeseries.csv"
+	[ -s "$pc_csv" ] || {
+		printf '{}'
+		return 0
+	}
+	# Same row discipline as the per-node extractor: __system__ is host
+	# state, not a node, and must never become a grid column (a node with
+	# per-core rows drops its "all" fallback, so a phantom node here would
+	# distort the grid, not just add noise). Core ids are bare CPU indices
+	# per the telemetry contract — anything non-numeric is a malformed row,
+	# rejected rather than sanitized into a phantom core.
+	LC_ALL=C awk -F, 'NR > 1 && $2 != "__system__" && $3 ~ /^[0-9]+$/ &&
+	           $4 ~ /^[0-9]+([.][0-9]+)?$/ {
+	           n = $2; sub(/^rnode\.[^.]*\./, "", n)
+	           cell = n SUBSEP $3
+	           if (!(cell in peak) || $4 + 0 > peak[cell]) peak[cell] = $4 + 0 }
+	         END { printf "{"; nsep = ""
+	               for (cell in peak) { split(cell, parts, SUBSEP); nodes[parts[1]] = 1 }
+	               for (n in nodes) {
+	                 k = n; gsub(/[^A-Za-z0-9._-]/, "_", k)
+	                 printf "%s\"%s\":{", nsep, k; nsep = ","
+	                 csep = ""
+	                 for (cell in peak) {
+	                   split(cell, parts, SUBSEP)
+	                   if (parts[1] != n) continue
+	                   printf "%s\"%s\":%.1f", csep, parts[2], peak[cell]; csep = ","
+	                 }
+	                 printf "}"
+	               }
+	               printf "}" }' "$pc_csv" 2>/dev/null || printf '{}'
 }
 
 snapshot_iteration_monitor_outputs() {
 	local iteration_dir="$1" started_epoch filename source tmp
 	started_epoch="$(date +%s)"
 	while :; do
-		for filename in resource-timeseries.csv node-metrics-timeseries.csv resource-summary.txt host-protection-breach.txt; do
+		for filename in resource-timeseries.csv resource-percore-timeseries.csv node-metrics-timeseries.csv resource-summary.txt host-protection-breach.txt; do
 			source="$(find "${HARNESS_TELEMETRY_DIRS[@]}" \
 				-name "$filename" -newer "$iteration_dir/.started" -print0 2>/dev/null |
 				xargs -0 -r ls -t 2>/dev/null | head -1 || true)"
@@ -369,6 +449,11 @@ emit_iteration_metrics() {
 	errors="$(printf '%s' "$summary_line" | grep -oE '[0-9]+ error' | grep -oE '[0-9]+' || echo 0)"
 	rss_peak="$(iteration_rss_peak_mb "$iteration_dir")"
 	cpu_peak="$(iteration_cpu_peak_percent "$iteration_dir")"
+	local cpu_per_node cpu_per_core
+	cpu_per_node="$(iteration_cpu_peak_per_node_percent "$iteration_dir")"
+	jq -e 'type == "object"' >/dev/null 2>&1 <<<"$cpu_per_node" || cpu_per_node='{}'
+	cpu_per_core="$(iteration_cpu_peak_per_node_core_percent "$iteration_dir")"
+	jq -e 'type == "object"' >/dev/null 2>&1 <<<"$cpu_per_core" || cpu_per_core='{}'
 	latency="$(iteration_finalization_latency "$iteration_dir")"
 	lat_p50="$(printf '%s' "$latency" | awk '{print $1}')"
 	lat_p95="$(printf '%s' "$latency" | awk '{print $2}')"
@@ -400,6 +485,8 @@ emit_iteration_metrics() {
 		--argjson errors "$errors" \
 		--argjson rss_peak "${rss_peak:-null}" \
 		--argjson cpu_peak "${cpu_peak:-null}" \
+		--argjson cpu_per_node "$cpu_per_node" \
+		--argjson cpu_per_core "$cpu_per_core" \
 		--argjson lat_p50 "${lat_p50:-null}" \
 		--argjson lat_p95 "${lat_p95:-null}" \
 		--argjson lat_p99 "${lat_p99:-null}" \
@@ -411,6 +498,8 @@ emit_iteration_metrics() {
       pytest: {passed: $passed, failed: $failed, skipped: $skipped, errors: $errors},
       rss_peak_mb: $rss_peak,
       cpu_peak_pct: $cpu_peak,
+      cpu_peak_per_node_pct: (if ($cpu_per_node | length) > 0 then $cpu_per_node else null end),
+      cpu_peak_per_node_core_pct: (if ($cpu_per_core | length) > 0 then $cpu_per_core else null end),
       finalization_latency: {p50_ms: $lat_p50, p95_ms: $lat_p95, p99_ms: $lat_p99, samples: ($lat_n // 0)},
       too_far_ahead_errors: $too_far_ahead,
       metrics: $metrics,

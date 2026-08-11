@@ -32,6 +32,31 @@ Items are organized by category and rough priority within each category.
 
 <!-- Future features that have been identified but aren't yet prioritized -->
 
+#### BACKLOG-FI-003: Per-core CPU sampling in the soak harness monitor
+
+```yaml
+---
+backlog_id: BACKLOG-FI-003
+title: "Sample per-CPU cgroup counters per node container so the dashboard CPU grid gains real core rows"
+status: implemented_pending_merge
+repo_scope: system-integration (monitor, PR #103), f1r3node-rust (driver + rollup, feature/enhance-soak-data-emission)
+---
+```
+
+Implemented on paired branches (2026-08-11). system-integration PR #103
+(`feature/enhance-soak-data-emission`) adds the monitor half: a per-sample
+docker-exec probe reads cgroup v1 `cpuacct.usage_percpu` (falling back on
+cgroup v2 — which has no per-CPU accounting — to attributing per-thread
+`/proc` CPU-time deltas to each thread's current core) and emits
+`resource-percore-timeseries.csv` (`elapsed_s,node,core,cpu_percent`) as a
+separate file so the aggregate awk extractors cannot double-count. This
+repo's same-named branch consumes it: the soak driver snapshots the CSV and
+emits nested `cpu_peak_per_node_core_pct` per iteration, and
+`write-soak-summary.sh` rolls real core rows into `cpu_peak_core_grid_pct`
+per node, keeping the `"all"` fallback row for nodes without per-core data
+(pre-emission history, providers without the hook). Remove this entry once
+both branches merge.
+
 #### BACKLOG-FI-002: Genericize testbed scripts for AWS / GCP
 
 ```yaml
