@@ -40,6 +40,7 @@ ignore = [
   "RUSTSEC-2021-0153", # encoding (transitive via hocon -> nom)
   "RUSTSEC-2024-0436", # paste proc-macro (transitive via metrics)
   "RUSTSEC-2026-0173", # proc-macro-error2 unmaintained (transitive via getset -> neli -> local-ip-address -> comm; no safe upgrade available)
+  "RUSTSEC-2026-0247", # bitmaps unmaintained (imbl + imbl-sized-chunks; upstream jneem/imbl#170 has no replacement release)
     # Unmaintained advisories accepted for now (transitive deps from upstream
     # crates we don't own). Track upstream remediation; revisit on next sync.
     "RUSTSEC-2025-0134", # rustls-pemfile (transitive via reqwest/tonic)
