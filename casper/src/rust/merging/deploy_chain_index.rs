@@ -322,7 +322,9 @@ impl Ord for DeployChainIndex {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::hash_map::DefaultHasher;
     use std::collections::HashSet;
+    use std::hash::{Hash, Hasher};
 
     use proptest::prelude::*;
     use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -351,6 +353,12 @@ mod tests {
             source_block_hash: Bytes::from(vec![post_state_seed; 32]),
             source_block_number: 0,
         }
+    }
+
+    fn hash(index: &DeployChainIndex) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        index.hash(&mut hasher);
+        hasher.finish()
     }
 
     #[test]
@@ -392,9 +400,7 @@ mod tests {
 
         assert_ne!(a, b);
         assert_ne!(a.cmp(&b), std::cmp::Ordering::Equal);
-
-        let set = HashSet::from([a, b]);
-        assert_eq!(set.len(), 2);
+        assert_ne!(hash(&a), hash(&b));
     }
 
     #[test]

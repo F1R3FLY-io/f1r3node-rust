@@ -46,29 +46,6 @@ pub struct ReplayRuntimeOps {
     pub runtime_ops: RuntimeOps,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn effect_state_witness_requires_complete_contiguous_boundaries() {
-        let empty = StateHash::new();
-        let pre = StateHash::from(vec![1; 32]);
-        let post = StateHash::from(vec![2; 32]);
-
-        assert!(
-            !ReplayRuntimeOps::validate_effect_pre_state("legacy", &empty, &empty, &pre).unwrap()
-        );
-        assert!(ReplayRuntimeOps::validate_effect_pre_state("exact", &pre, &post, &pre).unwrap());
-        assert!(
-            ReplayRuntimeOps::validate_effect_pre_state("partial", &pre, &empty, &pre).is_err()
-        );
-        assert!(ReplayRuntimeOps::validate_effect_pre_state("gap", &post, &pre, &pre).is_err());
-        assert!(ReplayRuntimeOps::validate_effect_post_state("exact", &post, &post).is_ok());
-        assert!(ReplayRuntimeOps::validate_effect_post_state("forged", &pre, &post).is_err());
-    }
-}
-
 impl ReplayRuntimeOps {
     pub fn new(runtime_ops: RuntimeOps) -> Self { Self { runtime_ops } }
 
@@ -1013,5 +990,28 @@ impl ReplayRuntimeOps {
         metrics::histogram!(BLOCK_REPLAY_SYSDEPLOY_CHECK_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(check_start.elapsed().as_secs_f64());
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effect_state_witness_requires_complete_contiguous_boundaries() {
+        let empty = StateHash::new();
+        let pre = StateHash::from(vec![1; 32]);
+        let post = StateHash::from(vec![2; 32]);
+
+        assert!(
+            !ReplayRuntimeOps::validate_effect_pre_state("legacy", &empty, &empty, &pre).unwrap()
+        );
+        assert!(ReplayRuntimeOps::validate_effect_pre_state("exact", &pre, &post, &pre).unwrap());
+        assert!(
+            ReplayRuntimeOps::validate_effect_pre_state("partial", &pre, &empty, &pre).is_err()
+        );
+        assert!(ReplayRuntimeOps::validate_effect_pre_state("gap", &post, &pre, &pre).is_err());
+        assert!(ReplayRuntimeOps::validate_effect_post_state("exact", &post, &post).is_ok());
+        assert!(ReplayRuntimeOps::validate_effect_post_state("forged", &pre, &post).is_err());
     }
 }
