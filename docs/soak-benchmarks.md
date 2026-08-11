@@ -56,6 +56,20 @@ Three workflows publish the site — `merge-recovery-soak.yml` (final),
 file list. **A new data file must be added to all three**, or the next publisher
 to run deletes it.
 
+The failure map on each tab is a pre-rendered SVG pair
+(`failure-heatmap-<series>-{light,dark}.svg`), not a page-drawn chart: rows are
+failure categories (total, per provider), columns are run dates, cell color is
+the failure rate on a sequential red ramp with a neutral non-red for 0%, and
+cell text carries the failures/iterations volume. They are rendered by the
+standalone `scripts/soak-charts` crate (charton; deliberately not a workspace
+member — CI runs a dedicated cargo-deny pass for it, and its committed
+`Cargo.lock` pins the publisher builds via `--locked`). The two publishers whose
+output can change history re-render both series; the checkpoint publisher only
+carries the SVGs forward, since a checkpoint never appends to history. Rendering
+is `continue-on-error` in the same spirit as the badges: a chart bug must never
+block the publish that makes history durable — the carried-forward SVGs from the
+previous publish stand instead.
+
 Each run also records what it soaked: the target ref, the commit sha (linked to
 GitHub) and the node version declared at that commit — the same value carried by
 the Docker LABEL and image tag, so a dashboard row can be matched to a pulled
@@ -214,6 +228,12 @@ nothing added to the workspace). The sample fixtures are deterministic and
 deliberately include a regressed run, so the failure styling is exercised
 without hand-editing anything. Everything generated lands in the gitignored
 `site/`, rebuilt on start and removed on exit.
+
+The failure-map SVGs are rendered from the seeded (or fetched) history when
+`cargo` is available, by building `scripts/soak-charts` — the one part of the
+preview outside the std-only guarantee, so it is best-effort: without cargo the
+figure simply hides itself, and `--live` falls back to the published SVGs it
+fetched.
 
 ## What is measured
 

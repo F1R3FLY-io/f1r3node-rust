@@ -1593,7 +1593,9 @@ jobs:
                    latest-report-daily.md \
                    badge-soak.json badge-soak-daily.json \
                    badge-stability.json badge-stability-daily.json \
-                   badge-perf.json badge-perf-daily.json; do
+                   badge-perf.json badge-perf-daily.json \
+                   failure-heatmap-weekend-light.svg failure-heatmap-weekend-dark.svg \
+                   failure-heatmap-daily-light.svg failure-heatmap-daily-dark.svg; do
             code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
               -o "site/data/${f}" "${DASHBOARD_URL}data/${f}?cb=${cb}")" || code=000
             case "$code" in
@@ -1604,6 +1606,18 @@ jobs:
                 exit 1
                 ;;
             esac
+          done
+          # Heatmap SVGs get the same 200-is-not-proof treatment as the JSON
+          # files: they are normally re-rendered below, but when rendering
+          # skips or fails these carried copies ARE the published charts, and
+          # a cached error page must not become one.
+          for f in failure-heatmap-weekend-light.svg failure-heatmap-weekend-dark.svg \
+                   failure-heatmap-daily-light.svg failure-heatmap-daily-dark.svg; do
+            [ -e "site/data/${f}" ] || continue
+            head -c 1024 "site/data/${f}" | grep -q '<svg' || {
+              echo "::error::published ${f} is not an SVG; refusing to republish it"
+              exit 1
+            }
           done
           # HTTP 200 is not proof of valid content — a CDN or proxy error page
           # is served with 200 too, and republishing one would corrupt the
@@ -1689,6 +1703,31 @@ jobs:
             src="soak-results/report/${b%%:*}.json"
             [ -e "$src" ] && cp "$src" "site/data/${b##*:}${SERIES_SUFFIX}.json"
           done
+
+      - name: Render dashboard charts
+        # Chart SVGs are cosmetic the same way badges are: a render failure
+        # must never block the publish that makes soak history durable, so
+        # this step may fail while the deploy proceeds — the SVGs carried
+        # forward from the previous publish then stand. Both series are
+        # re-rendered because both histories were just fetched fresh.
+        continue-on-error: true
+        shell: bash -euo pipefail {0}
+        run: |
+          # The runner's preinstalled stable toolchain, not the workspace's
+          # pinned nightly: the standalone crate builds on stable, and pulling
+          # the nightly would add minutes to every publish. --locked holds the
+          # build to the crate's committed Cargo.lock, its supply-chain pin.
+          export RUSTUP_TOOLCHAIN=stable
+          cargo build --release --locked \
+            --manifest-path ci-control/scripts/soak-charts/Cargo.toml
+          render() {
+            [ -s "site/data/history$1.json" ] || return 0
+            ci-control/scripts/soak-charts/target/release/soak-charts \
+              --history "site/data/history$1.json" \
+              --out-dir site/data --basename "failure-heatmap-$2"
+          }
+          render "" weekend
+          render "-daily" daily
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

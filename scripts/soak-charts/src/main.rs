@@ -86,6 +86,15 @@ struct Theme {
     ink_on_light: &'static str,
     /// Ink for text sitting on dark fills.
     ink_on_dark: &'static str,
+    /// Canvas background baked into the SVG — the dashboard figure's surface
+    /// color (--surface-2), so the chart sits on the same ground as the
+    /// page-drawn charts instead of a white box. Distinct from zero_neutral,
+    /// so absence (bare surface) and 0% (neutral cell) stay tellable apart.
+    surface: &'static str,
+    /// Ink for axis titles and tick labels (--text-secondary). Axis LINES have
+    /// no theme hook in charton and keep its default rgba(51,51,51) stroke;
+    /// retheme_svg rewrites that stroke to this ink.
+    axis_ink: &'static str,
 }
 
 const THEMES: [Theme; 2] = [
@@ -97,6 +106,8 @@ const THEMES: [Theme; 2] = [
         zero_is_dark: false,
         ink_on_light: "#52514e",
         ink_on_dark: "#ffffff",
+        surface: "#f1f0ee",
+        axis_ink: "#52514e",
     },
     Theme {
         name: "dark",
@@ -106,6 +117,8 @@ const THEMES: [Theme; 2] = [
         zero_is_dark: true,
         ink_on_light: "#1a1a19",
         ink_on_dark: "#e8e7df",
+        surface: "#242423",
+        axis_ink: "#c3c2b7",
     },
 ];
 
@@ -172,6 +185,9 @@ fn render(cells: &[Cell], theme: &Theme, out: &str) -> Result<(), Box<dyn Error>
             t.with_color_map(theme.ramp)
                 .with_show_legend(false)
                 .with_x_tick_label_angle(45.0)
+                .with_background_color(theme.surface)
+                .with_label_color(theme.axis_ink)
+                .with_tick_label_color(theme.axis_ink)
         })];
 
     // "f/n" volume on every cell, split into two ink layers by the darkness
@@ -202,7 +218,11 @@ fn render(cells: &[Cell], theme: &Theme, out: &str) -> Result<(), Box<dyn Error>
                 .configure_text(|t| t.with_size(10.0).with_color(ink))
                 .encode((alt::x("date"), alt::y("category"), alt::text("label")))?
                 .configure_theme(|t| {
-                    t.with_show_legend(false).with_x_tick_label_angle(45.0)
+                    t.with_show_legend(false)
+                        .with_x_tick_label_angle(45.0)
+                        .with_background_color(theme.surface)
+                        .with_label_color(theme.axis_ink)
+                        .with_tick_label_color(theme.axis_ink)
                 }),
         );
     }
@@ -211,22 +231,33 @@ fn render(cells: &[Cell], theme: &Theme, out: &str) -> Result<(), Box<dyn Error>
     let first = iter.next().ok_or("no layers to render")?;
     let layered = iter.fold(first, |acc, layer| acc.and(layer));
     layered.save(out)?;
-    neutralize_zero_fill(out, theme)?;
+    retheme_svg(out, theme)?;
     Ok(())
 }
 
-/// Rewrite the ramp's exact start color to the theme's neutral, on rect fills
-/// only. A zero-rate cell normalizes to 0.0 and therefore renders precisely
-/// the ramp start; substituting that one fill realizes "0% is a neutral
+/// Two exact-color rewrites the declarative API has no hook for.
+///
+/// Zero cells: a zero-rate cell normalizes to 0.0 and renders precisely the
+/// ramp's start color; substituting that one fill realizes "0% is a neutral
 /// non-red" without a per-cell API. A tiny nonzero rate that ROUNDS to the
 /// same 8-bit color would be caught too — visually indistinguishable either
 /// way, and the cell's f/n text disambiguates.
-fn neutralize_zero_fill(path: &str, theme: &Theme) -> Result<(), Box<dyn Error>> {
+///
+/// Axis lines: charton's theme colors axis TEXT but not the axis lines and
+/// tick marks, which keep its hardcoded rgba(51,51,51) stroke — near-invisible
+/// on the dark surface. That exact grey appears nowhere in the Reds ramp or
+/// either theme's palette, so a stroke-scoped rewrite is unambiguous.
+fn retheme_svg(path: &str, theme: &Theme) -> Result<(), Box<dyn Error>> {
     let svg = fs::read_to_string(path)?;
-    let replaced = svg.replace(
-        &format!("fill=\"{}\"", theme.ramp_start),
-        &format!("fill=\"{}\"", theme.zero_neutral),
-    );
+    let replaced = svg
+        .replace(
+            &format!("fill=\"{}\"", theme.ramp_start),
+            &format!("fill=\"{}\"", theme.zero_neutral),
+        )
+        .replace(
+            "stroke=\"rgba(51,51,51,1.000)\"",
+            &format!("stroke=\"{}\"", theme.axis_ink),
+        );
     fs::write(path, replaced)?;
     Ok(())
 }

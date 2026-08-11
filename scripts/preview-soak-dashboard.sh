@@ -101,7 +101,9 @@ case "$MODE" in
     # first soak publishes.
     for f in history.json latest-summary.json latest-verdict.json latest-report.md \
              history-daily.json latest-summary-daily.json latest-verdict-daily.json \
-             latest-report-daily.md; do
+             latest-report-daily.md \
+             failure-heatmap-weekend-light.svg failure-heatmap-weekend-dark.svg \
+             failure-heatmap-daily-light.svg failure-heatmap-daily-dark.svg; do
       code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
         -o "$SITE_DIR/data/$f" "${DASHBOARD_URL}data/${f}?cb=$$" 2>/dev/null)" || code=000
       if [ "$code" = "200" ]; then
@@ -114,8 +116,35 @@ case "$MODE" in
     ;;
 esac
 
+# Seeding now happens before serving (it used to ride on the serve
+# invocation) so the heatmap renderer below can see the history files it
+# draws from.
+[ "$SEED" = "none" ] || "$PREVIEW_BIN" --dir "$SITE_DIR" --port 0 --seed "$SEED"
+
+# Best-effort heatmap render. CI pre-renders these SVGs with the standalone
+# scripts/soak-charts crate, which needs cargo and (cold) the network — both
+# outside this script's std-only, rustc-only guarantee. So: render when cargo
+# is present, otherwise skip — the dashboard hides the heatmap figure when its
+# SVGs are absent, and --live already fetched the published ones above.
+if command -v cargo >/dev/null 2>&1; then
+  if cargo build --release --locked \
+       --manifest-path "$REPO_ROOT/scripts/soak-charts/Cargo.toml"; then
+    for spec in ":weekend" "-daily:daily"; do
+      h="$SITE_DIR/data/history${spec%%:*}.json"
+      [ -s "$h" ] || continue
+      "$REPO_ROOT/scripts/soak-charts/target/release/soak-charts" \
+        --history "$h" --out-dir "$SITE_DIR/data" \
+        --basename "failure-heatmap-${spec#*:}" \
+        || printf 'soak-charts render failed — heatmap absent for %s\n' "${spec#*:}"
+    done
+  else
+    printf 'soak-charts build failed — skipping heatmap SVGs\n'
+  fi
+else
+  printf 'cargo not found — skipping heatmap SVGs (the figure hides itself)\n'
+fi
+
 if [ "$SERVE" != "true" ]; then
-  [ "$SEED" = "none" ] || "$PREVIEW_BIN" --dir "$SITE_DIR" --port 0 --seed "$SEED"
   printf 'Assembled (not serving).\n'
   exit 0
 fi
@@ -123,4 +152,4 @@ fi
 # Deliberately not exec: exec would replace this shell and discard the EXIT
 # trap, leaving the preview tree behind on Ctrl-C. Ctrl-C exits 130, which is
 # the normal way to stop this, so it must not read as a failure.
-"$PREVIEW_BIN" --dir "$SITE_DIR" --port "$PORT" --seed "$SEED" || true
+"$PREVIEW_BIN" --dir "$SITE_DIR" --port "$PORT" --seed none || true

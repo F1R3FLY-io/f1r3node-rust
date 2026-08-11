@@ -1,9 +1,9 @@
 # Standalone by design: NOT a workspace member. Charton's dependency tree is a
 # publish-time-only concern — it renders dashboard SVGs in the Pages publishers
 # and must never ride along in the node workspace's lockfile, build times, or
-# supply-chain surface. The publisher workflow runs `cargo deny check` here
-# with the workspace's deny.toml, so the tree is still reviewed; the committed
-# Cargo.lock is the pin.
+# supply-chain surface. The tree is still reviewed: CI's cargo-deny job and the
+# weekly deny schedule run a dedicated pass here against the repo's deny.toml,
+# and the publishers build with --locked so the committed Cargo.lock is the pin.
 [package]
 name = "soak-charts"
 version = "0.1.0"

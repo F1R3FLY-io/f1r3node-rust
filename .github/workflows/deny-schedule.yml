@@ -37,3 +37,23 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories bans licenses sources
+
+      # Guarded on existence because this workflow checks out dev and master
+      # by ref while running the default branch's workflow file — a branch
+      # that does not carry the crate yet must not fail its scheduled check.
+      - name: Detect soak-charts crate
+        id: soak_charts
+        shell: bash
+        run: echo "present=$([ -f scripts/soak-charts/Cargo.toml ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      # Standalone crate (not a workspace member), so the workspace check
+      # above never sees its tree — same policy, own pass.
+      - name: cargo-deny check (soak-charts)
+        if: steps.soak_charts.outputs.present == 'true'
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          # --config is a `check` option (not global), so it rides in the
+          # command string; the path is cwd-relative — the repo's own policy.
+          command: check --config deny.toml advisories bans licenses sources
+          manifest-path: scripts/soak-charts/Cargo.toml
+          arguments: --all-features

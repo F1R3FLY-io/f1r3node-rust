@@ -158,7 +158,9 @@ jobs:
                    latest-report-daily.md \
                    badge-soak.json badge-soak-daily.json \
                    badge-stability.json badge-stability-daily.json \
-                   badge-perf.json badge-perf-daily.json; do
+                   badge-perf.json badge-perf-daily.json \
+                   failure-heatmap-weekend-light.svg failure-heatmap-weekend-dark.svg \
+                   failure-heatmap-daily-light.svg failure-heatmap-daily-dark.svg; do
             code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
               -o "site/data/${f}" "${DASHBOARD_URL}data/${f}?cb=${cb}")" || code=000
             case "$code" in
@@ -169,6 +171,18 @@ jobs:
                 exit 1
                 ;;
             esac
+          done
+          # A checkpoint never appends to history, so the heatmaps cannot
+          # change here — carried forward only, with the same 200-is-not-proof
+          # check as the JSON files so a cached error page is never published
+          # as a chart.
+          for f in failure-heatmap-weekend-light.svg failure-heatmap-weekend-dark.svg \
+                   failure-heatmap-daily-light.svg failure-heatmap-daily-dark.svg; do
+            [ -e "site/data/${f}" ] || continue
+            head -c 1024 "site/data/${f}" | grep -q '<svg' || {
+              echo "::error::published ${f} is not an SVG; refusing to republish it"
+              exit 1
+            }
           done
           for f in history.json history-daily.json; do
             [ -e "site/data/${f}" ] || continue

@@ -217,6 +217,18 @@ jobs:
         with:
           command: check advisories bans licenses sources
 
+      # The soak-charts publisher crate is deliberately not a workspace member
+      # (see scripts/soak-charts/Cargo.toml), so the workspace check above
+      # never sees its tree — it gets its own pass against the same policy.
+      - name: cargo-deny check (soak-charts)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          # --config is a `check` option (not global), so it rides in the
+          # command string; the path is cwd-relative — the repo's own policy.
+          command: check --config deny.toml advisories bans licenses sources
+          manifest-path: scripts/soak-charts/Cargo.toml
+          arguments: --all-features
+
   markdown_link_check:
     name: Markdown Link Check
     needs: build_base
