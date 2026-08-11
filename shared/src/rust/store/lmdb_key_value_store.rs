@@ -134,10 +134,13 @@ impl KeyValueStore for LmdbKeyValueStore {
 /// `put()` calls — preserving prior behavior exactly — when any store isn't
 /// an `LmdbKeyValueStore` (e.g. an in-memory test double) or the stores
 /// don't all share one `Env`.
-pub fn batched_put(
-    writes: Vec<(&dyn KeyValueStore, Vec<(ByteBuffer, ByteBuffer)>)>,
-) -> Result<(), KvStoreError> {
-    let lmdb_stores: Option<Vec<(&LmdbKeyValueStore, &Vec<(ByteBuffer, ByteBuffer)>)>> = writes
+/// One store's worth of key/value pairs to write, paired with the store to write them to.
+pub type StoreWrite<'a> = (&'a dyn KeyValueStore, Vec<(ByteBuffer, ByteBuffer)>);
+
+type LmdbStoreWrite<'a> = (&'a LmdbKeyValueStore, &'a Vec<(ByteBuffer, ByteBuffer)>);
+
+pub fn batched_put(writes: Vec<StoreWrite<'_>>) -> Result<(), KvStoreError> {
+    let lmdb_stores: Option<Vec<LmdbStoreWrite<'_>>> = writes
         .iter()
         .map(|(store, kv_pairs)| {
             store
