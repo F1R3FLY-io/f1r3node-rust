@@ -153,21 +153,10 @@ const CATCH_UNWIND_ALLOWLIST: &[Allowed] = &[
     ),
     // ── the token, but not the construct ─────────────────────────────────────
     (
-        "rholang/tests/par_read_ceiling_site_registry.rs",
-        1,
-        "NOT A CALL. The token occurs once, inside a multi-line assertion MESSAGE that \
-         explains why the site it registers cannot be observed in-process — it names a \
-         SIGABRT the interceptor cannot intercept. The registry itself performs no \
-         interception. Listed rather than filtered out because the scanner keeps string \
-         literals deliberately — a generator that EMITS an interceptor must be visible \
-         — and silently exempting message text would create a hole a real emitted call \
-         could hide in.",
-    ),
-    (
         "rspace++/libs/rspace_rhotypes/tests/ffi_absent_required_child.rs",
         1,
-        "NOT A CALL. Same shape as the registry entry above: the token occurs once, in \
-         the assertion message that states the finding — the fault at the FFI boundary \
+        "NOT A CALL. The token occurs once in the assertion message that states the \
+         finding — the fault at the FFI boundary \
          is a non-unwinding panic that no in-process interceptor can catch, which is \
          precisely why this file measures it out of process. This file is the template \
          the other subprocess probes in both repositories follow.",

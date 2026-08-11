@@ -5,8 +5,9 @@
 //! traversal, environment, synchronization, or file-I/O code.
 
 use std::env;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use crate::rhoapi::tagged_continuation::TaggedCont;
@@ -17,7 +18,8 @@ const OUTPUT_ENV: &str = "PHASE7_DEPTH_HISTOGRAM_PATH";
 const SUITE_ENV: &str = "PHASE7_DEPTH_HISTOGRAM_SUITE";
 const SUBJECT_ENV: &str = "PHASE7_DEPTH_HISTOGRAM_SUBJECT";
 
-static OUTPUT: OnceLock<Mutex<File>> = OnceLock::new();
+static OUTPUT_PATH: OnceLock<PathBuf> = OnceLock::new();
+static OUTPUT_LOCK: Mutex<()> = Mutex::new(());
 static SUBJECT: OnceLock<String> = OnceLock::new();
 
 fn selected(subject: &'static str) -> bool {
@@ -34,25 +36,30 @@ fn selected(subject: &'static str) -> bool {
         == subject
 }
 
-fn output() -> &'static Mutex<File> {
-    OUTPUT.get_or_init(|| {
-        let path = env::var_os(OUTPUT_ENV).unwrap_or_else(|| {
-            panic!(
-                "{OUTPUT_ENV} is required when phase7-depth-histograms is enabled; a silent sink would make the measurement vacuous"
-            )
-        });
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .unwrap_or_else(|error| {
+fn output_path() -> &'static Path {
+    OUTPUT_PATH
+        .get_or_init(|| {
+            env::var_os(OUTPUT_ENV).map(PathBuf::from).unwrap_or_else(|| {
                 panic!(
-                    "cannot append Phase 7 depth observations to {}: {error}",
-                    path.to_string_lossy()
+                    "{OUTPUT_ENV} is required when phase7-depth-histograms is enabled; a silent sink would make the measurement vacuous"
                 )
-            });
-        Mutex::new(file)
-    })
+            })
+        })
+        .as_path()
+}
+
+fn output() -> impl Write {
+    let path = output_path();
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .unwrap_or_else(|error| {
+            panic!(
+                "cannot append Phase 7 depth observations to {}: {error}",
+                path.to_string_lossy()
+            )
+        })
 }
 
 /// Maximum structural `Par` depth, with each root `Par` at depth one.
@@ -81,9 +88,10 @@ fn record(subject: &'static str, root_kind: &'static str, depth: usize) {
         )
     });
     let line = format!("{suite}\t{subject}\t{root_kind}\t{depth}\n");
-    output()
+    let _output_guard = OUTPUT_LOCK
         .lock()
-        .expect("Phase 7 histogram output lock poisoned")
+        .expect("Phase 7 histogram output lock poisoned");
+    output()
         .write_all(line.as_bytes())
         .expect("write Phase 7 depth observation");
 }
