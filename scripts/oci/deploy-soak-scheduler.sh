@@ -224,6 +224,27 @@ upsert_dynamic_group() {
 			--matching-rule "$rule" \
 			--force >/dev/null
 	fi
+	# Verify-after-write, via GET only. The 2026-08-04 deploy left all three
+	# groups with NO matching rule — empty groups authorize nothing, so every
+	# nightly schedule 404'd on the function for a week while the GitHub cron
+	# fallback silently carried the soaks. The failure was invisible because
+	# BOTH `oci iam dynamic-group list` and the identity-domains list endpoint
+	# report matching-rule=null regardless of the real value in this tenancy;
+	# only a GET returns the truth. A rule that does not bind is worse than no
+	# rule, because it reads as a guarantee and stops people re-checking.
+	local actual
+	if ! actual="$(oci iam dynamic-group get \
+		--profile "$OCI_PROFILE" \
+		--dynamic-group-id "$id" \
+		--query 'data."matching-rule"' \
+		--raw-output)"; then
+		echo "ERROR: could not verify dynamic group $name matching rule via OCI GET." >&2
+		return 1
+	fi
+	if [ "$actual" != "$rule" ]; then
+		echo "ERROR: dynamic group $name matching rule did not persist." >&2
+		return 1
+	fi
 	printf '%s\n' "$id"
 }
 
@@ -238,11 +259,21 @@ policy_name="f1r3node-soak-scheduler"
 secret_statement="Allow dynamic-group $function_group to read secret-bundles in compartment id $SECRET_COMPARTMENT_OCID"
 schedule_02_statement="Allow dynamic-group $schedule_02_group to use fn-invocation in compartment id $OCI_COMPARTMENT_OCID where target.function.id = '$function_id'"
 schedule_03_statement="Allow dynamic-group $schedule_03_group to use fn-invocation in compartment id $OCI_COMPARTMENT_OCID where target.function.id = '$function_id'"
+# The read grants are load-bearing, not belt-and-braces: `use fn-invocation`
+# does not cover the scheduler's resource-RESOLUTION step, and without `read
+# functions-family` the START_RESOURCE work request dies at 0% with a 404 on
+# the function OCID (OCI reports authorization failures as 404). Added live
+# 2026-08-11; this list REPLACES the policy wholesale on update, so removing
+# them here would silently revert the fix on the next redeploy.
+schedule_02_read_statement="Allow dynamic-group $schedule_02_group to read functions-family in compartment id $OCI_COMPARTMENT_OCID where target.function.id = '$function_id'"
+schedule_03_read_statement="Allow dynamic-group $schedule_03_group to read functions-family in compartment id $OCI_COMPARTMENT_OCID where target.function.id = '$function_id'"
 statements="$(jq -cn \
 	--arg secret "$secret_statement" \
 	--arg schedule_02 "$schedule_02_statement" \
 	--arg schedule_03 "$schedule_03_statement" \
-	'[$secret,$schedule_02,$schedule_03]')"
+	--arg schedule_02_read "$schedule_02_read_statement" \
+	--arg schedule_03_read "$schedule_03_read_statement" \
+	'[$secret,$schedule_02,$schedule_03,$schedule_02_read,$schedule_03_read]')"
 policy_id="$(oci iam policy list \
 	--profile "$OCI_PROFILE" \
 	--compartment-id "$TENANCY_OCID" \

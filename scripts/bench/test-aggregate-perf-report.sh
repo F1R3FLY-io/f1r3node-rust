@@ -20,6 +20,7 @@ cat >"$TMP/failed/summary.json" <<'JSON'
   "iterations_per_hour": 36,
   "rss_peak_mb": 17100,
   "cpu_peak_pct": 100,
+  "cpu_peak_core_grid_pct": {"validator1": {"all": 55.5}, "bootstrap": {"all": 12}},
   "finalization_p50_ms": null,
   "finalization_p95_ms": null,
   "finalization_p99_ms": null,
@@ -84,6 +85,7 @@ jq -e '
   and .active.segments_ok == 1
   and (.active.segments | length) == 1
   and .active.segments[0].offset_seconds == 60
+  and .passive.cpu_peak_core_grid_pct == {"validator1": {"all": 55.5}, "bootstrap": {"all": 12}}
 ' "$TMP/segments-report/weekly-summary.json" >/dev/null
 
 mkdir -p "$TMP/breach" "$TMP/breach-report"
