@@ -135,8 +135,9 @@ jobs:
                 ;;
             esac
             jq -e 'type == "array" and all(.[]; type == "string")' "site/data/${m}" >/dev/null 2>&1 || {
-              echo "::error::published ${m} is not an array of strings; refusing to republish it"
-              exit 1
+              echo "::warning::published ${m} is not an array of strings; dropping the chart manifest rather than blocking the publish"
+              rm -f "site/data/${m}"
+              continue
             }
             while IFS= read -r f; do
               case "$f" in
@@ -152,24 +153,28 @@ jobs:
               esac
               code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
                 -o "site/data/${f}" "${DASHBOARD_URL}data/${f}?cb=${cb}")" || code=000
-              case "$code" in
-                200)
-                  head -c 1024 "site/data/${f}" | grep -q '<svg' || {
-                    echo "::error::published ${f} is not an SVG; refusing to republish it"
-                    exit 1
-                  }
-                  ;;
-                404)
-                  rm -f "site/data/${f}"
-                  echo "::error::published ${m} lists ${f}, but that SVG returned 404; refusing to publish an incomplete chart set"
-                  exit 1
-                  ;;
-                *)
-                  echo "::error::could not read published ${f} (HTTP ${code}); aborting so live dashboard data is not overwritten"
-                  exit 1
-                  ;;
-              esac
+              # Charts are cosmetic: a per-SVG fetch or content failure drops
+              # that one chart with a warning instead of blocking the publish
+              # that makes soak history durable. The page hides a missing
+              # figure and the next successful render restores it; the
+              # manifest is re-filtered below so it never advertises a file
+              # this deploy does not carry. A hostile FILENAME above stays
+              # fatal — that is a poisoned manifest, not a cosmetic blip.
+              if [ "$code" = "200" ] && head -c 1024 "site/data/${f}" | grep -q '<svg'; then
+                :
+              else
+                echo "::warning::dropping chart ${f} (HTTP ${code}) rather than blocking the publish"
+                rm -f "site/data/${f}"
+              fi
             done < <(jq -r '.[]' "site/data/${m}")
+            # The carried manifest must describe what this deploy actually
+            # ships: re-filter it to the SVGs that survived, so a consumer
+            # never fetches a name the manifest promised but the drop above
+            # removed.
+            jq -r '.[]' "site/data/${m}" | while IFS= read -r f; do
+              { [ -s "site/data/${f}" ] && printf '%s\n' "$f"; } || true
+            done | jq -R . | jq -s . > "site/data/${m}.filtered"
+            mv -f "site/data/${m}.filtered" "site/data/${m}"
           done
           # HTTP 200 is not proof of valid content — a CDN or proxy error page
           # is served with 200 too. Republishing one would corrupt the data.
@@ -287,9 +292,18 @@ jobs:
             --manifest-path scripts/soak-charts/Cargo.toml
           render() {
             [ -s "site/data/history$1.json" ] || return 0
+            # Staged render: the crate writes into a scratch dir OUTSIDE the
+            # site tree, and only a fully successful series replaces the
+            # carried SVGs and manifest — a mid-render crash therefore cannot
+            # publish a truncated chart, making "the carried SVGs stand" a
+            # guarantee rather than a hope.
+            rm -rf "chart-stage-$2"
+            mkdir -p "chart-stage-$2"
             scripts/soak-charts/target/release/soak-charts \
               --history "site/data/history$1.json" \
-              --out-dir site/data --series "$2"
+              --out-dir "chart-stage-$2" --series "$2"
+            cp "chart-stage-$2"/* site/data/
+            rm -rf "chart-stage-$2"
           }
           render "" weekend
           render "-daily" daily
