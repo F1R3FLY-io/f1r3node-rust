@@ -10,6 +10,7 @@
 # Environment variables:
 #   SKIP_FMT=1      - Skip cargo fmt check
 #   SKIP_CLIPPY=1   - Skip cargo clippy
+#   SKIP_TESTS=1    - Skip cargo tests
 #   SKIP_DENY=1     - Skip cargo deny check
 #   VERBOSE=1       - Show full command output
 #
@@ -41,8 +42,10 @@ unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE
 
 SKIP_FMT="${SKIP_FMT:-0}"
 SKIP_CLIPPY="${SKIP_CLIPPY:-0}"
+SKIP_TESTS="${SKIP_TESTS:-0}"
 SKIP_DENY="${SKIP_DENY:-0}"
 VERBOSE="${VERBOSE:-0}"
+SOAK_CHARTS_MANIFEST="scripts/soak-charts/Cargo.toml"
 
 # Skip in CI
 if [ -n "${CI:-}" ] || [ -n "${GITLAB_CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
@@ -63,7 +66,8 @@ if [[ "$SKIP_FMT" == "1" ]]; then
     echo -e "  ${CYAN}[fmt]${NC}    ${YELLOW}SKIP${NC} (SKIP_FMT=1)"
 else
     fmt_out=$(mktemp)
-    if cargo fmt --all -- --check > "$fmt_out" 2>&1; then
+    if cargo fmt --all -- --check > "$fmt_out" 2>&1 &&
+        cargo fmt --manifest-path "$SOAK_CHARTS_MANIFEST" -- --check >> "$fmt_out" 2>&1; then
         echo -e "  ${CYAN}[fmt]${NC}    ${GREEN}PASS${NC}"
     else
         echo -e "  ${CYAN}[fmt]${NC}    ${RED}FAIL${NC}"
@@ -74,6 +78,7 @@ else
             echo ""
             echo -e "  ${YELLOW}Unformatted files detected. Run:${NC}"
             echo "    cargo fmt --all"
+            echo "    cargo fmt --manifest-path $SOAK_CHARTS_MANIFEST"
             echo ""
         fi
     fi
@@ -85,7 +90,8 @@ if [[ "$SKIP_CLIPPY" == "1" ]]; then
     echo -e "  ${CYAN}[clippy]${NC} ${YELLOW}SKIP${NC} (SKIP_CLIPPY=1)"
 else
     clippy_out=$(mktemp)
-    if cargo clippy --workspace --all-targets -- -D warnings > "$clippy_out" 2>&1; then
+    if cargo clippy --workspace --all-targets -- -D warnings > "$clippy_out" 2>&1 &&
+        cargo clippy --manifest-path "$SOAK_CHARTS_MANIFEST" --all-targets -- -D warnings >> "$clippy_out" 2>&1; then
         echo -e "  ${CYAN}[clippy]${NC} ${GREEN}PASS${NC}"
     else
         echo -e "  ${CYAN}[clippy]${NC} ${RED}FAIL${NC}"
@@ -96,11 +102,35 @@ else
             # Show just the error lines
             grep -E "^error" "$clippy_out" | head -20
             echo ""
-            echo -e "  ${YELLOW}Run for details:${NC} cargo clippy --workspace --all-targets"
+            echo -e "  ${YELLOW}Run for details:${NC}"
+            echo "    cargo clippy --workspace --all-targets"
+            echo "    cargo clippy --manifest-path $SOAK_CHARTS_MANIFEST --all-targets"
             echo ""
         fi
     fi
     rm -f "$clippy_out"
+fi
+
+# --- cargo test ---
+if [[ "$SKIP_TESTS" == "1" ]]; then
+    echo -e "  ${CYAN}[test]${NC}   ${YELLOW}SKIP${NC} (SKIP_TESTS=1)"
+else
+    test_out=$(mktemp)
+    if cargo test --manifest-path "$SOAK_CHARTS_MANIFEST" > "$test_out" 2>&1; then
+        echo -e "  ${CYAN}[test]${NC}   ${GREEN}PASS${NC}"
+    else
+        echo -e "  ${CYAN}[test]${NC}   ${RED}FAIL${NC}"
+        FAILED=1
+        if [[ "$VERBOSE" == "1" ]]; then
+            cat "$test_out"
+        else
+            tail -40 "$test_out"
+            echo ""
+            echo -e "  ${YELLOW}Run for details:${NC} cargo test --manifest-path $SOAK_CHARTS_MANIFEST"
+            echo ""
+        fi
+    fi
+    rm -f "$test_out"
 fi
 
 # --- cargo deny ---
@@ -140,6 +170,7 @@ else
     echo "Options:"
     echo "  SKIP_FMT=1 git commit       - Skip formatting check"
     echo "  SKIP_CLIPPY=1 git commit    - Skip clippy lint check"
+    echo "  SKIP_TESTS=1 git commit     - Skip soak chart tests"
     echo "  SKIP_DENY=1 git commit      - Skip cargo deny check"
     echo "  VERBOSE=1 git commit        - Show full output"
     exit 1

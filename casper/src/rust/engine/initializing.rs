@@ -247,8 +247,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
     async fn handle(&self, peer: PeerNode, msg: CasperMessage) -> Result<(), CasperError> {
         match msg {
             CasperMessage::ApprovedBlock(approved_block) => {
-                self.on_approved_block(peer, approved_block, self.disable_state_exporter)
-                    .await
+                self.on_approved_block(peer, approved_block).await
             }
             CasperMessage::ApprovedBlockRequest(approved_block_request) => {
                 send_no_approved_block_available(
@@ -383,7 +382,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         &self,
         sender: PeerNode,
         approved_block: ApprovedBlock,
-        _disable_state_exporter: bool,
     ) -> Result<(), CasperError> {
         let sender_is_bootstrap = self
             .rp_conf_ask

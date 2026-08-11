@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use ed25519_dalek::ed25519::signature::hazmat::PrehashVerifier;
-use eyre::{Context, Result};
+use eyre::{Result, WrapErr};
 use k256::ecdsa::signature::hazmat::PrehashSigner;
 use k256::ecdsa::{Signature, SigningKey, VerifyingKey};
 use k256::elliptic_curve::sec1::ToEncodedPoint;
@@ -29,12 +29,12 @@ impl Secp256k1 {
 
         // Read the PEM file
         let pem_content = std::fs::read_to_string(path)
-            .with_context(|| format!("Failed to read PEM file: {}", path.display()))?;
+            .wrap_err_with(|| format!("Failed to read PEM file: {}", path.display()))?;
 
         // Parse the PEM content
         let pem = pem_content
             .parse::<Pem>()
-            .with_context(|| "Invalid PEM format")?;
+            .wrap_err_with(|| "Invalid PEM format")?;
 
         // Heuristics to detect encrypted PEM:
         // - labels like "ENCRYPTED PRIVATE KEY" or "ENCRYPTED" in label
@@ -76,9 +76,9 @@ impl Secp256k1 {
                                 // Parse the PEM content to extract DER
                                 let pem = String::from_utf8_lossy(&pem_bytes)
                                     .parse::<Pem>()
-                                    .with_context(|| "Invalid PEM format from OpenSSL")?;
+                                    .wrap_err_with(|| "Invalid PEM format from OpenSSL")?;
                                 let signing_key = SigningKey::from_pkcs8_der(pem.contents())
-                                    .with_context(|| {
+                                    .wrap_err_with(|| {
                                         "Could not parse PKCS#8 private key from PEM"
                                     })?;
                                 signing_key.to_bytes().to_vec()
@@ -94,9 +94,9 @@ impl Secp256k1 {
                     // Parse the PEM content to extract DER
                     let pem = String::from_utf8_lossy(&pem_bytes)
                         .parse::<Pem>()
-                        .with_context(|| "Invalid PEM format from OpenSSL")?;
+                        .wrap_err_with(|| "Invalid PEM format from OpenSSL")?;
                     let signing_key = SigningKey::from_pkcs8_der(pem.contents())
-                        .with_context(|| "Could not parse PKCS#8 private key from PEM")?;
+                        .wrap_err_with(|| "Could not parse PKCS#8 private key from PEM")?;
                     signing_key.to_bytes().to_vec()
                 }
             };
