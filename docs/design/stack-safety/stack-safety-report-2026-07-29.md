@@ -1224,6 +1224,8 @@ new consensus-path operation is involved.
 
 ⚠ **Named, not fixed** (**MEASURED (q)**, `a3fd6fe4`): the `eval_with` subject on a nested `EList` chain still measures **15,872 B/level**, which is `<Par as Clone>::clone` exactly. That is *not* this SCC — the `EListBody` arm returns `par_with_expr(expr.clone())` **without descending** — so on that shape the probe measures the derived class and nothing else. The gate subject is `eval_with_nots` precisely because it is the shape that actually recurses.
 
+**Living closure revalidation (2026-08-11; `c0cb7a45`; MEASURED (q/f)).** The two paragraphs immediately above are historical residues, not live ceilings: the generated schema now provides stack-safe `Clone for Par` and `Drop for Par`, with the destructor delegating to `par_children::dismantle_in_place`. The fixed-stack `rho-pure-eval` child gate now exercises the production composition directly rather than ending in fixture-only `dismantle`: the recursive evaluator fails at depth 4,096 as required, while `eval_with` followed by ordinary generated `Par::drop` survives depth **131,072** on a **1 MiB** thread stack. A fresh debug run of `converted_traversals_are_depth_independent` measured `eval_with_nots` at **76 / 76 KiB**, `par_drop` at **48 / 48 KiB**, and `normalize_drop` at **196 / 196 KiB** for depth **4 / 4,096**; the full registered depth/width ladder passed **1/1** in **187.73 s**. This closure uses no `RUST_MIN_STACK`, `stacker`, traversal-depth cap, or fixture-side teardown obligation.
+
 #### 5.2.2 ★ The `tokio` fire-and-forget driver — establishing the mechanism, not assuming it
 
 ![async detached driver](figures/async-detached-driver.svg)
