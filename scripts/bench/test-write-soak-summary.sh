@@ -23,8 +23,8 @@ write_summary() {
 
 BASE="$TMP/base"
 mkdir -p "$BASE/iteration-00001-docker" "$BASE/iteration-00002-subprocess"
-printf '%s\n' '{"iteration":1,"provider":"docker","duration_s":60,"ok":false,"rss_peak_mb":15580,"cpu_peak_pct":42.5,"finalization_latency":{"p50_ms":100,"p95_ms":200,"p99_ms":300},"too_far_ahead_errors":2,"metrics":{"lfb_spread":{"p50":3,"samples":4}}}' >"$BASE/iteration-00001-docker/metrics.json"
-printf '%s\n' '{"iteration":2,"provider":"subprocess","duration_s":120,"ok":false,"rss_peak_mb":null,"finalization_latency":{},"metrics":{}}' >"$BASE/iteration-00002-subprocess/metrics.json"
+printf '%s\n' '{"iteration":1,"provider":"docker","duration_s":60,"ok":false,"rss_peak_mb":15580,"cpu_peak_pct":42.5,"cpu_peak_per_node_pct":{"validator1":42.5,"bootstrap":12},"finalization_latency":{"p50_ms":100,"p95_ms":200,"p99_ms":300},"too_far_ahead_errors":2,"metrics":{"lfb_spread":{"p50":3,"samples":4}}}' >"$BASE/iteration-00001-docker/metrics.json"
+printf '%s\n' '{"iteration":2,"provider":"subprocess","duration_s":120,"ok":false,"rss_peak_mb":null,"cpu_peak_per_node_pct":{"validator1":55,"weird":"not-a-number"},"finalization_latency":{},"metrics":{}}' >"$BASE/iteration-00002-subprocess/metrics.json"
 write_summary "$BASE" 2 2
 
 jq -e '
@@ -35,6 +35,7 @@ jq -e '
   and .failures == 2
   and .shard_up_seconds == 0
   and .rss_peak_mb == 15580
+  and .cpu_peak_core_grid_pct == {"validator1": {"all": 55}, "bootstrap": {"all": 12}}
   and .providers.docker.failures == 1
   and .providers.subprocess.failures == 1
   and .tracked_metrics.lfb_spread.p50 == 3
@@ -49,6 +50,7 @@ write_summary "$EMPTY" 0 0
 jq -e '
   .rss_peak_mb == null
   and .cpu_peak_pct == null
+  and .cpu_peak_core_grid_pct == null
   and .shard_up_seconds == 0
   and .tracked_metrics == {}
   and .iteration_metrics == []
@@ -70,6 +72,7 @@ write_summary "$SPARSE" 1 0
 jq -e '
   .rss_peak_mb == null
   and .cpu_peak_pct == null
+  and .cpu_peak_core_grid_pct == null
   and .shard_up_seconds == 0
   and .tracked_metrics.lfb_spread.p50 == null
   and .tracked_metrics.lfb_spread.p95 == null

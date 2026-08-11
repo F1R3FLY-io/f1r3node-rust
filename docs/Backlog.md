@@ -32,6 +32,28 @@ Items are organized by category and rough priority within each category.
 
 <!-- Future features that have been identified but aren't yet prioritized -->
 
+#### BACKLOG-FI-003: Per-core CPU sampling in the soak harness monitor
+
+```yaml
+---
+backlog_id: BACKLOG-FI-003
+title: "Sample per-CPU cgroup counters per node container so the dashboard CPU grid gains real core rows"
+status: deferred
+repo_scope: system-integration (monitor), f1r3node-rust (none — pipeline ready)
+---
+```
+
+The dashboard's node × core CPU heatmap currently renders one `"all"` row per
+node: the harness monitor's `resource-timeseries.csv` records `cpu_percent`
+per container (all cores combined). Real core rows need the monitor to read
+per-CPU cgroup counters (`cpuacct.usage_percpu` / cgroup v2 equivalents) per
+node container and emit them into the telemetry the soak driver already
+consumes. The downstream pipeline is complete and waiting: the driver's
+per-node extraction, `write-soak-summary.sh`'s `cpu_peak_core_grid_pct`
+rollup, and the renderer all handle arbitrary core ids — when per-core data
+lands, the `"all"` row is simply replaced and the chart grows taller with no
+further changes in this repo.
+
 #### BACKLOG-FI-002: Genericize testbed scripts for AWS / GCP
 
 ```yaml

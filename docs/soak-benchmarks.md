@@ -79,16 +79,24 @@ the too-far-ahead counter is suppressed while it is all-zero — the page shows 
 "0 · target 0" badge instead of a flat line.
 
 Peak CPU steps up through three representations as richer data appears, each
-the honest chart for what exists. With only today's aggregate `cpu_peak_pct`
-it is a single line chart with a dashed status-red line at 100% (one full
-core). When per-run `passive.cpu_peak_per_core_pct` (core id → peak %)
-arrives, each core becomes a small-multiples facet on a shared y scale. And
-when the full cluster grid `passive.cpu_peak_core_grid_pct` (node id → core id
-→ peak %) is recorded, the panel renders the latest run's node × core
-utilization heatmap: cells on a cool-to-hot (Jet) ramp whose domain is pinned
-so red always means "at or beyond one full core", saturated cells (≥ 100%)
-carrying their printed value, and the ramp legend drawn by the page (charton's
-own continuous colorbar renders degenerate, so it stays suppressed).
+the honest chart for what exists: an aggregate line chart with a dashed
+status-red line at 100% (one full core); small-multiples facets per core when
+`passive.cpu_peak_per_core_pct` (core id → peak %) exists; and, preferred over
+both, the cluster grid `passive.cpu_peak_core_grid_pct` (node id → core id →
+peak %), rendered as the latest run's node × core utilization heatmap — cells
+on a cool-to-hot (Jet) ramp whose domain is pinned so red always means "at or
+beyond one full core", saturated cells (≥ 100%) carrying their printed value,
+and the ramp legend drawn by the page (charton's own continuous colorbar
+renders degenerate, so it stays suppressed).
+
+The grid is emitted today at node granularity: the soak driver splits the
+harness's per-node `resource-timeseries.csv` rows into per-node CPU peaks
+(`cpu_peak_per_node_pct` per iteration), and `write-soak-summary.sh` rolls
+them up cell-wise into the grid under a single `"all"` core row — so the panel
+renders one heat cell per shard node (bootstrap, validators). Per-core rows
+require the harness monitor to sample per-CPU cgroup counters per container, a
+system-integration follow-up; when those land, real core ids simply replace
+the `"all"` row and the same chart grows taller.
 
 The two publishers whose output can change history re-render both series; the
 checkpoint publisher only carries the SVGs forward, since a checkpoint never

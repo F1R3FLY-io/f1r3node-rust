@@ -118,8 +118,11 @@ jq -e '
   .iterations == 1
   and .failures == 1
   and .rss_peak_mb == 768
+  and .cpu_peak_pct == 30
+  and .cpu_peak_core_grid_pct == {"validator1": {"all": 10}, "validator2": {"all": 20}}
   and .iteration_metrics[0].exit_code == 1
   and .iteration_metrics[0].rss_peak_mb == 768
+  and .iteration_metrics[0].cpu_peak_per_node_pct == {"validator1": 10, "validator2": 20}
   and .iteration_metrics[0].too_far_ahead_errors == 1
 ' "$TMP/output/summary.json" >/dev/null
 grep -q 'replay_cache_retained_bytes,1048576' \

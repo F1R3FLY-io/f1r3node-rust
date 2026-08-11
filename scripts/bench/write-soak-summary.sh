@@ -94,6 +94,20 @@ jq -n \
           iterations_per_hour: (if $elapsed > 0 then ($iterations * 3600 / $elapsed * 100 | floor / 100) else 0 end),
           rss_peak_mb: (numeric_values(.rss_peak_mb?) | max_or_null),
           cpu_peak_pct: (numeric_values(.cpu_peak_pct?) | max_or_null),
+          # The dashboard CPU grid: per-node peaks across the whole run
+          # (cell-wise max over iterations), published under the "all" core
+          # row because the harness monitor samples per container, not per
+          # core — real core rows take over when it does. Null (absent) when
+          # no iteration recorded a per-node map, so pre-emission history
+          # entries and this run stay shaped alike.
+          cpu_peak_core_grid_pct: (
+            [$all[] | .cpu_peak_per_node_pct? | select(type == "object") | to_entries[]
+             | select(.value | type == "number")] as $cells
+            | if ($cells | length) == 0 then null
+              else ($cells | group_by(.key)
+                    | map({key: .[0].key, value: {all: (map(.value) | max)}})
+                    | from_entries)
+              end),
           finalization_p50_ms: (numeric_values(.finalization_latency?.p50_ms?) | median),
           finalization_p95_ms: (numeric_values(.finalization_latency?.p95_ms?) | median),
           finalization_p99_ms: (numeric_values(.finalization_latency?.p99_ms?) | median),

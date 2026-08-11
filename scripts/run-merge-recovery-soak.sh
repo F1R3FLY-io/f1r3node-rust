@@ -225,6 +225,30 @@ iteration_cpu_peak_percent() {
                  if (max > 0) printf "%.1f\n", max }' "$ts_csv" 2>/dev/null
 }
 
+# The same CSV split back out per node: each node's own peak cpu_percent over
+# the iteration, as a JSON object {node: pct}. This is what feeds the
+# dashboard's node × core CPU grid — at node granularity, because the harness
+# monitor samples cpu_percent per container (all cores combined); per-core
+# sampling is a harness-side follow-up. The harness prefixes container names
+# with "rnode.<network>." — stripped here so grid columns read "validator1",
+# not a Docker network id. '{}' when absent, and the caller validates the
+# output is JSON before trusting it (fail-soft like every metric here).
+iteration_cpu_peak_per_node_percent() {
+	local iteration_dir="$1" ts_csv="$iteration_dir/resource-timeseries.csv"
+	[ -s "$ts_csv" ] || {
+		printf '{}'
+		return 0
+	}
+	awk -F, 'NR > 1 && $2 != "__system__" && $4 ~ /^[0-9]+([.][0-9]+)?$/ {
+	           n = $2; sub(/^rnode\.[^.]*\./, "", n)
+	           if (!(n in peak) || $4 + 0 > peak[n]) peak[n] = $4 + 0 }
+	         END { printf "{"; sep = ""
+	               for (n in peak) {
+	                 k = n; gsub(/[\\"]/, "", k)
+	                 printf "%s\"%s\":%.1f", sep, k, peak[n]; sep = "," }
+	               printf "}" }' "$ts_csv" 2>/dev/null || printf '{}'
+}
+
 snapshot_iteration_monitor_outputs() {
 	local iteration_dir="$1" started_epoch filename source tmp
 	started_epoch="$(date +%s)"
@@ -369,6 +393,9 @@ emit_iteration_metrics() {
 	errors="$(printf '%s' "$summary_line" | grep -oE '[0-9]+ error' | grep -oE '[0-9]+' || echo 0)"
 	rss_peak="$(iteration_rss_peak_mb "$iteration_dir")"
 	cpu_peak="$(iteration_cpu_peak_percent "$iteration_dir")"
+	local cpu_per_node
+	cpu_per_node="$(iteration_cpu_peak_per_node_percent "$iteration_dir")"
+	jq -e 'type == "object"' >/dev/null 2>&1 <<<"$cpu_per_node" || cpu_per_node='{}'
 	latency="$(iteration_finalization_latency "$iteration_dir")"
 	lat_p50="$(printf '%s' "$latency" | awk '{print $1}')"
 	lat_p95="$(printf '%s' "$latency" | awk '{print $2}')"
@@ -400,6 +427,7 @@ emit_iteration_metrics() {
 		--argjson errors "$errors" \
 		--argjson rss_peak "${rss_peak:-null}" \
 		--argjson cpu_peak "${cpu_peak:-null}" \
+		--argjson cpu_per_node "$cpu_per_node" \
 		--argjson lat_p50 "${lat_p50:-null}" \
 		--argjson lat_p95 "${lat_p95:-null}" \
 		--argjson lat_p99 "${lat_p99:-null}" \
@@ -411,6 +439,7 @@ emit_iteration_metrics() {
       pytest: {passed: $passed, failed: $failed, skipped: $skipped, errors: $errors},
       rss_peak_mb: $rss_peak,
       cpu_peak_pct: $cpu_peak,
+      cpu_peak_per_node_pct: (if ($cpu_per_node | length) > 0 then $cpu_per_node else null end),
       finalization_latency: {p50_ms: $lat_p50, p95_ms: $lat_p95, p99_ms: $lat_p99, samples: ($lat_n // 0)},
       too_far_ahead_errors: $too_far_ahead,
       metrics: $metrics,
