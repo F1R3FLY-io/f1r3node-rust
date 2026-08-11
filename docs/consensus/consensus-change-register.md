@@ -100,8 +100,8 @@ the Surface-L acceptance set (L07, L08 in flight, L10, L11, L14, L15), binder-sh
 route (L24). **The metering axis was re-derived
 under the D3 token model** (consensus cost = evaluated `Send`/`Receive` prefix events; per-op prices
 are diagnostics): **CBR-L20, CBR-L23, and CBR-L24 move that prefix-event schedule**; the
-register's one historical `UNVERIFIED` cell resolved in the same derivation. **55 further changes
-were examined and retired** with typed reasons — 42 bug fixes, 4
+register's one historical `UNVERIFIED` cell resolved in the same derivation. **54 further changes
+were examined and retired** with typed reasons — 41 bug fixes, 4
 measured-neutral optimizations, 5 equivalence-proven conversions, 3 dormant additions or removals, and the
 formerly-open wire-asymmetry hazard, closed against CBR-044 — each a one-line row in
 [Appendix B.1](#b1-retired-register-entries) whose full historical body remains in git history.
@@ -146,7 +146,7 @@ with typed reasons so the account stays checkable.
 3. A **derived** register (§3, §4): 23 entries, each with all six axes answered, a stated blast
    radius, a direction, an evidence grade, and — where one exists — the owner ruling that authorised
    it, quoted verbatim with its date.
-4. The **negative results**: 55 retired entries with typed reasons (Appendix B.1) and 21 commit-level
+4. The **negative results**: 54 retired entries with typed reasons (Appendix B.1) and 21 commit-level
    exemptions (Appendix B.2), which are what make the inclusion criterion checkable rather than
    merely asserted.
 
@@ -460,7 +460,7 @@ conversions proven equivalent to their recursive counterparts definitely do not 
 while **data-model, wire-format, and deliberate semantic changes** (the EPathMap representation and
 EPM1 being the named exemplar) are what this register exists to carry. Every entry was re-classified
 under that criterion; the 46 that no longer qualified at re-scope—and later classified findings
-through CBR-053—are retired to typed rows in
+through CBR-052—are retired to typed rows in
 [Appendix B.1](#b1-retired-register-entries), and their full bodies remain in git history at the
 pre-refactor revision.
 
@@ -607,8 +607,8 @@ is a *future* fork, not a present one).
 (**CBR-L08**); zero open hazards. By evidence grade: **21 WITNESSED**, 1 MECHANISM-ONLY
 (**CBR-013**), 1 LATENT (**CBR-L14**). By direction: **15 CORRECTIVE, 4 PERMISSIVE, 4 REGRESSIVE**.
 Axis cells reading `UNVERIFIED`: **0** — the register's one historical `?` cell (CBR-L07 metering)
-resolved under the token model (§3.3). The 55 retired entries are
-[Appendix B.1](#b1-retired-register-entries); 23 + 55 = 78 historical identifiers, none reused.
+resolved under the token model (§3.3). The 54 retired entries are
+[Appendix B.1](#b1-retired-register-entries); 23 + 54 = 77 historical identifiers, none reused.
 
 ### 4.2 Entry template
 
@@ -3394,7 +3394,7 @@ above is the maintenance mechanism.
 ## 8. Conclusions
 
 1. The register holds **23** may-change-consensus entries derived from the campaign record: **14**
-   on the F1r3node node, **9** on MeTTaIL's Rholang; **22 landed, 1 in flight**. **55** examined
+   on the F1r3node node, **9** on MeTTaIL's Rholang; **22 landed, 1 in flight**. **54** examined
    changes are retired with typed reasons and **21** commit-level exemptions are retained — the
    negative results that make the criterion checkable.
 2. **The axes are genuinely independent and must be reviewed separately.** CBR-014 moves four bytes
@@ -3532,7 +3532,7 @@ Quote actual numbers. The RED, the measurement, the acceptance matrix. Tag each 
 
 ### B.1 Retired register entries
 
-The 55 entries retired under the 2026-08-03 inclusion criterion (§3.2). Each keeps its **former
+The 54 entries retired under the 2026-08-03 inclusion criterion (§3.2). Each keeps its **former
 identifier forever** — identifiers are never reused, and a historical citation of any `CBR-*` below
 resolves to this table. Full bodies remain in git history at the pre-refactor revision of this file.
 Reasons are the closed retirement enum of §3.2; the evidence column points at where the discharging
@@ -3579,7 +3579,6 @@ material now lives.
 | `CBR-050` | `b30a1568`; measurement harness `mettail-rust@bb98055b`, metadata guard `9dccb346` | Reducer-identity EPathMaps preserve their native trie root, and shared clone-family teardown releases one root without copy-on-write cloning every `Par` | `OPTIMIZATION_MEASURED_NEUTRAL` | target evaluator/root and recursive-oracle differentials pass; treatment values, COMM schedule, attempts, successes, and D3 token count are unchanged by `b30a1568`; all 45 stack subjects remain flat. Pgmcp experiment 171 accepted 18.730472 ms treatment vs 32.280954 ms control with 51 samples/arm; allocations 4,119,482 $`\rightarrow`$ 278,527. PathMap report §5.4.1; stack-safety report §5.17 |
 | `CBR-051` | `c1feaf36` | Configured gRPC receive bounds apply to complete protobuf messages rather than individual HTTP/2 frames | `BUG_FIX_RULED_NONCONSENSUS` | This enforces the existing operator byte policy before protobuf decode; it changes no normalized term, Rholang value, protobuf encoding, block byte, post-state hash, D3 communication-prefix count, token settlement, EPathMap mode, or PathMap operation. Black-box API and peer tests prove an under-limit request dispatches and an over-limit request returns `OutOfRange` without entering the handler; threat model TM-CA-167 records the pre-runtime boundary. |
 | `CBR-052` | this checkpoint; `mettail-rust` FLT Track A checkpoint; pgmcp #5300 | An AC remainder preserves target-position identity, so one selected duplicate occurrence no longer expands to every structurally equal target and a generated float worklist strictly decreases | `BUG_FIX_RULED_NONCONSENSUS` | the three-identical-send witness captures exactly two occurrences; production PDA and bounded compatibility equation agree on the duplicate corpus; the complete 50-test matcher target and 7 maximum-matching tests pass; isolated Ambient and nine-cell co-install executions quiesce with exact multiplicity; admission-free `CrossLanguageSeparation.v` proves positional deletion and strict soup-size descent. Stack-safety report §5.25. |
-| `CBR-053` | `bd436d89`; pgmcp #5303 | MakeMint decrement consumes gain a literal `"decr"` selector, making their receive language disjoint from `setLog` while preserving exact mint-capability authorization | `BUG_FIX_RULED_NONCONSENSUS` | source-shape guards prove the two persistent listeners differ by both arity and first pattern; fresh-purse `setLog` answers `Nil`, a tagged request with the wrong capability answers `false`, the former logging cell completes 3/3, and the complete MakeMint and SystemVault specifications pass under zero-swap memory caps. Raw blessed bytes move `7ac55f…a5d3`/11,187 $`\rightarrow`$ `5d09c9…520d`/11,240; the current normalized protobuf term is pinned at `1ac943…2070`/7,347. |
 | `CBR-L01` | `3ff1c98b`, `f586e138` | Equal operator precedence becomes representable; Rholang's ladder corrected | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L02` | `0f3d298c` | The substrate lane stops answering "false" for a guard it could not decide | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L03` | `69c66cd1` | A residual binder rests the COMM, whatever the formula collapsed to | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
@@ -3604,34 +3603,6 @@ maximum-matching result, relation schedule, free-map aggregation, matching prior
 surface unchanged. Its behavioral movement is corrective: an input that could repeat without
 progress now produces the exact multiset remainder and terminates. Under the owner-ruled inclusion
 criterion, that is permanently recorded evidence of a bug fix, not a new active consensus choice.
-
-**CBR-053 classification continuation (2026-08-11; pgmcp #5303).** Before `bd436d89`,
-`MakeMint.rho` installed two persistent three-argument receives on each purse. The decrement receive
-began with the free pattern `@providedDecr`; the logging receive began with the literal pattern
-`@"setLog"`. Consequently, a three-argument `setLog` send belonged to both receive languages even
-though only one continuation represented its protocol operation. R1 adds the literal `"decr"`
-operation tag to the decrement receive and the sole production decrement call. The operation tag
-selects the method; the body pattern `=*thisDecr` separately compares the supplied value with the
-already-bound mint capability. This separation preserves the prior `false` response for a tagged
-request carrying the wrong authority instead of turning authorization failure into a resting send.
-
-R2, moving `setLog` to a dedicated channel, would require a new logging-capability distribution
-protocol and changes to every logging caller. R3 would retain the overlapping receive languages.
-A guarded receive would add guard-evaluator semantics and change invalid-capability liveness; a
-global preference for literal patterns would alter RSpace selection for unrelated contracts. A new
-private decrement channel is attractive in isolation, but it cannot replace the current source-purse
-plus mint-capability construction without also redesigning how another purse obtains invocation
-authority. R1 is therefore the smallest complete repair and the one aligned with every other public
-purse method's literal-selector convention.
-
-The valid deposit path keeps the same `Send`/`Receive` prefix count, result values, mint check, and
-failure rollback; only the request's argument shape changes. The corrected ambiguous schedule can
-move the selected continuation and its reply, both serialized lanes move because the installed
-normalized contract moves, and genesis source bytes, block bytes, signatures, and post-state roots
-move. The accepted Rholang syntax and D3 metering surface do not. The MakeMint-specific raw and
-normalized pins are recorded above. A separate pre-existing ten-contract normalized-pin drift was
-discovered by the same gate and is tracked as pgmcp #5304 under E2; it is deliberately not attributed
-to R1 or hidden in `bd436d89`.
 
 **CBR-033 living evidence continuation (2026-08-11; pgmcp #5301).** `7983bf4b` makes the
 read-only hot-store snapshot total over the union of datum and continuation key domains. A datum
@@ -4044,6 +4015,6 @@ is the point: the derivation's surplus is real, and it is small and classifiable
 ---
 
 *The register's identifiers are stable and never reused. The 2026-08-03 re-scope retired 46 entries
-to B.1; subsequent classified findings through CBR-053 and CBR-L22 bring the living appendix to 55. The re-scope also removed
+to B.1; subsequent classified findings through CBR-052 and CBR-L22 bring the living appendix to 54. The re-scope also removed
 the mechanised drift gate with its machine index; the pre-refactor revision, with every then-retired
 body and the gate's specification, remains in git history.*

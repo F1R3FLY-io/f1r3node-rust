@@ -29,23 +29,62 @@ use crate::genesis::contracts::rho_spec_probe::{
 };
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
-// (a) `MakeMint.rho`'s former logging race stays closed
+// (a) `MakeMint.rho`'s LOGGING path raises — `make_mint_spec`, `test_log_set`
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 
-/// ★★ **`MakeMintTest.rho`'s logging cell completes repeatedly after dispatch separation.**
+/// ★★ **`MakeMintTest.rho` ITSELF, one registered test at a time — `test_log_set` is a RACE.**
 ///
-/// Before the repair, the full and narrowed fixtures alternated between completion and
-/// `parallel or non expression found where expression expected`. The three-argument free-pattern
-/// decrement listener could consume the three-argument `setLog` send and bind a channel into the
-/// amount position. R1 gives decrement a literal `"decr"` tag and a fourth argument, so the two
-/// receive languages are disjoint before either body executes.
+/// `make_mint_spec` dies inside `test_log_set` ("be able to set a log channel and receive
+/// notifications") with `ReduceError("Error: parallel or non expression found where expression
+/// expected.")`, before its first assertion.
 ///
-/// This cell retains the original narrowed-fixture method rather than substituting a hand-built
-/// approximation. [`with_single_registered_test`] verifies that each source contains exactly the
-/// named registered test. `test_deposit` remains the logging-disabled control; `test_log_set` is
-/// repeated so the formerly intermittent interleaving cannot hide behind one favorable draw.
+/// Every logging site in `MakeMint.rho` is guarded by `if (Nil != *logCh)` — lines 61, 71, 84, 144,
+/// 159, 170, 181 — and the default is `logStore!(Nil)` at line 34. So with logging off, none of that
+/// code is evaluated: `test_deposit` and `test_split` drive the same `deposit`/`decr` contracts to a
+/// pass while taking the other branch. **`MakeMint.rho`'s logging branch has never been evaluated
+/// by any test in this repository**, because `test_log_set` is the only test that calls `setLog` and
+/// it has never run.
+///
+/// ⚠ **Why this cell runs the fixture instead of a reconstruction, and what that cost.** Two
+/// hand-built reconstructions of `test_log_set` were measured and **neither reproduced**: setting
+/// logs on both purses, depositing, and reading both log entries completes cleanly when the mint
+/// arrives through a `match` on the setup result rather than through the fixture's
+/// `contract test_log_set(rhoSpec, @(mintA, _), ackCh)` formal. So "the logging branch raises" is
+/// **not** a sufficient statement of the mechanism — some further interaction with the fixture's own
+/// shape is required, and a cell that claimed otherwise would be asserting more than was measured.
+///
+/// What *is* reproducible is the fixture, run one registered test at a time. The list is narrowed by
+/// [`with_single_registered_test`], which rewrites the `testSuite` list in the loaded source and
+/// then **verifies the rewrite with the extractor that the non-vacuity floor uses** — so the
+/// narrowing is checked, not assumed. `test_deposit` is the control: same file, same setup, same
+/// `deposit` contract, log left at its `Nil` default.
+///
+/// # ★★ THE FAILURE IS INTERMITTENT — which is the finding, not an obstacle
+///
+/// Observed 2026-07-29, same tree, same command shape:
+///
+/// | observation | `make_mint_spec` | narrowed `test_log_set` |
+/// |---|---|---|
+/// | full suite, run 1 (453 s) | **FAIL**, `parallel or non expression …` | — |
+/// | this cell, isolated | — | **Raised**, `parallel or non expression …` |
+/// | full suite, run 2 (649 s) | **PASS** | **Completed** |
+///
+/// A deterministic contract cannot do that. `MakeMint.rho`'s logging path therefore contains a
+/// **race**, and its losing interleaving puts a non-expression where an expression is required. The
+/// suspicious shape is the single `bdCh` that each `new success, thisPurseDecrCh, decrCh,
+/// bd(`rho:block:data`), bdCh in { … }` block shares across several `if (Nil != *logCh)` branches
+/// (`MakeMint.rho:44-46` for `decr`, and the corresponding block for `deposit`), with a concurrent
+/// `setLog` that consumes and re-produces `logStore` linearly (`MakeMint.rho:102-104`) while the
+/// logging sites PEEK it. That is a hypothesis and is labelled one; what is measured is the
+/// nondeterminism and the identity of the error when it fires.
+///
+/// ⚠ **This cell must therefore NOT assert that the subject raises** — that would be a flaky test,
+/// and a flaky guard is worse than none. It asserts the two things that ARE invariant: the control
+/// completes, and the subject's outcome is *never* something other than "completed" or "raised with
+/// this exact error". A block, or a different error, fails it. The subject is run several times so a
+/// single run's luck does not decide what gets recorded.
 #[tokio::test]
-async fn makemint_test_log_set_is_deterministic_after_dispatch_separation() {
+async fn makemint_test_log_set_is_nondeterministic_where_test_deposit_is_not() {
     let fixture = crate::util::rholang::test_rho_loader::load_test_rho("MakeMintTest.rho")
         .expect("MakeMintTest.rho must be loadable");
 
@@ -72,24 +111,53 @@ async fn makemint_test_log_set_is_deterministic_after_dispatch_separation() {
         "★ CONTROL: exactly the narrowed test must have reported",
     );
 
-    // The formerly intermittent subject is repeated under identical source and genesis state.
+    // ★★ The subject, repeated. `ATTEMPTS` is small because each attempt is a genesis-backed
+    // suite; it is >1 because one attempt cannot distinguish "deterministic" from "won the race".
     const ATTEMPTS: usize = 3;
+    let mut subjects = Vec::with_capacity(ATTEMPTS);
     for attempt in 1..=ATTEMPTS {
         let outcome = run_suite(&subject_source).await;
         println!("subject attempt {attempt}/{ATTEMPTS} ({LOG_SET}): {outcome:?}");
+        subjects.push(outcome);
+    }
+
+    let expected_raise = "parallel or non expression found where expression expected";
+    for (attempt, outcome) in subjects.iter().enumerate() {
         match outcome {
+            // The race was won: the log entries were read and the assertions ran.
             SuiteOutcome::Completed { reported } => assert_eq!(
-                reported,
+                *reported,
                 only(LOG_SET),
-                "★ a completing attempt must report exactly the narrowed logging test; attempt \
-                 {attempt}",
+                "★ a completing attempt must have reported under the narrowed name; attempt {}",
+                attempt + 1,
             ),
-            other => panic!(
-                "★★ `{LOG_SET}` must complete after dispatch separation; attempt {attempt} \
-                 produced {other:?}",
+            // The race was lost: it must be THIS failure and no other.
+            SuiteOutcome::Raised(_) => {
+                let raise = outcome.raise_text().expect("matched Raised");
+                assert!(
+                    raise.contains(expected_raise),
+                    "★★ attempt {} of `{LOG_SET}` failed with an error this cell does not \
+                     document. The mechanism has moved and the analysis above needs redoing. \
+                     Expected {expected_raise:?}, got {raise}",
+                    attempt + 1,
+                );
+            }
+            // Neither: a block is a third mechanism and would need its own analysis.
+            SuiteOutcome::Blocked { reported } => panic!(
+                "★★ attempt {} of `{LOG_SET}` BLOCKED — `testSuiteCompleted` never fired and \
+                 nothing raised. That is a third mechanism, distinct from both the completion and \
+                 the raise this cell documents, and it needs its own analysis. reported: \
+                 {reported:?}",
+                attempt + 1,
             ),
         }
     }
+
+    let raised = subjects.iter().filter(|o| o.raise_text().is_some()).count();
+    println!(
+        "★ `{LOG_SET}` raised on {raised} of {ATTEMPTS} attempts (control `{DEPOSIT}`: completed). \
+         Intermittency at this site was first observed 2026-07-29; see the cell documentation."
+    );
 }
 
 /// Rewrite a fixture's `testSuite` registration list down to the single entry naming `keep`.

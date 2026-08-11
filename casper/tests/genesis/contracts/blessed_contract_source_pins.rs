@@ -239,11 +239,11 @@ fn pins() -> Vec<Pin> {
             constant: "MAKE_MINT",
             resource: "MakeMint.rho",
             source: embedded_rho::MAKE_MINT,
-            digest: "5d09c9d391762ce17191b6a4c4aa612d4d2303f91455068251e8c7928ff7520d",
-            length: 11240,
+            digest: "7ac55f98be1fb6360b3a4a97ec56380d692ffc0bef7058e61c65f400e750a5d3",
+            length: 11187,
             normalized: Some(NormalizedPin {
-                digest: "1ac9438fd9e10cdd04857676212dadae194dc0839aaafe5631d0c4167a752070",
-                length: 7347,
+                digest: "b31e21b6cb14c71a89a3e900f330c30a5d98501411f39cbdc0eb8aecbd604b0d",
+                length: 7367,
             }),
         },
         Pin {
