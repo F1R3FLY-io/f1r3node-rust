@@ -117,3 +117,39 @@ fn xml_escape_neutralizes_markup_in_core_ids() {
         "&lt;core &quot;0&quot; &amp; &#39;more&#39;&gt;"
     );
 }
+
+#[test]
+fn latest_cpu_grid_picks_the_most_recent_run_and_ignores_empty_grids() {
+    let entries = history(
+        r#"[
+          {
+            "run": { "date": "2026-08-09T00:00:00Z" },
+            "passive": { "cpu_peak_core_grid_pct": { "node-1": { "0": 40.0 } } }
+          },
+          {
+            "run": { "date": "2026-08-10T00:00:00Z" },
+            "passive": { "cpu_peak_core_grid_pct": { "node-1": { "0": 75.0 } } }
+          },
+          {
+            "run": { "date": "2026-08-11T00:00:00Z" },
+            "passive": { "cpu_peak_core_grid_pct": { "node-1": {} } }
+          }
+        ]"#,
+    );
+
+    let grid = latest_cpu_grid(&entries).expect("a grid should be found");
+
+    assert_eq!(
+        grid["node-1"]["0"], 75.0,
+        "empty grids must not shadow the last real one"
+    );
+}
+
+#[test]
+fn id_sorting_is_numeric_for_numeric_ids_and_lexicographic_otherwise() {
+    let numeric = id_sorted(["10", "2", "0", "1"].map(String::from).into_iter());
+    assert_eq!(numeric, ["0", "1", "2", "10"]);
+
+    let named = id_sorted(["node-b", "node-a"].map(String::from).into_iter());
+    assert_eq!(named, ["node-a", "node-b"]);
+}

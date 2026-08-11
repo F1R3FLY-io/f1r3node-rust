@@ -194,6 +194,10 @@
      zero cells use --heat-zero, matching the SVG's baked-in neutral. */
   .swatch-cell { height: 12px; border-radius: 3px; }
   .heat-ramp { background: linear-gradient(90deg, #fff5f0, #fb6a4a, #67000d); }
+  /* The CPU cluster grid's cool-to-hot scale — mirrors charton's Jet map
+     (idle blue through to saturated red), which the SVGs bake in. */
+  .jet-ramp { background: linear-gradient(90deg, #00007f, #0000ff, #00ffff,
+              #7fff00, #ffff00, #ff7f00, #ff0000, #7f0000); }
   /* Every chart is a pre-rendered SVG pair from scripts/soak-charts with theme
      colors baked in; show the variant matching the active theme with the same
      three-state logic as the CSS vars above. */
@@ -545,7 +549,20 @@
         continue;
       }
 
-      const legend = seriesData.length > 1
+      // The CPU panel becomes a node × core grid heatmap once the soak
+      // records the cluster grid; its legend is the color scale itself. The
+      // SVG suppresses charton's own legend (it renders a continuous
+      // colorbar as a black slab), so the ramp is drawn here, themed.
+      const gridRun = def.slug === "peak-cpu"
+        ? history.some(h => {
+            const grid = g(h, ["passive", "cpu_peak_core_grid_pct"]);
+            return grid && typeof grid === "object" && Object.keys(grid).length > 0;
+          })
+        : false;
+      const legend = gridRun
+        ? '<div class="legend"><span><i class="swatch swatch-cell jet-ramp"></i>0% → hot</span>' +
+          '<span class="unit">cell = one core · labelled ≥ 100% (a full core)</span></div>'
+        : seriesData.length > 1
         ? '<div class="legend">' + seriesData.map(s =>
             `<span><i class="swatch" style="background:${S[s.c]}"></i>${s.name}</span>`).join("") + "</div>"
         : "";

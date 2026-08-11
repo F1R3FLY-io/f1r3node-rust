@@ -64,6 +64,11 @@ struct Passive {
     /// rows appear they become facets with no renderer change, and until then
     /// a single synthesized "aggregate" facet carries cpu_peak_pct.
     cpu_peak_per_core_pct: Option<std::collections::BTreeMap<String, f64>>,
+    /// Full cluster grid (node id -> core id -> % of that core), also not
+    /// emitted yet. When present, the CPU panel prefers it over everything
+    /// else and renders the latest run's node × core utilization heatmap.
+    cpu_peak_core_grid_pct:
+        Option<std::collections::BTreeMap<String, std::collections::BTreeMap<String, f64>>>,
     finalization_p50_ms: Option<f64>,
     finalization_p95_ms: Option<f64>,
     finalization_p99_ms: Option<f64>,
@@ -639,6 +644,13 @@ const CPU_Y_TITLE: &str = "% of one core";
 /// every facet's x domain to the same span. With only today's aggregate data
 /// this degenerates to exactly one facet.
 fn render_cpu_panel(history: &[Entry], theme: &Theme, out: &str) -> Result<bool, Box<dyn Error>> {
+    // Richest representation wins: a recorded cluster grid renders as the
+    // node × core heatmap; otherwise per-core facets; otherwise the aggregate
+    // line. Each step down is the honest chart for the data that exists.
+    if let Some(grid) = latest_cpu_grid(history) {
+        render_cpu_grid(grid, theme, out)?;
+        return Ok(true);
+    }
     let obs = collect_cpu(history);
     if obs.is_empty() {
         return Ok(false);
@@ -798,6 +810,133 @@ fn build_cpu_facet(
     Ok(iter
         .fold(first, |acc, layer| acc.and(layer))
         .with_x_label(""))
+}
+
+type CpuGrid = std::collections::BTreeMap<String, std::collections::BTreeMap<String, f64>>;
+
+/// The most recent run that recorded a cluster grid. A snapshot, not a
+/// series: the grid already spends both axes on node × core, so it shows the
+/// latest state and leaves history to the table.
+fn latest_cpu_grid(history: &[Entry]) -> Option<&CpuGrid> {
+    history
+        .iter()
+        .filter_map(|e| {
+            let (when, _) = e
+                .run
+                .as_ref()
+                .and_then(|r| r.date.as_deref())
+                .and_then(parse_date)?;
+            let grid = p(e)?
+                .cpu_peak_core_grid_pct
+                .as_ref()
+                .filter(|g| g.values().any(|cores| !cores.is_empty()))?;
+            Some((when, grid))
+        })
+        .max_by_key(|(when, _)| *when)
+        .map(|(_, grid)| grid)
+}
+
+/// Ids like "0", "1", … "15" must not sort lexicographically ("0", "1",
+/// "10", … "2"); non-numeric ids keep plain string order.
+fn id_sorted(ids: impl Iterator<Item = String>) -> Vec<String> {
+    let mut v: Vec<String> = ids.collect();
+    v.sort_by(|a, b| match (a.parse::<u64>(), b.parse::<u64>()) {
+        (Ok(x), Ok(y)) => x.cmp(&y),
+        _ => a.cmp(b),
+    });
+    v.dedup();
+    v
+}
+
+/// Node × core utilization heatmap: x = node, y = core, cell color = that
+/// core's peak load on a cool-to-hot ramp. Jet is the one charton map running
+/// blue (idle) through to red (hot) as the design calls for; it is not
+/// perceptually uniform, so color never carries saturation alone — every cell
+/// at ≥100% (a full core) also gets its value printed on the cell. The color
+/// domain is pinned to [0, max(100, data max)] so "red" always means "at or
+/// beyond one full core", not "the largest value this week", and cores a node
+/// did not report leave no cell at all.
+fn render_cpu_grid(grid: &CpuGrid, theme: &Theme, out: &str) -> Result<(), Box<dyn Error>> {
+    let nodes = id_sorted(grid.keys().cloned());
+    let cores = id_sorted(grid.values().flat_map(|c| c.keys().cloned()));
+
+    let mut x: Vec<String> = Vec::new();
+    let mut y: Vec<String> = Vec::new();
+    let mut pct: Vec<f64> = Vec::new();
+    for node in &nodes {
+        for core in &cores {
+            if let Some(v) = grid.get(node).and_then(|c| c.get(core)) {
+                if v.is_finite() {
+                    x.push(node.clone());
+                    y.push(core.clone());
+                    pct.push(*v);
+                }
+            }
+        }
+    }
+    if pct.is_empty() {
+        return Err("cpu grid had no finite readings".into());
+    }
+    let data_max = pct.iter().fold(0.0_f64, |m, v| m.max(*v));
+    let domain_top = data_max.max(100.0);
+
+    let ds = Dataset::new()
+        .with_column("node", x.clone())?
+        .with_column("core", y.clone())?
+        .with_column("% of one core", pct.clone())?;
+    let mut layers: Vec<LayeredChart> = vec![Chart::build(ds)?
+        .mark_rect()?
+        .encode((
+            alt::x("node"),
+            alt::y("core"),
+            alt::color("% of one core")
+                .with_domain(ScaleDomain::Continuous(0.0, domain_top))
+                .with_expandsion(Expansion {
+                    mult: (0.0, 0.0),
+                    add: (0.0, 0.0),
+                }),
+        ))?
+        .configure_theme(|t| {
+            // Legend suppressed like every chart here — charton renders a
+            // continuous colorbar as a black slab (same degenerate fallback
+            // as constant-column normalization), so the page draws the Jet
+            // ramp legend itself, themed, next to the caption. Node labels
+            // angle only when enough nodes exist to collide.
+            base_theme(t, theme)
+                .with_x_tick_label_angle(if nodes.len() > 4 { 45.0 } else { 0.0 })
+                .with_color_map(ColorMap::Jet)
+        })];
+
+    // Saturated cells only: printing every value turns a 16×8 grid into a
+    // number sheet, but ≥100% is the state the panel exists to surface. Hot
+    // Jet cells are dark reds — white ink reads on all of them.
+    let sat: Vec<usize> = (0..pct.len()).filter(|&i| pct[i] >= 99.5).collect();
+    if !sat.is_empty() {
+        let ds = Dataset::new()
+            .with_column(
+                "node",
+                sat.iter().map(|&i| x[i].clone()).collect::<Vec<_>>(),
+            )?
+            .with_column(
+                "core",
+                sat.iter().map(|&i| y[i].clone()).collect::<Vec<_>>(),
+            )?
+            .with_column(
+                "label",
+                sat.iter()
+                    .map(|&i| fmt_value(pct[i]))
+                    .collect::<Vec<String>>(),
+            )?;
+        layers.push(
+            Chart::build(ds)?
+                .mark_text()?
+                .configure_text(|t| t.with_size(9.0).with_color("#ffffff"))
+                .encode((alt::x("node"), alt::y("core"), alt::text("label")))?
+                .configure_theme(|t| base_theme(t, theme).with_x_tick_label_angle(0.0)),
+        );
+    }
+
+    save_layers(layers, theme, out, false)
 }
 
 /// Stack per-core facet SVGs vertically into one document. Each facet's clip

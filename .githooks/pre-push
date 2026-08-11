@@ -201,7 +201,7 @@ pid_clippy=$!
         echo -e "  ${CYAN}[dashboard]${NC} deny ${YELLOW}SKIP${NC} (cargo-deny not installed)" >&3
         skipped=$((skipped + 1))
     else
-        run_dashboard_check deny cargo deny --manifest-path "$SOAK_CHARTS_MANIFEST" --all-features check --config deny.toml advisories bans licenses sources
+        run_dashboard_check deny cargo deny --manifest-path "$SOAK_CHARTS_MANIFEST" --all-features check advisories bans licenses sources
     fi
 
     if [[ "$SKIP_TESTS" == "1" ]]; then

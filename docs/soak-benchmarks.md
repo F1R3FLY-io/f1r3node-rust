@@ -78,14 +78,17 @@ chart is mostly empty axis. A panel with no recorded data emits nothing, and
 the too-far-ahead counter is suppressed while it is all-zero — the page shows a
 "0 · target 0" badge instead of a flat line.
 
-Peak CPU is shaped as a core × time matrix rather than a single series: the
-renderer facets one sub-chart per core (small multiples on a shared y scale,
-with a dashed status-red line at 100% — one full core — so multi-core
-saturation is legible at a glance). The soak only records the aggregate
-`cpu_peak_pct` today, which renders as a single synthesized "aggregate" facet;
-when per-run `passive.cpu_peak_per_core_pct` (a map of core id → peak %)
-starts being emitted, its rows become additional facets with no renderer
-change.
+Peak CPU steps up through three representations as richer data appears, each
+the honest chart for what exists. With only today's aggregate `cpu_peak_pct`
+it is a single line chart with a dashed status-red line at 100% (one full
+core). When per-run `passive.cpu_peak_per_core_pct` (core id → peak %)
+arrives, each core becomes a small-multiples facet on a shared y scale. And
+when the full cluster grid `passive.cpu_peak_core_grid_pct` (node id → core id
+→ peak %) is recorded, the panel renders the latest run's node × core
+utilization heatmap: cells on a cool-to-hot (Jet) ramp whose domain is pinned
+so red always means "at or beyond one full core", saturated cells (≥ 100%)
+carrying their printed value, and the ramp legend drawn by the page (charton's
+own continuous colorbar renders degenerate, so it stays suppressed).
 
 The two publishers whose output can change history re-render both series; the
 checkpoint publisher only carries the SVGs forward, since a checkpoint never

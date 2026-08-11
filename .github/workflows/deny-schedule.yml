@@ -52,7 +52,6 @@ jobs:
         if: steps.soak_charts.outputs.present == 'true'
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          command: check
-          command-arguments: --config deny.toml advisories bans licenses sources
+          command: check advisories bans licenses sources
           manifest-path: scripts/soak-charts/Cargo.toml
           arguments: --all-features

@@ -293,3 +293,45 @@ fn aggregate_only_cpu_history_renders_a_single_unstacked_chart() {
     assert!(!light.contains("translate(0,400)"));
     assert!(!light.contains(">aggregate</text>"));
 }
+
+#[test]
+fn cluster_grid_history_renders_a_node_core_heatmap_over_facets() {
+    let test_dir = TestDir::new("cpu-grid");
+    let output = run_renderer(
+        &test_dir,
+        r#"[
+          {
+            "run": { "date": "2026-08-10T00:00:00Z" },
+            "passive": {
+              "cpu_peak_per_core_pct": { "core-0": 90.0 },
+              "cpu_peak_core_grid_pct": {
+                "node-1": { "0": 122.0, "1": 85.0 },
+                "node-2": { "0": 5.0, "1": 8.0 }
+              }
+            }
+          }
+        ]"#,
+        "weekend",
+    );
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let light = fs::read_to_string(
+        test_dir
+            .path()
+            .join("output")
+            .join("chart-peak-cpu-weekend-light.svg"),
+    )
+    .expect("light CPU chart should exist");
+
+    // The grid wins over the per-core facet path: node ticks on x, no facet
+    // stacking, and the one saturated core (122%) carries its printed value.
+    assert!(light.contains(">node-1</text>"));
+    assert!(light.contains(">node-2</text>"));
+    assert!(!light.contains("translate(0,400)"));
+    assert!(light.contains(">122</text>"));
+}
