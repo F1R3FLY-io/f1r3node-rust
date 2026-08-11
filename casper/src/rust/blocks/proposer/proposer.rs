@@ -241,7 +241,12 @@ where
                             ValidBlockProcessing::Left(invalid_reason) => {
                                 // Some self-validation failures are recoverable races in fast, multi-parent
                                 // proposing: parent selection can become stale, and safety checks can reject
-                                // the candidate by the time validation runs.
+                                // the candidate by the time validation runs. ContainsExpiredDeploy is in this
+                                // set as a wedge-breaker, not a race: deploy selection excludes block-expired
+                                // deploys, but any residual expiry disagreement with validation must cost one
+                                // skipped propose rather than the permanent BugError retry loop of issue #197
+                                // (the pool is unchanged on this path, so erroring here re-proposes the same
+                                // block forever).
                                 if matches!(
                                     invalid_reason,
                                     BlockError::Invalid(InvalidBlock::InvalidParents)
@@ -252,6 +257,7 @@ where
                                         | BlockError::Invalid(InvalidBlock::InvalidBondsCache)
                                         | BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)
                                         | BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock)
+                                        | BlockError::Invalid(InvalidBlock::ContainsExpiredDeploy)
                                 ) {
                                     let recoverable_reason = match &invalid_reason {
                                         BlockError::Invalid(InvalidBlock::InvalidParents) => {
@@ -272,6 +278,9 @@ where
                                         BlockError::Invalid(
                                             InvalidBlock::NeglectedInvalidBlock,
                                         ) => "neglected_invalid_block",
+                                        BlockError::Invalid(
+                                            InvalidBlock::ContainsExpiredDeploy,
+                                        ) => "contains_expired_deploy",
                                         _ => "other",
                                     };
                                     metrics::counter!(
