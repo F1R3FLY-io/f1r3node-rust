@@ -89,14 +89,17 @@ beyond one full core", saturated cells (≥ 100%) carrying their printed value,
 and the ramp legend drawn by the page (charton's own continuous colorbar
 renders degenerate, so it stays suppressed).
 
-The grid is emitted today at node granularity: the soak driver splits the
-harness's per-node `resource-timeseries.csv` rows into per-node CPU peaks
-(`cpu_peak_per_node_pct` per iteration), and `write-soak-summary.sh` rolls
-them up cell-wise into the grid under a single `"all"` core row — so the panel
-renders one heat cell per shard node (bootstrap, validators). Per-core rows
-require the harness monitor to sample per-CPU cgroup counters per container, a
-system-integration follow-up; when those land, real core ids simply replace
-the `"all"` row and the same chart grows taller.
+The grid carries real core rows when the harness provides them: the
+system-integration monitor samples per-CPU cgroup counters per node container
+and emits `resource-percore-timeseries.csv` (a separate file from
+`resource-timeseries.csv` so the aggregate extractors cannot double-count),
+which the soak driver reduces to per-(node, core) peaks
+(`cpu_peak_per_node_core_pct` per iteration) alongside the aggregate per-node
+peaks (`cpu_peak_per_node_pct`). `write-soak-summary.sh` rolls both up
+cell-wise: a node with per-core data in any iteration gets real core ids, and
+a node with none anywhere — pre-emission history, or a provider without the
+per-core hook — keeps a single `"all"` fallback row, so the same chart simply
+grows taller as real core data appears.
 
 The two publishers whose output can change history re-render both series; the
 checkpoint publisher only carries the SVGs forward, since a checkpoint never

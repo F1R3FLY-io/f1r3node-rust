@@ -45,6 +45,18 @@ jq -e '
   and .tracked_metrics.lfb_spread.samples == 4
 ' "$BASE/summary.json" >/dev/null
 
+# Real core rows: a node with per-core data in ANY iteration gets real core
+# ids (cell-wise max across iterations, non-numbers skipped); a node with
+# none anywhere (bootstrap) keeps its aggregate "all" fallback row.
+PERCORE="$TMP/percore"
+mkdir -p "$PERCORE/iteration-00001-docker" "$PERCORE/iteration-00002-docker"
+printf '%s\n' '{"iteration":1,"provider":"docker","duration_s":60,"ok":true,"cpu_peak_per_node_pct":{"validator1":42.5,"bootstrap":12},"cpu_peak_per_node_core_pct":{"validator1":{"0":30,"1":70}},"metrics":{}}' >"$PERCORE/iteration-00001-docker/metrics.json"
+printf '%s\n' '{"iteration":2,"provider":"docker","duration_s":60,"ok":true,"cpu_peak_per_node_pct":{"validator1":55,"bootstrap":10},"cpu_peak_per_node_core_pct":{"validator1":{"0":80,"1":61.5,"bad":"not-a-number"}},"metrics":{}}' >"$PERCORE/iteration-00002-docker/metrics.json"
+write_summary "$PERCORE" 2 0
+jq -e '
+  .cpu_peak_core_grid_pct == {"validator1": {"0": 80, "1": 70}, "bootstrap": {"all": 12}}
+' "$PERCORE/summary.json" >/dev/null
+
 EMPTY="$TMP/empty"
 mkdir -p "$EMPTY"
 write_summary "$EMPTY" 0 0 invalid

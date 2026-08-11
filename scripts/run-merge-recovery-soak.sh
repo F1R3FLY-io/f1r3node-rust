@@ -249,11 +249,46 @@ iteration_cpu_peak_per_node_percent() {
 	               printf "}" }' "$ts_csv" 2>/dev/null || printf '{}'
 }
 
+# Real core rows for the same grid: the harness monitor's per-core telemetry
+# (resource-percore-timeseries.csv, columns elapsed_s,node,core,cpu_percent —
+# a separate file from resource-timeseries.csv precisely so the aggregate
+# extractors above cannot double-count), reduced to each (node, core) cell's
+# peak over the iteration as nested JSON {node: {core: pct}}. '{}' when the
+# harness predates per-core emission or the provider has no per-core hook;
+# the summary rollup then keeps that node's "all" fallback row. Same name
+# prefix stripping and JSON validation contract as the per-node extractor.
+iteration_cpu_peak_per_node_core_percent() {
+	local iteration_dir="$1" pc_csv="$iteration_dir/resource-percore-timeseries.csv"
+	[ -s "$pc_csv" ] || {
+		printf '{}'
+		return 0
+	}
+	awk -F, 'NR > 1 && $4 ~ /^[0-9]+([.][0-9]+)?$/ {
+	           n = $2; sub(/^rnode\.[^.]*\./, "", n)
+	           cell = n SUBSEP $3
+	           if (!(cell in peak) || $4 + 0 > peak[cell]) peak[cell] = $4 + 0 }
+	         END { printf "{"; nsep = ""
+	               for (cell in peak) { split(cell, parts, SUBSEP); nodes[parts[1]] = 1 }
+	               for (n in nodes) {
+	                 k = n; gsub(/[\\"]/, "", k)
+	                 printf "%s\"%s\":{", nsep, k; nsep = ","
+	                 csep = ""
+	                 for (cell in peak) {
+	                   split(cell, parts, SUBSEP)
+	                   if (parts[1] != n) continue
+	                   c = parts[2]; gsub(/[\\"]/, "", c)
+	                   printf "%s\"%s\":%.1f", csep, c, peak[cell]; csep = ","
+	                 }
+	                 printf "}"
+	               }
+	               printf "}" }' "$pc_csv" 2>/dev/null || printf '{}'
+}
+
 snapshot_iteration_monitor_outputs() {
 	local iteration_dir="$1" started_epoch filename source tmp
 	started_epoch="$(date +%s)"
 	while :; do
-		for filename in resource-timeseries.csv node-metrics-timeseries.csv resource-summary.txt host-protection-breach.txt; do
+		for filename in resource-timeseries.csv resource-percore-timeseries.csv node-metrics-timeseries.csv resource-summary.txt host-protection-breach.txt; do
 			source="$(find "${HARNESS_TELEMETRY_DIRS[@]}" \
 				-name "$filename" -newer "$iteration_dir/.started" -print0 2>/dev/null |
 				xargs -0 -r ls -t 2>/dev/null | head -1 || true)"
@@ -393,9 +428,11 @@ emit_iteration_metrics() {
 	errors="$(printf '%s' "$summary_line" | grep -oE '[0-9]+ error' | grep -oE '[0-9]+' || echo 0)"
 	rss_peak="$(iteration_rss_peak_mb "$iteration_dir")"
 	cpu_peak="$(iteration_cpu_peak_percent "$iteration_dir")"
-	local cpu_per_node
+	local cpu_per_node cpu_per_core
 	cpu_per_node="$(iteration_cpu_peak_per_node_percent "$iteration_dir")"
 	jq -e 'type == "object"' >/dev/null 2>&1 <<<"$cpu_per_node" || cpu_per_node='{}'
+	cpu_per_core="$(iteration_cpu_peak_per_node_core_percent "$iteration_dir")"
+	jq -e 'type == "object"' >/dev/null 2>&1 <<<"$cpu_per_core" || cpu_per_core='{}'
 	latency="$(iteration_finalization_latency "$iteration_dir")"
 	lat_p50="$(printf '%s' "$latency" | awk '{print $1}')"
 	lat_p95="$(printf '%s' "$latency" | awk '{print $2}')"
@@ -428,6 +465,7 @@ emit_iteration_metrics() {
 		--argjson rss_peak "${rss_peak:-null}" \
 		--argjson cpu_peak "${cpu_peak:-null}" \
 		--argjson cpu_per_node "$cpu_per_node" \
+		--argjson cpu_per_core "$cpu_per_core" \
 		--argjson lat_p50 "${lat_p50:-null}" \
 		--argjson lat_p95 "${lat_p95:-null}" \
 		--argjson lat_p99 "${lat_p99:-null}" \
@@ -440,6 +478,7 @@ emit_iteration_metrics() {
       rss_peak_mb: $rss_peak,
       cpu_peak_pct: $cpu_peak,
       cpu_peak_per_node_pct: (if ($cpu_per_node | length) > 0 then $cpu_per_node else null end),
+      cpu_peak_per_node_core_pct: (if ($cpu_per_core | length) > 0 then $cpu_per_core else null end),
       finalization_latency: {p50_ms: $lat_p50, p95_ms: $lat_p95, p99_ms: $lat_p99, samples: ($lat_n // 0)},
       too_far_ahead_errors: $too_far_ahead,
       metrics: $metrics,

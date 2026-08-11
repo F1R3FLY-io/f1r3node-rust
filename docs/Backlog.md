@@ -38,21 +38,24 @@ Items are organized by category and rough priority within each category.
 ---
 backlog_id: BACKLOG-FI-003
 title: "Sample per-CPU cgroup counters per node container so the dashboard CPU grid gains real core rows"
-status: deferred
-repo_scope: system-integration (monitor), f1r3node-rust (none — pipeline ready)
+status: implemented_pending_merge
+repo_scope: system-integration (monitor, PR #103), f1r3node-rust (driver + rollup, feature/enhance-soak-data-emission)
 ---
 ```
 
-The dashboard's node × core CPU heatmap currently renders one `"all"` row per
-node: the harness monitor's `resource-timeseries.csv` records `cpu_percent`
-per container (all cores combined). Real core rows need the monitor to read
-per-CPU cgroup counters (`cpuacct.usage_percpu` / cgroup v2 equivalents) per
-node container and emit them into the telemetry the soak driver already
-consumes. The downstream pipeline is complete and waiting: the driver's
-per-node extraction, `write-soak-summary.sh`'s `cpu_peak_core_grid_pct`
-rollup, and the renderer all handle arbitrary core ids — when per-core data
-lands, the `"all"` row is simply replaced and the chart grows taller with no
-further changes in this repo.
+Implemented on paired branches (2026-08-11). system-integration PR #103
+(`feature/enhance-soak-data-emission`) adds the monitor half: a per-sample
+docker-exec probe reads cgroup v1 `cpuacct.usage_percpu` (falling back on
+cgroup v2 — which has no per-CPU accounting — to attributing per-thread
+`/proc` CPU-time deltas to each thread's current core) and emits
+`resource-percore-timeseries.csv` (`elapsed_s,node,core,cpu_percent`) as a
+separate file so the aggregate awk extractors cannot double-count. This
+repo's same-named branch consumes it: the soak driver snapshots the CSV and
+emits nested `cpu_peak_per_node_core_pct` per iteration, and
+`write-soak-summary.sh` rolls real core rows into `cpu_peak_core_grid_pct`
+per node, keeping the `"all"` fallback row for nodes without per-core data
+(pre-emission history, providers without the hook). Remove this entry once
+both branches merge.
 
 #### BACKLOG-FI-002: Genericize testbed scripts for AWS / GCP
 
