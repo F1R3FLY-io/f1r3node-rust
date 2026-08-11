@@ -9,8 +9,8 @@ use models::rhoapi::{
     ReceiveBind, Send,
 };
 use models::rust::utils::{
-    new_elist_par, new_emap_par, new_eset_par, new_etuple_par, new_freevar_par, new_gint_par,
-    new_gstring_par, new_wildcard_par,
+    new_elist_par, new_emap_par, new_eset_par, new_etuple_par, new_freevar_expr, new_freevar_par,
+    new_gint_par, new_gstring_par, new_wildcard_par,
 };
 
 use super::recursive_oracle::spatial_matcher::{
@@ -248,6 +248,19 @@ fn recursive_oracle_and_pda_agree_on_the_semantic_corpus() {
         "send channel and data",
         send(one(), vec![seven()], false),
         send(free(0), vec![free(1)], true),
+    );
+    let duplicate = send(one(), vec![seven()], false).sends[0].clone();
+    let duplicate_target = models::par_from_default! {
+        sends: vec![duplicate.clone(), duplicate.clone(), duplicate],
+        ..Default::default()
+    };
+    let mut duplicate_pattern = send(one(), vec![free(0)], true);
+    duplicate_pattern.exprs.push(new_freevar_expr(1));
+    duplicate_pattern.connective_used = true;
+    compare(
+        "Par remainder over byte-identical sends",
+        duplicate_target,
+        duplicate_pattern,
     );
     compare(
         "receive source and body",

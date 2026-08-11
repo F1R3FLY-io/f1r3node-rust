@@ -1602,16 +1602,17 @@ fn finish_list(context: &mut SpatialMatcherContext, machine: ListMachine) -> Job
             order => order,
         }
     });
-    let remainder_values = ordered
-        .iter()
-        .filter(|(_, assignment)| {
-            matches!(patterns[assignment.pattern_index], ListPattern::Remainder)
-        })
-        .map(|(target_index, _)| targets[*target_index].clone())
-        .collect::<Vec<_>>();
+    let mut remainder_target_indices = vec![false; targets.len()];
+    for (target_index, assignment) in &ordered {
+        if matches!(patterns[assignment.pattern_index], ListPattern::Remainder) {
+            remainder_target_indices[*target_index] = true;
+        }
+    }
     let remainder_sorted = targets
         .iter()
-        .filter(|target| remainder_values.contains(target))
+        .enumerate()
+        .filter(|(target_index, _)| remainder_target_indices[*target_index])
+        .map(|(_, target)| target)
         .cloned()
         .collect::<Vec<_>>();
     let maps = ordered

@@ -307,6 +307,48 @@ fn matching_extras_with_free_variable_should_work() {
 }
 
 #[test]
+fn par_remainder_preserves_the_exact_multiplicity_of_identical_sends() {
+    let channel = new_gstring_par("duplicate-remainder".to_string(), Vec::new(), false);
+    let datum = new_gint_par(7, Vec::new(), false);
+    let duplicated_send = new_send_par(
+        channel.clone(),
+        vec![datum.clone()],
+        false,
+        Vec::new(),
+        false,
+        Vec::new(),
+        false,
+    )
+    .sends
+    .first()
+    .cloned()
+    .expect("the helper constructs one send");
+    let target = vector_par(Vec::new(), false).with_sends(vec![
+        duplicated_send.clone(),
+        duplicated_send.clone(),
+        duplicated_send.clone(),
+    ]);
+
+    // Match one send and bind the rest of the Par at level 1.  Equal sends are
+    // distinct AC occurrences: consuming one leaves exactly two, not all three.
+    let send_pattern = new_send_par(
+        channel,
+        vec![new_freevar_par(0, Vec::new())],
+        false,
+        Vec::new(),
+        true,
+        Vec::new(),
+        true,
+    );
+    let pattern = prepend_expr(send_pattern, new_freevar_expr(1), 1);
+    let remainder =
+        vector_par(Vec::new(), false).with_sends(vec![duplicated_send.clone(), duplicated_send]);
+    let expected_captures = BTreeMap::from([(0, datum), (1, remainder)]);
+
+    assert!(assert_spatial_match(target, pattern, Some(expected_captures)).is_ok());
+}
+
+#[test]
 fn matching_a_singleton_list_should_work() {
     let target: Par = new_elist_par(
         vec![new_gint_par(1, Vec::new(), false)],

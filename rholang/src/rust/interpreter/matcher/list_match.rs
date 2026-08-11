@@ -161,14 +161,15 @@ macro_rules! list_match {
 
                 // println!("\ncurrent free_map: {:?}", self.free_map);
 
-                let matches = maximum_bipartite_match.find_matches(all_patterns, targets.clone())?;
+                let matches = maximum_bipartite_match
+                    .find_indexed_matches(all_patterns, targets.clone())?;
 
                 // println!("\nfree_map after MBM: {:?}", self.free_map);
                 // println!("\nmatches: {:?}", matches);
 
                 let free_maps: Vec<FreeMap> = matches
                     .iter()
-                    .map(|(_, _, free_map)| free_map.clone())
+                    .map(|(_, _, _, free_map)| free_map.clone())
                     .collect();
 
                 let updated_free_map = aggregate_updates(self.free_map.clone(), free_maps)?;
@@ -176,17 +177,18 @@ macro_rules! list_match {
                 self.free_map = updated_free_map;
                 // println!("\nnew free_map: {:?}", self.free_map);
 
-                let remainder_targets: Vec<$type> = matches
-                    .iter()
-                    .filter_map(|(target, pattern, _)| match pattern {
-                        Pattern::Remainder(_) => Some(target.clone()),
-                        _ => None,
-                    })
-                    .collect();
+                let mut remainder_target_indices = vec![false; targets.len()];
+                for (target_index, _, pattern, _) in &matches {
+                    if matches!(pattern, Pattern::Remainder(_)) {
+                        remainder_target_indices[*target_index] = true;
+                    }
+                }
 
                 let remainder_targets_sorted: Vec<$type> = targets
                     .iter()
-                    .filter(|target| remainder_targets.contains(target))
+                    .enumerate()
+                    .filter(|(target_index, _)| remainder_target_indices[*target_index])
+                    .map(|(_, target)| target)
                     .cloned()
                     .collect();
 

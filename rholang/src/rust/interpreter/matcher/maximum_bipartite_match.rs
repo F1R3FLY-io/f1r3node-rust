@@ -78,6 +78,26 @@ where
     pub fn stats(&self) -> MaximumBipartiteMatchStats { self.stats }
 
     pub fn find_matches(&mut self, patterns: Vec<P>, targets: Vec<T>) -> Option<Vec<(T, P, R)>> {
+        self.find_indexed_matches(patterns, targets).map(|matches| {
+            matches
+                .into_iter()
+                .map(|(_, target, pattern, result)| (target, pattern, result))
+                .collect()
+        })
+    }
+
+    /// Return the same deterministic matching as [`find_matches`](Self::find_matches),
+    /// retaining each target's original position.
+    ///
+    /// Target identity is positional, not merely structural: an AC subject may contain
+    /// byte-identical siblings, and a remainder that selects one of them must not select
+    /// every equal sibling.  The ordinary compatibility surface drops the index, while
+    /// remainder reconstruction consumes it to preserve exact multiplicity in linear time.
+    pub(crate) fn find_indexed_matches(
+        &mut self,
+        patterns: Vec<P>,
+        targets: Vec<T>,
+    ) -> Option<Vec<(usize, T, P, R)>> {
         self.stats = MaximumBipartiteMatchStats::default();
         let mut assignments: Vec<Option<Assignment<R>>> =
             (0..targets.len()).map(|_| None).collect();
@@ -120,7 +140,12 @@ where
             ordered
                 .into_iter()
                 .map(|(target, pattern_index, result)| {
-                    (target.value, patterns[pattern_index].clone(), result)
+                    (
+                        target.index,
+                        target.value,
+                        patterns[pattern_index].clone(),
+                        result,
+                    )
                 })
                 .collect(),
         )
