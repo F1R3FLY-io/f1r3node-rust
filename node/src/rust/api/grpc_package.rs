@@ -19,6 +19,21 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
 // Note: Deploy and Propose services are defined in the models crate
 // These would be imported from models::casper::v1::{deploy_service_v1_server, propose_service_v1_server}
 
+// RFC 9113 §6.5.2: SETTINGS_MAX_FRAME_SIZE must lie in [2^14, 2^24 - 1]. The
+// configured gRPC message size doubles as the frame-size hint here, but the two
+// are independent limits — the 16 MiB message-size default (2^24) is one past
+// the frame cap, and h2 rejects out-of-range values (issue #20). Clamp the
+// frame size only; the message size itself is enforced unclamped by the
+// per-service codecs.
+const HTTP2_FRAME_SIZE_MIN: u32 = 1 << 14;
+const HTTP2_FRAME_SIZE_MAX: u32 = (1 << 24) - 1;
+
+fn http2_frame_size(max_message_size: usize) -> u32 {
+    u32::try_from(max_message_size)
+        .unwrap_or(HTTP2_FRAME_SIZE_MAX)
+        .clamp(HTTP2_FRAME_SIZE_MIN, HTTP2_FRAME_SIZE_MAX)
+}
+
 /// Shared transport configuration for both the internal and external gRPC servers.
 fn configure_server(
     max_message_size: usize,
@@ -31,7 +46,7 @@ fn configure_server(
 ) -> TonicServer {
     TonicServer::builder()
         .tcp_keepalive(Some(tcp_keepalive_time))
-        .max_frame_size(Some(max_message_size as u32))
+        .max_frame_size(Some(http2_frame_size(max_message_size)))
         .http2_keepalive_interval(Some(keep_alive_time))
         .http2_keepalive_timeout(Some(keep_alive_timeout))
         .http2_adaptive_window(Some(true))
@@ -167,7 +182,94 @@ mod tests {
     use tonic::transport::server::TcpIncoming;
     use tonic::transport::Endpoint;
 
-    use super::{configure_server, FILE_DESCRIPTOR_SET};
+    use super::{
+        configure_server, http2_frame_size, FILE_DESCRIPTOR_SET, HTTP2_FRAME_SIZE_MAX,
+        HTTP2_FRAME_SIZE_MIN,
+    };
+
+    // The 16 MiB grpc_max_recv_message_size default is exactly one past the
+    // HTTP/2 frame-size cap (issue #20).
+    const DEFAULT_MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
+
+    #[test]
+    fn frame_size_is_clamped_to_the_http2_range() {
+        assert_eq!(
+            http2_frame_size(DEFAULT_MAX_MESSAGE_SIZE),
+            HTTP2_FRAME_SIZE_MAX
+        );
+        assert_eq!(http2_frame_size(usize::MAX), HTTP2_FRAME_SIZE_MAX);
+        assert_eq!(http2_frame_size(0), HTTP2_FRAME_SIZE_MIN);
+        assert_eq!(http2_frame_size(1 << 20), 1 << 20);
+    }
+
+    /// Reads the server's initial SETTINGS frame off a raw HTTP/2 connection and
+    /// returns the advertised SETTINGS_MAX_FRAME_SIZE (0x5), if present.
+    async fn advertised_max_frame_size(addr: std::net::SocketAddr) -> Option<u32> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut stream = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("tcp connect");
+        stream
+            .write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+            .await
+            .expect("client preface");
+        stream
+            .write_all(&[0, 0, 0, 4, 0, 0, 0, 0, 0])
+            .await
+            .expect("empty client SETTINGS");
+
+        let mut header = [0u8; 9];
+        stream.read_exact(&mut header).await.expect("frame header");
+        let len = u32::from_be_bytes([0, header[0], header[1], header[2]]) as usize;
+        assert_eq!(header[3], 0x4, "first server frame must be SETTINGS");
+        let mut payload = vec![0u8; len];
+        stream.read_exact(&mut payload).await.expect("payload");
+        payload.chunks_exact(6).find_map(|s| {
+            (u16::from_be_bytes([s[0], s[1]]) == 0x5)
+                .then(|| u32::from_be_bytes([s[2], s[3], s[4], s[5]]))
+        })
+    }
+
+    /// The 16 MiB message-size default is one past the HTTP/2 frame-size cap
+    /// (RFC 9113 §6.5.2). Passed through unclamped, h2 asserts on the invalid
+    /// SETTINGS value (`DEFAULT_MAX_FRAME_SIZE <= val && val <= MAX_MAX_FRAME_SIZE`,
+    /// h2 frame/settings.rs) — panicking the serving task and resetting every
+    /// inbound connection (issue #20). The clamp must both keep the server
+    /// alive and make it advertise the capped value.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn default_message_size_advertises_clamped_frame_size() {
+        let incoming =
+            TcpIncoming::bind("127.0.0.1:0".parse().unwrap()).expect("bind ephemeral port");
+        let addr = incoming.local_addr().expect("resolve bound address");
+
+        let reflection_service = tonic_reflection::server::Builder::configure()
+            .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
+            .build_v1()
+            .expect("build reflection service");
+
+        let router = configure_server(
+            DEFAULT_MAX_MESSAGE_SIZE,
+            Duration::from_secs(10),
+            Duration::from_secs(5),
+            Duration::from_secs(10),
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+            Duration::from_secs(5),
+        )
+        .add_service(reflection_service);
+
+        let server = tokio::spawn(async move { router.serve_with_incoming(incoming).await });
+
+        let advertised = advertised_max_frame_size(addr).await;
+        server.abort();
+
+        assert_eq!(
+            advertised,
+            Some(HTTP2_FRAME_SIZE_MAX),
+            "server must advertise the clamped frame size, not fall back to the 16 KiB default"
+        );
+    }
 
     const RESUMED_AFTER_COMPLETION: &str = "resumed after completion";
     const MAX_CONNECTION_AGE: Duration = Duration::from_millis(300);
