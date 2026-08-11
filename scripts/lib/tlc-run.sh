@@ -74,22 +74,34 @@ __tlc_mem_bytes() {
 
 # tlc_bounded <cmd...> — exec cmd under a hard memory ceiling ($TLC_RSS).
 # Trace lines go to stderr so a caller capturing stdout sees only TLC output.
+#
+# Optional wall-clock bound: when TLC_WALL_TIMEOUT is set (GNU timeout
+# duration syntax, e.g. 45m) and `timeout` exists, the command is wrapped in
+# `timeout --signal=TERM --kill-after=60` INSIDE the memory wrapper, so TERM
+# reaches the JVM directly and timeout's exit code 124 propagates back
+# through systemd-run/prlimit to the caller (a `timeout` OUTSIDE systemd-run
+# would signal systemd-run itself and could leave the scope's JVM running).
+# Unset/empty keeps the historical unbounded-wall-clock behavior.
 tlc_bounded() {
+  local __tlc_wall=()
+  if [[ -n "${TLC_WALL_TIMEOUT:-}" ]] && command -v timeout >/dev/null 2>&1; then
+    __tlc_wall=(timeout --signal=TERM --kill-after=60 "$TLC_WALL_TIMEOUT")
+  fi
   if [[ "${ALLOW_UNBOUNDED_TLC:-0}" == "1" ]]; then
-    echo "+ (unbounded) $*" >&2
-    "$@"
+    echo "+ (unbounded) ${__tlc_wall[*]:-} $*" >&2
+    "${__tlc_wall[@]}" "$@"
     return
   fi
   if command -v systemd-run >/dev/null 2>&1 && systemd-run --user --scope true >/dev/null 2>&1; then
-    echo "+ systemd-run --user --scope -p MemoryMax=$TLC_RSS -p MemorySwapMax=0 -- $*" >&2
-    systemd-run --user --scope -p "MemoryMax=$TLC_RSS" -p "MemorySwapMax=0" -- "$@"
+    echo "+ systemd-run --user --scope -p MemoryMax=$TLC_RSS -p MemorySwapMax=0 -- ${__tlc_wall[*]:-} $*" >&2
+    systemd-run --user --scope -p "MemoryMax=$TLC_RSS" -p "MemorySwapMax=0" -- "${__tlc_wall[@]}" "$@"
     return
   fi
   if command -v prlimit >/dev/null 2>&1; then
     local bytes
     bytes="$(__tlc_mem_bytes "$TLC_RSS")" || return 1
-    echo "+ prlimit --as=$bytes -- $*" >&2
-    prlimit --as="$bytes" -- "$@"
+    echo "+ prlimit --as=$bytes -- ${__tlc_wall[*]:-} $*" >&2
+    prlimit --as="$bytes" -- "${__tlc_wall[@]}" "$@"
     return
   fi
   echo "tlc-run: cannot bound TLC to $TLC_RSS (no systemd-run/prlimit); set ALLOW_UNBOUNDED_TLC=1 to override" >&2

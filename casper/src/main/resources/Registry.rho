@@ -492,6 +492,7 @@ in {
         contract lookup(@uriOrShorthand, ret) = {
           match {
             `rho:lang:either` : `rho:id:qrh6mgfp5z6orgchgszyxnuonanz7hw3amgrprqtciia6astt66ypn`,
+            `rho:lang:exchange` : `rho:id:h7oamwfmbdgahd4jk6kcf9kzqssapm6bifq5i4u77danpta6d1ejf5`,
             `rho:lang:listOps` : `rho:id:6fzorimqngeedepkrizgiqms6zjt76zjeciktt1eifequy4osz35ks`,
             `rho:lang:nonNegativeNumber` : `rho:id:hxyadh1ffypra47ry9mk6b8r1i33ar1w9wjsez4khfe9huzrfcytx9`,
             `rho:lang:stack` : `rho:id:eb6a9iqn4tqr9gaa6dzspiuee9g3mt9c1umrfwcpaugp6ctuijbnwj`,

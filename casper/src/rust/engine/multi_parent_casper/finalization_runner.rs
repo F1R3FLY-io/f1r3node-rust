@@ -45,10 +45,14 @@ use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+// DISABLED (2026-08-07 dev merge) — only the commented-out purge used this:
+// use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
+// DISABLED (2026-08-07 dev merge): `RejectedDeploy` was used only by the
+// commented-out purge fn.
 use models::rust::casper::protocol::casper_message::BlockMessage;
 // Phase 9 (A-3): deploy_storage uses parking_lot::Mutex.
 use parking_lot::Mutex;
@@ -62,7 +66,43 @@ use super::events::finalised_event;
 use super::types::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
 use crate::rust::finality::finalizer::Finalizer;
+use crate::rust::safety::clique_oracle::FtThreshold;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
+
+// DISABLED (2026-08-07 dev merge) — finalization-time rejected-buffer purge.
+//
+// This purge (and every handle/plumbing line feeding it, all commented out
+// below with this same tag) was restored on this branch when the DL-1 hazard
+// was understood against the OLD recovery design. The 2026-07-15 dev-merge
+// measurement (see the module header above, "DO NOT re-add …") showed that
+// under the record-driven recovery design adopted from dev, the purge is
+// actively harmful: it evicts the round-0 keep-one LOSERS from the buffer
+// before recovery can re-propose them, losing their writes permanently
+// (`three_writers_converge_under_load`: purge present ⇒ FAILS, purge absent
+// ⇒ PASSES). The DL-1 double-apply hazard this purge guarded is enforced at
+// ADMISSION instead (`block_creator` `canonical_won_sigs` + `remove_by_sig`
+// + the `rejected_in_scope` exemption, pinned by
+// `interpreter_util::backstop_tests`). Kept commented out, not deleted, per
+// the repo's disable-by-commenting rule; re-enabling requires re-running the
+// measurement in the module header first.
+//
+// /// Purge a finalized block's deploys from the per-node rejected-deploy buffer: BOTH the
+// /// block's own included deploys (`deploy_sigs`) AND every signature it lists in
+// /// `rejected_deploys`. The rejected ones are definitively lost to the canonical chain and
+// /// must never be re-proposed from this node's buffer; the included ones have landed
+// /// canonically and no longer need re-proposal.
+// pub(crate) fn purge_finalized_deploys_from_buffer(
+//     buffer: &mut KeyValueRejectedDeployBuffer,
+//     deploy_sigs: &[Vec<u8>],
+//     rejected_deploys: &[RejectedDeploy],
+// ) {
+//     for sig in deploy_sigs {
+//         let _ = buffer.remove_by_sig(sig);
+//     }
+//     for rd in rejected_deploys {
+//         let _ = buffer.remove_by_sig(&rd.sig);
+//     }
+// }
 
 // Phase 13 (TC-1): the previous `FINALIZER_BLOCKING_TIMEOUT = 15s`
 // constant is now `CasperShardConf::finalizer_blocking_timeout`,
@@ -88,17 +128,37 @@ pub(crate) struct FinalizationContext {
     pub(crate) block_dag_storage: BlockDagKeyValueStorage,
     pub(crate) block_store: KeyValueBlockStore,
     pub(crate) deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    /// Cosigner-metadata sidecar (keyed by primary signature). Drained in
+    /// lockstep with `deploy_storage` when a block's deploys are finalized, so
+    /// compound-deploy metadata stays bounded after canonical inclusion. Under
+    /// sealed-floor, deploys are retained through accept and purged only at
+    /// finalization, so this drain was relocated here from block admission.
+    pub(crate) pending_cosigner_metadata: Arc<
+        Mutex<
+            std::collections::HashMap<prost::bytes::Bytes, super::types::PendingCosignerMetadata>,
+        >,
+    >,
+    // DISABLED (2026-08-07 dev merge) — the buffer handle existed only to feed
+    // the finalization-time purge (see the module header + the commented-out
+    // `purge_finalized_deploys_from_buffer` above). Deliberately absent per
+    // dev's measured design: the buffer must SURVIVE finalization so
+    // record-driven recovery can re-propose keep-one losers.
+    // pub(crate) rejected_deploy_buffer: Arc<
+    //     std::sync::Mutex<
+    //         block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer,
+    //     >,
+    // >,
     pub(crate) runtime_manager: Arc<RuntimeManager>,
     pub(crate) event_publisher: F1r3flyEvents,
     pub(crate) finalization_in_progress: Arc<AtomicBool>,
     pub(crate) enable_mergeable_channel_gc: bool,
-    pub(crate) ftt: crate::rust::safety::clique_oracle::FtThreshold,
+    pub(crate) ftt: FtThreshold,
     pub(crate) finalizer_conf: crate::rust::casper_conf::FinalizerConf,
     pub(crate) finalizer_blocking_timeout: std::time::Duration,
 }
 
 /// Build a `FinalizationContext` from a `MultiParentCasperImpl`. Single
-/// source of truth for the 10-field clone — previously duplicated at
+/// source of truth for the context clone — previously duplicated at
 /// `traits::last_finalized_block` and the trigger site in
 /// `finalization_runner::run_finalization`. Replaces both literal
 /// constructions so adding/renaming a context field is one edit.
@@ -111,14 +171,15 @@ pub(crate) fn build_finalization_context<
         block_dag_storage: this.block_dag_storage.clone(),
         block_store: this.block_store.clone(),
         deploy_storage: this.deploy_storage.clone(),
+        pending_cosigner_metadata: this.pending_cosigner_metadata.clone(),
+        // DISABLED (2026-08-07 dev merge): no buffer handle — see FinalizationContext.
+        // rejected_deploy_buffer: this.rejected_deploy_buffer.clone(),
         runtime_manager: this.runtime_manager.clone(),
         event_publisher: this.event_publisher.clone(),
         finalization_in_progress: this.finalization_in_progress.clone(),
         enable_mergeable_channel_gc: this.casper_shard_conf.enable_mergeable_channel_gc,
         // Exact ppm from the shard conf — the source of truth for the DECISION.
-        ftt: crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-            this.casper_shard_conf.fault_tolerance_threshold_ppm,
-        ),
+        ftt: FtThreshold::from_ppm(this.casper_shard_conf.fault_tolerance_threshold_ppm),
         finalizer_conf: this.casper_shard_conf.finalizer_conf.clone(),
         finalizer_blocking_timeout: this.casper_shard_conf.finalizer_blocking_timeout,
     }
@@ -170,6 +231,8 @@ pub(crate) async fn compute_last_finalized_block(
         block_dag_storage,
         block_store,
         deploy_storage,
+        pending_cosigner_metadata,
+        // DISABLED (2026-08-07 dev merge): rejected_deploy_buffer removed from the context.
         runtime_manager,
         event_publisher,
         finalization_in_progress,
@@ -189,6 +252,9 @@ pub(crate) async fn compute_last_finalized_block(
     let block_dag_storage_for_effect = block_dag_storage.clone();
     let block_store_for_effect = block_store.clone();
     let deploy_storage_for_effect = deploy_storage.clone();
+    let pending_cosigner_metadata_for_effect = pending_cosigner_metadata.clone();
+    // DISABLED (2026-08-07 dev merge): buffer clone fed only the purge.
+    // let rejected_deploy_buffer_for_effect = rejected_deploy_buffer.clone();
     let runtime_manager_for_effect = runtime_manager.clone();
     let event_publisher_for_effect = event_publisher.clone();
     let finalization_in_progress_for_effect = finalization_in_progress.clone();
@@ -198,6 +264,9 @@ pub(crate) async fn compute_last_finalized_block(
         let block_dag_storage = block_dag_storage_for_effect.clone();
         let block_store = block_store_for_effect.clone();
         let deploy_storage = deploy_storage_for_effect.clone();
+        let pending_cosigner_metadata = pending_cosigner_metadata_for_effect.clone();
+        // DISABLED (2026-08-07 dev merge): buffer clone fed only the purge.
+        // let rejected_deploy_buffer = rejected_deploy_buffer_for_effect.clone();
         let runtime_manager = runtime_manager_for_effect.clone();
         let event_publisher = event_publisher_for_effect.clone();
         let finalization_in_progress = finalization_in_progress_for_effect.clone();
@@ -208,6 +277,9 @@ pub(crate) async fn compute_last_finalized_block(
                     let finalized_set = finalized_set.clone();
                     let block_store = block_store.clone();
                     let deploy_storage = deploy_storage.clone();
+                    let pending_cosigner_metadata = pending_cosigner_metadata.clone();
+                    // DISABLED (2026-08-07 dev merge): buffer clone fed only the purge.
+                    // let rejected_deploy_buffer = rejected_deploy_buffer.clone();
                     let runtime_manager = runtime_manager.clone();
                     let event_publisher = event_publisher.clone();
                     let finalization_in_progress = finalization_in_progress.clone();
@@ -239,7 +311,48 @@ pub(crate) async fn compute_last_finalized_block(
                             // Remove block deploys from persistent store.
                             // Phase 9 (A-3): parking_lot::Mutex — no poison.
                             let deploys_count = deploys.len();
+                            let deploy_sigs_for_buffer: Vec<Vec<u8>> =
+                                deploys.iter().map(|d| d.sig.to_vec()).collect();
                             deploy_storage.lock().remove(deploys)?;
+
+                            // Drain the cosigner-metadata sidecar in lockstep
+                            // with `deploy_storage` (both keyed by primary
+                            // signature). Relocated here from the acceptance-time
+                            // purge so the sidecar stays bounded under sealed-floor
+                            // record-driven recovery: deploys are retained through
+                            // accept and removed only once finalized, so their
+                            // compound-deploy metadata must be released here too.
+                            {
+                                let mut sidecar = pending_cosigner_metadata.lock();
+                                for sig in &deploy_sigs_for_buffer {
+                                    sidecar.remove(&prost::bytes::Bytes::from(sig.clone()));
+                                }
+                            }
+
+                            // DISABLED (2026-08-07 dev merge) — the buffer purge
+                            // that used to run here. The prior rationale ("the
+                            // casper_engine split dropped this purge … IntegerAdd
+                            // invariant violation") was true against the OLD
+                            // recovery design; under dev's record-driven recovery
+                            // (adopted by this merge) the purge is MEASURED
+                            // harmful — see the module header: it evicts keep-one
+                            // losers before re-proposal, and DL-1 is enforced at
+                            // admission instead.
+                            //
+                            // {
+                            //     let mut buffer_guard =
+                            //         rejected_deploy_buffer.lock().map_err(|_| {
+                            //             KvStoreError::LockError(
+                            //                 "Failed to acquire rejected_deploy_buffer lock"
+                            //                     .to_string(),
+                            //             )
+                            //         })?;
+                            //     purge_finalized_deploys_from_buffer(
+                            //         &mut *buffer_guard,
+                            //         &deploy_sigs_for_buffer,
+                            //         &block.body.rejected_deploys,
+                            //     );
+                            // }
                             let finalized_set_str = PrettyPrinter::build_string_hashes(
                                 &finalized_set.iter().map(|h| h.to_vec()).collect::<Vec<_>>(),
                             );
@@ -297,6 +410,7 @@ pub(crate) async fn compute_last_finalized_block(
     let new_finalized_hash_opt = Finalizer::run(
         &dag,
         ftt,
+        &last_finalized_block_hash,
         last_finalized_block_height,
         new_lfb_found_effect,
         finalizer_conf,
@@ -379,3 +493,68 @@ pub(crate) async fn update_last_finalized_block<T: TransportLayer + Send + Sync>
     }
     Ok(())
 }
+
+// DISABLED (2026-08-07 dev merge) — the DL-1 purge unit test, commented out
+// together with `purge_finalized_deploys_from_buffer` (see the rationale at
+// the commented-out fn above and the module header). The DL-1 contract is
+// now pinned admission-side by `interpreter_util::backstop_tests`, which the
+// deploy-lifecycle gate runs.
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use crate::rust::util::construct_deploy;
+//     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+//
+//     /// DL-1 (deploy-lifecycle finalization purge). Finalizing a block must remove from THIS
+//     /// node's rejected-deploy buffer BOTH the deploys the block INCLUDED (they landed
+//     /// canonically) AND the deploys it listed as REJECTED (definitively lost) — while
+//     /// leaving unrelated buffered deploys intact for later re-proposal. This is exactly the
+//     /// purge the casper_engine split dropped, which re-proposed already-finalized deploys and
+//     /// double-applied them (the `three_writers_converge_under_load` regression). Previously
+//     /// covered only indirectly through that convergence test; this pins the contract directly.
+//     #[tokio::test]
+//     async fn purge_removes_included_and_rejected_deploys_and_keeps_others() {
+//         let mut kvm = InMemoryStoreManager::new();
+//         let mut buffer = KeyValueRejectedDeployBuffer::new(&mut kvm)
+//             .await
+//             .expect("in-memory rejected-deploy buffer");
+//
+//         // Three distinct deploys — distinct terms + timestamps ⇒ distinct signatures.
+//         let included =
+//             construct_deploy::source_deploy("@1!(1)".to_string(), 1, None, None, None, None, None)
+//                 .expect("included deploy");
+//         let rejected =
+//             construct_deploy::source_deploy("@2!(2)".to_string(), 2, None, None, None, None, None)
+//                 .expect("rejected deploy");
+//         let survivor =
+//             construct_deploy::source_deploy("@3!(3)".to_string(), 3, None, None, None, None, None)
+//                 .expect("survivor deploy");
+//
+//         buffer
+//             .add(vec![included.clone(), rejected.clone(), survivor.clone()])
+//             .expect("seed buffer");
+//         assert!(buffer.contains_sig(&included.sig).expect("contains"), "included seeded");
+//         assert!(buffer.contains_sig(&rejected.sig).expect("contains"), "rejected seeded");
+//         assert!(buffer.contains_sig(&survivor.sig).expect("contains"), "survivor seeded");
+//
+//         // The finalized block INCLUDED `included` and lists `rejected` in body.rejected_deploys.
+//         let included_sigs: Vec<Vec<u8>> = vec![included.sig.to_vec()];
+//         let rejected_deploys = vec![RejectedDeploy { sig: rejected.sig.clone() }];
+//
+//         purge_finalized_deploys_from_buffer(&mut buffer, &included_sigs, &rejected_deploys);
+//
+//         assert!(
+//             !buffer.contains_sig(&included.sig).expect("contains"),
+//             "an included (now-finalized) deploy must be purged from the buffer"
+//         );
+//         assert!(
+//             !buffer.contains_sig(&rejected.sig).expect("contains"),
+//             "a body.rejected_deploys sig must be purged (definitively lost, never re-proposed)"
+//         );
+//         assert!(
+//             buffer.contains_sig(&survivor.sig).expect("contains"),
+//             "an unrelated buffered deploy must survive the finalization purge (still re-proposable)"
+//         );
+//     }
+// }
+//

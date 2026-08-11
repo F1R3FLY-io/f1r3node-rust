@@ -443,17 +443,10 @@ async fn prepare_user_deploys_with_policy(
         .map(|h| h.min(earliest_block_number))
         .unwrap_or(earliest_block_number);
 
-    // Terminal purge: a rejected-buffer entry is dropped only once its sig is
-    // canonically WON inside the FINALIZED ancestry (latest finalized
-    // disposition is a win) AND that finalized win sits strictly above every
-    // rejection visible from the current parents. A win that is merely
-    // canonical-but-unfinalized can still be orphaned, so the entry must
-    // survive until finality; symmetrically, a finalized win with a visible
-    // rejection at or above its height is not terminal — block finalization
-    // does not finalize effects, and the pending rejection can finalize and
-    // drop the win from canonical state (finalized-win blindness,
-    // finalized_win_pending_rejection_spec). The buffer is the only
-    // re-proposable copy of merge-rejected work.
+    // Terminal purge requires a finalized active occurrence and no visible
+    // exact tombstone for that source. Legacy rejection records retain their
+    // height-based compatibility rule. An unfinalized win can still be orphaned,
+    // so the buffer survives until this source-aware terminal condition holds.
     let finalized_won_buffered: Vec<Signed<DeployData>> = if buffered_deploys.is_empty() {
         Vec::new()
     } else {
@@ -882,6 +875,59 @@ async fn prepare_user_deploys_with_policy(
         }
     }
 
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        for d in &future_deploys {
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "prepare_user_deploys.FILTER",
+                deploy = %hex::encode(&d.sig[..8.min(d.sig.len())]),
+                decision = "filtered",
+                reason = "future",
+                "merge.step: deploy filter decision"
+            );
+        }
+        for d in &block_expired_deploys {
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "prepare_user_deploys.FILTER",
+                deploy = %hex::encode(&d.sig[..8.min(d.sig.len())]),
+                decision = "filtered",
+                reason = "block-expired",
+                "merge.step: deploy filter decision"
+            );
+        }
+        for d in &time_expired_deploys {
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "prepare_user_deploys.FILTER",
+                deploy = %hex::encode(&d.sig[..8.min(d.sig.len())]),
+                decision = "filtered",
+                reason = "time-expired",
+                "merge.step: deploy filter decision"
+            );
+        }
+        for d in &already_in_scope {
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "prepare_user_deploys.FILTER",
+                deploy = %hex::encode(&d.sig[..8.min(d.sig.len())]),
+                decision = "filtered",
+                reason = "already-in-scope (repeat_deploy / deploys_in_scope, non-stale)",
+                "merge.step: deploy filter decision"
+            );
+        }
+        for d in &valid_unique {
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "prepare_user_deploys.FILTER",
+                deploy = %hex::encode(&d.sig[..8.min(d.sig.len())]),
+                decision = "selected-candidate",
+                reason = "passed expiry + scope filters",
+                "merge.step: deploy filter decision"
+            );
+        }
+    }
+
     // Log deploy selection details when there are any deploys in the pool
     if !unfinalized.is_empty() || !casper_snapshot.deploys_in_scope.is_empty() {
         tracing::info!(
@@ -1001,6 +1047,64 @@ async fn prepare_user_deploys_with_policy(
         deferred_user_deploy_bytes,
         byte_cap_hit,
     })
+}
+
+/// Reconstruct the canonical `Cosigned<DeployData>` envelope for one selected
+/// deploy, mirroring the multi-sig-aware uplift in `create()`: if the primary
+/// signature has a sidecar entry in `pending_cosigner_metadata` the full
+/// per-signer-reverified envelope is rebuilt (canonical pk-ascending order,
+/// share-sum invariants), otherwise the legacy single-sig uplift via
+/// `Cosigned::from_single_signer` produces a one-element envelope byte-identical
+/// to the pre-multi-sig path.
+///
+/// Extracted so BOTH the WD-D2 acceptance gate (which needs the envelope to
+/// derive each deploy's supply key `Σ⟦s⟧` BEFORE execution) and the dummy-deploy
+/// uplift share ONE reconstruction — identical to the replay-side
+/// `ProcessedDeploy::to_cosigned`, so play and replay agree on the envelope.
+fn reconstruct_cosigned(
+    signed: Signed<DeployData>,
+    cosigner_sidecar: &std::collections::HashMap<
+        prost::bytes::Bytes,
+        crate::rust::engine::multi_parent_casper::types::PendingCosignerMetadata,
+    >,
+) -> Result<crypto::rust::signatures::signed::Cosigned<DeployData>, CasperError> {
+    if let Some(meta) = cosigner_sidecar.get(&signed.sig) {
+        use crypto::rust::signatures::signatures_alg::SignaturesAlgFactory;
+        use crypto::rust::signatures::signed::{Cosigned, Cosigner};
+        let primary = Cosigner {
+            pk: signed.pk.clone(),
+            sig: signed.sig.clone(),
+            sig_algorithm: signed.sig_algorithm.clone(),
+        };
+        let mut signers = Vec::with_capacity(1 + meta.cosigners.len());
+        signers.push(primary);
+        for cs in &meta.cosigners {
+            let alg = SignaturesAlgFactory::apply(&cs.sig_algorithm).ok_or_else(|| {
+                CasperError::RuntimeError(format!(
+                    "Unknown cosigner sig_algorithm {} during proposer-side Cosigned reconstruction",
+                    cs.sig_algorithm
+                ))
+            })?;
+            signers.push(Cosigner {
+                pk: crypto::rust::public_key::PublicKey::from_bytes(&cs.pk),
+                sig: cs.sig.clone(),
+                sig_algorithm: alg,
+            });
+        }
+        Cosigned::from_signed_data(signed.data.clone(), signers).map_err(|e| {
+            CasperError::RuntimeError(format!(
+                "Cosigned reconstruction failed on proposer side: {}",
+                e
+            ))
+        })
+    } else {
+        crypto::rust::signatures::signed::Cosigned::from_single_signer(signed).map_err(|e| {
+            CasperError::RuntimeError(format!(
+                "legacy uplift to Cosigned failed in proposer: {}",
+                e
+            ))
+        })
+    }
 }
 
 fn collect_self_chain_deploy_sigs(
@@ -1638,16 +1742,6 @@ fn drain_selected_recovered_deploys_from_deploy_storage(
     }
 
     Ok(removed_from_storage)
-}
-
-fn filter_unprocessed_rejected_deploys(
-    rejected_deploys: Vec<Bytes>,
-    processed_deploy_sigs: &HashSet<Bytes>,
-) -> Vec<Bytes> {
-    rejected_deploys
-        .into_iter()
-        .filter(|sig| !processed_deploy_sigs.contains(sig))
-        .collect()
 }
 
 /// Removes the ordinary deploy-storage copies of recovered deploys whose sig
@@ -2416,6 +2510,14 @@ pub async fn create(
     dummy_deploy_opt: Option<(PrivateKey, String)>,
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: Arc<Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>,
+    pending_cosigner_metadata: Arc<
+        parking_lot::Mutex<
+            std::collections::HashMap<
+                prost::bytes::Bytes,
+                crate::rust::engine::multi_parent_casper::types::PendingCosignerMetadata,
+            >,
+        >,
+    >,
     runtime_manager: &RuntimeManager,
     block_store: &mut KeyValueBlockStore,
     allow_empty_blocks: bool,
@@ -2753,7 +2855,12 @@ pub async fn create(
         v
     };
 
-    let has_user_or_dummy_deploys = !user_deploys.is_empty() || !dummy_deploys.is_empty();
+    // The user deploys (gated by the WD-D2 acceptance gate below) are kept
+    // SEPARATE from the proposer's own dummy deploys: the gate funds only
+    // `user_deploys` (per-signature funding obligation, §7.6); the proposer's
+    // dummy/heartbeat deploys are exempt and always included. `prepare_user_deploys`
+    // already removed deploys in scope.
+    let user_deploys: HashSet<Signed<DeployData>> = user_deploys;
 
     // Merge the parents once up front. Two reasons to do this before the
     // empty-block skip check below:
@@ -2788,7 +2895,85 @@ pub async fn create(
         "source" => CASPER_METRICS_SOURCE
     )
     .record(__merge_pre_t.elapsed().as_secs_f64());
-    let (_pre_state, _rejected_user_sigs, rejected_slashes) = merge_pre_info;
+    let (pre_state, _rejected_user_sigs, rejected_slashes) = merge_pre_info;
+
+    // ── WD-D2 acceptance gate (cost-accounted-rho §7.6/§7.7) ─────────────────
+    // Reconstruct the canonical Cosigned envelopes for the user deploys (the
+    // same uplift the runtime install + replay perform, so the envelope `Sig`
+    // that keys each supply pool `Σ⟦s⟧` is byte-identical across all paths).
+    let cosigner_sidecar_for_gate: std::collections::HashMap<
+        prost::bytes::Bytes,
+        crate::rust::engine::multi_parent_casper::types::PendingCosignerMetadata,
+    > = pending_cosigner_metadata.lock().clone();
+    let user_cosigned_for_gate: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>> =
+        user_deploys
+            .into_iter()
+            .map(|signed| reconstruct_cosigned(signed, &cosigner_sidecar_for_gate))
+            .collect::<Result<Vec<_>, CasperError>>()?;
+
+    // Run the per-signature funding gate on the user deploys against the merged
+    // pre-state, BEFORE any execution (gate-before-execute, tex 1726-1729). The
+    // gate re-imposes the consensus-canonical deploy order on the
+    // nondeterministically-ordered HashSet, groups by supply channel `Σ⟦s⟧`, and
+    // admits the largest canonical-order prefix per group whose cumulative Δ_s
+    // fits Σ_s (rejecting the first unfunded candidate and all after it).
+    //
+    // ACTIVATION is PER-POOL by SUPPLY PRESENCE (reported grounding refinement —
+    // see `supply::read_balance_present`): the per-signature pools the gate reads
+    // are provisioned by the Cost-Accounted Rho ECONOMIC producer (Workstream C),
+    // which lands AFTER D2 ("B core → C economic → D acceptance"). StageB
+    // (landed) mints only per-VALIDATOR pools, NOT the per-deploy-signature pools
+    // the gate reads, so until C provisions a signer's pool that pool is ABSENT —
+    // and the gate admits its deploys UNENFORCED + UNDEBITED (pre-C /
+    // non-cost-accounted operation, bit-for-bit). A PRESENT pool (including a
+    // drained `Some(0)`) is enforced. The margin is the on-chain
+    // `min_phlo_price` (D2.5).
+    //
+    // Task #13a: the per-pool-presence activation above is the TRANSITIONAL
+    // default. The shard-genesis `strict_funding_enforcement` flag (off by
+    // default = back-compat) switches the gate to SPEC-STRICT (§7.6 step 5):
+    // an absent pool is then treated as present-zero, so an underfunded deploy
+    // is rejected rather than admitted unenforced. The same shard constant is
+    // threaded into the replay-side recompute, so play and replay agree.
+    let gate_margin = casper_snapshot.on_chain_state.shard_conf.min_phlo_price;
+    let strict_funding_enforcement = casper_snapshot
+        .on_chain_state
+        .shard_conf
+        .strict_funding_enforcement;
+    let gate_outcome = {
+        let t = std::time::Instant::now();
+        let reader = crate::rust::util::rholang::acceptance::RuntimeManagerSupplyReader {
+            runtime_manager,
+            pre_state_hash: pre_state.clone(),
+        };
+        let outcome = crate::rust::util::rholang::acceptance::admit_by_funding(
+            user_cosigned_for_gate,
+            &reader,
+            gate_margin,
+            strict_funding_enforcement,
+        )
+        .await?;
+        tracing::debug!(
+            target: "f1r3fly.block_creator.timing",
+            "acceptance_gate_ms={}, admitted={}, gate_rejected={}, debit_pools={}",
+            t.elapsed().as_millis(),
+            outcome.admitted.len(),
+            outcome.rejected.len(),
+            outcome.debits.len()
+        );
+        outcome
+    };
+    let gate_rejected_sigs: Vec<Bytes> = gate_outcome.rejected.clone();
+    let settlement_debits = gate_outcome.debits.clone();
+    // Cost-Accounted Rho Stage D (F-D conserving carve): the per-client FEE
+    // debits computed by the gate against each client's POST-COST `Σ⟦c⟧` (one
+    // token per admitted deploy, apportioned across compound components by the
+    // same policy as the cost). Captured before `gate_outcome.admitted` is moved.
+    let fee_debits = gate_outcome.fee_debits.clone();
+    let admitted_user_cosigned = gate_outcome.admitted;
+    // Whether there is any user work surviving the gate (drives the post-gate
+    // empty-block skip below).
+    let has_admitted_user_deploys = !admitted_user_cosigned.is_empty();
 
     // Union own slashes with merge-rejected slashes, dedup by
     // `invalid_block_hash`. Own detections take priority — any
@@ -2866,6 +3051,15 @@ pub async fn create(
     // on a wake with no other pending work.
     let has_slashing_deploys = !slashing_deploys.is_empty();
     let has_recovered_rejected_slashes = !recovered_rejected_slashes.is_empty();
+    // POST-GATE empty-block skip: a block is worth proposing iff something
+    // survives the WD-D2 funding gate (an admitted user deploy), or there is a
+    // dummy/heartbeat deploy, or a slash to issue/recover. If every user deploy
+    // was rejected by the gate (unfunded) and there is no other work, skip —
+    // the gate-rejected sigs are not force-packed into an otherwise-empty block
+    // (they remain in storage for a later cycle when supply may be available).
+    // `has_user_or_dummy_deploys` is deliberately computed AFTER the funding
+    // gate: gate-rejected (unfunded) deploys must not count as user work.
+    let has_user_or_dummy_deploys = has_admitted_user_deploys || !dummy_deploys.is_empty();
     if !has_user_or_dummy_deploys && !has_slashing_deploys && !has_recovered_rejected_slashes {
         if should_skip_empty_recovery_heartbeat(
             suppress_empty_recovery_block_by_non_leader,
@@ -2883,7 +3077,9 @@ pub async fn create(
         }
         if !allow_empty_blocks {
             tracing::info!(
-                "Skipping empty block creation: no new user deploys, no slashing deploys, no merge-rejected slashes to recover"
+                "Skipping empty block creation: no funded user deploys (gate-admitted={}, gate-rejected={}), no dummy deploys, no slashing deploys, no merge-rejected slashes to recover",
+                admitted_user_cosigned.len(),
+                gate_rejected_sigs.len()
             );
             return Ok(BlockCreatorResult::NoNewDeploys);
         }
@@ -2921,13 +3117,43 @@ pub async fn create(
         }
     }
 
-    // Add the actual close block deploy
-    system_deploys_converted.push(SystemDeployEnum::Close(CloseBlockDeploy {
-        initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
-            validator_identity.public_key.clone(),
-            next_seq_num,
-        ),
-    }));
+    // Add the actual close block deploy. It carries the WD-D2 settlement debits
+    // computed by the acceptance gate above: closeBlock is always the LAST
+    // system deploy, so by the time its `dual_write_supply` runs every admitted
+    // user deploy has executed, and it then subtracts ΣΔ_s from each pool
+    // `Σ⟦s⟧` (`post = pre − ΣΔ_admitted`). On replay these debits are RECOMPUTED
+    // from `block.body.deploys` — they are NOT serialized into the block — so the
+    // play-side map is purely a play-path optimization.
+    //
+    // Cost-Accounted Rho Stage D (F-D conserving carve): it ALSO carries the
+    // FeeExtract carve (cost-accounted-rho.tex:3637 "one client token consumed as
+    // fee") for the PROPOSING validator. The fee is CARVED from each admitted
+    // client's OWN post-cost `Σ⟦c⟧` (a supply-conserving transfer, NOT a mint)
+    // and credited to the proposer's `F_v`. The per-client amounts come from the
+    // gate (`fee_debits`), so ONLY admitted CLIENT deploys are charged — the
+    // proposer's own gate-exempt dummy deploys carve NO fee (they have no client
+    // pool). On replay the SAME carve is RECOMPUTED from `block.body.deploys`.
+    // cost ≠ fee (D.0): a TRANSFERRED token, distinct from the burned cost debit.
+    // `None` when nothing was carved (empty block) ⇒ no fee write at closeBlock.
+    // The fee carve and the Close deploy itself are assembled INSIDE the
+    // checkpoint retry loop below: `settlement_debits`/`fee_carve` are
+    // functions of the admitted user set actually packaged, and the retry
+    // loop may shrink that set (see the R2 note at the loop).
+    //
+    // Task #13b: thread the genesis client funding-slot allocations onto the
+    // close deploy from the shard-genesis conf (the SAME constant replay reads).
+    // Credited only at the block-1 close (gated on `block_number == 1` inside
+    // `dual_write_supply`); on every other block it rides along but the gate
+    // skips the credit. Lowered to raw pk bytes (the basis `Sig::Ground` uses).
+    // Default-empty shards leave this empty ⇒ byte-identical to pre-#13b.
+    // Prefix-independent, so computed once here and cloned per attempt.
+    let client_fuel_allocations: Vec<(Vec<u8>, i64)> = casper_snapshot
+        .on_chain_state
+        .shard_conf
+        .client_fuel_allocations
+        .iter()
+        .map(|(pk, amount)| (pk.bytes.to_vec(), *amount))
+        .collect();
 
     // Use the adjusted `now_millis` captured at the start of create for block timestamp.
     // The value is clamped to the max parent timestamp to avoid InvalidTimestamp from clock skew.
@@ -2951,27 +3177,96 @@ pub async fn create(
         seq_num: next_seq_num,
     };
 
-    // Compute checkpoint data
+    // Compute checkpoint data — route through the multi-sig-aware path
+    // (compute_deploys_checkpoint_cosigned) so cosigner data survives from
+    // submission through execution. The deploys fed to execution are the
+    // WD-D2-GATE-ADMITTED user envelopes (already reconstructed as
+    // Cosigned<DeployData> by `admit_by_funding`, in canonical order — only
+    // funded deploys execute, gate-before-execute per tex 1726-1729) PLUS the
+    // proposer's own dummy deploys (exempt from the gate), uplifted via the same
+    // `reconstruct_cosigned` (legacy single-sig ⇒ byte-identical one-element
+    // envelope; multi-sig ⇒ canonical per-signer-reverified envelope).
     let checkpoint_started = std::time::Instant::now();
-    let ordered_user_deploys = ordered_user_deploys(&user_deploys);
-    let original_user_deploys = ordered_user_deploys.len();
-    let mut user_deploy_limit = original_user_deploys;
+    // R2 (play/replay): `settlement_debits`/`fee_carve` on the Close deploy
+    // are functions of the ADMITTED USER SET actually packaged, and replay
+    // recomputes them from `block.body.deploys` (`recompute_settlement_debits`).
+    // When this retry loop shrinks the admitted prefix, the Close assembly is
+    // therefore recomputed INSIDE the loop for that prefix — a truncated
+    // prefix carrying full-set debits would fail the proposer's own
+    // play≠replay equality. Admission is prefix-closed (canonical order,
+    // per-lane prefix sums), so re-gating an admitted prefix re-admits it in
+    // full; anything else is a hard error (fail loudly, never package
+    // diverged debits). Deploys truncated out of an attempt are NOT recorded
+    // in `rejected_deploys` — they stay in deploy storage for a later block.
+    let original_admitted_user_deploys = admitted_user_cosigned.len();
+    let mut user_deploy_limit = original_admitted_user_deploys;
     let mut retry_count = 0usize;
     let checkpoint_data = loop {
-        let mut deploys: Vec<Signed<DeployData>> = ordered_user_deploys
-            .iter()
-            .take(user_deploy_limit)
-            .cloned()
-            .collect();
-        deploys.extend(dummy_deploys.iter().cloned());
+        let attempt_admitted: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>> =
+            admitted_user_cosigned
+                .iter()
+                .take(user_deploy_limit)
+                .cloned()
+                .collect();
+        let (attempt_settlement_debits, attempt_fee_debits) = if user_deploy_limit
+            == original_admitted_user_deploys
+        {
+            (settlement_debits.clone(), fee_debits.clone())
+        } else {
+            let reader = crate::rust::util::rholang::acceptance::RuntimeManagerSupplyReader {
+                runtime_manager,
+                pre_state_hash: pre_state.clone(),
+            };
+            let prefix_outcome = crate::rust::util::rholang::acceptance::admit_by_funding(
+                attempt_admitted.clone(),
+                &reader,
+                gate_margin,
+                strict_funding_enforcement,
+            )
+            .await?;
+            if prefix_outcome.admitted.len() != attempt_admitted.len()
+                || !prefix_outcome.rejected.is_empty()
+            {
+                return Err(CasperError::RuntimeError(format!(
+                        "prefix re-admission diverged while shrinking the checkpoint batch: prefix_len={}, re-admitted={}, re-rejected={} (admission must be prefix-closed)",
+                        attempt_admitted.len(),
+                        prefix_outcome.admitted.len(),
+                        prefix_outcome.rejected.len()
+                    )));
+            }
+            (prefix_outcome.debits, prefix_outcome.fee_debits)
+        };
+        let attempt_fee_carve = crate::rust::util::rholang::acceptance::fee_carve(
+            validator_identity.public_key.bytes.to_vec(),
+            attempt_fee_debits,
+        );
+        let mut attempt_system_deploys = system_deploys_converted.clone();
+        attempt_system_deploys.push(SystemDeployEnum::Close(CloseBlockDeploy {
+            initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                validator_identity.public_key.clone(),
+                next_seq_num,
+            ),
+            settlement_debits: attempt_settlement_debits,
+            fee_carve: attempt_fee_carve,
+            client_fuel_allocations: client_fuel_allocations.clone(),
+        }));
+        let mut cosigned_deploys: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>> =
+            Vec::with_capacity(attempt_admitted.len() + dummy_deploys.len());
+        cosigned_deploys.extend(attempt_admitted);
+        for dummy in dummy_deploys.iter() {
+            cosigned_deploys.push(reconstruct_cosigned(
+                dummy.clone(),
+                &cosigner_sidecar_for_gate,
+            )?);
+        }
         let attempted_user_deploys = user_deploy_limit;
-        let attempted_total_deploys = deploys.len();
+        let attempted_total_deploys = cosigned_deploys.len();
 
-        match interpreter_util::compute_deploys_checkpoint(
+        match interpreter_util::compute_deploys_checkpoint_cosigned(
             block_store,
             parents.clone(),
-            deploys,
-            system_deploys_converted.clone(),
+            cosigned_deploys,
+            attempt_system_deploys,
             casper_snapshot,
             runtime_manager,
             block_data.clone(),
@@ -2981,11 +3276,11 @@ pub async fn create(
         .await
         {
             Ok(data) => {
-                if attempted_user_deploys < original_user_deploys {
+                if attempted_user_deploys < original_admitted_user_deploys {
                     tracing::warn!(
                         "Checkpoint merge recovered by reducing selected user deploys for block #{}: original_user_deploys={}, included_user_deploys={}, dummy_deploys={}, retries={}",
                         next_block_num,
-                        original_user_deploys,
+                        original_admitted_user_deploys,
                         attempted_user_deploys,
                         dummy_deploys.len(),
                         retry_count
@@ -3065,13 +3360,6 @@ pub async fn create(
         processed_system_deploys,
         new_bonds,
     ) = checkpoint_data;
-    let processed_deploy_sigs: HashSet<Bytes> = processed_deploys
-        .iter()
-        .map(|pd| pd.deploy.sig.clone())
-        .collect();
-    let rejected_deploys =
-        filter_unprocessed_rejected_deploys(rejected_deploys, &processed_deploy_sigs);
-
     let block_bonds = {
         let parent_hashes: Vec<BlockHash> = parents.iter().map(|p| p.block_hash.clone()).collect();
         let latest_messages: BTreeMap<Validator, BlockHash> = casper_snapshot
@@ -3154,10 +3442,14 @@ pub async fn create(
     metrics::gauge!(BLOCK_CREATOR_PACKED_BLOCK_BYTES_METRIC, "source" => CASPER_METRICS_SOURCE)
         .set(signed_block_bytes as f64);
 
-    let selected_user_deploys_for_buffer_drain: Vec<Signed<DeployData>> = ordered_user_deploys
+    // Drain by the GATE-ADMITTED prefix actually packaged into the block (the
+    // legacy-signed view of each admitted envelope), not the pre-gate ordered
+    // set: gate-rejected (unfunded) deploys were never packaged, so they must
+    // not be drained from ordinary deploy storage here.
+    let selected_user_deploys_for_buffer_drain: Vec<Signed<DeployData>> = admitted_user_cosigned
         .iter()
         .take(user_deploy_limit)
-        .cloned()
+        .map(|cosigned| cosigned.as_legacy_signed_ref())
         .collect();
     let removed_recovered_from_storage = drain_selected_recovered_deploys_from_deploy_storage(
         &deploy_storage,
@@ -3209,7 +3501,7 @@ fn package_block(
     pre_state_hash: Bytes,
     post_state_hash: Bytes,
     deploys: Vec<ProcessedDeploy>,
-    rejected_deploys: Vec<Bytes>,
+    rejected_deploys: Vec<RejectedDeploy>,
     system_deploys: Vec<ProcessedSystemDeploy>,
     bonds_map: Vec<Bond>,
     shard_id: String,
@@ -3222,15 +3514,10 @@ fn package_block(
         block_number: block_data.block_number,
     };
 
-    let rejected_deploys_wrapped: Vec<RejectedDeploy> = rejected_deploys
-        .into_iter()
-        .map(|r| RejectedDeploy { sig: r })
-        .collect();
-
     let body = Body {
         state,
         deploys,
-        rejected_deploys: rejected_deploys_wrapped,
+        rejected_deploys,
         system_deploys,
         extra_bytes: Bytes::new(),
     };
@@ -4469,21 +4756,6 @@ mod tests {
 
         snapshot.last_finalized_block = parent_hash;
         assert!(!parent_frontier_extends_lfb(&snapshot, &block_store).expect("lfb parent"));
-    }
-
-    #[test]
-    fn processed_deploys_are_not_packaged_as_rejected_deploys() {
-        let processed_sig = Bytes::from_static(b"processed");
-        let other_sig = Bytes::from_static(b"other");
-        let fresh_sig = Bytes::from_static(b"fresh");
-        let processed_deploy_sigs: HashSet<Bytes> = [processed_sig.clone()].into_iter().collect();
-
-        let filtered = filter_unprocessed_rejected_deploys(
-            vec![processed_sig, other_sig.clone(), fresh_sig.clone()],
-            &processed_deploy_sigs,
-        );
-
-        assert_eq!(filtered, vec![other_sig, fresh_sig]);
     }
 
     /// A bonded validator that PoS still considers active is slashable

@@ -14,9 +14,11 @@ use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::block::state_hash::{StateHash, StateHashSerde};
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
-    Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
+    Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy,
+    SystemDeployData,
 };
 use models::rust::validator::Validator;
+use prost::Message;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::merging::rholang_merging_logic::{
@@ -102,7 +104,7 @@ pub struct ParentsPostStateCacheKey {
 
 pub type ParentsPostStateCacheVal = (
     StateHash,
-    Vec<prost::bytes::Bytes>,
+    Vec<RejectedDeploy>,
     Vec<crate::rust::merging::rejected_slash::RejectedSlash>,
 );
 
@@ -160,6 +162,19 @@ impl RuntimeManager {
             bytes.extend_from_slice(data);
         }
 
+        #[inline]
+        fn push_event_log(bytes: &mut Vec<u8>, event_log: &[Event]) {
+            bytes.extend_from_slice(&(event_log.len() as u64).to_le_bytes());
+            let mut encoded_events = event_log
+                .iter()
+                .map(|event| event.to_proto().encode_to_vec())
+                .collect::<Vec<_>>();
+            encoded_events.sort();
+            for encoded in encoded_events {
+                push_len_prefixed(bytes, &encoded);
+            }
+        }
+
         // Fingerprint replay-relevant payload so cache keys stay safe under adversarial input.
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&(usr_processed.len() as u64).to_le_bytes());
@@ -167,6 +182,7 @@ impl RuntimeManager {
             push_len_prefixed(&mut bytes, &pd.deploy.sig);
             bytes.extend_from_slice(&pd.cost.cost.to_le_bytes());
             bytes.push(u8::from(pd.is_failed));
+            push_event_log(&mut bytes, &pd.deploy_log);
             match &pd.system_deploy_error {
                 Some(err) => {
                     bytes.push(1);
@@ -174,12 +190,22 @@ impl RuntimeManager {
                 }
                 None => bytes.push(0),
             }
+            push_len_prefixed(&mut bytes, &pd.pre_state_hash);
+            push_len_prefixed(&mut bytes, &pd.post_state_hash);
         }
         bytes.extend_from_slice(&(sys_processed.len() as u64).to_le_bytes());
         for psd in sys_processed {
             match psd {
-                ProcessedSystemDeploy::Succeeded { system_deploy, .. } => {
+                ProcessedSystemDeploy::Succeeded {
+                    event_list,
+                    system_deploy,
+                    pre_state_hash,
+                    post_state_hash,
+                } => {
                     bytes.push(0);
+                    push_event_log(&mut bytes, event_list);
+                    push_len_prefixed(&mut bytes, pre_state_hash);
+                    push_len_prefixed(&mut bytes, post_state_hash);
                     match system_deploy {
                         SystemDeployData::Slash {
                             invalid_block_hash,
@@ -201,11 +227,50 @@ impl RuntimeManager {
                         SystemDeployData::Empty => {
                             bytes.push(2);
                         }
+                        SystemDeployData::Redeem {
+                            validator_pk,
+                            outcome_tag,
+                            penalty,
+                            pos_multi_sig_public_keys,
+                            pos_multi_sig_quorum,
+                            authorizations,
+                        } => {
+                            // Cost-Accounted Rho Stage-C redemption (DR-7/DR-12).
+                            // Deterministic, length-prefixed encoding of the FULL
+                            // authorization material so every node feeds identical
+                            // bytes into the post-state hash. Little-endian is
+                            // consensus-determined here (mirrors the Slash arm
+                            // above); do not switch to big-endian.
+                            bytes.push(3);
+                            push_len_prefixed(&mut bytes, validator_pk);
+                            push_len_prefixed(&mut bytes, outcome_tag.as_bytes());
+                            bytes.extend_from_slice(&penalty.to_le_bytes());
+                            bytes.extend_from_slice(&(*pos_multi_sig_quorum).to_le_bytes());
+                            bytes.extend_from_slice(
+                                &(pos_multi_sig_public_keys.len() as u32).to_le_bytes(),
+                            );
+                            for key in pos_multi_sig_public_keys {
+                                push_len_prefixed(&mut bytes, key.as_bytes());
+                            }
+                            bytes.extend_from_slice(&(authorizations.len() as u32).to_le_bytes());
+                            for auth in authorizations {
+                                push_len_prefixed(&mut bytes, &auth.public_key);
+                                push_len_prefixed(&mut bytes, &auth.signature);
+                            }
+                        }
                     }
                 }
-                ProcessedSystemDeploy::Failed { error_msg, .. } => {
+                ProcessedSystemDeploy::Failed {
+                    event_list,
+                    error_msg,
+                    pre_state_hash,
+                    post_state_hash,
+                } => {
                     bytes.push(1);
+                    push_event_log(&mut bytes, event_list);
                     push_len_prefixed(&mut bytes, error_msg.as_bytes());
+                    push_len_prefixed(&mut bytes, pre_state_hash);
+                    push_len_prefixed(&mut bytes, post_state_hash);
                 }
             }
         }
@@ -312,6 +377,79 @@ impl RuntimeManager {
         runtime
     }
 
+    /// Multi-signature-aware variant of [`Self::compute_state`]. Routes
+    /// `Vec<Cosigned<DeployData>>` through the per-cosigner runtime
+    /// fan-out at `RuntimeOps::compute_state_cosigned`. For legacy
+    /// single-signature deploys (1-element Cosigned envelopes), behavior
+    /// is byte-identical to `compute_state`.
+    pub async fn compute_state_cosigned(
+        &self,
+        start_hash: &StateHash,
+        terms: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
+        system_deploys: Vec<super::system_deploy_enum::SystemDeployEnum>,
+        block_data: BlockData,
+        invalid_blocks: Option<HashMap<BlockHash, Validator>>,
+    ) -> Result<(StateHash, Vec<ProcessedDeploy>, Vec<ProcessedSystemDeploy>), CasperError> {
+        let invalid_blocks = invalid_blocks.unwrap_or_default();
+        let runtime = self.spawn_runtime().await;
+        let mut runtime_ops = RuntimeOps::new(runtime);
+        let sender = block_data.sender.clone();
+        let seq_num = block_data.seq_num;
+
+        let (state_hash, usr_deploy_res, sys_deploy_res) = runtime_ops
+            .compute_state_cosigned(
+                start_hash,
+                terms,
+                system_deploys,
+                block_data,
+                invalid_blocks,
+            )
+            .await?;
+
+        let (usr_processed, usr_mergeable): (Vec<ProcessedDeploy>, Vec<NumberChannelsEndVal>) =
+            usr_deploy_res.into_iter().unzip();
+        let (sys_processed, sys_mergeable): (
+            Vec<ProcessedSystemDeploy>,
+            Vec<NumberChannelsEndVal>,
+        ) = sys_deploy_res.into_iter().unzip();
+
+        let mergeable_chs = usr_mergeable
+            .into_iter()
+            .chain(sys_mergeable.into_iter())
+            .collect();
+        let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);
+        let post_state_hash = Blake2b256Hash::from_bytes_prost(&state_hash);
+        self.save_mergeable_channels(
+            post_state_hash,
+            sender.bytes.clone(),
+            seq_num,
+            mergeable_chs,
+            &pre_state_hash,
+        )?;
+
+        // Cache replay result (mirror compute_state's caching logic).
+        let replay_cache_event_log_cap = Self::max_replay_cache_event_log_entries();
+        if let Some(ref cache) = self.replay_cache {
+            let all_logs = Self::collect_replay_logs(&usr_processed, &sys_processed);
+            if !all_logs.is_empty() && all_logs.len() <= replay_cache_event_log_cap {
+                let replay_payload_hash =
+                    Self::replay_payload_hash(&usr_processed, &sys_processed, false);
+                let key = ReplayCacheKey::new(
+                    start_hash.clone(),
+                    sender.bytes.to_vec(),
+                    seq_num as i64,
+                    replay_payload_hash,
+                );
+                let entry = ReplayCacheEntry::new(all_logs, state_hash.clone());
+                cache.put(key, entry);
+            }
+        }
+        if let Some(ref cache) = self.state_hash_cache {
+            cache.put(start_hash.clone(), state_hash.clone());
+        }
+        Ok((state_hash, usr_processed, sys_processed))
+    }
+
     pub async fn compute_state(
         &self,
         start_hash: &StateHash,
@@ -368,10 +506,10 @@ impl RuntimeManager {
         // Cache replay result for potential replay shortcut (including event logs)
         if let Some(ref cache) = self.replay_cache {
             let all_logs = Self::collect_replay_logs(&usr_processed, &sys_processed);
-            let replay_payload_hash =
-                Self::replay_payload_hash(&usr_processed, &sys_processed, false);
 
             if !all_logs.is_empty() && all_logs.len() <= replay_cache_event_log_cap {
+                let replay_payload_hash =
+                    Self::replay_payload_hash(&usr_processed, &sys_processed, false);
                 let key = ReplayCacheKey::new(
                     start_hash.clone(),
                     sender.bytes.to_vec(),
@@ -399,6 +537,92 @@ impl RuntimeManager {
         }
 
         Ok((state_hash, usr_processed, sys_processed))
+    }
+
+    /// Multi-signature-aware variant of [`Self::compute_state_with_bonds`].
+    /// Accepts `Vec<Cosigned<DeployData>>` so multi-signature deploys
+    /// execute through the per-cosigner pre-charge + FIFO refund fan-out.
+    /// For legacy single-signature deploys (1-element Cosigned envelopes)
+    /// behavior is byte-identical. Bonds computation is unaffected by the
+    /// signature shape — it reads validator stake from the post-state.
+    pub async fn compute_state_with_bonds_cosigned(
+        &self,
+        start_hash: &StateHash,
+        terms: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
+        system_deploys: Vec<super::system_deploy_enum::SystemDeployEnum>,
+        block_data: BlockData,
+        invalid_blocks: Option<HashMap<BlockHash, Validator>>,
+    ) -> Result<
+        (
+            StateHash,
+            Vec<ProcessedDeploy>,
+            Vec<ProcessedSystemDeploy>,
+            Vec<Bond>,
+        ),
+        CasperError,
+    > {
+        let invalid_blocks = invalid_blocks.unwrap_or_default();
+        let runtime = self.spawn_runtime().await;
+        let mut runtime_ops = RuntimeOps::new(runtime);
+        let sender = block_data.sender.clone();
+        let seq_num = block_data.seq_num;
+
+        let (state_hash, usr_deploy_res, sys_deploy_res) = runtime_ops
+            .compute_state_cosigned(
+                start_hash,
+                terms,
+                system_deploys,
+                block_data,
+                invalid_blocks,
+            )
+            .await?;
+
+        let (usr_processed, usr_mergeable): (Vec<ProcessedDeploy>, Vec<NumberChannelsEndVal>) =
+            usr_deploy_res.into_iter().unzip();
+        let (sys_processed, sys_mergeable): (
+            Vec<ProcessedSystemDeploy>,
+            Vec<NumberChannelsEndVal>,
+        ) = sys_deploy_res.into_iter().unzip();
+        let mergeable_chs = usr_mergeable
+            .into_iter()
+            .chain(sys_mergeable.into_iter())
+            .collect();
+        let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);
+        let post_state_hash = Blake2b256Hash::from_bytes_prost(&state_hash);
+        self.save_mergeable_channels(
+            post_state_hash,
+            sender.bytes.clone(),
+            seq_num,
+            mergeable_chs,
+            &pre_state_hash,
+        )?;
+
+        let replay_cache_event_log_cap = Self::max_replay_cache_event_log_entries();
+        if let Some(ref cache) = self.replay_cache {
+            let all_logs = Self::collect_replay_logs(&usr_processed, &sys_processed);
+            if !all_logs.is_empty() && all_logs.len() <= replay_cache_event_log_cap {
+                let replay_payload_hash =
+                    Self::replay_payload_hash(&usr_processed, &sys_processed, false);
+                let key = ReplayCacheKey::new(
+                    start_hash.clone(),
+                    sender.bytes.to_vec(),
+                    seq_num as i64,
+                    replay_payload_hash,
+                );
+                let entry = ReplayCacheEntry::new(all_logs, state_hash.clone());
+                cache.put(key, entry);
+            }
+        }
+        if let Some(ref cache) = self.state_hash_cache {
+            cache.put(start_hash.clone(), state_hash.clone());
+        }
+
+        // Reuse the same spawned runtime for bonds query (mirrors
+        // compute_state_with_bonds).
+        let bonds = runtime_ops.compute_bonds(&state_hash).await?;
+        drop(runtime_ops);
+
+        Ok((state_hash, usr_processed, sys_processed, bonds))
     }
 
     pub async fn compute_state_with_bonds(
@@ -478,10 +702,10 @@ impl RuntimeManager {
         // Cache replay result for potential replay shortcut (including event logs)
         if let Some(ref cache) = self.replay_cache {
             let all_logs = Self::collect_replay_logs(&usr_processed, &sys_processed);
-            let replay_payload_hash =
-                Self::replay_payload_hash(&usr_processed, &sys_processed, false);
 
             if !all_logs.is_empty() && all_logs.len() <= replay_cache_event_log_cap {
+                let replay_payload_hash =
+                    Self::replay_payload_hash(&usr_processed, &sys_processed, false);
                 let key = ReplayCacheKey::new(
                     start_hash.clone(),
                     sender.bytes.to_vec(),
@@ -562,6 +786,21 @@ impl RuntimeManager {
         block_data: &BlockData,
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
         is_genesis: bool, // FIXME have a better way of knowing this. Pass the replayDeploy function maybe? - OLD
+        // Task #13a: shard-genesis spec-strict acceptance-gate mode
+        // (`CasperShardConf::strict_funding_enforcement`). Threaded from the
+        // validation caller (which has the shard conf) down to the replay-side
+        // recompute so play and replay evaluate the gate with the SAME constant
+        // (replay determinism). Genesis / historical-replay callers that have
+        // no live snapshot pass their engine's shard-conf value (cost-accounting
+        // is off for genesis, so the value is inert there).
+        strict_funding_enforcement: bool,
+        // Task #13b: shard-genesis client funding-slot allocations
+        // (`CasperShardConf::client_fuel_allocations`, lowered to raw pk bytes).
+        // Threaded from the validation caller down to the reconstructed block-1
+        // close deploy so its `Σ⟦c⟧` seed is byte-identical to the play side.
+        // Genesis / historical-replay callers with no live snapshot pass their
+        // engine's shard-conf value (empty / inert there).
+        client_fuel_allocations: &[(Vec<u8>, i64)],
     ) -> Result<StateHash, CasperError> {
         let sender = block_data.sender.clone();
         let seq_num = block_data.seq_num;
@@ -671,6 +910,8 @@ impl RuntimeManager {
                 block_data,
                 Some(invalid_blocks),
                 is_genesis,
+                strict_funding_enforcement,
+                client_fuel_allocations,
             )
             .await?;
 
@@ -1038,6 +1279,11 @@ impl RuntimeManager {
         &self,
         block: &models::rust::casper::protocol::casper_message::BlockMessage,
         invalid_blocks: HashMap<BlockHash, Validator>,
+        // Shard funding config threaded from the caller so the mergeable-entry
+        // replay reproduces the block's canonical post-state (the funding-enforced
+        // settlement recompute is part of that post-state under cost accounting).
+        strict_funding_enforcement: bool,
+        client_fuel_allocations: &[(Vec<u8>, i64)],
     ) -> Result<(), CasperError> {
         if self.has_mergeable_entry(block)? {
             return Ok(());
@@ -1052,6 +1298,8 @@ impl RuntimeManager {
             &block_data,
             Some(invalid_blocks),
             is_genesis,
+            strict_funding_enforcement,
+            client_fuel_allocations,
         )
         .await?;
 
@@ -1331,5 +1579,700 @@ impl RuntimeManager {
         let store = kvm.store("mergeable-channel-cache".to_string()).await?;
 
         Ok(KeyValueTypedStoreImpl::new(store))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crypto::rust::public_key::PublicKey;
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+    use models::rhoapi::PCost;
+    use models::rust::casper::protocol::casper_message::{
+        BlockMessage, Body, F1r3flyState, Header, ProduceEvent,
+    };
+
+    use super::*;
+
+    fn deploy_data() -> DeployData {
+        DeployData {
+            term: "Nil".to_string(),
+            time_stamp: 0,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+            expiration_timestamp: None,
+        }
+    }
+
+    fn signed_deploy() -> Signed<DeployData> {
+        let alg: Box<dyn SignaturesAlg> = Box::new(Secp256k1);
+        let (sk, _) = alg.new_key_pair();
+        Signed::create(deploy_data(), alg, sk).expect("signed deploy")
+    }
+
+    fn produce_event(tag: u8) -> Event {
+        Event::Produce(ProduceEvent {
+            channels_hash: vec![tag].into(),
+            hash: vec![tag, tag].into(),
+            persistent: false,
+            times_repeated: 0,
+            is_deterministic: true,
+            output_value: vec![vec![tag, tag, tag].into()],
+            failed: false,
+        })
+    }
+
+    fn processed_deploy(
+        deploy: Signed<DeployData>,
+        cost: u64,
+        deploy_log: Vec<Event>,
+    ) -> ProcessedDeploy {
+        ProcessedDeploy {
+            deploy,
+            cost: PCost { cost },
+            deploy_log,
+            is_failed: false,
+            system_deploy_error: None,
+            cosigners: Vec::new(),
+            cosigner_threshold: 0,
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
+        }
+    }
+
+    fn block_with_processed_deploy(deploy: ProcessedDeploy) -> BlockMessage {
+        BlockMessage {
+            block_hash: Vec::<u8>::new().into(),
+            header: Header {
+                parents_hash_list: Vec::new(),
+                timestamp: 0,
+                version: 1,
+                extra_bytes: Vec::<u8>::new().into(),
+            },
+            body: Body {
+                state: F1r3flyState {
+                    pre_state_hash: vec![0; 32].into(),
+                    post_state_hash: vec![1; 32].into(),
+                    bonds: Vec::new(),
+                    block_number: 0,
+                },
+                deploys: vec![deploy],
+                rejected_deploys: Vec::new(),
+                system_deploys: Vec::new(),
+                extra_bytes: Vec::<u8>::new().into(),
+            },
+            justifications: Vec::new(),
+            sender: vec![7].into(),
+            seq_num: 0,
+            sig: Vec::<u8>::new().into(),
+            sig_algorithm: "secp256k1".to_string(),
+            shard_id: "root".to_string(),
+            extra_bytes: Vec::<u8>::new().into(),
+        }
+    }
+
+    fn slash_system_deploy(tag: u8) -> ProcessedSystemDeploy {
+        ProcessedSystemDeploy::Succeeded {
+            event_list: vec![produce_event(tag)],
+            system_deploy: SystemDeployData::Slash {
+                invalid_block_hash: vec![tag; 32].into(),
+                issuer_public_key: PublicKey::from_bytes(&[tag, tag + 1]),
+                target_activation_epoch: tag as i64,
+            },
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
+        }
+    }
+
+    #[derive(serde::Deserialize)]
+    struct V12FixtureSet {
+        fixtures: Vec<V12Fixture>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct V12Fixture {
+        id: String,
+        oracle_surface: String,
+        oracle_kind: String,
+        mutation_axis: String,
+        expected_total_cost: i64,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct V13FixtureSet {
+        fixtures: Vec<V13Fixture>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct V13Fixture {
+        id: String,
+        #[serde(default)]
+        semantic_oracle: String,
+        #[serde(default)]
+        expected_disposition: String,
+        #[serde(default)]
+        expected_total_cost: i64,
+        // DISABLED (2026-08-07 dev merge warning sweep) — never read; the
+        // fixture JSON's settlement blocks are consumed by the native
+        // settlement tests, not this deserializer. serde ignores unknown
+        // JSON keys, so parsing is unaffected.
+        // #[serde(default)]
+        // settlement: serde_json::Value,
+        #[serde(default)]
+        replay_mutations: Vec<String>,
+        #[serde(default)]
+        source_surface_status: String,
+        #[serde(default)]
+        source_facets: Vec<String>,
+        #[serde(default)]
+        source_anchor_digest: String,
+        #[serde(default)]
+        cross_surface_role: String,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct V14FixtureSet {
+        fixtures: Vec<V14Fixture>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct V14Fixture {
+        id: String,
+        #[serde(default)]
+        security_surface: String,
+        #[serde(default)]
+        expected_disposition: String,
+        #[serde(default)]
+        replay_mutations: Vec<String>,
+        #[serde(default)]
+        source_anchor_digest: String,
+        #[serde(default)]
+        source_anchor_status: String,
+        #[serde(default)]
+        auth_boundary: String,
+        #[serde(default)]
+        replay_boundary: String,
+        #[serde(default)]
+        slashing_authorization: serde_json::Value,
+        #[serde(default)]
+        dependency_advisory_id: String,
+        #[serde(default)]
+        secret_material_touched: bool,
+    }
+
+    fn horizon_v12_fixtures() -> Vec<V12Fixture> {
+        serde_json::from_str::<V12FixtureSet>(include_str!(
+            "../../../../../rholang/tests/accounting/horizon_v12_fixtures.json"
+        ))
+        .expect("embedded horizon v12 fixture schema")
+        .fixtures
+    }
+
+    fn horizon_v13_fixtures() -> Vec<V13Fixture> {
+        serde_json::from_str::<V13FixtureSet>(include_str!(
+            "../../../../../rholang/tests/accounting/horizon_v13_fixtures.json"
+        ))
+        .expect("embedded horizon v13 fixture schema")
+        .fixtures
+    }
+
+    fn horizon_v14_fixtures() -> Vec<V14Fixture> {
+        serde_json::from_str::<V14FixtureSet>(include_str!(
+            "../../../../../rholang/tests/accounting/horizon_v14_fixtures.json"
+        ))
+        .expect("embedded horizon v14 fixture schema")
+        .fixtures
+    }
+
+    // DISABLED (2026-08-07 dev merge warning sweep) — dead since the v13
+    // settlement assertions moved to the native settlement tests; kept
+    // commented out per the repo's disable-by-commenting rule.
+    // fn fixture_i64(value: &serde_json::Value, key: &str) -> i64 {
+    // value
+    // .get(key)
+    // .and_then(serde_json::Value::as_i64)
+    // .unwrap_or_else(|| panic!("fixture settlement must include {key}"))
+    // }
+
+    #[test]
+    fn replay_payload_hash_changes_when_user_cost_changes() {
+        let deploy = signed_deploy();
+        let left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
+        let right = processed_deploy(deploy, 4, vec![produce_event(1)]);
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[left], &[], false),
+            RuntimeManager::replay_payload_hash(&[right], &[], false)
+        );
+    }
+
+    #[test]
+    fn block_hash_changes_when_processed_deploy_cost_changes() {
+        let deploy = signed_deploy();
+        let left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
+        let right = processed_deploy(deploy, 4, vec![produce_event(1)]);
+
+        assert_ne!(
+            crate::rust::util::proto_util::hash_block(&block_with_processed_deploy(left)),
+            crate::rust::util::proto_util::hash_block(&block_with_processed_deploy(right))
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_changes_when_user_signature_changes() {
+        let left = processed_deploy(signed_deploy(), 3, vec![produce_event(1)]);
+        let right = processed_deploy(signed_deploy(), 3, vec![produce_event(1)]);
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[left], &[], false),
+            RuntimeManager::replay_payload_hash(&[right], &[], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_changes_when_user_failure_status_changes() {
+        let deploy = signed_deploy();
+        let left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
+        let mut right = processed_deploy(deploy, 3, vec![produce_event(1)]);
+        right.is_failed = true;
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[left], &[], false),
+            RuntimeManager::replay_payload_hash(&[right], &[], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_changes_when_user_system_error_changes() {
+        let deploy = signed_deploy();
+        let left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
+        let mut right = processed_deploy(deploy, 3, vec![produce_event(1)]);
+        right.system_deploy_error = Some("forged settlement".to_string());
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[left], &[], false),
+            RuntimeManager::replay_payload_hash(&[right], &[], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_changes_when_user_deploy_log_changes() {
+        let deploy = signed_deploy();
+        let left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
+        let right = processed_deploy(deploy, 3, vec![produce_event(2)]);
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[left], &[], false),
+            RuntimeManager::replay_payload_hash(&[right], &[], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_canonicalizes_user_deploy_log_order() {
+        let deploy = signed_deploy();
+        let left = processed_deploy(deploy.clone(), 3, vec![produce_event(1), produce_event(2)]);
+        let right = processed_deploy(deploy, 3, vec![produce_event(2), produce_event(1)]);
+
+        assert_eq!(
+            RuntimeManager::replay_payload_hash(&[left], &[], false),
+            RuntimeManager::replay_payload_hash(&[right], &[], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_changes_when_user_state_witness_changes() {
+        let deploy = signed_deploy();
+        let left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
+        let mut right = processed_deploy(deploy, 3, vec![produce_event(1)]);
+        right.post_state_hash = vec![9; 32].into();
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[left], &[], false),
+            RuntimeManager::replay_payload_hash(&[right], &[], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_changes_when_system_deploy_log_changes() {
+        let left = ProcessedSystemDeploy::Succeeded {
+            event_list: vec![produce_event(1)],
+            system_deploy: SystemDeployData::Empty,
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
+        };
+        let right = ProcessedSystemDeploy::Succeeded {
+            event_list: vec![produce_event(2)],
+            system_deploy: SystemDeployData::Empty,
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
+        };
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[], &[left], false),
+            RuntimeManager::replay_payload_hash(&[], &[right], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_canonicalizes_system_deploy_log_order() {
+        let left = ProcessedSystemDeploy::Succeeded {
+            event_list: vec![produce_event(1), produce_event(2)],
+            system_deploy: SystemDeployData::Empty,
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
+        };
+        let right = ProcessedSystemDeploy::Succeeded {
+            event_list: vec![produce_event(2), produce_event(1)],
+            system_deploy: SystemDeployData::Empty,
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
+        };
+
+        assert_eq!(
+            RuntimeManager::replay_payload_hash(&[], &[left], false),
+            RuntimeManager::replay_payload_hash(&[], &[right], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_changes_when_system_deploy_kind_changes() {
+        let left = ProcessedSystemDeploy::Succeeded {
+            event_list: vec![produce_event(1)],
+            system_deploy: SystemDeployData::Empty,
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
+        };
+        let right = ProcessedSystemDeploy::Succeeded {
+            event_list: vec![produce_event(1)],
+            system_deploy: SystemDeployData::CloseBlockSystemDeployData,
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
+        };
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[], &[left], false),
+            RuntimeManager::replay_payload_hash(&[], &[right], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_changes_when_system_state_witness_changes() {
+        let left = ProcessedSystemDeploy::Succeeded {
+            event_list: vec![produce_event(1)],
+            system_deploy: SystemDeployData::Empty,
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
+        };
+        let right = ProcessedSystemDeploy::Succeeded {
+            event_list: vec![produce_event(1)],
+            system_deploy: SystemDeployData::Empty,
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: vec![9; 32].into(),
+        };
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[], &[left], false),
+            RuntimeManager::replay_payload_hash(&[], &[right], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_changes_when_slash_fields_change() {
+        let left = slash_system_deploy(1);
+        let right = slash_system_deploy(2);
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[], &[left], false),
+            RuntimeManager::replay_payload_hash(&[], &[right], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_changes_when_system_error_changes() {
+        let left = ProcessedSystemDeploy::Failed {
+            event_list: vec![produce_event(1)],
+            error_msg: "left".to_string(),
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
+        };
+        let right = ProcessedSystemDeploy::Failed {
+            event_list: vec![produce_event(1)],
+            error_msg: "right".to_string(),
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
+        };
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[], &[left], false),
+            RuntimeManager::replay_payload_hash(&[], &[right], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_changes_when_genesis_flag_changes() {
+        let deploy = processed_deploy(signed_deploy(), 3, vec![produce_event(1)]);
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[deploy.clone()], &[], false),
+            RuntimeManager::replay_payload_hash(&[deploy], &[], true)
+        );
+    }
+
+    #[test]
+    fn cost_accounting_v12_casper_replay_payload_oracles_hold() {
+        let fixtures = horizon_v12_fixtures()
+            .into_iter()
+            .filter(|fixture| fixture.oracle_surface == "casper_replay")
+            .collect::<Vec<_>>();
+        assert!(!fixtures.is_empty());
+
+        for fixture in fixtures {
+            assert_eq!(fixture.oracle_kind, "casper_replay_payload_hash");
+            let deploy = signed_deploy();
+            let left = processed_deploy(deploy, 3, vec![produce_event(1)]);
+
+            let right = match fixture.mutation_axis.as_str() {
+                "signature" => processed_deploy(signed_deploy(), 3, vec![produce_event(1)]),
+                other => panic!(
+                    "unexpected v12 casper mutation axis {other} in {}",
+                    fixture.id
+                ),
+            };
+
+            assert_ne!(
+                RuntimeManager::replay_payload_hash(&[left], &[], false),
+                RuntimeManager::replay_payload_hash(&[right], &[], false),
+                "v12 casper replay fixture {} must reject mutation axis {}",
+                fixture.id,
+                fixture.mutation_axis
+            );
+        }
+    }
+
+    #[test]
+    fn cost_accounting_v12_slashing_replay_oracles_hold() {
+        let fixtures = horizon_v12_fixtures()
+            .into_iter()
+            .filter(|fixture| fixture.oracle_surface == "slashing")
+            .collect::<Vec<_>>();
+        assert!(!fixtures.is_empty());
+
+        for fixture in fixtures {
+            match fixture.oracle_kind.as_str() {
+                "slashing_replay_payload_hash" => {
+                    assert_ne!(
+                        RuntimeManager::replay_payload_hash(&[], &[slash_system_deploy(1)], false),
+                        RuntimeManager::replay_payload_hash(&[], &[slash_system_deploy(2)], false),
+                        "v12 slashing fixture {} must authenticate slashing fields",
+                        fixture.id
+                    );
+                }
+                "slashing_post_eval_isolation" => {
+                    let user_deploy = processed_deploy(
+                        signed_deploy(),
+                        fixture.expected_total_cost as u64,
+                        vec![produce_event(1)],
+                    );
+                    let with_slash = RuntimeManager::replay_payload_hash(
+                        &[user_deploy.clone()],
+                        &[slash_system_deploy(1)],
+                        false,
+                    );
+                    let without_slash =
+                        RuntimeManager::replay_payload_hash(&[user_deploy.clone()], &[], false);
+
+                    assert_ne!(
+                        with_slash, without_slash,
+                        "v12 slashing fixture {} must include system-deploy evidence",
+                        fixture.id
+                    );
+                    assert_eq!(
+                        user_deploy.cost.cost, fixture.expected_total_cost as u64,
+                        "v12 slashing fixture {} must not mutate user deploy cost",
+                        fixture.id
+                    );
+                }
+                other => panic!(
+                    "unexpected v12 slashing oracle kind {other} in {}",
+                    fixture.id
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn cost_accounting_v13_source_semantic_replay_payload_oracles_hold() {
+        let fixtures = horizon_v13_fixtures()
+            .into_iter()
+            .filter(|fixture| {
+                matches!(
+                    fixture.semantic_oracle.as_str(),
+                    "replay_to_slashing_authentication"
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(!fixtures.is_empty());
+
+        for fixture in fixtures {
+            assert!(!fixture.source_anchor_digest.is_empty());
+            assert!(!fixture.cross_surface_role.is_empty());
+            assert!(fixture
+                .replay_mutations
+                .iter()
+                .any(|field| field == "slash_fields"));
+
+            match fixture.semantic_oracle.as_str() {
+                "replay_to_slashing_authentication" => {
+                    for field in ["slash_fields", "block_hash", "signature"] {
+                        assert!(
+                            fixture
+                                .replay_mutations
+                                .iter()
+                                .any(|mutation| mutation == field),
+                            "v13 fixture {} must include replay/slashing mutation field {}",
+                            fixture.id,
+                            field
+                        );
+                    }
+                    assert_ne!(
+                        RuntimeManager::replay_payload_hash(&[], &[slash_system_deploy(1)], false),
+                        RuntimeManager::replay_payload_hash(&[], &[slash_system_deploy(2)], false),
+                        "v13 fixture {} must authenticate slashing fields in replay payload",
+                        fixture.id
+                    );
+                }
+                other => panic!("unexpected v13 replay oracle {other} in {}", fixture.id),
+            }
+        }
+    }
+
+    #[test]
+    fn cost_accounting_v13_settlement_slashing_legacy_oracles_hold() {
+        let fixtures = horizon_v13_fixtures()
+            .into_iter()
+            .filter(|fixture| {
+                matches!(
+                    fixture.semantic_oracle.as_str(),
+                    "runtime_to_settlement_fuel_isolation" | "legacy_to_runtime_quarantine"
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(!fixtures.is_empty());
+
+        for fixture in fixtures {
+            assert!(!fixture.source_anchor_digest.is_empty());
+            assert!(!fixture.cross_surface_role.is_empty());
+            match fixture.semantic_oracle.as_str() {
+                "runtime_to_settlement_fuel_isolation" => {
+                    // D3 (DR-9, OD-2): the escrow refund/charge projection
+                    // (`refund_amount_for_token_cost` / `checked_total_phlo_charge`)
+                    // has no successor — a deploy carries no phlo price/limit. The
+                    // surviving invariant is that the recorded per-COMM
+                    // `ProcessedDeploy.cost` is the runtime's consumed cost
+                    // evidence (now settled once against Σ⟦s⟧ at block close).
+                    let user_deploy = processed_deploy(
+                        signed_deploy(),
+                        fixture.expected_total_cost as u64,
+                        vec![produce_event(1)],
+                    );
+                    assert_eq!(
+                        user_deploy.cost.cost, fixture.expected_total_cost as u64,
+                        "v13 fixture {} per-COMM runtime cost evidence must be preserved",
+                        fixture.id
+                    );
+                }
+                "legacy_to_runtime_quarantine" => {
+                    assert_eq!(fixture.source_surface_status, "absent");
+                    assert_eq!(fixture.expected_disposition, "source_absent");
+                    assert!(fixture
+                        .source_facets
+                        .iter()
+                        .any(|facet| facet == "legacy_quarantine"));
+                }
+                other => panic!(
+                    "unexpected v13 settlement/legacy oracle {other} in {}",
+                    fixture.id
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn cost_accounting_v14_replay_slashing_oracles_hold() {
+        let fixtures = horizon_v14_fixtures()
+            .into_iter()
+            .filter(|fixture| matches!(fixture.security_surface.as_str(), "slashing_authorization"))
+            .collect::<Vec<_>>();
+        assert!(!fixtures.is_empty());
+
+        for fixture in fixtures {
+            assert!(!fixture.source_anchor_digest.is_empty());
+            assert_eq!(fixture.source_anchor_status, "present");
+            assert!(!fixture.auth_boundary.is_empty());
+            assert!(!fixture.replay_boundary.is_empty());
+            assert!(fixture.dependency_advisory_id.is_empty());
+            assert!(!fixture.secret_material_touched);
+
+            match fixture.security_surface.as_str() {
+                "slashing_authorization" => {
+                    assert_eq!(fixture.expected_disposition, "replay_invalid");
+                    for field in [
+                        "slash_epoch",
+                        "slash_fields",
+                        "target_activation_epoch",
+                        "evidence_epoch",
+                        "parent_pre_state_bond",
+                        "block_hash",
+                        "signature",
+                    ] {
+                        assert!(
+                            fixture
+                                .replay_mutations
+                                .iter()
+                                .any(|mutation| mutation == field),
+                            "v14 fixture {} must include replay/slashing mutation field {}",
+                            fixture.id,
+                            field
+                        );
+                    }
+                    let auth = &fixture.slashing_authorization;
+                    let current_epoch = auth
+                        .get("current_epoch")
+                        .and_then(serde_json::Value::as_i64);
+                    assert_eq!(
+                        auth.get("evidence_epoch")
+                            .and_then(serde_json::Value::as_i64),
+                        current_epoch,
+                        "v14 fixture {} must bind evidence epoch to current epoch",
+                        fixture.id
+                    );
+                    assert_eq!(
+                        auth.get("target_activation_epoch")
+                            .and_then(serde_json::Value::as_i64),
+                        current_epoch,
+                        "v14 fixture {} must bind target activation epoch to current epoch",
+                        fixture.id
+                    );
+                    assert!(
+                        auth.get("parent_pre_state_bond")
+                            .and_then(serde_json::Value::as_i64)
+                            .unwrap_or(0)
+                            > 0,
+                        "v14 fixture {} must carry parent pre-state bond evidence",
+                        fixture.id
+                    );
+                    assert_ne!(
+                        RuntimeManager::replay_payload_hash(&[], &[slash_system_deploy(1)], false),
+                        RuntimeManager::replay_payload_hash(&[], &[slash_system_deploy(2)], false),
+                        "v14 fixture {} must authenticate slashing payload fields",
+                        fixture.id
+                    );
+                }
+                other => panic!(
+                    "unexpected v14 replay/slashing surface {other} in {}",
+                    fixture.id
+                ),
+            }
+        }
     }
 }

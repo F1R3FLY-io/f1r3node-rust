@@ -9,6 +9,7 @@ use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
 use rspace_plus_plus::rspace::merger::merging_logic;
 use rspace_plus_plus::rspace::merger::merging_logic::NumberChannelsDiff;
+use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use rspace_plus_plus::rspace::trace::event::Produce;
 
 use crate::rust::errors::CasperError;
@@ -87,6 +88,64 @@ pub fn new(
     }
     let aligned_mergeable_chs = mergeable_chs.clone();
 
+    let mut witness_count = 0usize;
+    let mut empty_witness_count = 0usize;
+    for (pre, post) in usr_processed_deploys
+        .iter()
+        .map(|deploy| (&deploy.pre_state_hash, &deploy.post_state_hash))
+        .chain(
+            sys_processed_deploys
+                .iter()
+                .map(ProcessedSystemDeploy::state_hashes),
+        )
+    {
+        match (pre.is_empty(), post.is_empty()) {
+            (false, false) => witness_count += 1,
+            (true, true) => empty_witness_count += 1,
+            _ => {
+                return Err(CasperError::RuntimeError(format!(
+                    "Incomplete execution state witness in block {}",
+                    hex::encode(block_hash)
+                )))
+            }
+        }
+    }
+    if witness_count > 0 && empty_witness_count > 0 {
+        return Err(CasperError::RuntimeError(format!(
+            "Mixed exact and legacy execution state witnesses in block {}",
+            hex::encode(block_hash)
+        )));
+    }
+    let has_exact_state_witness = witness_count == deploy_count && deploy_count > 0;
+    if has_exact_state_witness {
+        let mut expected_pre = pre_state_hash.to_bytes_prost();
+        for (execution_index, (effect_pre, effect_post)) in usr_processed_deploys
+            .iter()
+            .map(|deploy| (&deploy.pre_state_hash, &deploy.post_state_hash))
+            .chain(
+                sys_processed_deploys
+                    .iter()
+                    .map(ProcessedSystemDeploy::state_hashes),
+            )
+            .enumerate()
+        {
+            if effect_pre != &expected_pre {
+                return Err(CasperError::RuntimeError(format!(
+                    "Non-contiguous execution state witness in block {} at effect {}",
+                    hex::encode(block_hash),
+                    execution_index
+                )));
+            }
+            expected_pre = effect_post.clone();
+        }
+        if expected_pre != post_state_hash.to_bytes_prost() {
+            return Err(CasperError::RuntimeError(format!(
+                "Final execution state witness does not match block post-state in block {}",
+                hex::encode(block_hash)
+            )));
+        }
+    }
+
     // Connect deploy with corresponding mergeable channels map
     let (usr_mergeable_chs, sys_mergeable_chs) = aligned_mergeable_chs.split_at(usr_count);
     let usr_deploys_with_mergeable: Vec<_> = usr_processed_deploys
@@ -100,19 +159,47 @@ pub fn new(
 
     // Create user deploy indices - filter out failed deploys
     let mut usr_deploy_indices = Vec::new();
-    for (deploy, merge_chs) in usr_deploys_with_mergeable {
+    for (execution_index, (deploy, merge_chs)) in usr_deploys_with_mergeable.into_iter().enumerate()
+    {
         if !deploy.is_failed {
+            let effect_pre = if has_exact_state_witness {
+                Blake2b256Hash::from_bytes_prost(&deploy.pre_state_hash)
+            } else {
+                pre_state_hash.clone()
+            };
             let event_log_index = create_event_log_index(
                 &deploy.deploy_log,
                 history_repository.clone(),
-                pre_state_hash,
+                &effect_pre,
                 merge_chs.clone(),
             );
+
+            let state_changes = if has_exact_state_witness {
+                let effect_post = Blake2b256Hash::from_bytes_prost(&deploy.post_state_hash);
+                Some(
+                    StateChange::new(
+                        history_repository
+                            .get_history_reader_struct(&effect_pre)
+                            .map_err(CasperError::HistoryError)?,
+                        history_repository
+                            .get_history_reader_struct(&effect_post)
+                            .map_err(CasperError::HistoryError)?,
+                        &event_log_index,
+                    )
+                    .map_err(CasperError::HistoryError)?,
+                )
+            } else {
+                None
+            };
 
             let deploy_index = DeployIndex {
                 deploy_id: deploy.deploy.sig.clone(),
                 cost: deploy.cost.cost,
                 event_log_index,
+                execution_index: u32::try_from(execution_index).map_err(|_| {
+                    CasperError::RuntimeError("Execution index exceeds u32".to_string())
+                })?,
+                state_changes,
             };
 
             usr_deploy_indices.push(deploy_index);
@@ -121,11 +208,13 @@ pub fn new(
 
     // Create system deploy indices - collect successful system deploys
     let mut sys_deploy_indices = Vec::new();
-    for (sys_deploy, merge_chs) in sys_deploys_with_mergeable {
+    for (sys_index, (sys_deploy, merge_chs)) in sys_deploys_with_mergeable.into_iter().enumerate() {
         match sys_deploy {
             ProcessedSystemDeploy::Succeeded {
                 system_deploy,
                 event_list,
+                pre_state_hash: effect_pre_hash,
+                post_state_hash: effect_post_hash,
             } => {
                 let (sig, cost) = match system_deploy {
                     SystemDeployData::Slash { .. } => {
@@ -138,6 +227,11 @@ pub fn new(
                         sig_bytes.extend_from_slice(DeployIndex::SYS_CLOSE_BLOCK_DEPLOY_ID);
                         (sig_bytes.into(), DeployIndex::SYS_CLOSE_BLOCK_DEPLOY_COST)
                     }
+                    SystemDeployData::Redeem { .. } => {
+                        let mut sig_bytes = block_hash.to_vec();
+                        sig_bytes.extend_from_slice(DeployIndex::SYS_REDEEM_DEPLOY_ID);
+                        (sig_bytes.into(), DeployIndex::SYS_REDEEM_DEPLOY_COST)
+                    }
                     SystemDeployData::Empty => {
                         let mut sig_bytes = block_hash.to_vec();
                         sig_bytes.extend_from_slice(DeployIndex::SYS_EMPTY_DEPLOY_ID);
@@ -145,17 +239,44 @@ pub fn new(
                     }
                 };
 
+                let effect_pre = if has_exact_state_witness {
+                    Blake2b256Hash::from_bytes_prost(effect_pre_hash)
+                } else {
+                    pre_state_hash.clone()
+                };
                 let event_log_index = create_event_log_index(
                     event_list,
                     history_repository.clone(),
-                    pre_state_hash,
+                    &effect_pre,
                     merge_chs.clone(),
                 );
+
+                let state_changes = if has_exact_state_witness {
+                    let effect_post = Blake2b256Hash::from_bytes_prost(effect_post_hash);
+                    Some(
+                        StateChange::new(
+                            history_repository
+                                .get_history_reader_struct(&effect_pre)
+                                .map_err(CasperError::HistoryError)?,
+                            history_repository
+                                .get_history_reader_struct(&effect_post)
+                                .map_err(CasperError::HistoryError)?,
+                            &event_log_index,
+                        )
+                        .map_err(CasperError::HistoryError)?,
+                    )
+                } else {
+                    None
+                };
 
                 let deploy_index = DeployIndex {
                     deploy_id: sig,
                     cost,
                     event_log_index,
+                    execution_index: u32::try_from(usr_count + sys_index).map_err(|_| {
+                        CasperError::RuntimeError("Execution index exceeds u32".to_string())
+                    })?,
+                    state_changes,
                 };
 
                 sys_deploy_indices.push(deploy_index);

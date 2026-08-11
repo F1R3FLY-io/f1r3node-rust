@@ -67,7 +67,7 @@ withdrawal arm (line 619). Bug #10's theorem set
 > | #7  | T-9.7   | `equivocation_detector.rs` — canonical self-chain child above base    |
 > | #8  | T-9.8   | `block_creator.rs:498-533` — proposer-bond early-return              |
 > | #9  | T-9.9   | `validate.rs:1448-1449` — per-target `slash_targets` exemption (§9.10) |
-> | #10 | T-9.10  | `PoS.rhox:615-651` — `payWithdraw` pattern-match + success-gated `computeRemove` |
+> | #10 | T-9.10  | `PoS.rhox:1265-1302` — `payWithdraw` pattern-match + success-gated `computeRemove` |
 > | #11 | T-9.11  | `equivocation_detector.rs` — total deterministic traversal with distinct child hashes |
 >
 > The "Cause" subsections below describe the *pre-fix* state
@@ -925,4 +925,10 @@ atomic-transition contract that documents resume-time reconciliation.
 
 ---
 
-**Next:** [§10 — Bisimilarity (Rust ↔ Scala)](10-bisimilarity.md)
+**Next:** §10 — Bisimilarity (Rust ↔ Scala) — **removed (2026-05-29,
+DR-6)**: the cost-accounted-rho migration made the two implementations
+structurally incomparable; the chapter, its Rocq mechanization
+(`Bisimulation.v`) and the `prop_t_13*/14/15` property tests were
+retired together. See the removal notice in
+[slashing-verification.md](../slashing-verification.md); the surviving
+headline is `main_slashing_algorithm_correct`.

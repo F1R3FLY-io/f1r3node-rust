@@ -106,6 +106,9 @@ pub struct KeyValueDagRepresentation {
     pub block_metadata_index: Arc<PlRwLock<BlockMetadataStore>>,
     #[doc(hidden)]
     pub deploy_index: Arc<PlRwLock<KeyValueTypedStoreImpl<DeployId, BlockHashSerde>>>,
+    #[doc(hidden)]
+    pub deploy_occurrence_index:
+        Arc<PlRwLock<KeyValueTypedStoreImpl<DeployId, BTreeSet<BlockHashSerde>>>>,
     /// Memoized justification-derived floor per block (block hash -> floor hash).
     /// Pure function of the block, so node-identical; persistent to avoid
     /// re-walking to genesis on every floor query.
@@ -300,6 +303,19 @@ impl KeyValueDagRepresentation {
         deploy_index_guard
             .get_one(deploy_id)
             .map(|result| result.map(|block_hash_serde| block_hash_serde.into()))
+    }
+
+    pub fn lookup_deploy_occurrences(
+        &self,
+        deploy_id: &DeployId,
+    ) -> Result<BTreeSet<BlockHash>, KvStoreError> {
+        let deploy_occurrence_index_guard = self.deploy_occurrence_index.read();
+        Ok(deploy_occurrence_index_guard
+            .get_one(deploy_id)?
+            .unwrap_or_default()
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     // See block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockDagRepresentationSyntax.scala
@@ -676,6 +692,8 @@ pub struct BlockDagKeyValueStorage {
     pub(crate) latest_messages_index: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde>,
     pub(crate) block_metadata_index: Arc<PlRwLock<BlockMetadataStore>>,
     pub(crate) deploy_index: Arc<PlRwLock<KeyValueTypedStoreImpl<DeployId, BlockHashSerde>>>,
+    pub(crate) deploy_occurrence_index:
+        Arc<PlRwLock<KeyValueTypedStoreImpl<DeployId, BTreeSet<BlockHashSerde>>>>,
     pub(crate) invalid_blocks_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
     /// Memoized justification-derived floor per block (block hash -> floor hash).
     pub(crate) floor_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
@@ -712,6 +730,8 @@ impl BlockDagKeyValueStorage {
             KeyValueTypedStoreImpl::new(invalid_blocks_kv_store);
 
         let deploy_index_kv_store = kvm.store("deploy-index".to_string()).await?;
+        let deploy_occurrence_index_kv_store =
+            kvm.store("deploy-occurrence-index".to_string()).await?;
         let floor_index_kv_store = kvm.store("floor-index".to_string()).await?;
         let floor_index_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde> =
             KeyValueTypedStoreImpl::new(floor_index_kv_store);
@@ -720,11 +740,14 @@ impl BlockDagKeyValueStorage {
             KeyValueTypedStoreImpl::new(frontier_index_kv_store);
         let deploy_index_db: KeyValueTypedStoreImpl<DeployId, BlockHashSerde> =
             KeyValueTypedStoreImpl::new(deploy_index_kv_store);
+        let deploy_occurrence_index_db: KeyValueTypedStoreImpl<DeployId, BTreeSet<BlockHashSerde>> =
+            KeyValueTypedStoreImpl::new(deploy_occurrence_index_kv_store);
 
         Ok(Self {
             global_lock: Arc::new(PlRwLock::new(())),
             block_metadata_index: Arc::new(PlRwLock::new(block_metadata_store)),
             deploy_index: Arc::new(PlRwLock::new(deploy_index_db)),
+            deploy_occurrence_index: Arc::new(PlRwLock::new(deploy_occurrence_index_db)),
             invalid_blocks_index: invalid_blocks_db,
             floor_index: floor_index_db,
             frontier_index: frontier_index_db,
@@ -784,6 +807,9 @@ impl BlockDagKeyValueStorage {
         latest_messages_index: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde>,
         block_metadata_index: Arc<PlRwLock<BlockMetadataStore>>,
         deploy_index: Arc<PlRwLock<KeyValueTypedStoreImpl<DeployId, BlockHashSerde>>>,
+        deploy_occurrence_index: Arc<
+            PlRwLock<KeyValueTypedStoreImpl<DeployId, BTreeSet<BlockHashSerde>>>,
+        >,
         invalid_blocks_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
         floor_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
         frontier_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
@@ -795,6 +821,7 @@ impl BlockDagKeyValueStorage {
             latest_messages_index,
             block_metadata_index,
             deploy_index,
+            deploy_occurrence_index,
             invalid_blocks_index,
             floor_index,
             frontier_index,
@@ -815,6 +842,14 @@ impl BlockDagKeyValueStorage {
         &self,
     ) -> Arc<PlRwLock<KeyValueTypedStoreImpl<DeployId, BlockHashSerde>>> {
         self.deploy_index.clone()
+    }
+
+    #[cfg(any(test, feature = "test-internals"))]
+    #[doc(hidden)]
+    pub fn deploy_occurrence_index_for_tests(
+        &self,
+    ) -> Arc<PlRwLock<KeyValueTypedStoreImpl<DeployId, BTreeSet<BlockHashSerde>>>> {
+        self.deploy_occurrence_index.clone()
     }
 
     /// Test-only accessor for the block-metadata-index handle. Same
@@ -907,6 +942,7 @@ impl BlockDagKeyValueStorage {
             finalized_blocks_set: finalized_blocks,
             block_metadata_index: self.block_metadata_index.clone(),
             deploy_index: self.deploy_index.clone(),
+            deploy_occurrence_index: self.deploy_occurrence_index.clone(),
             floor_index: self.floor_index.clone(),
             frontier_index: self.frontier_index.clone(),
         })
@@ -1087,19 +1123,47 @@ impl BlockDagKeyValueStorage {
             drop(block_metadata_guard);
             self.dag_generation.fetch_add(1, Ordering::Relaxed);
 
-            let deploy_hashes: Vec<DeployId> = block
-                .body
-                .deploys
-                .iter()
-                .map(|deploy| deploy.deploy.sig.clone().into())
-                .collect();
-            let deploy_entries: Vec<(DeployId, BlockHashSerde)> = deploy_hashes
-                .into_iter()
-                .map(|deploy_id| (deploy_id, BlockHashSerde(block.block_hash.clone())))
-                .collect();
-            let deploy_index_guard = self.deploy_index.write();
-            deploy_index_guard.put(deploy_entries)?;
-            drop(deploy_index_guard);
+            if !invalid {
+                let deploy_hashes: Vec<DeployId> = block
+                    .body
+                    .deploys
+                    .iter()
+                    .map(|deploy| deploy.deploy.sig.clone().into())
+                    .collect();
+                let deploy_index_guard = self.deploy_index.write();
+                let deploy_occurrence_index_guard = self.deploy_occurrence_index.write();
+                for deploy_id in deploy_hashes {
+                    let candidate_hash = block.block_hash.clone();
+                    let selected_hash = match deploy_index_guard.get_one(&deploy_id)? {
+                        Some(existing) => {
+                            let existing_hash: BlockHash = existing.into();
+                            let existing_height = self
+                                .block_metadata_index
+                                .read()
+                                .get(&existing_hash)?
+                                .map(|metadata| metadata.block_number)
+                                .unwrap_or(i64::MIN);
+                            if existing_height > block.body.state.block_number
+                                || (existing_height == block.body.state.block_number
+                                    && existing_hash < candidate_hash)
+                            {
+                                existing_hash
+                            } else {
+                                candidate_hash.clone()
+                            }
+                        }
+                        None => candidate_hash.clone(),
+                    };
+                    deploy_index_guard.put_one(deploy_id.clone(), BlockHashSerde(selected_hash))?;
+                    let mut occurrences = deploy_occurrence_index_guard
+                        .get_one(&deploy_id)?
+                        .unwrap_or_default();
+                    occurrences.insert(BlockHashSerde(candidate_hash));
+                    deploy_occurrence_index_guard.put_one(deploy_id, occurrences)?;
+                }
+                drop(deploy_occurrence_index_guard);
+                drop(deploy_index_guard);
+            }
 
             if invalid {
                 self.invalid_blocks_index

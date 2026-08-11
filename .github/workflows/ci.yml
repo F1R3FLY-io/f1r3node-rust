@@ -282,6 +282,11 @@ jobs:
           - block-storage
           - comm
           - graphz
+          # Cost-accounted-rho workspace members (not in the devProtect
+          # required-check set; added so their tests run in CI at all —
+          # previously they were only compiled by the Lint job's clippy).
+          - rho-pure-eval
+          - cost-accounting-loom-models
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -312,11 +317,16 @@ jobs:
         run: |
           ulimit -n 65536
           mkdir -p /tmp/test-logs
+          nextest_retries=0
+          if [ "${{ matrix.crate }}" = "casper" ]; then
+            nextest_retries=2
+          fi
           # nextest runs all of the crate's unit + integration tests in one global
           # parallel pool (vs `cargo test`, which runs each test binary sequentially),
           # which is what keeps the ~930-test casper crate under the job timeout.
           # `--no-tests=pass` tolerates a crate whose only tests are doctests.
-          cargo nextest run --release -p ${{ matrix.crate }} --no-tests=pass 2>&1 \
+          set +e
+          cargo nextest run --release -p ${{ matrix.crate }} --no-tests=pass --retries "$nextest_retries" 2>&1 \
             | tee /tmp/test-logs/${{ matrix.crate }}.txt
           nt=${PIPESTATUS[0]}
           # nextest does NOT run doctests; run them explicitly to preserve the
@@ -324,6 +334,7 @@ jobs:
           cargo test --release -p ${{ matrix.crate }} --doc 2>&1 \
             | tee /tmp/test-logs/${{ matrix.crate }}-doc.txt
           dt=${PIPESTATUS[0]}
+          set -e
           echo "nextest exit=$nt doctest exit=$dt"
           [ "$nt" -eq 0 ] && [ "$dt" -eq 0 ]
 

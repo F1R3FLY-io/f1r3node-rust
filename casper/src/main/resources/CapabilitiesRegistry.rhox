@@ -1,0 +1,223 @@
+/*
+ * `rho:system:capabilities` — Phase 3 LL-rich algebra capability registry.
+ *
+ * Backing store for the Sig::Bang and Sig::Lolly connectives. Each
+ * registered capability is keyed by a content-addressed handle and
+ * carries the metadata needed to invoke or revoke it.
+ *
+ * Handle = Blake2b256(delegator_pk ++ from_sig ++ to_sig ++ transformer_id ++ registered_at_nonce_le).
+ *
+ * RPC methods:
+ *   ("register", from_sig, to_sig, transformer, uses_bound, deployer_id, ret)
+ *     -> (true, handle) | (false, errMsg)
+ *   ("invoke", handle, from_token_channel, ret)
+ *     -> (true, to_token_channel) | (false, errMsg)
+ *   ("revoke", handle, deployer_id, ret)
+ *     -> (true, Nil) | (false, errMsg)
+ *   ("lookup", handle, ret)
+ *     -> (true, metadata) | (false, errMsg)
+ *
+ * Genesis-deployment derivation table (regenerated whenever sk/timestamp change):
+ *
+ * No. | Dependency | Computation       | Result
+ * ----+------------+-------------------+------------------------------------------------------------------------------------------------------------------------------------------------------
+ * 1.  |            | given             | sk = 0c93f4a9b25d6e1f378203f4b09e8c43d17ab2c4e5f6a18b3294c02765a1f450
+ * 2.  |            | given             | timestamp = 1748678400000
+ * 3.  |            | lastNonce         | nonce = 9223372036854775807
+ * 4.  | 1,         | secp256k1         | pk = (regenerated; see standard_deploys.rs CAPABILITIES_REGISTRY_PK)
+ * 5.  | 2, 4, 3,   | registry          | value = (timestamp, pk, lastNonce)
+ * 6.  | 5,         | protobuf          | toSign = (regenerated)
+ * 7.  | 6, 1,      | secp256k1         | sig = (regenerated; see CapabilitiesRegistry.rho registration call)
+ * 8.  | 4,         | registry          | uri = rho:id:<derived from pk>
+ * ----+------------+-------------------+------------------------------------------------------------------------------------------------------------------------------------------------------
+ *
+ * The handle returned by `register` is opaque to clients — clients store
+ * it and present it on subsequent `invoke` / `revoke` / `lookup` calls.
+ * Handle bytes are content-addressed so different (delegator,
+ * from_sig, to_sig, transformer, nonce) tuples produce different
+ * handles, but the same tuple is idempotent (registering twice yields
+ * the same handle and the existing entry is returned).
+ */
+
+new CapabilitiesRegistry,
+    rs(`rho:registry:insertSigned:secp256k1`), uriOut,
+    blake2b256(`rho:crypto:blake2b256Hash`),
+    handleCounterCh,
+    capabilityMapCh
+in {
+  // Capability map state: { handle -> capability_entry }. capability_entry
+  // is a tuple (delegator_pk, from_sig, to_sig, transformer_par,
+  // uses_remaining_or_neg1_for_unbounded, revoked, registered_at_nonce).
+  capabilityMapCh!({}) |
+  // Monotone counter providing replay-deterministic uniqueness when
+  // multiple identical-tuple registrations would otherwise collide.
+  handleCounterCh!(0) |
+
+  // -----------------------------------------------------------------
+  // register(from_sig, to_sig, transformer, uses_bound, deployer_id, ret)
+  // -----------------------------------------------------------------
+  // uses_bound = 0 means LL-canonical unbounded; uses_bound > 0 means
+  // bounded with that initial uses_remaining; uses_bound < 0 is invalid.
+  contract CapabilitiesRegistry(@"register",
+      @fromSig, @toSig, @transformer, @usesBound, deployerId, ret) = {
+    if (usesBound < 0) {
+      ret!((false, "invalid uses_bound: must be >= 0"))
+    } else {
+      new DeployerIdOps(`rho:system:deployerId:ops`),
+          deployerPkCh,
+          counterCh,
+          handleCh
+      in {
+        DeployerIdOps!("pubKeyBytes", *deployerId, *deployerPkCh) |
+        for (@deployerPk <- deployerPkCh) {
+          for (@nonce <- handleCounterCh) {
+            handleCounterCh!(nonce + 1) |
+            // Content-addressed handle: Blake2b256 of the registration
+            // tuple (delegator, from, to, transformer-id, nonce-le).
+            blake2b256!(
+              deployerPk ++
+              fromSig ++
+              toSig ++
+              transformer.toByteArray() ++
+              nonce.toByteArray(),
+              *handleCh
+            ) |
+            for (@handle <- handleCh) {
+              for (@capMap <<- capabilityMapCh) {
+                if (capMap.contains(handle)) {
+                  ret!((false, "capability handle already registered (nonce collision); retry"))
+                } else {
+                  for (@latestMap <- capabilityMapCh) {
+                    // Encode uses_remaining as -1 for unbounded; otherwise usesBound.
+                    new usesRem in {
+                      match usesBound {
+                        0 => { usesRem!(-1) }
+                        _ => { usesRem!(usesBound) }
+                      } |
+                      for (@usesRemaining <- usesRem) {
+                        capabilityMapCh!(latestMap.set(handle,
+                          (deployerPk, fromSig, toSig, transformer,
+                           usesRemaining, false, nonce))) |
+                        ret!((true, handle))
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -----------------------------------------------------------------
+  // invoke(handle, from_token_channel, ret)
+  // -----------------------------------------------------------------
+  // Looks up the capability, validates not-revoked + uses_remaining > 0
+  // (or unbounded), decrements uses_remaining if bounded, runs the
+  // transformer on from_token_channel, and returns the produced
+  // to_token_channel. Atomic against the MVar.
+  contract CapabilitiesRegistry(@"invoke", @handle, fromTokenCh, ret) = {
+    for (@capMap <- capabilityMapCh) {
+      match capMap.get(handle) {
+        Nil => {
+          capabilityMapCh!(capMap) |
+          ret!((false, "unknown capability handle"))
+        }
+        (delegatorPk, fromSig, toSig, transformer, usesRemaining, revoked, regNonce) => {
+          if (revoked) {
+            capabilityMapCh!(capMap) |
+            ret!((false, "capability has been revoked"))
+          } else if (usesRemaining == 0) {
+            // Bounded capability that has exhausted its allotted uses.
+            capabilityMapCh!(capMap) |
+            ret!((false, "capability uses exhausted"))
+          } else {
+            new newUsesRem, toTokenCh in {
+              // Decrement only if bounded (usesRemaining > 0); leave at
+              // -1 if unbounded (LL-canonical Bang).
+              match usesRemaining {
+                -1 => { newUsesRem!(-1) }
+                _  => { newUsesRem!(usesRemaining - 1) }
+              } |
+              for (@newRemaining <- newUsesRem) {
+                capabilityMapCh!(capMap.set(handle,
+                  (delegatorPk, fromSig, toSig, transformer,
+                   newRemaining, revoked, regNonce))) |
+                // Apply the transformer: invoke it as a continuation
+                // taking the from-token channel and returning a
+                // to-token channel.
+                @transformer!(*fromTokenCh, *toTokenCh) |
+                for (@toTokenValue <- toTokenCh) {
+                  ret!((true, toTokenValue))
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -----------------------------------------------------------------
+  // revoke(handle, deployer_id, ret)
+  // -----------------------------------------------------------------
+  // Only the original delegator can revoke. Idempotent: revoking an
+  // already-revoked capability is a no-op and returns success.
+  contract CapabilitiesRegistry(@"revoke", @handle, deployerId, ret) = {
+    new DeployerIdOps(`rho:system:deployerId:ops`),
+        deployerPkCh
+    in {
+      DeployerIdOps!("pubKeyBytes", *deployerId, *deployerPkCh) |
+      for (@deployerPk <- deployerPkCh) {
+        for (@capMap <- capabilityMapCh) {
+          match capMap.get(handle) {
+            Nil => {
+              capabilityMapCh!(capMap) |
+              ret!((false, "unknown capability handle"))
+            }
+            (delegatorPk, fromSig, toSig, transformer, usesRemaining, revoked, regNonce) => {
+              if (delegatorPk != deployerPk) {
+                capabilityMapCh!(capMap) |
+                ret!((false, "only the delegator may revoke this capability"))
+              } else {
+                capabilityMapCh!(capMap.set(handle,
+                  (delegatorPk, fromSig, toSig, transformer,
+                   0, true, regNonce))) |
+                ret!((true, Nil))
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -----------------------------------------------------------------
+  // lookup(handle, ret)
+  // -----------------------------------------------------------------
+  // Public, no auth required. Returns metadata but NOT the transformer
+  // body (capability leak prevention).
+  contract CapabilitiesRegistry(@"lookup", @handle, ret) = {
+    for (@capMap <<- capabilityMapCh) {
+      match capMap.get(handle) {
+        Nil => {
+          ret!((false, "unknown capability handle"))
+        }
+        (delegatorPk, fromSig, toSig, _transformer, usesRemaining, revoked, regNonce) => {
+          // Return all metadata EXCEPT transformer (capability-leak prevention).
+          ret!((true, (delegatorPk, fromSig, toSig, usesRemaining, revoked, regNonce)))
+        }
+      }
+    }
+  } |
+
+  // Bundle the contract and register it at `rho:system:capabilities`.
+  rs!(
+    "$$capabilitiesRegistryPubKey$$".hexToBytes(),
+    (9223372036854775807, bundle+{*CapabilitiesRegistry}),
+    "$$capabilitiesRegistrySig$$".hexToBytes(),
+    *uriOut
+  )
+}

@@ -20,9 +20,12 @@
 //! 4. `neglected_invalid_block` — reject the block if it has invalid
 //!    justifications whose bonded sender is *still* bonded (T-9.7).
 //! 5. `check_neglected_equivocations_with_update` — see Bug #2 / T-9.2.
-//! 6. `phlo_price` — minimum phlo-price check.
-//! 7. `check_equivocations` — direct equivocation check against the
+//! 6. `check_equivocations` — direct equivocation check against the
 //!    sender's prior latest message.
+//!
+//! D3 (DR-9): the former per-block `phlo_price` minimum-price rule is REMOVED —
+//! deploys carry no phlo price/limit; per-signature funding is settled at block
+//! assembly by the acceptance gate (against Σ⟦s⟧).
 //!
 //! ## Slashing-protocol position
 //!
@@ -501,7 +504,7 @@ impl Validate {
         Either::Right(ValidBlock::Valid)
     }
 
-    /// Validate no deploy with the same sig has been produced in the chain
+    /// Validate no deploy with the same sig has been produced in the chain.
     /// Agnostic of non-parent justifications.
     ///
     /// Recovery exemption: a sig whose LATEST canonical disposition within
@@ -1455,6 +1458,46 @@ impl Validate {
         Either::Right(ValidBlock::Valid)
     }
 
+    pub async fn bonds_cache(
+        b: &BlockMessage,
+        runtime_manager: &RuntimeManager,
+    ) -> ValidBlockProcessing {
+        let bonds = proto_util::bonds(b);
+        let tuplespace_hash = proto_util::post_state_hash(b);
+
+        match runtime_manager.compute_bonds(&tuplespace_hash).await {
+            Ok(computed_bonds) => {
+                let bonds_set: HashSet<_> = bonds
+                    .iter()
+                    .map(|bond| (&bond.validator, bond.stake))
+                    .collect();
+                let computed_bonds_set: HashSet<_> = computed_bonds
+                    .iter()
+                    .map(|bond| (&bond.validator, bond.stake))
+                    .collect();
+
+                if bonds_set == computed_bonds_set {
+                    Either::Right(ValidBlock::Valid)
+                } else {
+                    tracing::warn!(
+                        "Bonds in proof of stake contract do not match block's bond cache."
+                    );
+                    Either::Left(BlockError::Invalid(InvalidBlock::InvalidBondsCache))
+                }
+            }
+            Err(ex) => {
+                tracing::warn!("Failed to compute bonds from tuplespace hash: {}", ex);
+                Either::Left(BlockError::BlockException(ex))
+            }
+        }
+    }
+
+    // D3 (DR-9, D.5): the `Validate::phlo_price` block rule (all deploys must
+    // carry valid phlo terms and a price ≥ minPhloPrice) is REMOVED — deploys
+    // carry no phlo price/limit. Funding is enforced at block assembly by the
+    // per-signature acceptance gate (`util/rholang/acceptance.rs`) against
+    // Σ⟦s⟧, with `min_phlo_price` repurposed as that gate's safety margin.
+
     pub async fn bonds_cache_from_floor(
         b: &BlockMessage,
         block_store: &KeyValueBlockStore,
@@ -1537,53 +1580,6 @@ impl Validate {
                 tracing::warn!("Failed to compute bonds from finalized-floor state: {}", ex);
                 Either::Left(BlockError::BlockException(ex))
             }
-        }
-    }
-
-    pub async fn bonds_cache(
-        b: &BlockMessage,
-        runtime_manager: &RuntimeManager,
-    ) -> ValidBlockProcessing {
-        let bonds = proto_util::bonds(b);
-        let tuplespace_hash = proto_util::post_state_hash(b);
-
-        match runtime_manager.compute_bonds(&tuplespace_hash).await {
-            Ok(computed_bonds) => {
-                let bonds_set: HashSet<_> = bonds
-                    .iter()
-                    .map(|bond| (&bond.validator, bond.stake))
-                    .collect();
-                let computed_bonds_set: HashSet<_> = computed_bonds
-                    .iter()
-                    .map(|bond| (&bond.validator, bond.stake))
-                    .collect();
-
-                if bonds_set == computed_bonds_set {
-                    Either::Right(ValidBlock::Valid)
-                } else {
-                    tracing::warn!(
-                        "Bonds in proof of stake contract do not match block's bond cache."
-                    );
-                    Either::Left(BlockError::Invalid(InvalidBlock::InvalidBondsCache))
-                }
-            }
-            Err(ex) => {
-                tracing::warn!("Failed to compute bonds from tuplespace hash: {}", ex);
-                Either::Left(BlockError::BlockException(ex))
-            }
-        }
-    }
-
-    /// All of deploys must have greater or equal phloPrice than minPhloPrice
-    pub fn phlo_price(b: &BlockMessage, min_phlo_price: i64) -> ValidBlockProcessing {
-        if b.body
-            .deploys
-            .iter()
-            .all(|deploy| deploy.deploy.data.phlo_price >= min_phlo_price)
-        {
-            Either::Right(ValidBlock::Valid)
-        } else {
-            Either::Left(BlockError::Invalid(InvalidBlock::LowDeployCost))
         }
     }
 }
@@ -1693,6 +1689,8 @@ mod merge_recovery_validation_tests {
                 issuer_public_key: PublicKey::new(issuer),
                 target_activation_epoch,
             },
+            pre_state_hash: Vec::<u8>::new().into(),
+            post_state_hash: Vec::<u8>::new().into(),
         }
     }
 

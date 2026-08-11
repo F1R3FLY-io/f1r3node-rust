@@ -193,7 +193,11 @@ impl EquivocationDetector {
         block_dag_storage.access_equivocations_tracker(|tracker| {
             let equivocations = tracker.data()?;
             let mut canonical_child_cache = CanonicalChildCache::new();
-            let mut recorded: Vec<EquivocationRecord> = Vec::new();
+            // FV audit #6: post-fix the EquivocationDetected arm is unreachable and
+            // never pushes, so `recorded` is always empty and the pass returns
+            // Oblivious. The Vec + DetectedAndRecorded return path is retained (the
+            // enum variant and its caller arm stay live) but is now dead at runtime.
+            let recorded: Vec<EquivocationRecord> = Vec::new();
             for equivocation_record in equivocations {
                 let status = Self::get_equivocation_discovery_status(
                     dag,
@@ -208,22 +212,29 @@ impl EquivocationDetector {
                     EquivocationDiscoveryStatus::EquivocationNeglected => {
                         return Ok(NeglectedEquivocationOutcome::Neglected);
                     }
+                    // FV audit #6 remediation (unbonded-window record pollution
+                    // fork). Post-fix, `get_equivocation_discovery_status` NEVER
+                    // returns `EquivocationDetected`: the unbonded/stake-0 branches
+                    // (:280 / :311) now return `EquivocationOblivious`, and the
+                    // bonded stake>0 branch returns only Neglected/Oblivious. This
+                    // arm is therefore UNREACHABLE. We keep it — the enum variant
+                    // still exists (models::…::EquivocationDiscoveryStatus) — but it
+                    // must NOT mutate the record: stamping observer block hashes into
+                    // an unbonded offender's witness set was the root cause of the
+                    // observation-order-dependent NeglectedEquivocation consensus
+                    // fork (docs/theory/slashing/design/12-failure-modes.md
+                    // §12.2.1a). The body is a strict no-op over `tracker` and
+                    // `recorded`, so `recorded` stays empty ⇒ the pass resolves to
+                    // Oblivious. Reaching it at all is a regression; alert loudly.
                     EquivocationDiscoveryStatus::EquivocationDetected => {
-                        let mut updated = equivocation_record.clone();
-                        updated
-                            .equivocation_detected_block_hashes
-                            .insert(block.block_hash.clone());
-                        tracker.add(updated.clone())?;
-                        // P4-5: detection is a (rare) consensus event; keep info!
-                        // here so operators see the per-block record but use the
-                        // structured `target: "f1r3fly.slashing"` namespace so
-                        // ops can filter without grepping for the message text.
-                        tracing::info!(
+                        tracing::warn!(
                             target: "f1r3fly.slashing",
                             block = %PrettyPrinter::build_string_no_limit(&block.block_hash),
-                            "Equivocation detected and tracker updated"
+                            validator = %hex::encode(&equivocation_record.equivocator),
+                            base_seq = equivocation_record.equivocation_base_block_seq_num,
+                            "unexpected EquivocationDetected post-fix (regression): witness \
+                             stamping suppressed, record left untouched (FV audit #6)"
                         );
-                        recorded.push(updated);
                     }
                     EquivocationDiscoveryStatus::EquivocationOblivious => {}
                 }
@@ -266,22 +277,45 @@ impl EquivocationDetector {
             ),
             None => {
                 // P5 (slashing audit): a validator absent from the bond map
-                // who appears as an equivocator is a degenerate case — the
-                // detector still classifies as EquivocationDetected, but
-                // operators should be alerted because this can indicate a
-                // bond-map / equivocation-tracker desync (rare; Bug #5 was
-                // the original site of this branch).
+                // who appears as an equivocator is a degenerate case. Operators
+                // should still be alerted because this can indicate a bond-map /
+                // equivocation-tracker desync (rare; Bug #5 was the original site
+                // of this branch), so the warn! below is KEPT.
+                //
+                // FV audit #6 remediation: the return is now
+                // EquivocationOblivious (was EquivocationDetected). An unbonded
+                // offender has no stake to slash and, per
+                // slashing-specification.md §11.6, must never be recorded. Since
+                // the caller only stamps the record on EquivocationDetected,
+                // returning Oblivious leaves the (empty) witness set untouched —
+                // no witness is recorded — which closes the observation-order-
+                // dependent NeglectedEquivocation fork (§12.2.1a). Detectability
+                // then rests solely on the deterministic
+                // `updated_equivocation_children.len() > 1` mechanism.
                 tracing::warn!(
                     target: "f1r3fly.slashing",
                     validator = %hex::encode(&equivocation_record.equivocator),
                     base_seq = equivocation_record.equivocation_base_block_seq_num,
-                    "unbonded equivocation observed (validator absent from bond map)"
+                    "unbonded equivocation observed (validator absent from bond map); \
+                     classified Oblivious, no witness recorded (FV audit #6)"
                 );
                 Ok(EquivocationDiscoveryStatus::EquivocationOblivious)
             }
         }
     }
 
+    /// Resolve the discovery status for an offender that IS present in the
+    /// block's bond map.
+    ///
+    /// * `stake > 0` (bonded): `EquivocationNeglected` iff the equivocation is
+    ///   detectable in the observing block's latest-message view, else
+    ///   `EquivocationOblivious`.
+    /// * `stake == 0` (unbonded/unbonding): `EquivocationOblivious` — **no
+    ///   witness recorded** (FV audit #6; `slashing-specification.md §11.6`).
+    ///   Returning Oblivious (rather than the pre-fix `EquivocationDetected`)
+    ///   makes the caller's stamping arm unreachable, so the witness set stays
+    ///   empty and the observation-order-dependent NeglectedEquivocation fork
+    ///   (`§12.2.1a`) cannot arise.
     fn get_equivocation_discovery_status_for_bonded_validator(
         dag: &KeyValueDagRepresentation,
         block_store: &KeyValueBlockStore,
@@ -308,6 +342,12 @@ impl EquivocationDetector {
                 Ok(EquivocationDiscoveryStatus::EquivocationOblivious)
             }
         } else {
+            // FV audit #6 remediation: a stake-0 (bonded-but-unbonding) offender
+            // ⇒ EquivocationOblivious (was EquivocationDetected). No stake to
+            // slash and, per slashing-specification.md §11.6, nothing to record;
+            // the caller stamps only on EquivocationDetected, so returning
+            // Oblivious keeps the witness set empty and prevents the
+            // observation-order-dependent NeglectedEquivocation fork (§12.2.1a).
             Ok(EquivocationDiscoveryStatus::EquivocationOblivious)
         }
     }
@@ -659,6 +699,9 @@ mod tests {
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index,
             deploy_index,
+            deploy_occurrence_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
+                InMemoryKeyValueStore::new(),
+            )))),
             floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         };

@@ -1,0 +1,100 @@
+/*
+ * `rho:lang:exchange` — the blessed conserving 1:1 token Exchange
+ * (Cost-Accounted Rho, Stage D; spec "Fee conversion" tex:3061-3084).
+ *
+ * The spec's market-making operator is the persistent JOIN
+ *
+ *     Exchange(c, v) =
+ *       for (t_c <- n_c & t_v <- n_v) {
+ *         n_c!(*t_v) | n_v!(*t_c)
+ *       }
+ *
+ * — it consumes ONE datum from each of two carrier channels and re-emits
+ * one on each, SWAPPED, implementing a 1:1 peg. StageD resolves the two
+ * economic open decisions toward the spec-literal (no business parameter):
+ *
+ *   OD-1  the swap is a JOIN: it fires ONLY when BOTH a c-carrier and a
+ *         v-carrier datum are present (DR-4 — no one-sided mint). Modelled
+ *         here as a persistent `contract` keyed on a swap handle, whose body
+ *         joins the two per-handle carrier channels.
+ *   OD-2  the operands are ordinary COUNT-DATUM CARRIER channels: a carrier
+ *         holds a bare integer count `k`. `Σ⟦Ground(pk)⟧` is UNNAMEABLE from
+ *         Rholang (no bytes→GPrivate surface primitive), so Exchange operates
+ *         on carriers; the `Σ⟦v⟧` credit that backs a fee conversion is the
+ *         Rust `supply::produce_balance` mirror (close_block_deploy.rs
+ *         `dual_write_supply`, phase 3), NOT written here.
+ *   OD-5  the peg is 1:1: the swap moves the carrier counts across without a
+ *         rate parameter. More sophisticated AMMs are expressible (variable
+ *         remainders) but are out of StageD scope.
+ *
+ * Per-channel conservation is the contract invariant (Rocq
+ * `Exchange.v::exchange_conserves_per_channel`): the join consumes exactly
+ * one datum from each carrier and produces exactly one on each, so each
+ * carrier's datum COUNT is preserved (one in, one out). The total token
+ * count across the two carriers is invariant (`exchange_total_conserved`).
+ *
+ * RPC method:
+ *   ("swap", cCarrier, vCarrier, ret)
+ *     Joins the two carrier channels: consumes one datum from each, re-emits
+ *     each datum on the OTHER carrier (the spec's `n_c!(*t_v) | n_v!(*t_c)`),
+ *     then `ret!((true, Nil))`. Persistent: the same Exchange serves every
+ *     `swap` call. DR-4: it blocks until BOTH carriers carry a datum (no
+ *     one-sided fire).
+ *
+ * The closeBlock per-epoch fee→v conversion (PoS.rhox `convertFeesToValidators`)
+ * is the production CALLER of this 1:1 swap at the validator-economic layer;
+ * clients acquiring `v`-fuel for their `c`-fees (#13, orthogonal to StageD)
+ * are its public callers.
+ *
+ * Genesis-deployment derivation table (regenerated whenever sk/timestamp change):
+ *
+ * No. | Dependency | Computation       | Result
+ * ----+------------+-------------------+------------------------------------------------------------------------------------------------------------------------------------------------------
+ * 1.  |            | given             | sk = 3f9c1a7e8b2d4056f1a3c7e90b4d28f6a5c3e1b7d9f08264a3c5e7091bd4f628
+ * 2.  |            | given             | timestamp = 1748678400001
+ * 3.  |            | lastNonce         | nonce = 9223372036854775807
+ * 4.  | 1,         | secp256k1         | pk = (regenerated; see standard_deploys.rs EXCHANGE_PK)
+ * 5.  | 2, 4, 3,   | registry          | value = (timestamp, pk, lastNonce)
+ * 6.  | 5,         | protobuf          | toSign = (regenerated)
+ * 7.  | 6, 1,      | secp256k1         | sig = (regenerated; substituted as $$exchangeSig$$ below)
+ * 8.  | 4,         | registry          | uri = rho:id:h7oamwfmbdgahd4jk6kcf9kzqssapm6bifq5i4u77danpta6d1ejf5
+ * ----+------------+-------------------+------------------------------------------------------------------------------------------------------------------------------------------------------
+ *
+ * The URI (row 8) is content-addressed from the pubkey alone, so it is stable
+ * across genesis shards; it is registered as the `rho:lang:exchange` shorthand
+ * in Registry.rho's bootstrapLookup table.
+ */
+
+new Exchange,
+    rs(`rho:registry:insertSigned:secp256k1`), uriOut
+in {
+  // ---------------------------------------------------------------
+  // swap(cCarrier, vCarrier, ret)
+  // ---------------------------------------------------------------
+  // The spec's conserving 1:1 join (tex:3067-3081): consume ONE datum off
+  // each carrier and re-emit each on the OTHER carrier. The for-join over
+  // `cCarrier & vCarrier` is the DR-4 "requires both inputs" guarantee —
+  // the body fires ONLY once a datum is available on BOTH channels, so a
+  // one-sided carrier can never trigger a mint. Per-channel datum count is
+  // preserved (exactly one consumed and one produced on each carrier), and
+  // the two carriers' total token count is invariant. Persistent (`<=`) so
+  // the single blessed Exchange serves every caller.
+  contract Exchange(@"swap", cCarrier, vCarrier, ret) = {
+    for (@cDatum <- cCarrier & @vDatum <- vCarrier) {
+      // n_c!(*t_v) | n_v!(*t_c): the c-carrier now holds what the v-carrier
+      // held and vice versa — a 1:1 peg with no remainder, no rate param.
+      cCarrier!(vDatum) |
+      vCarrier!(cDatum) |
+      ret!((true, Nil))
+    }
+  } |
+
+  // Bundle the contract and register it under the content-addressed URI
+  // (resolvable as the `rho:lang:exchange` shorthand via Registry.rho).
+  rs!(
+    "$$exchangePubKey$$".hexToBytes(),
+    (9223372036854775807, bundle+{*Exchange}),
+    "$$exchangeSig$$".hexToBytes(),
+    *uriOut
+  )
+}

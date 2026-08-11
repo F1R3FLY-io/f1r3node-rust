@@ -378,6 +378,13 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             block_store.clone(),
             deploy_storage_arc.clone(),
             rejected_deploy_buffer_arc.clone(),
+            // Multi-sig cosigner-metadata sidecar (§1.9.5). The casper
+            // instance owns the canonical sidecar; the proposer holds a
+            // shared Arc clone. In production, setup.rs constructs the
+            // casper-side sidecar first and threads it through both sides;
+            // this entry point creates the sidecar fresh for the proposer
+            // and the casper engine receives the same Arc.
+            std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
             block_retriever.clone(),
             transport_layer.clone(),
             rp_connections.clone(),
@@ -856,6 +863,14 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             epoch_length: conf.casper.genesis_block_data.epoch_length,
             quarantine_length: conf.casper.genesis_block_data.quarantine_length,
             min_phlo_price: conf.casper.min_phlo_price,
+            // Task #13a: thread the spec-strict gate flag onto this GC-path
+            // shard conf from the same shard-genesis config (default OFF).
+            strict_funding_enforcement: conf.casper.strict_funding_enforcement,
+            // Task #13b: this GC-path shard conf drives mergeable-channel GC
+            // sizing, NOT block creation, so the genesis client funding-slot list
+            // is inert here — default EMPTY (the authoritative wiring is in
+            // `casper_launch.rs`, which the block proposer/validator read).
+            client_fuel_allocations: Vec::new(),
             disable_late_block_filtering: conf.casper.disable_late_block_filtering,
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: conf.standalone,
@@ -869,6 +884,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             synchrony_finalized_baseline_max_distance: conf
                 .casper
                 .synchrony_finalized_baseline_max_distance,
+            max_cosigners_per_deploy: casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
             max_user_deploys_per_block: conf.casper.max_user_deploys_per_block,
             native_token_name: conf.casper.genesis_block_data.native_token_name.clone(),
             native_token_symbol: conf.casper.genesis_block_data.native_token_symbol.clone(),

@@ -31,6 +31,12 @@ declare -a THEORY_DIRS=(
     "${REPO}/formal/rocq/finalized_floor/theories"
     "${REPO}/formal/rocq/fork_choice/theories"
     "${REPO}/formal/rocq/merge_algebra/theories"
+    # 2026-08-08: the cost-accounting and validator trees were missing from
+    # this map, so every `CostAccountedSyntax.v:NNN`-style citation in the
+    # cost-accounting docs was reported "not found" regardless of accuracy —
+    # the exact scope blind spot the note above warns about, one tier deeper.
+    "${REPO}/formal/rocq/cost_accounted_rho/theories"
+    "${REPO}/formal/rocq/validator/theories"
 )
 DOCS_DIR="${REPO}/docs/theory"
 QUIET=0
@@ -61,8 +67,15 @@ for dir in "${THEORY_DIRS[@]}"; do
     for v in "${dir}"/*.v; do
         [[ -f "${v}" ]] || continue
         base="$(basename "${v}")"
-        grep -nE '^ *(Theorem|Lemma|Definition|Corollary|Fixpoint|Inductive) [A-Za-z_]+' "${v}" |
-            awk -F'[: ]' -v f="${base}" '{for(i=1;i<=NF;i++) if($i ~ /^(Theorem|Lemma|Definition|Corollary|Fixpoint|Inductive)$/) {print f, $1, $(i+1); break}}'
+        grep -nE '^ *(Theorem|Lemma|Definition|Corollary|Fixpoint|CoFixpoint|Inductive|CoInductive) [A-Za-z_]+' "${v}" |
+            awk -F'[: ]' -v f="${base}" '{for(i=1;i<=NF;i++) if($i ~ /^(Theorem|Lemma|Definition|Corollary|Fixpoint|CoFixpoint|Inductive|CoInductive)$/) {print f, $1, $(i+1); break}}'
+        # Also index (co)inductive CONSTRUCTORS (`  | name : ...`) and
+        # `with`-block heads (`with name : ...`) — docs legitimately cite
+        # reduction-rule constructors (rs_comm, dill_*) and mutual bodies
+        # (RhoSyntax's `with proc :`), which the declaration pass misses.
+        grep -nE '^ *(\| *|with +)[A-Za-z_][A-Za-z0-9_]* *:' "${v}" |
+            sed -E 's/^([0-9]+): *(\| *|with +)([A-Za-z_][A-Za-z0-9_]*).*/\1 \3/' |
+            awk -v f="${base}" '{print f, $1, $2}'
     done
 done > "${INDEX}"
 

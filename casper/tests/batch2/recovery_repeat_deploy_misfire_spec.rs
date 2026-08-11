@@ -128,9 +128,7 @@ async fn repeat_deploy_grants_exemption_on_parent_rejection_record() {
             None,
             None,
         );
-        block_n.body.rejected_deploys = vec![RejectedDeploy {
-            sig: deploy_sig.clone(),
-        }];
+        block_n.body.rejected_deploys = vec![RejectedDeploy::legacy(deploy_sig.clone())];
         block_store
             .put(block_n.block_hash.clone(), &block_n)
             .unwrap();
@@ -351,9 +349,7 @@ async fn repeat_deploy_verdict_is_identical_across_divergent_local_views() {
             None,
             None,
         );
-        block_m.body.rejected_deploys = vec![RejectedDeploy {
-            sig: deploy_sig.clone(),
-        }];
+        block_m.body.rejected_deploys = vec![RejectedDeploy::legacy(deploy_sig.clone())];
         block_store
             .put(block_m.block_hash.clone(), &block_m)
             .unwrap();

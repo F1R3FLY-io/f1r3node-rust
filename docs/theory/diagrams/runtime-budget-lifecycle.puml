@@ -1,0 +1,47 @@
+' RuntimeBudget / TokenBudget lifecycle (migration §5.3) — the bounded-memory
+' replacement for CostManager. A funded budget reserves weighted source-token
+' events as metered gates fire; the first over-budget reservation fixes a
+' canonical out-of-phlo boundary; finalization reports the consensus total_cost;
+' reset-from-token re-funds and clears the diagnostic trace. The conservation
+' invariant `consumed + remaining == initial` holds in every state.
+'
+' Source of truth for Figure 5.3 in cost-accounting-migration.md §5.3.
+' Palette:  Funded mint #C8E6C9 · Reserving amber #FFECB3 ·
+'           OutOfPhlo reject #EF9A9A · Finalized supply-blue #BBDEFB
+' Render:  plantuml -tsvg docs/theory/diagrams/runtime-budget-lifecycle.puml
+'          (or: ./render.sh runtime-budget-lifecycle.puml)
+
+@startuml runtime-budget-lifecycle
+!theme plain
+skinparam defaultFontName "sans-serif"
+skinparam shadowing false
+skinparam state {
+  BorderColor #333333
+  FontName "sans-serif"
+}
+title RuntimeBudget / TokenBudget lifecycle — invariant: consumed + remaining == initial
+
+state "Funded\nconsumed = 0\nremaining = initial_tokens" as Funded #C8E6C9
+state "Reserving\nreserve_canonical(w)" as Reserving #FFECB3
+state "OutOfPhlo\ncanonical OOP boundary fixed\n(first boundary; schedule-independent)" as OOP #EF9A9A
+state "Finalized\ntotal_cost = min(consumed, initial)\n(diagnostic digest derived)" as Final #BBDEFB
+
+[*]       --> Funded    : new(initial_tokens)
+Funded    --> Reserving : a metered gate fires
+Reserving --> Funded    : fits — append billable event,\nconsumed += w
+Reserving --> OOP       : would exceed initial →\nfix the FIRST canonical OOP boundary
+OOP       --> OOP       : later over-budget attempts\n(first boundary preserved)
+Funded    --> Final     : finalization read
+OOP       --> Final     : finalization read
+Final     --> Funded    : reset_from_token(new initial)\nconsumed := 0; clear trace + OOP
+
+note bottom #E8F5E9
+  Invariant (`RuntimeBudgetRefinement.v`): in every state
+  **consumed + remaining == initial_tokens**.
+  Consensus reads only `total_cost = consumed` (clamped); the cost-trace
+  digest / event-count / `last_oop` are diagnostic (TM-CA-151).
+  Reconciliation is a pure function of (initial, attempt multiset), so play
+  and replay reach the same boundary regardless of scheduling.
+end note
+
+@enduml

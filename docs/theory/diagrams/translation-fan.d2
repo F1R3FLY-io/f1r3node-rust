@@ -1,0 +1,36 @@
+# Compositional translation fan — the four mutually-recursive functions
+# N⟦·⟧ / T⟦·⟧ / S⟦·⟧ (and P⟦·⟧) map the cost-accounted calculus (signatures,
+# tokens, systems) back into pure rho (proc, name only). The blue dashed arrows
+# are the "translates-into" (model→code) instantiations.
+#
+# Layout: flat top-level nodes + direction:down so elk produces a 4-tier / 3-lane
+# vertical fan. (An earlier version used grid-columns containers, which collapsed
+# the fan into one horizontal row with edges cutting through the node text.)
+#
+# Source of truth for Figure 5.0 in cost-accounted-rho-verification.md §5.
+# Render:  d2 --layout elk translation-fan.d2 translation-fan.svg
+#          (or: ./render.sh translation-fan.d2)
+...@palette
+direction: down
+
+ca: "Cost-Accounted Calculus\n(signatures · tokens · systems)" { class: surface }
+
+sig: "Signatures\ns ↦ name" { class: capability }
+tok: "Tokens\nT ↦ proc" { class: pool }
+sys: "Systems\nS ↦ proc" { class: process }
+
+Ntr: "N⟦·⟧" { class: gate }
+Ttr: "T⟦·⟧\n(paper K⟦·⟧)" { class: gate }
+Str: "S⟦·⟧\n(via P⟦·⟧)" { class: gate }
+
+rho: "Pure Rho Calculus\n(proc · name only)" { class: supply }
+
+ca -> sig
+ca -> tok
+ca -> sys
+sig -> Ntr: translates { class: instantiate }
+tok -> Ttr: translates { class: instantiate }
+sys -> Str: translates { class: instantiate }
+Ntr -> rho
+Ttr -> rho
+Str -> rho

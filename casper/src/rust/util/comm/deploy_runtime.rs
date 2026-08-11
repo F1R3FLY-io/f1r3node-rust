@@ -105,10 +105,10 @@ impl DeployRuntime {
 
     /// Accepts a Rholang source file and deploys it
     #[allow(clippy::too_many_arguments)]
+    // D3 (DR-9): the CLI deploy helper no longer takes/encodes phlo_limit /
+    // phlo_price — a deploy carries no escrow price/limit (cost = per-COMM count).
     pub async fn deploy_file_program<S: DeployService>(
         svc: &mut S,
-        phlo_limit: i64,
-        phlo_price: i64,
         valid_after_block: i64,
         private_key: &PrivateKey,
         file: &str,
@@ -129,8 +129,6 @@ impl DeployRuntime {
             let d = DeployData {
                 term: code,
                 time_stamp: now_ms,
-                phlo_price,
-                phlo_limit,
                 valid_after_block_number: valid_after_block,
                 shard_id: shard_id.to_string(),
                 expiration_timestamp: None,

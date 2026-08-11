@@ -1028,6 +1028,15 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 &block_data,
                 None, // No invalid blocks for genesis
                 true, // isGenesis = true
+                // Task #13a: pass the engine's shard-conf strict flag. Genesis
+                // replays with cost-accounting OFF, so the value is inert here,
+                // but threading the real shard constant keeps the call uniform.
+                self.casper_shard_conf.strict_funding_enforcement,
+                // Task #13b: genesis (block 0) runs no close post_eval and the
+                // client credit is gated on `block_number == 1`, so the list is
+                // inert here. Pass empty (the block-1 credit lands in
+                // `replay_single_block`, which threads the real allocations).
+                &[],
             )
             .await;
 
@@ -1105,6 +1114,22 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 &block_data,
                 Some(invalid_blocks_map),
                 is_genesis,
+                // Task #13a: historical-block replay (rebuilding the mergeable
+                // cache) uses the engine's shard-conf strict flag — the SAME
+                // shard constant the block was validated under, so the
+                // recompute is deterministic.
+                self.casper_shard_conf.strict_funding_enforcement,
+                // Task #13b: historical NON-genesis replay (this path includes
+                // block 1) MUST thread the SAME client funding-slot allocations
+                // the block was validated/created under, lowered to raw pk bytes,
+                // so the reconstructed block-1 close re-seeds each `Σ⟦c⟧`
+                // byte-identically. Empty on default shards.
+                &self
+                    .casper_shard_conf
+                    .client_fuel_allocations
+                    .iter()
+                    .map(|(pk, amount)| (pk.bytes.to_vec(), *amount))
+                    .collect::<Vec<(Vec<u8>, i64)>>(),
             )
             .await;
 
@@ -1155,6 +1180,10 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // casper constructors), so this path deliberately does NOT read it
         // again — a second read here would be a second policy site and could
         // drift from the one the running casper actually finalizes with.
+        // (The pre-merge re-read that used to live here was removed in the
+        // 2026-08-07 dev merge for exactly that reason; see
+        // `casper::hash_set_casper`'s "SINGLE ADOPTION POINT" reconcile, which
+        // discharges `FtProvenance.reconcile_agrees_on_onchain`.)
         let casper_shard_conf = self.casper_shard_conf.clone();
 
         // Pass Arc<RuntimeManager> directly to hash_set_casper

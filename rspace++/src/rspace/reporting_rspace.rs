@@ -261,6 +261,14 @@ where
         self.replay_rspace.get_joins(channel).await
     }
 
+    async fn remove_all_data(&self, channel: &C) -> Result<(), RSpaceError> {
+        self.replay_rspace.remove_all_data(channel).await
+    }
+
+    async fn remove_all_continuations(&self, channels: Vec<C>) -> Result<(), RSpaceError> {
+        self.replay_rspace.remove_all_continuations(channels).await
+    }
+
     async fn clear(&self) -> Result<(), RSpaceError> { self.replay_rspace.clear().await }
 
     async fn get_root(&self) -> Blake2b256Hash { self.replay_rspace.get_root().await }

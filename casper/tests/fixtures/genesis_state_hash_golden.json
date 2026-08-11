@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "purpose": "Phase 4.14 — golden record of the post-Map-in-MVar genesis empty state hash and the Phase 1-3 multi-sig domain-separator constants. Companion to `RuntimeManager::empty_state_hash_fixed()` (in-code) and `runtime_spec.rs::empty_state_hash_should_be_the_same_as_hard_coded_cached_value`.",
+  "recorded_at": "2026-05-25",
+  "recorded_for_branch": "feature/cost-accounted-rho",
+  "empty_state_hash_hex": "cb7480d13e774ef931c0d22379cbe4deb6fed0f096d7ff93d507a2b3276d7efe",
+  "empty_state_hash_origin": "RuntimeManager::empty_state_hash_fixed() at casper/src/rust/util/rholang/runtime_manager.rs:1328",
+  "domain_separators": {
+    "legacy_single_signature_v1": "f1r3node:cost-accounted-rho:deploy-signature:v1",
+    "compound_multi_signature_v1": "f1r3node:cost-accounted-rho:compound-deploy-signature:v1",
+    "origin": "rholang/src/rust/interpreter/accounting/mod.rs:19,24"
+  },
+  "domain_separation_property": {
+    "description": "set_deploy_signature(&s) and set_deploy_signatures(&[&s]) must produce DIFFERENT deploy_id values for the same single-byte input s. This is verified by ll_rejection_spec.rs::legacy_vs_compound_set_deploy_signature_produces_distinct_deploy_ids.",
+    "guarantees": [
+      "no deploy_id collision between Phase 1 (single-sig) and Phase 2+ (compound) paths",
+      "no wire-reorder attack can reuse a deploy_id (compound_deploy_id_depends_on_signature_order)"
+    ]
+  },
+  "phase_1_7_pos_map_in_mvar_refinement": {
+    "description": "The PoS contract refinement (Map[deployerId -> amount] in MVar) changed PoS.rhox between commits 7c0a5c31 and 286c02c5. Any genesis-hash drift after Phase 4 landing must be reflected in this golden's `empty_state_hash_hex`.",
+    "back_compat_property": "legacy single-sig deploys via the compute_state path produce byte-identical cost_trace_digest / deploy_log / state_hash vs legacy contract (Rocq theorem: single_sig_pos_map_observably_equivalent_after_{charge,refund} at MultiSignerRefinement.v:292-308)."
+  },
+  "phase_3_capabilities_registry": {
+    "description": "rho:system:capabilities (Phase 4.16) is bootstrapped at genesis via standard_deploys::capabilities_registry. Its registry URI is content-addressed from the pubkey hash; changing the CAPABILITIES_REGISTRY_PK constant will drift this golden.",
+    "registry_uri_origin": "Registry::build_uri(&Blake2b256::hash(pub_key.bytes))",
+    "pub_key_hex_in_standard_deploys": "0c93f4a9b25d6e1f378203f4b09e8c43d17ab2c4e5f6a18b3294c02765a1f450"
+  }
+}

@@ -172,11 +172,24 @@ pub async fn equivocate_block(
     // System deploys: just CloseBlock. No SlashDeploys (this is the
     // Byzantine validator's first-equivocation block — it would not
     // self-slash).
+    // Cost-Accounted Rho Stage D (F-D carve): this helper replicates
+    // `block_creator::create`'s close deploy MANUALLY. The conserving FeeExtract is
+    // now a per-CLIENT carve from each funded client's `Σ⟦c⟧` (not a mint), which
+    // replay RECOMPUTES from the block's admitted client deploys. These slashing
+    // fixtures provision NO funded cost-accounted client pools for `alt_deploys`
+    // (they exercise the slash path), so the recomputed carve is empty ⇒ `None` on
+    // BOTH play and replay — byte-identical (no fee write at closeBlock).
+    let close_fee_carve: Option<casper::rust::util::rholang::acceptance::FeeCarve> = None;
     let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy {
         initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
             validator_identity.public_key.clone(),
             next_seq_num,
         ),
+        settlement_debits: Default::default(),
+        fee_carve: close_fee_carve,
+        // Task #13b: slashing-flow test fixtures provision no genesis client
+        // funding slots (these helpers exercise the slash path, not block 1).
+        client_fuel_allocations: Vec::new(),
     })];
 
     let invalid_blocks = snapshot.invalid_blocks.clone();
@@ -211,9 +224,7 @@ pub async fn equivocate_block(
     // that function is private to block_creator.rs (`fn`, not
     // `pub fn`), so we replicate its 25-line body here. The
     // proto_util helpers are public.
-    use models::rust::casper::protocol::casper_message::{
-        Body, F1r3flyState, Header, RejectedDeploy,
-    };
+    use models::rust::casper::protocol::casper_message::{Body, F1r3flyState, Header};
 
     let state = F1r3flyState {
         pre_state_hash,
@@ -221,14 +232,10 @@ pub async fn equivocate_block(
         bonds: new_bonds,
         block_number: block_data.block_number,
     };
-    let rejected_deploys_wrapped: Vec<RejectedDeploy> = rejected_deploys
-        .into_iter()
-        .map(|sig| RejectedDeploy { sig })
-        .collect();
     let body = Body {
         state,
         deploys: processed_deploys,
-        rejected_deploys: rejected_deploys_wrapped,
+        rejected_deploys,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
     };
@@ -313,11 +320,24 @@ pub async fn propose_with_explicit_justifications(
         seq_num: next_seq_num,
     };
 
+    // Cost-Accounted Rho Stage D (F-D carve): this helper replicates
+    // `block_creator::create`'s close deploy MANUALLY. The conserving FeeExtract is
+    // now a per-CLIENT carve from each funded client's `Σ⟦c⟧` (not a mint), which
+    // replay RECOMPUTES from the block's admitted client deploys. These slashing
+    // fixtures provision NO funded cost-accounted client pools for `alt_deploys`
+    // (they exercise the slash path), so the recomputed carve is empty ⇒ `None` on
+    // BOTH play and replay — byte-identical (no fee write at closeBlock).
+    let close_fee_carve: Option<casper::rust::util::rholang::acceptance::FeeCarve> = None;
     let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy {
         initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
             validator_identity.public_key.clone(),
             next_seq_num,
         ),
+        settlement_debits: Default::default(),
+        fee_carve: close_fee_carve,
+        // Task #13b: slashing-flow test fixtures provision no genesis client
+        // funding slots (these helpers exercise the slash path, not block 1).
+        client_fuel_allocations: Vec::new(),
     })];
 
     let invalid_blocks = snapshot.invalid_blocks.clone();
@@ -346,9 +366,7 @@ pub async fn propose_with_explicit_justifications(
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
 
-    use models::rust::casper::protocol::casper_message::{
-        Body, F1r3flyState, Header, RejectedDeploy,
-    };
+    use models::rust::casper::protocol::casper_message::{Body, F1r3flyState, Header};
 
     let state = F1r3flyState {
         pre_state_hash,
@@ -356,14 +374,10 @@ pub async fn propose_with_explicit_justifications(
         bonds: new_bonds,
         block_number: block_data.block_number,
     };
-    let rejected_deploys_wrapped: Vec<RejectedDeploy> = rejected_deploys
-        .into_iter()
-        .map(|sig| RejectedDeploy { sig })
-        .collect();
     let body = Body {
         state,
         deploys: processed_deploys,
-        rejected_deploys: rejected_deploys_wrapped,
+        rejected_deploys,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
     };
@@ -486,11 +500,24 @@ pub async fn propose_with_block_mutation(
         seq_num: next_seq_num,
     };
 
+    // Cost-Accounted Rho Stage D (F-D carve): this helper replicates
+    // `block_creator::create`'s close deploy MANUALLY. The conserving FeeExtract is
+    // now a per-CLIENT carve from each funded client's `Σ⟦c⟧` (not a mint), which
+    // replay RECOMPUTES from the block's admitted client deploys. These slashing
+    // fixtures provision NO funded cost-accounted client pools for `alt_deploys`
+    // (they exercise the slash path), so the recomputed carve is empty ⇒ `None` on
+    // BOTH play and replay — byte-identical (no fee write at closeBlock).
+    let close_fee_carve: Option<casper::rust::util::rholang::acceptance::FeeCarve> = None;
     let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy {
         initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
             validator_identity.public_key.clone(),
             next_seq_num,
         ),
+        settlement_debits: Default::default(),
+        fee_carve: close_fee_carve,
+        // Task #13b: slashing-flow test fixtures provision no genesis client
+        // funding slots (these helpers exercise the slash path, not block 1).
+        client_fuel_allocations: Vec::new(),
     })];
 
     let invalid_blocks = snapshot.invalid_blocks.clone();
@@ -519,9 +546,7 @@ pub async fn propose_with_block_mutation(
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
 
-    use models::rust::casper::protocol::casper_message::{
-        Body, F1r3flyState, Header, RejectedDeploy,
-    };
+    use models::rust::casper::protocol::casper_message::{Body, F1r3flyState, Header};
 
     let state = F1r3flyState {
         pre_state_hash,
@@ -529,14 +554,10 @@ pub async fn propose_with_block_mutation(
         bonds: new_bonds,
         block_number: block_data.block_number,
     };
-    let rejected_deploys_wrapped: Vec<RejectedDeploy> = rejected_deploys
-        .into_iter()
-        .map(|sig| RejectedDeploy { sig })
-        .collect();
     let body = Body {
         state,
         deploys: processed_deploys,
-        rejected_deploys: rejected_deploys_wrapped,
+        rejected_deploys,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
     };
@@ -634,11 +655,24 @@ pub async fn propose_neglecting_block(
     // `prepare_slashing_deploys`. The receiver's
     // `is_neglected_equivocation_detected_with_update` will see
     // the missing slash and classify NeglectedEquivocation.
+    // Cost-Accounted Rho Stage D (F-D carve): this helper replicates
+    // `block_creator::create`'s close deploy MANUALLY. The conserving FeeExtract is
+    // now a per-CLIENT carve from each funded client's `Σ⟦c⟧` (not a mint), which
+    // replay RECOMPUTES from the block's admitted client deploys. These slashing
+    // fixtures provision NO funded cost-accounted client pools for `alt_deploys`
+    // (they exercise the slash path), so the recomputed carve is empty ⇒ `None` on
+    // BOTH play and replay — byte-identical (no fee write at closeBlock).
+    let close_fee_carve: Option<casper::rust::util::rholang::acceptance::FeeCarve> = None;
     let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy {
         initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
             validator_identity.public_key.clone(),
             next_seq_num,
         ),
+        settlement_debits: Default::default(),
+        fee_carve: close_fee_carve,
+        // Task #13b: slashing-flow test fixtures provision no genesis client
+        // funding slots (these helpers exercise the slash path, not block 1).
+        client_fuel_allocations: Vec::new(),
     })];
 
     let invalid_blocks = snapshot.invalid_blocks.clone();
@@ -667,9 +701,7 @@ pub async fn propose_neglecting_block(
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
 
-    use models::rust::casper::protocol::casper_message::{
-        Body, F1r3flyState, Header, RejectedDeploy,
-    };
+    use models::rust::casper::protocol::casper_message::{Body, F1r3flyState, Header};
 
     let state = F1r3flyState {
         pre_state_hash,
@@ -677,14 +709,10 @@ pub async fn propose_neglecting_block(
         bonds: new_bonds,
         block_number: block_data.block_number,
     };
-    let rejected_deploys_wrapped: Vec<RejectedDeploy> = rejected_deploys
-        .into_iter()
-        .map(|sig| RejectedDeploy { sig })
-        .collect();
     let body = Body {
         state,
         deploys: processed_deploys,
-        rejected_deploys: rejected_deploys_wrapped,
+        rejected_deploys,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
     };

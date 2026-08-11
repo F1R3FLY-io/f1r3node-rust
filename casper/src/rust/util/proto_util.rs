@@ -666,6 +666,9 @@ mod fork_choice_b1_repro_tests {
             deploy_index: Arc::new(PlRwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
                 InMemoryKeyValueStore::new(),
             )))),
+            deploy_occurrence_index: Arc::new(PlRwLock::new(KeyValueTypedStoreImpl::new(
+                Arc::new(InMemoryKeyValueStore::new()),
+            ))),
             floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         }

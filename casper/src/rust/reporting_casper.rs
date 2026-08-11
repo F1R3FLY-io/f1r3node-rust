@@ -165,6 +165,24 @@ impl RhoReporterCasper {
         runtime.set_block_data(block_data.clone()).await;
         runtime.set_invalid_blocks(invalid_blocks).await;
 
+        // WD-D2: the REPORTING path (block-explorer event tracing) is a
+        // non-consensus diagnostics replay — it collects per-deploy reduction
+        // events and does NOT validate the post-state root. The close-block
+        // settlement-debit produce is a bare supply write with no reduction
+        // events to report, so reporting passes an EMPTY debit map (the
+        // settlement debit is faithfully applied + verified only on the
+        // consensus replay path, `ReplayRuntimeOps::replay_deploys`). This keeps
+        // the reporting runtime free of the gate-recompute machinery (which needs
+        // a `RuntimeOps` handle the reporting wrapper does not expose) while
+        // losing no consensus-relevant information.
+        let settlement_debits: std::collections::BTreeMap<
+            crate::rust::util::rholang::acceptance::SigKey,
+            crate::rust::util::rholang::acceptance::SettlementDebit,
+        > = std::collections::BTreeMap::new();
+        // Stage D: likewise no fee carve on the reporting path (the FeeExtract
+        // carve is a bare supply write with no reduction events to report).
+        let fee_carve: Option<crate::rust::util::rholang::acceptance::FeeCarve> = None;
+
         let mut deploy_results = Vec::new();
         for (idx, term) in terms.iter().enumerate() {
             tracing::debug!(
@@ -205,7 +223,10 @@ impl RhoReporterCasper {
             );
 
             let replay_result = runtime
-                .replay_block_system_deploy(block_data, system_deploy)
+                // Task #13b: this is the reporting-LOCAL wrapper (4 args); it
+                // forwards to the `ReplayRuntimeOps` method below, which passes
+                // empty client allocations (a bare supply write, no report events).
+                .replay_block_system_deploy(block_data, system_deploy, &settlement_debits, &fee_carve)
                 .await;
 
             let events = match replay_result {
@@ -331,15 +352,29 @@ impl ReportingRuntime {
         &mut self,
         block_data: &BlockData,
         processed_system_deploy: &models::rust::casper::protocol::casper_message::ProcessedSystemDeploy,
+        settlement_debits: &std::collections::BTreeMap<
+            crate::rust::util::rholang::acceptance::SigKey,
+            crate::rust::util::rholang::acceptance::SettlementDebit,
+        >,
+        fee_carve: &Option<crate::rust::util::rholang::acceptance::FeeCarve>,
     ) -> Result<(), crate::rust::errors::CasperError> {
         use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
 
         // Create ReplayRuntimeOps from the runtime
         let mut replay_ops = ReplayRuntimeOps::new_from_runtime(self.runtime.clone());
 
-        // Replay the system deploy
+        // Replay the system deploy, threading the WD-D2 settlement debits so the
+        // reported events include the close-block settlement debit produce. The
+        // Stage-D fee credit / fee-convert mirror is likewise threaded (reporting
+        // passes `None`, mirroring the EMPTY settlement-debit map above — both are
+        // bare supply writes with no reduction events to report; they are
+        // faithfully applied + verified only on the consensus replay path).
         replay_ops
-            .replay_block_system_deploy(block_data, processed_system_deploy)
+            // Task #13b: the client funding-slot credit is a bare supply write
+            // with no reduction events (faithfully applied + verified only on the
+            // consensus replay path), so the reporting path passes empty
+            // allocations — same rationale as the threaded debit/fee above.
+            .replay_block_system_deploy(block_data, processed_system_deploy, settlement_debits, fee_carve, &[])
             .await?;
 
         // Update the runtime from replay_ops

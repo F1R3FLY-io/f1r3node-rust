@@ -400,6 +400,7 @@ async fn create_allow_empty(node: &mut TestNode) -> BlockCreatorResult {
         None,
         node.deploy_storage.clone(),
         node.rejected_deploy_buffer.clone(),
+        std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
         &node.runtime_manager,
         &mut node.block_store,
         true,

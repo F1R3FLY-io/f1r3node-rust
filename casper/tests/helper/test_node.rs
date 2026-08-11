@@ -122,6 +122,7 @@ impl TestNode {
             None, // dummy_deploy_opt
             self.deploy_storage.clone(),
             self.rejected_deploy_buffer.clone(),
+            std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
             &self.runtime_manager.clone(),
             &mut self.block_store.clone(),
             self.allow_empty_blocks,
@@ -1003,6 +1004,7 @@ impl TestNode {
                 block_store.clone(),
                 deploy_storage.clone(),
                 rejected_deploy_buffer.clone(),
+                std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
                 block_retriever.clone(),
                 tle.clone(),
                 connections_cell.clone(),
@@ -1083,6 +1085,9 @@ impl TestNode {
             block_store: block_store.clone(),
             block_dag_storage: block_dag_storage.clone(),
             deploy_storage: deploy_storage.clone(),
+            pending_cosigner_metadata: std::sync::Arc::new(parking_lot::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
             rejected_deploy_buffer: rejected_deploy_buffer.clone(),
             casper_buffer_storage: casper_buffer_storage.clone(),
             validator_id: validator_id_opt.clone(),

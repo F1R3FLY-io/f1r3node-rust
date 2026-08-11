@@ -1,0 +1,421 @@
+// =============================================================================
+//  NATIVE SEMANTICS NOTE (f1r3node-rust, W1 surface-syntax integration)
+// =============================================================================
+//  The header below describes the cost-accounting TRANSPILER model: `s :: ()` ⟿
+//  a `Σ⟦s⟧` SEND and `{% P %}[s]` ⟿ a `for(t <- Σ⟦s⟧){ *t | P }` GATE that parks
+//  when its signature pool is unfunded.
+//
+//  f1r3node's NATIVE integration does NOT lower to those gates (W1 §0/§3,
+//  MAJOR-2): a signed term / token stack is RECOGNIZED — its signature is
+//  resolved + validated to a native `accounting::Sig`, and the inner process is
+//  lowered ORDINARILY — so the normalized `Par` has the SAME COMM-node count as
+//  the unsigned program (no double-metering). Metering is per-COMM at the reducer,
+//  and multi-sig FUNDEDNESS is settled at DEPLOY ADMISSION (the Rust acceptance
+//  gate `admit_by_funding` / `is_funded`; the BALANCED policy `DefaultApportionment`
+//  in rholang/.../accounting/resource_logic.rs debits EACH cosigner's wallet an
+//  EQUAL share — Greg P8 — and `(*)` is commutative so signer order is irrelevant).
+//
+//  CONSEQUENCE (MAJOR-4): in-program PARKING does NOT occur natively — an unfunded
+//  signer's gate has nothing to block on, so the process RUNS. The native model
+//  replaces in-program parking with deploy-level admission-rejection, which a
+//  single `rholang-cli` run does not apply. So the multi-sig syntax here is INTENT
+//  annotation (who must co-sign; the admission gate enforces it + apportions the
+//  balanced cost). What STILL holds verbatim when you run the file are the
+//  GUARD-enforced conservation invariants: every `pay` / `release` is a `match` on
+//  the source balance that re-emits both cells on BOTH branches, so MONEY is
+//  conserved in every interleaving regardless of which gates "run" — total stays
+//  640, no cell ever goes negative, and the one-shot grant is released exactly
+//  once. The integration test `cost_accounting_multisig_treasury_spec.rs` asserts
+//  exactly those.
+// =============================================================================
+//
+// =============================================================================
+//  Cost-Accounted Rholang -- a MULTI-SIGNATURE TREASURY
+// =============================================================================
+//
+//  Run it:
+//    cargo run -p rholang --bin rholang-cli --                        examples/multi_sig_treasury.rho   (full: + final ledgers)
+//    cargo run -p rholang --bin rholang-cli -- --quiet                examples/multi_sig_treasury.rho   (audit lines only)
+//    cargo run -p rholang --bin rholang-cli -- --unmatched-sends-only examples/multi_sig_treasury.rho   (resting fuel tokens)
+//
+//  THE ONE MECHANIC.  Cost-accounting adds just TWO surface forms, both lowering to
+//  ordinary Rholang:
+//      mint a token    s :: ()        ⟿   Σ⟦s⟧!(Nil)                 a SEND on s's unforgeable channel
+//      fuel-gate P     {% P %}[ s ]   ⟿   for(t <- Σ⟦s⟧){ *t | P }   a RECEIVE; P runs once a token arrives
+//  A stack  s :: s :: ()  is a depth-N BUDGET: it funds N operations under s.
+//
+//  THE MULTI-SIG MECHANIC (the focus of this file).  Joint authority is the
+//  compound signature operator `(*)` -- there is NO comma-list form; `s1 (*) s2`
+//  means BOTH s1 AND s2 must authorize (it is commutative + associative, so
+//  `a (*) b (*) c` is an order-independent 3-of-3). It is funded EITHER by:
+//      * SEPARATE tokens   s1 :: () | s2 :: ()      -- each signer mints their own fuel, or
+//      * one COMBINED token   s1 (*) s2 :: ()        -- a single co-signed token the
+//                                                       admission gate destructures (a splitter).
+//  Same joint authority, same BALANCED per-wallet cost; only the packaging differs.
+//  Receive-side joint authority is the per-clause signed bind  {% y <- x %}[ s ]
+//  used inside a `for( ... & ... )` join: each leg is metered on its OWN lane --
+//  fuel is NEVER folded into the data join (that would be combinatorial in arity).
+//
+//  THE DELEGATION MECHANIC  (-o lollipop -- separate WHO AUTHORIZES from WHO EXECUTES).
+//  `s1 -o s2` is linear-logic implication. On a signed `for`:
+//      {% for(y<-x){ P } %}[ s1 -o s2 ]   ⟿   {% for(y<-x){ {% P %}[ s2 ] } %}[ s1 ]
+//  the LEFT s1 funds the RENDEZVOUS (opening the interaction), the RIGHT s2 funds the
+//  CONTINUATION P (the work) -- two distinct fuels; the body MUST be a `for`. It
+//  composes with `(*)` by precedence (`(*)` binds TIGHTER than `-o`; signatures take
+//  NO parens):
+//      alice (*) bob -o paymaster      parses as  (alice (*) bob) -o paymaster
+//      treasurer -o clerkA (*) clerkB  parses as  treasurer -o (clerkA (*) clerkB)
+//  Chaining is NESTED `for`s (one lollipop per hop); a single-`for` `a -o b -o c` is
+//  NOT well-formed (its inner non-`for` body has no comm to transfer through).
+//
+//  THE STORY.  The Acme Collective is a worker co-op whose shared TREASURY is
+//  governed by three trustees -- ALICE, BOB, and CAROL. No trustee can move funds
+//  alone; every disbursement is authorized by a JOINT SIGNATURE -- the cost-
+//  accounting fuel IS the multi-sig. The co-op pays vendors, disburses grants,
+//  runs a community-grant quorum, delegates a payment while a trustee travels,
+//  ring-fences an emergency reserve, settles an invoice on collected endorsements,
+//  and executes a charter-mandated governance payout. MONEY is the single
+//  conserved resource (every cell is cash); fuel/authorization is a SEPARATE
+//  dimension that never appears in the money total.
+//
+//  THREE NON-CROSSING MONEY POOLS (the pools never exchange, so the sum is constant):
+//    * TREASURY pool  -- Treasury(500) funds the vendor / grant / delegated /
+//                        endorsement / governance disbursements (worst-case draw 234).
+//    * QUORUM pool    -- Quorum_grant(40) is released once to Grace by any 2-of-3 pair.
+//    * RESERVE pool   -- Reserve(100) is ring-fenced; a thief's drain (if it runs
+//                        natively) only redistributes WITHIN this pool.
+//  Opening total = 500 + 40 + 100 = 640, conserved in every interleaving.
+//
+//  FEATURE INDEX (the file is one FLAT parallel composition; textual order is irrelevant):
+//    1  2-of-2  s1 (*) s2  + depth-2 BUDGET .. Alice (*) Bob pay TWO vendors; each trustee's
+//                                              `:: ::` stack budgets their two co-signs
+//    2  COMBINED-cell token .................. same Alice (*) Bob authority, ONE co-signed token
+//    3  3-of-3  s1 (*) s2 (*) s3 ............. Alice (*) Bob (*) Carol disburse a large grant
+//    4  2-of-3 QUORUM via racing pairs ....... ANY two trustees release a one-shot community grant;
+//                                              `(*)` is AND -- the 2-of-3 is the ENUMERATED pairs +
+//                                              the one-shot cell, NOT a threshold operator
+//    5  -o  LOLLIPOP delegation (4 forms) .... (a) plain p -o a; (b) co-authorized (alice (*) bob) -o
+//                                              paymaster; (c) delegate-to-a-pair p -o (clerkA (*) clerkB);
+//                                              (d) multi-hop pipeline via NESTED lollipops
+//    6  new-bound sig (RING-FENCING) ......... the emergency Reserve key; a free-name thief is shut out
+//    7  {% y<-x %}[s] per-clause signed JOIN .. receive-side multi-sig: a payment settles only once
+//                                              BOTH trustees' endorsements are collected (each metered)
+//    8  # P  hash / charter signature ........ a governance payout authorized by the org's charter identity
+//
+//  WHAT IS DETERMINISTIC.  Opening balances cover every authorized disbursement in
+//  EVERY interleaving, so the safety invariants hold every run: MONEY total stays
+//  640; no cell ever goes negative (the guards); the community grant is released
+//  EXACTLY ONCE -- the three authorized pairs race, exactly one wins (nondeterministic
+//  which), the other two read a drained cell and are denied. Print order is the only
+//  visibly schedule-dependent thing.
+// =============================================================================
+
+new stdout(`rho:io:stdout`) in {
+
+  // ---- TREASURY pool (cash cells); funds disbursements 1,2,3,5,7,8 -----------
+  @"Treasury"!(500)
+  | @"Dave_cash"!(0)
+  | @"Doug_cash"!(0)
+  | @"Frank_cash"!(0)
+  | @"Erin_cash"!(0)
+  | @"Heidi_cash"!(0)
+  | @"Niaj_cash"!(0)
+  | @"Olivia_cash"!(0)
+  | @"Peggy_cash"!(0)
+  | @"Ivan_cash"!(0)
+  | @"Judy_cash"!(0)
+
+  // ---- QUORUM pool : a one-shot community grant ------------------------------
+  | @"Quorum_grant"!(40)
+  | @"Grace_cash"!(0)
+
+  // ---- RESERVE pool : ring-fenced emergency funds + the thief's sink ---------
+  | @"Reserve"!(100)
+  | @"Mallory_cash"!(0)
+
+  // ---- Consoles : forward every announcement to the terminal -----------------
+  //  @"display" and @"audit" are ORDINARY Rholang channels (plain stdout forwarders),
+  //  NOT cost-accounting machinery. The persistent `<=` receive reprints each send once.
+  | for (@line <= @"display") {
+    stdout!(line)
+  }
+  | for (@line <= @"audit") {
+    stdout!(("AUDIT", line))
+  }
+
+  // ===========================================================================
+  //  INFRASTRUCTURE CONTRACTS (unmetered; only the request *sends* are token-wrapped)
+  // ===========================================================================
+
+  // -- PAY : a guarded, CONSERVATIVE money transfer. ONE 2-cell atomic JOIN reads
+  //    the source and destination; the guard checks funds; both cells are re-emitted
+  //    on BOTH branches, so `from + to` is invariant in every interleaving.
+  | for (@from, @to, @amt, @ret <= @"pay") {
+    for (@f <- @from & @t <- @to) {
+      match (f >= amt) {
+        true  => {
+          @from!(f - amt)
+          | @to!(t + amt)
+          | @ret!(true)
+          | @"display"!(("PAY-OK", from, "->", to, amt))
+        }
+        false => {
+          @from!(f)
+          | @to!(t)
+          | @ret!(false)
+          | @"display"!(("PAY-DENIED", from, "->", to, amt, "(insufficient funds)"))
+        }
+      }
+    }
+  }
+
+  // -- RELEASE : a ONE-SHOT guarded draw used by the quorum. Same conservative
+  //    2-cell move as PAY, but the `amt > 0` guard + the racing callers make it a
+  //    once-only release: the first caller drains the grant cell, every later caller
+  //    reads it short and is denied -- so a 2-of-3 grant is paid out exactly once.
+  | for (@grantCell, @to, @amt, @ret <= @"release") {
+    for (@g <- @grantCell & @rec <- @to) {
+      match (g >= amt and amt > 0) {
+        true  => {
+          @grantCell!(g - amt)
+          | @to!(rec + amt)
+          | @ret!(true)
+          | @"display"!(("RELEASE-OK", grantCell, "->", to, amt))
+        }
+        false => {
+          @grantCell!(g)
+          | @to!(rec)
+          | @ret!(false)
+          | @"display"!(("RELEASE-DENIED", grantCell, "(already released)"))
+        }
+      }
+    }
+  }
+
+  // ===========================================================================
+  //  1.  2-OF-2 JOINT  alice (*) bob  + depth-2 BUDGETS (SEPARATE tokens).
+  //  Alice and Bob jointly authorize TWO vendor payments. `{% P %}[ alice (*) bob ]`
+  //  is joint (AND) authority -- BOTH must fund. Here each trustee mints their fuel
+  //  SEPARATELY, and pre-authorizes BOTH co-signs with a depth-2 budget stack
+  //  `alice :: alice :: ()` (two operations' worth). CONTRAST scene 2 -- the same
+  //  joint authority funded by ONE combined token instead of separate budgets.
+  // ===========================================================================
+  | new r in {
+    {% @"pay"!("Treasury", "Dave_cash", 30, *r) %}[ alice (*) bob ]
+    | for (@ok <- r) {
+      @"audit"!(("Dave vendor-paid 30 [2-of-2 Alice (*) Bob]", ok))
+    }
+  }
+  | new r in {
+    {% @"pay"!("Treasury", "Doug_cash", 20, *r) %}[ alice (*) bob ]
+    | for (@ok <- r) {
+      @"audit"!(("Doug vendor-paid 20 [2-of-2 Alice (*) Bob]", ok))
+    }
+  }
+  | alice :: alice :: ()                                       // Alice's budget = 2 co-signs
+  | bob :: bob :: ()                                           // Bob's budget   = 2 co-signs
+
+  // ===========================================================================
+  //  2.  COMBINED-CELL TOKEN (the SAME alice (*) bob authority, packaged as one).
+  //  Instead of two separate tokens, the trustees co-sign ONE combined token
+  //  `alice (*) bob :: ()` on the compound channel Σ⟦alice ∘ bob⟧. The admission
+  //  gate destructures it into the component authorities (a splitter). Identical
+  //  joint authority and identical BALANCED per-wallet cost -- only the packaging
+  //  differs from scene 1.
+  // ===========================================================================
+  | new r in {
+    {% @"pay"!("Treasury", "Frank_cash", 25, *r) %}[ alice (*) bob ]
+    | for (@ok <- r) {
+      @"audit"!(("Frank contractor-paid 25 [2-of-2, ONE combined token]", ok))
+    }
+  }
+  | alice (*) bob :: ()
+
+  // ===========================================================================
+  //  3.  3-OF-3 JOINT  alice (*) bob (*) carol  (n-ary compound).
+  //  A large grant requires ALL THREE trustees. `(*)` is associative, so the
+  //  3-of-3 is just the order-independent compound of three component authorities,
+  //  each funded by its own token.
+  // ===========================================================================
+  | new r in {
+    {% @"pay"!("Treasury", "Erin_cash", 45, *r) %}[ alice (*) bob (*) carol ]
+    | for (@ok <- r) {
+      @"audit"!(("Erin grant 45 [3-of-3 Alice (*) Bob (*) Carol]", ok))
+    }
+  }
+  | alice :: ()
+  | bob :: ()
+  | carol :: ()
+
+  // ===========================================================================
+  //  4.  2-OF-3 QUORUM via racing pairs + a ONE-SHOT grant.
+  //  IMPORTANT: `(*)` is AND, not a threshold. We build a 2-of-3 quorum by
+  //  ENUMERATING the three authorized 2-trustee pairs -- [alice (*) bob],
+  //  [alice (*) carol], [bob (*) carol] -- each a 2-party AND, all RACING to
+  //  `release` the SAME one-shot grant cell. The grant cell guarantees the
+  //  community grant is paid AT MOST ONCE: exactly one pair wins (nondeterministic
+  //  which), the other two read the drained cell and are denied. Which pairs are
+  //  valid signers is the admission gate's business (each pair balanced-apportioned
+  //  across its two wallets); here the one-shot cell + conservation are what hold.
+  // ===========================================================================
+  | new r in {
+    {% @"release"!("Quorum_grant", "Grace_cash", 40, *r) %}[ alice (*) bob ]
+    | for (@ok <- r) {
+      @"audit"!(("community grant -- release by Alice (*) Bob", ok))
+    }
+  }
+  | alice :: ()
+  | bob :: ()
+  | new r in {
+    {% @"release"!("Quorum_grant", "Grace_cash", 40, *r) %}[ alice (*) carol ]
+    | for (@ok <- r) {
+      @"audit"!(("community grant -- release by Alice (*) Carol", ok))
+    }
+  }
+  | alice :: ()
+  | carol :: ()
+  | new r in {
+    {% @"release"!("Quorum_grant", "Grace_cash", 40, *r) %}[ bob (*) carol ]
+    | for (@ok <- r) {
+      @"audit"!(("community grant -- release by Bob (*) Carol", ok))
+    }
+  }
+  | bob :: ()
+  | carol :: ()
+
+  // ===========================================================================
+  //  5.  DELEGATION -- the  -o  LOLLIPOP  (separate WHO AUTHORIZES from WHO EXECUTES).
+  //  `[ s1 -o s2 ]` on a signed `for`: s1 funds the order RENDEZVOUS, s2 funds the
+  //  SETTLEMENT (the pay) -- two distinct fuels. Four useful delegation shapes follow.
+  // ===========================================================================
+
+  //  (a) PLAIN delegation -- Alice is travelling, so she delegates a supplier payment
+  //      to her agent. Alice (principal) funds the order intake; her agent funds the
+  //      pay. The body is a `for` -- the comm the authority transfers through.
+  | new r in {
+    {% for (@q <- @"aliceOrder") {
+      @"pay"!("Treasury", "Heidi_cash", q, *r)
+    } %}[ alicePrincipal -o aliceAgent ]
+    | for (@ok <- r) {
+      @"audit"!(("Heidi supplier-paid 20 (Alice -o her agent)", ok))
+    }
+  }
+  | alicePrincipal :: ()
+  | aliceAgent :: ()
+  | @"aliceOrder"!(20)
+
+  //  (b) CO-AUTHORIZED delegation (compound on the LEFT) -- the board (Alice AND Bob)
+  //      jointly authorizes the standing PAYMASTER to execute a vendor payment.
+  //      `alice (*) bob -o paymaster` parses as `(alice (*) bob) -o paymaster` (`(*)`
+  //      binds tighter): the JOINT board authority (2-of-2) funds the order intake,
+  //      the paymaster funds execution. Governance authorizes; operations execute.
+  | new r in {
+    {% for (@amt <- @"boardPayOrder") {
+      @"pay"!("Treasury", "Niaj_cash", amt, *r)
+    } %}[ alice (*) bob -o paymaster ]
+    | for (@ok <- r) {
+      @"audit"!(("Niaj vendor-paid 18 (board [Alice (*) Bob] -o paymaster)", ok))
+    }
+  }
+  | alice :: ()
+  | bob :: ()
+  | paymaster :: ()
+  | @"boardPayOrder"!(18)
+
+  //  (c) DELEGATE-TO-A-PAIR / dual control (compound on the RIGHT) -- the treasurer
+  //      delegates a disbursement to a TWO-PERSON team that must BOTH act.
+  //      `treasurer -o clerkA (*) clerkB` parses as `treasurer -o (clerkA (*) clerkB)`:
+  //      the treasurer funds the order intake, the JOINT clerk pair funds the
+  //      settlement (four-eyes execution).
+  | new r in {
+    {% for (@amt <- @"clerkOrder") {
+      @"pay"!("Treasury", "Olivia_cash", amt, *r)
+    } %}[ treasurer -o clerkA (*) clerkB ]
+    | for (@ok <- r) {
+      @"audit"!(("Olivia contractor-paid 12 (treasurer -o dual-control clerks)", ok))
+    }
+  }
+  | treasurer :: ()
+  | clerkA :: ()
+  | clerkB :: ()
+  | @"clerkOrder"!(12)
+
+  //  (d) MULTI-HOP PIPELINE (NESTED lollipops) -- a field-office expense threads
+  //      through a TWO-HOP authorization chain. Chaining MUST be nested `for`s (a
+  //      single-`for` `a -o b -o c` is not well-formed): the OUTER [ regionalDir -o
+  //      deptHead ] funds the regional intake and hands authority to the dept head;
+  //      the INNER [ deptHead -o disburser ] funds the department intake and hands
+  //      the settlement to the disburser. Each hop receives its own instruction --
+  //      genuine causal delegation, the one nested scene in an otherwise flat file.
+  | new r in {
+      {% for (@req <- @"fieldRequest") {
+        {% for (@amt <- @"deptApproval") {
+          @"pay"!("Treasury", "Peggy_cash", amt, *r)
+        } %}[ deptHead -o disburser ]
+      } %}[ regionalDir -o deptHead ]
+    | for (@ok <- r) {
+      @"audit"!(("Peggy field-office-paid 14 (2-hop pipeline regionalDir -o deptHead -o disburser)", ok))
+    }
+  }
+  | regionalDir :: ()
+  | deptHead :: ()
+  | disburser :: ()
+  | @"fieldRequest"!("expense claim #42")
+  | @"deptApproval"!(14)
+
+  // ===========================================================================
+  //  6.  RING-FENCING via a `new`-bound signature -- the emergency RESERVE key.
+  //  The reserve's fuel `reserveSig` lives in its OWN `new reserveSig` scope
+  //  (channel Σ⟦bound reserveSig⟧, keyed on the binder), so a thief OUTSIDE that
+  //  scope who signs with a FREE `reserveSig` hits a DIFFERENT channel and can
+  //  never reach the ring-fenced fuel. At deploy admission Mallory's unfunded
+  //  drain is rejected. (Native: with no gate to park on, Mallory's `pay` RUNS --
+  //  but the Reserve pool is non-crossing, so the move only shuffles Reserve into
+  //  Mallory_cash WITHIN the pool: the total stays 640 and the Treasury is untouched.)
+  // ===========================================================================
+  | new reserveSig in {
+    reserveSig :: ()
+  }
+  | new r in {
+    {% @"pay"!("Reserve", "Mallory_cash", 100, *r) %}[ reserveSig ]
+    | for (@ok <- r) {
+      @"audit"!(("Mallory reserve-drain attempt (admission rejects this)", ok))
+    }
+  }
+
+  // ===========================================================================
+  //  7.  RECEIVE-SIDE MULTI-SIG -- per-clause signed JOIN  {% y <- x %}[ s ]  (Axis-C).
+  //  An invoice settles only once BOTH trustees have POSTED an endorsement. The
+  //  desk JOINS the two endorsement messages atomically -- a genuine run-time AND
+  //  on the data -- while each leg is signed independently (`[ alice ]`, `[ bob ]`):
+  //  per-clause fuel on its OWN lane, the continuation NOT re-signed (ONE token per
+  //  clause). Fuel is NEVER folded into the data join. Only when both endorsements
+  //  are present does the desk pay Ivan from the Treasury.
+  // ===========================================================================
+  | @"alice_ok"!("Alice endorses Ivan's invoice")
+  | @"bob_ok"!("Bob endorses Ivan's invoice")
+  | new r in {
+    for ( {% @e1 <- @"alice_ok" %}[ alice ] & {% @e2 <- @"bob_ok" %}[ bob ] ) {
+      @"pay"!("Treasury", "Ivan_cash", 15, *r)
+    }
+    | for (@ok <- r) {
+      @"audit"!(("Ivan invoice-paid 15 [receive-side 2-endorsement join]", ok))
+    }
+  }
+  | alice :: ()
+  | bob :: ()
+
+  // ===========================================================================
+  //  8.  # P  HASH / CHARTER SIGNATURE -- a governance payout authorized by the
+  //  organization's own charter identity. `# "OrgCharter"` keys Σ on the HASH of
+  //  the charter principal: only code that can name the charter mints its fuel. The
+  //  token `# "OrgCharter" :: ()` and the gate `[ # "OrgCharter" ]` rendezvous there.
+  // ===========================================================================
+  | new r in {
+    {% @"pay"!("Treasury", "Judy_cash", 35, *r) %}[ # "OrgCharter" ]
+    | for (@ok <- r) {
+      @"audit"!(("Judy governance-paid 35 [charter-signed hash sig]", ok))
+    }
+  }
+  | # "OrgCharter" :: ()
+}

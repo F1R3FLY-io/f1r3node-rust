@@ -8,7 +8,6 @@ pub mod lmdb_key_value_store_spec;
 pub mod map_cell_convergence_spec;
 pub mod multi_validator_recovery_spec;
 pub mod recovery_cycle_spec;
-pub mod recovery_repeat_deploy_misfire_spec;
 pub mod rholang_build_test;
 pub mod rnode_key_value_store_manager_spec;
 pub mod single_parent_casper_spec;

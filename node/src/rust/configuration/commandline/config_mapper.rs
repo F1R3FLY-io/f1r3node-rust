@@ -785,6 +785,13 @@ mod tests {
                     genesis_block_number: 0,
                     pos_multi_sig_public_keys: vec![],
                     pos_multi_sig_quorum: 0,
+                    max_cosigners_per_deploy:
+                        casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
+                    initial_phlogiston: casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
+                    epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
+                    // Task #13b: default EMPTY genesis client funding-slot list
+                    // (back-compat — no client `Σ⟦c⟧` seed unless configured).
+                    client_fuel_allocations: Vec::new(),
                     deploy_timestamp: None,
                     native_token_name: "F1R3CAP".to_string(),
                     native_token_symbol: "F1R3".to_string(),
@@ -799,6 +806,7 @@ mod tests {
                     ceremony_master_mode: false,
                 },
                 min_phlo_price: 1,
+                strict_funding_enforcement: false,
                 heartbeat_conf: casper::rust::casper_conf::HeartbeatConf {
                     enabled: false,
                     check_interval: Duration::from_secs(30),

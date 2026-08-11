@@ -105,6 +105,30 @@ pub trait Casper {
         deploy: Signed<DeployData>,
     ) -> Result<Either<DeployError, DeployId>, CasperError>;
 
+    /// Multi-signature aware deploy submission. Default impl rejects
+    /// compound deploys (so legacy/test implementations that haven't
+    /// overridden it fail loudly rather than silently dropping cosigner
+    /// data); production `MultiParentCasperImpl` overrides with the
+    /// Cosigned-aware admission path. For single-signer Cosigned
+    /// envelopes (the legacy uplift case from `Cosigned::from_single_signer`),
+    /// the default delegates to `deploy` for byte-identical observable behavior.
+    fn deploy_cosigned(
+        &self,
+        deploy: crypto::rust::signatures::signed::Cosigned<DeployData>,
+    ) -> Result<Either<DeployError, DeployId>, CasperError> {
+        if deploy.is_compound() {
+            return Err(CasperError::RuntimeError(
+                "deploy_cosigned: implementation does not override the default \
+                 multi-sig path; multi-signature deploys are not supported by this \
+                 Casper implementation. The production MultiParentCasperImpl \
+                 overrides this method."
+                    .to_string(),
+            ));
+        }
+        // Single-signer cosigned: legacy delegate.
+        self.deploy(deploy.into_legacy_signed_unchecked())
+    }
+
     async fn estimator(
         &self,
         dag: &mut KeyValueDagRepresentation,
@@ -253,6 +277,9 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         block_store,
         block_dag_storage,
         deploy_storage: Arc::new(parking_lot::Mutex::new(deploy_storage)),
+        pending_cosigner_metadata: Arc::new(parking_lot::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
         rejected_deploy_buffer,
         casper_buffer_storage,
         validator_id,
@@ -366,6 +393,29 @@ pub struct CasperShardConf {
     pub epoch_length: i32,
     pub quarantine_length: i32,
     pub min_phlo_price: i64,
+    /// Cost-Accounted Rho acceptance-gate activation mode (task #13a). `false`
+    /// (default) = TRANSITIONAL per-pool-presence gate (absent pool ⇒ admit
+    /// unenforced, no debit; back-compat). `true` = SPEC-STRICT (§7.6 step 5):
+    /// an absent pool is a present-zero pool, so an underfunded (`Δ > 0`)
+    /// deploy is rejected and only a `Δ = 0` deploy is admitted (no debit).
+    /// Shard-genesis constant shared by every node ⇒ replay-deterministic
+    /// (mirrors `min_phlo_price`). Threaded onto both the play gate
+    /// (`admit_by_funding`) and the replay recompute
+    /// (`recompute_settlement_debits`) so play and replay agree.
+    pub strict_funding_enforcement: bool,
+    /// Cost-Accounted Rho task #13b: the genesis CLIENT funding-slot allocations
+    /// `[(client_pk, amount)]` — the §5.7/§7.5 genesis/system write that SEEDS
+    /// each client supply pool `Σ⟦c⟧ = from_sig(Ground(client_pk))` so a
+    /// spec-strict shard (`strict_funding_enforcement = true`) can bootstrap
+    /// FUNDED clients. Wired from `CasperConf::client_fuel_allocations` at genesis
+    /// (default EMPTY ⇒ existing shards byte-identical). Shard-genesis constant
+    /// shared by every node ⇒ replay-deterministic (mirrors `min_phlo_price` /
+    /// `strict_funding_enforcement`). Threaded onto the genesis-block-1
+    /// `CloseBlockDeploy` on BOTH the play (`block_creator::create`) and replay
+    /// (`replay_block_system_deploy`) paths; the credit is performed once at the
+    /// block-1 close (gated on `block_number == 1`), mirroring the StageB
+    /// genesis-bonded-set `initialPhlogiston` funding.
+    pub client_fuel_allocations: Vec<(crypto::rust::public_key::PublicKey, i64)>,
     /// Disable late block filtering in DagMerger (for testing or special configurations)
     pub disable_late_block_filtering: bool,
     /// When `true`, `add_deploy` triggers an immediate heartbeat-signal
@@ -390,6 +440,14 @@ pub struct CasperShardConf {
     pub synchrony_finalized_baseline_enabled: bool,
     pub synchrony_finalized_baseline_max_distance: u64,
     pub max_user_deploys_per_block: u32,
+    /// Per-deploy hard cap on number of cosigners in a multi-signature
+    /// deploy. Substituted into the PoS contract at genesis as
+    /// `$$maxCosignersPerDeploy$$` (per §1.7) and enforced at the
+    /// `admit_deploy_cosigned` ingress boundary (per §1.9.5) before the
+    /// deploy reaches the pool. Sourced from
+    /// `casper_conf::max_cosigners_per_deploy` (default 64). Configurable
+    /// per shard.
+    pub max_cosigners_per_deploy: u32,
     /// Native token metadata baked into the TokenMetadata contract at genesis.
     /// Present on every node (joiner, validator, ceremony master, observer, standalone)
     /// so each path can log the effective values at startup.
@@ -431,6 +489,16 @@ impl CasperShardConf {
             epoch_length: 0,
             quarantine_length: 0,
             min_phlo_price: 0,
+            // Task #13a: default OFF = transitional per-pool-presence gate
+            // (back-compat). `CasperShardConf::new()` is the basis for every
+            // `..CasperShardConf::new()`-spread literal, so this default
+            // covers all such sites.
+            strict_funding_enforcement: false,
+            // Task #13b: default EMPTY = no genesis client funding-slot seed
+            // (back-compat — the block-1 close performs no client credit, so
+            // existing shards stay byte-identical). Covers every
+            // `..CasperShardConf::new()`-spread literal (incl. test sites).
+            client_fuel_allocations: Vec::new(),
             disable_late_block_filtering: true,
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: false,
@@ -443,6 +511,7 @@ impl CasperShardConf {
             synchrony_finalized_baseline_enabled: true,
             synchrony_finalized_baseline_max_distance: 2048,
             max_user_deploys_per_block: 128,
+            max_cosigners_per_deploy: crate::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,
@@ -528,6 +597,9 @@ pub mod test_helpers {
                 deploy_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
                     InMemoryKeyValueStore::new(),
                 )))),
+                deploy_occurrence_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(
+                    Arc::new(InMemoryKeyValueStore::new()),
+                ))),
                 floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
                 frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             };

@@ -148,12 +148,11 @@ env:
   # template placeholder, long before the override existed. Grepping would have
   # said yes against a launcher that ignores the variable.
   #
-  # 2026-08-10: bumped to the PR #99 merge (main tip) — AMD64_MEM_GB=48
-  # fleet default (the 48GB soak VM this workflow's guard values are sized
-  # for) plus the RUNNER_MEM_GB_OVERRIDE launch knob. Verified by content
-  # at the SHA: state.env AMD64_MEM_GB=48, override present in
-  # launch-runner.sh.
-  SYSTEM_INTEGRATION_REF: a0c6fba626e4db8310180d0a90a213314424dd92
+  # 2026-08-10: combined draft PR #98's D3/canonical-transfer harness with
+  # PR #99's AMD64_MEM_GB=48 fleet default and RUNNER_MEM_GB_OVERRIDE. The
+  # immutable merge commit has parents a2c690a1 and a0c6fba6, so the 48GB
+  # guard sizing and cost-accounted integration coverage remain together.
+  SYSTEM_INTEGRATION_REF: 087487981ae5c5e08ce12c524dd772ca67a308a6
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"

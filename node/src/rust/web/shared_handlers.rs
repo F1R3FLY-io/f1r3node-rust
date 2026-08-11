@@ -7,9 +7,9 @@ use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use casper::rust::api::block_api::{
-    BlockNotFoundError, DeployNotFoundError, DeployValidationError, ExploratoryDeployReadOnlyError,
-    InvalidHashError, InvalidPublicKeyError, LatestBlockMessageError, NoNewDeploysError,
-    ProposeReadOnlyError,
+    BlockNotFoundError, BlockPendingAdmissionError, DeployNotFoundError, DeployValidationError,
+    ExploratoryDeployReadOnlyError, InvalidHashError, InvalidPublicKeyError,
+    LatestBlockMessageError, NoNewDeploysError, ProposeReadOnlyError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::errors::CasperError;
@@ -216,6 +216,13 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
         if cause.downcast_ref::<BlockNotFoundError>().is_some() {
             return (StatusCode::NOT_FOUND, "block_not_found", cause.to_string());
         }
+        if cause.downcast_ref::<BlockPendingAdmissionError>().is_some() {
+            return (
+                StatusCode::CONFLICT,
+                "block_pending_admission",
+                cause.to_string(),
+            );
+        }
         if cause.downcast_ref::<InvalidHashError>().is_some() {
             return (StatusCode::BAD_REQUEST, "invalid_hash", cause.to_string());
         }
@@ -286,6 +293,17 @@ fn classify_casper_error(err: &CasperError) -> (StatusCode, &'static str, String
         CommError(_) => (S::BAD_GATEWAY, "comm_error", err.to_string()),
 
         SlashAuth(_) => (S::FORBIDDEN, "slash_auth_error", err.to_string()),
+
+        // Cost-accounted-rho multi-sig admission failures: client-side deploy
+        // errors (an underfunded or double-charged cosigner), not node faults.
+        InsufficientPhloByCosigner { .. } => (
+            S::PAYMENT_REQUIRED,
+            "insufficient_phlo_by_cosigner",
+            err.to_string(),
+        ),
+        DuplicateCosignerCharge { .. } => {
+            (S::BAD_REQUEST, "duplicate_cosigner_charge", err.to_string())
+        }
 
         SigningError(_) => internal("signing_error"),
         KvStoreError(_) => internal("kv_store_error"),
@@ -541,6 +559,7 @@ pub async fn get_blocks_handler(
         (status = 200, description = "Block information", body = BlockInfoSerde),
         (status = 400, description = "Hash is shorter than 6 characters or contains non-hex characters (`invalid_hash`)", body = ApiErrorResponse),
         (status = 404, description = "No block matches the given hash or prefix (`block_not_found`)", body = ApiErrorResponse),
+        (status = 409, description = "Block was received but is still pending DAG admission (`block_pending_admission`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`runtime_error`, `history_error`)", body = ApiErrorResponse),
     ),
     tag = "Blocks"

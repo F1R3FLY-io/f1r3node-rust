@@ -137,6 +137,7 @@ impl Finalizer {
     pub async fn run<F, Fut>(
         dag: &KeyValueDagRepresentation,
         ftt: FtThreshold,
+        curr_lfb_hash: &BlockHash,
         curr_lfb_height: i64,
         mut new_lfb_found_effect: F,
         finalizer_conf: &crate::rust::casper_conf::FinalizerConf,
@@ -367,6 +368,11 @@ impl Finalizer {
             if total_started.elapsed() >= work_budget {
                 budget_exhausted = true;
                 break;
+            }
+            if message.block_hash == *curr_lfb_hash
+                || !dag.is_in_main_chain(curr_lfb_hash, &message.block_hash)?
+            {
+                continue;
             }
             let ft_upper_bound =
                 Self::fault_tolerance_upper_bound(&message_weight_map, &agreeing_weight_map);

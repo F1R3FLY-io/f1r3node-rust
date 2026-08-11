@@ -1,0 +1,72 @@
+' Reflection & Cost Pipeline — the runtime signature algebra reflects into an
+' intuitionistic-linear-logic formula, and BOTH projections (cost and
+' consumed-atoms) commute: the two paths to ℕ and to (list ℕ) agree, closed by
+' the Rocq bridge theorems. All three §5.6 bridges are shown.
+'
+' Source of truth for Figure 1 in docs/theory/cost-accounting-linear-logic.md.
+' Palette:  Rust=salmon · Rocq-syntax=blue · Rocq-LL=mint · sinks(ℕ / list ℕ)=amber
+'   arrows: reflection/models=blue #1565C0 · cost=purple #6A1B9A
+'           consumed=green #2E7D32 · Rust-mirror=red-dashed #C62828
+' Render:  plantuml -tsvg docs/theory/diagrams/ll-reflection-pipeline.puml
+
+@startuml ll-reflection-pipeline
+!theme plain
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam ArrowFontSize 11
+skinparam package {
+  BackgroundColor<<rust>> #F8C3B8
+  BackgroundColor<<syn>>  #BBDEFB
+  BackgroundColor<<ll>>   #C8E6C9
+  BorderColor #444444
+}
+skinparam component {
+  BackgroundColor<<rust>> #FAD7CE
+  BackgroundColor<<syn>>  #D7E3FC
+  BackgroundColor<<ll>>   #DCEDC8
+  BackgroundColor<<sink>> #FFECB3
+  BorderColor #333333
+}
+
+package "Wire / Rust runtime" <<rust>> {
+  component "Sig\n(Unit · Hash · And · Plus · With\nBang · WhyNot · Lolly · Threshold)" <<rust>> as SIG
+}
+package "Rocq · CostAccountedSyntax.v" <<syn>> {
+  component "sig_algebra\n(9 constructors)" <<syn>> as SA
+}
+package "Rocq · LinearLogicResources.v" <<ll>> {
+  component "ll_formula\n(LLUnit … LLLolly)" <<ll>> as LLF
+}
+component "ℕ\nfuel cost" <<sink>> as COST
+component "list ℕ\nwitnesses spent" <<sink>> as SPENT
+
+note bottom of SIG #FFF8E1
+F-A: only {Unit, Ground, Quote(=Hash), And} are FUNDING formers
+— the funding key is funding_sig = Ground(pk) (§D2.9). The other six
+(Plus/With/Bang/WhyNot/Lolly/Threshold) are value/type-logic only.
+Canonical F-A picture: sig-funding-vs-capability.puml.
+end note
+
+SIG -[#1565C0]-> SA   : models (Rocq abstraction of)
+SIG .[#C62828].> COST : min_required_for (Rust)\nmirrors clause-for-clause
+SA  -[#1565C0]-> LLF  : <b>ll_of_sig_algebra</b>\nreflection
+SA  -[#6A1B9A]-> COST  : sig_algebra_min_required
+LLF -[#6A1B9A]-> COST  : ll_required_units
+SA  -[#2E7D32]-> SPENT : sig_algebra_presented_atoms
+LLF -[#2E7D32]-> SPENT : ll_consumed_atoms
+
+note bottom of COST
+  <b>ll_sig_algebra_required_complete</b>
+  ll_required_units (ll_of_sig_algebra s)
+  = sig_algebra_min_required s
+end note
+note bottom of SPENT
+  <b>ll_sig_algebra_consumed_matches_presented</b>
+  ll_consumed_atoms (ll_of_sig_algebra s)
+  = sig_algebra_presented_atoms s
+end note
+note right of SA
+  <b>ll_sig_algebra_threshold_valid_bounds_bridge</b>
+  valid ASThreshold ⟹ 1 ≤ k ≤ |members|
+end note
+@enduml

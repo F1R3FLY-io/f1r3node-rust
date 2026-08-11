@@ -16,7 +16,6 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
-use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, Justification};
 use models::rust::validator::Validator;
@@ -229,34 +228,6 @@ fn prune_dag_covered_parents(
     Ok(parents)
 }
 
-fn candidate_scope_has_rejected_deploys(
-    dag: &KeyValueDagRepresentation,
-    block_store: &KeyValueBlockStore,
-    parent_metas: Vec<BlockMetadata>,
-    current_block_number: i64,
-    deploy_lifespan: i64,
-) -> Result<bool, CasperError> {
-    let earliest_block_number = current_block_number - deploy_lifespan;
-    let neighbor_fn = |block_metadata: &BlockMetadata| {
-        proto_util::get_parent_metadatas_above_block_number(
-            block_metadata,
-            earliest_block_number,
-            dag,
-        )
-    };
-    let traversal_result = dag_ops::try_bf_traverse(parent_metas, neighbor_fn)?;
-    for block_metadata in traversal_result {
-        if block_store
-            .rejected_deploy_sigs(&block_metadata.block_hash)?
-            .map(|sigs| !sigs.is_empty())
-            .unwrap_or(false)
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 /// Snapshot-time approximation of buffer recoverability, used only to decide
 /// whether `compute_snapshot` enters a recovery context (which narrows parent
 /// selection). Runs BEFORE the snapshot's `deploys_in_scope` /
@@ -440,29 +411,24 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         &dag.last_finalized_block(),
     )?;
 
-    let (rejected_deploys_in_candidate_scope, recovery_backlog) = if sorted_parents_list.is_empty()
-    {
-        (false, false)
+    let recovery_backlog = if sorted_parents_list.is_empty() {
+        false
     } else {
         let sorted_parent_hashes: Vec<BlockHash> = sorted_parents_list
             .iter()
             .map(|block| block.block_hash.clone())
             .collect();
-        let sorted_parent_metas = dag.lookups_unsafe(sorted_parent_hashes.clone())?;
-        let candidate_block_number = proto_util::max_block_number_metadata(&sorted_parent_metas)
+        let candidate_block_number = sorted_parents_list
+            .iter()
+            .map(|block| block.body.state.block_number)
+            .max()
+            .unwrap_or(0)
             .checked_add(1)
             .ok_or_else(|| {
                 CasperError::RuntimeError(
                     "candidate max_block_num overflow while checking recovery context".to_string(),
                 )
             })?;
-        let rejected_deploys_in_candidate_scope = candidate_scope_has_rejected_deploys(
-            &dag,
-            &this.block_store,
-            sorted_parent_metas,
-            candidate_block_number,
-            this.casper_shard_conf.deploy_lifespan,
-        )?;
         let now_u128 = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_err(CasperError::from)?
@@ -473,28 +439,24 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
                 now_u128
             ))
         })?;
-        let recovery_backlog = local_rejected_buffer_has_recoverable_deploys(
+        local_rejected_buffer_has_recoverable_deploys(
             &this.block_store,
             &this.rejected_deploy_buffer,
             &sorted_parent_hashes,
             candidate_block_number,
             now_millis,
             this.casper_shard_conf.deploy_lifespan,
-        )?;
-        (rejected_deploys_in_candidate_scope, recovery_backlog)
+        )?
     };
-    let recovery_context = recovery_backlog || rejected_deploys_in_candidate_scope;
 
     let unfiltered_parents = if sorted_parents_list.is_empty() {
         vec![this.approved_block.clone()]
-    } else if recovery_context && sorted_parents_list.len() > 1 {
+    } else if recovery_backlog && sorted_parents_list.len() > 1 {
         tracing::info!(
             target: "f1r3fly.casper.recovery",
-            "Parent selection narrowed for deploy recovery: original_parents={}, selected_main={}, local_buffer={}, rejected_in_scope={}",
+            "Parent selection narrowed for selectable deploy recovery: original_parents={}, selected_main={}",
             sorted_parents_list.len(),
-            PrettyPrinter::build_string_bytes(&sorted_parents_list[0].block_hash),
-            recovery_backlog,
-            rejected_deploys_in_candidate_scope
+            PrettyPrinter::build_string_bytes(&sorted_parents_list[0].block_hash)
         );
         vec![sorted_parents_list[0].clone()]
     } else {
@@ -857,9 +819,8 @@ mod tests {
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::{
-        candidate_scope_has_rejected_deploys, deploy_scope_cache_key_matches,
-        local_rejected_buffer_has_recoverable_deploys, prefer_deploy_support_main_parent,
-        prune_dag_covered_parents,
+        deploy_scope_cache_key_matches, local_rejected_buffer_has_recoverable_deploys,
+        prefer_deploy_support_main_parent, prune_dag_covered_parents,
     };
 
     #[test]
@@ -1168,14 +1129,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn candidate_scope_detects_rejected_deploys_without_local_buffer() {
+    async fn historical_rejection_without_local_backlog_does_not_trigger_recovery() {
         let mut kvm = InMemoryStoreManager::new();
         let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
             .await
             .expect("block store");
-        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
-            .await
-            .expect("dag storage");
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
 
         let genesis = block_implicits::get_random_block(
             Some(0),
@@ -1209,33 +1172,23 @@ mod tests {
             Some("test".to_string()),
             None,
         );
-        rejected.body.rejected_deploys = vec![RejectedDeploy {
-            sig: prost::bytes::Bytes::from_static(b"sig"),
-        }];
+        rejected.body.rejected_deploys = vec![RejectedDeploy::legacy(
+            prost::bytes::Bytes::from_static(b"sig"),
+        )];
 
-        block_store
-            .put_block_message(&genesis)
-            .expect("store genesis");
         block_store
             .put_block_message(&rejected)
             .expect("store rejected");
-        dag_storage
-            .insert(&genesis, InsertMode::Approved)
-            .expect("insert genesis");
-        dag_storage
-            .insert(&rejected, InsertMode::Normal)
-            .expect("insert rejected");
 
-        let dag = dag_storage.get_representation().expect("dag");
-        let parent_meta = dag
-            .lookup(&rejected.block_hash)
-            .expect("lookup rejected")
-            .expect("rejected metadata");
-
-        assert!(
-            candidate_scope_has_rejected_deploys(&dag, &block_store, vec![parent_meta], 2, 50)
-                .expect("candidate scope")
-        );
+        assert!(!local_rejected_buffer_has_recoverable_deploys(
+            &block_store,
+            &rejected_deploy_buffer,
+            std::slice::from_ref(&rejected.block_hash),
+            2,
+            i64::MAX,
+            50
+        )
+        .expect("empty backlog"));
     }
 
     #[tokio::test]

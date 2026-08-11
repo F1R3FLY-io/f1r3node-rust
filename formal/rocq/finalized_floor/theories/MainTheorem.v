@@ -36,6 +36,7 @@ From FinalizedFloor Require Import Foundation.
 From FinalizedFloor Require Import CliqueOracle.
 From FinalizedFloor Require Import Floor.
 From FinalizedFloor Require Import Merge.
+From FinalizedFloor Require Import OccurrenceDisposition.
 From FinalizedFloor Require Import Recovery.
 From FinalizedFloor Require Import Selection.
 From FinalizedFloor Require Import IntegerAdd.
@@ -75,6 +76,30 @@ Proof.
   - exact merge_or_perm.
   - exact merge_or_no_lost_bit.
   - exact apply_idem.
+Qed.
+
+Theorem finalized_floor_occurrence_correct :
+  (forall records rejected,
+     tombstoned (reject_occurrence records rejected) rejected)
+  /\
+  (forall records rejected survivor,
+     deploy_id rejected = deploy_id survivor ->
+     source_id rejected <> source_id survivor ->
+     active records survivor ->
+     active (reject_occurrence records rejected) survivor)
+  /\
+  (forall records left right candidate,
+     tombstoned (reject_occurrence (reject_occurrence records left) right) candidate <->
+     tombstoned (reject_occurrence (reject_occurrence records right) left) candidate)
+  /\
+  (forall winner loser,
+     deploy_id winner = deploy_id loser ->
+     source_id winner <> source_id loser ->
+     active (reject_occurrence [] loser) winner).
+Proof.
+  exact (conj rejection_is_source_exact
+          (conj distinct_source_survives_rejection
+            (conj rejection_order_independent one_winner_preserved))).
 Qed.
 
 (* ===========================================================================
@@ -179,7 +204,7 @@ Close Scope Z_scope.
    Strengthens the A9 (ftexact) capstone at its one un-modelled seam: the SOURCING
    of the threshold numerator θ_ppm. A9 proves the decision is exact GIVEN θ_ppm;
    this proves θ_ppm is a pure function of the on-chain value (the unconditional
-   override at casper.rs:242), so local config cannot drive a fork,
+   override at casper.rs:266), so local config cannot drive a fork,
    AND that the exact decision is i128-overflow-free across the node's FULL
    validated ppm range num ∈ [-den, den] (the token_metadata_check.rs:105 range,
    including the negative-θ sentinels) — not just the narrower [0, den].

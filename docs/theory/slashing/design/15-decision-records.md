@@ -115,3 +115,46 @@ classes #12..#16. The Rocq aliases above all live in
 underlying lemmas in the relevant `BugFix*.v` files
 (e.g. `BugFixSlashAuthorization.v`, `ValidatorLifetime.v`,
 `BugFixSeqArithmetic.v`, `BugFixDuplicateJustifications.v`).
+
+## DR-6 — Removal of the Rust↔Scala bisimilarity (2026-05-29)
+
+**Decision.** Remove the Rust↔Scala bisimilarity development: the Rocq module
+`formal/rocq/slashing/theories/Bisimulation.v`, the T-13/T-14/T-15 bisimilarity
+components of `MainTheorem.v` (§5–§8: `main_T13_slash_bisim`, `main_T14_*`,
+`main_T15_*`, `main_bisimilarity_theorem`, `main_bisimilarity_strong`,
+`pipeline_step`/`t_15_pipeline_step_preserves_R`), the five Rust property tests
+that mirrored them (`prop_t_13a_bonds_bisim`, `prop_t_13b_records_bisim`,
+`prop_t_13c_forkchoice_bisim`, `prop_t_14_weak_barbed_equiv`,
+`prop_t_15_bisim_under_workload`), and the corresponding build-manifest and
+documentation entries.
+
+**Rationale.** The migration to the cost-accounted-rho architecture means the
+Rust slashing implementation no longer has a corresponding Scala implementation
+to be bisimilar *to* — the two architectures are no longer comparable. The
+bisimilarity's purpose (finding Rust/Scala divergences during the port) is
+complete. Git history preserves the removed proofs.
+
+**Preserved (explicitly NOT removed).** The headline safety theorem
+`main_slashing_algorithm_correct` and all T-1..T-12 / T-9.x detection,
+slash-effect, two-level-closure, and bug-fix theorems are independent of the
+bisimilarity and remain (in `PoSContract.v`, `EquivocationDetector.v`,
+`TwoLevelSlashing.v`, the `BugFix*.v` modules). The slashing Rocq build closes
+with zero admissions/axioms after the removal (verified).
+
+**Distinct from — and NOT to be confused with — the triple-bisimilarity suite.**
+The *triple*-bisimilarity differential tests (`triple_bisim_driver.rs`,
+`prop_t_triple_bisim_{dispatch,forkchoice,records}.rs`; methodology doc
+`methodology/differential-and-metamorphic/03-triple-bisimilarity.md`) run the
+same trace through **three** implementations — the Rust **harness** (Tier 3),
+the Rocq-derived **oracle** (Tier 2), and the **production** adapter (Tier 1) —
+with **no Scala leg**. They check Rust↔Rocq↔production agreement and remain a
+valuable cross-implementation check (more so under the cost-accounted rework).
+**They are KEPT.** (One of them, `prop_t_triple_bisim_dispatch.rs`, was briefly
+removed in error during this pass and restored.)
+
+**Alternatives considered.**
+
+| Alternative | Consequence |
+| --- | --- |
+| Re-scope the bisimilarity to relate Rust to the *spec's* model | Rejected: the spec's model is realized by the very Rust implementation under test; a Rust↔spec "bisimilarity" collapses to the existing simulation/refinement results already covered by the triple-bisim oracle tier and the cost-accounted-rho translation-faithfulness proofs. |
+| Keep the Rust↔Scala proofs as historical reference | Rejected: dead proofs over a removed counterpart are maintenance debt; git history is the reference. |

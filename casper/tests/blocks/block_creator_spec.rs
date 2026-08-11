@@ -40,8 +40,6 @@ fn create_deploy(
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0),
-        phlo_price: 1,
-        phlo_limit: 1000,
         valid_after_block_number,
         shard_id: "test-shard".to_string(),
         expiration_timestamp,
@@ -848,6 +846,7 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
         None,
         deploy_storage.clone(),
         rejected_deploy_buffer.clone(),
+        std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
         &runtime_manager,
         &mut block_store.clone(),
         false,
@@ -958,6 +957,7 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
         None,
         deploy_storage.clone(),
         rejected_deploy_buffer.clone(),
+        std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
         &runtime_manager,
         &mut block_store.clone(),
         false,
@@ -1056,6 +1056,7 @@ async fn should_remove_expired_deploys_from_rejected_deploy_buffer() {
         None,
         deploy_storage.clone(),
         rejected_deploy_buffer.clone(),
+        std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
         &runtime_manager,
         &mut block_store.clone(),
         false,

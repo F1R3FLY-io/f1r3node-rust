@@ -335,7 +335,10 @@ for(@_v <- @"multi-validator-shared") { Nil }
         rejected_slashes.len()
     );
 
-    let rejected_set: HashSet<prost::bytes::Bytes> = rejected_sigs.iter().cloned().collect();
+    let rejected_set: HashSet<prost::bytes::Bytes> = rejected_sigs
+        .iter()
+        .map(|rejected| rejected.sig.clone())
+        .collect();
 
     // Dedup must keep the shared recovered sig out of the rejected
     // list. If it appears here, dedup did not run and conflict
@@ -343,11 +346,15 @@ for(@_v <- @"multi-validator-shared") { Nil }
     // short-circuit — meaning the multi-validator-convergence dedup at
     // dag_merger.rs:153-235 is broken or has been removed.
     assert!(
-        !rejected_set.contains(&sig_x),
-        "sig_x must NOT appear in `rejected_user_deploys`. Got: {:?}",
+        rejected_sigs.iter().any(|rejected| {
+            rejected.sig == sig_x
+                && rejected.reason
+                    == models::rust::casper::protocol::casper_message::RejectedDeployReason::DuplicateOccurrence
+        }),
+        "the stale sig_x occurrence must be provenance-tombstoned. Got: {:?}",
         rejected_sigs
             .iter()
-            .map(|s| hex::encode(&s[..std::cmp::min(8, s.len())]))
+            .map(|s| hex::encode(&s.sig[..std::cmp::min(8, s.sig.len())]))
             .collect::<Vec<_>>()
     );
 
@@ -371,7 +378,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
         v1_orphaned,
         rejected_sigs
             .iter()
-            .map(|s| hex::encode(&s[..std::cmp::min(8, s.len())]))
+            .map(|s| hex::encode(&s.sig[..std::cmp::min(8, s.sig.len())]))
             .collect::<Vec<_>>()
     );
 }

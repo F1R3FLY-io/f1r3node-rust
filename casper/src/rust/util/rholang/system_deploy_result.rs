@@ -22,6 +22,7 @@ pub enum SystemDeployResult<A> {
 
 impl<A> SystemDeployResult<A> {
     pub fn play_succeeded(
+        pre_state_hash: StateHash,
         state_hash: StateHash,
         log: Vec<Event>,
         system_deploy_data: SystemDeployData,
@@ -29,10 +30,12 @@ impl<A> SystemDeployResult<A> {
         result: A,
     ) -> Self {
         Self::PlaySucceeded {
-            state_hash,
+            state_hash: state_hash.clone(),
             processed_system_deploy: ProcessedSystemDeploy::Succeeded {
                 event_list: log,
                 system_deploy: system_deploy_data,
+                pre_state_hash,
+                post_state_hash: state_hash.clone(),
             },
             mergeable_channels,
             result,
@@ -44,6 +47,8 @@ impl<A> SystemDeployResult<A> {
             processed_system_deploy: ProcessedSystemDeploy::Failed {
                 event_list: log,
                 error_msg: system_deploy_error.error_message,
+                pre_state_hash: StateHash::new(),
+                post_state_hash: StateHash::new(),
             },
         }
     }

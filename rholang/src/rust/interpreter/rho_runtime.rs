@@ -25,17 +25,16 @@ use rspace_plus_plus::rspace::rspace_interface::ISpace;
 use rspace_plus_plus::rspace::trace::Log;
 use rspace_plus_plus::rspace::tuplespace_interface::Tuplespace;
 
-use super::accounting::_cost;
 use super::accounting::cost_accounting::CostAccounting;
 use super::accounting::costs::Cost;
 use super::accounting::has_cost::HasCost;
+use super::accounting::{BillableTokenEvent, RuntimeBudget};
 use super::dispatch::{RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
 use super::interpreter::{EvaluateResult, Interpreter, InterpreterImpl};
 use super::reduce::DebruijnInterpreter;
 use super::registry::registry_bootstrap::ast;
-use super::storage::charging_rspace::ChargingRSpace;
 use super::substitute::Substitute;
 use super::system_processes::{
     Arity, BlockData, BodyRef, Definition, DeployData, InvalidBlocks, Name, ProcessContext,
@@ -131,17 +130,12 @@ pub trait RhoRuntime: HasCost {
     }
 
     /**
-     * The function would execute the par regardless setting cost which would possibly cause
-     * [[coop.rchain.rholang.interpreter.errors.OutOfPhlogistonsError]]. Because of that, use this
-     * function in some situation which is not cost sensitive.
+     * Inject an already-normalized process into the current runtime state.
      *
-     * This function would change the state in the runtime.
-     *
-     * Ideally, this function should be removed or hack the runtime without cost accounting in the future .
-     * @param par [[coop.rchain.models.Par]] for the execution
-     * @param env additional env for execution
-     * @param rand random seed for rholang execution
-     * @return
+     * Ordinary user deploys must enter through `evaluate`, which constructs the
+     * signed metered process and initializes the token budget. This lower-level
+     * entry point is kept for tests, bootstrap, and system paths that have
+     * already selected their budget mode explicitly.
      */
     async fn inj(
         &self,
@@ -253,7 +247,7 @@ pub trait RhoRuntime: HasCost {
 #[derive(Clone)]
 pub struct RhoRuntimeImpl {
     pub reducer: Arc<DebruijnInterpreter>,
-    pub cost: _cost,
+    pub cost: RuntimeBudget,
     pub block_data_ref: Arc<tokio::sync::RwLock<BlockData>>,
     pub invalid_blocks_param: InvalidBlocks,
     pub deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
@@ -263,7 +257,7 @@ pub struct RhoRuntimeImpl {
 impl RhoRuntimeImpl {
     fn new(
         reducer: Arc<DebruijnInterpreter>,
-        cost: _cost,
+        cost: RuntimeBudget,
         block_data_ref: Arc<tokio::sync::RwLock<BlockData>>,
         invalid_blocks_param: InvalidBlocks,
         deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
@@ -281,7 +275,11 @@ impl RhoRuntimeImpl {
 
     pub fn get_cost_log(&self) -> Vec<Cost> { self.cost.get_log() }
 
+    pub fn get_cost_event_log(&self) -> Vec<BillableTokenEvent> { self.cost.get_event_log() }
+
     pub fn clear_cost_log(&self) { self.cost.clear_log() }
+
+    pub fn clear_cost_event_log(&self) { self.cost.clear_event_log() }
 }
 
 impl RhoRuntime for RhoRuntimeImpl {
@@ -451,7 +449,7 @@ impl RhoRuntime for RhoRuntimeImpl {
 }
 
 impl HasCost for RhoRuntimeImpl {
-    fn cost(&self) -> &_cost { &self.cost }
+    fn cost(&self) -> &RuntimeBudget { &self.cost }
 }
 
 pub type RhoTuplespace =
@@ -1108,7 +1106,7 @@ fn basic_processes() -> HashMap<String, Par> {
 }
 
 async fn setup_reducer(
-    charging_rspace: RhoISpace,
+    rspace: RhoISpace,
     block_data_ref: Arc<tokio::sync::RwLock<BlockData>>,
     invalid_blocks: InvalidBlocks,
     deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
@@ -1120,7 +1118,7 @@ async fn setup_reducer(
     ollama_service: SharedOllamaService,
     grpc_client_service: GrpcClientService,
     chromadb_service: SharedChromaDBService,
-    cost: _cost,
+    cost: RuntimeBudget,
 ) -> Arc<DebruijnInterpreter> {
     let reducer_cell = Arc::new(std::sync::OnceLock::new());
 
@@ -1136,7 +1134,7 @@ async fn setup_reducer(
     let urn_map = Arc::new(urn_map);
 
     let replay_dispatch_table = dispatch_table_creator(
-        charging_rspace.clone(),
+        rspace.clone(),
         temp_dispatcher.clone(),
         block_data_ref,
         invalid_blocks,
@@ -1154,14 +1152,15 @@ async fn setup_reducer(
         reducer: reducer_cell.clone(),
     });
 
+    let metering = super::metering::MeteredMachine::new(cost.clone());
     let reducer = Arc::new(DebruijnInterpreter {
-        space: charging_rspace.clone(),
+        space: rspace.clone(),
         dispatcher: dispatcher.clone(),
         urn_map,
         merge_chs,
         mergeable_tags,
-        cost: cost.clone(),
-        substitute: Substitute { cost: cost.clone() },
+        metering: metering.clone(),
+        substitute: Substitute { metering },
     });
 
     reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();
@@ -1223,7 +1222,7 @@ pub async fn create_rho_env<T>(
     merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
     mergeable_tags: Arc<HashMap<Par, MergeType>>,
     extra_system_processes: &mut Vec<Definition>,
-    cost: _cost,
+    cost: RuntimeBudget,
     external_services: ExternalServices,
 ) -> (
     Arc<DebruijnInterpreter>,
@@ -1265,10 +1264,7 @@ where
     let res = introduce_system_process(vec![&mut rspace], proc_defs).await;
     assert!(res.iter().all(|s| s.is_none()));
 
-    let charging_rspace: RhoISpace = Arc::new(Box::new(ChargingRSpace::charging_rspace(
-        rspace,
-        cost.clone(),
-    )));
+    let raw_rspace: RhoISpace = Arc::new(Box::new(rspace));
 
     // Use services from ExternalServices
     let openai_service = external_services.openai.clone();
@@ -1276,7 +1272,7 @@ where
     let grpc_client_service = external_services.grpc_client.clone();
     let chromadb_service = external_services.chroma.clone();
     let reducer = setup_reducer(
-        charging_rspace,
+        raw_rspace,
         block_data_ref.clone(),
         invalid_blocks.clone(),
         deploy_data_ref.clone(),

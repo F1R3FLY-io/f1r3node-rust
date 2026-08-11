@@ -15,7 +15,9 @@ use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use crypto::rust::signatures::signed::Signed;
+// DISABLED (2026-08-07 dev merge warning sweep): only the commented-out
+// `to_signed_deploy` used this.
+// use crypto::rust::signatures::signed::Signed;
 #[cfg(feature = "schnorr_secp256k1_experimental")]
 use crypto::rust::signatures::{
     frost_secp256k1::FrostSecp256k1, schnorr_secp256k1::SchnorrSecp256k1,
@@ -416,13 +418,17 @@ impl WebApi for WebApiImpl {
     }
 
     async fn deploy(&self, request: DeployRequest) -> Result<String> {
-        // Convert request to signed deploy
-        let signed_deploy = to_signed_deploy(&request)?;
-
-        // Deploy using BlockAPI
-        BlockAPI::deploy(
+        // Multi-sig-aware decode. For legacy single-sig requests
+        // (cosigners.is_empty()), this produces a one-element Cosigned
+        // envelope; the downstream BlockAPI::deploy_cosigned routes it
+        // through the legacy single-sig path inside the engine for
+        // byte-identical observable behavior. For multi-sig requests,
+        // the full canonical Cosigned envelope is constructed with
+        // per-signer signature verification.
+        let cosigned_deploy = to_cosigned_deploy(&request)?;
+        BlockAPI::deploy_cosigned(
             &self.engine_cell,
-            signed_deploy,
+            cosigned_deploy,
             &self.trigger_propose_f,
             self.min_phlo_price,
             self.is_node_read_only,
@@ -576,16 +582,6 @@ impl WebApi for WebApiImpl {
             },
             system_deploy_error: if is_full {
                 Some(deploy.system_deploy_error.clone())
-            } else {
-                None
-            },
-            phlo_price: if is_full {
-                Some(deploy.phlo_price)
-            } else {
-                None
-            },
-            phlo_limit: if is_full {
-                Some(deploy.phlo_limit)
             } else {
                 None
             },
@@ -1171,10 +1167,36 @@ pub enum RhoUnforg {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DeployRequest {
     pub data: DeployData,
+    /// Primary signer's public key (hex-encoded).
     pub deployer: String,
+    /// Primary signer's signature (hex-encoded).
     pub signature: String,
     #[serde(rename = "sigAlgorithm")]
     pub sig_algorithm: String,
+    /// Additional cosigners beyond the primary. Empty (default) for legacy
+    /// single-signature deploys. When non-empty, the deploy is treated as
+    /// a multi-signature deploy and validated via `Cosigned::from_signed_data`
+    /// (per-signer signature verification, canonical pk-ascending sort,
+    /// no-duplicate check). D3 (DR-9): no per-signer phlo_share / share-sum.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cosigners: Vec<CosignerJson>,
+}
+
+/// JSON shape for one cosigner in a multi-signature [`DeployRequest`].
+/// Mirrors the wire `CompoundSigner` proto message (proto field 14 inside
+/// `DeployDataProto`).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct CosignerJson {
+    /// Cosigner public key (hex-encoded).
+    pub pk: String,
+    /// Cosigner signature over the canonical deploy hash (hex-encoded).
+    /// Must be a valid signature against the same canonical message hash
+    /// used by the primary signer (`Signed::<DeployData>::signature_hash`).
+    pub signature: String,
+    #[serde(rename = "sigAlgorithm")]
+    pub sig_algorithm: String,
+    // D3 (DR-9): no per-signer phlo_share — funding is the per-signature supply
+    // pool Σ⟦s⟧, not an envelope escrow share.
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1355,10 +1377,8 @@ pub struct DeployResponse {
     pub term: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "systemDeployError")]
     pub system_deploy_error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", rename = "phloPrice")]
-    pub phlo_price: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none", rename = "phloLimit")]
-    pub phlo_limit: Option<i64>,
+    // D3 (DR-9): phloPrice / phloLimit removed from the deploy response — a
+    // deploy's cost is the per-COMM token count (in `cost`), no escrow.
     #[serde(skip_serializing_if = "Option::is_none", rename = "sigAlgorithm")]
     pub sig_algorithm: Option<String>,
     #[serde(
@@ -1531,42 +1551,89 @@ fn validate_and_decode_pubkey(pubkey_hex: &str) -> Result<Vec<u8>> {
 
 // Conversion functions
 
-/// Convert DeployRequest to Signed DeployData
-fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
-    // Decode hex strings
-    let pk_bytes = hex::decode(&request.deployer)
-        .map_err(|e| eyre!("Public key is not valid base16 format: {}", e))?;
-
-    let sig_bytes = hex::decode(&request.signature)
-        .map_err(|e| eyre!("Signature is not valid base16 format: {}", e))?;
-
-    // Create public key
-    let pk = PublicKey::from_bytes(&pk_bytes);
-
-    // Look up signature algorithm by name
-    let sig_alg: Box<dyn SignaturesAlg> = match request.sig_algorithm.as_str() {
-        "secp256k1" => Box::new(crypto::rust::signatures::secp256k1::Secp256k1),
-        "secp256k1-eth" => Box::new(crypto::rust::signatures::secp256k1_eth::Secp256k1Eth),
-        "ed25519" => Box::new(crypto::rust::signatures::ed25519::Ed25519),
+/// Look up a signature algorithm by name, supporting all wire-recognized
+/// algorithms. Shared between `to_signed_deploy` and `to_cosigned_deploy`.
+fn lookup_sig_algorithm(name: &str) -> Result<Box<dyn SignaturesAlg>> {
+    match name {
+        "secp256k1" => Ok(Box::new(crypto::rust::signatures::secp256k1::Secp256k1)),
+        "secp256k1-eth" => Ok(Box::new(
+            crypto::rust::signatures::secp256k1_eth::Secp256k1Eth,
+        )),
+        "ed25519" => Ok(Box::new(crypto::rust::signatures::ed25519::Ed25519)),
         #[cfg(feature = "schnorr_secp256k1_experimental")]
-        "schnorr-secp256k1" => Box::new(SchnorrSecp256k1),
+        "schnorr-secp256k1" => Ok(Box::new(SchnorrSecp256k1)),
         #[cfg(feature = "schnorr_secp256k1_experimental")]
-        "frost-secp256k1" => Box::new(FrostSecp256k1),
-        _ => {
-            return Err(eyre!(
-                "Signature algorithm not supported: {}",
-                request.sig_algorithm
-            ))
-        }
-    };
+        "frost-secp256k1" => Ok(Box::new(FrostSecp256k1)),
+        _ => Err(eyre!("Signature algorithm not supported: {}", name)),
+    }
+}
 
-    // Create DeployData (use the data from request)
-    let deploy_data = request.data.clone();
+// DISABLED (2026-08-07 dev merge warning sweep) — dead since the cosigned
+// path (`to_cosigned_deploy`, which uplifts the empty-cosigners case to a
+// one-element envelope) subsumed the legacy single-sig conversion; kept
+// commented out per the repo's disable-by-commenting rule.
+// /// Convert DeployRequest to Signed DeployData (legacy single-sig path).
+// /// Used only when `request.cosigners.is_empty()` — the multi-sig path
+// /// uses [`to_cosigned_deploy`].
+// fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
+//     // Decode hex strings
+//     let pk_bytes = hex::decode(&request.deployer)
+//         .map_err(|e| eyre!("Public key is not valid base16 format: {}", e))?;
+//
+//     let sig_bytes = hex::decode(&request.signature)
+//         .map_err(|e| eyre!("Signature is not valid base16 format: {}", e))?;
+//
+//     let pk = PublicKey::from_bytes(&pk_bytes);
+//     let sig_alg = lookup_sig_algorithm(&request.sig_algorithm)?;
+//     let deploy_data = request.data.clone();
+//
+//     Signed::from_signed_data(deploy_data, pk, sig_bytes.into(), sig_alg)
+//         .map_err(|e| eyre!("Invalid signature: {}", e))?
+//         .ok_or_else(|| eyre!("Failed to create signed deploy"))
+// }
 
-    // Create signed deploy
-    Signed::from_signed_data(deploy_data, pk, sig_bytes.into(), sig_alg)
-        .map_err(|e| eyre!("Invalid signature: {}", e))?
-        .ok_or_else(|| eyre!("Failed to create signed deploy"))
+/// Convert DeployRequest to a [`Cosigned<DeployData>`] envelope. Handles
+/// both legacy single-signature requests (cosigners empty → one-element
+/// envelope) and multi-signature requests (cosigners non-empty → N-element
+/// envelope). Invariants enforced by `Cosigned::from_signed_data`:
+///
+/// - Every signer's signature verifies against the canonical message hash.
+/// - Canonical pk-ascending sort; no duplicate cosigner public keys.
+///
+/// D3 (DR-9): no per-signer phlo_share and no share-sum invariant — funding is
+/// the per-signature supply pool Σ⟦s⟧.
+fn to_cosigned_deploy(
+    request: &DeployRequest,
+) -> Result<crypto::rust::signatures::signed::Cosigned<DeployData>> {
+    use crypto::rust::signatures::signed::{Cosigned, Cosigner};
+
+    let primary_pk_bytes = hex::decode(&request.deployer)
+        .map_err(|e| eyre!("Primary public key is not valid base16: {}", e))?;
+    let primary_sig_bytes = hex::decode(&request.signature)
+        .map_err(|e| eyre!("Primary signature is not valid base16: {}", e))?;
+
+    // D3 (DR-9): no per-signer phlo_share — funding is the per-signature supply
+    // pool Σ⟦s⟧, not an envelope escrow share.
+    let mut signers = Vec::with_capacity(1 + request.cosigners.len());
+    signers.push(Cosigner {
+        pk: PublicKey::from_bytes(&primary_pk_bytes),
+        sig: primary_sig_bytes.into(),
+        sig_algorithm: lookup_sig_algorithm(&request.sig_algorithm)?,
+    });
+    for (i, cs) in request.cosigners.iter().enumerate() {
+        let pk_bytes = hex::decode(&cs.pk)
+            .map_err(|e| eyre!("Cosigner {} public key is not valid base16: {}", i, e))?;
+        let sig_bytes = hex::decode(&cs.signature)
+            .map_err(|e| eyre!("Cosigner {} signature is not valid base16: {}", i, e))?;
+        signers.push(Cosigner {
+            pk: PublicKey::from_bytes(&pk_bytes),
+            sig: sig_bytes.into(),
+            sig_algorithm: lookup_sig_algorithm(&cs.sig_algorithm)?,
+        });
+    }
+
+    Cosigned::from_signed_data(request.data.clone(), signers)
+        .map_err(|e| eyre!("Cosigned envelope validation failed: {}", e))
 }
 
 // Conversion functions for protobuf generated types
@@ -1960,8 +2027,6 @@ mod tests {
             deployer: Some("deployer1".to_string()),
             term: Some("new ret in { ret!(42) }".to_string()),
             system_deploy_error: Some(String::new()),
-            phlo_price: Some(10),
-            phlo_limit: Some(100000),
             sig_algorithm: Some("secp256k1".to_string()),
             valid_after_block_number: Some(0),
             transfers: Some(vec![]),
@@ -1978,8 +2043,9 @@ mod tests {
         assert_eq!(json["rejectionCount"], 0);
         assert!(json.get("deployer").is_some());
         assert!(json.get("term").is_some());
-        assert!(json.get("phloPrice").is_some());
-        assert!(json.get("phloLimit").is_some());
+        // D3 (DR-9): no phloPrice / phloLimit in the response.
+        assert!(json.get("phloPrice").is_none());
+        assert!(json.get("phloLimit").is_none());
         assert!(json.get("transfers").is_some());
     }
 
@@ -1998,8 +2064,6 @@ mod tests {
             deployer: None,
             term: None,
             system_deploy_error: None,
-            phlo_price: None,
-            phlo_limit: None,
             sig_algorithm: None,
             valid_after_block_number: None,
             transfers: None,
@@ -2031,8 +2095,6 @@ mod tests {
             data: DeployData {
                 term: "contract".to_string(),
                 time_stamp: 1234567890,
-                phlo_price: 1,
-                phlo_limit: 1000000,
                 valid_after_block_number: 0,
                 shard_id: "".to_string(),
                 expiration_timestamp: None,
@@ -2040,6 +2102,7 @@ mod tests {
             deployer: "0123456789abcdef".to_string(),
             signature: "fedcba9876543210".to_string(),
             sig_algorithm: "secp256k1".to_string(),
+            cosigners: Vec::new(),
         };
 
         let json = serde_json::to_string(&request).unwrap();

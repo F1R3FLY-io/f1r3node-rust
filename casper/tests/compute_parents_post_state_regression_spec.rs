@@ -224,6 +224,9 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
                 "047f0f0f5bbe1d6d1a8dac4d88a3957851940f39a57cd89d55fe25b536ab67e6d76fd3f365c83e5bfe11fe7117e549b1ae3dd39bfc867d1c725a4177692c4e7754".to_string(),
             ],
             pos_multi_sig_quorum: 2,
+            max_cosigners_per_deploy: casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
+            initial_phlogiston: casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
+            epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
         },
         vaults: Vec::new(),
         supply: i64::MAX,
@@ -381,6 +384,40 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         rejected_without_skew, rejected_with_skew,
         "Rejected deploy set should be invariant to finalized-set skew for the same parent set."
     );
+
+    // Spec §2.3 determinism pin (D4.3): the kept channel-based multi-parent
+    // merge composes disjoint sibling parents in a canonical, order-independent
+    // way, so the post-state is byte-identical under reversed parent input
+    // order. This guards `compute_parents_post_state` against an order-dependent
+    // merge regression — the residual shared-data-channel reconciliation that
+    // the spec preserves (tex §2.3:286-308) must be deterministic. (`b2`/`b3`
+    // are siblings, so the descendant fast-paths are skipped and the genuine
+    // DAG merge runs in both orders.)
+    runtime_manager.parents_post_state_cache.clear();
+    runtime_manager.block_index_cache.clear();
+
+    let reversed_parents = vec![b3.clone(), b2.clone()];
+    let (state_reversed_order, rejected_reversed_order, _rejected_slashes) =
+        compute_parents_post_state(
+            &block_store,
+            reversed_parents,
+            &snapshot_without_skew,
+            &runtime_manager,
+            &latest_messages_without_skew,
+            None,
+            None,
+        )
+        .await
+        .expect("Failed to compute parents post-state with reversed parent order");
+
+    assert_eq!(
+        state_without_skew, state_reversed_order,
+        "Parents post-state must be invariant to parent input order (spec §2.3 deterministic disjoint composition)."
+    );
+    assert_eq!(
+        rejected_without_skew, rejected_reversed_order,
+        "Rejected deploy set must be invariant to parent input order."
+    );
 }
 
 #[test]
@@ -450,6 +487,9 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
             quarantine_length: 50000,
             number_of_active_validators: 1,
             fault_tolerance_threshold_ppm: 0,
+            initial_phlogiston: casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
+            epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
+            max_cosigners_per_deploy: casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -710,6 +750,9 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
                 "047f0f0f5bbe1d6d1a8dac4d88a3957851940f39a57cd89d55fe25b536ab67e6d76fd3f365c83e5bfe11fe7117e549b1ae3dd39bfc867d1c725a4177692c4e7754".to_string(),
             ],
             pos_multi_sig_quorum: 2,
+            max_cosigners_per_deploy: casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
+            initial_phlogiston: casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
+            epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
         },
         vaults: Vec::new(),
         supply: i64::MAX,
@@ -833,6 +876,10 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
     )
     .await;
 
+    // A missing-but-recomputable mergeable entry must no longer fail the merge:
+    // the pre-pass replays the source block to materialize it (the LFS-imported-
+    // without-replay / locally-rejected recovery path that makes merge validity
+    // node-uniform).
     assert!(
         result.is_ok(),
         "compute_parents_post_state should reconstruct a missing mergeable entry; got {result:?}"
@@ -938,6 +985,9 @@ async fn run_visible_blocks_scope_test() {
                 "047f0f0f5bbe1d6d1a8dac4d88a3957851940f39a57cd89d55fe25b536ab67e6d76fd3f365c83e5bfe11fe7117e549b1ae3dd39bfc867d1c725a4177692c4e7754".to_string(),
             ],
             pos_multi_sig_quorum: 2,
+            max_cosigners_per_deploy: casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
+            initial_phlogiston: casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
+            epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
         },
         vaults: Vec::new(),
         supply: i64::MAX,

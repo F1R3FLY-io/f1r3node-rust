@@ -113,6 +113,8 @@ fn slash_deploy(
             issuer_public_key: PublicKey::from_bytes(&issuer),
             target_activation_epoch,
         },
+        pre_state_hash: Vec::<u8>::new().into(),
+        post_state_hash: Vec::<u8>::new().into(),
     }
 }
 

@@ -72,8 +72,9 @@ and reused by every verified area:
 | Slashing | [`formal/tlaplus/slashing/`](../formal/tlaplus/slashing), [`formal/rocq/slashing/`](../formal/rocq/slashing), kani harnesses | Equivocation detection, authorization arithmetic, concurrent tracking |
 | Finalized floor | [`formal/tlaplus/finalized_floor/`](../formal/tlaplus/finalized_floor), [`formal/rocq/finalized_floor/`](../formal/rocq/finalized_floor) | Floor monotonicity and scan correctness |
 | Fork choice | [`formal/tlaplus/fork_choice/`](../formal/tlaplus/fork_choice), [`formal/rocq/fork_choice/`](../formal/rocq/fork_choice) | Estimator safety |
-| Merge algebra | [`formal/rocq/merge_algebra/`](../formal/rocq/merge_algebra) | DAG-merge scope (`Selection.v`) — the proof `8763bc8e` realigned the code to |
+| Merge algebra | [`formal/rocq/merge_algebra/`](../formal/rocq/merge_algebra), [`formal/z3/merge_algebra/`](../formal/z3/merge_algebra) | Strict-total survivor selection, replay-authenticated exact execution deltas, causal-identity deduplication, and additive RSpace multiset projection; max-union and replicated whole-block deltas are negative models |
 | Deploy lifecycle | [`formal/tlaplus/deploy_lifecycle/`](../formal/tlaplus/deploy_lifecycle) | No re-proposal of finalized/toxic deploys |
+| Deploy occurrence consensus | [`formal/tlaplus/deploy_occurrence/`](../formal/tlaplus/deploy_occurrence), [`formal/rocq/finalized_floor/`](../formal/rocq/finalized_floor) | Source-specific rejection, one-winner preservation, observation-order convergence |
 | Block admission | [`formal/tlaplus/block_admission/`](../formal/tlaplus/block_admission) | Byte-bounded inbound pipeline (below) |
 | Replay cache | proptest invariants in `replay_cache.rs` | Entry/byte caps, accounting-equals-live-sum, admission contract, LRU order |
 

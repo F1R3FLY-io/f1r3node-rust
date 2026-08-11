@@ -362,28 +362,48 @@ impl StateChange {
                 let post = post_state_reader.get_joins(&history_pointer)?;
 
                 // find join which match channels
-                let join = pre
-                    .into_iter()
-                    .chain(post)
-                    .find(|join| {
-                        let mut join_channels = join
-                            .iter()
-                            .map(|item| stable_hash_provider::hash(item))
-                            .collect::<Vec<_>>();
-                        // sorting is required because channels of a consume in event log and
-                        // channels of a join in history might not be
-                        // ordered the same way
-                        consume_channels.sort();
-                        join_channels.sort();
-                        *consume_channels == join_channels
-                    })
-                    .expect(
-                        "Tuple space inconsistency found: channel of consume does not contain \
-                         join record corresponding to the consume channels.",
-                    );
+                let join_opt = pre.into_iter().chain(post).find(|join| {
+                    let mut join_channels = join
+                        .iter()
+                        .map(|item| stable_hash_provider::hash(item))
+                        .collect::<Vec<_>>();
+                    // sorting is required because channels of a consume in event log and
+                    // channels of a join in history might not be
+                    // ordered the same way
+                    consume_channels.sort();
+                    join_channels.sort();
+                    *consume_channels == join_channels
+                });
 
-                let raw_join = bincode::serialize(&join).expect("Unable to serialize join");
-                joins_map.insert(consume_channels, raw_join);
+                // A consume can be "affected" by the event-log set algebra yet have ZERO net
+                // tuple-space effect (created-and-resolved within the block, or a peek /
+                // immediate match leaving no residue), in which case neither pre nor post
+                // state holds a join for it. Such a no-op consume carries no join change:
+                // the `cont_diff.retain(...)` below drops it from the continuation diff, and
+                // `state_change_merger` consults this join map ONLY for consumes that have a
+                // (non-no-op) continuation change. So skip it rather than `.expect()`-
+                // panicking — the panic was a craftable validator-crash on attacker-
+                // influenceable input, and it fired during eager per-branch indexing.
+                // A genuine surviving/destroyed consume always has its join written in
+                // lockstep with its continuation, so it cannot reach pre==post==empty; were
+                // one ever to, the downstream merger degrades to a deterministic
+                // `HistoryError::MergeError` rather than a silent wrong state.
+                match join_opt {
+                    Some(join) => {
+                        let raw_join = bincode::serialize(&join).expect("Unable to serialize join");
+                        joins_map.insert(consume_channels, raw_join);
+                    }
+                    None => {
+                        tracing::warn!(
+                            target: "rspace.merger",
+                            "state_change: affected consume has no join record in pre or post \
+                             state (net-zero-effect / no-op consume); skipping its join entry. \
+                             This is expected for created-and-resolved or peek consumes and is \
+                             NOT a tuple-space inconsistency. channels={:?}",
+                            consume_channels
+                        );
+                    }
+                }
                 Ok::<(), HistoryError>(())
             })?;
 
@@ -505,6 +525,25 @@ impl StateChange {
     }
 
     pub fn combine(self, other: Self) -> Self {
+        self.merge(other, true, false)
+            .expect("legacy StateChange merge cannot fail")
+    }
+
+    pub fn join(self, other: Self) -> Self {
+        self.merge(other, false, false)
+            .expect("legacy StateChange join cannot fail")
+    }
+
+    pub fn additive_join(self, other: Self) -> Result<Self, HistoryError> {
+        self.merge(other, false, true)
+    }
+
+    fn merge(
+        self,
+        other: Self,
+        normalize_channels: bool,
+        additive_channels: bool,
+    ) -> Result<Self, HistoryError> {
         tracing::debug!(
             target: "f1r3fly.merge.step",
             step = "StateChange::combine.ENTER",
@@ -514,6 +553,7 @@ impl StateChange {
             other_datums = other.datums_changes.len(),
             other_conts = other.cont_changes.len(),
             other_joins = other.consume_channels_to_join_serialized_map.len(),
+            normalize_channels,
             "combining two StateChanges (multiset union per channel)",
         );
 
@@ -538,7 +578,13 @@ impl StateChange {
                             "datum channel present on both sides -> accumulating",
                         );
                     }
-                    let merged = current.combine(value);
+                    let merged = if additive_channels {
+                        current.additive_join(value)
+                    } else if normalize_channels {
+                        current.combine(value)
+                    } else {
+                        current.join(value)
+                    };
                     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
                         tracing::debug!(
                             target: "f1r3fly.merge.step",
@@ -586,7 +632,13 @@ impl StateChange {
                             "cont consume present on both sides -> accumulating",
                         );
                     }
-                    let merged = current.combine(value);
+                    let merged = if additive_channels {
+                        current.additive_join(value)
+                    } else if normalize_channels {
+                        current.combine(value)
+                    } else {
+                        current.join(value)
+                    };
                     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
                         tracing::debug!(
                             target: "f1r3fly.merge.step",
@@ -618,9 +670,24 @@ impl StateChange {
             }
         }
 
-        // Combine join maps (newer values take precedence)
         for (key, value) in other.consume_channels_to_join_serialized_map {
-            consume_channels_to_join_serialized_map.insert(key, value);
+            if additive_channels {
+                match consume_channels_to_join_serialized_map.entry(key) {
+                    dashmap::mapref::entry::Entry::Occupied(entry) => {
+                        if entry.get() != &value {
+                            return Err(HistoryError::MergeError(format!(
+                                "inconsistent serialized join for consume channels {:?}",
+                                entry.key()
+                            )));
+                        }
+                    }
+                    dashmap::mapref::entry::Entry::Vacant(entry) => {
+                        entry.insert(value);
+                    }
+                }
+            } else {
+                consume_channels_to_join_serialized_map.insert(key, value);
+            }
         }
 
         if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
@@ -650,10 +717,26 @@ impl StateChange {
             "combined StateChange",
         );
 
-        Self {
+        Ok(Self {
             datums_changes,
             cont_changes,
             consume_channels_to_join_serialized_map,
+        })
+    }
+
+    pub fn normalized(self) -> Self {
+        for mut entry in self.datums_changes.iter_mut() {
+            let current = std::mem::replace(entry.value_mut(), ChannelChange::empty());
+            *entry.value_mut() = current.canonicalized();
         }
+        for mut entry in self.cont_changes.iter_mut() {
+            let current = std::mem::replace(entry.value_mut(), ChannelChange::empty());
+            *entry.value_mut() = current.canonicalized();
+        }
+        self.datums_changes
+            .retain(|_, change| !(change.added.is_empty() && change.removed.is_empty()));
+        self.cont_changes
+            .retain(|_, change| !(change.added.is_empty() && change.removed.is_empty()));
+        self
     }
 }

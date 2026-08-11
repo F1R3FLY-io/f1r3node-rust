@@ -8,6 +8,8 @@
 // faultToleranceThresholdPpm - protocol fault-tolerance threshold in parts-per-million
 // posMultiSigPublicKeys - public keys
 // posMultiSigQuorum - how many confirmations are necessary to use multi-sig vault
+// initialPhlogiston - phlogiston minted into a validator's draw wallet @W_v when it first bonds (Cost-Accounted Rho, spec Appendix B; DR-13)
+// epochPhlogiston - phlogiston minted into each active validator's draw wallet @W_v at every epoch boundary (Cost-Accounted Rho, spec Appendix B/§4.7; DR-13)
 /*
 
 Life cycle in POS
@@ -84,18 +86,22 @@ new PoS,
     posId(`rho:system:deployerId`),
     PendingRewards, MergeIntMaps, treeHashMapCh,
     sysAuthTokenOps(`sys:authToken:ops`),
-    multiSigSystemVaultCh, coopVaultCh,
+    multiSigSystemVaultCh, coopVaultCh, makeMintCh,
     uriOut, sumFromPair
 in {
-  // Simultaneously retrieves SystemVault, ListOps, TreeHashMap, and MultiSigSystemVault contracts from the registry.
+  // Simultaneously retrieves SystemVault, ListOps, TreeHashMap, MultiSigSystemVault,
+  // and MakeMint contracts from the registry. MakeMint funds the per-validator
+  // phlogiston draw wallet @W_v in `mintPhlogiston` (Cost-Accounted Rho, DR-13).
   registryLookup!(`rho:vault:system`, *systemVaultCh) |
   registryLookup!(`rho:lang:listOps`, *listOpsCh) |
   registryLookup!(`rho:lang:treeHashMap`, *treeHashMapCh) |
   registryLookup!(`rho:vault:multiSig`, *multiSigSystemVaultCh) |
+  registryLookup!(`rho:system:makeMint`, *makeMintCh) |
   for (@(_, SystemVault)         <- systemVaultCh &
        @(_, ListOps)          <- listOpsCh &
        TreeHashMap            <- treeHashMapCh &
-       @(_, MultiSigSystemVault) <- multiSigSystemVaultCh) {
+       @(_, MultiSigSystemVault) <- multiSigSystemVaultCh &
+       @(_, MakeMint)         <- makeMintCh) {
     new posDeployerVaultAddressCh, posDeployerAuthKeyCh, posDeployerVaultCh, posVaultCh,
         initialActiveCh, pendingRewardsMapCh, createUnfVault, moveInitialBondCh, posAuthKeyCh
     in {
@@ -170,7 +176,54 @@ in {
           for (@initialActive     <- initialActiveCh;
                @(true, _) <- moveInitialBondCh) {
             new stateCh, pendingRewardsInitializedCh, rewardsInfo, calTotalActiveBonds, calTotalBonds,
-                accumulateSndNum, accumulateFstOfSndArg, accumulateItemInState in {
+                accumulateSndNum, accumulateFstOfSndArg, accumulateItemInState, walletTag,
+                quarantineTag,
+                mintPhlogistonToValidators, convertFeesToValidators in {
+              // `walletTag` is a fresh genesis-scoped unforgeable name (a sibling
+              // of `posDeployStateTag` in kind: a content-addressing tag), used
+              // ONLY to build the per-validator phlogiston DRAW wallet channel
+              // @W_v := @(*walletTag, validatorPk) (Cost-Accounted Rho, spec
+              // Appendix B eq:38; DR-13). It is allocated here in the PoS-state
+              // scope (rather than the narrower `posDeployStateTag` block) so it is
+              // in scope for every site that references @W_v: the bond-time VB
+              // install (`bond`), `mintPhlogiston`, and the genesis bonded-set VB
+              // install — all of which live across sibling contract blocks. See the
+              // full unforgeability/injectivity/merge-safety rationale at the
+              // `mintPhlogiston`/VB definitions below.
+              //
+              // `quarantineTag` is its sibling for the Stage-C two-effect slash
+              // (Cost-Accounted Rho, spec Appendix B "Slashing" / DR-3): on slash
+              // the offender's stake is EARMARKED on the per-offender quarantine
+              // channel @(*quarantineTag, validatorPk) (NOT transferred to
+              // coopMultiVault — the transfer is deferred to `redeemSlashed`'s
+              // adjudication, avoiding the transfer-failure path). Like `walletTag`
+              // it is unforgeable (private tag), deterministic, and INJECTIVE in
+              // validatorPk (distinct offenders ⇒ distinct quarantine channels,
+              // disjoint from the wallet/funding-slot domains —
+              // formal/rocq/cost_accounted_rho/theories/WalletNaming.v
+              // `wallet_quarantine_domain_disjoint` /
+              // `quarantine_funding_slot_domain_disjoint`), so two offenders'
+              // quarantines never alias under a multi-parent merge.
+              //
+              // DR-13 (CRITICAL): @W_v (the validator's DRAW channel) is DISTINCT
+              // from the SUPPLY POOL Σ⟦v⟧ = from_sig(Ground(pk)) that the WD-D2
+              // acceptance gate reads. Rholang cannot name Σ⟦v⟧ (no bytes→GPrivate
+              // surface primitive — the unforgeability mechanism), so the Σ⟦v⟧
+              // balance write is a Rust `produce_balance` co-located in the same
+              // sysAuthToken-bearing system deploy; it is NOT written in Rholang.
+              //
+              // Cost-Accounted Rho Stage D (spec "Fee conversion" tex:3061-3100 /
+              // DR-4): the per-validator FEE pool F_v is a Rust-nameable,
+              // content-addressed balance (`supply::fee_collection_channel(pk)`,
+              // keyed by `Sig::Ground(pk)` under a distinct fee domain) — like
+              // Σ⟦v⟧, it is REDUCER-UNWRITABLE (no bytes→GPrivate surface
+              // primitive — DR-13) and written ONLY by Rust (`post_eval`: the
+              // per-block FeeExtract collection credit; the per-epoch convert zero).
+              // So PoS does NOT hold a Rholang fee carrier; `convertFeesToValidators`
+              // here decides ONLY per-validator ELIGIBILITY (active ∧ ¬halted ∧
+              // ¬convertedEpochs) + the `convertedEpochs` idempotency record, and
+              // publishes the eligible list on `sys:casper:feeConvertList` for
+              // `post_eval` to convert each eligible validator's F_v 1:1 into Σ⟦v⟧.
               // Initializes PoS state structure.
               stateCh!({
                 // Map[PublicKey, Int] - each validator stake
@@ -188,6 +241,47 @@ in {
                 "pendingWithdrawers": {},
                 "randomImages"    : {},
                 "randomNumbers"   : {},
+                // Set[(PublicKey, Int)] - per-validator-per-epoch mint ledger
+                //   (Cost-Accounted Rho, Stage B Decision 3; DR-13). An entry
+                //   (pk, epochIndex) records that `pk` was already minted its
+                //   phlogiston for `epochIndex = blockNumber / epochLength`. The
+                //   closeBlock mint fold skips any (pk, epochIndex) already
+                //   present, so a replayed / multi-parent-duplicated epoch mint
+                //   is a no-op on BOTH @W_v and Σ⟦v⟧ (idempotency). Genesis-init
+                //   empty; the genesis bonded set is funded on block 1 via the
+                //   non-epoch (epochIndex=0) mint path.
+                "mintedEpochs"     : Set(),
+                // Set[PublicKey] - validators whose minting is halted (the
+                //   Cost-Accounted Rho slash effect, spec Appendix B / DR-3).
+                //   The closeBlock mint fold skips any pk in this set across ALL
+                //   epochs (the cross-epoch halt). Stage C's `slash` inserts pk
+                //   here (and zeros Σ⟦v⟧ + drains @W_v); `redeemSlashed` removes
+                //   it (and lets the normal next-epoch mint re-fund). Genesis-init
+                //   empty (no validator starts halted).
+                "mintingHalted"    : Set(),
+                // Map[PublicKey, (Int, Channel)] - the Cost-Accounted Rho Stage-C
+                //   two-effect slash quarantine ledger (spec Appendix B "Slashing"
+                //   / DR-3, DR-7). An entry (pk -> (bond, quarantineCh)) records
+                //   that `pk`'s pre-slash bond `bond` is EARMARKED on its
+                //   per-offender quarantine channel `quarantineCh = @(*quarantineTag,
+                //   pk)` pending adjudication, while the REV itself stays in
+                //   `posVault` (NOT moved to coopMultiVault — the transfer is
+                //   deferred to `redeemSlashed`). `slash` inserts here; the three
+                //   `redeemSlashed` outcomes consume it: Vindicated restores `bond`
+                //   to the validator's active stake, Guilty{penalty} moves `penalty`
+                //   to coopMultiVault and restores the remainder, Burned destroys
+                //   it. Genesis-init empty (no validator starts quarantined).
+                "quarantinedStake" : {},
+                // Set[(PublicKey, Int)] - per-validator-per-epoch fee-CONVERSION
+                //   ledger (Cost-Accounted Rho Stage D; spec tex:3095-3100 / DR-4).
+                //   An entry (pk, epochIndex) records that `pk`'s collected fees
+                //   F_v were already 1:1-converted to phlogiston for that epoch.
+                //   The closeBlock convertFeesToValidators fold skips any
+                //   (pk, epochIndex) already present, so a replayed /
+                //   multi-parent-duplicated epoch conversion is a NO-OP on F_v,
+                //   @W_v, and Σ⟦v⟧ (idempotency — the SIBLING guard of
+                //   `mintedEpochs`). Genesis-init empty (no fees collected yet).
+                "convertedEpochs"  : Set(),
               }) |
               contract rewardsInfo(retCh) = {
                 new posBalanceCh, totalActiveBondCh, totalBondCh, totalWithdrawCh, committedRewardsCh in {
@@ -270,6 +364,26 @@ in {
                   returnCh!(state.get("activeValidators"))
                 }
               } |
+              // Cost-Accounted Rho Stage-C observability (DR-3/DR-7): peeks at the
+              // `mintingHalted` Set[PublicKey] — the cross-epoch mint-halt set the
+              // slash inserts into and `redeemSlashed` (Vindicated/Guilty) removes
+              // from. Read-only `<<-` peek (no state mutation), mirroring `getBonds`.
+              // Used by the Stage-C redemption e2e test to witness the un-halt
+              // effect (a restored validator must NOT be in this set).
+              contract PoS(@"getMintingHalted", returnCh) = {
+                for (@state <<- stateCh) {
+                  returnCh!(state.get("mintingHalted"))
+                }
+              } |
+              // Cost-Accounted Rho Stage-C observability: peeks at the
+              // `quarantinedStake` Map[PublicKey, (Int, PublicKey)] — the
+              // per-offender earmark recorded by slash and cleared by every
+              // `redeemSlashed` outcome. Read-only `<<-` peek (no state mutation).
+              contract PoS(@"getQuarantinedStake", returnCh) = {
+                for (@state <<- stateCh) {
+                  returnCh!(state.get("quarantinedStake"))
+                }
+              } |
               // Peeks at active validator list.
               contract PoS(@"getWithdrawers", returnCh) = {
                 for (@state <<- stateCh) {
@@ -343,6 +457,18 @@ in {
                         match depositResult {
                           // If deposit is successful, the user becomes a bonded validator.
                           (true, _) => {
+                            // Install the spec's persistent validator bootstrap VB
+                            // (Cost-Accounted Rho, spec Appendix B eq:39; DR-3) for
+                            // the newly-bonded validator's draw wallet @W_v, mirror
+                            // of the genesis bonded-set install. VH = nil, so
+                            // VB = for(phlo<-@W_v){ *phlo }. The wallet starts EMPTY
+                            // (no phlogiston minted at bond — bond is a USER deploy
+                            // with no sysAuthToken; minting happens on the
+                            // authorized epoch/bond mint path), so VB blocks until
+                            // the validator is first funded — the DR-3 halt. The
+                            // validator handler VH is composed IN PARALLEL by a
+                            // later workstream WITHOUT modifying VB.
+                            for (phlo <= @(*walletTag, userPk)) { *phlo } |
                             resultCh!(state.set("allBonds", state.get("allBonds").set(userPk, amount)), depositResult)
                           }
                           // If deposit is unsuccessful, the user is not bonded.
@@ -384,74 +510,276 @@ in {
               // Private method which charges a deployer for a deploy.
               // Deployer's funds are deposited into the block sender's vault.
               // Return expects (Boolean, Either[Nil, String])
-              new currentDeployerData in {
-                contract PoS(@"chargeDeploy", @deployerId, @amount, @sysAuthToken, return) = {
+              // Per-deploy state holding `Map[deployerId -> initialPaymentAmount]`
+              // for in-flight charges awaiting refund. Multi-signature deploys
+              // accumulate one entry per cosigner; legacy single-sig deploys
+              // hold exactly one entry. The Map shape eliminates the
+              // non-deterministic `for` consumption hazard of the previous
+              // single-tuple channel design when N > 1 cosigners are charged
+              // in parallel — see the cost-accounted rho-calculus §3.2 Rules
+              // 2-5 for the operational semantics this realizes.
+              new posDeployStateTag in {
+                // `posDeployStateTag` is a fresh genesis-scoped name used only
+                // to build per-deploy-group state channels `@(*posDeployStateTag,
+                // deployGroupId)`. Each distinct deploy/branch gets a distinct
+                // `deployGroupId` (see system_deploy_util::deploy_group_id), so
+                // its charge-tracking Produce has a distinct content-addressed
+                // identity even when the tracked value is an identical `{}` —
+                // this is what stops the multi-parent merge engine from flagging
+                // independent deploys as conflicting/dependent. A deploy's N
+                // cosigners share one channel (dedup/cap/refund preserved).
+                //
+                // NOTE: no single global `{}` seed here. The map is seeded once
+                // per group, on the first cosigner's charge (`isFirst`), which is
+                // safe because a deploy's cosigner charges run SEQUENTIALLY (an
+                // awaited Rust loop in play_deploy_with_cost_accounting_cosigned),
+                // so there is no race among one deploy's charges.
+                //
+                // @W_v := @(*walletTag, validatorPk) (the per-validator phlogiston
+                // DRAW wallet; `walletTag` is allocated in the PoS-state scope
+                // above) is — by the SAME content-addressing rationale these
+                // charge-tracking channels rely on — unforgeable (private tag),
+                // deterministic, INJECTIVE in validatorPk (distinct pubkeys ⇒
+                // distinct channels, formalized in
+                // formal/rocq/cost_accounted_rho/theories/WalletNaming.v as
+                // `wallet_name_injective`), replay-stable, and merge-safe (distinct
+                // validators' mints get distinct Produce identities). DR-13: @W_v
+                // is DISTINCT from the supply pool Σ⟦v⟧ = from_sig(Ground(pk)); the
+                // Σ⟦v⟧ balance datum (TOKEN_TAG, n) is a Rust `produce_balance`
+                // concern, NOT built here (Rholang cannot name Σ⟦v⟧). @W_v holds a
+                // MakeMint purse — the draw representation.
+
+                // Private method which mints `amount` phlogiston into the validator's
+                // draw wallet @W_v := @(*walletTag, validatorPk) (Cost-Accounted Rho,
+                // spec Appendix B; DR-13). Authority root: a valid `sysAuthToken`
+                // (GSysAuthToken), constructible ONLY by Rust system deploys via
+                // `mk_sys_auth_token` (system_deploy.rs) — reachable from the
+                // epoch/bond mint path that always holds the validator pubkey.
+                // On a VALID token: deposit a fresh MakeMint purse of `amount` onto
+                // @W_v and `return!(true)`. On an INVALID/absent token: deposit
+                // NOTHING and `return!((false, "unauthorized mint"))`.
+                // Return expects Boolean | (Boolean, String).
+                contract PoS(@"mintPhlogiston", @validatorPk, @amount, @sysAuthToken, return) = {
                   new isValidTokenCh in {
                     sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
                     for (@isValid <- isValidTokenCh) {
                       if (isValid) {
-                        new depositCh in {
-                          deposit!(deployerId, amount, posVaultAddr, *depositCh) |
-                          for (@depositResult <- depositCh){
-                            match depositResult {
-                              (true, _) => {
-                                currentDeployerData!((deployerId, amount)) |
-                                return!(depositResult)
-                              }
-                              (_, errorMessage) => {
-                                return!((false, "Deploy payment failed: " ++ errorMessage))
+                        // Authorized: mint a purse of `amount` and deposit it onto
+                        // the validator's draw wallet. The bootstrap VB
+                        // (for(phlo<-@W_v){...}) consumes this purse to release
+                        // execution fuel into the ambient composition.
+                        new mintCh in {
+                          @MakeMint!(*mintCh) |
+                          for (mint <- mintCh) {
+                            new purseCh in {
+                              mint!("makePurse", amount, *purseCh) |
+                              for (purse <- purseCh) {
+                                @(*walletTag, validatorPk)!(*purse) |
+                                return!(true)
                               }
                             }
                           }
                         }
                       } else {
-                        return!((false, "Invalid system auth token"))
+                        // Unauthorized: no deposit, explicit rejection. A forged or
+                        // absent token cannot be a GSysAuthToken
+                        // (system_processes.rs `sys_auth_token_ops`), so this branch
+                        // is the sole outcome for any non-system caller.
+                        return!((false, "unauthorized mint"))
                       }
                     }
                   }
                 } |
-                // Private method which refunds a deployer if too much was charged in chargeDeploy.
-                // Funds are transferred from the block sender's vault to the deployer.
-                // Return expects (Boolean, Either[Nil, String])
-                contract PoS(@"refundDeploy", @refundAmount, @sysAuthToken, return) = {
-                  new isValidTokenCh in {
-                    sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
-                    for (@isValid <- isValidTokenCh) {
-                      if (isValid) {
-                        for (@(deployerId, initialPaymentAmount) <- currentDeployerData){
-                          if (refundAmount > 0) {
-                            new vaultAddressCh, transferCh in {
-                              vaultAddressOps!("fromDeployerId", deployerId, *vaultAddressCh) |
-                              for (@deployerVaultAddress <- vaultAddressCh) {
-                                // Transfer (from sender to deployer) called in refundDeploy.
-                                @posVault!("transfer", deployerVaultAddress, refundAmount, posAuthKey, *transferCh) |
-                                for (@transferResult <- transferCh) {
-                                  match transferResult {
-                                    (true, _) => {
-                                      return!((true, Nil))
-                                    }
-                                    (_, errorMessage) => {
-                                      return!((false, "(Bug found) Deploy refund failed: " ++ errorMessage))
-                                    }
-                                  }
-                                }
-                              }
+                // Shared epoch/genesis mint fold (Cost-Accounted Rho, Stage B
+                // Decision 2/3; DR-13). Folds over `allBonds` and mints `amount`
+                // phlogiston into the draw wallet @W_v of every validator `pk`
+                // that is ELIGIBLE for `epochIdx`:
+                //
+                //     eligible(pk) ≜ activeValidators.contains(pk)
+                //                  ∧ ¬mintingHalted.contains(pk)
+                //                  ∧ ¬mintedEpochs.contains((pk, epochIdx))
+                //
+                // For each eligible `pk`: (1) call `mintPhlogiston` (the @W_v
+                // purse half — the authorized, sysAuthToken-gated draw deposit);
+                // (2) record (pk, epochIdx) in `mintedEpochs` so a replayed /
+                // multi-parent-duplicated mint is a no-op (idempotency); (3)
+                // accumulate (pk, amount) into the returned mint list. The
+                // returned `mintList` is published by `closeBlock` onto the
+                // Rust-known, user-unforgeable env channel `sys:casper:mintList`,
+                // which `CloseBlockDeploy::post_eval` reads to mirror each amount
+                // into the SUPPLY POOL Σ⟦v⟧ = from_sig(Ground(pk)) — the half
+                // Rholang cannot write (Σ⟦v⟧ is unnameable in Rholang, DR-13). The
+                // @W_v purse and the Σ⟦v⟧ balance are I-DUAL: both derive from the
+                // SAME `amount` literal in the SAME authorized close-block deploy.
+                //
+                // Returns (updatedState, mintList) on returnCh, where
+                //   updatedState : the state with `mintedEpochs` extended, and
+                //   mintList     : List[(PublicKey, Int)] of the (pk, amount) minted.
+                contract mintPhlogistonToValidators(@state, @amount, @epochIdx, @sysAuthToken, returnCh) = {
+                  new mintFold, seedCh in {
+                    // The fold accumulator is the pair (stateSoFar, mintListSoFar).
+                    seedCh!((state, [])) |
+                    for (@seed <- seedCh) {
+                      @ListOps!("fold", state.get("allBonds").toList(), seed, *mintFold, *returnCh) |
+                      contract mintFold(@(pk, _bond), @(accState, accMints), resultCh) = {
+                        if (
+                          accState.get("activeValidators").contains(pk) and
+                          (accState.get("mintingHalted").contains(pk) == false) and
+                          (accState.get("mintedEpochs").contains((pk, epochIdx)) == false)
+                        ) {
+                          // Eligible: mint the @W_v purse half, then record the
+                          // epoch and accumulate the (pk, amount) mint record. We
+                          // sequence on `mintPhlogiston`'s ack so the deposit is
+                          // committed before the fold advances.
+                          new mintAckCh in {
+                            PoS!("mintPhlogiston", pk, amount, sysAuthToken, *mintAckCh) |
+                            for (@_mintAck <- mintAckCh) {
+                              resultCh!((
+                                accState.set("mintedEpochs", accState.get("mintedEpochs").add((pk, epochIdx))),
+                                accMints ++ [(pk, amount)]
+                              ))
                             }
-                          } else {
-                            return!((true, Nil))
                           }
+                        } else {
+                          // Not eligible (inactive, halted, or already minted this
+                          // epoch): no @W_v deposit, no Σ⟦v⟧ write, no record.
+                          resultCh!((accState, accMints))
                         }
-                      } else {
-                        return!((false, "Invalid system auth token"))
                       }
                     }
                   }
+                } |
+
+                // Cost-Accounted Rho Stage D — per-epoch fee→v CONVERSION
+                // ELIGIBILITY fold (the economic loop, spec tex:3095-3100; DR-4).
+                // Folds over `allBonds` and emits, for every validator `v` that is
+                // ELIGIBLE for `epochIdx`,
+                //
+                //   eligible(v) ≜ activeValidators.contains(v)
+                //               ∧ ¬mintingHalted.contains(v)
+                //               ∧ ¬convertedEpochs.contains((v, epochIdx))
+                //
+                // the pair (v, epochIdx), and records (v, epochIdx) in
+                // `convertedEpochs` (idempotency under replay / multi-parent merge —
+                // the merge engine dedups identical (v, E) records so a re-converted
+                // epoch credits Σ⟦v⟧ once). PoS owns ONLY the eligibility +
+                // idempotency decision here; it does NOT read F_v or write Σ⟦v⟧ /
+                // @W_v (those are reducer-unwritable, content-addressed Rust pools —
+                // DR-13). `CloseBlockDeploy::post_eval` reads the published eligible
+                // list and, for each `v`, reads its Rust-held fee pool F_v = f,
+                // credits Σ⟦v⟧ += f (the conserving 1:1 convert — bounded by the
+                // collected fees, Rocq `fee_convert_credit_is_backed`), and zeroes
+                // F_v. DR-4: an eligible validator whose F_v is EMPTY (f == 0) gets
+                // no Σ⟦v⟧ credit (Rust skips f == 0) — never a one-sided mint; the
+                // empty-fee validator is funded only by the epoch MINT.
+                //
+                // Returns (updatedState, eligibleList) on returnCh, where
+                //   updatedState : the state with `convertedEpochs` extended, and
+                //   eligibleList : List[(PublicKey, Int)] of (v, epochIdx) eligible.
+                contract convertFeesToValidators(@state, @epochIdx, @sysAuthToken, returnCh) = {
+                  new convertFold, seedCh in {
+                    // The fold accumulator is the pair (stateSoFar, eligibleSoFar).
+                    seedCh!((state, [])) |
+                    for (@seed <- seedCh) {
+                      @ListOps!("fold", state.get("allBonds").toList(), seed, *convertFold, *returnCh) |
+                      contract convertFold(@(pk, _bond), @(accState, accEligible), resultCh) = {
+                        if (
+                          accState.get("activeValidators").contains(pk) and
+                          (accState.get("mintingHalted").contains(pk) == false) and
+                          (accState.get("convertedEpochs").contains((pk, epochIdx)) == false)
+                        ) {
+                          // Eligible: record (pk, epochIdx) in convertedEpochs and
+                          // emit (pk, epochIdx) for post_eval's Σ⟦v⟧ convert mirror.
+                          resultCh!((
+                            accState.set("convertedEpochs",
+                              accState.get("convertedEpochs").add((pk, epochIdx))),
+                            accEligible ++ [(pk, epochIdx)]
+                          ))
+                        } else {
+                          // Not eligible (inactive, halted, or already converted
+                          // this epoch): no record, no emit.
+                          resultCh!((accState, accEligible))
+                        }
+                      }
+                    }
+                  }
+                } |
+                // Bootstrap for the genesis bonded set: install the spec's
+                // persistent validator bootstrap VB for every initially-bonded
+                // validator. Per spec Appendix B eq:39 and DR-3,
+                //
+                //     VB ≜ for(phlo <- @W_v){ VH | *phlo }
+                //
+                // draws a phlogiston purse from the draw wallet @W_v and releases
+                // it (`*phlo` = drop(phlo)) into the ambient parallel composition,
+                // where the validator handler VH consumes it. An empty @W_v leaves
+                // this for-comprehension with no message ⇒ it BLOCKS ⇒ the
+                // validator is effectively offline (the DR-3 halt mechanism, spec
+                // Appendix B "Slashing": removing the wallet's contents immediately
+                // halts the validator). This is FULLY FUNCTIONAL, not a stub: the
+                // validator handler VH is lifted into Rholang and composed IN
+                // PARALLEL (Rholang `|`) by a later workstream WITHOUT modifying VB;
+                // here VH = nil, so VB = for(phlo<-@W_v){ *phlo }. The `!` makes it
+                // persistent (a production validator re-draws after each deploy,
+                // spec Appendix B "Persistent validator": !VB).
+                new genesisWalletPksCh, installVB, installVBDoneCh in {
+                  @ListOps!("map", $$initialBonds$$.toList(), *fst, *genesisWalletPksCh) |
+                  for (@genesisWalletPks <- genesisWalletPksCh) {
+                    @ListOps!("foreach", genesisWalletPks, *installVB, *installVBDoneCh) |
+                    contract installVB(@validatorPk, ackCh) = {
+                      // VH = nil; VB = for(phlo<-@W_v){ nil | *phlo } = for(phlo<-@W_v){ *phlo }.
+                      for (phlo <= @(*walletTag, validatorPk)) { *phlo } |
+                      ackCh!(Nil)
+                    }
+                  }
                 }
+                // D3 (DR-9, OD-2): the per-deploy escrow `chargeDeploy` /
+                // `refundDeploy` PoS methods are REMOVED. A deploy's cost is the
+                // per-COMM token count, funded by the per-signature supply pool
+                // Σ⟦s⟧ and settled ONCE at block close by the acceptance gate —
+                // there is no per-deploy pre-charge / refund round-trip, so the
+                // group-scoped charge-tracking channel `@(*posDeployStateTag,
+                // deployGroupId)` is no longer written. (`posDeployStateTag`
+                // remains a harmless unused fresh name scoping the surrounding
+                // mint/convert/bootstrap contracts.) The removed-method body
+                // followed here, before `new commitRewards`.
               } |
               new commitRewards in {
-                // Private method which transfers all of a validator's rewards + bond to the Coop vault.
-                // Slash expects (Boolean, Either[Nil, String]) on returnCh.
-                contract PoS(@"slash", @deployerId, @blockHash, @sysAuthToken, returnCh) = {
+                // Cost-Accounted Rho Stage-C two-effect slash (spec Appendix B
+                // "Slashing" / DR-3, DR-7; docs/theory/cost-accounting-impl/
+                // workstream-c-economic.md "Stage C", stageb-minting-halt-interface.md
+                // Decision 4). The slash has THREE supply-side effects on a
+                // positive-bond offender:
+                //   (i)   drain @W_v (consume the resident MakeMint purse — the
+                //         DR-3 LIVENESS halt: an empty @W_v leaves VB blocked so
+                //         the validator cannot draw fuel) + insert the offender
+                //         into `mintingHalted` (the cross-epoch mint halt — the
+                //         closeBlock fold skips a halted pk). Both are guarded by
+                //         `¬mintingHalted.contains(v)` so a re-slash is a no-op on
+                //         them (first-slash-only / idempotent).
+                //   (ii)  ZERO Σ⟦v⟧ — performed by the Rust `SlashDeploy::post_eval`
+                //         (supply::produce_balance(from_sig(Ground(offender)), 0)),
+                //         NOT in Rholang (Σ⟦v⟧ is unnameable in Rholang — DR-13).
+                //         The contract publishes the resolved offender pk onto the
+                //         Rust-known, user-unforgeable env channel `sys:casper:slashedPk`
+                //         (mirroring closeBlock's `mintList` seam); post_eval reads
+                //         it to zero exactly that offender's pool. A no-op slash (or
+                //         absent evidence) publishes NOTHING ⇒ post_eval zeros
+                //         nothing (idempotency: zeroing an already-zero Σ⟦v⟧ is a
+                //         no-op anyway).
+                //   (iii) bond→0, remove from active, and EARMARK the pre-slash bond
+                //         on the per-offender quarantine channel @(*quarantineTag,
+                //         offender) recorded in `quarantinedStake` (pending
+                //         `redeemSlashed` adjudication). `coopMultiVault` is left
+                //         UNCHANGED — the REV stays in `posVault` (no transfer here,
+                //         so no transfer-failure path); coop grows ONLY in
+                //         `redeemSlashed`'s Guilty branch.
+                //
+                // `slashedPk` is the env channel (SlashDeploy::slashed_pk_channel,
+                // `sys:casper:slashedPk`) onto which the resolved offender pk is
+                // published for the Rust Σ⟦v⟧-zero. Slash expects
+                // (Boolean, Either[Nil, String]) on returnCh.
+                contract PoS(@"slash", @deployerId, @blockHash, @sysAuthToken, slashedPk, returnCh) = {
                   new isValidTokenCh in {
                     sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
                     for (@isValid <- isValidTokenCh) {
@@ -473,11 +801,9 @@ in {
                                       for (@valBond <- valBondCh) {
                                         // Idempotency: a validator already at
                                         // stake 0 has been slashed by a prior
-                                        // call. The transfer of `valBond = 0`
-                                        // would fail with "Amount must be
-                                        // positive value", but the desired
-                                        // end state (validator at 0, removed
-                                        // from active set) is already reached.
+                                        // call. The desired end state (validator
+                                        // at 0, removed from active, halted,
+                                        // quarantined) is already reached.
                                         // Returning (true, Nil) here makes
                                         // PoS!"slash" safe to invoke from
                                         // every block whose body re-issues a
@@ -488,38 +814,63 @@ in {
                                         // filter_recoverable`) and for the
                                         // T-9.3 catch-all dispatcher that
                                         // mints a record per slashable
-                                        // variant.
+                                        // variant. No offender pk is published
+                                        // on `slashedPk`, so the Rust post_eval
+                                        // zeros nothing (Σ⟦v⟧ already zero).
                                         if (valBond <= 0) {
                                           stateUpdateCh!(state, (true, Nil))
                                         } else {
-                                          new transferDoneCh in {
-                                            @posVault!(
-                                              "transfer",
-                                              coopMultiVaultAddr,
-                                              valBond,
-                                              posAuthKey,
-                                              *transferDoneCh
-                                            ) |
-                                            for (@transferResult <- transferDoneCh) {
-                                              match transferResult {
-                                                (true, _) => {
-                                                  stateUpdateCh!({
-                                                    "allBonds"        : state.get("allBonds").set(validator, 0),
-                                                    "activeValidators": state.get("activeValidators").delete(validator),
-                                                    "committedRewards" : state.get("committedRewards").delete(validator),
-                                                    "withdrawers"     : state.get("withdrawers"),
-                                                    "pendingWithdrawers": state.get("pendingWithdrawers"),
-                                                    "randomImages"    : state.get("randomImages"),
-                                                    "randomNumbers"   : state.get("randomNumbers")
-                                                  },
-                                                  (true, Nil))
-                                                }
-                                                (_, errorMessage) => {
-                                                  stateUpdateCh!(state, (false, "transfer failed: " ++ errorMessage))
-                                                }
-                                              }
-                                            }
-                                          }
+                                          // Positive-bond first slash: the
+                                          // two-effect quarantine. NO posVault
+                                          // transfer (coop unchanged); the bond
+                                          // is earmarked under the offender's
+                                          // quarantine identity and the offender
+                                          // is halted + zeroed (Rust post_eval).
+                                          // Drain @W_v (the DR-3 liveness halt)
+                                          // exactly once, guarded by ¬halted, so
+                                          // a re-slash does not double-drain. The
+                                          // quarantine "channel" the design records
+                                          // is the content-addressed name
+                                          // @(*quarantineTag, validator); since it
+                                          // is a pure function of the (in-scope)
+                                          // quarantineTag and the validator pk, we
+                                          // store the validator pk as the recovery
+                                          // key (the bond is read back via
+                                          // .nth(0)), keeping the stored datum a
+                                          // first-class process (a name cannot be a
+                                          // map VALUE directly in Rholang).
+                                          // Best-effort @W_v drain (the DR-3
+                                          // LIVENESS halt), composed IN PARALLEL so
+                                          // it never gates the consensus state
+                                          // update: a non-persistent `for` BLOCKS
+                                          // on an empty @W_v (an offline validator
+                                          // never funded), so gating the state
+                                          // update on it would hang the slash. The
+                                          // halt that consensus depends on is the
+                                          // `mintingHalted` insert + the Rust
+                                          // Σ⟦v⟧-zero below (both unconditional);
+                                          // the @W_v drain is the additional
+                                          // liveness re-block when a purse is
+                                          // resident. Guarded by ¬halted so a
+                                          // re-slash does not consume a fresh
+                                          // (post-redemption) purse.
+                                          (if (state.get("mintingHalted").contains(validator) == false) {
+                                            for (_ <- @(*walletTag, validator)) { Nil }
+                                          } else {
+                                            Nil
+                                          }) |
+                                          // Publish the offender pk for the Rust
+                                          // Σ⟦v⟧-zero (sys:casper:slashedPk).
+                                          slashedPk!(validator) |
+                                          stateUpdateCh!(
+                                            state
+                                              .set("allBonds", state.get("allBonds").set(validator, 0))
+                                              .set("activeValidators", state.get("activeValidators").delete(validator))
+                                              .set("committedRewards", state.get("committedRewards").delete(validator))
+                                              .set("mintingHalted", state.get("mintingHalted").add(validator))
+                                              .set("quarantinedStake", state.get("quarantinedStake").set(validator, (valBond, validator))),
+                                            (true, Nil)
+                                          )
                                         }
                                       }
                                     }
@@ -535,8 +886,219 @@ in {
                     }
                   }
                 } |
+                // Cost-Accounted Rho Stage-C validator redemption (spec Appendix B
+                // "Slashing" / DR-7; docs/theory/cost-accounting-impl/
+                // workstream-c-economic.md "Stage C", stageb-minting-halt-interface.md
+                // Decision 4). Governance-triggered (NOT auto-emitted) adjudication
+                // of a quarantined (slashed) validator. DOUBLE-gated:
+                //   (1) `sysAuthToken` — a GSysAuthToken constructible ONLY by the
+                //       Rust RedeemDeploy (system_deploy.rs `mk_sys_auth_token`); and
+                //   (2) `multiSigVerified` — the PoS-multisig-quorum datum
+                //       authentication is a Rust PLATFORM OBLIGATION (DR-12): the
+                //       RedeemDeploy (redeem_deploy.rs) verifies that at least
+                //       the configured pos-multisig-quorum of the pos-multisig
+                //       public keyset (the genesis posMultiSigQuorum /
+                //       posMultiSigPublicKeys params)
+                //       authorized the redemption datum BEFORE dispatch and passes
+                //       the verdict in as `multiSigVerified`. A false value (under
+                //       quorum / unauthorized) rejects with NO state change — no
+                //       restore. (Both gates must hold; the sysAuthToken alone is
+                //       insufficient for redemption, unlike mint/slash.)
+                //
+                // `outcome` is one of (DR-3 two-effect adjudication):
+                //   ("Vindicated", _)       — innocent: restore the full quarantined
+                //                             bond to active stake, remove from
+                //                             `mintingHalted`, clear the quarantine,
+                //                             and remove STALE mintedEpochs (v, e≥cur)
+                //                             so the next-epoch mint re-funds Σ⟦v⟧/@W_v
+                //                             (redemption writes NEITHER directly —
+                //                             all phlogiston creation stays on the
+                //                             single authorized mint path).
+                //   ("Guilty", penalty)     — partial: move `penalty` (≤ quarantined
+                //                             bond) to coopMultiVault (the ONLY place
+                //                             coop grows now) and restore the
+                //                             remainder to active stake; un-halt +
+                //                             clear quarantine + clear stale epochs.
+                //   ("Burned", _)           — total: destroy the quarantined stake
+                //                             (REV stays in posVault as protocol
+                //                             surplus); the validator STAYS unbonded
+                //                             AND halted (NOT removed from
+                //                             `mintingHalted`), quarantine cleared.
+                // redeemSlashed expects (Boolean, Either[Nil, String]) on returnCh.
+                contract PoS(@"redeemSlashed", @validatorPk, @outcome, @sysAuthToken, @multiSigVerified, returnCh) = {
+                  new isValidTokenCh in {
+                    sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
+                    for (@isValid <- isValidTokenCh) {
+                      if (isValid and multiSigVerified) {
+                        new blockDataCh, getBlockData(`rho:block:data`), stateProcessCh in {
+                          getBlockData!(*blockDataCh) |
+                          for (@blockNumber, _, _ <- blockDataCh) {
+                            runMVar!(*stateCh, *stateProcessCh, *returnCh) |
+                            for (@state, stateUpdateCh <- stateProcessCh) {
+                              // Redemption REQUIRES an active quarantine record
+                              // (DR-7 `redeem_requires_quarantine`): a validator that
+                              // was never slashed (or already redeemed) has nothing
+                              // to adjudicate — reject with no state change.
+                              if (state.get("quarantinedStake").contains(validatorPk) == false) {
+                                stateUpdateCh!(state, (false, "validator not quarantined"))
+                              } else {
+                                new quarantinedBondCh, currentEpochCh, clearStaleEpochs in {
+                                  quarantinedBondCh!(state.get("quarantinedStake").get(validatorPk).nth(0)) |
+                                  // The current epoch index; stale mint records are
+                                  // (v, e) with e >= currentEpoch — removing them lets
+                                  // the next-epoch mint re-fund a restored validator.
+                                  currentEpochCh!(blockNumber / $$epochLength$$) |
+                                  // Fold `mintedEpochs` keeping every entry EXCEPT
+                                  // this validator's records at epoch >= current.
+                                  for (@quarantinedBond <- quarantinedBondCh & @currentEpoch <- currentEpochCh) {
+                                    new staleClearedCh in {
+                                      @ListOps!("fold", state.get("mintedEpochs").toList(), Set(), *clearStaleEpochs, *staleClearedCh) |
+                                      contract clearStaleEpochs(@(epochPk, epochIdx), @acc, outCh) = {
+                                        if (epochPk == validatorPk and epochIdx >= currentEpoch) {
+                                          // Stale record for the redeemed validator:
+                                          // drop it (do not re-add to the accumulator).
+                                          outCh!(acc)
+                                        } else {
+                                          outCh!(acc.add((epochPk, epochIdx)))
+                                        }
+                                      } |
+                                      for (@freshEpochs <- staleClearedCh) {
+                                        match outcome {
+                                          ("Vindicated", _) => {
+                                            // Restore the full bond to active stake;
+                                            // un-halt; clear quarantine + stale epochs.
+                                            // No coop change, no direct Σ⟦v⟧/@W_v write.
+                                            stateUpdateCh!(
+                                              state
+                                                .set("allBonds", state.get("allBonds").set(validatorPk, quarantinedBond))
+                                                .set("activeValidators", state.get("activeValidators").add(validatorPk))
+                                                .set("mintingHalted", state.get("mintingHalted").delete(validatorPk))
+                                                .set("quarantinedStake", state.get("quarantinedStake").delete(validatorPk))
+                                                .set("mintedEpochs", freshEpochs),
+                                              (true, Nil)
+                                            )
+                                          }
+                                          ("Guilty", penalty) => {
+                                            // Partial: penalty (clamped to [0, bond])
+                                            // to coopMultiVault, remainder restored.
+                                            new penaltyCh, remainderCh in {
+                                              // Clamp so a penalty cannot exceed the
+                                              // quarantined bond (conservation; the
+                                              // Sage `redemption_model` penalty≤bond
+                                              // property) nor go negative.
+                                              if (penalty < 0) { penaltyCh!(0) }
+                                              else { if (penalty > quarantinedBond) { penaltyCh!(quarantinedBond) } else { penaltyCh!(penalty) } } |
+                                              for (@clampedPenalty <- penaltyCh) {
+                                                remainderCh!(quarantinedBond - clampedPenalty) |
+                                                for (@remainder <- remainderCh) {
+                                                  if (clampedPenalty <= 0) {
+                                                    // No penalty to move: behaves like
+                                                    // a (capped) restore of the whole
+                                                    // bond — no coop transfer needed.
+                                                    stateUpdateCh!(
+                                                      state
+                                                        .set("allBonds", state.get("allBonds").set(validatorPk, remainder))
+                                                        .set("activeValidators", state.get("activeValidators").add(validatorPk))
+                                                        .set("mintingHalted", state.get("mintingHalted").delete(validatorPk))
+                                                        .set("quarantinedStake", state.get("quarantinedStake").delete(validatorPk))
+                                                        .set("mintedEpochs", freshEpochs),
+                                                      (true, Nil)
+                                                    )
+                                                  } else {
+                                                    // Move the penalty REV from posVault
+                                                    // to coopMultiVault (the ONLY coop
+                                                    // growth path) before restoring.
+                                                    new transferDoneCh in {
+                                                      @posVault!("transfer", coopMultiVaultAddr, clampedPenalty, posAuthKey, *transferDoneCh) |
+                                                      for (@transferResult <- transferDoneCh) {
+                                                        match transferResult {
+                                                          (true, _) => {
+                                                            stateUpdateCh!(
+                                                              state
+                                                                .set("allBonds", state.get("allBonds").set(validatorPk, remainder))
+                                                                .set("activeValidators", state.get("activeValidators").add(validatorPk))
+                                                                .set("mintingHalted", state.get("mintingHalted").delete(validatorPk))
+                                                                .set("quarantinedStake", state.get("quarantinedStake").delete(validatorPk))
+                                                                .set("mintedEpochs", freshEpochs),
+                                                              (true, Nil)
+                                                            )
+                                                          }
+                                                          (_, errorMessage) => {
+                                                            stateUpdateCh!(state, (false, "penalty transfer failed: " ++ errorMessage))
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                          ("Burned", _) => {
+                                            // Total: destroy the quarantined stake.
+                                            // Validator stays unbonded (allBonds at 0
+                                            // from slash) AND halted (NOT un-halted);
+                                            // only the quarantine record is cleared.
+                                            // No coop change (REV stays in posVault as
+                                            // protocol surplus). Stale epochs cleared
+                                            // (harmless — halt blocks re-mint anyway).
+                                            stateUpdateCh!(
+                                              state
+                                                .set("quarantinedStake", state.get("quarantinedStake").delete(validatorPk))
+                                                .set("mintedEpochs", freshEpochs),
+                                              (true, Nil)
+                                            )
+                                          }
+                                          _ => {
+                                            stateUpdateCh!(state, (false, "unknown redemption outcome"))
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      } else {
+                        // Either an invalid sysAuthToken OR an unverified/under-quorum
+                        // multisig: reject with NO state change (no restore).
+                        returnCh!((false, "Unauthorized redemption (sysAuthToken or multisig quorum)"))
+                      }
+                    }
+                  }
+                } |
                 // Private method which signals the end of block processing.
-                contract PoS(@"closeBlock", @sysAuthToken, ackCh) = {
+                //
+                // Cost-Accounted Rho Stage B (Decision 2): closeBlock now also
+                // performs the per-validator phlogiston MINT. `mintList` is a
+                // Rust-supplied, user-unforgeable channel (CloseBlockDeploy env
+                // `sys:casper:mintList`); closeBlock publishes onto it the list
+                // List[(PublicKey, Int)] of (pk, amount) it minted this block, and
+                // `CloseBlockDeploy::post_eval` reads it to mirror each amount into
+                // the supply pool Σ⟦v⟧ (the half Rholang cannot write — DR-13).
+                // Two mint paths share `mintPhlogistonToValidators`:
+                //   * the steady EPOCH mint (blockNumber % epochLength == 0):
+                //     amount = epochPhlogiston, epochIdx = blockNumber/epochLength;
+                //   * the GENESIS BLOCK-1 mint (blockNumber == 1, non-epoch
+                //     branch): amount = initialPhlogiston, epochIdx = 0 — funds the
+                //     genesis bonded set. Newly-bonded validators get their first
+                //     mint on the next epoch boundary (the same fold; the catch-up
+                //     needs no separate set — spec draws no such distinction).
+                // Cost-Accounted Rho Stage D: closeBlock ALSO drives the per-epoch
+                // fee→v CONVERSION (the economic loop). `feeConvertList` is a
+                // Rust-supplied, user-unforgeable channel: closeBlock publishes
+                // onto it the list [(v, epochIdx)] of validators ELIGIBLE for fee
+                // conversion this epoch (active ∧ ¬halted ∧ ¬convertedEpochs;
+                // empty off-epoch), records `convertedEpochs` (idempotency), and
+                // `CloseBlockDeploy::post_eval` reads it to convert each eligible
+                // validator's Rust-held fee pool F_v 1:1 into Σ⟦v⟧. PoS owns the
+                // ELIGIBILITY decision (it alone reads activeValidators /
+                // mintingHalted / convertedEpochs); the fee BALANCES + the Σ⟦v⟧
+                // mirror are the Rust dual-write half (DR-13 — F_v / Σ⟦v⟧ are
+                // reducer-unwritable, content-addressed pools written only by Rust).
+                contract PoS(@"closeBlock", @sysAuthToken, mintList, feeConvertList, ackCh) = {
                   new isValidTokenCh in {
                     sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
                     for (@isValid <- isValidTokenCh) {
@@ -545,15 +1107,43 @@ in {
                           getBlockData!(*blockDataCh) |
                           for (@blockNumber, _, _ <- blockDataCh) {
                             if (blockNumber % $$epochLength$$ != 0) {
-                              // Epoch change does not occur.
-                              ackCh!((true, Nil))
+                              // Epoch change does not occur. Lifted to the
+                              // runMVar/stateUpdateCh pattern (Stage B) so the
+                              // genesis block-1 mint can extend `mintedEpochs` in
+                              // state. On block 1, mint `initialPhlogiston` to the
+                              // genesis bonded set (epochIdx 0); otherwise no mint
+                              // (publish an empty mint list so post_eval mirrors
+                              // nothing).
+                              new stateProcessCh in {
+                                // Stage D: no fee CONVERSION off the epoch boundary
+                                // (publish an empty feeConvertList so post_eval
+                                // mirrors nothing); the collection above still
+                                // accrued this block's fees onto F_v.
+                                feeConvertList!([]) |
+                                runMVar!(*stateCh, *stateProcessCh, *ackCh) |
+                                for (@state, stateUpdateCh <- stateProcessCh) {
+                                  if (blockNumber == 1) {
+                                    new mintedCh in {
+                                      mintPhlogistonToValidators!(state, $$initialPhlogiston$$, 0, sysAuthToken, *mintedCh) |
+                                      for (@(mintedState, mints) <- mintedCh) {
+                                        mintList!(mints) |
+                                        stateUpdateCh!(mintedState, (true, Nil))
+                                      }
+                                    }
+                                  } else {
+                                    mintList!([]) |
+                                    stateUpdateCh!(state, (true, Nil))
+                                  }
+                                }
+                              }
                             } else {
                               // Epoch change occurs.
                               new payWithdrawer, removeQuarantinedWithdrawers,
                                   stateProcessCh, paymentDoneCh,
                                   accDepositsDoneCh, commitRewardsCh,
                                   newValidatorsCh, removeQuarantinedCh, currentEpochRewardCh,
-                                  commitCurrentEpochRewards, updatedRewardsCh, movePendingWithdrawCh, movePendingWithdrawer
+                                  commitCurrentEpochRewards, updatedRewardsCh, movePendingWithdrawCh, movePendingWithdrawer,
+                                  epochMintedCh, feeConvertedCh
                               in {
                                 PoS!("getCurrentEpochRewards", * currentEpochRewardCh) |
                                 for (@currentRewards <- currentEpochRewardCh) {
@@ -575,7 +1165,59 @@ in {
                                           // 6. Pick new `activeValidators`
                                           pickActiveValidators!(newMovedPendingState.get("allBonds").toList(), *newValidatorsCh) |
                                           for (@newValidators <- newValidatorsCh) {
-                                            stateUpdateCh!(newRemovedQuantinueState.set("activeValidators", newValidators), (true, Nil))
+                                            // 6b. Cost-Accounted Rho Stage D: mark the
+                                            //     fee CONVERSION eligibility BEFORE the
+                                            //     mint (spec tex:3095-3100). This fold
+                                            //     does NOT move any tokens: F_v is a
+                                            //     Rust-only, reducer-unwritable pool
+                                            //     (DR-13), so the actual conserving
+                                            //     F_v→Σ⟦v⟧ move (read f, credit Σ⟦v⟧+=f,
+                                            //     zero F_v) is the RUST dual-write half
+                                            //     in `close_block_deploy` post_eval. Here
+                                            //     the fold only (i) selects the eligible
+                                            //     validators (active ∧ ¬halted ∧
+                                            //     ¬convertedEpochs) over the NEWLY-PICKED
+                                            //     active set, (ii) records (v, epochIdx)
+                                            //     in convertedEpochs, and (iii) publishes
+                                            //     the eligible list on `feeConvertList`
+                                            //     for post_eval to read. The converted
+                                            //     state feeds the mint below so both
+                                            //     ledgers (convertedEpochs + mintedEpochs)
+                                            //     advance in one runMVar transition.
+                                            new epochStateWithActiveCh in {
+                                              epochStateWithActiveCh!(newRemovedQuantinueState.set("activeValidators", newValidators)) |
+                                              for (@epochStateWithActive <- epochStateWithActiveCh) {
+                                                convertFeesToValidators!(
+                                                  epochStateWithActive,
+                                                  blockNumber / $$epochLength$$,
+                                                  sysAuthToken,
+                                                  *feeConvertedCh
+                                                ) |
+                                                for (@(feeConvertedState, feeConverts) <- feeConvertedCh) {
+                                                  feeConvertList!(feeConverts) |
+                                                  // 7. Cost-Accounted Rho Stage B: mint
+                                                  //    `epochPhlogiston` to every ACTIVE,
+                                                  //    non-halted, not-yet-minted-this-epoch
+                                                  //    validator, recording (pk, epochIdx)
+                                                  //    in `mintedEpochs`. Publish the
+                                                  //    (pk, amount) mint list to `mintList`
+                                                  //    for post_eval's Σ⟦v⟧ mirror. Runs on
+                                                  //    the fee-converted state so
+                                                  //    convertedEpochs is preserved.
+                                                  mintPhlogistonToValidators!(
+                                                    feeConvertedState,
+                                                    $$epochPhlogiston$$,
+                                                    blockNumber / $$epochLength$$,
+                                                    sysAuthToken,
+                                                    *epochMintedCh
+                                                  ) |
+                                                  for (@(epochMintedState, epochMints) <- epochMintedCh) {
+                                                    mintList!(epochMints) |
+                                                    stateUpdateCh!(epochMintedState, (true, Nil))
+                                                  }
+                                                }
+                                              }
+                                            }
                                           }
                                         }
                                       }

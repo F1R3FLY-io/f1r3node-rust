@@ -26,6 +26,25 @@ pub enum CasperError {
     /// `engine::multi_parent_casper::validation_dispatcher` can `match` on the structured
     /// reason instead of grepping a stringified error.
     SlashAuth(SlashAuthError),
+    /// Multi-signature deploy pre-charge failed for a specific cosigner.
+    /// Carries the signer's index in the canonical cosigner list, the
+    /// pk in hex form, and the underlying error message. Surfaced at the
+    /// runtime fan-out layer (`runtime.rs:402-490`); triggers a
+    /// `revert_to_soft_checkpoint` to roll back any preceding successful
+    /// cosigner pre-charges atomically.
+    InsufficientPhloByCosigner {
+        signer_index: usize,
+        pk_hex: String,
+        message: String,
+    },
+    /// Runtime-layer detection of a duplicate cosigner in the fan-out loop.
+    /// Unreachable if `Cosigned::from_signed_data`'s no-duplicate invariant
+    /// holds (the envelope rejects duplicate `pk`s at construction); surfaced
+    /// here for debuggability if a future code path bypasses that invariant.
+    /// The PoS contract also rejects double-charge defensively.
+    DuplicateCosignerCharge {
+        pk_hex: String,
+    },
     Other(String),
 }
 
@@ -43,6 +62,21 @@ impl fmt::Display for CasperError {
             CasperError::StreamError(error) => write!(f, "Stream error: {}", error),
             CasperError::LockError(error) => write!(f, "Lock error: {}", error),
             CasperError::SlashAuth(error) => write!(f, "Slash authorization error: {}", error),
+            CasperError::InsufficientPhloByCosigner {
+                signer_index,
+                pk_hex,
+                message,
+            } => write!(
+                f,
+                "Insufficient phlo by cosigner at index {} (pk={}): {}",
+                signer_index, pk_hex, message
+            ),
+            CasperError::DuplicateCosignerCharge { pk_hex } => write!(
+                f,
+                "Duplicate cosigner charge attempted for pk={} \
+                 (Cosigned envelope dedup invariant violated)",
+                pk_hex
+            ),
             CasperError::Other(error) => write!(f, "Other error: {}", error),
         }
     }

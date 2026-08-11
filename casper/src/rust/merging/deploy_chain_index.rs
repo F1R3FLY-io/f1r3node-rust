@@ -1,8 +1,6 @@
-#![allow(clippy::derived_hash_with_manual_eq)]
-
 // See casper/src/main/scala/coop/rchain/casper/merging/DeployChainIndex.scala
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
 use models::rust::block_hash::BlockHash;
@@ -11,6 +9,7 @@ use rspace_plus_plus::rspace::errors::HistoryError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
+use rspace_plus_plus::rspace::merger::merging_logic::NumberChannelsDiff;
 use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use shared::rust::hashable_set::HashableSet;
 
@@ -32,6 +31,9 @@ pub struct DeployChainIndex {
     pub system_event_log_index: EventLogIndex,
     pub event_log_index: EventLogIndex,
     pub state_changes: StateChange,
+    pub effect_indices: BTreeSet<u32>,
+    pub has_exact_state_witness: bool,
+    pub exact_effect_changes: BTreeMap<u32, (StateChange, NumberChannelsDiff)>,
     // Source block identity. Allows the merge algorithm to identify chains
     // whose diffs were computed against a block that was subsequently rejected.
     pub source_block_hash: BlockHash,
@@ -87,11 +89,65 @@ impl DeployChainIndex {
         let event_log_index =
             EventLogIndex::combine(&user_event_log_index, &system_event_log_index)?;
 
-        let pre_history_reader = history_repository.get_history_reader_struct(pre_state_hash)?;
-        let post_history_reader = history_repository.get_history_reader_struct(post_state_hash)?;
-
-        let state_changes =
-            StateChange::new(pre_history_reader, post_history_reader, &event_log_index)?;
+        let effect_indices = deploys
+            .0
+            .iter()
+            .map(|deploy| deploy.execution_index)
+            .collect::<BTreeSet<_>>();
+        let has_exact_state_witness = deploys
+            .0
+            .iter()
+            .all(|deploy| deploy.state_changes.is_some());
+        let exact_effect_changes = if has_exact_state_witness {
+            let changes = deploys
+                .0
+                .iter()
+                .map(|deploy| {
+                    (
+                        deploy.execution_index,
+                        (
+                            deploy
+                                .state_changes
+                                .clone()
+                                .expect("exact state witness checked above")
+                                .normalized(),
+                            deploy.event_log_index.number_channels_data.clone(),
+                        ),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            if changes.len() != deploys.0.len() {
+                return Err(HistoryError::MergeError(
+                    "duplicate execution index in deploy chain".to_string(),
+                ));
+            }
+            changes
+        } else {
+            BTreeMap::new()
+        };
+        let state_changes = if has_exact_state_witness {
+            exact_effect_changes
+                .values()
+                .try_fold(StateChange::empty(), |acc, (change, _)| {
+                    acc.additive_join(change.clone())
+                })?
+                .normalized()
+        } else {
+            if deploys
+                .0
+                .iter()
+                .any(|deploy| deploy.state_changes.is_some())
+            {
+                return Err(HistoryError::MergeError(
+                    "deploy chain mixes exact and legacy state changes".to_string(),
+                ));
+            }
+            let pre_history_reader =
+                history_repository.get_history_reader_struct(pre_state_hash)?;
+            let post_history_reader =
+                history_repository.get_history_reader_struct(post_state_hash)?;
+            StateChange::new(pre_history_reader, post_history_reader, &event_log_index)?
+        };
 
         Ok(Self {
             deploys_with_cost: HashableSet(deploys_with_cost),
@@ -100,6 +156,9 @@ impl DeployChainIndex {
             system_event_log_index,
             event_log_index,
             state_changes,
+            effect_indices,
+            has_exact_state_witness,
+            exact_effect_changes,
             source_block_hash,
             source_block_number,
         })
@@ -126,6 +185,9 @@ impl DeployChainIndex {
             system_event_log_index,
             event_log_index,
             state_changes,
+            effect_indices: BTreeSet::new(),
+            has_exact_state_witness: false,
+            exact_effect_changes: BTreeMap::new(),
             source_block_hash,
             source_block_number,
         }
@@ -133,13 +195,23 @@ impl DeployChainIndex {
 }
 
 impl PartialEq for DeployChainIndex {
-    fn eq(&self, other: &Self) -> bool { self.deploys_with_cost == other.deploys_with_cost }
+    fn eq(&self, other: &Self) -> bool {
+        self.deploys_with_cost == other.deploys_with_cost
+            && self.post_state_hash == other.post_state_hash
+            && self.source_block_hash == other.source_block_hash
+            && self.effect_indices == other.effect_indices
+            && self.has_exact_state_witness == other.has_exact_state_witness
+    }
 }
 
-// Hash is hand-rolled to match PartialEq (the derived Hash would cover all
-// fields and violate the k1 == k2 => hash(k1) == hash(k2) contract).
 impl std::hash::Hash for DeployChainIndex {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) { self.deploys_with_cost.hash(state); }
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.deploys_with_cost.hash(state);
+        self.post_state_hash.hash(state);
+        self.source_block_hash.hash(state);
+        self.effect_indices.hash(state);
+        self.has_exact_state_witness.hash(state);
+    }
 }
 
 impl Eq for DeployChainIndex {}
@@ -152,8 +224,18 @@ impl Ord for DeployChainIndex {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // 1. PRIMARY: Highest total cost first (economic incentive)
         //    Higher-paying transactions get priority in conflict resolution
-        let self_total_cost: u64 = self.deploys_with_cost.0.iter().map(|d| d.cost).sum();
-        let other_total_cost: u64 = other.deploys_with_cost.0.iter().map(|d| d.cost).sum();
+        let self_total_cost: u128 = self
+            .deploys_with_cost
+            .0
+            .iter()
+            .map(|d| u128::from(d.cost))
+            .sum();
+        let other_total_cost: u128 = other
+            .deploys_with_cost
+            .0
+            .iter()
+            .map(|d| u128::from(d.cost))
+            .sum();
 
         let cost_cmp = self_total_cost.cmp(&other_total_cost).reverse(); // Higher cost first
         if cost_cmp != std::cmp::Ordering::Equal {
@@ -218,21 +300,31 @@ impl Ord for DeployChainIndex {
             return post_state_cmp;
         }
 
-        // 5. QUINARY (injective, total, no cryptographic assumption): the Eq/Hash
-        //    key itself — the canonical shortlex order of the deploy set via
-        //    `HashableSet<DeployIdWithCost>: Ord` (sorts elements, so it is
-        //    deterministic regardless of HashSet iteration order). Because Eq is
-        //    defined by `deploys_with_cost` equality, `cmp == Equal` now implies
-        //    the two chains are Eq, so no two DISTINCT chains ever tie. That makes
-        //    the `min_by`/`sort` winner NODE-IDENTICAL — the property the validator
-        //    (which recomputes the merge) needs to agree with the proposer.
-        self.deploys_with_cost.cmp(&other.deploys_with_cost)
+        let deploy_set_cmp = self.deploys_with_cost.cmp(&other.deploys_with_cost);
+        if deploy_set_cmp != std::cmp::Ordering::Equal {
+            return deploy_set_cmp;
+        }
+
+        let source_cmp = self.source_block_hash.cmp(&other.source_block_hash);
+        if source_cmp != std::cmp::Ordering::Equal {
+            return source_cmp;
+        }
+
+        let effect_cmp = self.effect_indices.cmp(&other.effect_indices);
+        if effect_cmp != std::cmp::Ordering::Equal {
+            return effect_cmp;
+        }
+
+        self.has_exact_state_witness
+            .cmp(&other.has_exact_state_witness)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::hash_map::DefaultHasher;
     use std::collections::HashSet;
+    use std::hash::{Hash, Hasher};
 
     use proptest::prelude::*;
     use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -255,9 +347,18 @@ mod tests {
             system_event_log_index: EventLogIndex::empty(),
             event_log_index: EventLogIndex::empty(),
             state_changes: StateChange::empty(),
+            effect_indices: BTreeSet::new(),
+            has_exact_state_witness: false,
+            exact_effect_changes: BTreeMap::new(),
             source_block_hash: Bytes::from(vec![post_state_seed; 32]),
             source_block_number: 0,
         }
+    }
+
+    fn hash(index: &DeployChainIndex) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        index.hash(&mut hasher);
+        hasher.finish()
     }
 
     #[test]
@@ -289,6 +390,25 @@ mod tests {
 
         assert_eq!(a.cmp(&b), std::cmp::Ordering::Less);
         assert_eq!(b.cmp(&a), std::cmp::Ordering::Greater);
+    }
+
+    #[test]
+    fn source_distinguishes_identical_deploy_occurrences() {
+        let a = mk_index(&[(1, 5)], 0x01);
+        let mut b = a.clone();
+        b.source_block_hash = Bytes::from(vec![0x02; 32]);
+
+        assert_ne!(a, b);
+        assert_ne!(a.cmp(&b), std::cmp::Ordering::Equal);
+        assert_ne!(hash(&a), hash(&b));
+    }
+
+    #[test]
+    fn total_cost_comparison_does_not_overflow() {
+        let larger = mk_index(&[(1, u64::MAX), (2, u64::MAX)], 0x01);
+        let smaller = mk_index(&[(1, u64::MAX), (2, 1)], 0x02);
+
+        assert_eq!(larger.cmp(&smaller), std::cmp::Ordering::Less);
     }
 
     // Determinism regression (Finding B): two DISTINCT chains that tie on ALL FOUR

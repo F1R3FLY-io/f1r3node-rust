@@ -22,3 +22,6 @@ pub const MULTI_SIG_SYSTEM_VAULT: &str =
 pub const STACK: &str = include_str!("../../../main/resources/Stack.rho");
 pub const TOKEN_METADATA: &str = include_str!("../../../main/resources/TokenMetadata.rhox");
 pub const POS: &str = include_str!("../../../main/resources/PoS.rhox");
+pub const CAPABILITIES_REGISTRY: &str =
+    include_str!("../../../main/resources/CapabilitiesRegistry.rhox");
+pub const EXCHANGE: &str = include_str!("../../../main/resources/Exchange.rhox");

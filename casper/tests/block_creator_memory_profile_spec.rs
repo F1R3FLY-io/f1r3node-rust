@@ -76,8 +76,6 @@ fn create_deploy(
     let deploy_data = DeployData {
         term: format!("new x in {{ x!({}) | for (_ <- x) {{ Nil }} }}", iteration),
         time_stamp: timestamp,
-        phlo_price: 1,
-        phlo_limit: 100000,
         valid_after_block_number: 0,
         shard_id: shard_id.to_string(),
         expiration_timestamp: None,
@@ -213,6 +211,9 @@ async fn run_block_creator_create_memory_profile() {
                 "047f0f0f5bbe1d6d1a8dac4d88a3957851940f39a57cd89d55fe25b536ab67e6d76fd3f365c83e5bfe11fe7117e549b1ae3dd39bfc867d1c725a4177692c4e7754".to_string(),
             ],
             pos_multi_sig_quorum: 2,
+            max_cosigners_per_deploy: casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
+            initial_phlogiston: casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
+            epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
         },
         vaults: Vec::new(),
         supply: i64::MAX,
@@ -275,6 +276,7 @@ async fn run_block_creator_create_memory_profile() {
                 None,
                 deploy_storage.clone(),
                 rejected_deploy_buffer.clone(),
+                std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
                 &runtime_manager,
                 &mut block_store,
                 false,
@@ -457,6 +459,9 @@ async fn run_block_creator_phase_split_memory_profile() {
                 "047f0f0f5bbe1d6d1a8dac4d88a3957851940f39a57cd89d55fe25b536ab67e6d76fd3f365c83e5bfe11fe7117e549b1ae3dd39bfc867d1c725a4177692c4e7754".to_string(),
             ],
             pos_multi_sig_quorum: 2,
+            max_cosigners_per_deploy: casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
+            initial_phlogiston: casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
+            epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
         },
         vaults: Vec::new(),
         supply: i64::MAX,
@@ -554,12 +559,12 @@ async fn run_block_creator_phase_split_memory_profile() {
         let system_deploys = if skip_system_deploy {
             Vec::new()
         } else {
-            vec![SystemDeployEnum::Close(CloseBlockDeploy {
-                initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
+            vec![SystemDeployEnum::Close(CloseBlockDeploy::new(
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(
                     validator_identity.public_key.clone(),
                     next_seq_num,
                 ),
-            })]
+            ))]
         };
 
         let rss_before = vm_rss_kb();

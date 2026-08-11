@@ -14,7 +14,6 @@ use std::time::Instant;
 pub static LOCK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 use async_trait::async_trait;
-use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use shared::rust::store::key_value_store::KeyValueStore;
 
@@ -37,6 +36,7 @@ use super::rspace_interface::{
 use super::striped_locks::{self, ChannelLockGuard};
 use super::trace::Log;
 use super::trace::event::{COMM, Consume, Event, IOEvent, Produce};
+use super::util::unpack_option;
 use crate::rspace::checkpoint::Checkpoint;
 use crate::rspace::history::history_repository::{HistoryRepository, HistoryRepositoryInstances};
 use crate::rspace::hot_store::{HotStore, HotStoreInstances};
@@ -110,6 +110,12 @@ where
             .expect("history read lock")
             .clone()
     }
+}
+
+fn deterministic_candidate_hash<D>(candidate: &D) -> Blake2b256Hash
+where D: Serialize {
+    let bytes = bincode::serialize(candidate).unwrap_or_default();
+    Blake2b256Hash::new(&bytes)
 }
 
 impl<C, P, A, K> SpaceMatcher<C, P, A, K> for RSpace<C, P, A, K>
@@ -189,10 +195,13 @@ where
 
     async fn consume_result(
         &self,
-        _channel: Vec<C>,
-        _pattern: Vec<P>,
+        channel: Vec<C>,
+        pattern: Vec<P>,
     ) -> Result<Option<(K, Vec<A>)>, RSpaceError> {
-        panic!("\nERROR: RSpace consume_result should not be called here");
+        let consume_res = self
+            .consume(channel, pattern, K::default(), false, BTreeSet::new())
+            .await?;
+        Ok(unpack_option(&consume_res))
     }
 
     async fn get_data(&self, channel: &C) -> Vec<Datum<A>> { self.get_store().get_data(channel) }
@@ -202,6 +211,24 @@ where
     }
 
     async fn get_joins(&self, channel: C) -> Vec<Vec<C>> { self.get_store().get_joins(&channel) }
+
+    async fn remove_all_data(&self, channel: &C) -> Result<(), RSpaceError> {
+        let len = self.get_store().get_data(channel).len();
+        for index in (0..len).rev() {
+            self.get_store().remove_datum(channel, index as i32)?;
+        }
+        Ok(())
+    }
+
+    async fn remove_all_continuations(&self, channels: Vec<C>) -> Result<(), RSpaceError> {
+        let len = self.get_store().get_continuations(&channels).len();
+        for index in (0..len).rev() {
+            let _ = self
+                .get_store()
+                .remove_continuation(&channels, index as i32);
+        }
+        Ok(())
+    }
 
     async fn clear(&self) -> Result<(), RSpaceError> {
         self.reset(&RadixHistory::empty_root_node_hash()).await
@@ -1134,14 +1161,25 @@ where
         }
     }
 
-    fn shuffle_with_index<D>(&self, t: Vec<D>) -> Vec<(D, i32)> {
-        let mut rng = rand::rng();
+    fn shuffle_with_index<D>(&self, t: Vec<D>) -> Vec<(D, i32)>
+    where D: Serialize {
         let mut indexed_vec = t
             .into_iter()
             .enumerate()
             .map(|(i, d)| (d, i as i32))
             .collect::<Vec<_>>();
-        indexed_vec.shuffle(&mut rng);
+
+        // Candidate ordering participates in replay-visible COMM selection.
+        // A random shuffle can make equally valid matches diverge across
+        // validators, so order by a stable hash of the serialized candidate
+        // and use the original index only as a deterministic tie breaker.
+        indexed_vec.sort_by(|(left, left_index), (right, right_index)| {
+            let left_hash = deterministic_candidate_hash(left);
+            let right_hash = deterministic_candidate_hash(right);
+            left_hash
+                .cmp(&right_hash)
+                .then_with(|| left_index.cmp(right_index))
+        });
         indexed_vec
     }
 }

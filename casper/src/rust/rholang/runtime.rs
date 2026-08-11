@@ -2,7 +2,6 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
-use std::mem;
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -24,13 +23,18 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
-use models::rust::normalizer_env::normalizer_env_from_deploy;
+// `normalizer_env_from_deploy` is replaced by `normalizer_env_from_cosigned_deploy`
+// at the only remaining call site (inside `evaluate_cosigned`). The legacy `evaluate`
+// path uplifts `Signed<DeployData>` to `Cosigned<DeployData>` via
+// `Cosigned::from_single_signer` and delegates, so the legacy env builder is no
+// longer reached from runtime.rs.
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::sorted_par_hash_set::SortedParHashSet;
 use models::rust::sorted_par_map::SortedParMap;
 use models::rust::utils::new_freevar_par;
 use models::rust::validator::Validator;
+use rholang::rust::interpreter::accounting;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::has_cost::HasCost;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
@@ -54,19 +58,16 @@ use crate::rust::metrics_constants::{
     EVALUATE_SOURCE_WRAPPER_CALLS_METRIC, EVALUATE_SOURCE_WRAPPER_TIME_NS_METRIC,
     EVAL_SYSTEM_DEPLOY_WRAPPER_CALLS_METRIC, EVAL_SYSTEM_DEPLOY_WRAPPER_TIME_NS_METRIC,
 };
-use crate::rust::rholang::types::eval_collector::EvalCollector;
 use crate::rust::util::event_converter;
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
-use crate::rust::util::rholang::costacc::pre_charge_deploy::PreChargeDeploy;
-use crate::rust::util::rholang::costacc::refund_deploy::RefundDeploy;
 use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
+use crate::rust::util::rholang::interpreter_util;
 use crate::rust::util::rholang::system_deploy::SystemDeployTrait;
 use crate::rust::util::rholang::system_deploy_result::SystemDeployResult;
 use crate::rust::util::rholang::system_deploy_user_error::{
     SystemDeployPlatformFailure, SystemDeployUserError,
 };
 use crate::rust::util::rholang::tools::Tools;
-use crate::rust::util::rholang::{interpreter_util, system_deploy_util};
 
 /// Process-wide ephemeral identity to sign exploratory deploys.
 /// The key pair is generated randomly once per node process, so values derived
@@ -98,19 +99,26 @@ fn system_deploy_consume_all_pattern() -> BindPattern {
     }
 }
 
-/// Diagnostic label for a system deploy (closeBlock / slash / precharge /
-/// refund). Called lazily inside tracing field evaluation, so it costs nothing
-/// unless the event is enabled.
+/// Diagnostic label for a system deploy (closeBlock / slash / checkBalance /
+/// redeem — precharge/refund no longer exist under the in-calculus cost
+/// accounting, D3). Called lazily inside tracing field evaluation, so it
+/// costs nothing unless the event is enabled.
 fn system_deploy_kind<S: SystemDeployTrait>(sd: &S) -> &'static str {
     let any = sd.as_any();
     if any.downcast_ref::<CloseBlockDeploy>().is_some() {
         "closeBlock"
     } else if any.downcast_ref::<SlashDeploy>().is_some() {
         "slash"
-    } else if any.downcast_ref::<PreChargeDeploy>().is_some() {
-        "precharge"
-    } else if any.downcast_ref::<RefundDeploy>().is_some() {
-        "refund"
+    } else if any
+        .downcast_ref::<crate::rust::util::rholang::costacc::check_balance::CheckBalance>()
+        .is_some()
+    {
+        "checkBalance"
+    } else if any
+        .downcast_ref::<crate::rust::util::rholang::costacc::redeem_deploy::RedeemDeploy>()
+        .is_some()
+    {
+        "redeem"
     } else {
         "other"
     }
@@ -133,6 +141,89 @@ impl RuntimeOps {
     }
 
     /* Compute state with deploys (genesis block) and System deploys (regular block) */
+
+    /// Multi-sig-aware variant of [`Self::compute_state`]. Takes
+    /// `Vec<Cosigned<DeployData>>` so multi-signature deploys execute
+    /// through the per-cosigner pre-charge + FIFO refund fan-out at
+    /// `play_deploys_for_state_cosigned`. For legacy single-signature
+    /// deploys (1-element Cosigned envelopes), behavior is byte-identical.
+    pub async fn compute_state_cosigned(
+        &mut self,
+        start_hash: &StateHash,
+        terms: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
+        system_deploys: Vec<crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum>,
+        block_data: BlockData,
+        invalid_blocks: HashMap<BlockHash, Validator>,
+    ) -> Result<
+        (
+            StateHash,
+            Vec<(ProcessedDeploy, NumberChannelsEndVal)>,
+            Vec<(ProcessedSystemDeploy, NumberChannelsEndVal)>,
+        ),
+        CasperError,
+    > {
+        tracing::info!(target: "f1r3fly.casper.runtime", "compute-state-cosigned-started");
+        self.runtime.set_block_data(block_data).await;
+        self.runtime.set_invalid_blocks(invalid_blocks).await;
+
+        let (start_hash, processed_deploys) = self
+            .play_deploys_for_state_cosigned(start_hash, terms)
+            .await?;
+
+        let mut current_hash = start_hash;
+        let mut processed_system_deploys = Vec::with_capacity(system_deploys.len());
+        for system_deploy_enum in system_deploys.into_iter() {
+            let result = match system_deploy_enum {
+                crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Slash(
+                    mut slash_deploy,
+                ) => {
+                    self.play_system_deploy(&current_hash, &mut slash_deploy)
+                        .await?
+                }
+                crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
+                    mut close_deploy,
+                ) => {
+                    self.play_system_deploy(&current_hash, &mut close_deploy)
+                        .await?
+                }
+                crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Redeem(
+                    mut redeem_deploy,
+                ) => {
+                    self.play_system_deploy(&current_hash, &mut redeem_deploy)
+                        .await?
+                }
+            };
+            match result {
+                SystemDeployResult::PlaySucceeded {
+                    state_hash,
+                    processed_system_deploy,
+                    mergeable_channels,
+                    result: _,
+                } => {
+                    processed_system_deploys.push((processed_system_deploy, mergeable_channels));
+                    current_hash = state_hash;
+                }
+                SystemDeployResult::PlayFailed {
+                    processed_system_deploy: ProcessedSystemDeploy::Failed { error_msg, .. },
+                } => {
+                    return Err(CasperError::RuntimeError(format!(
+                        "Unexpected system error during cosigned play of system deploy: {}",
+                        error_msg
+                    )));
+                }
+                SystemDeployResult::PlayFailed {
+                    processed_system_deploy: ProcessedSystemDeploy::Succeeded { .. },
+                } => {
+                    return Err(CasperError::RuntimeError(
+                        "Unreachable code path. This is likely caused by a bug in the runtime."
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+
+        Ok((current_hash, processed_deploys, processed_system_deploys))
+    }
 
     /**
      * Evaluates deploys and System deploys with checkpoint to get final state hash
@@ -202,6 +293,12 @@ impl RuntimeOps {
                     mut close_deploy,
                 ) => {
                     self.play_system_deploy(&current_hash, &mut close_deploy)
+                        .await?
+                }
+                crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Redeem(
+                    mut redeem_deploy,
+                ) => {
+                    self.play_system_deploy(&current_hash, &mut redeem_deploy)
                         .await?
                 }
             };
@@ -286,7 +383,78 @@ impl RuntimeOps {
 
     /**
      * Evaluates deploys on root hash with checkpoint to get final state hash
-     */
+     * */
+    /// Multi-signature-aware variant of [`Self::play_deploys_for_state`].
+    /// Accepts `Vec<Cosigned<DeployData>>` so multi-signature deploys
+    /// route through the per-cosigner pre-charge + FIFO refund fan-out
+    /// at `play_deploy_with_cost_accounting_cosigned`. For legacy
+    /// single-signature deploys (1-element Cosigned envelopes), behavior
+    /// is byte-identical to `play_deploys_for_state`.
+    pub async fn play_deploys_for_state_cosigned(
+        &mut self,
+        start_hash: &StateHash,
+        terms: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
+    ) -> Result<(StateHash, Vec<(ProcessedDeploy, NumberChannelsEndVal)>), CasperError> {
+        let mem_profile_enabled = crate::rust::util::rholang::mem_profiler::mem_profile_enabled();
+        let read_vm_rss_kb =
+            || -> Option<usize> { crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() };
+        let mut rss_baseline = if mem_profile_enabled {
+            read_vm_rss_kb()
+        } else {
+            None
+        };
+        let mut rss_prev = rss_baseline;
+        let mut log_mem_step = |step: &str| {
+            if !mem_profile_enabled {
+                return;
+            }
+            if let Some(curr) = read_vm_rss_kb() {
+                let prev = rss_prev.unwrap_or(curr);
+                let baseline = rss_baseline.unwrap_or(curr);
+                eprintln!(
+                    "play_deploys_for_state_cosigned.mem step={} rss_kb={} delta_prev_kb={} delta_total_kb={}",
+                    step, curr, curr as i64 - prev as i64, curr as i64 - baseline as i64
+                );
+                rss_prev = Some(curr);
+                if rss_baseline.is_none() {
+                    rss_baseline = Some(curr);
+                }
+            }
+        };
+
+        tracing::info!(target: "f1r3fly.casper.play-deploys-cosigned", "play-deploys-cosigned-started");
+        log_mem_step("start");
+        self.runtime
+            .reset(&Blake2b256Hash::from_bytes_prost(start_hash))
+            .await?;
+        log_mem_step("after_reset");
+
+        let mut res = Vec::with_capacity(terms.len());
+        let mut current_root = start_hash.clone();
+        for (idx, cosigned) in terms.into_iter().enumerate() {
+            if mem_profile_enabled {
+                let before = format!("before_deploy_{}", idx + 1);
+                log_mem_step(&before);
+            }
+            let (mut processed, mergeable) = self
+                .play_deploy_with_cost_accounting_cosigned(cosigned)
+                .await?;
+            let checkpoint = self.runtime.create_checkpoint().await;
+            let next_root = checkpoint.root.to_bytes_prost();
+            processed.pre_state_hash = current_root;
+            processed.post_state_hash = next_root.clone();
+            current_root = next_root;
+            res.push((processed, mergeable));
+            if mem_profile_enabled {
+                let after = format!("after_deploy_{}", idx + 1);
+                log_mem_step(&after);
+            }
+        }
+
+        log_mem_step("after_final_checkpoint");
+        Ok((current_root, res))
+    }
+
     pub async fn play_deploys_for_state(
         &mut self,
         start_hash: &StateHash,
@@ -305,8 +473,15 @@ impl RuntimeOps {
         }
 
         let mut res = Vec::with_capacity(terms.len());
+        let mut current_root = start_hash.clone();
         for deploy in terms {
-            res.push(self.play_deploy_with_cost_accounting(deploy).await?);
+            let (mut processed, mergeable) = self.play_deploy_with_cost_accounting(deploy).await?;
+            let checkpoint = self.runtime.create_checkpoint().await;
+            let next_root = checkpoint.root.to_bytes_prost();
+            processed.pre_state_hash = current_root;
+            processed.post_state_hash = next_root.clone();
+            current_root = next_root;
+            res.push((processed, mergeable));
         }
 
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
@@ -315,21 +490,19 @@ impl RuntimeOps {
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "before_final_checkpoint_create_checkpoint", rss_kb);
         }
-        let final_checkpoint = self.runtime.create_checkpoint().await;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_final_checkpoint_create_checkpoint", rss_kb);
         }
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "before_final_checkpoint_root_to_bytes", rss_kb);
         }
-        let final_root = final_checkpoint.root.to_bytes_prost();
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_final_checkpoint_root_to_bytes", rss_kb);
         }
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_final_checkpoint", rss_kb);
         }
-        Ok((final_root, res))
+        Ok((current_root, res))
     }
 
     /**
@@ -347,196 +520,154 @@ impl RuntimeOps {
             .await?;
 
         let mut res = Vec::with_capacity(terms.len());
+        let mut current_root = start_hash.clone();
         for deploy in terms {
-            res.push(self.process_deploy_with_mergeable_data(deploy).await?);
+            let (mut processed, mergeable) =
+                self.process_deploy_with_mergeable_data(deploy).await?;
+            let checkpoint = self.runtime.create_checkpoint().await;
+            let next_root = checkpoint.root.to_bytes_prost();
+            processed.pre_state_hash = current_root;
+            processed.post_state_hash = next_root.clone();
+            current_root = next_root;
+            res.push((processed, mergeable));
         }
-
-        let final_checkpoint = self.runtime.create_checkpoint().await;
-        Ok((final_checkpoint.root.to_bytes_prost(), res))
+        Ok((current_root, res))
     }
 
     /**
-     * Evaluates deploy with cost accounting (PoS Pre-charge and Refund calls)
+     * Evaluates deploy with cost accounting (PoS Pre-charge and Refund calls).
+     *
+     * Legacy single-signature adapter. Byte-identical observable behavior to
+     * the pre-multi-signature implementation — same `deploy_id`, same vault
+     * deltas, same cost-trace digests, same `ProcessedDeploy::empty` failure
+     * envelope on pre-charge failure. Achieved by uplifting `Signed<DeployData>`
+     * to a single-signer `Cosigned<DeployData>` envelope (via
+     * `Cosigned::from_single_signer`) and delegating to the canonical
+     * `play_deploy_with_cost_accounting_cosigned` implementation. The legacy
+     * seed-derivation path (via `as_legacy_signed_ref` in the cosigned method)
+     * preserves replay determinism for existing on-chain deploys.
      */
     pub async fn play_deploy_with_cost_accounting(
         &mut self,
         deploy: Signed<DeployData>,
     ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
-        // Using tracing events for async - Span[F].withMarks("play-deploy") from Scala
-        tracing::debug!(target: "f1r3fly.casper.play_deploy", "play-deploy-started");
-        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
-        }
-        let mut eval_collector_state = EvalCollector::new();
-
-        let deploy_pk = deploy.pk.bytes.clone();
-        let deploy_pk_hex = hex::encode(&deploy_pk);
-        let deploy_sig_hex = hex::encode(&deploy.sig);
-        let refund_rand = system_deploy_util::generate_refund_deploy_random_seed(&deploy);
-        let pre_charge_rand = system_deploy_util::generate_pre_charge_deploy_random_seed(&deploy);
-
-        // Evaluates Pre-charge system deploy
-        let pre_charge_result = {
-            // Using tracing events for async - Span[F].traceI("precharge") from Scala
-            tracing::debug!(target: "f1r3fly.casper.precharge", "precharge-started");
-            tracing::debug!(
-                "PreCharging {} for {}",
-                deploy_pk_hex.as_str(),
-                deploy.data.total_phlo_charge()
-            );
-            if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-                tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "before_precharge_internal", rss_kb);
-            }
-            let (event_log, result, mergeable_channels) = self
-                .play_system_deploy_internal(&mut PreChargeDeploy {
-                    charge_amount: deploy.data.total_phlo_charge(),
-                    pk: deploy.pk.clone(),
-                    rand: pre_charge_rand,
-                })
-                .await?;
-            if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-                tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_precharge_internal", rss_kb);
-            }
-            eval_collector_state.add(event_log, mergeable_channels);
-            if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-                tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_precharge_collect", rss_kb);
-            }
-            result
-        };
-        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_precharge", rss_kb);
-        }
-
-        match pre_charge_result {
-            Either::Right(_) => {
-                // Evaluates user deploy
-                let pd = {
-                    // Using tracing events for async - Span[F].traceI("user-deploy") from Scala
-                    tracing::debug!(target: "f1r3fly.casper.user_deploy", "user-deploy-started");
-                    tracing::debug!("Processing user deploy {}", deploy_pk_hex.as_str());
-                    // Evaluates user deploy and append event log to local state
-                    {
-                        let (mut pd, mc) = self.process_deploy(deploy).await?;
-                        let deploy_log = mem::take(&mut pd.deploy_log);
-                        eval_collector_state.add(deploy_log, mc);
-                        pd
-                    }
-                };
-                if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-                    tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_user_deploy", rss_kb);
-                }
-
-                // Evaluates Refund system deploy
-                let refund_result = {
-                    // Using tracing events for async - Span[F].traceI("refund") from Scala
-                    tracing::debug!(target: "f1r3fly.casper.refund", "refund-started");
-                    tracing::debug!(
-                        "Refunding {} with {}",
-                        deploy_pk_hex.as_str(),
-                        pd.refund_amount()
-                    );
-                    let (event_log, result, mergeable_channels) = self
-                        .play_system_deploy_internal(&mut RefundDeploy {
-                            refund_amount: pd.refund_amount(),
-                            rand: refund_rand,
-                        })
-                        .await?;
-                    eval_collector_state.add(event_log, mergeable_channels);
-                    result
-                };
-                if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-                    tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_refund", rss_kb);
-                }
-
-                match refund_result {
-                    Either::Right(_) => {
-                        // Get mergeable channels data
-                        let mergeable_channels_data = self
-                            .get_number_channels_data(&eval_collector_state.mergeable_channels)
-                            .await?;
-
-                        let deploy_log = mem::take(&mut eval_collector_state.event_log);
-                        if let Some(rss_kb) =
-                            crate::rust::util::rholang::mem_profiler::read_vm_rss_kb()
-                        {
-                            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_collect_result", rss_kb);
-                        }
-
-                        Ok((
-                            ProcessedDeploy { deploy_log, ..pd },
-                            mergeable_channels_data,
-                        ))
-                    }
-
-                    Either::Left(error) => {
-                        // If Pre-charge succeeds and Refund fails, it's a platform error.
-                        // Include deploy identifiers so operators can quickly isolate toxic deploys.
-                        let refund_amount = pd.refund_amount();
-                        let failure_context = format!(
-                            "{}, deploy_sig={}, deployer_pk={}, refund_amount={}",
-                            error.error_message,
-                            deploy_sig_hex,
-                            deploy_pk_hex.as_str(),
-                            refund_amount
-                        );
-                        metrics::counter!(
-                            "casper_runtime_refund_failures_total",
-                            "source" => CASPER_METRICS_SOURCE
-                        )
-                        .increment(1);
-                        tracing::warn!("Refund failure '{}'", failure_context);
-                        Err(CasperError::SystemRuntimeError(
-                            SystemDeployPlatformFailure::GasRefundFailure(failure_context),
-                        ))
-                    }
-                }
-            }
-
-            Either::Left(error) => {
-                tracing::error!(error = %error.error_message, "pre-charge evaluation failed");
-
-                // Handle evaluation errors from PreCharge
-                // - assigning 0 cost - replay should reach the same state
-                let mut empty_pd = ProcessedDeploy::empty(deploy);
-                empty_pd.system_deploy_error = Some(error.error_message);
-
-                // Update result with accumulated event logs
-                // Get mergeable channels data
-                let mergeable_channels_data = self
-                    .get_number_channels_data(&eval_collector_state.mergeable_channels)
-                    .await?;
-
-                let deploy_log = mem::take(&mut eval_collector_state.event_log);
-
-                Ok((
-                    ProcessedDeploy {
-                        deploy_log,
-                        ..empty_pd
-                    },
-                    mergeable_channels_data,
-                ))
-            }
-        }
+        let cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy)
+            .map_err(|e| {
+                CasperError::RuntimeError(format!("legacy uplift to Cosigned failed: {e}"))
+            })?;
+        self.play_deploy_with_cost_accounting_cosigned(cosigned)
+            .await
     }
 
+    /// Multi-signature aware deploy execution with cost accounting.
+    ///
+    /// D3 (DR-9, OD-1/OD-2): the singular-phlo escrow model is REMOVED. There
+    /// is NO per-cosigner pre-charge / refund fan-out and NO per-deploy budget
+    /// cap. A deploy's fundedness was already proven by the block-assembly
+    /// acceptance gate (`util/rholang/acceptance.rs::admit_by_funding`, Def 19
+    /// §7.6) against the per-signature supply pool Σ⟦s⟧; the single consensus
+    /// decrement is the settlement debit applied once at block close. The user
+    /// deploy therefore runs UNMETERED-FOR-LIVENESS (no OOP-abort budget gates
+    /// an accepted deploy — `evaluate_cosigned` installs an `unsafe_max` token
+    /// budget so the OOP boundary never fires while `total_cost()` still counts
+    /// the per-COMM consensus cost). Non-termination is bounded by the existing
+    /// AST/term-count guard in `reduce.rs::eval_inner`.
+    ///
+    /// This is now a thin wrapper over [`Self::process_deploy_cosigned`] (which
+    /// owns the INNER soft-checkpoint that rolls back a FAILED user deploy's
+    /// effects), plus the mergeable-channel data collection. `cost` on the
+    /// returned `ProcessedDeploy` is the per-COMM `total_cost()`.
+    pub async fn play_deploy_with_cost_accounting_cosigned(
+        &mut self,
+        cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
+    ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
+        tracing::debug!(target: "f1r3fly.casper.play-deploy", "play-deploy-started");
+        let primary_pk_hex = hex::encode(&cosigned.primary().pk.bytes);
+
+        // USER DEPLOY (owns its own inner soft-checkpoint for failed-deploy
+        // rollback). No pre-charge / refund fan-out (D3): the gate already
+        // proved fundedness and the settlement debit is applied at block close.
+        tracing::debug!(target: "f1r3fly.casper.user-deploy",
+            "user-deploy-started primary_pk={}", primary_pk_hex);
+        let (pd, mc) = self.process_deploy_cosigned(cosigned).await?;
+
+        let mut mergeable: HashMap<Par, MergeType> = HashMap::new();
+        mergeable.extend(mc);
+        let mergeable_channels_data = self.get_number_channels_data(&mergeable).await?;
+        Ok((pd, mergeable_channels_data))
+    }
+
+    /// Legacy single-signature user-deploy execution. Uplifts to
+    /// `Cosigned<DeployData>` and delegates to [`Self::process_deploy_cosigned`]
+    /// for byte-identical observable behavior.
     pub async fn process_deploy(
         &mut self,
         deploy: Signed<DeployData>,
     ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>), CasperError> {
-        // Keep a soft checkpoint before user deploy execution so failed deploy rollback
-        // preserves pre-charge side effects required by refundDeploy.
+        let cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy)
+            .map_err(|e| {
+                CasperError::RuntimeError(format!(
+                    "legacy uplift to Cosigned failed in process_deploy: {e}"
+                ))
+            })?;
+        self.process_deploy_cosigned(cosigned).await
+    }
+
+    /// Multi-signature aware user-deploy execution. Keeps the INNER
+    /// soft-checkpoint that wraps the user deploy ONLY — on user-deploy errors
+    /// the inner scope reverts the user deploy's effects so a failed deploy
+    /// leaves no residue (D3: there is no pre-charge state to preserve; the
+    /// gate already settled fundedness against Σ⟦s⟧).
+    ///
+    /// `cost` on the returned `ProcessedDeploy` is the per-COMM `total_cost()`
+    /// (DR-9). The `ProcessedDeploy.deploy: Signed<DeployData>` storage shape is
+    /// preserved by reconstituting the primary signer's `Signed<DeployData>`
+    /// envelope via `Cosigned::into_legacy_signed_unchecked` — invariants
+    /// were already enforced at `Cosigned::from_signed_data` construction so
+    /// no re-verification is needed.
+    pub async fn process_deploy_cosigned(
+        &mut self,
+        cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
+    ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>), CasperError> {
+        // INNER soft-checkpoint — wraps the USER DEPLOY only. On a failed user
+        // deploy it reverts that deploy's effects (D3: no pre-charge state).
         let fallback = self.runtime.create_soft_checkpoint().await;
 
-        // Evaluate deploy
-        let eval_result = self.evaluate(&deploy).await?;
+        let eval_result = self.evaluate_cosigned(&cosigned).await?;
 
         let deploy_log = self.runtime.take_event_log().await;
 
         let eval_succeeded = eval_result.errors.is_empty();
-        let deploy_sig = deploy.sig.clone();
+        let primary_sig = cosigned.primary().sig.clone();
+        let is_compound = cosigned.is_compound();
+        let extracted_threshold = cosigned.cosigner_threshold() as i32;
+        // For multi-sig deploys (§1.9): extract cosigner data BEFORE the
+        // `into_legacy_signed_unchecked` consumes the envelope, so the
+        // ProcessedDeploy carries the full cosigner list through block storage
+        // and replay. D3 (DR-9): no per-signer phlo_share.
+        let extracted_cosigners: Vec<models::casper::CompoundSigner> = if is_compound {
+            cosigned
+                .signers()
+                .iter()
+                .skip(1)
+                .map(|c| models::casper::CompoundSigner {
+                    pk: c.pk.bytes.clone().into(),
+                    sig: c.sig.clone(),
+                    sig_algorithm: c.sig_algorithm.name(),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        // Reconstitute the legacy Signed<DeployData> shape for the
+        // `ProcessedDeploy.deploy` field. For single-sig (legacy uplift),
+        // this returns a byte-identical legacy envelope. For multi-sig,
+        // the additional cosigners survive via the `cosigners` field
+        // alongside, NOT through the inner Signed shape.
+        let legacy_signed = cosigned.into_legacy_signed_unchecked();
 
         let deploy_result = ProcessedDeploy {
-            deploy,
+            deploy: legacy_signed,
             cost: Cost::to_proto(eval_result.cost),
             deploy_log: deploy_log
                 .into_iter()
@@ -544,21 +675,41 @@ impl RuntimeOps {
                 .collect(),
             is_failed: !eval_succeeded,
             system_deploy_error: None,
+            cosigners: extracted_cosigners,
+            cosigner_threshold: extracted_threshold,
+            pre_state_hash: StateHash::new(),
+            post_state_hash: StateHash::new(),
         };
 
         if !eval_succeeded {
             self.runtime.revert_to_soft_checkpoint(fallback).await;
-            interpreter_util::print_deploy_errors(&deploy_sig, &eval_result.errors);
+            interpreter_util::print_deploy_errors(&primary_sig, &eval_result.errors);
         }
 
         Ok((deploy_result, eval_result.mergeable))
     }
 
+    /// Legacy single-signature variant. Thin wrapper around
+    /// [`Self::process_deploy_with_mergeable_data_cosigned`].
     pub async fn process_deploy_with_mergeable_data(
         &mut self,
         deploy: Signed<DeployData>,
     ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
-        let (pd, merge_chs) = self.process_deploy(deploy).await?;
+        let cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy)
+            .map_err(|e| {
+                CasperError::RuntimeError(format!(
+                    "legacy uplift to Cosigned failed in process_deploy_with_mergeable_data: {e}"
+                ))
+            })?;
+        self.process_deploy_with_mergeable_data_cosigned(cosigned)
+            .await
+    }
+
+    pub async fn process_deploy_with_mergeable_data_cosigned(
+        &mut self,
+        cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
+    ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
+        let (pd, merge_chs) = self.process_deploy_cosigned(cosigned).await?;
         let data = self.get_number_channels_data(&merge_chs).await?;
         Ok((pd, data))
     }
@@ -656,6 +807,23 @@ impl RuntimeOps {
         let (event_log, result, mergeable_channels) =
             self.play_system_deploy_internal(system_deploy).await?;
 
+        // Cost-Accounted Rho Stage B (Decision 2.5): run the system deploy's
+        // Rust-side settlement hook on the LIVE post-eval runtime, BEFORE the
+        // post-state checkpoint, ONLY on success. For `CloseBlockDeploy` this
+        // dual-writes the per-validator supply pool `Σ⟦v⟧` for the epoch /
+        // genesis-block-1 mint. The hook runs AFTER `play_system_deploy_internal`
+        // has already taken the event log (so its bare supply-produce events are
+        // NOT recorded into the system deploy's `event_list`), and its writes are
+        // captured by `create_checkpoint` below — symmetric with the replay-side
+        // invocation in `replay_block_system_deploy`. Default-no-op for every
+        // other system deploy.
+        if matches!(result, Either::Right(_)) {
+            let block_data = self.runtime.block_data_ref.read().await.clone();
+            system_deploy
+                .post_eval(self, &block_data, state_hash)
+                .await?;
+        }
+
         let final_state_hash = {
             let checkpoint = self.runtime.create_checkpoint().await;
             checkpoint.root.to_bytes_prost()
@@ -672,6 +840,7 @@ impl RuntimeOps {
                 }) = system_deploy.as_any().downcast_ref::<SlashDeploy>()
                 {
                     Ok(SystemDeployResult::play_succeeded(
+                        state_hash.clone(),
                         final_state_hash,
                         event_log,
                         SystemDeployData::create_slash(
@@ -686,14 +855,53 @@ impl RuntimeOps {
                     system_deploy.as_any().downcast_ref::<CloseBlockDeploy>()
                 {
                     Ok(SystemDeployResult::play_succeeded(
+                        state_hash.clone(),
                         final_state_hash,
                         event_log,
                         SystemDeployData::create_close(),
                         mcl,
                         system_deploy_result,
                     ))
+                } else if let Some(redeem) = system_deploy
+                    .as_any()
+                    .downcast_ref::<crate::rust::util::rholang::costacc::redeem_deploy::RedeemDeploy>()
+                {
+                    // Cost-Accounted Rho Stage-C redemption: persist the FULL
+                    // authorization material (validator, outcome, multisig
+                    // keyset/quorum, cosigner authorizations) so replay re-runs
+                    // the DR-12 quorum verification byte-identically to play.
+                    use crate::rust::util::rholang::costacc::redeem_deploy::RedemptionOutcome;
+                    let (outcome_tag, penalty) = match &redeem.outcome {
+                        RedemptionOutcome::Vindicated => ("Vindicated".to_string(), 0_i64),
+                        RedemptionOutcome::Guilty { penalty } => ("Guilty".to_string(), *penalty),
+                        RedemptionOutcome::Burned => ("Burned".to_string(), 0_i64),
+                    };
+                    let authorizations = redeem
+                        .authorizations
+                        .iter()
+                        .map(|a| models::rust::casper::protocol::casper_message::RedemptionAuthorizationData {
+                            public_key: a.public_key.clone().into(),
+                            signature: a.signature.clone().into(),
+                        })
+                        .collect();
+                    Ok(SystemDeployResult::play_succeeded(
+                        state_hash.clone(),
+                        final_state_hash,
+                        event_log,
+                        SystemDeployData::create_redeem(
+                            redeem.validator_pk.clone().into(),
+                            outcome_tag,
+                            penalty,
+                            redeem.pos_multi_sig_public_keys.clone(),
+                            redeem.pos_multi_sig_quorum,
+                            authorizations,
+                        ),
+                        mcl,
+                        system_deploy_result,
+                    ))
                 } else {
                     Ok(SystemDeployResult::play_succeeded(
+                        state_hash.clone(),
                         final_state_hash,
                         event_log,
                         SystemDeployData::Empty,
@@ -834,13 +1042,11 @@ impl RuntimeOps {
         deployer: Option<PublicKey>,
     ) -> Result<(Vec<Par>, u64), CasperError> {
         let deploy_result = async {
-            // Hardcoded phlogiston limit / 1 REV if phloPrice=1
-            let phlo_limit = 100 * 1000 * 1000;
+            // D3: a deploy carries no phlo price/limit — exploratory execution
+            // is metered by the in-calculus cost accounting, not a deploy field.
             let data = DeployData {
                 term,
                 time_stamp: 0,
-                phlo_price: 1,
-                phlo_limit,
                 valid_after_block_number: 0,
                 shard_id: String::new(),
                 expiration_timestamp: None,
@@ -1026,7 +1232,7 @@ impl RuntimeOps {
             })),
         }]);
 
-        let (data, _cost) = self
+        let (data, _token_cost) = self
             .capture_results_with_name(start, deploy, &return_name)
             .await?;
         Ok(data)
@@ -1062,20 +1268,88 @@ impl RuntimeOps {
 
     /* Evaluates Rholang source code */
 
+    /// Legacy single-signature evaluate. Preserves byte-identical
+    /// observable behavior for existing on-chain deploys (same `deploy_id`,
+    /// same `Sig::Quote` value, same normalizer env). Multi-signature
+    /// dispatch happens in [`Self::evaluate_cosigned`] which this
+    /// method delegates to via legacy uplift.
     pub async fn evaluate(
         &mut self,
         deploy: &Signed<DeployData>,
     ) -> Result<EvaluateResult, CasperError> {
-        let deploy_data = SystemProcessDeployData::from_deploy(deploy);
-        self.runtime.set_deploy_data(deploy_data).await;
+        let cosigned =
+            crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy.clone())
+                .map_err(|e| {
+                    CasperError::RuntimeError(format!(
+                        "legacy uplift to Cosigned failed in evaluate: {e}"
+                    ))
+                })?;
+        self.evaluate_cosigned(&cosigned).await
+    }
 
+    /// Multi-signature aware deploy evaluation. Single source of truth for
+    /// the signature install + normalizer-env construction logic.
+    ///
+    /// Single-sig deploys (`!cosigned.is_compound()`) route through the
+    /// legacy `set_deploy_signature` (legacy `DEPLOY_SIGNATURE_DOMAIN`) so
+    /// existing on-chain deploy_ids are preserved bit-for-bit. Multi-sig
+    /// deploys route through `set_deploy_signatures` (compound domain
+    /// separator) folding all signers into a left-associated `Sig::And` tree.
+    ///
+    /// The normalizer env is built via `normalizer_env_from_cosigned_deploy`
+    /// in both cases — for single-sig that produces a one-element
+    /// `rho:system:cosigners` list, observably equivalent to the legacy
+    /// `normalizer_env_from_deploy(signed)` output (Cosigned uplift
+    /// equivalence verified by
+    /// `cosigned_envelope_legacy_uplift_yields_single_element_cosigners`).
+    pub async fn evaluate_cosigned(
+        &mut self,
+        cosigned: &crypto::rust::signatures::signed::Cosigned<DeployData>,
+    ) -> Result<EvaluateResult, CasperError> {
+        let deploy_data = SystemProcessDeployData::from_cosigned(cosigned);
+        self.runtime.set_deploy_data(deploy_data).await;
+        self.runtime.cost.set_unmetered(false);
+
+        // Decouple the on-chain deploy_id (wire-sig-derived, UNCHANGED) from the
+        // FUNDING signature that keys Σ⟦s⟧: fund from the signers' GROUND public
+        // keys so the pool is the genesis-seeded wallet `Σ⟦Ground(pk)⟧`
+        // (`Σ⟦signer⟧ == Σ⟦wallet⟧`, cost-accounting WD-D2 §D2.9). `funding_sig`
+        // is the ONE shared derivation the D2 gate + replay recompute also use
+        // (no drift), and it excludes empty-sig threshold placeholders so only
+        // signers who actually signed the deploy fund it.
+        let funding = accounting::funding_sig(cosigned);
+        if cosigned.is_compound() {
+            // Multi-sig: deploy_id from the canonical-order WIRE signatures
+            // (compound domain); funding from the `And`-fold of Ground(pkᵢ),
+            // balanced across the cosigners' wallets at settlement (P8).
+            let sigs: Vec<&[u8]> = cosigned.signers().iter().map(|s| s.sig.as_ref()).collect();
+            self.runtime
+                .cost
+                .set_deploy_signatures_funded(&sigs, funding);
+        } else {
+            // Legacy single-sig path — byte-identical deploy_id to existing
+            // on-chain deploys (legacy DEPLOY_SIGNATURE_DOMAIN); funding from
+            // Ground(primary_pk).
+            self.runtime
+                .cost
+                .set_deploy_signature_funded(&cosigned.primary().sig, funding);
+        }
+
+        let primary = cosigned.primary();
+        // D3 (DR-9, OD-1): accepted deploys run UNMETERED-FOR-LIVENESS — there
+        // is NO per-deploy phlo_limit cap (the gate already proved fundedness
+        // against Σ⟦s⟧). Install an `unsafe_max` token budget so the runtime's
+        // OOP boundary NEVER fires; the budget stays METERED (not the unmetered
+        // flag), so `total_cost()` still returns the real per-COMM consensus
+        // cost. Non-termination is bounded by the existing AST/term-count guard
+        // in `reduce.rs::eval_inner`.
         let result = self
             .runtime
             .evaluate(
-                &deploy.data.term,
-                Cost::create(deploy.data.phlo_limit, "Evaluate deploy".to_string()),
-                normalizer_env_from_deploy(deploy),
-                Tools::unforgeable_name_rng(&deploy.pk, deploy.data.time_stamp),
+                &cosigned.data.term,
+                Cost::unsafe_max(),
+                models::rust::normalizer_env::normalizer_env_from_cosigned_deploy(cosigned),
+                Tools::unforgeable_name_rng(&primary.pk, cosigned.data.time_stamp),
             )
             .await;
 
@@ -1112,16 +1386,25 @@ impl RuntimeOps {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "before_runtime_evaluate", rss_kb);
         }
         let wrapper_pre = wrapper_pre_start.elapsed();
-        let result = self
-            .runtime
-            .evaluate(
-                S::source(),
-                Cost::unsafe_max(),
-                env,
-                // TODO: Review this clone and whether to pass mut ref down into evaluate
-                rand,
-            )
-            .await?;
+        let result = {
+            // System deploys perform protocol maintenance and settlement work
+            // outside user-runtime metering. The scoped guard is deliberately
+            // used here so panics, early returns, and async errors cannot leak
+            // unmetered mode into the next user deploy.
+            let _unmetered_scope = self.runtime.cost.enter_unmetered_scope();
+            self.runtime
+                .evaluate(
+                    S::source(),
+                    Cost::unsafe_max(),
+                    env,
+                    // `evaluate` owns the random seed state for this run, so the
+                    // cloned deploy seed is passed by value with the rest of the
+                    // immutable system-deploy inputs.
+                    rand,
+                )
+                .await
+        };
+        let result = result?;
         let wrapper_post_start = Instant::now();
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_runtime_evaluate", rss_kb);

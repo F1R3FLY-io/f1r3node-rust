@@ -1,0 +1,205 @@
+(* ════════════════════════════════════════════════════════════════════════
+   CAProperSubcategory.v — Prop 6.1 (the forgetful U : ciGSLT → iGSLT is faithful,
+   not full, not essentially surjective), continued-gslt-cost-v2 §6.
+
+   Model: objects are the reified [CIObj] (CACategory); an iGSLT morphism [IGMor]
+   is a transition-preserving carrier/signature map (it forgets the
+   behavioural-congruence obligation), while a ciGSLT morphism [CIMor]
+   ADDITIONALLY respects [cbisim] and quote-faithfulness. U keeps the underlying
+   maps and forgets [mor_cong]/quote-faithfulness.
+
+   - FAITHFUL: U keeps the map, so two ciGSLT morphisms with equal images are
+     equal in the hom-setoid (a Leibniz map equality forces [mor_heq] by [cbisim]
+     reflexivity).
+   - NOT FULL: an iGSLT morphism that collapses two behaviourally-identified states
+     onto two distinct ones has NO ciGSLT lift — the lift's [mor_cong] would force
+     [true = false], refuted by [discriminate]. (The R-D key-collapse obstruction.)
+   - NOT ESO: via TWO witnesses, both SPECIFIC to the concrete cost model. NOTE on
+       alignment: continued-gslt-cost-v2 §6 (tex:676-684) states three not-eso REASONS
+       — (i) rewrites that do not factor as an interaction cut, (ii) an UNDECIDABLE
+       structural congruence (no computable section), (iii) a non-wrappable
+       contraction. The witnesses below do NOT mechanize those reasons (which would
+       need, e.g., a halting-problem reduction for (ii)); they are independent,
+       model-specific obstructions that also suffice to refute essential surjectivity:
+       (W1, stack-inertness) the concrete transition [graded_step] never fires from a
+         bare token stack (no_leak_stack_inert) — closest in spirit to clause (iii),
+         wrappability/no-leak; refutes one transition shape.
+       (W2, image-finiteness) the CONCRETE graded transition is image-finite
+         (ca_ciGSLT_image_finite, from graded_image_finite), so the infinitely-branching
+         iGSLT object [Bad] is the forgetful image of no IMAGE-FINITE transition system
+         (U_not_eso). CAVEAT: ciGSLT objects are NOT image-finite in general — the paper
+         admits infinite branching with a computable section — so [ci_realizable] below
+         (which REQUIRES image-finiteness) models "realizable by an image-finite system",
+         a SUFFICIENT-not-necessary proxy. U_not_eso is thus a genuine non-eso witness
+         against image-finite realizations / the concrete rho model, NOT a mechanization
+         of the paper's general decidability-based not-eso.
+     Axiom-free.                                                                  *)
+
+From CostAccountedRho Require Import CostAccountedSyntax.
+From CostAccountedRho Require Import CASyntax.
+From CostAccountedRho Require Import CAReduction.
+From CostAccountedRho Require Import WrappingSubjectReduction.
+From CostAccountedRho Require Import CAGradedTransition.
+From CostAccountedRho Require Import CAGradedImageFinite.
+From CostAccountedRho Require Import CACategory.
+From Stdlib Require Import Lists.List.
+From Stdlib Require Import Lia.
+Import ListNotations.
+
+(* iGSLT morphism: transition-preserving, but NOT required to respect cbisim. *)
+Record IGMor (G H : CIObj) : Type := {
+  igm_map  : carrier G -> carrier H;
+  igm_sig_map : sig -> sig;
+  igm_pres : forall x g x', cstep G x g x' -> cstep H (igm_map x) (igm_sig_map g) (igm_map x')
+}.
+
+Arguments igm_map {G H} _ _.
+Arguments igm_sig_map {G H} _ _.
+
+(* The forgetful action on morphisms: a ciGSLT morphism IS an iGSLT morphism
+   (forget the [mor_cong] congruence and quote-faithfulness fields). *)
+Definition U_mor {G H : CIObj} (f : CIMor G H) : IGMor G H :=
+  {| igm_map := mor_map f;
+     igm_sig_map := mor_sig_map f;
+     igm_pres := fun x g x' => mor_pres f |}.
+
+(* ── Faithful: equal images ⇒ equal in the hom-setoid. ─────────────────────── *)
+Theorem U_faithful : forall (G H : CIObj) (f g : CIMor G H),
+  (forall x, igm_map (U_mor f) x = igm_map (U_mor g) x) -> mor_heq f g.
+Proof.
+  intros G H f g Hfg x. unfold mor_heq. simpl in Hfg. rewrite (Hfg x). apply cbisim_refl.
+Qed.
+
+(* ── Not full: two witness objects + a collapsing iGSLT morphism with no lift. ─ *)
+Definition obj_triv : CIObj :=
+  {| carrier := bool; cstep := fun _ _ _ => False;
+     cbisim := fun _ _ => True;
+     reachable_sig := fun _ => True;
+     cstep_reachable_sig := fun _ _ _ H => match H with end;
+     cbisim_refl := fun _ => I;
+     cbisim_sym := fun _ _ _ => I;
+     cbisim_trans := fun _ _ _ _ _ => I |}.
+
+Definition obj_eq : CIObj :=
+  {| carrier := bool; cstep := fun _ _ _ => False;
+     cbisim := @eq bool;
+     reachable_sig := fun _ => True;
+     cstep_reachable_sig := fun _ _ _ H => match H with end;
+     cbisim_refl := @eq_refl bool;
+     cbisim_sym := fun x y (H : x = y) => eq_sym H;
+     cbisim_trans := fun x y z (H1 : x = y) (H2 : y = z) => eq_trans H1 H2 |}.
+
+Definition h_collapse : IGMor obj_triv obj_eq.
+Proof.
+  refine (@Build_IGMor obj_triv obj_eq (fun b => b) (fun s => s) _).
+  intros x g x' H. simpl in H. destruct H.
+Defined.
+
+Theorem U_not_full :
+  exists (G H : CIObj) (h : IGMor G H),
+    ~ (exists f : CIMor G H, forall x, igm_map (U_mor f) x = igm_map h x).
+Proof.
+  exists obj_triv, obj_eq, h_collapse. intros [f Hf]. simpl in Hf.
+  (* Hf x : mor_map f x = x; mor_cong f at the (True-related) distinct states true,false
+     forces eq (mor_map f true)(mor_map f false), i.e. true = false. *)
+  pose proof (@mor_cong obj_triv obj_eq f true false I) as Hc. simpl in Hc.
+  rewrite (Hf true) in Hc. rewrite (Hf false) in Hc. discriminate Hc.
+Qed.
+
+(* ── Not eso (bounded): the ciGSLT transition never fires from a bare stack, so
+   a stack-headed iGSLT transition shape is unrealized by the ciGSLT structure. ─ *)
+Theorem graded_step_never_from_stack : forall t g S', ~ graded_step (STStack t) g S'.
+Proof.
+  intros t g S' H. apply graded_step_sound in H.
+  eapply no_leak_stack_inert. exact H.
+Qed.
+
+(* ── Not eso (W2): the image-finiteness obstruction (a model-specific witness). ──
+   W1 above refutes one transition shape. W2 is an INDEPENDENT obstruction: the
+   CONCRETE cost transition [graded_step] is image-finite, so an infinitely-branching
+   iGSLT object cannot be its forgetful image (nor that of any image-finite system).
+   This is NOT one of the paper's three not-eso reasons (clauses i/ii/iii are about
+   cut-factorisation, undecidable congruence, and wrappability — see the header), and
+   ciGSLT objects are NOT image-finite in general; so the predicate [ci_realizable]
+   below requires image-finiteness as a SUFFICIENT-not-necessary realizability proxy.
+   U_not_eso refutes essential surjectivity against image-finite realizations / the
+   concrete rho model — a genuine witness, honestly scoped, not the paper's general
+   decidability-based statement. *)
+
+(* An iGSLT object is a bare transition system (carrier + grade-labelled step). *)
+Record IGSys : Type := { ig_car : Type; ig_step : ig_car -> sig -> ig_car -> Prop }.
+
+Definition image_finite (B : IGSys) : Prop :=
+  forall x g, exists L : list (ig_car B), forall x', ig_step B x g x' -> In x' L.
+
+(* The CONCRETE cost transition is image-finite: its successors are exactly the
+   finite enumeration [graded_succ] (CAGradedImageFinite.graded_image_finite). This
+   justifies [image_finite] as the realizability proxy below FOR THE CONCRETE MODEL —
+   it is NOT a property of every ciGSLT object (the paper admits infinite branching
+   with a computable section), so the proxy is sufficient, not necessary. *)
+Lemma ca_ciGSLT_image_finite :
+  forall (S : signed_term) (g : sig),
+    exists L, forall S', graded_step S g S' -> In S' L.
+Proof.
+  intros S g. exists (graded_succ S g). intros S' H.
+  exact (proj1 (graded_image_finite S g S') H).
+Qed.
+
+(* [B] is "image-finitely realizable" when it is, up to a surjective step-reflecting
+   map, the forgetful image of an IMAGE-FINITE transition system. (For the concrete
+   cost model this coincides with ciGSLT-realizability — ca_ciGSLT_image_finite — but
+   in general image-finiteness is a sufficient-not-necessary proxy; see the header.) *)
+Definition ci_realizable (B : IGSys) : Prop :=
+  exists (A : IGSys) (h : ig_car A -> ig_car B),
+    image_finite A
+    /\ (forall y, exists x, h x = y)
+    /\ (forall x g y', ig_step B (h x) g y' -> exists x', h x' = y' /\ ig_step A x g x').
+
+(* The infinitely-branching iGSLT object: on the state space [nat], every state
+   g-steps to every state. *)
+Definition Bad : IGSys := {| ig_car := nat; ig_step := fun _ _ _ => True |}.
+
+Lemma in_le_list_max : forall (L : list nat) n, In n L -> n <= list_max L.
+Proof.
+  induction L as [|a L IH]; intros n Hin; simpl in *.
+  - contradiction.
+  - destruct Hin as [-> | Hin]; [ lia | specialize (IH n Hin); lia ].
+Qed.
+
+Lemma nat_not_all_in_list : forall (L : list nat), exists n, ~ In n L.
+Proof.
+  intro L. exists (S (list_max L)). intro Hin.
+  pose proof (in_le_list_max L _ Hin) as Hle. lia.
+Qed.
+
+Theorem U_not_eso : ~ ci_realizable Bad.
+Proof.
+  intros [A [h [Hfin [Hsurj Hrefl]]]].
+  (* A is inhabited: pick a preimage of Bad's state 0. *)
+  destruct (Hsurj 0) as [x0 _].
+  (* A's successors of x0 under SUnit are bounded by a finite list L. *)
+  destruct (Hfin x0 SUnit) as [L HL].
+  (* No finite list of nats contains every nat. *)
+  destruct (nat_not_all_in_list (map h L)) as [n Hn].
+  (* But Bad steps (h x0) --SUnit--> n (its step is True), reflected to an A-step
+     x0 --SUnit--> x' with h x' = n and x' ∈ L; hence n ∈ map h L — contradiction. *)
+  destruct (Hrefl x0 SUnit n I) as [x' [Hx'n Hstep]].
+  apply Hn. rewrite <- Hx'n. apply in_map. exact (HL x' Hstep).
+Qed.
+
+(* Prop 6.1 — the proper-subcategory claim: faithful, not full, and not essentially
+   surjective via two model-specific witnesses (W1 stack-inertness + W2 image-
+   finiteness; see the header for how these relate to — and differ from — the paper's
+   three stated not-eso reasons). *)
+Theorem proper_subcategory :
+  (forall (G H : CIObj) (f g : CIMor G H),
+     (forall x, igm_map (U_mor f) x = igm_map (U_mor g) x) -> mor_heq f g)
+  /\ (exists (G H : CIObj) (h : IGMor G H),
+        ~ (exists f : CIMor G H, forall x, igm_map (U_mor f) x = igm_map h x))
+  /\ (forall t g S', ~ graded_step (STStack t) g S')
+  /\ ~ ci_realizable Bad.
+Proof.
+  split; [ exact U_faithful
+         | split; [ exact U_not_full
+                  | split; [ exact graded_step_never_from_stack | exact U_not_eso ] ] ].
+Qed.

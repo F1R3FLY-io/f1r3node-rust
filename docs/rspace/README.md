@@ -184,10 +184,9 @@ pub struct COMM {
 
 `triggered_by_produce` records whether a produce or consume triggered the COMM during
 play. This field is excluded from `PartialEq` and `Hash` -- it does not affect COMM
-identity or replay_data matching. It is used by `ChargingRSpace` to ensure the
-cost model's identity-based refund logic produces consistent results between play
-and replay, where `tokio::spawn` scheduling may cause a different operation to
-trigger the same COMM.
+identity or replay_data matching. Cost accounting no longer depends on this trigger
+direction; the reducer charges source-token work before the RSpace operation, and
+RSpace uses this metadata only for event diagnostics and replay compatibility.
 
 ## Merger (Consensus Support)
 

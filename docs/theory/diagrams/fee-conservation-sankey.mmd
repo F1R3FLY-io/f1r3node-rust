@@ -1,0 +1,24 @@
+---
+config:
+  sankey:
+    showValues: true
+    nodeAlignment: justify
+    linkColor: gradient
+---
+%% Fee conservation Σ⟦c⟧ → F_v → Σ⟦v⟧ (F-C/F-D). For each admitted client deploy a
+%% FLAT one-token FeeExtract is carved from the client's supply pool Σ⟦c⟧ into the
+%% validator fee pool F_v (a conserving transfer: client debited == F_v credited,
+%% never a mint); at the epoch boundary F_v is converted 1:1, backed by the carve,
+%% into the validator pool Σ⟦v⟧. The Sankey is balanced left-to-right (Σ in = Σ out)
+%% = the conservation theorem fee_collect_then_convert_conserves. (Three clients as
+%% a representative example; the flat fee is one token per admitted deploy
+%% regardless of arity. ASCII labels — mermaid sankey-beta cannot tokenize Unicode;
+%% the Σ⟦·⟧ reading is in the prose.)
+%% Source of truth: cost-accounting-spec-alignment-audit.md (F-C/F-D fee path).
+%% Render: mmdc -i fee-conservation-sankey.mmd -o fee-conservation-sankey.svg
+sankey-beta
+
+"client pool c1","fee pool Fv",1
+"client pool c2","fee pool Fv",1
+"client pool c3","fee pool Fv",1
+"fee pool Fv","validator pool v",3

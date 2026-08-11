@@ -166,6 +166,20 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             epoch_length: conf.genesis_block_data.epoch_length,
             quarantine_length: conf.genesis_block_data.quarantine_length,
             min_phlo_price: conf.min_phlo_price,
+            // Task #13a: spec-strict acceptance-gate activation, wired from the
+            // shard-genesis `CasperConf` (default OFF = back-compat). Same
+            // shard constant on every node ⇒ the gate verdict is
+            // replay-deterministic (mirrors `min_phlo_price` directly above).
+            strict_funding_enforcement: conf.strict_funding_enforcement,
+            // Task #13b: genesis client funding-slot allocations, wired from the
+            // shard-genesis `GenesisBlockData` (default EMPTY = back-compat) and
+            // hex-lowered once here so a malformed key fails fast at launch. Same
+            // shard constant on every node ⇒ the block-1 client seed is
+            // replay-deterministic (mirrors `strict_funding_enforcement` above).
+            client_fuel_allocations: conf
+                .genesis_block_data
+                .lowered_client_fuel_allocations()
+                .expect("invalid client-fuel-allocations in genesis-block-data"),
             // Late block filtering disabled = deploys from "late" blocks (blocks not yet seen by
             // all validators) are included in merged state. Prevents deploy loss during network
             // partitions or validator catchup. Default is true (disabled).
@@ -182,6 +196,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             synchrony_finalized_baseline_max_distance: conf
                 .synchrony_finalized_baseline_max_distance,
             max_user_deploys_per_block: conf.max_user_deploys_per_block,
+            max_cosigners_per_deploy: conf.genesis_block_data.max_cosigners_per_deploy,
             native_token_name: conf.genesis_block_data.native_token_name.clone(),
             native_token_symbol: conf.genesis_block_data.native_token_symbol.clone(),
             native_token_decimals: conf.genesis_block_data.native_token_decimals,
@@ -534,6 +549,9 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                 .pos_multi_sig_public_keys
                 .clone(),
             self.conf.genesis_block_data.pos_multi_sig_quorum,
+            self.conf.genesis_block_data.max_cosigners_per_deploy,
+            self.conf.genesis_block_data.initial_phlogiston,
+            self.conf.genesis_block_data.epoch_phlogiston,
             self.conf.genesis_block_data.native_token_name.clone(),
             self.conf.genesis_block_data.native_token_symbol.clone(),
             self.conf.genesis_block_data.native_token_decimals,
@@ -632,6 +650,9 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                 .pos_multi_sig_public_keys
                 .clone(),
             self.conf.genesis_block_data.pos_multi_sig_quorum,
+            self.conf.genesis_block_data.max_cosigners_per_deploy,
+            self.conf.genesis_block_data.initial_phlogiston,
+            self.conf.genesis_block_data.epoch_phlogiston,
             self.conf.genesis_block_data.native_token_name.clone(),
             self.conf.genesis_block_data.native_token_symbol.clone(),
             self.conf.genesis_block_data.native_token_decimals,

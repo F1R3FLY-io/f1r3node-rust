@@ -6,8 +6,7 @@ hold*, independent of *how it is checked*. The companion
 [verification dossier](./merge-algebra-verification.md) records the mechanized proofs,
 models, and tests that discharge each requirement; the
 [glossary](./merge-algebra-glossary.md) defines every symbol and term used below (read it
-first if any notation is unfamiliar). Rendered diagrams are in
-[`diagrams/`](./diagrams/).
+first if any notation is unfamiliar).
 
 Requirement levels **MUST / MUST NOT / SHOULD** are used in the RFC-2119 sense.
 
@@ -34,8 +33,12 @@ Source of truth:
   **first** order-sensitive consumer.
 - `casper/src/rust/merging/conflict_set_merger.rs` — `resolve_conflicts` and
   `compute_merged_state` (the merged-state fold): the **second** order-sensitive consumer.
-- `rspace++/src/rspace/merger/channel_change.rs` — `ChannelChange::combine` (the
-  per-channel netting) and `state_change.rs` — `StateChange::combine` (the fold operator).
+- `rspace++/src/rspace/merger/channel_change.rs` — `ChannelChange::additive_join`
+  and `ChannelChange::normalized` (per-channel multiset composition), and
+  `state_change.rs` — `StateChange::additive_join` plus one final normalization.
+- `casper/src/rust/rholang/runtime.rs` and `replay_runtime.rs` — per-execution
+  pre-state/post-state witnesses and replay validation.
+- `casper/src/rust/merging/block_index.rs` — exact per-execution state deltas.
 - `rspace++/src/rspace/merger/merging_logic.rs` — `conflicts` (the conflict detector).
 - `rspace++/src/rspace/merger/event_log_index.rs` — `EventLogIndex::combine` (the
   set-union monoid).
@@ -48,18 +51,31 @@ Given a base state and a set of deploy chains to merge:
 
 - **R-ORDER.** The keep-one comparator `DeployChainIndex::cmp` **MUST** be a **strict total
   order** whose `Equal`-class is contained in the `Eq` relation: `cmp a b = Equal ⟹ a = b`.
-  No two **distinct** deploy chains may compare `Equal`. (The comparator is keyed 1–5:
-  Σcost DESC, max single cost DESC, min `deploy_id` ASC, `post_state_hash` ASC, and — the
-  **injective** terminal key — `deploys_with_cost.cmp` ASC, the `Eq`/`Hash` key itself.)
+  No two **distinct** deploy chains may compare `Equal`. The comparator has four priority
+  tiers — total cost, maximum single cost, minimum deploy ID, and post-state hash — followed
+  by the **injective composite identity**
+  `(deploys_with_cost, source_block_hash, effect_indices, witness_mode)`. The terminal
+  components are compared lexicographically and match the fields used by `Eq`/`Hash`.
 - **R-KEEP1.** The greedy keep-one / rejection winner (`dag_merger`'s
   `min_by(cmp)` over `pending`, then `split_unavailable_branch_consumes`) **MUST** be a pure
   function of the branch **set**, never the `HashSet` iteration order that produced
   `pending` (`branch.0.iter()`, whose `RandomState` is reseeded per process).
-- **R-FOLD.** The merged-state fold (`compute_merged_state`) **MUST** be order-independent.
-  Because the fold operator `StateChange::combine` (built from the per-channel
-  `ChannelChange::combine`) is **non-associative** (§5, Finding A), the fold **MUST** proceed
-  in the single **canonical order** induced by the total-order comparator (sort survivors
-  by `cmp`, then fold), so that every node folds identically.
+- **R-WITNESS.** Every execution in a new-format block **MUST** carry the state root
+  immediately before it and the state root immediately after it. The witnesses **MUST**
+  form one contiguous chain from the block pre-state to the block post-state. Replay
+  **MUST** checkpoint after each execution and reject a missing half-witness, a gap, or a
+  replayed post-state mismatch. A state delta **MUST** be computed from that execution's
+  own roots, not by copying the whole-block delta onto every deploy chain.
+- **R-CAUSAL.** Deduplication **MUST** operate on causal execution identity
+  `(source_block_hash, execution_index)`, never on serialized RSpace content. Repeated
+  observations of one identity with equal state and number-channel contributions count
+  once. Repeated observations of one identity with unequal contributions are an invariant
+  violation and **MUST** fail closed.
+- **R-FOLD.** After causal deduplication, distinct execution deltas **MUST** compose by
+  additive multiset union and normalize once. The additive fold is associative and
+  commutative, so survivor enumeration and association cannot alter the result. It is
+  intentionally not idempotent: two independent sends with byte-identical payloads are two
+  RSpace data, exactly as two parallel outputs form a two-element bag.
 - **R-CONFLICT.** Every conflict the removed single-value-cell check would flag **MUST** be
   caught by the retained double-consume / same-IO-event race detector (`conflicts`,
   Check #1) **or** be an intrinsically-mergeable number/foldable channel. No real conflict
@@ -89,9 +105,9 @@ Given a base state and a set of deploy chains to merge:
   1. **Total keep-one order** (R-ORDER): the `min_by`/`sort` winner is a pure function of
      the chain **set**, so the reseeded `HashSet`/`HashMap` iteration order can never leak
      into the rejected set (the first order-sensitive consumer).
-  2. **Canonical fold order** (R-FOLD): the merged-state fold sorts survivors by the total
-     order before folding, so the **non-associative** `combine` is applied in one canonical
-     order on every node (the second order-sensitive consumer).
+  2. **Causal map plus additive projection** (R-WITNESS/R-CAUSAL/R-FOLD): exact
+     per-execution deltas are deduplicated by identity, then their multiset multiplicities
+     are added and normalized once.
   3. **Union-monoid split** (R-SPLIT): the user/system partition recombines, by a
      commutative-associative-idempotent set-union monoid, to exactly the monolithic index.
 - **R-RECOMPUTE.** Block validation **MUST** recompute the merge and reject the block on
@@ -113,31 +129,64 @@ Given a base state and a set of deploy chains to merge:
 
 ## 5. Disclosed algebraic properties (normative)
 
-- **R-NET.** The per-channel `ChannelChange::combine` (idempotent max-multiset `vec_union`
-  + `cancel_common`) is **commutative** but **NON-associative** (**Finding A**): with
-  `a = add(x)`, `b = add(x)`, `c = remove(x)`, `(a∘b)∘c = ∅` while `a∘(b∘c) = {x}`. This
-  **MUST** be treated as a **disclosed** property of the shipped operator, not a latent
-  bug: it is benign for determinism **only because** R-ORDER pins one canonical fold order.
-  A change to the `combine` **algebra** (e.g. replacing max-union with the associative
-  sum-union monoid) **MUST NOT** be made silently, because it alters merge **semantics**
-  (which data survive a merge), not merely fold order.
+- **R-NET.** The legacy per-channel `ChannelChange::combine` (idempotent max-multiset
+  `vec_union` plus inline `cancel_common`) is commutative but **NON-associative**
+  (**Finding A**). Deferring cancellation repairs association dependence but does not
+  repair semantics: max-union collapses two distinct byte-identical outputs. The current
+  operator therefore adds multiplicities for distinct causal identities and performs one
+  final cancellation. Causal map union supplies idempotence at the correct layer.
 
-## 6. Explicit non-requirement (design boundary)
+### 5.1 Terms and projection
 
-- **N-SEMANTICS.** The merge-algebra hardening **MUST NOT** change merge **semantics**.
-  Specifically, the non-associative max-union `ChannelChange::combine` is **NOT** to be
-  replaced by the associative sum-union monoid as part of a determinism fix; **Finding A**
-  is **disclosed** and rendered **benign** by the deterministic fold order (R-ORDER), not
-  eliminated. Any implementation **MUST NOT** alter the observable merge result under the
-  guise of a determinism fix. The determinism guarantee is *byte-identical recomputation of
-  the current semantics*, **not** a redefinition of the merge.
-  - **Runtime guard (allowed, semantics-preserving).** The *assumption* R-ORDER relies on —
-    that no order-dependent survivor pair reaches apply — **MAY** be enforced by a
-    detection-only runtime guard (`OrderDependenceGuard`, `conflict_set_merger.rs`) that trips
-    iff a datum is contributed to a side by ≥ 2 distinct survivors on a non-mergeable channel.
-    Such a guard is permitted **because it changes no post-state** (`debug_assert!` + release
-    log/metric only); it does **not** alter the operator or the merge result. Sound by
-    `ChannelNetting.v combine_max_order_independent_under_no_dup`.
+An **execution identity** identifies one deterministic transition within one source block.
+An **exact delta** is the signed multiset difference between that execution's witnessed
+pre-state and post-state. An **effect map** is the finite map from execution identities to
+exact deltas. Its union is defined only when repeated keys carry equal values.
+
+For the finite key set `$`K`$` and effect map `$`M`$`, the state change applied to the
+merge base is:
+
+```math
+\Delta(M) = \operatorname{normalize}\!\left(\sum_{k \in K} M(k)\right).
+```
+
+The map union is idempotent because a key occurs once. The sum is non-idempotent because
+RSpace content is a multiset. These are different operations at different semantic layers.
+
+The merger implements the definition in this order:
+
+```text
+merge_exact_effects(surviving_chains):
+    effects := empty ordered map
+    for chain in canonical_order(surviving_chains):
+        require chain uses exact witnesses
+        for (identity, delta, numeric_delta) in chain.effects:
+            if identity is absent:
+                effects[identity] := canonical(delta, numeric_delta)
+            else:
+                require effects[identity] = canonical(delta, numeric_delta)
+    state_delta := normalize(add every effects[*].delta)
+    numeric_delta := checked_combine every effects[*].numeric_delta
+    return apply(state_delta, numeric_delta)
+```
+
+This separation is not an implementation preference. Meredith's RSpace denotation treats
+parallel composition as key-wise finite-multiset union and explicitly distinguishes two
+equal outputs from one output (`../publications/denotational-semantics-for-rho/knot-rho.tex`,
+section “The RSpace denotation: parallel composition as keyed multiset union”). The node
+therefore deduplicates executions, not messages.
+
+## 6. Activation boundary
+
+- **R-ACTIVATION.** Per-execution witnesses alter the block wire shape and additive
+  projection changes merge results for reachable Rholang programs. The feature **MUST**
+  activate atomically on an unreleased shard or at an explicit protocol boundary after a
+  finalized cut. A merge epoch **MUST NOT** mix exact-witness and legacy block indices.
+- **N-MAX.** The implementation **MUST NOT** use max-union to compose distinct execution
+  effects. It loses valid multiplicity.
+- **N-WHOLE.** The implementation **MUST NOT** add per-chain deltas derived from the same
+  whole-block pre/post roots. That duplicates the whole block once per chain. Exact
+  execution roots are required before additive composition is sound.
 
 ## 7. Safety invariants — MUST NEVER happen
 
@@ -145,16 +194,19 @@ Given a base state and a set of deploy chains to merge:
 |---|---|
 | **S1** | Two honest nodes derive a different `(pre-state hash, rejected-deploy set)` for the same merge inputs — a fork / finalization stall (violates R-DET). |
 | **S2** | The reseeded `HashSet` iteration order leaks into the greedy keep-one / rejection winner (violates R-ORDER / R-KEEP1) — **Finding B**. |
-| **S3** | The branch/item fold order changes the merged state (violates R-FOLD; reachable because `combine` is non-associative — **Finding A**). |
+| **S3** | Survivor enumeration or association changes the merged state (violates R-FOLD; the legacy inline-normalization **Finding A**). |
 | **S4** | The removed single-value-cell check silently dropped a real, non-number conflict (violates R-CONFLICT) — **GAP-3**. |
 | **S5** | The user/system event-log split hides a cross-partition conflict (violates R-SPLIT) — **P2**. |
 | **S6** | A comparator hardening breaks agreement with a live `v0.4.16` node on an input the old order already resolved deterministically (violates R-APPEND). |
 | **S7** | A merge persists a **single-value NUMBER cell** holding > 1 datum (a produce-only over-fill), so a later RhoVM read trips the IntegerAdd single-value invariant and **halts finalization** (violates R-SVC) — **§3c**, RCA-asi-devnet-finality-halt. |
+| **S8** | Two distinct executions that emit identical serialized data collapse to one datum (violates R-FOLD / RSpace finite-multiset semantics). |
+| **S9** | A whole-block delta is attributed to more than one deploy chain and then added repeatedly (violates R-WITNESS / N-WHOLE). |
+| **S10** | The same causal identity is accepted with two unequal contributions (violates R-CAUSAL). |
 
 ## 8. Conformance
 
 An implementation conforms iff every **R-** requirement holds, no **S-** invariant is
-reachable, and **N-SEMANTICS** is respected. The
+reachable, and **N-MAX** and **N-WHOLE** are respected. The
 [verification dossier](./merge-algebra-verification.md) maps each requirement/invariant to
 its mechanized artifact (Rocq axiom-free capstones, Z3 cross-witnesses) and Rust regression
 tests; run them locally with `scripts/check-merge-algebra-ALL.sh` (formal verification is

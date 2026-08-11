@@ -72,14 +72,16 @@ eval_inner():
      - Bundle -> evaluate in restricted scope
      - Expr -> evaluate arithmetic/logic/collection operations
   4. If produce/consume returns a match -> dispatch continuation
-  5. Await all spawned tasks, aggregate errors (parTraverseSafe pattern)
+  5. Drain spawned branch tasks through FuturesUnordered and aggregate errors
+     in stable source order
 ```
 
 **Parallel evaluation**: Par branches (`A | B | C`) are dispatched as independent
-tokio tasks via `tokio::spawn`, matching Scala's `parTraverse` for true parallel
-execution. Per-channel FIFO locks in RSpace (`tokio::sync::Mutex`) ensure
-deterministic COMM matching. The `ReplayRSpace` event log oracle forces the same
-COMMs during replay regardless of scheduling order.
+tokio tasks via `tokio::spawn` and drained through `FuturesUnordered`, preserving
+true parallel execution without a sequential `JoinHandle` barrier. Per-channel
+FIFO locks in RSpace (`tokio::sync::Mutex`) ensure deterministic COMM matching.
+The `ReplayRSpace` event log oracle forces the same COMMs during replay
+regardless of scheduling order.
 
 **Persistent operation re-issue**: When a persistent produce triggers a COMM, the
 data was matched inline (never stored). The reducer re-issues it via
@@ -87,27 +89,36 @@ data was matched inline (never stored). The reducer re-issues it via
 persistent produce triggers a peek COMM, the reducer also calls `produce_peeks()`
 to re-issue non-persistent peeked data on other channels that RSpace removed.
 
-**Stack safety**: `StackGrowingFuture` wraps recursive calls with `stacker::maybe_grow()` to dynamically expand the thread stack (1MB red zone).
+**Stack safety**: Cost accounting uses explicit `MeteredMachine` work frames
+for source-token events. The evaluator still wraps recursive Rholang
+continuation calls with `StackGrowingFuture` as a compatibility guard while
+metering itself remains stack-safe.
 
-**Variable substitution**: `Substitute` trait replaces De Bruijn-indexed variables. Each substitution is charged `O(term.encoded_len())` phlogiston.
+**Variable substitution**: `Substitute` trait replaces De Bruijn-indexed variables. Each substitution reserves a deterministic `Substitution` source-token event through `MeteredMachine`.
 
 **Arithmetic overflow safety**: Division and negation operations guard against i64 overflow. `i64::MIN / -1` and `i64::MIN.neg()` return `InterpreterError::ReduceError("Arithmetic overflow in ...")` as soft deploy failures rather than panics.
 
-## Cost Accounting (Phlogiston)
+## Cost Accounting (Source Tokens)
 
-Every operation is metered to prevent resource exhaustion:
+Metered reduction events reserve source-token phlogiston from a shared atomic budget:
 
 ```rust
-pub struct CostManager {
-    state: Arc<Mutex<Cost>>,
+pub struct RuntimeBudget {
+    initial_tokens: Arc<AtomicI64>,
+    consumed_tokens: Arc<AtomicI64>,
     log: Arc<Mutex<VecDeque<Cost>>>,
-    max_log_entries: usize,
+    event_log: Arc<Mutex<VecDeque<BillableTokenEvent>>>,
+    last_oop_event: Arc<Mutex<Option<BillableTokenEvent>>>,
 }
 ```
 
-- `charge(cost)` -- Subtract from remaining budget via `lock()` (blocking, thread-safe under concurrent `tokio::spawn` tasks); returns `OutOfPhlogistonsError` if exhausted. Uses saturating arithmetic to prevent overflow with `i64::MAX` budgets (genesis deploys).
-- `set(cost)` -- Reset balance
-- `get()` -- Query remaining
+- `reserve_canonical(event)` -- Atomically reserves the weighted source-token event; returns `OutOfPhlogistonsError` and commits consumed cost to the limit if exhausted.
+- `MeteredMachine::reserve_source_step(cost)` -- Enqueues and drains a structural rho reduction event.
+- `MeteredMachine::reserve_primitive(cost)` -- Records expression operators, methods, collection operations, and variable lookup as `Primitive` events.
+- `MeteredMachine::reserve_substitution(cost)` -- Records normalized substitution cost as `Substitution`.
+- `set(cost)` -- Reset balance and exhaustion descriptor.
+- `get()` / `remaining()` -- Query remaining tokens.
+- `total_cost()` -- Query consumed token units.
 
 **Cost table** (representative values):
 
@@ -118,35 +129,14 @@ pub struct CostManager {
 | Comparison | 3 phlos |
 | Collection lookup/add/remove | 3 phlos each |
 | `hex_to_bytes` | O(string_length) |
-| `produce` | O(channel_size + data_size) |
-| `consume` | O(channels * patterns * continuation) |
-| Parsing | O(source_code_length) |
 | Substitution | O(result_term_size) |
 
-## ChargingRSpace
+## RSpace and Cost Accounting
 
-Wraps any `ISpace` to add cost metering:
-```rust
-pub fn charging_rspace<T: ISpace>(space: T, cost: _cost) -> impl ISpace
-```
-
-Pre-charges `storage_cost_produce` or `storage_cost_consume` before each operation.
-When a COMM fires, `handle_result` adjusts costs based on the Scala-aligned model:
-
-- **Refund consume**: Always refunded for non-persistent consumes. For persistent
-  consumes, only refunded when the consume triggered the COMM (identity check via
-  raw `random_state` bytes).
-- **Refund produces**: Always refunded for non-persistent produces. For persistent
-  produces, only refunded when the produce triggered the COMM (identity check).
-- **Event storage cost**: Charged on `last_iteration` (when the triggering operation
-  is non-persistent).
-- **COMM event storage cost**: Always charged when a COMM fires.
-
-The identity check uses raw `Vec<u8>` proto bytes from `ListParWithRandom.random_state`,
-matching Scala's ScalaPB-deserialized `Blake2b512Random` comparison. The Scala cost
-model is designed so that the total cost of a COMM balances regardless of trigger
-direction: the re-issue cost of persistent operations cancels with the refund
-difference.
+RSpace is no longer wrapped for phlogiston metering. It owns tuple-space state,
+matching, cleanup, replay data, and deterministic event logs. The reducer owns
+source-token charging around the source work that causes RSpace operations, which
+keeps replay costs independent from scheduler timing and storage trigger direction.
 
 ## System Processes (Built-in Channels)
 

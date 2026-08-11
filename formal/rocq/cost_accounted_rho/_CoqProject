@@ -1,0 +1,457 @@
+# Cost-Accounted Rho Calculus — Formal Verification
+#
+# Proves that cost accounting (phlogiston) can be faithfully encoded back
+# into pure rho calculus via a compositional translation, making cost
+# control a first-class citizen of computation.
+#
+# Source: cost-accounted-rho.pdf (Meredith)
+# Companion doc: docs/theory/cost-accounted-rho-verification.md
+#
+# 32 modules with kernel-checked theorem bodies. The development is
+# parameterized over a single
+# hash_process function and 3 structural/cryptographic hypotheses on
+# it; all consensus-critical results (ca_cost_deterministic,
+# ca_step_deterministic, token_monotone_*, fuel_events_consumed_perm)
+# are unconditional (see verification doc §11.1). Replication encoding
+# is scoped to the axiom-free forward weak-barb propagation theorem
+# [preplicate_bang_encoding_body_barbs_sound].
+#
+# Module dependency graph (→ = "depends on"):
+#
+#   RhoSyntax                   (standalone)
+#   StructEquivInversion        → RhoSyntax
+#   StructEquivHeads            → RhoSyntax, StructEquivInversion
+#   RhoReduction                → RhoSyntax, StructEquivInversion, StructEquivHeads
+#   CostAccountedSyntax         → RhoSyntax
+#   CostAccountedReduction      → CostAccountedSyntax, RhoSyntax
+#   Translation                 → RhoSyntax, StructEquivInversion, StructEquivHeads,
+#                                 RhoReduction, CostAccountedSyntax
+#   ChannelSeparation           → RhoSyntax, CostAccountedSyntax, Translation
+#   TokenConservation           → CostAccountedSyntax, CostAccountedReduction
+#   Settlement                  → TokenConservation
+#   SlashingComposition         → Settlement
+#   MergeableChannelAccounting  → Settlement
+#   RuntimeBudgetRefinement     → CostAccountedSyntax
+#   FuelEventDecomposition      → CostAccountedSyntax, CostAccountedReduction
+#   StrongNormalization         → CostAccountedReduction, TokenConservation
+#   Confluence                  → CostAccountedReduction, StrongNormalization
+#   StepDeterminism             → CostAccountedReduction, Confluence
+#   TranslationFaithfulness     → Translation, ChannelSeparation, RhoReduction,
+#                                 CostAccountedReduction, TokenConservation;
+#                                 includes recursive metered reflection
+#   FuelGateSafety              → RhoSyntax, RhoReduction, Translation,
+#                                 CostAccountedSyntax, ChannelSeparation
+#   Bisimulation                → RhoSyntax, RhoReduction, Translation,
+#                                 TranslationFaithfulness
+#   Replication                 → RhoSyntax, StructEquivInversion,
+#                                 StructEquivHeads, RhoReduction, Bisimulation
+#   WeakBarbedEquiv             → RhoReduction
+#   LinearLogicResources        → CostAccountedSyntax
+#   LLIdentities                → (standalone; Stdlib only)
+#   WalletNaming                → RhoSyntax
+#   MintingInjection            → TokenConservation, WalletNaming
+#   MintingHalt                 → MintingInjection
+#   Exchange                    → TokenConservation, MintingInjection
+#   SystemStructEquiv           → RhoSyntax, CostAccountedSyntax
+#   SyntacticSugar              → Translation
+#   MultiSignerRefinement       → RuntimeBudgetRefinement
+#   UseCaseAdequacy             → TokenConservation, Settlement,
+#                                 SlashingComposition, MergeableChannelAccounting,
+#                                 RuntimeBudgetRefinement,
+#                                 FuelEventDecomposition, Confluence,
+#                                 StepDeterminism, TranslationFaithfulness
+#
+# Critical path: RhoSyntax → RhoReduction → Translation
+#              → TranslationFaithfulness → Bisimulation
+# Cost-determinism stack: TokenConservation → StrongNormalization
+#              → Confluence → StepDeterminism
+# Settlement stack: TokenConservation → Settlement →
+#              SlashingComposition / MergeableChannelAccounting
+# Runtime refinement stack: CostAccountedSyntax → RuntimeBudgetRefinement
+
+-Q theories CostAccountedRho
+
+# Level 0: Foundation (no dependencies)
+theories/RhoSyntax.v
+
+# Level 0b: Structural equivalence inversion (depends on RhoSyntax only)
+theories/StructEquivInversion.v
+
+# Level 0c: Heads-list permutation machinery (depends on StructEquivInversion)
+theories/StructEquivHeads.v
+
+# Level 1: Operational semantics (depend on RhoSyntax + inversion machinery)
+theories/RhoReduction.v
+theories/CostAccountedSyntax.v
+
+# Level 1b: Native four-sort cost-accounted syntax (DR-21 Option B — the
+# faithful "signed terms pervade the syntax" grammar). Parallel modules during
+# the incremental migration; reuse [sig]/[token] from CostAccountedSyntax.
+# - CASyntax: the three native sorts caproc/caname/signed_term + scheme,
+#   eq_dec, lift, subst (with the dequote st_to_proc collapse), token-count.
+# - CABinding: the locally-nameless metatheory (subst_lift_*, closed_* family).
+# - CAStructEquiv: the 3-way congruence; signed-term commutative monoid (∥,()).
+theories/CASyntax.v
+theories/CABinding.v
+theories/CAStructEquiv.v
+
+# Level 2b: Native cost-accounted reduction + the wrapping/no-leak invariant.
+# CAReduction's five gated COMM rules keep the continuation's OWN seal (GAP-2
+# dissolves — no SAnd re-seal); WrappingSubjectReduction proves subject
+# reduction (well-wrapping is a sorting invariant) and no-leak (a redex never
+# fires without a co-present token).
+theories/CAReduction.v
+theories/WrappingSubjectReduction.v
+
+# Level 2c: native fuel measures + conservation. st_total_fuel (all gates),
+# spine-invariance of substitution, the unconditional no-step-without-fuel fact,
+# and the linear-funding discipline (funded_linear) on which native SN/cost
+# determinism are conditioned (the consensus-relevant fragment).
+theories/CATokenConservation.v
+
+# Level 2d: native strong normalization on the linearly-funded fragment. The
+# bridge lemma (linear substitution bounds fuel), funded_step_decreases (every
+# funded COMM strictly drops st_total_fuel), ca_SN_funded (well-foundedness),
+# and the divergence witness (off the fragment the measure can rise — SN is
+# genuinely conditional, matching the acceptance gate).
+theories/CAStrongNormalization.v
+
+# Level 2e: native confluence + step determinism. Local confluence (the diamond)
+# + per-rule determinism (unconditional); single-token step determinism +
+# unique reduction-path length (the single-deploy ordered-hashing justification).
+theories/CAConfluence.v
+theories/CAStepDeterminism.v
+
+# Level 2f: native cost determinism. Newman's lemma (Coquand, constructive) on
+# the hereditarily-funded fragment ⇒ confluence ⇒ unique normal forms ⇒ cost
+# determinism — the consensus-critical result, on exactly the class of admitted
+# (funded) deploys.
+theories/CACostDeterminism.v
+
+# Level 2g: the modulus — a funded reduction's length is bounded by its total
+# fuel (the paper's "stack consumption is the modulus", realised by running).
+theories/CAModulus.v
+
+# Level 2g-bis: the untyped-λ "R1-only" cost instance (the cost-endofunctor
+# genericity witness; DR-25). Standalone — its own host syntax (lterm) + fuel
+# wrapper (lsys); reuses sig/token only; ONE β-R1 contact rule. Shows rigid K ⇒
+# R1 only, a funded run-bound, and UNCONDITIONAL funded SN (the Ω halting seam).
+theories/CAUntypedLambda.v
+
+# Level 2: Cost-accounted reduction (depends on Level 0-1)
+theories/CostAccountedReduction.v
+
+# Level 3: Translation (depends on Levels 0-2)
+theories/Translation.v
+
+# Level 3b: Channel separation (depends on RhoSyntax, CostAccountedSyntax)
+theories/ChannelSeparation.v
+
+# Level 4: Token conservation (depends on CostAccountedReduction)
+theories/TokenConservation.v
+
+# Level 4a0: Minting-injection layering theorem (depends on TokenConservation
+# and WalletNaming). Proves minting is exogenous token injection, never a
+# cost-accounted step (so conservation/SN/confluence survive verbatim), and —
+# Stage B — the supply-pool balance layer: Σ⟦v⟧ injectivity in pk, epoch-mint
+# idempotency on the balance, and user steps never move a supply balance.
+theories/MintingInjection.v
+
+# Level 4a: Post-evaluation fee settlement (depends on TokenConservation)
+theories/Settlement.v
+
+# Level 4a2: Slashing composition boundary (depends on Settlement)
+theories/SlashingComposition.v
+
+# Level 4a3: Typed mergeable-channel accounting boundary (depends on Settlement)
+theories/MergeableChannelAccounting.v
+
+# Level 4a4: Bounded-memory runtime-budget refinement (depends on syntax)
+theories/RuntimeBudgetRefinement.v
+
+# Level 4b: Fuel event decomposition (depends on CostAccountedReduction)
+theories/FuelEventDecomposition.v
+
+# Level 4c: Strong normalization (depends on TokenConservation)
+theories/StrongNormalization.v
+
+# Level 4d: Confluence and cost determinism (depends on StrongNormalization,
+# CostAccountedReduction)
+theories/Confluence.v
+
+# Level 4e: Step determinism for single-token systems (depends on Confluence)
+theories/StepDeterminism.v
+
+# Level 5: Main faithfulness theorem (depends on TokenConservation for the
+# PR #466 immunity corollary)
+theories/TranslationFaithfulness.v
+
+# Level 5: Other main theorems (depend on Translation; can be developed in parallel)
+theories/FuelGateSafety.v
+
+# Level 6: Bisimulation (depends on TranslationFaithfulness for compound
+# helpers compound_outer_gate_fires_closed, compound_inner_gate_fires_closed,
+# and compound_half_fires_two_step used in the SAnd compound bisim case)
+theories/Bisimulation.v
+
+# Level 6b: Weak barbs (coinduction-free, depends only on RhoReduction's
+# split-barb infrastructure). Provides the framework used by
+# Replication.v for the body-to-wrapper barb propagation theorem.
+theories/WeakBarbedEquiv.v
+
+# Level 7: Meredith's reflection-based replication encoding. Mechanizes
+# the one-step unfolding and forward weak-barb propagation facts used by
+# the verification record.
+theories/Replication.v
+
+# Level 4a5: Phase 1.10 multi-signature refinement (depends on
+# RuntimeBudgetRefinement; Qed-closed Map-in-MVar PoS-refinement +
+# FIFO drain conservation theorems).
+theories/MultiSignerRefinement.v
+
+# Level 4a6: Publication-derived linear-resource calculus (depends on
+# CostAccountedSyntax). Mechanizes the mixed unrestricted/linear resource
+# boundary, anti-contraction/anti-weakening, no-double-spend, and runtime
+# sig_algebra bridge.
+theories/LinearLogicResources.v
+
+# Level 4a7: Phase 2/3 linear-logic identities (standalone; depends only
+# on Stdlib). Mechanizes canonical multiplicative / additive / exponential
+# laws + Phase 2 Threshold permutation invariance.
+theories/LLIdentities.v
+
+# Level 3c: System-level structural equivalence + source-level free names
+# (depends on RhoSyntax, CostAccountedSyntax). Mechanizes the commutative-
+# monoid sys_equiv (parallel-unit law sse_par_unit, Appendix-B token_decomp)
+# and the FN_s(#P)=FN(P) free-name bridge (Def 3.3 g/#P axes; §3.5).
+theories/SystemStructEquiv.v
+
+# Level 3d: Section 3.8 syntactic sugar at the translation level (depends on
+# Translation). Mechanizes the uniform-signing and linear-transfer (⊸) sugar
+# defining equations as proc-level structural equivalences of the translated
+# images (option A; ⊸ desugars to nested plain-signature gate layers).
+theories/SyntacticSugar.v
+
+# Level 8: Use-case adequacy corollaries over the proof stack.
+theories/UseCaseAdequacy.v
+
+# Level 0d: Per-validator wallet @W_v naming (Cost-Accounted Rho Stage A;
+# DR-13). Depends only on RhoSyntax. Proves wallet-name injectivity in the
+# validator public key (distinct validators ⇒ distinct draw wallets) and
+# pairwise disjointness of the wallet / quarantine / funding-slot seed
+# DOMAINS. Axiom- and hypothesis-free (concrete injective bit-encoder), so
+# its headline theorems are Closed under the global context.
+theories/WalletNaming.v
+
+# Level 4a1: Stage-C halt INTERFACE proved at Stage B (DR-3 / DR-13). Depends
+# on MintingInjection (the PoS-state / epoch-mint abstraction) — INDEPENDENT of
+# MainTheorem.v / the slashing tree (G-coordination). Proves a halted validator
+# is never minted and never gains supply, and that redemption (clearing the
+# halt) is the only way a halted validator regains supply. Concrete, so its
+# headline theorems are Closed under the global context.
+theories/MintingHalt.v
+
+# Level 4a8: Stage-D blessed Exchange — the conserving 1:1 token swap (spec
+# "Fee conversion" tex:3061-3084 / DR-4). Depends on TokenConservation +
+# MintingInjection. Proves per-channel + total conservation of the swap, the
+# DR-4 requires-both-inputs join property, and that Exchange is a cost-accounted
+# step (fuel-non-increasing) never an exogenous mint. Concrete, so its headline
+# theorems are Closed under the global context.
+theories/Exchange.v
+
+# Level 4a9: the i64-bounded ledger (item 2505 re-modeling + item 2494 FV mirror).
+# Depends on TokenConservation + MintingInjection. Re-models the phlogiston pool
+# balance in Z bounded to the i64 non-negative range so the over/underflow branches
+# the checked_add/checked_sub runtime code guards are REPRESENTABLE and PROVEN
+# (conserved OR deterministically rejected), rather than domain-excluded by nat.
+# The nat conservation is recovered as the in-range restriction (checked_add_i64_
+# matches_nat), so no existing guarantee is weakened. Concrete; Closed under the
+# global context.
+theories/BoundedLedger.v
+
+# GSLT/OSLF capstone — discharges spec §6.1 (the calculus is a well-formed
+# GSLT: Types / Equations / Rewrites) and §7.7 (the OSLF-generated linear
+# resource logic: the funding judgment Σ_s ≥ Δ_s is decidable, the gate is a
+# sound proof-checker, an underfunded deploy is rejected, and the logic is
+# linear / no-contraction). Assembles already-proven Qed-closed results;
+# framework-independent (no MeTTaIL). Closed under the global context.
+theories/GSLTOSLFCapstone.v
+
+# Rule-4/5 continuation re-seal adequacy (GAP-2 / #7). Depends on RhoSyntax +
+# CostAccountedSyntax. Proves the Rocq model's re-seal of the bare-proc Rule-4/5
+# continuation under SAnd(s1,s2) is COST-BENIGN: a seal carries no fuel
+# (system_token_count (SSigned _ _) = 0), so the token count — the cost the cost
+# theorems and consensus meter — is independent of the continuation's seal, hence
+# identical to the spec's receiver seal s1. Axiom-free; Closed under the global
+# context.
+theories/Rule45ContinuationAdequacy.v
+
+# ── Categorical layer for continued-gslt-cost-v2 (the Cost endofunctor / monad).
+# CL2 — SignatureMonoid: the two monoids the monad laws descend from, the
+# signature commutative monoid (Sig,*,()) up to ≡sig and the temporal token-stack
+# free monoid (token, tok_concat, ()). Depends only on CostAccountedSyntax, so it
+# is buildable ahead of the rest of the categorical layer.
+theories/SignatureMonoid.v
+
+# ContinuedGSLT capstone — the cost-accounted rho calculus discharges the central
+# structural claims of continued-gslt-cost-v2 (wrapping by construction, the Cost
+# monad laws from the two monoids, GAP-2 dissolution, cost determinism, the stack
+# modulus) as a single axiom-free theorem. Assembles the native Stage 1-3 results.
+theories/ContinuedGSLTCapstone.v
+
+# Graded transition system (continued-gslt-cost-v2 §"Graded adequacy"): ca_step
+# relabelled by the consumed signature (sound + complete relabelling), plus a
+# graded Hennessy-Milner modality over it. The basis of graded adequacy.
+theories/CAGradedTransition.v
+
+# Level 3-native: source-to-source translation of the native four-sort grammar
+# into pure rho (the carrier-split target). Mutually-recursive p_tr/caname_tr/
+# st_tr with the gate-body lifting; reuses N_tr/T_tr; closedness. Faithfulness
+# /bisimulation (the simulation theorems) build on this.
+theories/CATranslation.v
+
+# CL3 + CL4 — the Cost endofunctor 𝔠 and its monad structure, realised as the
+# writer monad over the product of the two monoids (sig × token grade). Functor
+# laws, η/μ naturality, the three monad laws (all from SignatureMonoid), and
+# non-idempotence (μ strictly accumulates the modulus). No funext; axiom-free.
+theories/CostMonad.v
+
+# Stage 4b foundation — native locally-nameless commutation lemmas the
+# faithfulness proof consumes: st_to_proc commutes with lift/subst (L2), the
+# general lift/lift permutation, and the native lift/subst commutation (L1) that
+# RhoSyntax lacks. Pure CASyntax facts; axiom-free.
+theories/CATranslationLemmas.v
+
+# Stage 4b — native translation faithfulness (forward simulation up to strong
+# bisimulation). Section over the audited hash/ground hypotheses. Foundation:
+# N_tr/T_tr lift/subst invariance (closed images are inert under COMM's
+# substitutions). Builds toward the per-rule simulations + the headline.
+theories/CATranslationFaithfulness.v
+
+# Stage 4b — native single-gate strong bisimulation (the analogue of the old
+# translation_strong_bisimilar_generic): firing {P}_s with a unit token yields a
+# residue strongly bisimilar to the released body p_tr P (no force-collapse — a
+# single gate, no inner signed-term substitution at a force position).
+theories/CABisimulation.v
+
+# Stage 5 — native post-evaluation fee settlement: re-homes Settlement.v onto the
+# four-sort grammar. Fee arithmetic reused (carrier-independent); the calculus
+# link is native fuel monotonicity on the hereditarily-funded fragment (HF).
+theories/CASettlement.v
+
+# Stage 5 — native minting-injection layering: re-homes MintingInjection.v's
+# core. Minting (STPar S (STStack t)) is exogenous token injection, never a
+# funded ca_step (which strictly decreases fuel) — so conservation/SN survive.
+theories/CAMintingInjection.v
+
+# Stage 5 — native blessed Exchange: re-homes Exchange.v. The 1:1 swap
+# conservation is carrier-independent (re-exported); the native characterization
+# is "a swap is a funded ca_step, never a mint".
+theories/CAExchange.v
+
+# Stage 5 — native economic capstone: consolidates CASettlement/CAMintingInjection/
+# CAExchange into one funded-fragment guarantee (fuel conserved + settlement
+# balances + no mint). Documents that the remaining economic modules are
+# carrier-independent (hold for native verbatim).
+theories/CAEconomicCapstone.v
+
+# CL8 — located capabilities: phlogiston capability is spatially located on
+# signature surfaces; local sufficiency composes to global, locations are disjoint
+# (the Rocq image of lane_pool_disjoint + the TLA+ LocatedPurse model).
+theories/CALocatedPurses.v
+
+# CL6 — graded Hennessy-Milner adequacy (soundness): graded-bisimilar states
+# satisfy the same graded-HML formulae. Constructive (no Classical/funext/choice);
+# about the native ca_step's graded transitions, independent of the translation.
+theories/CAGradedAdequacy.v
+
+# CL5 — Adjunction I (Free ⊣ Forget): the cost apparatus is a detachable layer.
+# Free installs the unit grade, Forget strips it; Forget∘Free = id, Free∘Forget
+# alters (structure-preserving, behaviour-altering). Adjunction II is force-limited.
+theories/CAAdjunctions.v
+
+# CL7 — OSLF linear-resource type discipline: phlogiston is linear (no
+# contraction / no double-spend) threaded through tensor/lolly/plus/with/bang/
+# whynot + the threshold quorum. Carrier-independent (LinearLogicResources holds
+# for native verbatim); re-exported here under native names.
+theories/CATypeDiscipline.v
+
+# CL6 foundation — image-finiteness of the graded LTS: an explicit successor
+# enumeration graded_succ with graded_step S g S' <-> In S' (graded_succ S g).
+# The constructive basis the Hennessy-Milner completeness direction needs.
+theories/CAGradedImageFinite.v
+
+# CL6 completeness — grade-tagged successor enumeration: graded_succ_all with
+# graded_step S g S' <-> In (g, S') (graded_succ_all S). The dichotomy iterates it.
+theories/CAGradedSuccPairs.v
+
+# CL6 completeness — constructive graded Hennessy-Milner adequacy at every finite
+# modal depth: the dichotomy (graded_bisim_n n  ∨  distinguishing φ of depth ≤ n)
+# and graded_finitary_adequacy (depth-n bisimilarity ⟺ agreement on depth-≤-n HML).
+# No Classical/funext/choice — the converse of graded_adequacy_sound, constructively.
+theories/CAGradedCompleteness.v
+
+# CL5 Adjunction II — internalise ⊣ include (Prop. adj2): the internalisation
+# retraction Imp_G ∘ η_G ≈ id_G up to weak bisimulation, exhibiting Cost(G) as a
+# behavioural retract of its Turing-complete base. The s=SUnit instance of the
+# single-gate bisimulation; the unit token is freely available so the force-point
+# obstruction (a property of the full metered translation, NOT this claim) is absent.
+theories/CAInternalisation.v
+
+# CL6 capstone — the FULL (non-stratified) constructive graded Hennessy-Milner
+# theorem: (∀n graded_bisim_n n) ⟺ (∀φ gsat-equivalence), plus the coinductive
+# bridge graded_bisim_refines_approximants. Pins the lone non-intuitionistic step
+# (approximant-limit ⇒ coinductive gfp) as stated/assumed nowhere.
+theories/CAGradedLimit.v
+
+# §3a PROVEN — the force-point over-gating obstruction as a theorem: the gated
+# translation of a signed term is stuck (gated_translation_stuck), hence not
+# bisimilar to the dequoted-and-running source force (ca_force_overgating_separation,
+# with a concrete non-vacuous witness). Settles the "full force bisimulation" as
+# FALSE for the naive translation, not deferred.
+theories/CAForceSeparation.v
+
+# Join §4.8 conservation of authority (Prop 4.7) — multiset invariance of the
+# compound funding key under regrouping, the reverse-currying iso, partition
+# invariance, and the no-weakening corollary. Up to Permutation (SAnd is free).
+theories/CAJoinConservation.v
+theories/CategoryInterface.v
+theories/CACategory.v
+theories/CACostFunctor.v
+theories/CACostFunctorCI.v
+
+# Level 6-bis: the untyped-λ instance as a SECOND object under the cost
+# endofunctor (Lambda_ciGSLT, beside Rho_ciGSLT). DR-25; depends on the core
+# witness CAUntypedLambda + the ciGSLT category/functor.
+theories/CAUntypedLambdaCI.v
+theories/CACostMonadCat.v
+theories/CAAdjunctionI.v
+theories/CACostMonadInstances.v
+theories/CASimulationBicat.v
+theories/CAAdjunctionII.v
+theories/CAProperSubcategory.v
+theories/CAAbstractCapstone.v
+
+# CA-P-178 — the generic nearness gate near(I,J) on the rho object
+# (continued-gslt-cost-v2 §"The nominal surface" + the R1/R2/R3 premise
+# L = near(I,J)). In the rho instance near is channel-IDENTITY matching (the
+# user-clarified semantics: the send and receive act on the same channel); the
+# metered cut fires IFF near is Some and blocks on None — a faithful MON-level
+# restatement of the channel-match the native ca_rule1 already enforces. Depends
+# on CASyntax/CAReduction/WrappingSubjectReduction. Axiom-free.
+theories/CANearMatch.v
+
+# CA-P-179 — no ambient authority under a non-free K (continued-gslt-cost-v2
+# sec:ac-leak + "Located resource stacks"): proximity to a located resource
+# stack never confers the right to draw; authority is carried by a NAMED matching
+# surface. Composes the located-purse lemmas of CALocatedPurses. Axiom-free.
+theories/CAAmbientAuthority.v
+
+# CA-P-180 (corollary half) — the digest section's ≡-incoherence is
+# bisimulation-harmless because signatures never reduce (continued-gslt-cost-v2
+# §5 "Quotient and section", :629-632). The forcing half (the digest does NOT
+# respect ≡sig, and must not) lives in SignatureMonoid; here we discharge the
+# companion sentence via the inertness facts no_leak_requires_token /
+# no_leak_stack_inert. Depends on SignatureMonoid + WrappingSubjectReduction.
+# Axiom-free.
+theories/CASection.v

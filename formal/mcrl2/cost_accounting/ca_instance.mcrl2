@@ -1,0 +1,9 @@
+% Cost-Accounted Rho — a finite gated-COMM instance (mCRL2). The COMM is GATED by a
+% token; a settle follows. Branching-bisimilarity to the rho translation
+% (rho_translation.mcrl2) corroborates translation faithfulness up to internal
+% steps; the no-leak modal formula (no_leak.mcf) corroborates
+% WrappingSubjectReduction.no_leak_requires_token (a COMM cannot fire without a
+% co-present token).
+act tok, fire, settle;
+proc CA = tok . fire . settle . delta;
+init CA;

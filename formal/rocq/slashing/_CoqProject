@@ -1,8 +1,9 @@
 # Slashing — Formal Verification
 #
-# Establishes observational bisimilarity at the process level between
-# the Rust slashing logic in this repository and the Scala original,
-# with explicit, proven bug-fix deltas where the Scala source is faulty.
+# Establishes correctness of the Rust slashing logic in this repository:
+# detection soundness/completeness, the slash effect (bond zeroing, stake
+# transfer, fork-choice exclusion), two-level closure, and the documented
+# bug-fix deltas, composed in main_slashing_algorithm_correct.
 #
 # Source: f1r3node-rust/casper/src/rust/{equivocation_detector,validate,
 #         blocks/proposer/block_creator, util/rholang/costacc/slash_deploy}.rs
@@ -12,17 +13,24 @@
 #   docs/theory/slashing/slashing-specification.md  (normative spec)
 #   docs/theory/slashing/slashing-verification.md   (proofs in math + Rocq pointers)
 #
-# 26 modules. Zero `Admitted`. No custom `Axiom` or `Parameter`.
+# 27 modules. Zero `Admitted`. No custom `Axiom` or `Parameter`.
 #
 # Module dependency graph (→ = "depends on"):
 #
 #   Validator              (standalone)
+#   ValidatorLifetime      → Validator
 #   Block                  → Validator
 #   InvalidBlock           → Block
 #   EquivocationRecord     → Validator, Block
 #   DAGState               → Block, EquivocationRecord
 #   EquivocationDetector   → DAGState, InvalidBlock
-#   PoSContract            → Validator
+#   PoSContract            → Validator   (+ Stage-C two-effect PoSStateC/slashC,
+#                                          §7-§12: quarantine + mintingHalted,
+#                                          ADDITIVE — legacy PoSState/slash kept)
+#   ValidatorRedemption    → Validator, PoSContract  (Stage-C redeemSlashed:
+#                                          vindicated/guilty/burned adjudication
+#                                          + slash→redeem total conservation;
+#                                          INDEPENDENT of MainTheorem.v)
 #   SlashDeploy            → Block, PoSContract, InvalidBlock
 #   BlockCreator           → DAGState, SlashDeploy, EquivocationRecord
 #   ForkChoice             → DAGState, PoSContract
@@ -42,18 +50,13 @@
 #                                  embedding of PoSState; withdrawer/reward
 #                                  maps; safety + total-funds preservation
 #                                  + parallel-fold order-independence)
-#   Bisimulation           → all of the above (the headline relation)
-#   MainTheorem            → Bisimulation, all BugFix*
+#   BugFixAtomicBufferDagTransition → (standalone; T-9.20 atomic buffer DAG
+#                                  transition bug fix #17)
+#   MainTheorem            → all of the above (composition)
 #
 # The development models the on-chain Rholang `slash` contract at
-# `casper/src/main/resources/PoS.rhox:432-495`. Bisimilarity is maintained
-# except at the documented bug-fix deltas, including the authorization/no-op
-# behavior for unknown slash evidence.
-#
-# Bisimilarity is defined modulo:
-#   - α-equivalence on Rholang names
-#   - iteration order on BTreeSet (Rust) vs Set (Scala) — value-level only,
-#     not byte-level on-disk
+# `casper/src/main/resources/PoS.rhox:432-495`, including the
+# authorization/no-op behavior for unknown slash evidence.
 
 -Q theories Slashing
 
@@ -65,6 +68,7 @@ theories/EquivocationRecord.v
 theories/DAGState.v
 theories/EquivocationDetector.v
 theories/PoSContract.v
+theories/ValidatorRedemption.v
 theories/SlashDeploy.v
 theories/BlockCreator.v
 theories/ForkChoice.v
@@ -82,5 +86,4 @@ theories/BugFixSlashAuthorization.v
 theories/BugFixUnbondedProposer.v
 theories/BugFixWithdrawTransferFailure.v
 theories/BugFixAtomicBufferDagTransition.v
-theories/Bisimulation.v
 theories/MainTheorem.v

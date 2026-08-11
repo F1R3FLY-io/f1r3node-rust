@@ -193,6 +193,7 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
             Finalizer::run(
                 &dag,
                 FtThreshold::from_f32_lossy(-1.0),
+                &genesis.block_hash,
                 0,
                 move |(m, _ft)| {
                     let lfb_store = lfb_store.clone();
@@ -260,6 +261,7 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
             Finalizer::run(
                 &dag,
                 FtThreshold::from_f32_lossy(-1.0),
+                &b1.block_hash,
                 finalized_height,
                 move |(_m, _ft)| {
                     let lfb_effect_invoked = lfb_effect_invoked.clone();
@@ -324,6 +326,7 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
             Finalizer::run(
                 &dag,
                 FtThreshold::from_f32_lossy(-1.0),
+                &b1.block_hash,
                 0,
                 move |(m, _ft)| {
                     let lfb_store = lfb_store.clone();
@@ -421,6 +424,7 @@ async fn finalizer_invokes_effect_for_finalized_candidate_ahead_of_lfb() {
             Finalizer::run(
                 &dag,
                 FtThreshold::from_f32_lossy(-1.0),
+                &genesis.block_hash,
                 0,
                 move |(hash, _)| {
                     let effect_invoked = effect_invoked.clone();
@@ -443,6 +447,108 @@ async fn finalizer_invokes_effect_for_finalized_candidate_ahead_of_lfb() {
         );
         assert_eq!(*selected.borrow(), candidate.block_hash);
         assert!(*effect_invoked.borrow());
+
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    })
+    .await
+    .expect("validation fixture");
+}
+
+#[tokio::test]
+async fn finalizer_never_moves_to_a_sibling_of_the_exact_lfb() {
+    with_storage(|mut store, mut dag_store| async move {
+        let validators = [
+            generate_validator(Some("Exact LFB Validator 1")),
+            generate_validator(Some("Exact LFB Validator 2")),
+            generate_validator(Some("Exact LFB Validator 3")),
+            generate_validator(Some("Exact LFB Validator 4")),
+            generate_validator(Some("Exact LFB Validator 5")),
+        ];
+        let bonds: Vec<Bond> = validators
+            .iter()
+            .map(|validator| Bond {
+                validator: validator.clone(),
+                stake: 3,
+            })
+            .collect();
+        let genesis = create_genesis_block(
+            &mut store,
+            &mut dag_store,
+            None,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let creators = [
+            create_block_creator(&bonds, &genesis, &validators[0]),
+            create_block_creator(&bonds, &genesis, &validators[1]),
+            create_block_creator(&bonds, &genesis, &validators[2]),
+            create_block_creator(&bonds, &genesis, &validators[3]),
+            create_block_creator(&bonds, &genesis, &validators[4]),
+        ];
+        let genesis_justifications = HashMap::from([
+            (&validators[0], &genesis),
+            (&validators[1], &genesis),
+            (&validators[2], &genesis),
+            (&validators[3], &genesis),
+            (&validators[4], &genesis),
+        ]);
+        let current_lfb = creators[0](
+            &mut store,
+            &mut dag_store,
+            vec![&genesis],
+            &genesis_justifications,
+        );
+        let sibling = creators[1](
+            &mut store,
+            &mut dag_store,
+            vec![&genesis],
+            &genesis_justifications,
+        );
+        let sibling_justifications = HashMap::from([
+            (&validators[0], &sibling),
+            (&validators[1], &sibling),
+            (&validators[2], &sibling),
+            (&validators[3], &sibling),
+            (&validators[4], &sibling),
+        ]);
+        for creator in &creators {
+            creator(
+                &mut store,
+                &mut dag_store,
+                vec![&sibling],
+                &sibling_justifications,
+            );
+        }
+
+        let dag = dag_store.get_representation().expect("dag representation");
+        let effect_invoked = Rc::new(RefCell::new(false));
+        let result = {
+            let effect_invoked = effect_invoked.clone();
+            Finalizer::run(
+                &dag,
+                FtThreshold::from_f32_lossy(-1.0),
+                &current_lfb.block_hash,
+                current_lfb.body.state.block_number,
+                move |_| {
+                    let effect_invoked = effect_invoked.clone();
+                    async move {
+                        *effect_invoked.borrow_mut() = true;
+                        Ok(())
+                    }
+                },
+                &FinalizerConf::default(),
+            )
+            .await
+            .expect("finalizer run")
+        };
+
+        assert!(result.is_none());
+        assert!(!*effect_invoked.borrow());
 
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     })
@@ -516,6 +622,7 @@ async fn finalizer_growth_feedback_loop_stale_justification_chain() {
                 let _ = Finalizer::run(
                     &dag,
                     FtThreshold::from_f32_lossy(-1.0),
+                    &genesis.block_hash,
                     0,
                     |(_m, _ft)| async { Ok::<(), KvStoreError>(()) },
                     &FinalizerConf::default(),

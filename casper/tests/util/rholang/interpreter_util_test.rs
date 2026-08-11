@@ -18,9 +18,8 @@ use models::rhoapi::PCost;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy,
+    BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy,
 };
-use prost::bytes::Bytes;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::history::Either;
 
@@ -155,6 +154,10 @@ impl TestContext {
                 deploy_log: Vec::new(),
                 is_failed: false,
                 system_deploy_error: None,
+                cosigners: Vec::new(),
+                cosigner_threshold: 0,
+                pre_state_hash: Vec::<u8>::new().into(),
+                post_state_hash: Vec::<u8>::new().into(),
             })
             .collect()
     }
@@ -226,7 +229,7 @@ impl TestContext {
             StateHash,
             StateHash,
             Vec<ProcessedDeploy>,
-            Vec<Bytes>,
+            Vec<RejectedDeploy>,
             Vec<ProcessedSystemDeploy>,
             Vec<Bond>,
         ),
@@ -1852,8 +1855,18 @@ async fn used_deploy_with_insufficient_phlos_should_be_added_to_a_block_with_all
         "Block should have exactly 1 deploy"
     );
 
+    // D3/DR-9 (OD-1): accepted deploys run UNMETERED-for-liveness — the
+    // acceptance gate (Σ_s ≥ Δ_s) proves fundedness, so the legacy per-deploy
+    // `phlo_limit` (3000) no longer caps execution. The deploy therefore runs
+    // to its ACTUAL per-COMM cost; it never "consumes all phlos" on
+    // insufficiency. Mirrors the sibling `replay_should_match_in_case_of_out_of_phlo_error`
+    // (this file, ~L1786): assert `0 < cost < limit`, not `cost == limit`.
     let deploy_cost = b.body.deploys[0].cost.cost;
-    assert_eq!(deploy_cost, 3000, "Deploy should consume all phlos (3000)");
+    assert!(
+        deploy_cost > 0 && deploy_cost < 3000,
+        "Under D3 unmetered-for-liveness the deploy runs to its actual cost ({deploy_cost}), \
+         not capped at the legacy phlo_limit (3000)"
+    );
 }
 
 const MULTI_BRANCH_SAMPLE_TERM_WITH_ERROR: &str = r#"
@@ -1884,7 +1897,7 @@ async fn replay_should_match_in_case_of_out_of_phlo_error() {
     let deploy = construct_deploy::source_deploy(
         MULTI_BRANCH_SAMPLE_TERM_WITH_ERROR.to_string(),
         timestamp,
-        Some(20000), // Not enough phlo
+        Some(20000), // phlo_limit — advisory only under D3/DR-9 (deploys run unmetered-for-liveness)
         None,
         None,
         None,
@@ -1907,10 +1920,17 @@ async fn replay_should_match_in_case_of_out_of_phlo_error() {
         "Block should have exactly 1 deploy"
     );
 
+    // D3/DR-9 (OD-1): accepted deploys run UNMETERED-for-liveness — the acceptance
+    // gate proves fundedness, so the legacy per-deploy `phlo_limit` no longer caps
+    // execution. This deploy therefore runs to its ACTUAL cost and errors at the
+    // user `.xxx()` fault, rather than consuming the full 20000-phlo limit (the
+    // pre-D3 out-of-phlo behavior). Play and replay agree on this actual cost (the
+    // erroring deploy is processed deterministically — validated by `add_block`).
     let deploy_cost = b.body.deploys[0].cost.cost;
-    assert_eq!(
-        deploy_cost, 20000,
-        "Deploy should consume all phlos (20000)"
+    assert!(
+        deploy_cost > 0 && deploy_cost < 20000,
+        "Under D3 unmetered-for-liveness the deploy runs to its actual cost ({deploy_cost}), \
+         erroring at .xxx() — not capped at the legacy phlo_limit (20000)"
     );
 }
 
@@ -1950,8 +1970,12 @@ async fn replay_should_match_in_case_of_user_execution_error() {
     );
 
     let deploy_cost = b.body.deploys[0].cost.cost;
-    assert_eq!(
-        deploy_cost, 300000,
-        "Deploy should consume all phlos (300000)"
+    assert!(
+        b.body.deploys[0].is_failed,
+        "Deploy should fail with user error"
+    );
+    assert!(
+        deploy_cost > 0 && deploy_cost < 300000,
+        "User execution errors should report consumed tokens without exhausting the full budget"
     );
 }

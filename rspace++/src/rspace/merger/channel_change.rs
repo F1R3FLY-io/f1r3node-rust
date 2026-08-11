@@ -16,10 +16,37 @@ impl<A> ChannelChange<A> {
 
     pub fn combine(self, other: Self) -> Self
     where A: PartialEq {
-        let mut added = Self::vec_union(self.added, other.added);
-        let mut removed = Self::vec_union(self.removed, other.removed);
+        self.join(other).normalized()
+    }
+
+    pub fn join(self, other: Self) -> Self
+    where A: PartialEq {
+        Self {
+            added: Self::vec_union(self.added, other.added),
+            removed: Self::vec_union(self.removed, other.removed),
+        }
+    }
+
+    pub fn additive_join(mut self, other: Self) -> Self {
+        self.added.extend(other.added);
+        self.removed.extend(other.removed);
+        self
+    }
+
+    pub fn normalized(self) -> Self
+    where A: PartialEq {
+        let mut added = self.added;
+        let mut removed = self.removed;
         Self::cancel_common(&mut added, &mut removed);
         Self { added, removed }
+    }
+
+    pub fn canonicalized(self) -> Self
+    where A: Ord {
+        let mut normalized = self.normalized();
+        normalized.added.sort();
+        normalized.removed.sort();
+        normalized
     }
 
     fn vec_union(left: Vec<A>, right: Vec<A>) -> Vec<A>
@@ -105,15 +132,14 @@ mod tests {
         assert_eq!(merged_result, vec![datum_c]);
     }
 
-    // === GAP-1: ChannelChange.combine algebra ===============================
+    // === GAP-1: ChannelChange merge algebra =================================
     //
     // Rust modality companion to
     // formal/rocq/merge_algebra/theories/ChannelNetting.v (and the Z3 witness
     // formal/z3/merge_algebra/channel_netting_monoid.py). A per-datum change is
     // (added multiplicity, removed multiplicity); `combine` is max-multiset
-    // union then cancel_common. These pin: (1) commutativity HOLDS; (2)
-    // NON-associativity (disclosed Finding A); (3) the sum-union FIX is
-    // order-independent.
+    // union then cancel_common. These pin the legacy inline-normalization
+    // counterexample and both order-independent deferred-normalization algebras.
 
     fn sorted<T: Ord + Clone>(v: &[T]) -> Vec<T> {
         let mut w = v.to_vec();
@@ -121,20 +147,17 @@ mod tests {
         w
     }
 
-    // (2) Finding A, PINNED. Max-union combine is NON-associative: with
+    // Finding A, PINNED. The legacy inline-normalized combine is
+    // NON-associative: with
     // a = add(x), b = add(x), c = remove(x),
     //   (a . b) . c   cancels x away   -> {}
     //   a . (b . c)   leaves x         -> {x}
     // so the fold RESULT depends on the association (hence, in a multi-branch
     // fold, on order). Mirror of Rocq `combine_not_assoc_exhibit`. This is a
-    // DISCLOSED property of the shipped operator (NOT a code change requested
-    // here); #[ignore]d so it documents the hazard without failing the normal
-    // suite. Run explicitly (`cargo test -- --ignored`) to assert the expected
-    // inequality.
+    // historical counterexample retained as a negative-model regression.
     #[test]
-    #[ignore = "Finding A: pins the shipped max-union combine's NON-associativity (disclosed, not \
-                a fix)"]
-    fn finding_a_max_union_combine_is_non_associative() {
+    #[ignore = "negative model: legacy inline-normalized max-union is non-associative"]
+    fn finding_a_legacy_inline_combine_is_non_associative() {
         let x: u8 = 0x42;
         let add_x = || ChannelChange {
             added: vec![x],
@@ -161,9 +184,7 @@ mod tests {
         );
     }
 
-    // A test-only FIXED operator: sum-union net multiplicity per datum (added
-    // contributes +1, removed -1). This is a commutative group, so folding over
-    // ANY branch order yields the identical net map. Rocq: netting_fold_perm.
+    // Projection of additive composition into signed multiplicities.
     fn fixed_net(changes: &[ChannelChange<u8>]) -> BTreeMap<u8, i64> {
         let mut net: BTreeMap<u8, i64> = BTreeMap::new();
         for ch in changes {
@@ -198,11 +219,8 @@ mod tests {
             prop_assert_eq!(sorted(&ab.removed), sorted(&ba.removed), "combine removed must be commutative");
         }
 
-        // (3) the sum-union FIX is ORDER-INDEPENDENT: folding the net over any
-        // permutation of the branch changes yields the identical net map. Rocq:
-        // channel_netting_fixed_deterministic.
         #[test]
-        fn fixed_net_is_order_independent(
+        fn additive_join_is_order_independent(
             specs in prop::collection::vec(
                 (prop::collection::vec(0u8..6, 0..4), prop::collection::vec(0u8..6, 0..4)),
                 1..6),
@@ -215,6 +233,17 @@ mod tests {
             let n = changes.len();
             let mut permuted = changes.clone();
             permuted.rotate_left(rot % n.max(1));
+            let fold = |items: &[ChannelChange<u8>]| {
+                items
+                    .iter()
+                    .cloned()
+                    .fold(ChannelChange::empty(), ChannelChange::additive_join)
+                    .canonicalized()
+            };
+            let expected = fold(&changes);
+            let actual = fold(&permuted);
+            prop_assert_eq!(expected.added, actual.added);
+            prop_assert_eq!(expected.removed, actual.removed);
             prop_assert_eq!(
                 fixed_net(&changes),
                 fixed_net(&permuted),
@@ -222,15 +251,14 @@ mod tests {
             );
         }
 
-        // (4) The SHIPPED (non-associative) max-union combine is nonetheless
+        // The legacy inline-normalized max-union combine is nonetheless
         // ORDER-INDEPENDENT when no datum is contributed to a side by >= 2 distinct
-        // survivors — the exact `OrderDependenceGuard` precondition
-        // (conflict_set_merger.rs). Empirical companion to Rocq
+        // survivors. Empirical companion to Rocq
         // `combine_max_order_independent_under_no_dup`: generate survivor changes in
         // which every datum has AT MOST ONE adder and AT MOST ONE remover, then fold
         // the shipped `combine` in two different orders and require the same result.
         #[test]
-        fn shipped_combine_is_order_independent_under_no_duplication(
+        fn legacy_inline_combine_is_order_independent_under_no_duplication(
             n in 1usize..5,
             // For each datum value (0..len), which survivor adds it / removes it.
             assignments in prop::collection::vec(
@@ -254,9 +282,54 @@ mod tests {
             rotated.rotate_left(rot % n);
             let reversed: Vec<usize> = ident.iter().rev().copied().collect();
             prop_assert_eq!(fold(&ident), fold(&rotated),
-                "shipped max-union combine fold must be order-independent under no-dup");
+                "legacy inline max-union fold must be order-independent under no-dup");
             prop_assert_eq!(fold(&ident), fold(&reversed),
-                "shipped max-union combine fold must be order-independent under no-dup");
+                "legacy inline max-union fold must be order-independent under no-dup");
+        }
+
+        #[test]
+        fn additive_join_is_associative_and_canonical(
+            a_add in prop::collection::vec(0u8..6, 0..5),
+            a_rem in prop::collection::vec(0u8..6, 0..5),
+            b_add in prop::collection::vec(0u8..6, 0..5),
+            b_rem in prop::collection::vec(0u8..6, 0..5),
+            c_add in prop::collection::vec(0u8..6, 0..5),
+            c_rem in prop::collection::vec(0u8..6, 0..5),
+        ) {
+            let a = ChannelChange { added: a_add, removed: a_rem };
+            let b = ChannelChange { added: b_add, removed: b_rem };
+            let c = ChannelChange { added: c_add, removed: c_rem };
+            let left = a.clone().additive_join(b.clone()).additive_join(c.clone()).canonicalized();
+            let right = a.additive_join(b.additive_join(c)).canonicalized();
+            prop_assert_eq!(left.added, right.added);
+            prop_assert_eq!(left.removed, right.removed);
+        }
+
+        #[test]
+        fn additive_join_preserves_multiplicity_under_permutation(
+            specs in prop::collection::vec(
+                (prop::collection::vec(0u8..6, 0..4), prop::collection::vec(0u8..6, 0..4)),
+                1..6),
+            rot in 0usize..6,
+        ) {
+            let changes: Vec<ChannelChange<u8>> = specs
+                .into_iter()
+                .map(|(added, removed)| ChannelChange { added, removed })
+                .collect();
+            let fold = |items: &[ChannelChange<u8>]| {
+                items
+                    .iter()
+                    .cloned()
+                    .fold(ChannelChange::empty(), ChannelChange::additive_join)
+                    .canonicalized()
+            };
+            let mut permuted = changes.clone();
+            let n = permuted.len();
+            permuted.rotate_left(rot % n);
+            let expected = fold(&changes);
+            let actual = fold(&permuted);
+            prop_assert_eq!(expected.added, actual.added);
+            prop_assert_eq!(expected.removed, actual.removed);
         }
     }
 }

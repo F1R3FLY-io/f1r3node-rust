@@ -1,0 +1,23 @@
+% The P4 pipeline: a naked GSLT is decorated by the COST endofunctor into a
+% cost-decorated Cost(GSLT), then OSLF is applied to the graded LTS to yield a
+% cost-aware spatial+modal+linear type system. The two functor arrows (blue) are
+% labelled with their Rocq realizations.
+%
+% Source of truth for the §1 pipeline in
+% cost-accounting-impl/w2-cost-aware-oslf-typing-forward-design.md.
+% Render:  lualatex --output-format=dvi gslt-cost-pipeline.tex && dvisvgm ...
+%          (or: ./render.sh gslt-cost-pipeline.tex)
+\documentclass[border=8pt]{standalone}
+\usepackage{amsmath,amssymb}
+\input{palette.tex}
+\usepackage{tikz-cd}
+\usetikzlibrary{arrows.meta}
+\begin{document}
+\begin{tikzcd}[column sep=4cm, cells={nodes={font=\sffamily}}]
+  |[draw, rounded corners, fill=caSurface]| {\shortstack{GSLT\\(naked)}}
+    \ar[r, "\mathrm{COST}", "{\texttt{CostObj}\ \text{(CACostFunctorCI.v)}}"', caInstantiate]
+  & |[draw, rounded corners, fill=caProcess]| {\shortstack{Cost(GSLT)\\(cost-decorated)}}
+    \ar[r, "\mathrm{OSLF}", "{\texttt{graded\_step} + \text{GForm}/\text{gsat}}"', caInstantiate]
+  & |[draw, rounded corners, fill=caPool]| {\shortstack{cost-AWARE\\ spatial+modal+linear\\ type system}}
+\end{tikzcd}
+\end{document}

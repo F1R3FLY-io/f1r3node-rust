@@ -6,6 +6,7 @@ use crypto::rust::signatures::signed::Signed;
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use proptest::test_runner::TestRunner;
+use prost::bytes::Bytes as ByteString;
 use rand::prelude::*;
 
 use super::block::state_hash::{self, StateHash};
@@ -65,8 +66,6 @@ pub fn signed_deploy_data_gen() -> impl Strategy<Value = Signed<DeployData>> {
         Signed::create(
             DeployData {
                 time_stamp: timestamp,
-                phlo_price: 1,
-                phlo_limit: 9000000,
                 valid_after_block_number: 1,
                 term,
                 shard_id,
@@ -87,6 +86,10 @@ pub fn processed_deploy_gen() -> impl Strategy<Value = ProcessedDeploy> {
         deploy_log: Vec::new(),
         is_failed: false,
         system_deploy_error: None,
+        cosigners: Vec::new(),
+        cosigner_threshold: 0,
+        pre_state_hash: ByteString::new(),
+        post_state_hash: ByteString::new(),
     })
 }
 

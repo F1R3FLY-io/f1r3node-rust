@@ -576,29 +576,47 @@ fn dag_storage_should_advance_latest_message_to_invalid_block_from_same_sender()
 fn dag_storage_should_be_able_to_restore_deploy_index_on_startup() {
     let genesis = genesis_block();
     proptest!(proptest_config(), |(block_elements in block_elements_with_parents_gen(genesis.clone(), 0, 10))| {
-      let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
+      let forward_storage = RUNTIME.block_on(create_dag_storage(&genesis));
+      let reverse_storage = RUNTIME.block_on(create_dag_storage(&genesis));
 
       for block_element in &block_elements {
-        dag_storage.insert(block_element, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid).unwrap();
+        forward_storage.insert(block_element, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal).unwrap();
+      }
+      for block_element in block_elements.iter().rev() {
+        reverse_storage.insert(block_element, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal).unwrap();
       }
 
-      let dag = dag_storage.get_representation().expect("dag representation");
-      let mut deploy_sigs = Vec::new();
-      let mut block_hashes = Vec::new();
+      let forward_dag = forward_storage.get_representation().expect("forward dag representation");
+      let reverse_dag = reverse_storage.get_representation().expect("reverse dag representation");
+      let mut expected_occurrences: HashMap<Vec<u8>, BTreeSet<BlockHash>> = HashMap::new();
+      let mut expected_representatives: HashMap<Vec<u8>, (i64, BlockHash)> = HashMap::new();
 
       for block in &block_elements {
           for deploy in &block.body.deploys {
-              deploy_sigs.push(deploy.deploy.sig.clone());
-              block_hashes.push(block.block_hash.clone());
+              let deploy_id = deploy.deploy.sig.to_vec();
+              expected_occurrences
+                  .entry(deploy_id.clone())
+                  .or_default()
+                  .insert(block.block_hash.clone());
+              let candidate = (block.body.state.block_number, block.block_hash.clone());
+              expected_representatives
+                  .entry(deploy_id)
+                  .and_modify(|current| {
+                      if candidate.0 > current.0 || (candidate.0 == current.0 && candidate.1 < current.1) {
+                          *current = candidate.clone();
+                      }
+                  })
+                  .or_insert(candidate);
           }
       }
 
-      let deploy_lookups: Vec<Option<BlockHash>> = deploy_sigs
-          .iter()
-          .map(|sig| dag.lookup_by_deploy_id(&sig.to_vec()).unwrap())
-          .collect();
-
-      assert_eq!(deploy_lookups, block_hashes.iter().map(|h| Some(h.clone())).collect::<Vec<_>>());
+      for (deploy_id, occurrences) in expected_occurrences {
+          assert_eq!(forward_dag.lookup_deploy_occurrences(&deploy_id).unwrap(), occurrences);
+          assert_eq!(reverse_dag.lookup_deploy_occurrences(&deploy_id).unwrap(), occurrences);
+          let expected = expected_representatives.get(&deploy_id).map(|(_, hash)| hash.clone());
+          assert_eq!(forward_dag.lookup_by_deploy_id(&deploy_id).unwrap(), expected);
+          assert_eq!(reverse_dag.lookup_by_deploy_id(&deploy_id).unwrap(), expected);
+      }
     });
 }
 

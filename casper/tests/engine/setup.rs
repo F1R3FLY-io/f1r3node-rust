@@ -262,6 +262,11 @@ impl TestFixture {
             latest_messages_typed_store,
             Arc::new(parking_lot::RwLock::new(block_metadata_store)),
             Arc::new(parking_lot::RwLock::new(deploy_index_typed_store)),
+            Arc::new(parking_lot::RwLock::new(KeyValueTypedStoreImpl::new(
+                Arc::new(
+                    rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
+                ),
+            ))),
             invalid_blocks_typed_store,
             KeyValueTypedStoreImpl::new(Arc::new(
                 rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
@@ -440,6 +445,9 @@ impl TestFixture {
                 .pos_multi_sig_public_keys
                 .clone(),
             genesis_params.proof_of_stake.pos_multi_sig_quorum,
+            genesis_params.proof_of_stake.max_cosigners_per_deploy,
+            genesis_params.proof_of_stake.initial_phlogiston,
+            genesis_params.proof_of_stake.epoch_phlogiston,
             genesis_params.native_token_name.clone(),
             genesis_params.native_token_symbol.clone(),
             genesis_params.native_token_decimals,
