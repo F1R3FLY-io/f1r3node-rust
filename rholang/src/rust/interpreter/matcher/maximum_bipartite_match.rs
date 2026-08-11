@@ -182,9 +182,8 @@ where
             let Some(frame) = stack.last_mut() else {
                 return false;
             };
-            let mut descended = false;
 
-            while let Some((target_index, result)) =
+            if let Some((target_index, result)) =
                 self.next_edge(frame, patterns, targets, relation, &seen_targets)
             {
                 seen_targets[target_index] = true;
@@ -226,14 +225,9 @@ where
                             relation_cursor: relation.cursor(previous_pattern),
                             pending: None,
                         });
-                        descended = true;
-                        break;
+                        continue;
                     }
                 }
-            }
-
-            if descended {
-                continue;
             }
 
             // This displaced pattern has no alternative. Its parent keeps the
