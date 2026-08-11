@@ -5,11 +5,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 write_summary() {
-	local output_dir="$1" iterations="$2" failures="$3"
+	local output_dir="$1" iterations="$2" failures="$3" slot_delay="${4:-0}"
 	SOAK_OUTPUT_DIR="$output_dir" \
 		SOAK_METRICS_REGISTRY="$ROOT/scripts/bench/soak-metrics.json" \
 		SOAK_TARGET_REF=dev \
 		SOAK_TARGET_SHA=1086923fb257407baa2e15ce57841987503dbbb5 \
+		SOAK_SLOT_DELAY_SECONDS="$slot_delay" \
 		SOAK_VERSION=0.4.42 \
 		SOAK_STARTED_AT=1000 \
 		SOAK_FINISHED_AT=1180 \
@@ -45,9 +46,10 @@ jq -e '
 
 EMPTY="$TMP/empty"
 mkdir -p "$EMPTY"
-write_summary "$EMPTY" 0 0
+write_summary "$EMPTY" 0 0 invalid
 jq -e '
-  .rss_peak_mb == null
+  .slot_delay_seconds == 0
+  and .rss_peak_mb == null
   and .cpu_peak_pct == null
   and .shard_up_seconds == 0
   and .tracked_metrics == {}

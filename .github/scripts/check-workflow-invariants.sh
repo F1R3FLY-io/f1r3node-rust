@@ -332,6 +332,12 @@ puts "canary retry attempts are not rejected" unless body&.include?("INPUT_RETRY
 puts "protection injection is not restricted to canaries" unless body&.include?("inject_protection_breach requires canary")
 injection = jobs.dig("soak", "steps").find { |step| step["name"] == "Configure injected protection breach" }
 puts "protection injection step is missing or not gate-controlled" unless injection&.dig("if").to_s == "needs.schedule_gate.outputs.inject_protection_breach == 'true'"
+publish_steps = jobs.dig("perf_report", "steps")
+control_checkout = publish_steps.find { |step| step["name"] == "Checkout CI control files" }
+puts "dashboard publisher does not check out CI control files under ci-control" unless control_checkout&.dig("with", "path") == "ci-control"
+renderer = publish_steps.find { |step| step["name"] == "Render dashboard charts" }
+renderer_body = renderer && renderer["run"].to_s
+puts "dashboard publisher renderer does not use the ci-control checkout" unless renderer_body&.include?("--manifest-path ci-control/scripts/soak-charts/Cargo.toml") && renderer_body&.include?("ci-control/scripts/soak-charts/target/release/soak-charts")
 puts "OCI scheduled slots are not handled before manual dispatches" unless body&.include?('if [ -n "$INPUT_SCHEDULED_SLOT" ]; then')
 puts "OCI scheduled inputs are not isolated from manual controls" unless body&.include?("scheduled_slot_epoch cannot be combined")
 puts "Friday routing does not consistently target master" unless body&.scan("target_ref=master")&.length.to_i >= 2
@@ -349,6 +355,17 @@ if [ -n "$soak_errors" ]; then
 else
 	ok "soak canaries are isolated and scheduled routing maps daily to dev and weekend to master"
 fi
+
+for publisher in \
+	.github/workflows/merge-recovery-soak.yml \
+	.github/workflows/soak-checkpoint-publish.yml \
+	.github/workflows/soak-dashboard-pages.yml; do
+	if grep -Fq 'published ${m} lists ${f}, but that SVG returned 404; refusing to publish an incomplete chart set' "$publisher"; then
+		ok "$publisher rejects manifest-listed SVGs that return 404"
+	else
+		err "$publisher may publish an incomplete chart set when a manifest-listed SVG returns 404"
+	fi
+done
 
 if [ "$fail" -ne 0 ]; then
 	printf '::error::%s\n' "workflow security invariants violated; see errors above"

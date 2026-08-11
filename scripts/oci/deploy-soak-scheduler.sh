@@ -233,16 +233,17 @@ upsert_dynamic_group() {
 	# only a GET returns the truth. A rule that does not bind is worse than no
 	# rule, because it reads as a guarantee and stops people re-checking.
 	local actual
-	actual="$(oci iam dynamic-group get \
+	if ! actual="$(oci iam dynamic-group get \
 		--profile "$OCI_PROFILE" \
 		--dynamic-group-id "$id" \
 		--query 'data."matching-rule"' \
-		--raw-output 2>/dev/null || true)"
+		--raw-output)"; then
+		echo "ERROR: could not verify dynamic group $name matching rule via OCI GET." >&2
+		return 1
+	fi
 	if [ "$actual" != "$rule" ]; then
 		echo "ERROR: dynamic group $name matching rule did not persist." >&2
-		echo "  wanted: $rule" >&2
-		echo "  got:    ${actual:-<null>}" >&2
-		exit 1
+		return 1
 	fi
 	printf '%s\n' "$id"
 }

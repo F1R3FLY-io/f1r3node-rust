@@ -159,7 +159,11 @@ jobs:
                     exit 1
                   }
                   ;;
-                404) rm -f "site/data/${f}" ;;
+                404)
+                  rm -f "site/data/${f}"
+                  echo "::error::published ${m} lists ${f}, but that SVG returned 404; refusing to publish an incomplete chart set"
+                  exit 1
+                  ;;
                 *)
                   echo "::error::could not read published ${f} (HTTP ${code}); aborting so live dashboard data is not overwritten"
                   exit 1
