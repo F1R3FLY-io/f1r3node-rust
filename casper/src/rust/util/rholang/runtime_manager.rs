@@ -1608,8 +1608,6 @@ mod tests {
         #[serde(default)]
         expected_total_cost: i64,
         #[serde(default)]
-        settlement: serde_json::Value,
-        #[serde(default)]
         replay_mutations: Vec<String>,
         #[serde(default)]
         source_surface_status: String,
@@ -1673,13 +1671,6 @@ mod tests {
         ))
         .expect("embedded horizon v14 fixture schema")
         .fixtures
-    }
-
-    fn fixture_i64(value: &serde_json::Value, key: &str) -> i64 {
-        value
-            .get(key)
-            .and_then(serde_json::Value::as_i64)
-            .unwrap_or_else(|| panic!("fixture settlement must include {key}"))
     }
 
     #[test]

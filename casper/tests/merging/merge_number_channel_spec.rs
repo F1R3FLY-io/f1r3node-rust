@@ -458,19 +458,19 @@ async fn multiple_branches_should_reject_deploy_when_mergeable_number_channels_g
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn multiple_branches_should_reject_deploy_when_mergeable_number_channels_got_overflow() {
     test_case(
-        vec![RHO_ST.to_owned(), rho_change(10)],
+        vec![RHO_ST.to_owned()],
         vec![DeployTestInfo {
-            term: rho_change(-5),
+            term: rho_change(10),
             cost: 10,
             sig: "0x11".to_string(),
         }],
         vec![DeployTestInfo {
-            term: rho_change(9223372036854775806),
+            term: rho_change(i64::MAX),
             cost: 10,
             sig: "0x22".to_string(),
         }],
         HashableSet::from_iter(vec![make_sig_pb("0x22")]),
-        5,
+        10,
     )
     .await;
 }

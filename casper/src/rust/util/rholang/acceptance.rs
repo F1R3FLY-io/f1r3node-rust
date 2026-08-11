@@ -2294,7 +2294,7 @@ mod tests {
         // would reject it (8 > 5); a malicious proposer includes it anyway.
         let over = compound_cosigned(&n_sends(8), 0, 10);
         let (left, right) = match accounting::funding_sig(&over) {
-            Sig::And(l, r) => (*l, *r),
+            Sig::And(ref l, ref r) => (l.as_ref().clone(), r.as_ref().clone()),
             other => panic!("expected And(Ground,Ground), got {:?}", other),
         };
         let mut reader = MockSupplyReader::new();
@@ -2322,7 +2322,7 @@ mod tests {
         // gate-admitted block.
         let ok = compound_cosigned(&n_sends(4), 0, 10);
         let (l2, r2) = match accounting::funding_sig(&ok) {
-            Sig::And(l, r) => (*l, *r),
+            Sig::And(ref l, ref r) => (l.as_ref().clone(), r.as_ref().clone()),
             other => panic!("expected And, got {:?}", other),
         };
         let mut reader_ok = MockSupplyReader::new();
