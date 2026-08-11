@@ -97,6 +97,34 @@ jq -n \
           iterations_per_hour: (if $elapsed > 0 then ($iterations * 3600 / $elapsed * 100 | floor / 100) else 0 end),
           rss_peak_mb: (numeric_values(.rss_peak_mb?) | max_or_null),
           cpu_peak_pct: (numeric_values(.cpu_peak_pct?) | max_or_null),
+          # The dashboard CPU grid: per-(node, core) peaks across the whole
+          # run (cell-wise max over iterations). Real core rows come from
+          # iterations whose harness emitted per-core telemetry
+          # (cpu_peak_per_node_core_pct); a node with no per-core data in any
+          # iteration (pre-emission harness, provider without the hook) falls
+          # back to its aggregate per-node peak under the "all" core row.
+          # Real rows replace the fallback per node, never mix with it. Null
+          # (absent) when no iteration recorded either map, so pre-emission
+          # history entries and this run stay shaped alike.
+          cpu_peak_core_grid_pct: (
+            [$all[] | .cpu_peak_per_node_core_pct? | select(type == "object") | to_entries[]
+             | .key as $node | (.value | select(type == "object") | to_entries[])
+             | select(.value | type == "number")
+             | {node: $node, core: .key, pct: .value}] as $core_cells
+            | [$all[] | .cpu_peak_per_node_pct? | select(type == "object") | to_entries[]
+               | select(.value | type == "number")
+               | {node: .key, core: "all", pct: .value}] as $agg_cells
+            | ($core_cells | map(.node) | unique) as $core_nodes
+            | ($core_cells
+               + [$agg_cells[] | select(. as $cell | $core_nodes | index($cell.node) | not)]) as $cells
+            | if ($cells | length) == 0 then null
+              else ($cells | group_by(.node)
+                    | map({key: .[0].node,
+                           value: (group_by(.core)
+                                   | map({key: .[0].core, value: (map(.pct) | max)})
+                                   | from_entries)})
+                    | from_entries)
+              end),
           finalization_p50_ms: (numeric_values(.finalization_latency?.p50_ms?) | median),
           finalization_p95_ms: (numeric_values(.finalization_latency?.p95_ms?) | median),
           finalization_p99_ms: (numeric_values(.finalization_latency?.p99_ms?) | median),

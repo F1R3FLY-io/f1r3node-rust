@@ -64,9 +64,12 @@ struct Passive {
     /// rows appear they become facets with no renderer change, and until then
     /// a single synthesized "aggregate" facet carries cpu_peak_pct.
     cpu_peak_per_core_pct: Option<std::collections::BTreeMap<String, f64>>,
-    /// Full cluster grid (node id -> core id -> % of that core), also not
-    /// emitted yet. When present, the CPU panel prefers it over everything
-    /// else and renders the latest run's node × core utilization heatmap.
+    /// Full cluster grid (node id -> core id -> % of that core). Emitted by
+    /// write-soak-summary.sh at node granularity — per-node peaks under the
+    /// "all" core row, because the harness monitor samples per container —
+    /// and preferred by the CPU panel over everything else: it renders the
+    /// latest run's node × core utilization heatmap. Real core rows take
+    /// over when the harness starts sampling per core.
     cpu_peak_core_grid_pct:
         Option<std::collections::BTreeMap<String, std::collections::BTreeMap<String, f64>>>,
     finalization_p50_ms: Option<f64>,
@@ -852,10 +855,12 @@ fn id_sorted(ids: impl Iterator<Item = String>) -> Vec<String> {
 /// core's peak load on a cool-to-hot ramp. Jet is the one charton map running
 /// blue (idle) through to red (hot) as the design calls for; it is not
 /// perceptually uniform, so color never carries saturation alone — every cell
-/// at ≥100% (a full core) also gets its value printed on the cell. The color
-/// domain is pinned to [0, max(100, data max)] so "red" always means "at or
-/// beyond one full core", not "the largest value this week", and cores a node
-/// did not report leave no cell at all.
+/// at ≥100% (a full core) also gets its value printed on the cell. Color is
+/// the value CLAMPED to 100 on a fixed [0, 100] domain: an unclamped domain
+/// stretched by one multi-core outlier (today's "all" rows reach 260%+) would
+/// paint a 95%-saturated core cool blue. The clamp keeps the invariant that
+/// red always means "at or beyond one full core" — the printed value carries
+/// how far beyond — and cores a node did not report leave no cell at all.
 fn render_cpu_grid(grid: &CpuGrid, theme: &Theme, out: &str) -> Result<(), Box<dyn Error>> {
     let nodes = id_sorted(grid.keys().cloned());
     let cores = id_sorted(grid.values().flat_map(|c| c.keys().cloned()));
@@ -877,20 +882,23 @@ fn render_cpu_grid(grid: &CpuGrid, theme: &Theme, out: &str) -> Result<(), Box<d
     if pct.is_empty() {
         return Err("cpu grid had no finite readings".into());
     }
-    let data_max = pct.iter().fold(0.0_f64, |m, v| m.max(*v));
-    let domain_top = data_max.max(100.0);
+    // Clamped values feed the COLOR channel only. The saturation labels
+    // below are built from the untouched `pct` vector in a separate dataset,
+    // so a 263% cell renders max-red AND prints 263 — the clamp never
+    // reaches the printed value.
+    let clamped: Vec<f64> = pct.iter().map(|v| v.min(100.0)).collect();
 
     let ds = Dataset::new()
         .with_column("node", x.clone())?
         .with_column("core", y.clone())?
-        .with_column("% of one core", pct.clone())?;
+        .with_column("% of one core", clamped)?;
     let mut layers: Vec<LayeredChart> = vec![Chart::build(ds)?
         .mark_rect()?
         .encode((
             alt::x("node"),
             alt::y("core"),
             alt::color("% of one core")
-                .with_domain(ScaleDomain::Continuous(0.0, domain_top))
+                .with_domain(ScaleDomain::Continuous(0.0, 100.0))
                 .with_expandsion(Expansion {
                     mult: (0.0, 0.0),
                     add: (0.0, 0.0),

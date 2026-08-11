@@ -79,16 +79,27 @@ the too-far-ahead counter is suppressed while it is all-zero — the page shows 
 "0 · target 0" badge instead of a flat line.
 
 Peak CPU steps up through three representations as richer data appears, each
-the honest chart for what exists. With only today's aggregate `cpu_peak_pct`
-it is a single line chart with a dashed status-red line at 100% (one full
-core). When per-run `passive.cpu_peak_per_core_pct` (core id → peak %)
-arrives, each core becomes a small-multiples facet on a shared y scale. And
-when the full cluster grid `passive.cpu_peak_core_grid_pct` (node id → core id
-→ peak %) is recorded, the panel renders the latest run's node × core
-utilization heatmap: cells on a cool-to-hot (Jet) ramp whose domain is pinned
-so red always means "at or beyond one full core", saturated cells (≥ 100%)
-carrying their printed value, and the ramp legend drawn by the page (charton's
-own continuous colorbar renders degenerate, so it stays suppressed).
+the honest chart for what exists: an aggregate line chart with a dashed
+status-red line at 100% (one full core); small-multiples facets per core when
+`passive.cpu_peak_per_core_pct` (core id → peak %) exists; and, preferred over
+both, the cluster grid `passive.cpu_peak_core_grid_pct` (node id → core id →
+peak %), rendered as the latest run's node × core utilization heatmap — cells
+on a cool-to-hot (Jet) ramp whose domain is pinned so red always means "at or
+beyond one full core", saturated cells (≥ 100%) carrying their printed value,
+and the ramp legend drawn by the page (charton's own continuous colorbar
+renders degenerate, so it stays suppressed).
+
+The grid carries real core rows when the harness provides them: the
+system-integration monitor samples per-CPU cgroup counters per node container
+and emits `resource-percore-timeseries.csv` (a separate file from
+`resource-timeseries.csv` so the aggregate extractors cannot double-count),
+which the soak driver reduces to per-(node, core) peaks
+(`cpu_peak_per_node_core_pct` per iteration) alongside the aggregate per-node
+peaks (`cpu_peak_per_node_pct`). `write-soak-summary.sh` rolls both up
+cell-wise: a node with per-core data in any iteration gets real core ids, and
+a node with none anywhere — pre-emission history, or a provider without the
+per-core hook — keeps a single `"all"` fallback row, so the same chart simply
+grows taller as real core data appears.
 
 The two publishers whose output can change history re-render both series; the
 checkpoint publisher only carries the SVGs forward, since a checkpoint never

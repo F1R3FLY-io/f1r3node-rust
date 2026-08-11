@@ -24,6 +24,18 @@ elapsed_s,node,memory_mb,cpu_percent,memory_limit_mb
 1.0,rnode.test.validator1,256.0,10.0,0
 1.0,rnode.test.validator2,512.0,20.0,0
 CSV
+# Per-core telemetry for validator1 only: validator2 must keep its "all"
+# fallback row in the summary grid (mixed real/fallback rendering). The
+# __system__ row is host state and must not become a grid node, and the
+# non-numeric core id is a malformed row that must be rejected — the grid
+# assertion below proves both filters.
+cat >"$FAKE_ARCHIVE_DIR/session/resource-percore-timeseries.csv" <<'CSV'
+elapsed_s,node,core,cpu_percent
+1.0,rnode.test.validator1,0,7.5
+1.0,rnode.test.validator1,1,42.0
+1.0,__system__,0,93.0
+1.0,rnode.test.validator1,not-a-core,88.0
+CSV
 cat >"$FAKE_DATA_DIR/session/node-metrics-timeseries.csv" <<'CSV'
 elapsed_s,node,metric,value
 1.0,rnode.test.validator1,replay_cache_entries,12
@@ -88,7 +100,12 @@ for _ in $(seq 1 20); do
 			"$TMP/output/iteration-00001-docker/node-memory-timeseries.tsv" 2>/dev/null && break
 	sleep 0.25
 done
+for _ in $(seq 1 20); do
+	[ -s "$TMP/output/iteration-00001-docker/resource-percore-timeseries.csv" ] && break
+	sleep 0.25
+done
 test -s "$TMP/output/iteration-00001-docker/resource-timeseries.csv"
+test -s "$TMP/output/iteration-00001-docker/resource-percore-timeseries.csv"
 test -s "$TMP/output/iteration-00001-docker/node-metrics-timeseries.csv"
 grep -q 'test.validator1.*12.*1048576.*2.*2.*7' \
 	"$TMP/output/iteration-00001-docker/node-memory-timeseries.tsv"
@@ -118,8 +135,12 @@ jq -e '
   .iterations == 1
   and .failures == 1
   and .rss_peak_mb == 768
+  and .cpu_peak_pct == 30
+  and .cpu_peak_core_grid_pct == {"validator1": {"0": 7.5, "1": 42}, "validator2": {"all": 20}}
   and .iteration_metrics[0].exit_code == 1
   and .iteration_metrics[0].rss_peak_mb == 768
+  and .iteration_metrics[0].cpu_peak_per_node_pct == {"validator1": 10, "validator2": 20}
+  and .iteration_metrics[0].cpu_peak_per_node_core_pct == {"validator1": {"0": 7.5, "1": 42}}
   and .iteration_metrics[0].too_far_ahead_errors == 1
 ' "$TMP/output/summary.json" >/dev/null
 grep -q 'replay_cache_retained_bytes,1048576' \
