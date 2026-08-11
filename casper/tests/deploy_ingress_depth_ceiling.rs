@@ -1,10 +1,4 @@
-//! # The gRPC INGRESS depth ceiling — the defect, the repair, and the ladder
-//!
-//! ⚠ **This file used to say "nothing here fixes anything".** That is no longer
-//! true, and the change is not cosmetic: the traversal it characterises has been
-//! **converted**, and the assertions below are now the executed record that it
-//! stays converted. What was a one-sided floor guarding a live defect is now a
-//! flatness claim with a sloped control beside it.
+//! # The gRPC ingress depth ceiling — historical defect and current flatness gate
 //!
 //! ## What was wrong
 //!
@@ -123,15 +117,14 @@
 //! subject below calls production rather than imitating it, so the question cannot
 //! arise again here.
 //!
-//! ## The repair
+//! ## The two repairs
 //!
-//! `Par` is `prost`-generated, so its derived `Drop` cannot be replaced — only
-//! **bypassed at the owning call site**. `casper::rust::util::rholang::
-//! interpreter_util::validate_deploy_term` now owns the discard: it parses, and
-//! hands the term to `models::rust::rholang::par_children::dismantle`, an explicit
-//! `Vec<Par>` worklist that is `O(1)` in native stack. Both admission call sites
-//! call it, and so does [`ingress_validate`] below — one function, so the shape
-//! cannot drift between production and its measurement.
+//! The first repair centralized admission's surplus term in
+//! `validate_deploy_term`, which hands it to `par_children::dismantle`. The later,
+//! schema-generated repair emits `Drop for Par` itself and delegates to
+//! `par_children::dismantle_in_place`. Both paths therefore use one explicit heap
+//! worklist and `O(1)` native stack. The generated repair is broader: ordinary
+//! lexical destruction of any `Par` now has the same depth-independent property.
 //!
 //! **Zero observable bytes change.** The signature is over the SOURCE
 //! (`DeployData::to_message`'s `term` field is the source string, and that is what
@@ -140,7 +133,7 @@
 //! reorders the frees of a value no signature, hash, block, replay or stored byte
 //! ever reads.
 //!
-//! ## Measured, after the repair — both profiles, subject and control
+//! ## Measured after the call-site repair
 //!
 //! Printed by [`ingress_validation_is_depth_independent`] on every run; the
 //! figures below are one such run (2026-07-28).
@@ -165,38 +158,29 @@
 //! above resolves. The numbers quoted for *production* are the pre-repair
 //! production ones; the control's are its own.
 //!
-//! ## What is asserted here, and why in this shape
+//! The table predates generated `Drop`. Its "derived" column is retained as a
+//! historical measurement, not a current expectation: generated `Drop` has now
+//! removed that slope as well.
 //!
-//! [`ingress_validation_is_depth_independent`] is a **converted-style** claim, in
-//! the sense `rholang/tests/stack_depth_gate.rs` gives that word: the subject's
-//! minimum stack does not grow with depth, and the fixture is proved to be
-//! carrying depth by a **control** — the pre-repair shape, over the same deploy,
-//! in the same binary, differing only in its teardown — which must still be
-//! sloped and must still have a ceiling the same search can find. Without the
-//! control, a fixture that quietly collapsed to a shallow term would read flat and
-//! uncapped, and the test would certify nothing.
+//! ## What is asserted now
+//!
+//! [`ingress_validation_is_depth_independent`] requires both the explicit
+//! admission worklist and ordinary generated `Drop` to remain flat and uncapped.
+//! Anti-vacuity no longer relies on a deliberately recursive control. The
+//! generated-`Drop` path iteratively follows the normalized `EList` spine and
+//! proves that the output has exactly the requested depth before releasing it.
+//! Both paths consume the same signed deploy source and normalizer environment,
+//! while the existing verdict-equivalence test proves that the admission wrapper
+//! accepts and rejects exactly what `mk_term` does.
 //!
 //! ⚠ A raised floor is **not** admissible as evidence of conversion; that rule is
 //! stated where the gate defines `CONVERTED_DEPTH` and it is the reason
 //! [`ingress_depth_ceiling_has_not_got_worse`] — the original one-sided floor — is
 //! kept but no longer carries the claim.
 //!
-//! ## Why a child process per probe point
-//!
-//! The control's failure is an `abort()`, so it cannot be observed in-process
-//! without taking every other assertion in the binary with it. The parent
-//! re-execs this binary once per (teardown, depth, stack) and reads the exit
-//! status.
-//!
-//! ```text
-//! INGRESS_TEARDOWN=derived INGRESS_DEPTH=21781 INGRESS_STACK=2097152 \
-//!   cargo test --release -p casper --test deploy_ingress_depth_ceiling \
-//!   -- --ignored --exact ingress_child
-//! ```
-//!
-//! ⚠ Run bisections under `ulimit -c 0`: the control's children abort by design,
-//! and on a system whose `core_pattern` pipes to `systemd-coredump` each one
-//! otherwise leaves a multi-megabyte core behind.
+//! Each probe point still runs in a child because a regression in either teardown
+//! can abort on the native stack guard rather than return an error. The parent can
+//! observe that process status without taking down the test runner.
 
 use std::collections::HashMap;
 
@@ -204,6 +188,8 @@ use casper::rust::util::rholang::interpreter_util;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::{Cosigned, Signed};
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::Par;
 use models::rust::casper::protocol::casper_message::DeployData;
 use models::rust::normalizer_env::normalizer_env_from_cosigned_deploy;
 
@@ -260,37 +246,29 @@ const CEILING_FLOOR_DEBUG: usize = 4_000;
 // ---------------------------------------------------------------------------
 
 /// How the probe releases the `Par` that deploy admission builds.
-///
-/// The two variants differ in **nothing else**: same deploy, same signature, same
-/// `normalizer_env`, same parse, same binary, same thread stack. That is what
-/// makes the pair evidence — the flat reading and the sloped reading cannot be
-/// attributed to the fixture, because it is one fixture.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Teardown {
-    /// ★ **PRODUCTION**, reached by calling it rather than by reproducing it:
-    /// `interpreter_util::validate_deploy_term`, which hands the term to
-    /// `par_children::dismantle`.
+    /// Admission's explicit `par_children::dismantle` path.
     Worklist,
-    /// ⚠ **THE CONTROL — the shape production carried until this session, and no
-    /// longer does.** `mk_term` with the term bound to `_parsed_term` and released
-    /// by the arm ending. It is retained deliberately: it is the only thing that
-    /// proves the fixture carries depth and that the search can still go red.
-    Derived,
+    /// Ordinary lexical release through schema-generated `Drop for Par`.
+    GeneratedDrop,
 }
 
 impl Teardown {
     fn tag(self) -> &'static str {
         match self {
             Teardown::Worklist => "worklist",
-            Teardown::Derived => "derived",
+            Teardown::GeneratedDrop => "generated-drop",
         }
     }
 
     fn from_tag(tag: &str) -> Self {
         match tag {
             "worklist" => Teardown::Worklist,
-            "derived" => Teardown::Derived,
-            other => panic!("INGRESS_TEARDOWN must be `worklist` or `derived`, got {other:?}"),
+            "generated-drop" => Teardown::GeneratedDrop,
+            other => {
+                panic!("INGRESS_TEARDOWN must be `worklist` or `generated-drop`, got {other:?}")
+            }
         }
     }
 }
@@ -314,6 +292,42 @@ fn nested_list_source(depth: usize) -> String {
 
 /// The leading bracket run of a source — the parameter the probe claims to carry.
 fn source_bracket_depth(src: &str) -> usize { src.bytes().take_while(|b| *b == b'[').count() }
+
+/// Follow the normalized singleton-list spine without recursion.
+///
+/// This witnesses the depth at the output of normalization. It deliberately
+/// borrows the term: the generated destructor remains the operation measured
+/// after this function returns.
+fn normalized_list_depth(root: &Par) -> usize {
+    let mut cursor = root;
+    let mut depth = 0usize;
+
+    loop {
+        let [expr] = cursor.exprs.as_slice() else {
+            panic!(
+                "VACUOUS PROBE: expected one expression at normalized depth {depth}, got {}",
+                cursor.exprs.len()
+            );
+        };
+        match expr.expr_instance.as_ref() {
+            Some(ExprInstance::EListBody(list)) => {
+                let [child] = list.ps.as_slice() else {
+                    panic!(
+                        "VACUOUS PROBE: expected a singleton list at normalized depth {depth}, \
+                         got {} elements",
+                        list.ps.len()
+                    );
+                };
+                depth += 1;
+                cursor = child;
+            }
+            Some(ExprInstance::GInt(0)) => return depth,
+            other => panic!(
+                "VACUOUS PROBE: normalized list ended at depth {depth} in {other:?}, not integer 0"
+            ),
+        }
+    }
+}
 
 /// A real, signed, single-signer `Cosigned<DeployData>` carrying a depth-`depth`
 /// term — the shape `DeployData::from_proto_cosigned` produces from the wire and
@@ -344,19 +358,10 @@ fn cosigned_deploy_of_depth(depth: usize) -> Cosigned<DeployData> {
 // ---------------------------------------------------------------------------
 // ⚠ ANTI-VACUITY
 //
-// A probe whose term failed to PARSE would return `Err` in O(1) stack, exit 0,
-// and be recorded as "survived" — reporting a ceiling for a traversal that never
-// ran. That is the same failure the audit records three times (§4.3, §11.3, the
-// score-tree subjects). So the probe checks the source's bracket run AND asserts
-// the verdict is `Ok`: ingress accepted the deploy, which means the term was
-// normalized in full and something of that depth existed to be released.
-//
-// ★ That covers the INPUT end. The OUTPUT end — "the normalized term really was
-// deep" — cannot be checked by looking at it any more, because the whole point of
-// the repair is that production no longer hands the term back. It is covered
-// instead by the `Derived` control: over this identical fixture the control is
-// sloped and has a ceiling, and a collapsed fixture would make the control flat
-// and uncapped too. See `ingress_validation_is_depth_independent`.
+// A probe whose term failed to parse would return `Err` in O(1) stack and could
+// masquerade as a successful depth run. The probe therefore asserts source depth,
+// requires an `Ok` verdict, and on the generated-`Drop` path iteratively verifies
+// the normalized output depth before releasing it.
 // ---------------------------------------------------------------------------
 
 /// ★ The subject: `admit_deploy_cosigned`'s term-validation prefix.
@@ -404,22 +409,23 @@ fn ingress_validate(teardown: Teardown, depth: usize) {
                 }
             }
         }
-        // ⚠ THE CONTROL — `block_admission.rs`'s shape BEFORE the repair, kept
-        // verbatim. `_parsed_term` is bound, never read, and released when the arm
-        // ends, through `prost`'s derived recursive `drop_in_place`. This arm is
-        // not production and must never become production again; it exists so the
-        // flat reading above has something to be flat *against*.
-        Teardown::Derived => match interpreter_util::mk_term(&cosigned.data.term, normalizer_env) {
-            Err(e) => panic!(
-                "VACUOUS PROBE: ingress REJECTED the depth-{depth} deploy ({e:?}). A \
-                     rejected deploy returns in O(1) stack and would be recorded as \
-                     'survived' — nothing of that depth was ever built, so nothing of that \
-                     depth was ever released."
-            ),
-            Ok(_parsed_term) => {
-                std::hint::black_box(depth);
-            }
-        },
+        Teardown::GeneratedDrop => {
+            let term = interpreter_util::mk_term(&cosigned.data.term, normalizer_env)
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "VACUOUS PROBE: ingress REJECTED the depth-{depth} deploy ({e:?}). A \
+                         rejected deploy returns in O(1) stack, so no depth-bearing term \
+                         would be released."
+                    )
+                });
+            assert_eq!(
+                normalized_list_depth(&term),
+                depth,
+                "VACUOUS PROBE: normalization did not preserve the requested list depth"
+            );
+            std::hint::black_box(&term);
+            // Ordinary scope exit exercises generated `Drop for Par`.
+        }
     }
 }
 
@@ -545,117 +551,51 @@ fn slope(lo_stack: usize, hi_stack: usize) -> f64 {
 // the claim
 // ---------------------------------------------------------------------------
 
-/// ★★ **Deploy admission's term check is depth-INDEPENDENT — and the fixture is
-/// proved to be carrying depth by a control that is not.**
+/// Deploy admission and generated `Par` destruction are depth-independent.
 ///
-/// Four legs, and each one closes a way the other three could be satisfied by
-/// something that is not the repair:
-///
-/// | leg | asserts | what it refuses |
-/// |---|---|---|
-/// | 1 | the subject's minimum stack does not grow over `256 → 4,096` | the recursion coming back |
-/// | 2 | the CONTROL's does, by ≥ 8× the tolerance | a collapsed fixture reading flat |
-/// | 3 | the subject has NO ceiling below [`SEARCH_CAP`] on a 2 MiB worker | a merely *raised* ceiling |
-/// | 4 | the CONTROL still has one, and the same search finds it | a probe that cannot go red |
-///
-/// Legs 2 and 4 are the bidirectional halves, and they are not ceremony: leg 1
-/// and leg 3 are both satisfied by a fixture that stopped carrying depth — a
-/// deploy whose term collapsed to `0` would be flat and uncapped forever. The
-/// control differs from the subject in the teardown and **in nothing else**, so
-/// any explanation that would make the subject vacuously flat makes the control
-/// vacuously flat too, and leg 2 fails.
-///
-/// ★ **Membership by CONVERSION, never by a raised ceiling.** This is the rule
-/// `rholang/tests/stack_depth_gate.rs` states where it defines `CONVERTED_DEPTH`,
-/// and it is why this test asserts flatness rather than a larger floor. The
-/// rholang gate's `normalize_drop` subject — `Compiler::source_to_adt` followed by
-/// the derived `Drop` — remains in `TRIPWIRE_DEPTH`, correctly: this repair
-/// converts the **deploy-admission** instance of that composition, not the
-/// evaluation instance, and a name leaves the tripwire only when the traversal it
-/// stands for is gone.
+/// Both paths must have a flat minimum-stack ladder and no ceiling below
+/// [`SEARCH_CAP`]. The generated-`Drop` path proves the normalized output carries
+/// the requested depth before releasing it, and [`the_ingress_probe_discriminates`]
+/// proves that child-process failures are observable.
 #[test]
 fn ingress_validation_is_depth_independent() {
-    // ── legs 1 and 2: the ladder, subject and control ───────────────────────
-    let lo = min_stack_for(Teardown::Worklist, LADDER_LO);
-    let hi = min_stack_for(Teardown::Worklist, LADDER_HI);
-    let control_lo = min_stack_for(Teardown::Derived, LADDER_LO);
-    let control_hi = min_stack_for(Teardown::Derived, LADDER_HI);
+    for teardown in [Teardown::Worklist, Teardown::GeneratedDrop] {
+        let lo = min_stack_for(teardown, LADDER_LO);
+        let hi = min_stack_for(teardown, LADDER_HI);
+        println!(
+            "  ingress {} ladder {LADDER_LO} -> {LADDER_HI}: {lo} -> {hi} B \
+             ({:.1} B/level)",
+            teardown.tag(),
+            slope(lo, hi)
+        );
 
-    println!(
-        "  ingress ladder {LADDER_LO} -> {LADDER_HI}:  worklist {} -> {} B ({:.1} B/level)   \
-         derived {} -> {} B ({:.1} B/level)",
-        lo,
-        hi,
-        slope(lo, hi),
-        control_lo,
-        control_hi,
-        slope(control_lo, control_hi)
-    );
+        assert!(
+            hi <= lo + ZERO_SLOPE_TOLERANCE,
+            "★ INGRESS TEARDOWN `{}` IS Θ(depth) AGAIN. It needed {hi} B of stack at depth \
+             {LADDER_HI} against {lo} B at depth {LADDER_LO}, a growth of {} B ({:.1} \
+             B/level) past the {ZERO_SLOPE_TOLERANCE} B tolerance. Either the explicit \
+             worklist stopped being reached or generated `Drop for Par` no longer detaches \
+             the complete recursive schema family.",
+            teardown.tag(),
+            hi.saturating_sub(lo),
+            slope(lo, hi)
+        );
 
-    let control_growth = control_hi.saturating_sub(control_lo);
-    assert!(
-        control_growth > 8 * ZERO_SLOPE_TOLERANCE,
-        "VACUOUS LADDER: the DERIVED control grew only {control_growth} B over depths \
-         {LADDER_LO} -> {LADDER_HI}, which does not clear the {} B tolerance by the order of \
-         magnitude a control must. The control is `mk_term` with the term released by the \
-         arm ending — the exact shape that was measured at ~96 B/level and aborted a 2 MiB \
-         worker at depth 21,782 — so if it now reads flat, the deploy fixture has stopped \
-         carrying depth and the subject's flatness below proves nothing about the repair.",
-        8 * ZERO_SLOPE_TOLERANCE
-    );
-
-    assert!(
-        hi <= lo + ZERO_SLOPE_TOLERANCE,
-        "★ DEPLOY ADMISSION'S TERM CHECK IS Θ(depth) AGAIN. `validate_deploy_term` needed \
-         {hi} B of stack at depth {LADDER_HI} against {lo} B at depth {LADDER_LO} — a growth \
-         of {} B, past the {ZERO_SLOPE_TOLERANCE} B tolerance, i.e. {:.1} B per nesting \
-         level. The control on the same fixture reads {:.1}. Something on the path \
-         `admit_deploy{{,_cosigned}}` ▸ `validate_deploy_term` ▸ `par_children::dismantle` \
-         is recursing over the term again: either the worklist stopped being reached, or a \
-         new `Par`-bearing edge was added to the family and `take_par_child_pars` does not \
-         detach it, so its subtree still unwinds through the derived destructor.",
-        hi - lo,
-        slope(lo, hi),
-        slope(control_lo, control_hi)
-    );
-
-    // ── legs 3 and 4: the ceiling on a real worker stack ────────────────────
-    let ceiling = max_surviving_depth(Teardown::Worklist, PRODUCTION_WORKER_STACK, SEARCH_CAP);
-    let control_ceiling =
-        max_surviving_depth(Teardown::Derived, PRODUCTION_WORKER_STACK, SEARCH_CAP);
-
-    println!(
-        "  ingress ceiling on a {} MiB worker (cap {SEARCH_CAP}):  worklist {:?}   \
-         derived {:?}",
-        PRODUCTION_WORKER_STACK / (1024 * 1024),
-        ceiling,
-        control_ceiling
-    );
-
-    match control_ceiling {
-        Some(d) if d < SEARCH_CAP => {}
-        other => panic!(
-            "THE CEILING SEARCH CANNOT GO RED. The DERIVED control reported {other:?} on a \
-             {} MiB worker, but that shape is the one this file measured at ~96 B/level and \
-             bisected to a ceiling of 21,781. If it now survives the whole search range, the \
-             search is not observing the child's exit status and leg 3 below is vacuous.",
+        let ceiling = max_surviving_depth(teardown, PRODUCTION_WORKER_STACK, SEARCH_CAP);
+        println!(
+            "  ingress {} ceiling on a {} MiB worker (cap {SEARCH_CAP}): {ceiling:?}",
+            teardown.tag(),
             PRODUCTION_WORKER_STACK / (1024 * 1024)
-        ),
+        );
+        assert!(
+            ceiling.is_none(),
+            "★ INGRESS TEARDOWN `{}` stops at nesting depth {ceiling:?} on a {} MiB worker, \
+             where the converted path must have no ceiling below {SEARCH_CAP}. The fixture's \
+             normalized output depth was checked iteratively before generated destruction.",
+            teardown.tag(),
+            PRODUCTION_WORKER_STACK / (1024 * 1024)
+        );
     }
-
-    assert!(
-        ceiling.is_none(),
-        "★ THE INGRESS DEPTH CEILING IS BACK: deploy admission stops at nesting depth {:?} on \
-         the {} MiB stack a spawned worker gets, where the converted path has none below \
-         {SEARCH_CAP}. That composition — parse, then release a term nothing reads — runs \
-         BEFORE the deploy is stored, BEFORE consensus, with no `RuntimeBudget` in scope, on \
-         source that arrived from the network; and a stack overflow is a SIGSEGV, so the \
-         `Err` arm in the same `match` cannot turn it into a failed deploy. It takes the \
-         node. The control on this same run stopped at {control_ceiling:?}, so the harness \
-         is working and this is the subject.",
-        ceiling,
-        PRODUCTION_WORKER_STACK / (1024 * 1024)
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -737,7 +677,7 @@ fn ingress_depth_ceiling_has_not_got_worse() {
 #[test]
 fn the_ingress_probe_discriminates() {
     const IMPOSSIBLY_SMALL: usize = 16 * 1024;
-    for teardown in [Teardown::Worklist, Teardown::Derived] {
+    for teardown in [Teardown::Worklist, Teardown::GeneratedDrop] {
         assert!(
             !ingress_survives(teardown, 8, IMPOSSIBLY_SMALL),
             "THE INGRESS PROBE CANNOT GO RED. A depth-8 deploy 'survived' a {} KiB stack \

@@ -670,6 +670,7 @@ impl NormKont<'_> {
     ///
     /// The `match` is exhaustive with no `_` arm, so a continuation added without
     /// an arity is a compile error.
+    #[cfg(debug_assertions)]
     pub(crate) fn arity(&self) -> usize {
         match self {
             // one operand
@@ -741,6 +742,7 @@ impl NormKont<'_> {
     /// The exhaustive `match` is the other half of the cross-check: `arity`
     /// speaks for the node's shape, `filled` speaks for what the machine has
     /// actually delivered, and [`norm_drive`] asserts they meet exactly once.
+    #[cfg(debug_assertions)]
     pub(crate) fn filled(&self) -> usize {
         match self {
             NormKont::Unary { .. }
@@ -815,8 +817,8 @@ impl NormKont<'_> {
         }
     }
 
-    /// Every `Par` this continuation owns, for iterative teardown on the error
-    /// path. `Drop` for `Par` is Θ(depth); see the module docs.
+    /// Every `Par` this continuation owns, for the error path's shared iterative
+    /// teardown worklist.
     fn into_pars(self) -> Vec<Par> {
         fn push_opt(out: &mut Vec<Par>, p: Option<Par>) { out.extend(p); }
         let mut out = Vec::new();

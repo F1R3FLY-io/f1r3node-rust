@@ -741,11 +741,9 @@ pub(crate) fn dismantle_collecting_epathmap_keys(root: Par, keys: &mut Vec<Vec<u
 
 /// Tear `root` down **iteratively**.
 ///
-/// `Drop` for this family is itself a Θ(depth) recursive traversal (measured
-/// 470 B/level debug — see the audit's §5, row 10). A harness that let a deep
-/// term drop normally would therefore measure `Drop` rather than the traversal
-/// under test, and a driver that produced a deep term on a small stack could
-/// still abort while releasing it.
+/// This was introduced before the schema generator emitted stack-safe `Drop for
+/// Par`; it remains the by-value teardown primitive used by drivers and callers
+/// that already own an explicit worklist.
 ///
 /// This walks the term with an explicit worklist, detaching each node's
 /// children before the (now child-free) shell falls out of scope, so native
