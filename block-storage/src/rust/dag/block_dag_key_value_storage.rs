@@ -1157,7 +1157,10 @@ impl BlockDagKeyValueStorage {
             // acquisitions of LMDB's single-writer lock per block insert (see
             // issue #146 / lmdb_key_value_store::batched_put doc comment).
             shared::rust::store::lmdb_key_value_store::batched_put(vec![
-                (deploy_index_guard.raw_store().as_ref(), deploy_entries_encoded),
+                (
+                    deploy_index_guard.raw_store().as_ref(),
+                    deploy_entries_encoded,
+                ),
                 (
                     self.latest_messages_index.raw_store().as_ref(),
                     latest_messages_encoded,
