@@ -78,6 +78,9 @@ fn exploratory_key_pair() -> &'static (PrivateKey, PublicKey) {
     EXPLORATORY_KEY_PAIR.get_or_init(|| Secp256k1.new_key_pair())
 }
 
+/// Default phlogiston ceiling for exploratory deploy execution.
+pub const DEFAULT_EXPLORATORY_DEPLOY_PHLO_LIMIT: i64 = 5_000_000;
+
 pub struct RuntimeOps {
     pub runtime: RhoRuntimeImpl,
 }
@@ -833,8 +836,13 @@ impl RuntimeOps {
         hash: &StateHash,
         deployer: Option<PublicKey>,
     ) -> Result<(Vec<Par>, u64), CasperError> {
-        self.play_exploratory_deploy_with_phlo_limit(term, hash, deployer, 100 * 1000 * 1000)
-            .await
+        self.play_exploratory_deploy_with_phlo_limit(
+            term,
+            hash,
+            deployer,
+            DEFAULT_EXPLORATORY_DEPLOY_PHLO_LIMIT,
+        )
+        .await
     }
 
     pub async fn play_exploratory_deploy_with_phlo_limit(

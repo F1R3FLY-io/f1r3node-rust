@@ -455,6 +455,7 @@ pub async fn deploy_handler(
 #[utoipa::path(
     post,
     path = "/explore-deploy",
+    description = "Executes against the last finalized block post-state. Unfinalized DAG-tip state is not visible.",
     request_body = SimpleExploreDeployRequest,
     responses(
         (status = 200, description = "Exploratory deploy executed; returns channel data", body = RhoDataResponse),

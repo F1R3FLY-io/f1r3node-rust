@@ -736,6 +736,9 @@ mod tests {
                 http_max_body_bytes: 16777216,
                 max_blocks_limit: 100,
                 enable_reporting: false,
+                exploratory_deploy_max_concurrent: 1,
+                exploratory_deploy_phlo_limit: 5_000_000,
+                exploratory_deploy_execution_timeout: Duration::from_secs(15),
                 keep_alive_time: Duration::from_secs(2),
                 keep_alive_timeout: Duration::from_secs(20),
                 tcp_keepalive_time: Duration::from_secs(5),
@@ -912,6 +915,20 @@ mod tests {
         assert_eq!(default_config.api_server.host, "localhost".to_string());
         assert_eq!(default_config.api_server.grpc_max_recv_message_size, 111111);
         assert_eq!(default_config.api_server.max_blocks_limit, 111111);
+        assert_eq!(
+            default_config.api_server.exploratory_deploy_max_concurrent,
+            1
+        );
+        assert_eq!(
+            default_config.api_server.exploratory_deploy_phlo_limit,
+            5_000_000
+        );
+        assert_eq!(
+            default_config
+                .api_server
+                .exploratory_deploy_execution_timeout,
+            Duration::from_secs(15)
+        );
         assert_eq!(
             default_config.api_server.keep_alive_time,
             Duration::from_secs(111111)

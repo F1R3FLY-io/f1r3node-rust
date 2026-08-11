@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -197,13 +198,79 @@ impl std::fmt::Display for ExploratoryDeployReadOnlyError {
 impl std::error::Error for ExploratoryDeployReadOnlyError {}
 
 #[derive(Debug, thiserror::Error)]
-#[error("Observer is busy processing another exploratory query; retry later")]
+#[error("Node exploratory query capacity is exhausted; retry later")]
 pub struct ExploratoryDeployBusyError;
 
 #[derive(Debug, thiserror::Error)]
 #[error("Exploratory query exceeded the {timeout_ms} ms execution deadline")]
 pub struct ExploratoryDeployTimeoutError {
-    pub timeout_ms: u128,
+    pub timeout_ms: u64,
+}
+
+#[repr(u8)]
+enum ExploratoryDeployOutcome {
+    Failed,
+    Completed,
+    TimedOut,
+}
+
+struct ExploratoryDeployMetrics {
+    started: Instant,
+    outcome: Arc<AtomicU8>,
+}
+
+impl ExploratoryDeployMetrics {
+    fn new(outcome: Arc<AtomicU8>) -> Self {
+        metrics::gauge!("exploratory_deploy.active", "source" => "casper").increment(1.0);
+        Self {
+            started: Instant::now(),
+            outcome,
+        }
+    }
+}
+
+impl Drop for ExploratoryDeployMetrics {
+    fn drop(&mut self) {
+        metrics::gauge!("exploratory_deploy.active", "source" => "casper").decrement(1.0);
+        metrics::histogram!("exploratory_deploy.duration", "source" => "casper")
+            .record(self.started.elapsed().as_secs_f64());
+        match self.outcome.load(Ordering::Relaxed) {
+            value if value == ExploratoryDeployOutcome::Completed as u8 => {
+                metrics::counter!("exploratory_deploy.completed", "source" => "casper")
+                    .increment(1);
+            }
+            value if value == ExploratoryDeployOutcome::TimedOut as u8 => {
+                metrics::counter!("exploratory_deploy.timed_out", "source" => "casper")
+                    .increment(1);
+            }
+            _ => {
+                metrics::counter!("exploratory_deploy.failed", "source" => "casper").increment(1);
+            }
+        }
+        RuntimeManager::trim_allocator();
+    }
+}
+
+enum ExploratoryDeployTaskError {
+    Join(tokio::task::JoinError),
+    Timeout,
+}
+
+async fn await_exploratory_deploy_task<T>(
+    mut task: tokio::task::JoinHandle<T>,
+    timeout: Duration,
+    outcome: Arc<AtomicU8>,
+) -> Result<T, ExploratoryDeployTaskError> {
+    match tokio::time::timeout(timeout, &mut task).await {
+        Ok(Ok(result)) => Ok(result),
+        Ok(Err(error)) => Err(ExploratoryDeployTaskError::Join(error)),
+        Err(_) => {
+            outcome.store(ExploratoryDeployOutcome::TimedOut as u8, Ordering::Relaxed);
+            task.abort();
+            let _ = task.await;
+            Err(ExploratoryDeployTaskError::Timeout)
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1670,20 +1737,19 @@ impl BlockAPI {
             let is_read_only = casper.get_validator().is_none();
             if is_read_only || dev_mode {
                 let runtime_manager = casper.runtime_manager();
-                let _permit = runtime_manager
-                    .acquire_exploratory_deploy_permit()
-                    .await
-                    .ok_or_else(|| eyre::Report::new(ExploratoryDeployBusyError))?;
+                let permit = runtime_manager
+                    .try_acquire_exploratory_deploy_permit()
+                    .ok_or_else(|| {
+                        metrics::counter!(
+                            "exploratory_deploy.rejected",
+                            "source" => "casper"
+                        )
+                        .increment(1);
+                        eyre::Report::new(ExploratoryDeployBusyError)
+                    })?;
 
                 let (state_hash, target_block) = if block_hash.is_none() {
-                    let dag = casper.block_dag().await?;
-                    let lfb_hash = dag.last_finalized_block();
-                    let lfb = casper.block_store().get(&lfb_hash)?.ok_or_else(|| {
-                        eyre::eyre!(
-                            "Failure to find last finalized block with hash: {}",
-                            PrettyPrinter::build_string_no_limit(&lfb_hash)
-                        )
-                    })?;
+                    let lfb = casper.last_finalized_block().await?;
                     (proto_util::post_state_hash(&lfb), Some(lfb))
                 } else {
                     // Specific block requested: use its post-state
@@ -1716,50 +1782,42 @@ impl BlockAPI {
 
                 match target_block {
                     Some(b) => {
-                        let started = Instant::now();
-                        metrics::gauge!(
-                            "exploratory_deploy.active",
-                            "source" => "casper"
-                        )
-                        .increment(1.0);
                         let timeout = runtime_manager.exploratory_deploy_execution_timeout_value();
-                        let result = tokio::time::timeout(
-                            timeout,
-                            runtime_manager.play_exploratory_deploy(term, &state_hash, deployer),
-                        )
-                        .await;
-                        metrics::gauge!(
-                            "exploratory_deploy.active",
-                            "source" => "casper"
-                        )
-                        .decrement(1.0);
-                        metrics::histogram!(
-                            "exploratory_deploy.duration",
-                            "source" => "casper"
-                        )
-                        .record(started.elapsed().as_secs_f64());
-                        RuntimeManager::trim_allocator();
+                        let outcome =
+                            Arc::new(AtomicU8::new(ExploratoryDeployOutcome::Failed as u8));
+                        let task_outcome = outcome.clone();
+                        let task_runtime_manager = runtime_manager.clone();
+                        let task = tokio::spawn(async move {
+                            let _permit = permit;
+                            let _metrics = ExploratoryDeployMetrics::new(task_outcome.clone());
+                            let result = task_runtime_manager
+                                .play_exploratory_deploy(term, &state_hash, deployer)
+                                .await;
+                            if result.is_ok() {
+                                task_outcome.store(
+                                    ExploratoryDeployOutcome::Completed as u8,
+                                    Ordering::Relaxed,
+                                );
+                            }
+                            result
+                        });
 
-                        let (res, cost) = match result {
-                            Ok(result) => {
-                                metrics::counter!(
-                                    "exploratory_deploy.completed",
-                                    "source" => "casper"
-                                )
-                                .increment(1);
-                                result?
-                            }
-                            Err(_) => {
-                                metrics::counter!(
-                                    "exploratory_deploy.timed_out",
-                                    "source" => "casper"
-                                )
-                                .increment(1);
-                                return Err(eyre::Report::new(ExploratoryDeployTimeoutError {
-                                    timeout_ms: timeout.as_millis(),
-                                }));
-                            }
-                        };
+                        let (res, cost) =
+                            match await_exploratory_deploy_task(task, timeout, outcome).await {
+                                Ok(result) => result?,
+                                Err(ExploratoryDeployTaskError::Join(error)) => {
+                                    return Err(eyre::eyre!(
+                                        "Exploratory query task failed: {}",
+                                        error
+                                    ));
+                                }
+                                Err(ExploratoryDeployTaskError::Timeout) => {
+                                    return Err(eyre::Report::new(ExploratoryDeployTimeoutError {
+                                        timeout_ms: u64::try_from(timeout.as_millis())
+                                            .unwrap_or(u64::MAX),
+                                    }));
+                                }
+                            };
                         let light_block_info =
                             Self::get_light_block_info(casper.as_ref(), &b).await?;
                         Ok((res, light_block_info, cost))
@@ -1854,5 +1912,50 @@ impl BlockAPI {
             tracing::warn!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::pending;
+    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use tokio::sync::Semaphore;
+
+    use super::{
+        await_exploratory_deploy_task, ExploratoryDeployOutcome, ExploratoryDeployTaskError,
+    };
+
+    struct DropSignal(Arc<AtomicBool>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) { self.0.store(true, Ordering::Relaxed); }
+    }
+
+    #[tokio::test]
+    async fn exploratory_timeout_aborts_and_joins_before_releasing_capacity() {
+        let semaphore = Arc::new(Semaphore::new(1));
+        let permit = semaphore.clone().try_acquire_owned().unwrap();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let task_dropped = dropped.clone();
+        let task = tokio::spawn(async move {
+            let _permit = permit;
+            let _drop_signal = DropSignal(task_dropped);
+            pending::<()>().await;
+        });
+        let outcome = Arc::new(AtomicU8::new(ExploratoryDeployOutcome::Failed as u8));
+
+        let result =
+            await_exploratory_deploy_task(task, Duration::from_millis(10), outcome.clone()).await;
+
+        assert!(matches!(result, Err(ExploratoryDeployTaskError::Timeout)));
+        assert!(dropped.load(Ordering::Relaxed));
+        assert_eq!(
+            outcome.load(Ordering::Relaxed),
+            ExploratoryDeployOutcome::TimedOut as u8
+        );
+        assert!(semaphore.try_acquire_owned().is_ok());
     }
 }

@@ -66,12 +66,16 @@ The gRPC `exploratoryDeploy` endpoint returns errors in the `ExploratoryDeployRe
 
 ## Block Hash Parameter
 
-When calling exploratory deploy, always pass an explicit block hash (typically the LFB hash) to ensure you're querying the expected state. Passing an empty string may resolve to a state that doesn't include recent deploys.
+When no block hash is supplied, exploratory deploy runs against the last finalized block post-state. It never merges unfinalized DAG tips. Pass an explicit block hash when the caller needs a different historical state.
 
 ```python
 lfb = node.last_finalized_block().blockInfo
 result = node.exploratory_deploy(rholang_code, lfb.blockHash)
 ```
+
+## Backpressure
+
+The node accepts only `api-server.exploratory-deploy-max-concurrent` exploratory executions at once and rejects excess requests immediately. The authoritative execution bound is `api-server.exploratory-deploy-phlo-limit`; `api-server.exploratory-deploy-execution-timeout` is a best-effort wall-clock deadline because timeout observation requires the interpreter to yield. A timed-out task retains its capacity permit until it has terminated. The defaults are one concurrent execution, 5,000,000 phlogiston, and 15 seconds.
 
 ## Implementation
 
