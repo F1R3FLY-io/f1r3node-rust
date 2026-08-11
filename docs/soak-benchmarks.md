@@ -54,7 +54,47 @@ Three workflows publish the site — `merge-recovery-soak.yml` (final),
 `soak-checkpoint-publish.yml` (mid-run) and `soak-dashboard-pages.yml`
 (dashboard edits) — and each carries the published data forward from its own
 file list. **A new data file must be added to all three**, or the next publisher
-to run deletes it.
+to run deletes it. Chart SVGs are the one exception: they ride
+`charts-manifest-<series>.json`, written by the renderer to name exactly the
+SVGs it produced, and the publishers iterate that manifest — so adding a chart
+is a renderer change only.
+
+Every chart on the dashboard is a pre-rendered SVG pair
+(`…-<series>-{light,dark}.svg`) from the standalone `scripts/soak-charts` crate
+(charton; deliberately not a workspace member — CI runs a dedicated cargo-deny
+pass for it, and its committed `Cargo.lock` pins the publisher builds via
+`--locked`). Colors are baked at render time, so each chart ships a light and a
+dark variant and the page swaps them with its theme logic.
+
+The failure map is a heatmap: rows are failure categories (total, per
+provider), columns are run dates, cell color is the failure rate on a
+sequential red ramp with a neutral non-red for 0%, and cell text carries the
+failures/iterations volume. The metric panels (throughput, peak RSS/CPU,
+finalization latency, too-far-ahead, LFB spread) pick their mark from data
+density at render time: with enough distinct dates they are layered line+point
+charts on a temporal axis (throughput adds a low-opacity trend area); with only
+a few they render as value-labelled bars or points, because a two-point line
+chart is mostly empty axis. A panel with no recorded data emits nothing, and
+the too-far-ahead counter is suppressed while it is all-zero — the page shows a
+"0 · target 0" badge instead of a flat line.
+
+Peak CPU steps up through three representations as richer data appears, each
+the honest chart for what exists. With only today's aggregate `cpu_peak_pct`
+it is a single line chart with a dashed status-red line at 100% (one full
+core). When per-run `passive.cpu_peak_per_core_pct` (core id → peak %)
+arrives, each core becomes a small-multiples facet on a shared y scale. And
+when the full cluster grid `passive.cpu_peak_core_grid_pct` (node id → core id
+→ peak %) is recorded, the panel renders the latest run's node × core
+utilization heatmap: cells on a cool-to-hot (Jet) ramp whose domain is pinned
+so red always means "at or beyond one full core", saturated cells (≥ 100%)
+carrying their printed value, and the ramp legend drawn by the page (charton's
+own continuous colorbar renders degenerate, so it stays suppressed).
+
+The two publishers whose output can change history re-render both series; the
+checkpoint publisher only carries the SVGs forward, since a checkpoint never
+appends to history. Rendering is `continue-on-error` in the same spirit as the
+badges: a chart bug must never block the publish that makes history durable —
+the carried-forward SVGs from the previous publish stand instead.
 
 Each run also records what it soaked: the target ref, the commit sha (linked to
 GitHub) and the node version declared at that commit — the same value carried by
@@ -214,6 +254,12 @@ nothing added to the workspace). The sample fixtures are deterministic and
 deliberately include a regressed run, so the failure styling is exercised
 without hand-editing anything. Everything generated lands in the gitignored
 `site/`, rebuilt on start and removed on exit.
+
+The chart SVGs are rendered from the seeded (or fetched) history when `cargo`
+is available, by building `scripts/soak-charts` — the one part of the preview
+outside the std-only guarantee, so it is best-effort: without cargo the chart
+figures simply hide themselves, and `--live` falls back to the published SVGs
+it fetched via the charts manifest.
 
 ## What is measured
 

@@ -5,6 +5,11 @@ OUTPUT_DIR="${SOAK_OUTPUT_DIR:?SOAK_OUTPUT_DIR is required}"
 REGISTRY="${SOAK_METRICS_REGISTRY:?SOAK_METRICS_REGISTRY is required}"
 TARGET_REF="${SOAK_TARGET_REF:-unknown}"
 TARGET_SHA="${SOAK_TARGET_SHA:-unknown}"
+TRIGGER_SOURCE="${SOAK_TRIGGER_SOURCE:-manual}"
+SLOT_DELAY_SECONDS="${SOAK_SLOT_DELAY_SECONDS:-0}"
+if ! [[ "$SLOT_DELAY_SECONDS" =~ ^[0-9]+$ ]]; then
+	SLOT_DELAY_SECONDS=0
+fi
 VERSION="${SOAK_VERSION:-unknown}"
 STARTED_AT="${SOAK_STARTED_AT:?SOAK_STARTED_AT is required}"
 FINISHED_AT="${SOAK_FINISHED_AT:?SOAK_FINISHED_AT is required}"
@@ -25,6 +30,8 @@ jq -n \
 	--slurpfile registry "$REGISTRY" \
 	--arg target_ref "$TARGET_REF" \
 	--arg target_sha "$TARGET_SHA" \
+	--arg trigger_source "$TRIGGER_SOURCE" \
+	--argjson slot_delay "${SLOT_DELAY_SECONDS:-0}" \
 	--arg version "$VERSION" \
 	--argjson started "$STARTED_AT" \
 	--argjson finished "$FINISHED_AT" \
@@ -70,6 +77,8 @@ jq -n \
       | {
           target_ref: $target_ref,
           target_sha: $target_sha,
+          trigger_source: $trigger_source,
+          slot_delay_seconds: $slot_delay,
           version: $version,
           started_at: $started,
           finished_at: $finished,

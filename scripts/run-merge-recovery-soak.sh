@@ -6,6 +6,11 @@ SYSTEM_INTEGRATION_DIR="${SYSTEM_INTEGRATION_DIR:?SYSTEM_INTEGRATION_DIR is requ
 OUTPUT_DIR="${SOAK_OUTPUT_DIR:-/tmp/merge-recovery-soak}"
 TARGET_REF="${SOAK_TARGET_REF:-unknown}"
 TARGET_SHA="${SOAK_TARGET_SHA:-unknown}"
+TRIGGER_SOURCE="${SOAK_TRIGGER_SOURCE:-manual}"
+SLOT_DELAY_SECONDS="${SOAK_SLOT_DELAY_SECONDS:-0}"
+if ! [[ "$SLOT_DELAY_SECONDS" =~ ^[0-9]+$ ]]; then
+	SLOT_DELAY_SECONDS=0
+fi
 if ! [[ "$DURATION_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
 	printf 'SOAK_DURATION_SECONDS must be a positive integer\n' >&2
 	exit 2
@@ -807,6 +812,8 @@ if command -v jq >/dev/null; then
 		SOAK_METRICS_REGISTRY="$SCRIPT_DIR/bench/soak-metrics.json" \
 		SOAK_TARGET_REF="$TARGET_REF" \
 		SOAK_TARGET_SHA="$TARGET_SHA" \
+		SOAK_TRIGGER_SOURCE="$TRIGGER_SOURCE" \
+		SOAK_SLOT_DELAY_SECONDS="$SLOT_DELAY_SECONDS" \
 		SOAK_VERSION="$VERSION" \
 		SOAK_STARTED_AT="$STARTED_AT" \
 		SOAK_FINISHED_AT="$FINISHED_AT" \
@@ -827,6 +834,8 @@ if command -v jq >/dev/null; then
 			jq -n \
 				--arg target_ref "$TARGET_REF" \
 				--arg target_sha "$TARGET_SHA" \
+				--arg trigger_source "$TRIGGER_SOURCE" \
+				--argjson slot_delay "$SLOT_DELAY_SECONDS" \
 				--arg version "$VERSION" \
 				--argjson started "$STARTED_AT" \
 				--argjson finished "$FINISHED_AT" \
@@ -836,6 +845,7 @@ if command -v jq >/dev/null; then
 				--argjson bench_segments "$BENCH_SEGMENTS" \
 				--argjson bench_failures "$BENCH_FAILURES" \
 				'{target_ref: $target_ref, target_sha: $target_sha, version: $version,
+          trigger_source: $trigger_source, slot_delay_seconds: $slot_delay,
           started_at: $started, finished_at: $finished,
           requested_seconds: $requested,
           elapsed_seconds: ($finished - $started),
