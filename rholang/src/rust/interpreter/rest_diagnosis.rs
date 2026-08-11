@@ -59,40 +59,44 @@
 //! whole-map API, and that is the first half of its consensus-invisibility
 //! argument.
 //!
-//! ⚠ **The instrument has one blind spot, and it is structural.** `to_map`
-//! iterates the **data** keys and looks up continuations at the same key, so:
-//!
-//! * a continuation resting on a channel that carries **no data** is absent from
-//!   the snapshot entirely;
-//! * a continuation whose join is **multi-channel** (`for (x <- a & y <- b)`) is
-//!   keyed under `[a, b]` and is therefore never found from the single-channel
-//!   data key `[a]`.
-//!
-//! ⇒ This module diagnoses **resting DATA**. The two rest classes that concern
-//! resting *continuations* — a `for` nobody sends to, and a partially satisfied
-//! join — are **not observable through this instrument**, and are named in §3
-//! rather than guessed at. Making them observable is a change to
-//! `HotStore::to_map`, which this module does not own.
+//! `to_map` now constructs the **union** of the data-key and continuation-key
+//! domains. A datum remains keyed by `[channel]`; a join remains keyed by its
+//! complete ordered channel vector. Consequently the snapshot contains a
+//! continuation with no data, a partially supplied join, and a join whose every
+//! leg has data. No per-channel lookup or history fill is needed. This closes the
+//! former structural blind spot without mutating the hot store or checkpoint.
 //!
 //! ## §3 The rest classes, DERIVED rather than listed
 //!
-//! The taxonomy is the case analysis of one predicate over a snapshot row, so a
-//! case cannot be forgotten by omission — [`diagnose_row`]'s `match` is total
-//! over the same product:
+//! The taxonomy is the case analysis of the data/continuation product plus the
+//! join's per-leg data-availability vector. A case cannot be forgotten by
+//! omission: [`diagnose_row`] is total for a one-channel row, while
+//! [`diagnose_join_row`] is total for a joined continuation.
 //!
 //! ```text
-//!   (data present?) × (continuation present at this key?) × (some bind admits the arity?)
+//!   (data present?) × (continuation present?) × (some bind admits the arity?)
 //!
 //!   ┌───────────┬──────────────────┬────────────────────┬──────────────────────────────┐
 //!   │ data      │ continuation     │ arity admitted     │ reason                       │
 //!   ├───────────┼──────────────────┼────────────────────┼──────────────────────────────┤
-//!   │ absent    │ (either)         │ —                  │ nothing to diagnose (§2)      │
+//!   │ absent    │ absent           │ —                  │ nothing to diagnose           │
+//!   │ absent    │ present          │ —                  │ WaitingForData                │
 //!   │ present   │ absent           │ —                  │ NoReader                     │
 //!   │ present   │ present          │ no                 │ ArityMismatch  ← work item #169│
 //!   │ present   │ present          │ yes                │ ShapeOrGuardRefused          │
 //!   │ present   │ present          │ unanswerable       │ MalformedRow                 │
 //!   └───────────┴──────────────────┴────────────────────┴──────────────────────────────┘
+//!
+//!   joined continuation:
+//!     zero supplied legs  -> WaitingForData
+//!     some supplied legs  -> PartiallySatisfiedJoin
+//!     every leg supplied  -> JoinCandidatesRefused
 //! ```
+//!
+//! An idle `ScalaBodyRef` is an installed platform service, not a source term
+//! that is stuck waiting. It is omitted while no data is present. Once data is
+//! present, the ordinary row and join classifications include it, because a
+//! refused attempt to call a platform service is actionable.
 //!
 //! `MalformedRow` exists so that a row whose join arity disagrees with its
 //! pattern-list length is **reported** rather than indexed into. ⚠ This module
@@ -104,8 +108,8 @@
 //!
 //! 1. **No consensus-path call site.** The analysis is *pull-based*. Nothing in
 //!    `Interpreter::inj_attempt`, `Reduce::eval`, `RhoRuntimeImpl::evaluate` or
-//!    the `casper` block pipeline calls it. Its only in-tree callers are
-//!    `storage::storage_printer::pretty_print_rest_diagnosis` and the tests.
+//!    the `casper` block pipeline calls it. Its only in-tree callers are the two
+//!    diagnostic renderers in `storage::storage_printer` and the tests.
 //! 2. **The surface it joins is already off the path**, and its callers are a
 //!    closed, checkable set: `rholang/src/rholang_cli.rs` (the developer CLI),
 //!    `node/src/rust/api/repl_grpc_service.rs` (the REPL service), and tests.
@@ -128,9 +132,10 @@
 //! consensus byte path by splitting the renderer — the same shape of fix, driven
 //! by the same distinction between "does not, today" and "cannot".
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
+use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
 
@@ -179,16 +184,41 @@ impl fmt::Display for Admits {
 
 /// ★ Why a term rests. **A disposition is a value, not an absence.**
 ///
-/// Every variant carries enough to act on without re-deriving anything: the
-/// arity that was sent, and what the installed continuations would have taken.
+/// Every variant carries enough to act on without re-deriving its classification
+/// from the snapshot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RestReason {
+    /// One or more continuations rest here and none of their channels carries
+    /// data. This is the receive-side dual of [`RestReason::NoReader`].
+    WaitingForData {
+        /// Number of source-level continuations waiting on this channel vector.
+        continuation_count: usize,
+    },
+
+    /// A joined continuation has data on at least one, but not every, leg.
+    PartiallySatisfiedJoin {
+        /// Ordered join positions whose channel currently carries data.
+        channel_positions_with_data: usize,
+        /// Total number of channels in the join.
+        total_channels: usize,
+        /// Number of continuations waiting on this exact channel vector.
+        continuation_count: usize,
+    },
+
+    /// Every channel of a join carries data, but no candidate combination has
+    /// committed. The remaining question is arity, shape, guard, peeking, or
+    /// cross-leg compatibility; a snapshot cannot choose among them safely.
+    JoinCandidatesRefused {
+        /// Total number of channels in the join.
+        total_channels: usize,
+        /// Number of continuations waiting on this exact channel vector.
+        continuation_count: usize,
+    },
+
     /// Payloads rest here and **no continuation is installed at this channel**.
     ///
-    /// ⚠ Read this against §2's blind spot: a multi-channel join listening on
-    /// this channel is invisible to a hot-store snapshot, so this reason means
-    /// *"nothing is installed on this channel alone"* and not *"nothing anywhere
-    /// could ever read it"*. The variant is named for what the instrument sees.
+    /// A channel that participates in a visible multi-channel join is not
+    /// classified this way; the join receives its own aggregate diagnosis.
     NoReader {
         /// How many payloads the resting send carried.
         sent: usize,
@@ -259,11 +289,33 @@ impl RestSite {
             }
         };
         match &self.reason {
+            RestReason::WaitingForData { continuation_count } => format!(
+                "{continuation_count} source continuation(s) wait on `{where_}`, and none of their \
+                 channels carries data. The receive is installed correctly and will remain \
+                 waiting until a matching send arrives."
+            ),
+            RestReason::PartiallySatisfiedJoin {
+                channel_positions_with_data,
+                total_channels,
+                continuation_count,
+            } => format!(
+                "{continuation_count} joined continuation(s) wait on `{where_}`; \
+                 {channel_positions_with_data} of {total_channels} ordered channel position(s) \
+                 currently carry data. The join is only partially supplied, so no COMM can fire \
+                 yet."
+            ),
+            RestReason::JoinCandidatesRefused {
+                total_channels,
+                continuation_count,
+            } => format!(
+                "{continuation_count} joined continuation(s) wait on `{where_}`, and all \
+                 {total_channels} channel(s) carry data. The join still rests, so inspect payload \
+                 arities, pattern shapes, guards, peeks, and cross-leg candidate compatibility."
+            ),
             RestReason::NoReader { sent, count } => format!(
-                "{count} send(s) of {sent} payload(s) rest on `{where_}` and no continuation is \
-                 installed on that channel. Nothing will read them unless a `for` or `contract` \
-                 is installed there, or unless a multi-channel join is listening (a join is not \
-                 visible in a hot-store snapshot)."
+                "{count} send(s) of {sent} payload(s) rest on `{where_}` and no single- or \
+                 multi-channel continuation in the snapshot listens there. Nothing will read \
+                 them unless a `for` or `contract` is installed."
             ),
             RestReason::ArityMismatch {
                 sent,
@@ -345,24 +397,48 @@ fn resting_arities(data: &[Datum<ListParWithRandom>]) -> BTreeMap<usize, usize> 
     counts
 }
 
+/// Source-level continuations resting with no data.
+///
+/// `ScalaBodyRef` identifies a platform service installed during runtime
+/// bootstrap. Reporting every idle service would drown the source-level signal;
+/// data-bearing calls to those services remain diagnosable through the other
+/// variants.
+fn waiting_source_continuation_count(
+    row: &Row<BindPattern, ListParWithRandom, TaggedContinuation>,
+) -> usize {
+    row.wks
+        .iter()
+        .filter(|continuation| {
+            !matches!(
+                continuation.continuation.tagged_cont.as_ref(),
+                Some(TaggedCont::ScalaBodyRef(_))
+            )
+        })
+        .count()
+}
+
 /// ★ One row's diagnosis. The `match` is **total** over §3's product, which is
 /// what makes the taxonomy derived rather than maintained.
 pub fn diagnose_row(
     channels: &[Par],
     row: &Row<BindPattern, ListParWithRandom, TaggedContinuation>,
 ) -> Vec<RestSite> {
-    // (data absent) — nothing this instrument can diagnose. A resting
-    // continuation with no data is not in the snapshot at all (§2).
-    if row.data.is_empty() {
-        return Vec::new();
-    }
-
-    let arities = resting_arities(&row.data);
-    let mut sites = Vec::with_capacity(arities.len());
     let at = |reason| RestSite {
         channels: channels.to_vec(),
         reason,
     };
+
+    if row.data.is_empty() {
+        let continuation_count = waiting_source_continuation_count(row);
+        return if continuation_count == 0 {
+            Vec::new()
+        } else {
+            vec![at(RestReason::WaitingForData { continuation_count })]
+        };
+    }
+
+    let arities = resting_arities(&row.data);
+    let mut sites = Vec::with_capacity(arities.len());
 
     // (data present, continuation absent at this key)
     if row.wks.is_empty() {
@@ -386,7 +462,7 @@ pub fn diagnose_row(
                 return vec![at(RestReason::MalformedRow {
                     join_arity: channels.len(),
                     pattern_lists: continuation.patterns.len(),
-                })]
+                })];
             }
         }
     }
@@ -411,17 +487,110 @@ pub fn diagnose_row(
     sites
 }
 
-/// ★ Every resting datum in a snapshot, with why it rests.
+/// Diagnose one continuation keyed by more than one channel.
+///
+/// `HotStore::to_map` keeps the continuation under its full ordered channel
+/// vector and each datum under a one-channel key. Reading those rows together
+/// is sufficient to distinguish zero, some, and all channel positions carrying
+/// data without invoking the mutating `HotStore::get_data` history-fill path.
+fn diagnose_join_row(
+    channels: &[Par],
+    row: &Row<BindPattern, ListParWithRandom, TaggedContinuation>,
+    snapshot: &StoreSnapshot,
+) -> Vec<RestSite> {
+    if row.wks.is_empty() {
+        return Vec::new();
+    }
+
+    let at = |reason| RestSite {
+        channels: channels.to_vec(),
+        reason,
+    };
+
+    if channels.is_empty() {
+        return vec![at(RestReason::MalformedRow {
+            join_arity: 0,
+            pattern_lists: row
+                .wks
+                .first()
+                .map(|continuation| continuation.patterns.len())
+                .unwrap_or(0),
+        })];
+    }
+
+    if let Some(continuation) = row
+        .wks
+        .iter()
+        .find(|continuation| continuation.patterns.len() != channels.len())
+    {
+        return vec![at(RestReason::MalformedRow {
+            join_arity: channels.len(),
+            pattern_lists: continuation.patterns.len(),
+        })];
+    }
+
+    let channel_positions_with_data = channels
+        .iter()
+        .filter(|channel| {
+            snapshot
+                .get(std::slice::from_ref(*channel))
+                .is_some_and(|channel_row| !channel_row.data.is_empty())
+        })
+        .count();
+    let continuation_count = row.wks.len();
+
+    let reason = match channel_positions_with_data {
+        0 => {
+            let continuation_count = waiting_source_continuation_count(row);
+            if continuation_count == 0 {
+                return Vec::new();
+            }
+            RestReason::WaitingForData { continuation_count }
+        }
+        supplied if supplied < channels.len() => RestReason::PartiallySatisfiedJoin {
+            channel_positions_with_data: supplied,
+            total_channels: channels.len(),
+            continuation_count,
+        },
+        _ => RestReason::JoinCandidatesRefused {
+            total_channels: channels.len(),
+            continuation_count,
+        },
+    };
+    vec![at(reason)]
+}
+
+/// ★ Every resting send or continuation in a snapshot, with why it rests.
 ///
 /// The order is **deterministic** — sorted on the rendered channel and then on
 /// the payload count — because a `HashMap` iteration order is not, and a
 /// diagnostic that reorders between runs is one a developer stops reading. It is
 /// not a consensus requirement (§4); it is a usability one.
 pub fn diagnose(snapshot: &StoreSnapshot) -> Vec<RestSite> {
-    let mut sites: Vec<RestSite> = snapshot
+    let joined_channels: HashSet<&Par> = snapshot
         .iter()
-        .flat_map(|(channels, row)| diagnose_row(channels, row))
+        .filter(|(channels, row)| channels.len() > 1 && !row.wks.is_empty())
+        .flat_map(|(channels, _)| channels.iter())
         .collect();
+
+    let mut sites = Vec::new();
+    for (channels, row) in snapshot {
+        match channels.as_slice() {
+            [] if !row.wks.is_empty() => {
+                sites.extend(diagnose_join_row(channels, row, snapshot));
+            }
+            [channel]
+                if !row.data.is_empty()
+                    && row.wks.is_empty()
+                    && joined_channels.contains(channel) =>
+            {
+                // The data is represented by the joined-continuation diagnosis;
+                // calling it `NoReader` here would contradict the same snapshot.
+            }
+            [_] => sites.extend(diagnose_row(channels, row)),
+            _ => sites.extend(diagnose_join_row(channels, row, snapshot)),
+        }
+    }
     sites.sort_by_cached_key(|site| {
         let rendered: Vec<String> = site
             .channels
@@ -437,10 +606,13 @@ pub fn diagnose(snapshot: &StoreSnapshot) -> Vec<RestSite> {
 /// variant, so two reasons at one channel never swap between runs.
 fn sort_key(reason: &RestReason) -> (usize, u8) {
     match reason {
-        RestReason::NoReader { sent, .. } => (*sent, 0),
-        RestReason::ArityMismatch { sent, .. } => (*sent, 1),
-        RestReason::ShapeOrGuardRefused { sent, .. } => (*sent, 2),
+        RestReason::WaitingForData { .. } => (0, 0),
+        RestReason::PartiallySatisfiedJoin { .. } => (0, 1),
+        RestReason::JoinCandidatesRefused { .. } => (0, 2),
         RestReason::MalformedRow { .. } => (0, 3),
+        RestReason::NoReader { sent, .. } => (*sent, 4),
+        RestReason::ArityMismatch { sent, .. } => (*sent, 5),
+        RestReason::ShapeOrGuardRefused { sent, .. } => (*sent, 6),
     }
 }
 

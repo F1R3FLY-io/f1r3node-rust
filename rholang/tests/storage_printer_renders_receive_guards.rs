@@ -163,8 +163,8 @@ fn expected_unguarded_header(pattern: &str, channel: &str) -> String {
 /// [`the_controls_can_go_red`] establishes.
 fn renders_a_where_clause(report: &str) -> bool { report.contains("where") }
 
-/// Does `report` mention `channel` at all? The joined-consume pin asserts this
-/// is **false**, so the same non-vacuity obligation applies.
+/// Does `report` mention `channel` at all? Joined-receive coverage uses both
+/// positive and negative answers, so the same non-vacuity obligation applies.
 fn mentions_channel(report: &str, channel: &str) -> bool { report.contains(channel) }
 
 // ===========================================================================
@@ -216,73 +216,59 @@ async fn a_resting_guarded_receive_renders_its_where_clause() {
     .await;
 }
 
-/// ★ **A SEPARATE, PRE-EXISTING DEFECT, PINNED — not repaired here.**
+/// Joined continuations use their complete ordered channel vector as the hot
+/// store key, while data use one-channel keys. `HotStore::to_map` must therefore
+/// return the union of both key domains. Iterating only data keys made every
+/// joined receive invisible before the printer could preserve its guard.
 ///
-/// A **joined** consume — `for (@x <- a & @y <- b) { … }`, one receipt over two
-/// channels — never reaches the storage report at all, guard or no guard.
-///
-/// # The mechanism, and why the guard repair cannot touch it
-///
-/// `RhoRuntimeImpl::get_hot_changes` is `space.to_map()`, and
-/// `InMemHotStore::to_map` (`rspace++/src/rspace/hot_store.rs`) builds its
-/// result by iterating the **data** map, whose keys are single channels, and
-/// looking each one up in the continuation map:
-///
-/// ```text
-///   for (k, v) in data { row = Row { data: v, wks: all_continuations[k] } }
-/// ```
-///
-/// A single-channel consume survives that because the consume attempt itself
-/// calls `get_data(channel)`, which inserts an entry — possibly an *empty* one —
-/// into the data map, so the channel is a key and its continuation is found.
-/// A joined consume is keyed by the **two-element vector** `[a, b]`; no
-/// single-channel data key can ever match it, so it is dropped before any
-/// printing happens. The loss is upstream of `to_receives` and upstream of
-/// `PrettyPrinter`, in a crate this change does not touch.
-///
-/// # Why pin it rather than fix it or stay silent
-///
-/// Fixing it changes what `get_hot_changes` returns for **every** caller — the
-/// REPL, the CLI, and the FFI at `rholang/src/lib.rs` — which is a different
-/// change with a different blast radius. Staying silent is worse: the guard
-/// repair is easily mistaken for "guards now show up in the report", and for a
-/// joined receive that is false for a reason that has nothing to do with
-/// guards. This is the discipline `b98fa20a` used on the `match` target: make
-/// the wrong behaviour a **pinned fact** so it is a decision rather than an
-/// accident, and so the eventual repair has something to go red against.
-///
-/// The comparison against the **unguarded** twin is what makes the attribution
-/// exact: both are equally invisible, so the guard is not what is being lost.
+/// The guarded and unguarded fixtures below exercise both halves of the repair:
+/// both joins must be visible, and only the guarded one may render `where`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_joined_consume_never_reaches_the_storage_report_and_that_is_pinned() {
+async fn joined_consumes_reach_the_storage_report_with_their_guards() {
     with_runtime("storage-printer-joined-", |mut runtime| async move {
         let guarded = r#"for (@x <- @"gleft" & @y <- @"gright" where x + y > 10) { @"out"!(x) }"#;
         let report = rest_and_report(&mut runtime, guarded).await;
+
+        let guards = resting_guards(&runtime).await;
+        assert_eq!(
+            guards.len(),
+            1,
+            "the joined fixture must retain exactly one live guard; found {guards:?}"
+        );
         for channel in [r#""gleft""#, r#""gright""#] {
             assert!(
-                !mentions_channel(&report, channel),
-                "a joined consume reached the storage report on {channel}. That would be an \
-                 IMPROVEMENT over the pinned behaviour — `to_map` keys continuations by the \
-                 single channels of the data map — but it is not what this test records, so \
-                 the pin and its explanation are now stale.\nREPORT:\n{report}"
+                mentions_channel(&report, channel),
+                "the joined receive lost {channel} before reaching the report.\nREPORT:\n{report}"
             );
         }
+
+        let (header, body) = receive_lines(&report, r#"@{"gleft"}"#);
+        let variable = variable_the_body_sends(&body);
+        assert!(
+            header.contains(r#"@{"gright"}"#),
+            "the receive header must contain both join channels.\nHEADER:\n{header}"
+        );
+        assert!(
+            header.contains(&format!(" where {variable} + ")) && header.contains(" > 10 "),
+            "the joined receive must render its guard in the body's environment.\n\
+             HEADER: {header:?}\nBODY: {body:?}\nREPORT:\n{report}"
+        );
     })
     .await;
 
     with_runtime("storage-printer-joined-plain-", |mut runtime| async move {
-        // The attribution: identical term, no guard, equally invisible. The
-        // loss is the JOIN, not the `where`.
         let unguarded = r#"for (@x <- @"pleft" & @y <- @"pright") { @"out"!(x) }"#;
         let report = rest_and_report(&mut runtime, unguarded).await;
         for channel in [r#""pleft""#, r#""pright""#] {
             assert!(
-                !mentions_channel(&report, channel),
-                "an UNGUARDED joined consume reached the report while the guarded one did \
-                 not, so the two are not lost for the same reason and the attribution above \
-                 is wrong.\nREPORT:\n{report}"
+                mentions_channel(&report, channel),
+                "the unguarded joined receive lost {channel}.\nREPORT:\n{report}"
             );
         }
+        assert!(
+            !renders_a_where_clause(&report),
+            "an unguarded join grew a `where` clause.\nREPORT:\n{report}"
+        );
     })
     .await;
 }
@@ -395,8 +381,8 @@ async fn a_resting_send_is_unaffected() {
 // ★ THE CONTROLS' OWN NON-VACUITY — each comparator shown able to REJECT
 // ===========================================================================
 
-/// Three of the assertions above are **negative** (`!renders_a_where_clause`,
-/// `!mentions_channel`) or **equalities against a computed expectation**. Each is
+/// Assertions above include **negative** `!renders_a_where_clause` predicates,
+/// channel-presence predicates, and equalities against a computed expectation. Each is
 /// worth exactly as much as its comparator's ability to fire, and none of them
 /// fired during this change — they passed before the repair and after it, which
 /// is what makes them controls and also what makes them unfalsified.
@@ -482,14 +468,13 @@ fn the_controls_can_go_red() {
         );
     }
 
-    // ── The joined-consume pin's comparator: `mentions_channel` ─────────────
-    // The pin asserts a channel is ABSENT. That is vacuous unless the predicate
-    // can see a channel that is present, so both directions are required.
+    // ── The joined-consume comparator: `mentions_channel` ─────────────
+    // Both directions are required: a present channel must be found, and an
+    // absent channel must not be invented.
     let single_channel_report = "for( @{k2} <- @{\"plain\"} ) {\n  \"out\"!(l0)\n}";
     assert!(
         mentions_channel(single_channel_report, r#""plain""#),
-        "`mentions_channel` cannot find a channel that IS rendered, so the joined-consume \
-         pin asserts nothing"
+        "`mentions_channel` cannot find a channel that is rendered"
     );
     assert!(
         !mentions_channel(single_channel_report, r#""gleft""#),

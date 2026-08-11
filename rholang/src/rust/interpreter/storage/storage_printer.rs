@@ -42,17 +42,18 @@ pub async fn pretty_print(runtime: &RhoRuntimeImpl) -> String {
     }
 }
 
-/// ★ The resting terms, **with their reasons** — the companion to
-/// [`pretty_print_unmatched_sends`], which renders the same terms and cannot say
-/// why any of them is stuck.
+/// ★ The resting terms, **with their reasons** — the analysis half used by
+/// [`pretty_print_unmatched_sends_with_reasons`].
 ///
-/// # Why this is a NEW function and not a change to the two above
+/// # Why the analysis remains a separate renderer
 ///
 /// `pretty_print_unmatched_sends` renders a resting send as Rholang source, and
 /// that string is a gRPC response body (`node/src/rust/api/repl_grpc_service.rs`).
-/// Appending a diagnosis to it would change an API's payload for every existing
-/// caller. Silence is a defect in the *surface*, not in that function's contract,
-/// so the reason gets its own surface.
+/// Its contract remains unchanged for callers that request only that rendering.
+/// The CLI and gRPC flag adopt the explicit combined renderer below, which keeps
+/// the original terms as its first section and appends this analysis as its
+/// second section. Callers can therefore choose either component without a
+/// second snapshot read.
 ///
 /// # ⚠ What it is safe to call this from
 ///
@@ -70,7 +71,27 @@ pub async fn pretty_print_rest_diagnosis(runtime: &RhoRuntimeImpl) -> String {
 
 pub async fn pretty_print_unmatched_sends(runtime: &RhoRuntimeImpl) -> String {
     let mapped = runtime.get_hot_changes().await;
+    render_unmatched_sends(
+        &mapped,
+        "The space is empty. Note that top level terms that are not sends or receives are discarded.",
+    )
+}
 
+/// Preserve the `print_unmatched_sends_only` contract while adding the reason
+/// each retained term rests.
+///
+/// One read-only snapshot feeds both sections. Existing callers still receive
+/// the original Rholang rendering of unmatched sends; the appended diagnostic
+/// explains sends, continuation-only rows, and joins without a second store
+/// read or a history fill.
+pub async fn pretty_print_unmatched_sends_with_reasons(runtime: &RhoRuntimeImpl) -> String {
+    let snapshot = runtime.get_hot_changes().await;
+    let sends = render_unmatched_sends(&snapshot, "No unmatched sends.");
+    let diagnosis = rest_diagnosis::report(&rest_diagnosis::diagnose(&snapshot));
+    format!("{sends}\n\nResting diagnostics:\n{diagnosis}")
+}
+
+fn render_unmatched_sends(mapped: &rest_diagnosis::StoreSnapshot, empty: &str) -> String {
     let pars: Vec<Par> = mapped
         .iter()
         .filter_map(|(channels, row)| {
@@ -83,7 +104,7 @@ pub async fn pretty_print_unmatched_sends(runtime: &RhoRuntimeImpl) -> String {
         .collect();
 
     if pars.is_empty() {
-        "The space is empty. Note that top level terms that are not sends or receives are discarded.".to_string()
+        empty.to_string()
     } else {
         let combined_par = pars
             .into_iter()

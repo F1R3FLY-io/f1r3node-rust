@@ -65,7 +65,7 @@ impl ReplGrpcServiceImpl {
             .await?;
 
         let pretty_storage = if print_unmatched_sends_only {
-            storage_printer::pretty_print_unmatched_sends(&self.runtime).await
+            storage_printer::pretty_print_unmatched_sends_with_reasons(&self.runtime).await
         } else {
             storage_printer::pretty_print(&self.runtime).await
         };
@@ -188,5 +188,6 @@ mod tests {
 
         let response = result.unwrap().into_inner();
         assert!(response.output.contains("Storage Contents"));
+        assert!(response.output.contains("Resting diagnostics:"));
     }
 }

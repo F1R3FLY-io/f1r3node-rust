@@ -746,6 +746,46 @@ proptest! {
   }
 }
 
+#[test]
+fn to_map_returns_the_union_of_data_and_continuation_key_domains() {
+    let (_, hot_store) = fixture();
+    let data_channel = "data-only".to_string();
+    let waiting_channels = vec!["waiting-only".to_string()];
+    let joined_channels = vec!["left".to_string(), "right".to_string()];
+    let datum = Datum::<String>::default();
+    let continuation = Continuation::default();
+
+    hot_store.put_datum(&data_channel, datum.clone());
+    hot_store.put_continuation(&waiting_channels, continuation.clone());
+    hot_store.put_continuation(&joined_channels, continuation.clone());
+    hot_store.install_continuation(&joined_channels, continuation);
+
+    let mapped = hot_store.to_map();
+    assert_eq!(mapped.len(), 3, "one row per distinct key domain member");
+
+    let data_row = mapped
+        .get(std::slice::from_ref(&data_channel))
+        .expect("a data-only channel must be present");
+    assert_eq!(data_row.data, vec![datum]);
+    assert!(data_row.wks.is_empty());
+
+    let waiting_row = mapped
+        .get(&waiting_channels)
+        .expect("a continuation-only channel must be present");
+    assert!(waiting_row.data.is_empty());
+    assert_eq!(waiting_row.wks.len(), 1);
+
+    let joined_row = mapped
+        .get(&joined_channels)
+        .expect("a multi-channel continuation key must be present");
+    assert!(joined_row.data.is_empty());
+    assert_eq!(
+        joined_row.wks.len(),
+        2,
+        "ordinary and installed continuations at the same join key must merge"
+    );
+}
+
 fn check_removal_works_or_fails_on_error<T>(
     res: Option<()>,
     actual: Vec<T>,

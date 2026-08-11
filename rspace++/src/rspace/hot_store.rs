@@ -652,43 +652,43 @@ where
 
     fn to_map(&self) -> HashMap<Vec<C>, Row<P, A, K>> {
         let state = self.state.read().expect("hot store state read lock");
-        let data = state
-            .data
-            .iter()
-            .map(|entry| {
-                let (k, v) = entry;
-                (vec![k.clone()], v.clone())
-            })
-            .collect::<HashMap<_, _>>();
+        let mut map = HashMap::with_capacity(
+            state.data.len() + state.continuations.len() + state.installed_continuations.len(),
+        );
 
-        let all_continuations = {
-            let mut all = state
-                .continuations
-                .iter()
-                .map(|entry| {
-                    let (k, v) = entry;
-                    (k.clone(), v.clone())
+        // Data and continuations use different key shapes: a datum is indexed
+        // by one channel, while a joined continuation is indexed by its full
+        // channel vector. Build the union of those domains. Iterating only the
+        // data keys silently dropped continuation-only rows and every join.
+        for (channel, data) in &state.data {
+            if !data.is_empty() {
+                map.insert(vec![channel.clone()], Row {
+                    data: data.clone(),
+                    wks: Vec::new(),
+                });
+            }
+        }
+
+        for (channels, continuations) in &state.continuations {
+            if !continuations.is_empty() {
+                map.entry(channels.clone())
+                    .or_insert_with(|| Row {
+                        data: Vec::new(),
+                        wks: Vec::new(),
+                    })
+                    .wks
+                    .extend(continuations.iter().cloned());
+            }
+        }
+
+        for (channels, continuation) in &state.installed_continuations {
+            map.entry(channels.clone())
+                .or_insert_with(|| Row {
+                    data: Vec::new(),
+                    wks: Vec::new(),
                 })
-                .collect::<HashMap<_, _>>();
-            for (k, v) in state.installed_continuations.iter().map(|entry| {
-                let (k, v) = entry;
-                (k.clone(), v.clone())
-            }) {
-                all.entry(k).or_insert_with(Vec::new).push(v);
-            }
-            all
-        };
-
-        let mut map = HashMap::new();
-
-        for (k, v) in data.into_iter() {
-            let row = Row {
-                data: v,
-                wks: all_continuations.get(&k).cloned().unwrap_or_else(Vec::new),
-            };
-            if !(row.data.is_empty() && row.wks.is_empty()) {
-                map.insert(k, row);
-            }
+                .wks
+                .push(continuation.clone());
         }
 
         map

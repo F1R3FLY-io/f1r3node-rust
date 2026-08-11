@@ -253,6 +253,67 @@ async fn data_of_different_arities_are_separate_questions() {
     .await;
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// ★ THE RECEIVE SIDE — continuation-only and joined rows remain observable
+// ───────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_continuation_with_no_data_says_it_is_waiting() {
+    with_runtime("rest-diagnosis-waiting-", |mut runtime| async move {
+        let sites = rest_of(&mut runtime, r#"for (@a <- @"waiting") { Nil }"#).await;
+        assert_eq!(
+            only(&sites, "a receive with no send"),
+            RestReason::WaitingForData {
+                continuation_count: 1,
+            }
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_join_with_some_but_not_all_channels_supplied_is_partial() {
+    with_runtime("rest-diagnosis-partial-join-", |mut runtime| async move {
+        let sites = rest_of(
+            &mut runtime,
+            r#"for (@x <- @"left" & @y <- @"right") { Nil } | @"left"!(1)"#,
+        )
+        .await;
+        assert_eq!(
+            only(&sites, "a two-channel join with data only on its left leg"),
+            RestReason::PartiallySatisfiedJoin {
+                channel_positions_with_data: 1,
+                total_channels: 2,
+                continuation_count: 1,
+            },
+            "the datum on the left participates in the join and must not also be called unread"
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fully_supplied_join_that_refuses_its_candidates_is_distinct_from_a_partial_join() {
+    with_runtime("rest-diagnosis-refused-join-", |mut runtime| async move {
+        let sites = rest_of(
+            &mut runtime,
+            r#"for (@42 <- @"left" & @43 <- @"right") { Nil } | @"left"!(1) | @"right"!(2)"#,
+        )
+        .await;
+        assert_eq!(
+            only(
+                &sites,
+                "a fully supplied two-channel join whose literal patterns refuse"
+            ),
+            RestReason::JoinCandidatesRefused {
+                total_channels: 2,
+                continuation_count: 1,
+            }
+        );
+    })
+    .await;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ★ THE FLOORS — a reason that is always "arity" is worthless
 // ─────────────────────────────────────────────────────────────────────────────
@@ -332,8 +393,8 @@ fn fixed_seed() -> Blake2b512Random {
 }
 
 /// Evaluate [`RESTING_SOURCE`] on a fresh runtime and return the post-state root.
-/// When `ask`, interrogate the diagnosis first — through **both** entry points,
-/// the pure analysis and the printer surface that emits through `tracing`.
+/// When `ask`, interrogate the diagnosis first — through the pure analysis, the
+/// reason-only renderer, and the combined renderer adopted by the CLI and gRPC.
 async fn root_after(prefix: &str, ask: bool) -> Blake2b256Hash {
     with_runtime(prefix, |mut runtime| async move {
         let result = runtime
@@ -364,6 +425,15 @@ async fn root_after(prefix: &str, ask: bool) -> Blake2b256Hash {
                 printed.contains("ARITY MISMATCH"),
                 "the printer surface must have produced the diagnosis: {printed}"
             );
+            let combined =
+                storage_printer::pretty_print_unmatched_sends_with_reasons(&runtime).await;
+            for expected in ["\"ch\"!(1, 2)", "Resting diagnostics:", "ARITY MISMATCH"] {
+                assert!(
+                    combined.contains(expected),
+                    "the adopted combined surface must preserve the send and append its reason; \
+                     missing {expected:?} from:\n{combined}"
+                );
+            }
         }
 
         runtime.create_checkpoint().await.root
