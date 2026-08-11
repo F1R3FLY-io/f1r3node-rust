@@ -17,6 +17,10 @@
        darker step that passes all six palette checks (validated: CVD worst
        adjacent ΔE 14.8, contrast ≥ 3:1 on #f1f0ee). */
     --grid: #e4e2dd; --series-1: #2a78d6; --series-2: #008300; --series-3: #d5588e;
+    /* Neutral fill for 0% heatmap cells — must match zero_neutral in
+       scripts/soak-charts (the SVGs bake it in; this var only paints the
+       legend swatch beside them). */
+    --heat-zero: #e7e5e0;
     --good: #008300; --serious: #c81e1e; --serious-bg: #fdeaea;
     /* Sheet tint strength: the same perceptual whisper needs a stronger mix
        on a dark surface than a light one. */
@@ -27,6 +31,7 @@
       --surface-1: #1a1a19; --surface-2: #242423;
       --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #8a887f;
       --grid: #33322f; --series-1: #3987e5; --series-2: #008300; --series-3: #d55181;
+      --heat-zero: #33322f;
       --good: #33a133; --serious: #f05252; --serious-bg: #3a1f1f;
       --tint: 14%;
     }
@@ -35,6 +40,7 @@
     --surface-1: #1a1a19; --surface-2: #242423;
     --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #8a887f;
     --grid: #33322f; --series-1: #3987e5; --series-2: #008300; --series-3: #d55181;
+    --heat-zero: #33322f;
     --good: #33a133; --serious: #f05252; --serious-bg: #3a1f1f;
     --tint: 14%;
   }
@@ -183,6 +189,21 @@
   .legend { display: flex; gap: 1rem; flex-wrap: wrap; margin: .35rem 0 .5rem; color: var(--text-secondary); }
   .legend span { display: inline-flex; align-items: center; gap: .35rem; }
   .swatch { width: 12px; height: 3px; border-radius: 2px; display: inline-block; }
+  /* Heatmap legend swatches are cells, not lines. The ramp gradient mirrors
+     the ColorBrewer Reds scale the SVGs are rendered with (scripts/soak-charts);
+     zero cells use --heat-zero, matching the SVG's baked-in neutral. */
+  .swatch-cell { height: 12px; border-radius: 3px; }
+  .heat-ramp { background: linear-gradient(90deg, #fff5f0, #fb6a4a, #67000d); }
+  /* The SVG pair bakes theme colors at render time; show the variant matching
+     the active theme with the same three-state logic as the CSS vars above. */
+  .heat { display: block; width: 100%; height: auto; }
+  .heat-dark { display: none; }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .heat-light { display: none; }
+    :root:where(:not([data-theme="light"])) .heat-dark { display: block; }
+  }
+  :root[data-theme="dark"] .heat-light { display: none; }
+  :root[data-theme="dark"] .heat-dark { display: block; }
   svg { display: block; width: 100%; height: auto; }
   .gridline { stroke: var(--grid); stroke-width: 1; }
   .axis-label { fill: var(--text-muted); font-size: 11px; }
@@ -269,12 +290,6 @@
 
   const S = ["var(--series-1)", "var(--series-2)", "var(--series-3)"];
   const CHARTS = [
-    { title: "Failure rate", unit: "failures / iteration", fmt: v => (v * 100).toFixed(1) + "%",
-      series: [
-        { name: "total", path: ["passive", "failure_rate"], c: 0 },
-        { name: "docker", path: ["passive", "providers", "docker"], deriv: p => p && p.iterations > 0 ? p.failures / p.iterations : null, c: 1 },
-        { name: "subprocess", path: ["passive", "providers", "subprocess"], deriv: p => p && p.iterations > 0 ? p.failures / p.iterations : null, c: 2 },
-      ] },
     { title: "Throughput", unit: "iterations / hour", fmt: v => v.toFixed(2),
       series: [
         { name: "total", path: ["passive", "iterations_per_hour"], c: 0 },
@@ -454,6 +469,44 @@
       f.map(s => "<li>" + esc(s) + "</li>").join("") + "</ul></div>";
   }
 
+  // The failure map replaces the failure-rate line chart: for sparse failure
+  // data a heatmap carries strictly more — rate (color), volume (cell text),
+  // and category, per day. The cells are pre-rendered SVGs published by
+  // scripts/soak-charts (one per theme; colors are baked at render time, so the
+  // page swaps variants with the same theme logic as everything else). The
+  // legend is built here because the SVG suppresses its own: a ramp labelled
+  // with the series' real min/max nonzero rates, a neutral swatch for 0%, and
+  // the absence rule — a missing cell means that category did not run.
+  function renderHeatmap(container, seriesKey, history) {
+    const rates = [];
+    for (const h of history) {
+      const p = h.passive || {};
+      if (typeof p.failure_rate === "number" && p.failure_rate > 0) rates.push(p.failure_rate);
+      for (const k of ["docker", "subprocess"]) {
+        const pr = p.providers && p.providers[k];
+        if (pr && pr.iterations > 0 && pr.failures > 0) rates.push(pr.failures / pr.iterations);
+      }
+    }
+    const pct = v => (v * 100).toFixed(v < 0.01 ? 2 : 1) + "%";
+    const range = rates.length
+      ? `${pct(Math.min(...rates))} – ${pct(Math.max(...rates))}`
+      : "no failures recorded";
+    const fig = document.createElement("figure");
+    fig.className = "heatmap-figure";
+    fig.innerHTML =
+      `<figcaption>Failure map <span class="unit">failures / iteration</span></figcaption>` +
+      `<div class="legend"><span><i class="swatch swatch-cell" style="background:var(--heat-zero)"></i>0%</span>` +
+      `<span><i class="swatch swatch-cell heat-ramp"></i>${esc(range)}</span>` +
+      `<span class="unit">blank = did not run</span></div>` +
+      `<img class="heat heat-light" alt="Failure heatmap: rate by category and date" ` +
+      `src="data/failure-heatmap-${esc(seriesKey)}-light.svg" ` +
+      `onerror="this.closest('figure').style.display='none'">` +
+      `<img class="heat heat-dark" alt="Failure heatmap: rate by category and date" ` +
+      `src="data/failure-heatmap-${esc(seriesKey)}-dark.svg" ` +
+      `onerror="this.closest('figure').style.display='none'">`;
+    container.appendChild(fig);
+  }
+
   function renderCharts(container, history) {
     const dates = history.map(h => ((h.run || {}).date || "").slice(0, 10));
     const W = 360, H = 180, PX = 44, PY = 18;
@@ -615,6 +668,7 @@
         `<p class="empty">${def.empty}</p>`;
       continue;
     }
+    renderHeatmap(document.getElementById("charts-" + def.key), def.key, history);
     renderCharts(document.getElementById("charts-" + def.key), history);
     renderTable(document.getElementById("table-" + def.key), history);
   }
