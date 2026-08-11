@@ -380,7 +380,7 @@ fn hex_rgba(hex: &str, alpha: f64) -> String {
 
 fn base_theme(t: charton::theme::Theme, theme: &Theme) -> charton::theme::Theme {
     t.with_show_legend(false)
-        .with_x_tick_label_angle(45.0)
+        .with_x_tick_label_angle(-45.0)
         .with_background_color(theme.surface)
         .with_label_color(theme.axis_ink)
         .with_tick_label_color(theme.axis_ink)
@@ -694,7 +694,7 @@ fn build_cpu_facet(
     // the pinned y domain alone.
     if n_dates >= 2 {
         let rule_theme = |t: charton::theme::Theme, th: &Theme| {
-            base_theme(t, th).with_x_tick_label_angle(if dense { 45.0 } else { 0.0 })
+            base_theme(t, th).with_x_tick_label_angle(if dense { -45.0 } else { 0.0 })
         };
         if dense {
             let ds = Dataset::new()
@@ -795,7 +795,9 @@ fn build_cpu_facet(
 
     let mut iter = layers.into_iter();
     let first = iter.next().ok_or("no layers to render")?;
-    Ok(iter.fold(first, |acc, layer| acc.and(layer)))
+    Ok(iter
+        .fold(first, |acc, layer| acc.and(layer))
+        .with_x_label(""))
 }
 
 /// Stack per-core facet SVGs vertically into one document. Each facet's clip
@@ -976,7 +978,9 @@ fn save_layers(
 ) -> Result<(), Box<dyn Error>> {
     let mut iter = layers.into_iter();
     let first = iter.next().ok_or("no layers to render")?;
-    let layered = iter.fold(first, |acc, layer| acc.and(layer));
+    let layered = iter
+        .fold(first, |acc, layer| acc.and(layer))
+        .with_x_label("");
     layered.save(out)?;
     retheme_svg(out, theme, neutralize_zero)?;
     Ok(())

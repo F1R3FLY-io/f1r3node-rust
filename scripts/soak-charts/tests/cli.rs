@@ -88,6 +88,8 @@ fn zero_failure_cells_are_neutral_and_missing_providers_stay_absent() {
     assert!(dark.contains("#33322f"));
     assert!(light.contains("0&#x2F;10"));
     assert!(light.contains("0&#x2F;5"));
+    assert!(light.contains(">08-10</text>"));
+    assert!(!light.contains(">date</text>"));
     assert!(!light.contains("subprocess"));
     assert_eq!(manifest(&test_dir, "weekend"), vec![
         "failure-heatmap-weekend-light.svg",
@@ -125,6 +127,15 @@ fn manifest_tracks_rendered_panels_and_omits_all_zero_alert_panels() {
     assert!(files.contains(&"failure-heatmap-daily-dark.svg".to_string()));
     assert!(files.contains(&"chart-throughput-daily-light.svg".to_string()));
     assert!(files.contains(&"chart-throughput-daily-dark.svg".to_string()));
+    let throughput = fs::read_to_string(
+        test_dir
+            .path()
+            .join("output")
+            .join("chart-throughput-daily-light.svg"),
+    )
+    .expect("throughput chart should exist");
+    assert!(throughput.contains(">08-10</text>"));
+    assert!(!throughput.contains(">date</text>"));
     assert!(!files.iter().any(|file| file.contains("too-far-ahead")));
     assert!(files
         .iter()
@@ -165,6 +176,38 @@ fn unsupported_series_is_rejected_before_output_is_created() {
     assert!(String::from_utf8_lossy(&output.stderr)
         .contains("--series must be weekend or daily, got monthly"));
     assert!(!test_dir.path().join("output").exists());
+}
+
+#[test]
+fn dense_date_labels_rotate_below_the_x_axis() {
+    let test_dir = TestDir::new("dense-dates");
+    let output = run_renderer(
+        &test_dir,
+        r#"[
+          { "run": { "date": "2026-08-01T00:00:00Z" }, "passive": { "iterations_per_hour": 10 } },
+          { "run": { "date": "2026-08-02T00:00:00Z" }, "passive": { "iterations_per_hour": 11 } },
+          { "run": { "date": "2026-08-03T00:00:00Z" }, "passive": { "iterations_per_hour": 12 } },
+          { "run": { "date": "2026-08-04T00:00:00Z" }, "passive": { "iterations_per_hour": 13 } }
+        ]"#,
+        "weekend",
+    );
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let light = fs::read_to_string(
+        test_dir
+            .path()
+            .join("output")
+            .join("chart-throughput-weekend-light.svg"),
+    )
+    .expect("dense throughput chart should exist");
+
+    assert!(light.contains("transform=\"rotate(-45"));
+    assert!(!light.contains("transform=\"rotate(45"));
 }
 
 #[test]
@@ -210,6 +253,9 @@ fn per_core_cpu_history_renders_stacked_facets_with_saturation_line() {
     assert!(light.contains(">core-0</text>"));
     assert!(light.contains(">core-1</text>"));
     assert!(light.contains("rgba(200,30,30"));
+    assert!(light.contains(">08-09</text>"));
+    assert!(light.contains(">08-10</text>"));
+    assert!(!light.contains(">date</text>"));
     // Clip-path ids must be unique per facet or clipping breaks silently.
     assert!(!light.contains("plot-clip-area"));
     assert!(light.contains("plot-clip-0"));
