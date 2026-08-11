@@ -2225,6 +2225,24 @@ tripwires — a revalidation of the registered representation and bytes, not a f
 The 2026-08-04 proof refinement separately passed Rocq/Z3/TLC, the formal manifest 5/5, EPM1
 15/15, and codec 7/7 in zero-swap cgroups. It changes no byte, value, verdict, accepted input,
 post-state, or metering rule and therefore does not create another register entry.
+
+**CBR-044 normalized blessed-term pin closure (2026-08-11; pgmcp #5304).** Raw blessed-source
+pins and normalized protobuf-term pins are independent controls. The pin table had retained ten
+pre-transition normalized coordinates after CBR-041 (`1b576c90`) replaced non-ground EPathMap entry
+lists with trie bytes and CBR-044 (`26876b65`) introduced the homogeneous EPM1 snapshot. The ten
+source files had not changed; their raw-source pins remained green while their normalized terms
+legitimately moved with the registered wire representation. Commit `19b9cef4` re-derives those ten
+coordinates from the current encoder and corrects the diagnostic that had treated every normalized
+length change as proof of a source edit. Commit `049ab230` restores the owner-ruled pre-campaign
+MakeMint source while retaining its current EPM1 normalized coordinate
+`b31e21b6…04b0d`/7,367 beside the restored raw coordinate `7ac55f98…a5d3`/11,187.
+
+The complete raw/normalized blessed-pin module passes 5/5; the independent protobuf encoder,
+depth-unbounded protobuf, EPM1 snapshot, and serializer-byte matrix passes 41/41; and four separate
+processes reproduce the pinned default genesis post-state `28ca4bcf…925ca` in 14.67–14.86 seconds
+under a 10 GiB zero-swap cap. This is delayed pin-table and evidence closure for the already-landed
+CBR-041/044 byte transition, not another byte movement or a new register entry.
+
 **This entry also closes the formerly-open wire-asymmetry hazard CBR-028**: the generated decode
 PDAs remove the read ceiling, making writer and reader symmetric; the retired row is
 [Appendix B.1](#b1-retired-register-entries).
