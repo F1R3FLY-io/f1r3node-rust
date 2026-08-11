@@ -61,6 +61,7 @@ pub(crate) fn admit_deploy<T: TransportLayer + Send + Sync>(
     deploy: Signed<DeployData>,
 ) -> Result<Either<DeployError, DeployId>, CasperError> {
     let deploy_id = deploy.sig.to_vec();
+    // This fast path avoids parsing known deploys; reserve_deploy performs the authoritative check.
     if deploy_is_known(this, &deploy_id)? {
         return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
     }
@@ -104,14 +105,42 @@ fn deploy_is_known<T: TransportLayer + Send + Sync>(
     if this.deploy_storage.lock().contains_sig(deploy_id)? {
         return Ok(true);
     }
-    if this.block_dag_storage.contains_deploy(deploy_id)? {
+    if this
+        .block_dag_storage
+        .lookup_by_deploy_id(deploy_id)?
+        .is_some()
+    {
         return Ok(true);
     }
     this.rejected_deploy_buffer
         .lock()
-        .map_err(|e| CasperError::LockError(e.to_string()))?
+        .map_err(|error| CasperError::LockError(error.to_string()))?
         .contains_sig(deploy_id)
         .map_err(Into::into)
+}
+
+fn reserve_deploy<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+    deploy: Signed<DeployData>,
+) -> Result<bool, CasperError> {
+    let deploy_id = deploy.sig.to_vec();
+    if this
+        .block_dag_storage
+        .lookup_by_deploy_id(&deploy_id)?
+        .is_some()
+    {
+        return Ok(false);
+    }
+
+    let mut deploy_storage = this.deploy_storage.lock();
+    let rejected_deploys = this
+        .rejected_deploy_buffer
+        .lock()
+        .map_err(|error| CasperError::LockError(error.to_string()))?;
+    if rejected_deploys.contains_sig(&deploy_id)? {
+        return Ok(false);
+    }
+    deploy_storage.add_if_absent(deploy).map_err(Into::into)
 }
 
 pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
@@ -167,7 +196,7 @@ pub(crate) fn add_deploy<T: TransportLayer + Send + Sync>(
     deploy: Signed<DeployData>,
 ) -> Result<Either<DeployError, DeployId>, CasperError> {
     let deploy_id = deploy.sig.to_vec();
-    if !this.deploy_storage.lock().add_if_absent(deploy.clone())? {
+    if !reserve_deploy(this, deploy.clone())? {
         return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
     }
 
