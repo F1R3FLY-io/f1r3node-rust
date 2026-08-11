@@ -21,10 +21,11 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
 
 // RFC 9113 §6.5.2: SETTINGS_MAX_FRAME_SIZE must lie in [2^14, 2^24 - 1]. The
 // configured gRPC message size doubles as the frame-size hint here, but the two
-// are independent limits — the 16 MiB message-size default (2^24) is one past
-// the frame cap, and h2 rejects out-of-range values (issue #20). Clamp the
-// frame size only; the message size itself is enforced unclamped by the
-// per-service codecs.
+// are independent limits — a binary 16 MiB message size (2^24, the issue #20
+// value) is one past the frame cap, and h2 asserts on out-of-range values,
+// resetting every connection. The shipped default escapes only because
+// defaults.conf's "16M" parses as SI 16,000,000. Clamp the frame size only;
+// the message size itself is enforced unclamped by the per-service codecs.
 const HTTP2_FRAME_SIZE_MIN: u32 = 1 << 14;
 const HTTP2_FRAME_SIZE_MAX: u32 = (1 << 24) - 1;
 
@@ -187,14 +188,15 @@ mod tests {
         HTTP2_FRAME_SIZE_MIN,
     };
 
-    // The 16 MiB grpc_max_recv_message_size default is exactly one past the
-    // HTTP/2 frame-size cap (issue #20).
-    const DEFAULT_MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
+    // Binary 16 MiB — the issue #20 configuration, exactly one past the HTTP/2
+    // frame-size cap. NOT the shipped default: defaults.conf's "16M" parses as
+    // SI 16,000,000, which sits just under the cap.
+    const ISSUE_20_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 
     #[test]
     fn frame_size_is_clamped_to_the_http2_range() {
         assert_eq!(
-            http2_frame_size(DEFAULT_MAX_MESSAGE_SIZE),
+            http2_frame_size(ISSUE_20_MESSAGE_SIZE),
             HTTP2_FRAME_SIZE_MAX
         );
         assert_eq!(http2_frame_size(usize::MAX), HTTP2_FRAME_SIZE_MAX);
@@ -231,14 +233,15 @@ mod tests {
         })
     }
 
-    /// The 16 MiB message-size default is one past the HTTP/2 frame-size cap
-    /// (RFC 9113 §6.5.2). Passed through unclamped, h2 asserts on the invalid
+    /// A binary 16 MiB message size — the issue #20 configuration — is one past
+    /// the HTTP/2 frame-size cap (RFC 9113 §6.5.2). Passed through unclamped,
+    /// h2 asserts on the invalid
     /// SETTINGS value (`DEFAULT_MAX_FRAME_SIZE <= val && val <= MAX_MAX_FRAME_SIZE`,
     /// h2 frame/settings.rs) — panicking the serving task and resetting every
     /// inbound connection (issue #20). The clamp must both keep the server
     /// alive and make it advertise the capped value.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn default_message_size_advertises_clamped_frame_size() {
+    async fn issue_20_message_size_advertises_clamped_frame_size() {
         let incoming =
             TcpIncoming::bind("127.0.0.1:0".parse().unwrap()).expect("bind ephemeral port");
         let addr = incoming.local_addr().expect("resolve bound address");
@@ -249,7 +252,7 @@ mod tests {
             .expect("build reflection service");
 
         let router = configure_server(
-            DEFAULT_MAX_MESSAGE_SIZE,
+            ISSUE_20_MESSAGE_SIZE,
             Duration::from_secs(10),
             Duration::from_secs(5),
             Duration::from_secs(10),
