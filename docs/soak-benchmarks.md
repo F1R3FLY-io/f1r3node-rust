@@ -341,22 +341,26 @@ oci ons subscription delete --subscription-id <subscription-ocid>
   segment mid-loop before any state or rollup was written.
 - **The harness memory guards are sized to the host, and deliberately fire
   before the kernel does.** The harness default ceiling (5000MB) is
-  laptop-scale, while the 6-node shard legitimately peaks ~10GB under
-  `test_load` on the 32GB soak VM, so the soak passes `--rss-ceiling-mb`
-  computed as `MemTotal − 12GB` (~20GB there) and `--host-free-floor-mb` as
-  `min(MemTotal/4, 6000)` (~6000 there; harness default 2000). The floor is
-  scaled rather than flat because a flat 6000 breaches on contact on a small
-  host, where the clamped 5000 ceiling still permits a 5GB shard.
-  The reserve is 12GB rather than the 8GB first tried
-  because 8GB permits a 24GB node working set, which puts the *kernel* OOM
-  killer ahead of the watchdog — the harness never breaches, the kernel picks a
-  victim by `oom_score`, and `Runner.Worker` is a plausible one. That produces a
-  runner that vanishes mid-step with no log and no failed step, which is
-  unattributable; a breach is not. Override with `SOAK_HOST_RESERVE_MB`,
-  `SOAK_RSS_CEILING_MB`, `SOAK_HOST_FREE_FLOOR_MB`; `0` disables a guard, which
-  is not recommended. The floor is enforced on subprocess iterations only —
-  docker iterations rely on the ceiling. Sustained RSS growth is policed
-  week-over-week by the regression gate, not by these limits.
+  laptop-scale, while the 6-node shard legitimately peaks 16.7–19.3GB under
+  `test_load` (measured 2026-08: CI runs 30906818259 / 31332864501, with
+  per-validator skew up to ~5GB on one node), so the workflow pins explicit
+  values sized to the 48GB soak VM: `SOAK_RSS_CEILING_MB=28672` (~1.5× the
+  measured envelope — never fires on legitimate load, catches a real leak
+  attributably) and `SOAK_HOST_FREE_FLOOR_MB=8192`. The sizing invariant,
+  learned twice in 2026-08 (PR #217 review, then run 31390673884):
+  `ceiling + ~7GB host overhead + floor ≤ MemTotal`, otherwise the free-RAM
+  floor fires before the RSS ceiling can, replacing the kill that names the
+  overweight component with one that only names host pressure. The floor is
+  enforced at two layers: pytest's `--host-free-floor-mb` (subprocess
+  iterations only) and the orchestrator host guardian in
+  `run-merge-recovery-soak.sh`, which watches host free RAM on EVERY
+  iteration, docker included. The 12GB derivation reserve (used when
+  `SOAK_RSS_CEILING_MB` is unset) exists to keep the kernel OOM killer —
+  whose victim vanishes mid-step with no log — behind the watchdog; explicit
+  values must preserve that property. Override with `SOAK_HOST_RESERVE_MB`,
+  `SOAK_RSS_CEILING_MB`, `SOAK_HOST_FREE_FLOOR_MB`; `0` disables a guard,
+  which is not recommended. Sustained RSS growth is policed week-over-week
+  by the regression gate, not by these limits.
 - **Soak runners are exempt from the CI reaper, with an expiry.**
   `ci-runner-reaper.yml` terminates `ci-eph-*` instances older than 2h, which
   would kill any healthy soak mid-run. The **soak job tags the instance it is

@@ -72,8 +72,31 @@ permissions:
 
 env:
   DOCKER_IMAGE_NAME: f1r3flyindustries/f1r3fly-rust
-  SOAK_RSS_CEILING_MB: "14336"
-  SOAK_HOST_FREE_FLOOR_MB: "12288"
+  # 2026-08-09: raised 14336 -> 20480 after the weekend-soak breaches (runs
+  # 31331480002 / 31332864501). Attribution before raising: local A/B of
+  # pre- vs post-merge master showed no node-code memory change, and the
+  # green-vs-failed harness pins carry an empty test_load diff — the 6-node
+  # shard's real envelope is 16.7-19.3GB (the last GREEN run already peaked
+  # 16693MB, over the old ceiling), so 14336 was below the workload, not a
+  # regression guard. SOAK_HOST_FREE_FLOOR_MB remains the host-thrash guard.
+  # 2026-08-10: 20480 -> 28672 with the 48GB soak VM (system-integration
+  # PR #99 raised AMD64_MEM_GB to 48; run 31390673884 proved 32GB cannot
+  # hold the envelope + any safe floor — the orchestrator host guardian
+  # killed at free 6524MB). Sizing invariant, learned twice (PR #217 review,
+  # then 31390673884): ceiling + ~7GB host overhead + floor <= MemTotal,
+  # else the floor fires before this attributable ceiling can. Here:
+  # 28672 + ~7168 + 8192 = ~44GB <= 48GB. 28672 is ~1.5x the measured
+  # envelope — silent on legitimate load, catches a real leak ~9GB before
+  # the floor or the kernel OOM killer get involved.
+  SOAK_RSS_CEILING_MB: "28672"
+  # 2026-08-10 (PR #217 review): lowered 12288 -> 8192 alongside the ceiling
+  # raise — on the then-32GB host, 20480 + 12288 = 32768 meant available RAM
+  # crossed the floor before total RSS could reach the ceiling, so the
+  # less-attributable floor kill fired below the measured 16.7-19.3GB
+  # workload envelope. On the 48GB host 8192 is a pure backstop with ~12GB
+  # of normal-operation clearance; both the pytest floor (subprocess
+  # iterations) and the orchestrator host guardian (every iteration) use it.
+  SOAK_HOST_FREE_FLOOR_MB: "8192"
   # THIRD pin site. The other two — .github/oci-validation.env and
   # _integration-pipeline.yml — are held identical by build_base's drift check;
   # this one is outside that check and rotted unnoticed as a result. It sat at
@@ -124,7 +147,13 @@ env:
   # by grep: main already contained the string __RUNNER_LABELS__, the cloud-init
   # template placeholder, long before the override existed. Grepping would have
   # said yes against a launcher that ignores the variable.
-  SYSTEM_INTEGRATION_REF: 62f752f48f895be598b25d1281768f66e577e126
+  #
+  # 2026-08-10: bumped to the PR #99 merge (main tip) — AMD64_MEM_GB=48
+  # fleet default (the 48GB soak VM this workflow's guard values are sized
+  # for) plus the RUNNER_MEM_GB_OVERRIDE launch knob. Verified by content
+  # at the SHA: state.env AMD64_MEM_GB=48, override present in
+  # launch-runner.sh.
+  SYSTEM_INTEGRATION_REF: a0c6fba626e4db8310180d0a90a213314424dd92
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
