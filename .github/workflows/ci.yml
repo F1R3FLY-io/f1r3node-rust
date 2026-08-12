@@ -109,6 +109,7 @@ jobs:
           env_file=.github/oci-validation.env
           oci_yml=.github/workflows/oci-validation.yml
           pipe_yml=.github/workflows/_integration-pipeline.yml
+          soak_yml=.github/workflows/merge-recovery-soak.yml
 
           # value of a `KEY=value` line in a dotenv file
           envval() { grep -E "^$1=" "$2" | head -1 | cut -d= -f2- | sed -E 's/[[:space:]]*$//'; }
@@ -128,6 +129,9 @@ jobs:
           check "SYSTEM_INTEGRATION_REF (oci-validation.env vs _integration-pipeline.yml)" \
             "$(envval SYSTEM_INTEGRATION_REF "$env_file")" \
             "$(yval SYSTEM_INTEGRATION_REF "$pipe_yml")"
+          check "SYSTEM_INTEGRATION_REF (oci-validation.env vs merge-recovery-soak.yml)" \
+            "$(envval SYSTEM_INTEGRATION_REF "$env_file")" \
+            "$(yval SYSTEM_INTEGRATION_REF "$soak_yml")"
 
           for key in OCI_CLI_INSTALLER_URL OCI_CLI_INSTALLER_SHA256 OCI_CLI_INSTALLER_PY_SHA256 OCI_CLI_VERSION; do
             check "$key (oci-validation.yml vs _integration-pipeline.yml)" \
@@ -162,6 +166,10 @@ jobs:
       - name: Verify soak schedule routing
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-soak-schedule-routing.sh
+
+      - name: Verify system-integration node capability contract
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-system-integration-node-capabilities.sh
 
       - name: Verify soak summary aggregation
         shell: bash -euo pipefail {0}
@@ -216,6 +224,16 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories bans licenses sources
+
+      # The soak-charts publisher crate is deliberately not a workspace member
+      # (see scripts/soak-charts/Cargo.toml), so the workspace check above
+      # never sees its tree — it gets its own pass against the same policy.
+      - name: cargo-deny check (soak-charts)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources
+          manifest-path: scripts/soak-charts/Cargo.toml
+          arguments: --all-features
 
   markdown_link_check:
     name: Markdown Link Check
