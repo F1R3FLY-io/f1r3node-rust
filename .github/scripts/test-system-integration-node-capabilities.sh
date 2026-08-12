@@ -36,8 +36,13 @@ expect_failure "$TMP/missing"
 for workflow in \
 	"$ROOT/.github/workflows/_integration-pipeline.yml" \
 	"$ROOT/.github/workflows/reusable-oci-validation.yml"; do
-	grep -Fq 'read-system-integration-node-capabilities.sh' "$workflow"
+	grep -Fq 'NODE_CAPABILITIES=$(bash "$GITHUB_WORKSPACE/.github/scripts/read-system-integration-node-capabilities.sh"' "$workflow"
+	grep -Fq 'done <<< "$NODE_CAPABILITIES"' "$workflow"
 	grep -Fq '"${NODE_CAPABILITY_ARGS[@]}"' "$workflow"
+	if grep -Fq 'done < <(bash' "$workflow"; then
+		printf 'capability reader failure is masked by process substitution in %s\n' "$workflow" >&2
+		exit 1
+	fi
 done
 
 "$READER" "$ROOT/.github/system-integration-node-capabilities.txt" >/dev/null
