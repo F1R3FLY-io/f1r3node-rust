@@ -457,11 +457,6 @@ async fn prepare_user_deploys_with_policy(
         } else {
             HashSet::new()
         };
-    let parent_hashes: Vec<BlockHash> = casper_snapshot
-        .parents
-        .iter()
-        .map(|p| p.block_hash.clone())
-        .collect();
     let earliest_block_number =
         block_number - casper_snapshot.on_chain_state.shard_conf.deploy_lifespan;
     // The FLOOR-clock window bound for retry work. The floor is the only

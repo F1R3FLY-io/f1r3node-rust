@@ -749,6 +749,31 @@ impl TestNode {
         max_parent_depth: Option<i32>,
         with_read_only_size: Option<usize>,
     ) -> Result<Vec<TestNode>, CasperError> {
+        Self::create_network_with_deploy_lifespan(
+            genesis,
+            network_size,
+            synchrony_constraint_threshold,
+            max_number_of_parents,
+            max_parent_depth,
+            with_read_only_size,
+            None,
+        )
+        .await
+    }
+
+    /// `create_network` with a shard `deploy_lifespan` override (default 50).
+    /// A short lifespan lets a spec close deploy validity windows within a
+    /// handful of blocks — required to exercise window-boundary behavior
+    /// (block-expiry, the merge-time window rule) without ~50 filler blocks.
+    pub async fn create_network_with_deploy_lifespan(
+        genesis: GenesisContext,
+        network_size: usize,
+        synchrony_constraint_threshold: Option<f64>,
+        max_number_of_parents: Option<i32>,
+        max_parent_depth: Option<i32>,
+        with_read_only_size: Option<usize>,
+        deploy_lifespan: Option<i64>,
+    ) -> Result<Vec<TestNode>, CasperError> {
         // Initialize the shared tracing subscriber once per test process.
         // Without this, tracing calls in production code are silently
         // dropped during tests, defeating diagnostic intent. Tests opt
@@ -773,6 +798,7 @@ impl TestNode {
             with_read_only_size.unwrap_or(0),
             None,
             test_network,
+            deploy_lifespan,
         )
         .await
     }
@@ -800,6 +826,7 @@ impl TestNode {
             0,
             Some(bootstrap_index),
             test_network,
+            None,
         )
         .await
     }
@@ -815,6 +842,7 @@ impl TestNode {
         with_read_only_size: usize,
         bootstrap_index: Option<usize>,
         test_network: TestNetwork,
+        deploy_lifespan: Option<i64>,
     ) -> Result<Vec<TestNode>, CasperError> {
         let genesis = genesis_context.genesis_block.clone();
         let n = sks.len();
@@ -860,6 +888,7 @@ impl TestNode {
                 test_network.clone(),
                 &genesis_context,
                 bootstrap_peer.clone(),
+                deploy_lifespan,
             )
             .await;
             nodes.push(node);
@@ -897,6 +926,7 @@ impl TestNode {
         test_network: TestNetwork,
         genesis_context: &GenesisContext,
         bootstrap_peer: Option<PeerNode>,
+        deploy_lifespan: Option<i64>,
     ) -> TestNode {
         let tle = Arc::new(TransportLayerTestImpl::new(test_network.clone()));
         let tls =
@@ -1059,7 +1089,7 @@ impl TestNode {
             height_constraint_threshold: i64::MAX,
             // Validators will try to put deploy in a block only for next `deployLifespan` blocks.
             // Required to enable protection from re-submitting duplicate deploys
-            deploy_lifespan: 50,
+            deploy_lifespan: deploy_lifespan.unwrap_or(50),
             casper_version: 1,
             config_version: 1,
             bond_minimum: 0,

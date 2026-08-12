@@ -1869,6 +1869,7 @@ async fn bridge_query_survives_multi_parent_merge() {
         let mut shard_conf = CasperShardConf::new();
         shard_conf.shard_name = shard_name.clone();
         shard_conf.max_parent_depth = 0;
+        shard_conf.deploy_lifespan = 50;
         let mut bonds_map = HashMap::new();
         bonds_map.insert(validator.clone(), 100);
         snapshot.on_chain_state = OnChainCasperState {
@@ -2246,6 +2247,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         let mut shard_conf = CasperShardConf::new();
         shard_conf.shard_name = shard_name.clone();
         shard_conf.max_parent_depth = 0;
+        shard_conf.deploy_lifespan = 50;
         let mut bonds_map = HashMap::new();
         bonds_map.insert(validator.clone(), 100);
         snapshot.on_chain_state = OnChainCasperState {
@@ -3012,6 +3014,7 @@ async fn stale_diff_application_corrupts_merged_state() {
         let mut shard_conf = CasperShardConf::new();
         shard_conf.shard_name = shard_name.clone();
         shard_conf.max_parent_depth = 0;
+        shard_conf.deploy_lifespan = 50;
         let mut bonds_map = HashMap::new();
         bonds_map.insert(validator.clone(), 100);
         snapshot.on_chain_state = OnChainCasperState {
