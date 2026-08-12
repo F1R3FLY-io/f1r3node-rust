@@ -156,6 +156,81 @@ else
 		--force >/dev/null
 fi
 
+# Invoke logging for the Function application. Without it a handler failure
+# leaves no trace anywhere: hotwrap reports failed invocations as successes
+# (empirically verified 2026-08-12 — a handler exiting 1 produced
+# responseType=Success and body "error running exec: exit status 1"), the
+# Resource Scheduler work request ignores the response body, and stderr is
+# simply dropped. The 02:30Z slot that night was lost to a transient GitHub
+# TLS failure with zero application logs to prove it. The invoke log captures
+# handler stderr for every invocation of every function in the application.
+LOG_GROUP_NAME="${LOG_GROUP_NAME:-f1r3node-soak-scheduler-logs}"
+LOG_NAME="${LOG_NAME:-f1r3node-soak-scheduler-invoke}"
+log_group_id="$(oci logging log-group list \
+	--profile "$OCI_PROFILE" \
+	--compartment-id "$OCI_COMPARTMENT_OCID" \
+	--all \
+	--output json |
+	jq -r --arg name "$LOG_GROUP_NAME" '.data[] | select(."display-name" == $name and ."lifecycle-state" != "DELETED") | .id' |
+	head -1)"
+if [ -z "$log_group_id" ]; then
+	oci logging log-group create \
+		--profile "$OCI_PROFILE" \
+		--compartment-id "$OCI_COMPARTMENT_OCID" \
+		--display-name "$LOG_GROUP_NAME" \
+		--description "Logs for the f1r3node soak scheduler function" \
+		--wait-for-state SUCCEEDED >/dev/null
+	log_group_id="$(oci logging log-group list \
+		--profile "$OCI_PROFILE" \
+		--compartment-id "$OCI_COMPARTMENT_OCID" \
+		--all \
+		--output json |
+		jq -r --arg name "$LOG_GROUP_NAME" '.data[] | select(."display-name" == $name and ."lifecycle-state" != "DELETED") | .id' |
+		head -1)"
+fi
+[ -n "$log_group_id" ] || {
+	echo "log group $LOG_GROUP_NAME did not resolve after create" >&2
+	exit 1
+}
+invoke_log="$(oci logging log list \
+	--profile "$OCI_PROFILE" \
+	--log-group-id "$log_group_id" \
+	--all \
+	--output json |
+	jq -c --arg name "$LOG_NAME" '[.data[] | select(."display-name" == $name and ."lifecycle-state" != "DELETED")] | first // empty')"
+if [ -z "$invoke_log" ]; then
+	log_configuration="$(jq -cn --arg app "$application_id" \
+		'{source:{sourceType:"OCISERVICE",service:"functions",resource:$app,category:"invoke"}}')"
+	oci logging log create \
+		--profile "$OCI_PROFILE" \
+		--log-group-id "$log_group_id" \
+		--display-name "$LOG_NAME" \
+		--log-type SERVICE \
+		--is-enabled true \
+		--configuration "$log_configuration" \
+		--wait-for-state SUCCEEDED >/dev/null
+	log_id="$(oci logging log list \
+		--profile "$OCI_PROFILE" \
+		--log-group-id "$log_group_id" \
+		--all \
+		--output json |
+		jq -r --arg name "$LOG_NAME" '.data[] | select(."display-name" == $name and ."lifecycle-state" != "DELETED") | .id' |
+		head -1)"
+else
+	log_id="$(jq -r '.id' <<<"$invoke_log")"
+	if [ "$(jq -r '."is-enabled"' <<<"$invoke_log")" != true ]; then
+		oci logging log update \
+			--profile "$OCI_PROFILE" \
+			--log-group-id "$log_group_id" \
+			--log-id "$log_id" \
+			--is-enabled true >/dev/null
+	fi
+fi
+[ -n "$log_id" ] || {
+	echo "invoke log $LOG_NAME did not resolve after create" >&2
+	exit 1
+}
+
 create_schedule() {
 	local hour="$1" name schedule_id resources
 	name="f1r3node-soak-${hour}30-utc"
@@ -305,4 +380,6 @@ jq -n \
 	--arg schedule_02_id "$schedule_02_id" \
 	--arg schedule_03_id "$schedule_03_id" \
 	--arg policy_id "$policy_id" \
-	'{image:$image,application_id:$application_id,function_id:$function_id,schedules:[$schedule_02_id,$schedule_03_id],policy_id:$policy_id}'
+	--arg log_group_id "$log_group_id" \
+	--arg log_id "$log_id" \
+	'{image:$image,application_id:$application_id,function_id:$function_id,schedules:[$schedule_02_id,$schedule_03_id],policy_id:$policy_id,log_group_id:$log_group_id,invoke_log_id:$log_id}'
