@@ -44,7 +44,7 @@ env:
   # the old..new range in system-integration; never replace with a tag/branch.
   # MUST be kept identical to .github/oci-validation.env (the Full OCI
   # Validation workflow sources that file) — bump both in the same commit.
-  SYSTEM_INTEGRATION_REF: 755301662e4f86ffb55f51077b88f32212a1f3ed
+  SYSTEM_INTEGRATION_REF: fe91755ed16774a5f56f33da9712f7df1f52ca9d
   # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
   # install.sh checksum fails closed if the tag is ever moved; OCI_CLI_VERSION
   # pins what the installer pulls from PyPI (without it the installer floats to
@@ -512,6 +512,11 @@ jobs:
           if [ "${{ matrix.arch }}" = "arm64" ]; then
             SCALE_FLAG="--timeout-scale=1.5"
           fi
+          NODE_CAPABILITIES=$(bash "$GITHUB_WORKSPACE/.github/scripts/read-system-integration-node-capabilities.sh" "$GITHUB_WORKSPACE/.github/system-integration-node-capabilities.txt")
+          NODE_CAPABILITY_ARGS=()
+          while IFS= read -r capability; do
+            [ -z "$capability" ] || NODE_CAPABILITY_ARGS+=("--node-capability=$capability")
+          done <<< "$NODE_CAPABILITIES"
           poetry run pytest \
             integration-tests/test/tests/shared/ \
             integration-tests/test/tests/custom/ \
@@ -530,6 +535,7 @@ jobs:
             --deselect integration-tests/test/tests/custom/test_user_contract_concurrency.py \
             --deselect integration-tests/test/tests/custom/test_active_validator_cap.py \
             --provider=${{ matrix.provider }} \
+            "${NODE_CAPABILITY_ARGS[@]}" \
             -v --tb=short --instafail --maxfail=10 \
             -n 16 --dist=loadgroup --timeout=1200 $SCALE_FLAG
 
