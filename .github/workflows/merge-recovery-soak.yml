@@ -84,11 +84,18 @@ env:
   # hold the envelope + any safe floor — the orchestrator host guardian
   # killed at free 6524MB). Sizing invariant, learned twice (PR #217 review,
   # then 31390673884): ceiling + ~7GB host overhead + floor <= MemTotal,
-  # else the floor fires before this attributable ceiling can. Here:
-  # 28672 + ~7168 + 8192 = ~44GB <= 48GB. 28672 is ~1.5x the measured
-  # envelope — silent on legitimate load, catches a real leak ~9GB before
-  # the floor or the kernel OOM killer get involved.
-  SOAK_RSS_CEILING_MB: "28672"
+  # else the floor fires before this attributable ceiling can.
+  #
+  # 2026-08-11: 28672 -> 45056 with the 64GB soak VM
+  # (RUNNER_MEM_GB_OVERRIDE below). The #197 wedge fix (#228) unmasked the
+  # workload's true footprint: smoke run 31547587950 breached at 36008MB
+  # instant RSS while fully healthy (1200 deploys/300s, 0 errors, tip-LFB
+  # lag 0), matching the 31-37GB envelope measured in the local A/B that
+  # exonerated the merge. The old ceiling was 1.5x the wedge-suppressed
+  # envelope, not the real one. 45056 is ~1.25x the observed 36GB peak —
+  # silent on legitimate load, catches a real leak ~9GB before the floor —
+  # and the invariant holds on 64GB: 45056 + ~7168 + 8192 = ~59GB <= 64GB.
+  SOAK_RSS_CEILING_MB: "45056"
   # 2026-08-10 (PR #217 review): lowered 12288 -> 8192 alongside the ceiling
   # raise — on the then-32GB host, 20480 + 12288 = 32768 meant available RAM
   # crossed the floor before total RSS could reach the ceiling, so the
@@ -153,7 +160,14 @@ env:
   # for) plus the RUNNER_MEM_GB_OVERRIDE launch knob. Verified by content
   # at the SHA: state.env AMD64_MEM_GB=48, override present in
   # launch-runner.sh.
-  SYSTEM_INTEGRATION_REF: a0c6fba626e4db8310180d0a90a213314424dd92
+  #
+  # 2026-08-11: bumped to the SI PR #103 merge — the harness monitor's
+  # per-core CPU sampling (resource-percore-timeseries.csv), which the
+  # driver's per-core extractor folds into the dashboard CPU grid. Verified
+  # by ancestry (a0c6fba6 is an ancestor, so the 48GB default and
+  # RUNNER_LABELS override carry forward) and by content at the SHA
+  # (state.env AMD64_MEM_GB=48; resource_monitor.py emits the per-core CSV).
+  SYSTEM_INTEGRATION_REF: 755301662e4f86ffb55f51077b88f32212a1f3ed
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
@@ -181,6 +195,13 @@ jobs:
       duration_seconds: ${{ steps.resolve.outputs.duration_seconds }}
       target_ref: ${{ steps.resolve.outputs.target_ref }}
       run_benchmarks: ${{ steps.resolve.outputs.run_benchmarks }}
+      # How this run was triggered (oci-resource-scheduler | cron-fallback |
+      # manual) and how late it started relative to its intended slot. Carried
+      # into the published history so a scheduler outage is visible on the
+      # dashboard instead of being silently masked by the cron fallback — the
+      # 2026-08-04..11 outage went unnoticed for a week exactly this way.
+      trigger_source: ${{ steps.resolve.outputs.trigger_source }}
+      slot_delay_seconds: ${{ steps.resolve.outputs.slot_delay_seconds }}
       # weekend | daily. Selects which published series this run appends to;
       # the two are kept in separate files so the week-over-week regression
       # gate never compares a 22h daily against a 60h weekend baseline.
@@ -248,6 +269,8 @@ jobs:
               exit 1
             fi
             echo "source=oci-resource-scheduler slot=$(date -u -d "@$slot_epoch" +%FT%TZ) pacific_hm=$pacific_hm pacific_weekday=$pacific_weekday trigger_delay=${trigger_delay}s"
+            trigger_source=oci-resource-scheduler
+            slot_delay_seconds="$trigger_delay"
             should_run=true
             idle_skip=false
             duplicate_skip=false
@@ -294,6 +317,8 @@ jobs:
             fi
             target_ref="$INPUT_TARGET_REF"
             should_run=true
+            trigger_source=manual
+            slot_delay_seconds=0
             # A manual run has no cron slot, so it starts now. The checkpoint
             # computation below needs a start instant either way, and without
             # this the step dies on an unbound variable under `set -u` — a
@@ -363,6 +388,8 @@ jobs:
             pacific_hm="$(TZ=America/Los_Angeles date -d "@${slot_epoch}" +%H%M)"
             pacific_weekday="$(TZ=America/Los_Angeles date -d "@${slot_epoch}" +%u)"
             echo "cron=$EVENT_SCHEDULE slot=$(date -u -d "@${slot_epoch}" +%FT%TZ) pacific_hm=$pacific_hm pacific_weekday=$pacific_weekday"
+            trigger_source=cron-fallback
+            slot_delay_seconds=$((now_epoch - slot_epoch))
             target_ref=dev
             should_run=false
             idle_skip=false
@@ -594,6 +621,8 @@ jobs:
             echo "should_run=$should_run"
             echo "duration_seconds=$duration_seconds"
             echo "target_ref=$target_ref"
+            echo "trigger_source=${trigger_source:-manual}"
+            echo "slot_delay_seconds=${slot_delay_seconds:-0}"
             echo "run_benchmarks=$run_benchmarks"
             echo "kind=$kind"
             echo "end_epoch=$end_epoch"
@@ -696,6 +725,16 @@ jobs:
           # particular is the one whose absence actually breaks routing, and it
           # must stay in step with the soak job's runs-on below.
           RUNNER_LABELS: self-hosted,linux,x64,f1r3fly-rust-soak,oracle-cloud
+          # 64GB for the soak VM only (fleet default stays AMD64_MEM_GB=48).
+          # The #197 wedge fix unmasked the workload's true footprint: smoke
+          # run 31547587950 (2026-08-11) breached at 36008MB instant RSS
+          # while fully healthy — 1200 deploys/300s, 0 errors, tip-LFB lag 0.
+          # 48GB cannot hold that envelope plus any invariant-respecting
+          # guard (max ceiling there is ~33GB, below the observed peak), so
+          # the launch knob SI PR #99 added is used here. Keep in step with
+          # SOAK_RSS_CEILING_MB above — the sizing invariant is
+          # ceiling + ~7GB host overhead + floor <= this VM's MemTotal.
+          RUNNER_MEM_GB_OVERRIDE: "64"
         shell: bash -e {0}
         run: system-integration/ci/oci-runners/launch-runner.sh amd64
 
@@ -1206,6 +1245,8 @@ jobs:
           duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
+          trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
+          slot_delay_seconds: ${{ needs.schedule_gate.outputs.slot_delay_seconds }}
           run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
           # Daily: after 8h, stop once the branch under test advances — the run
           # is pinned to one image, so past that point it is testing history.
@@ -1230,6 +1271,8 @@ jobs:
           duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
+          trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
+          slot_delay_seconds: ${{ needs.schedule_gate.outputs.slot_delay_seconds }}
           run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
           # Daily: after 8h, stop once the branch under test advances — the run
           # is pinned to one image, so past that point it is testing history.
@@ -1254,6 +1297,8 @@ jobs:
           duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
+          trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
+          slot_delay_seconds: ${{ needs.schedule_gate.outputs.slot_delay_seconds }}
           run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
           # Daily: after 8h, stop once the branch under test advances — the run
           # is pinned to one image, so past that point it is testing history.
@@ -1278,6 +1323,8 @@ jobs:
           duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
+          trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
+          slot_delay_seconds: ${{ needs.schedule_gate.outputs.slot_delay_seconds }}
           run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
           # Daily: after 8h, stop once the branch under test advances — the run
           # is pinned to one image, so past that point it is testing history.
@@ -1302,6 +1349,8 @@ jobs:
           duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
+          trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
+          slot_delay_seconds: ${{ needs.schedule_gate.outputs.slot_delay_seconds }}
           run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
           # Daily: after 8h, stop once the branch under test advances — the run
           # is pinned to one image, so past that point it is testing history.
@@ -1338,6 +1387,8 @@ jobs:
           duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
+          trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
+          slot_delay_seconds: ${{ needs.schedule_gate.outputs.slot_delay_seconds }}
           run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
           # Daily: after 8h, stop once the branch under test advances — the run
           # is pinned to one image, so past that point it is testing history.
@@ -1578,6 +1629,69 @@ jobs:
                 ;;
             esac
           done
+          # Chart SVGs ride the renderer's manifest instead of a hardcoded
+          # list: charts-manifest-<series>.json names exactly the SVGs the
+          # last render produced, so a chart added or suppressed in
+          # scripts/soak-charts changes what publishers preserve without any
+          # workflow edit. Normally the render step below overwrites all of
+          # this; when rendering skips or fails, these carried copies ARE the
+          # published charts. Manifest entries are remote content — only bare
+          # <name>.svg tokens are accepted, so a poisoned manifest cannot
+          # traverse paths, and every fetched body must look like an SVG (a
+          # CDN error page served with 200 must not become a chart).
+          for m in charts-manifest-weekend.json charts-manifest-daily.json; do
+            code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
+              -o "site/data/${m}" "${DASHBOARD_URL}data/${m}?cb=${cb}")" || code=000
+            case "$code" in
+              200) ;;
+              404) rm -f "site/data/${m}"; continue ;;
+              *)
+                echo "::error::could not read published ${m} (HTTP ${code}); aborting so no published series is lost"
+                exit 1
+                ;;
+            esac
+            jq -e 'type == "array" and all(.[]; type == "string")' "site/data/${m}" >/dev/null 2>&1 || {
+              echo "::warning::published ${m} is not an array of strings; dropping the chart manifest rather than blocking the publish"
+              rm -f "site/data/${m}"
+              continue
+            }
+            while IFS= read -r f; do
+              case "$f" in
+                ''|.*|*[!A-Za-z0-9._-]*)
+                  echo "::error::${m} lists a suspicious filename; refusing to republish it"
+                  exit 1
+                  ;;
+                *.svg) ;;
+                *)
+                  echo "::error::${m} lists non-SVG ${f}; refusing to republish it"
+                  exit 1
+                  ;;
+              esac
+              code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
+                -o "site/data/${f}" "${DASHBOARD_URL}data/${f}?cb=${cb}")" || code=000
+              # Charts are cosmetic: a per-SVG fetch or content failure drops
+              # that one chart with a warning instead of blocking the publish
+              # that makes soak history durable. The page hides a missing
+              # figure and the next successful render restores it; the
+              # manifest is re-filtered below so it never advertises a file
+              # this deploy does not carry. A hostile FILENAME above stays
+              # fatal — that is a poisoned manifest, not a cosmetic blip.
+              if [ "$code" = "200" ] && head -c 1024 "site/data/${f}" | grep -q '<svg'; then
+                :
+              else
+                echo "::warning::dropping chart ${f} (HTTP ${code}) rather than blocking the publish"
+                rm -f "site/data/${f}"
+              fi
+            done < <(jq -r '.[]' "site/data/${m}")
+            # The carried manifest must describe what this deploy actually
+            # ships: re-filter it to the SVGs that survived, so a consumer
+            # never fetches a name the manifest promised but the drop above
+            # removed.
+            jq -r '.[]' "site/data/${m}" | while IFS= read -r f; do
+              { [ -s "site/data/${f}" ] && printf '%s\n' "$f"; } || true
+            done | jq -R . | jq -s . > "site/data/${m}.filtered"
+            mv -f "site/data/${m}.filtered" "site/data/${m}"
+          done
           # HTTP 200 is not proof of valid content — a CDN or proxy error page
           # is served with 200 too, and republishing one would corrupt the
           # series just as thoroughly as dropping it. Every carried-forward
@@ -1662,6 +1776,40 @@ jobs:
             src="soak-results/report/${b%%:*}.json"
             [ -e "$src" ] && cp "$src" "site/data/${b##*:}${SERIES_SUFFIX}.json"
           done
+
+      - name: Render dashboard charts
+        # Chart SVGs are cosmetic the same way badges are: a render failure
+        # must never block the publish that makes soak history durable, so
+        # this step may fail while the deploy proceeds — the SVGs carried
+        # forward from the previous publish then stand. Both series are
+        # re-rendered because both histories were just fetched fresh.
+        continue-on-error: true
+        shell: bash -euo pipefail {0}
+        run: |
+          # The runner's preinstalled stable toolchain, not the workspace's
+          # pinned nightly: the standalone crate builds on stable, and pulling
+          # the nightly would add minutes to every publish. --locked holds the
+          # build to the crate's committed Cargo.lock, its supply-chain pin.
+          export RUSTUP_TOOLCHAIN=stable
+          cargo build --release --locked \
+            --manifest-path ci-control/scripts/soak-charts/Cargo.toml
+          render() {
+            [ -s "site/data/history$1.json" ] || return 0
+            # Staged render: the crate writes into a scratch dir OUTSIDE the
+            # site tree, and only a fully successful series replaces the
+            # carried SVGs and manifest — a mid-render crash therefore cannot
+            # publish a truncated chart, making "the carried SVGs stand" a
+            # guarantee rather than a hope.
+            rm -rf "chart-stage-$2"
+            mkdir -p "chart-stage-$2"
+            ci-control/scripts/soak-charts/target/release/soak-charts \
+              --history "site/data/history$1.json" \
+              --out-dir "chart-stage-$2" --series "$2"
+            cp "chart-stage-$2"/* site/data/
+            rm -rf "chart-stage-$2"
+          }
+          render "" weekend
+          render "-daily" daily
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

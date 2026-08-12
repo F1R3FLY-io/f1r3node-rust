@@ -37,7 +37,16 @@ ignore = [
     "RUSTSEC-2021-0141", # dotenv (transitive via openai-api-rs)
     "RUSTSEC-2021-0153", # encoding (transitive via hocon -> nom)
     "RUSTSEC-2024-0436", # paste proc-macro (transitive via metrics)
-    "RUSTSEC-2026-0247", # bitmaps unmaintained (transitive via imbl -> block-storage/casper/rspace_plus_plus); no safe upgrade available
+    "RUSTSEC-2026-0247", # bitmaps (transitive via imbl, the rspace++ hot-store
+                         # persistent map; repo archived 2026-05-03, advisory
+                         # published 2026-08. No safe upgrade; imbl itself is
+                         # maintained — revisit if imbl replaces the dep)
+    "RUSTSEC-2024-0384", # instant unmaintained. Only reachable in the
+                         # standalone scripts/soak-charts crate (fastrand 1.x
+                         # via kernel-density-estimation -> charton), and only
+                         # as a wasm-target dependency — never compiled on the
+                         # publisher's linux targets. Unmatched (warning only)
+                         # in the workspace check, which shares this config.
 
     # Feature-gated transitive deps, present only under --all-features (as CI runs
     # cargo-deny). All reach the graph through rholang's optional rust-bert (ML)
