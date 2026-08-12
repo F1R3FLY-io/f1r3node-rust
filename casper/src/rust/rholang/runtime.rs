@@ -78,9 +78,6 @@ fn exploratory_key_pair() -> &'static (PrivateKey, PublicKey) {
     EXPLORATORY_KEY_PAIR.get_or_init(|| Secp256k1.new_key_pair())
 }
 
-/// Default phlogiston ceiling for exploratory deploy execution.
-pub const DEFAULT_EXPLORATORY_DEPLOY_PHLO_LIMIT: i64 = 5_000_000;
-
 pub struct RuntimeOps {
     pub runtime: RhoRuntimeImpl,
 }
@@ -828,23 +825,13 @@ impl RuntimeOps {
     }
 
     /**
-     * Evaluates exploratory (read-only) deploy
+     * Evaluates exploratory (read-only) deploy.
+     *
+     * `phlo_limit` is always supplied by the caller: `RuntimeManager` passes the
+     * operator-configured ceiling, and test callers state their own. There is no
+     * compiled-in default, so no call site can diverge from the operator's
+     * configuration without saying so.
      */
-    pub async fn play_exploratory_deploy(
-        &mut self,
-        term: String,
-        hash: &StateHash,
-        deployer: Option<PublicKey>,
-    ) -> Result<(Vec<Par>, u64), CasperError> {
-        self.play_exploratory_deploy_with_phlo_limit(
-            term,
-            hash,
-            deployer,
-            DEFAULT_EXPLORATORY_DEPLOY_PHLO_LIMIT,
-        )
-        .await
-    }
-
     pub async fn play_exploratory_deploy_with_phlo_limit(
         &mut self,
         term: String,

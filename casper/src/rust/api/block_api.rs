@@ -198,13 +198,64 @@ impl std::fmt::Display for ExploratoryDeployReadOnlyError {
 impl std::error::Error for ExploratoryDeployReadOnlyError {}
 
 #[derive(Debug, thiserror::Error)]
-#[error("Node exploratory query capacity is exhausted; retry later")]
-pub struct ExploratoryDeployBusyError;
+#[error("Node exploratory query capacity is exhausted; retry in {retry_after_secs} s")]
+pub struct ExploratoryDeployBusyError {
+    /// Seconds to advertise in `Retry-After`. Derived from the configured
+    /// execution budget: capacity is held until the occupying query terminates,
+    /// so that budget is the earliest a caller can expect a slot to free.
+    pub retry_after_secs: u64,
+}
+
+impl ExploratoryDeployBusyError {
+    /// Rounds up to one second because `Retry-After` is expressed in whole
+    /// seconds — a sub-second budget cannot be advertised as zero without
+    /// telling the caller to retry immediately.
+    fn with_budget(execution_budget: Duration) -> Self {
+        Self {
+            retry_after_secs: execution_budget.as_secs().max(1),
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
-#[error("Exploratory query exceeded the {timeout_ms} ms execution deadline")]
+#[error(
+    "Exploratory query cancelled after exceeding its {timeout_ms} ms execution budget; \
+     the budget bounds execution, not response time"
+)]
 pub struct ExploratoryDeployTimeoutError {
     pub timeout_ms: u64,
+}
+
+/// An exploratory-deploy rejection that every transport can express natively —
+/// HTTP via a status code, gRPC via `tonic::Status`.
+///
+/// Classification matches the error variant and carries its data forward; it
+/// never inspects the rendered message. That is what keeps the two transport
+/// surfaces from drifting apart, and it is why the payload lives here rather
+/// than being re-derived per transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExploratoryDeployRejection {
+    Busy { retry_after_secs: u64 },
+    Timeout { timeout_ms: u64 },
+}
+
+impl ExploratoryDeployRejection {
+    /// Classify one cause in an error chain, so a caller walking the chain can
+    /// keep using that cause's own message for the response body.
+    pub fn from_cause(cause: &(dyn std::error::Error + 'static)) -> Option<Self> {
+        if let Some(busy) = cause.downcast_ref::<ExploratoryDeployBusyError>() {
+            return Some(Self::Busy {
+                retry_after_secs: busy.retry_after_secs,
+            });
+        }
+        cause
+            .downcast_ref::<ExploratoryDeployTimeoutError>()
+            .map(|timeout| Self::Timeout {
+                timeout_ms: timeout.timeout_ms,
+            })
+    }
+
+    pub fn classify(err: &eyre::Error) -> Option<Self> { err.chain().find_map(Self::from_cause) }
 }
 
 #[repr(u8)]
@@ -1735,6 +1786,7 @@ impl BlockAPI {
             let is_read_only = casper.get_validator().is_none();
             if is_read_only || dev_mode {
                 let runtime_manager = casper.runtime_manager();
+                let execution_budget = runtime_manager.exploratory_deploy_execution_timeout_value();
                 let permit = runtime_manager
                     .try_acquire_exploratory_deploy_permit()
                     .ok_or_else(|| {
@@ -1743,7 +1795,7 @@ impl BlockAPI {
                             "source" => "casper"
                         )
                         .increment(1);
-                        eyre::Report::new(ExploratoryDeployBusyError)
+                        eyre::Report::new(ExploratoryDeployBusyError::with_budget(execution_budget))
                     })?;
 
                 let (state_hash, target_block) = if block_hash.is_none() {
@@ -1780,7 +1832,7 @@ impl BlockAPI {
 
                 match target_block {
                     Some(b) => {
-                        let timeout = runtime_manager.exploratory_deploy_execution_timeout_value();
+                        let timeout = execution_budget;
                         let outcome =
                             Arc::new(AtomicU8::new(ExploratoryDeployOutcome::Failed as u8));
                         let task_outcome = outcome.clone();

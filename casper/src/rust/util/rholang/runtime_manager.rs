@@ -46,7 +46,7 @@ use crate::rust::metrics_constants::{
     RUNTIME_SPAWN_REPLAY_TIME_METRIC, RUNTIME_SPAWN_TIME_METRIC,
 };
 use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
-use crate::rust::rholang::runtime::{RuntimeOps, DEFAULT_EXPLORATORY_DEPLOY_PHLO_LIMIT};
+use crate::rust::rholang::runtime::RuntimeOps;
 use crate::rust::util::rholang::replay_cache::{
     InMemoryReplayCache, ReplayCache, ReplayCacheEntry, ReplayCacheKey,
 };
@@ -70,22 +70,50 @@ pub struct ExploratoryDeployConfig {
 }
 
 impl ExploratoryDeployConfig {
-    pub fn new(max_concurrent: usize, phlo_limit: i64, execution_timeout: Duration) -> Self {
-        Self {
-            max_concurrent: max_concurrent.max(1),
-            phlo_limit: phlo_limit.max(1),
-            execution_timeout: execution_timeout.max(Duration::from_millis(1)),
+    /// Rejects a non-positive value rather than clamping it. A clamped `0`
+    /// yields a node that answers nothing on this endpoint — one phlogiston
+    /// fails every query on cost, a one-millisecond deadline times out every
+    /// query — with no diagnostic distinguishing that from a working node.
+    pub fn new(
+        max_concurrent: usize,
+        phlo_limit: i64,
+        execution_timeout: Duration,
+    ) -> Result<Self, CasperError> {
+        if max_concurrent == 0 {
+            return Err(CasperError::Other(
+                "exploratory-deploy-max-concurrent must be at least 1".to_string(),
+            ));
         }
+        if phlo_limit <= 0 {
+            return Err(CasperError::Other(format!(
+                "exploratory-deploy-phlo-limit must be positive, got {}",
+                phlo_limit
+            )));
+        }
+        if execution_timeout.is_zero() {
+            return Err(CasperError::Other(
+                "exploratory-deploy-execution-timeout must be greater than zero".to_string(),
+            ));
+        }
+        Ok(Self {
+            max_concurrent,
+            phlo_limit,
+            execution_timeout,
+        })
     }
-}
 
-impl Default for ExploratoryDeployConfig {
-    fn default() -> Self {
-        Self::new(
-            1,
-            DEFAULT_EXPLORATORY_DEPLOY_PHLO_LIMIT,
-            Duration::from_secs(15),
-        )
+    /// Fixture for the test-only constructors. Deliberately not a `Default`
+    /// impl: the operator-facing default lives in `defaults.conf` and reaches
+    /// the runtime through `create_with_history_config`, so a second
+    /// authoritative-looking declaration in Rust could drift from it silently.
+    /// These values are not that default — they are only what the test
+    /// constructors have always used.
+    pub fn for_tests() -> Self {
+        Self {
+            max_concurrent: 1,
+            phlo_limit: 5_000_000,
+            execution_timeout: Duration::from_secs(15),
+        }
     }
 }
 
@@ -1283,30 +1311,6 @@ impl RuntimeManager {
             .into()
     }
 
-    pub fn create_with_space(
-        rspace: RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
-        replay_rspace: ReplayRSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
-        history_repo: RhoHistoryRepository,
-        mergeable_store: MergeableStore,
-        mergeable_tags: std::sync::Arc<
-            std::collections::HashMap<
-                Par,
-                rspace_plus_plus::rspace::merger::merging_logic::MergeType,
-            >,
-        >,
-        external_services: ExternalServices,
-    ) -> RuntimeManager {
-        Self::create_with_space_config(
-            rspace,
-            replay_rspace,
-            history_repo,
-            mergeable_store,
-            mergeable_tags,
-            external_services,
-            ExploratoryDeployConfig::default(),
-        )
-    }
-
     pub fn create_with_space_config(
         rspace: RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
         replay_rspace: ReplayRSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
@@ -1371,6 +1375,9 @@ impl RuntimeManager {
         rt_manager
     }
 
+    /// Test-only entry point: supplies `ExploratoryDeployConfig::for_tests()`.
+    /// Production construction goes through `create_with_history_config` with
+    /// the operator's configuration.
     pub fn create_with_history(
         store: RSpaceStore,
         mergeable_store: MergeableStore,
@@ -1387,7 +1394,7 @@ impl RuntimeManager {
             mergeable_store,
             mergeable_tags,
             external_services,
-            ExploratoryDeployConfig::default(),
+            ExploratoryDeployConfig::for_tests(),
         )
     }
 
@@ -1440,10 +1447,25 @@ impl RuntimeManager {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::time::Duration;
 
     use tokio::sync::Semaphore;
 
-    use super::RuntimeManager;
+    use super::{ExploratoryDeployConfig, RuntimeManager};
+
+    #[test]
+    fn exploratory_deploy_config_rejects_non_positive_values() {
+        assert!(ExploratoryDeployConfig::new(0, 5_000_000, Duration::from_secs(15)).is_err());
+        assert!(ExploratoryDeployConfig::new(1, 0, Duration::from_secs(15)).is_err());
+        assert!(ExploratoryDeployConfig::new(1, -1, Duration::from_secs(15)).is_err());
+        assert!(ExploratoryDeployConfig::new(1, 5_000_000, Duration::ZERO).is_err());
+
+        let valid =
+            ExploratoryDeployConfig::new(2, 42, Duration::from_millis(500)).expect("valid config");
+        assert_eq!(valid.max_concurrent, 2);
+        assert_eq!(valid.phlo_limit, 42);
+        assert_eq!(valid.execution_timeout, Duration::from_millis(500));
+    }
 
     #[test]
     fn exploratory_deploy_permit_is_bounded_and_released() {

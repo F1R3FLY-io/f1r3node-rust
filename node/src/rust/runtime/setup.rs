@@ -252,7 +252,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                 conf.api_server.exploratory_deploy_max_concurrent,
                 conf.api_server.exploratory_deploy_phlo_limit,
                 conf.api_server.exploratory_deploy_execution_timeout,
-            ),
+            )?,
         );
         tracing::debug!("[Setup] RuntimeManager created successfully");
         result

@@ -412,7 +412,7 @@ curl -X POST http://localhost:40453/api/explore-deploy \
 | `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`) |
 | `502` | External service failure (`external_service_error`) |
-| `503` | Exploratory capacity is occupied (`observer_busy`) |
+| `503` | Exploratory capacity is occupied (`observer_busy`); carries `Retry-After` |
 | `504` | Execution exceeded the configured deadline (`exploratory_timeout`) |
 
 The phlogiston limit is the authoritative execution bound. The wall-clock deadline is best-effort because timeout observation requires interpreter execution to yield, and capacity remains occupied until cancelled work terminates.
@@ -443,7 +443,7 @@ curl -X POST http://localhost:40453/api/explore-deploy-by-block-hash \
 | `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`) |
 | `502` | External service failure (`external_service_error`) |
-| `503` | Exploratory capacity is occupied (`observer_busy`) |
+| `503` | Exploratory capacity is occupied (`observer_busy`); carries `Retry-After` |
 | `504` | Execution exceeded the configured deadline (`exploratory_timeout`) |
 
 ---
