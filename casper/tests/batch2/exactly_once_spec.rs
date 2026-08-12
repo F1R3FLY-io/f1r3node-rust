@@ -28,9 +28,10 @@ use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::finality::floor::floor_of_block;
 use casper::rust::safety::clique_oracle::FtThreshold;
 use casper::rust::util::construct_deploy;
+use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
-use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
 use prost::bytes::Bytes;
 use serial_test::serial;
 
@@ -209,10 +210,8 @@ async fn duplicate_sibling_inclusions_must_reconcile_to_one_effect() {
     );
 }
 
-/// RED 2: a reinstated effect must not be executed again by the block that
-/// inherits it.
-///
-/// Staging walks the two verified return paths into one block:
+/// Shared staging for the reinstated-effect specs — a floor-covered
+/// reinstatement with a late-arriving record:
 /// - contest on nodes[0]/nodes[1]; the adjudicating merge M rejects one
 ///   contender with a record;
 /// - nodes[2] (majority stake, no record in view) merges the loser's
@@ -221,31 +220,18 @@ async fn duplicate_sibling_inclusions_must_reconcile_to_one_effect() {
 ///   deploys-in-scope body walk;
 /// - nodes[2]'s floor advances over the carrier (self-witness spacers,
 ///   verified per round — staging precondition, not assumed);
-/// - the record side (winner + M) is delivered, and the loser is placed in
-///   nodes[2]'s stores the way the recovery plane does (deploy storage +
-///   rejected buffer); the rejected-in-scope exemption then re-admits it
-///   through selection.
+/// - the record side (winner + M) is delivered LATE: nodes[2] now holds a
+///   record adjudicating work its canonical lineage already carries.
 ///
-/// The proposal is driven through `block_creator::create` on the FULL
-/// frontier (own tip + the record branch). Going through the node's own
-/// snapshot instead cannot stage the geometry: parent narrowing collapses
-/// the frontier to a single parent whenever a record is in candidate
-/// scope, so the record branch never enters scope and selection filters
-/// the retry. Narrowing only serializes one node's own proposals — any
-/// validator without the narrowing trigger active legally mints the
-/// widened block from the same view, which is the block this call
-/// constructs. The scope sets are hand-extended to their true
-/// widened-frontier values (the record is visible from these parents),
-/// which is what re-admits the retry through the rejected-in-scope
-/// exemption.
-///
-/// Without the pre-state guard the created block executes the deploy
-/// twice: the witness cell holds two datums in its committed post-state.
-/// With the guard the fresh copy is dropped and the effect appears exactly
-/// once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[serial]
-async fn reinstated_effect_must_not_be_executed_again() {
+/// Returns (nodes, shard_id, loser_sig, loser_cell, loser_deploy, m_block).
+async fn stage_floor_covered_reinstatement() -> (
+    Vec<TestNode>,
+    String,
+    Bytes,
+    &'static str,
+    Signed<DeployData>,
+    BlockMessage,
+) {
     let (mut nodes, shard_id) = three_node_network().await;
 
     // Seed the contended cell (nodes[1]); nodes[0] and nodes[2] process it.
@@ -443,6 +429,46 @@ async fn reinstated_effect_must_not_be_executed_again() {
             .expect("nodes[2] ingests the record side");
     }
 
+    (
+        nodes,
+        shard_id,
+        loser_sig,
+        loser_cell,
+        loser_deploy,
+        m_block,
+    )
+}
+
+/// RED 2: a reinstated effect must not be executed again by the block that
+/// inherits it.
+///
+/// On top of the shared staging, the loser is placed in nodes[2]'s stores
+/// the way the recovery plane does (deploy storage + rejected buffer); the
+/// rejected-in-scope exemption then re-admits it through selection.
+///
+/// The proposal is driven through `block_creator::create` on the FULL
+/// frontier (own tip + the record branch). Going through the node's own
+/// snapshot instead cannot stage the geometry: parent narrowing collapses
+/// the frontier to a single parent whenever a record is in candidate
+/// scope, so the record branch never enters scope and selection filters
+/// the retry. Narrowing only serializes one node's own proposals — any
+/// validator without the narrowing trigger active legally mints the
+/// widened block from the same view, which is the block this call
+/// constructs. The scope sets are hand-extended to their true
+/// widened-frontier values (the record is visible from these parents),
+/// which is what re-admits the retry through the rejected-in-scope
+/// exemption.
+///
+/// Without the pre-state guard the created block executes the deploy
+/// twice: the witness cell holds two datums in its committed post-state.
+/// With the guard the fresh copy is dropped and the effect appears exactly
+/// once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn reinstated_effect_must_not_be_executed_again() {
+    let (mut nodes, _shard_id, loser_sig, loser_cell, loser_deploy, m_block) =
+        stage_floor_covered_reinstatement().await;
+
     // The recovery plane returns the loser to nodes[2]'s stores (the
     // verified return routes are several — validate-side populate, owner
     // retry, client resubmission; the seam models their common endpoint).
@@ -541,5 +567,143 @@ async fn reinstated_effect_must_not_be_executed_again() {
             .iter()
             .map(short)
             .collect::<Vec<_>>(),
+    );
+}
+
+/// THE SCHEDULED FALSIFIER (state plane): a floor-covered effect is
+/// immovable — a late record must not unwind it.
+///
+/// An instrumented experiment on the old branch once unwound a
+/// floor-covered effect after a late record arrived, with the merge cut
+/// clamped to the floor; the mechanism was never root-caused. On this
+/// base — merge = pure function(floor state, above-floor diffs), records
+/// never reaching state derivation — that unwinding should be structurally
+/// impossible: the base always carries the effect forward, and the record
+/// is testimony about an adjudication the canonical lineage never took.
+///
+/// On top of the shared staging (reinstated effect floor-covered on
+/// nodes[2], record delivered late), the two live validators alternate
+/// rounds until every floor covers the record's carrier M, plus settle
+/// rounds. The loser's witness effect must still be in the tip state.
+///
+/// This is an EXPERIMENT with both outcomes recorded: a red here finds the
+/// old anomaly's mechanism on the clean rebuild at the cheap end of the
+/// stack; a green pins that the old unwinding was branch-residual
+/// machinery and licenses the verdict plane to read floor-covered effects
+/// as settled.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn floor_covered_effect_survives_a_late_record() {
+    let (mut nodes, shard_id, loser_sig, loser_cell, _loser_deploy, m_block) =
+        stage_floor_covered_reinstatement().await;
+    let m_height = m_block.body.state.block_number;
+
+    // Join the lineages the way any non-narrowed validator legally would:
+    // one widened merge J over nodes[2]'s own tip and the record branch.
+    // The join cannot be staged through the node's own propose path —
+    // M's record sits in candidate scope, so parent narrowing collapses
+    // every self-proposal to a single parent and the lineages never meet
+    // (same diagnosis as the spec above).
+    let j_block = {
+        let mut snapshot = nodes[2]
+            .casper
+            .get_snapshot()
+            .await
+            .expect("nodes[2] snapshot");
+        if !snapshot
+            .parents
+            .iter()
+            .any(|p| p.block_hash == m_block.block_hash)
+        {
+            snapshot.parents.push(m_block.clone());
+        }
+        let validator_identity = nodes[2]
+            .validator_id_opt
+            .clone()
+            .expect("nodes[2] validator identity");
+        let deploy_storage = nodes[2].deploy_storage.clone();
+        let rejected_buffer = nodes[2].rejected_deploy_buffer.clone();
+        let runtime_manager = nodes[2].runtime_manager.clone();
+        let created = block_creator::create(
+            &snapshot,
+            &validator_identity,
+            None,
+            deploy_storage,
+            rejected_buffer,
+            &runtime_manager,
+            &mut nodes[2].block_store,
+            true,
+        )
+        .await
+        .expect("create the joining merge J");
+        let BlockCreatorResult::Created(j_block, _pre, _post) = created else {
+            panic!("create must mint the joining merge J on the full frontier");
+        };
+        j_block
+    };
+    for node in nodes.iter_mut() {
+        if !node.contains(&j_block.block_hash) {
+            node.process_block(j_block.clone())
+                .await
+                .expect("admit the joining merge J");
+        }
+    }
+
+    // Settle rounds: nodes[2] (5/9 stake — a self-witnessing majority)
+    // mints on the joined spine, delivered to all, until its floor covers
+    // the record's carrier M, plus a few rounds beyond.
+    let mut tip: Option<BlockMessage> = None;
+    let mut rounds_after_coverage = 0i32;
+    for round in 0..30i32 {
+        let marker = {
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+            construct_deploy::basic_deploy_data(
+                300 + round,
+                Some(construct_deploy::DEFAULT_SEC2.clone()),
+                Some(shard_id.clone()),
+            )
+            .expect("settle marker")
+        };
+        let b = nodes[2]
+            .add_block_from_deploys(std::slice::from_ref(&marker))
+            .await
+            .expect("settle round");
+        for (other, node) in nodes.iter_mut().enumerate() {
+            if other != 2 {
+                node.process_block(b.clone())
+                    .await
+                    .expect("settle delivery");
+            }
+        }
+        tip = Some(b.clone());
+        if floor_covers(&nodes[2], &b.block_hash, &m_block.block_hash, m_height).await {
+            rounds_after_coverage += 1;
+            if rounds_after_coverage >= 5 {
+                break;
+            }
+        }
+    }
+    let tip = tip.expect("at least one settle round ran");
+    assert!(
+        rounds_after_coverage >= 5,
+        "staging precondition: the floor must come to cover the record's \
+         carrier M within the settle rounds, plus rounds beyond — \
+         otherwise the falsifier never exercises the transient",
+    );
+
+    // THE FALSIFIER. The reinstated effect was floor-covered BEFORE the
+    // record entered the canonical lineage; every merge since starts from
+    // a base that carries it. If the effect is gone, a record reached back
+    // into state derivation — the fifth unwinding mechanism, found.
+    let live = !string_datums(&nodes[2], &tip.body.state.post_state_hash, loser_cell)
+        .await
+        .is_empty();
+    assert!(
+        live,
+        "UNWINDING: the loser's floor-covered effect (@\"{}\", sig {}) is \
+         no longer in the canonical tip state after its record canonicalized \
+         late — a rejection record reached back into state derivation",
+        loser_cell,
+        short(&loser_sig),
     );
 }
