@@ -223,6 +223,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
         BlockData::from_block(&r0_raw),
         HashMap::new(),
         None,
+        None,
     )
     .await
     .expect("compute R0 checkpoint");
@@ -275,6 +276,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
         BlockData::from_block(&r1_raw),
         HashMap::new(),
         None,
+        None,
     )
     .await
     .expect("compute R1 checkpoint");
@@ -324,6 +326,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
         &latest_messages,
         None,
         Some(&rejected_deploy_buffer),
+        None,
     )
     .await
     .expect("compute_parents_post_state over [R0, R1]");

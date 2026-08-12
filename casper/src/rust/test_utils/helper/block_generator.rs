@@ -74,6 +74,7 @@ async fn compute_block_checkpoint(
         BlockData::from_block(block),
         HashMap::new(),
         None,
+        None,
     )
     .await?;
 

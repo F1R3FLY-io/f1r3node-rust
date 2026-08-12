@@ -1460,55 +1460,61 @@ impl Validate {
         block_store: &KeyValueBlockStore,
         snapshot: &CasperSnapshot,
         runtime_manager: &RuntimeManager,
+        floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
     ) -> ValidBlockProcessing {
         let parent_hashes = b.header.parents_hash_list.clone();
         if parent_hashes.is_empty() {
             return Self::bonds_cache(b, runtime_manager).await;
         }
 
-        let latest_messages: BTreeMap<Validator, BlockHash> = b
-            .justifications
-            .iter()
-            .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
-            .collect();
-        let floor = match crate::rust::finality::floor::finalized_floor(
-            &snapshot.dag,
-            &parent_hashes,
-            &latest_messages,
-            crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-                snapshot
-                    .on_chain_state
-                    .shard_conf
-                    .fault_tolerance_threshold_ppm,
-            ),
-        )
-        .await
-        {
-            Ok(floor) => floor,
-            Err(ex) => {
-                tracing::warn!("Failed to derive finalized floor for bonds cache: {}", ex);
-                return Either::Left(BlockError::BlockException(ex));
+        let floor_state = match floor_ctx {
+            Some(ctx) => ctx.floor_state.clone(),
+            None => {
+                let latest_messages: BTreeMap<Validator, BlockHash> = b
+                    .justifications
+                    .iter()
+                    .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+                    .collect();
+                let floor = match crate::rust::finality::floor::finalized_floor(
+                    &snapshot.dag,
+                    &parent_hashes,
+                    &latest_messages,
+                    crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                        snapshot
+                            .on_chain_state
+                            .shard_conf
+                            .fault_tolerance_threshold_ppm,
+                    ),
+                )
+                .await
+                {
+                    Ok(floor) => floor,
+                    Err(ex) => {
+                        tracing::warn!("Failed to derive finalized floor for bonds cache: {}", ex);
+                        return Either::Left(BlockError::BlockException(ex));
+                    }
+                };
+                let floor_block = match block_store.get(&floor.hash) {
+                    Ok(Some(block)) => block,
+                    Ok(None) => {
+                        let err = CasperError::RuntimeError(format!(
+                            "finalized-floor block {} not in block store for bonds cache",
+                            PrettyPrinter::build_string_bytes(&floor.hash)
+                        ));
+                        tracing::warn!("{}", err);
+                        return Either::Left(BlockError::BlockException(err));
+                    }
+                    Err(ex) => {
+                        tracing::warn!(
+                            "Failed to read finalized-floor block for bonds cache: {}",
+                            ex
+                        );
+                        return Either::Left(BlockError::BlockException(ex.into()));
+                    }
+                };
+                proto_util::post_state_hash(&floor_block)
             }
         };
-        let floor_block = match block_store.get(&floor.hash) {
-            Ok(Some(block)) => block,
-            Ok(None) => {
-                let err = CasperError::RuntimeError(format!(
-                    "finalized-floor block {} not in block store for bonds cache",
-                    PrettyPrinter::build_string_bytes(&floor.hash)
-                ));
-                tracing::warn!("{}", err);
-                return Either::Left(BlockError::BlockException(err));
-            }
-            Err(ex) => {
-                tracing::warn!(
-                    "Failed to read finalized-floor block for bonds cache: {}",
-                    ex
-                );
-                return Either::Left(BlockError::BlockException(ex.into()));
-            }
-        };
-        let floor_state = proto_util::post_state_hash(&floor_block);
 
         // Same shared helper the proposer uses to package `block.bonds`, called on
         // the same floor state ⇒ the recomputed committee is identical by

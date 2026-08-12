@@ -31,6 +31,7 @@ use tracing;
 use crate::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
+use crate::rust::finality::floor_context::FloorContext;
 use crate::rust::slashing_authorization::{authorized_slash_candidates, checked_next_seq};
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
 use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
@@ -331,6 +332,7 @@ pub async fn prepare_user_deploys(
     allow_recovered_deploys: bool,
     allow_ordinary_deploys: bool,
 ) -> Result<PreparedUserDeploys, CasperError> {
+    let floor_ctx = derive_floor_context(casper_snapshot, block_store).await?;
     prepare_user_deploys_with_policy(
         casper_snapshot,
         block_number,
@@ -348,8 +350,70 @@ pub async fn prepare_user_deploys(
             fallback: false,
             backpressure: false,
         },
+        floor_ctx.as_ref(),
     )
     .await
+}
+
+/// One [`FloorContext`] per block operation, from the snapshot's frozen
+/// (parents, justifications) pair. `create` derives it once and threads it;
+/// entry points callable outside `create` derive their own. `None` iff the
+/// snapshot has no parents (parentless fixtures and the pre-genesis shape) —
+/// there is no floor to derive, and every consumer's walk over zero parents
+/// is empty anyway.
+async fn derive_floor_context(
+    casper_snapshot: &CasperSnapshot,
+    block_store: &KeyValueBlockStore,
+) -> Result<Option<FloorContext>, CasperError> {
+    if casper_snapshot.parents.is_empty() {
+        return Ok(None);
+    }
+    let parent_hashes: Vec<BlockHash> = casper_snapshot
+        .parents
+        .iter()
+        .map(|p| p.block_hash.clone())
+        .collect();
+    let latest_messages: BTreeMap<Validator, BlockHash> = casper_snapshot
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
+    FloorContext::derive(
+        &casper_snapshot.dag,
+        block_store,
+        &parent_hashes,
+        &latest_messages,
+        crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+            casper_snapshot
+                .on_chain_state
+                .shard_conf
+                .fault_tolerance_threshold_ppm,
+        ),
+    )
+    .await
+    .map(Some)
+}
+
+/// The parents-rooted canonical-won walk, through the operation context's
+/// memo when one exists (context-less entry points walk directly — over an
+/// empty parent set the walk is empty either way).
+fn canonical_won_over_parents(
+    floor_ctx: Option<&FloorContext>,
+    casper_snapshot: &CasperSnapshot,
+    block_store: &KeyValueBlockStore,
+    earliest_block_number: i64,
+) -> Result<HashSet<Bytes>, CasperError> {
+    match floor_ctx {
+        Some(ctx) => ctx.won_sigs(block_store, earliest_block_number),
+        None => {
+            let parent_hashes: Vec<BlockHash> = casper_snapshot
+                .parents
+                .iter()
+                .map(|p| p.block_hash.clone())
+                .collect();
+            interpreter_util::canonical_won_sigs(block_store, &parent_hashes, earliest_block_number)
+        }
+    }
 }
 
 async fn prepare_user_deploys_with_policy(
@@ -363,6 +427,7 @@ async fn prepare_user_deploys_with_policy(
     block_store: &KeyValueBlockStore,
     allow_recovered_deploys: bool,
     admission_policy: DeployAdmissionPolicy,
+    floor_ctx: Option<&FloorContext>,
 ) -> Result<PreparedUserDeploys, CasperError> {
     let max_user_deploys = normal_ordinary_deploy_cap(casper_snapshot);
     let ordinary_cap = admission_policy.ordinary_cap.min(max_user_deploys);
@@ -493,7 +558,7 @@ async fn prepare_user_deploys_with_policy(
     }
 
     let canonical_won_buffer_sigs = if allow_recovered_deploys && !buffered_deploys.is_empty() {
-        interpreter_util::canonical_won_sigs(block_store, &parent_hashes, buffer_scan_floor)?
+        canonical_won_over_parents(floor_ctx, casper_snapshot, block_store, buffer_scan_floor)?
     } else {
         HashSet::new()
     };
@@ -630,8 +695,12 @@ async fn prepare_user_deploys_with_policy(
 
     let valid_count = valid.len();
 
-    let canonical_won =
-        interpreter_util::canonical_won_sigs(block_store, &parent_hashes, canonical_scan_floor)?;
+    let canonical_won = canonical_won_over_parents(
+        floor_ctx,
+        casper_snapshot,
+        block_store,
+        canonical_scan_floor,
+    )?;
 
     let recovered_canonical_wins: Vec<Signed<DeployData>> = valid
         .iter()
@@ -1826,6 +1895,7 @@ fn fresh_local_deploy_stats(
     deploy_storage: &Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     block_store: &KeyValueBlockStore,
+    floor_ctx: Option<&FloorContext>,
 ) -> Result<FreshLocalDeployStats, CasperError> {
     let stored_deploys = deploy_storage.lock().read_all()?;
     if stored_deploys.is_empty() {
@@ -1853,19 +1923,18 @@ fn fresh_local_deploy_stats(
     if candidates.is_empty() {
         return Ok(FreshLocalDeployStats::default());
     }
-    let parent_hashes: Vec<BlockHash> = casper_snapshot
-        .parents
-        .iter()
-        .map(|p| p.block_hash.clone())
-        .collect();
     let canonical_scan_floor = candidates
         .iter()
         .map(|d| d.data.valid_after_block_number)
         .min()
         .map(|h| h.min(earliest_block_number))
         .unwrap_or(earliest_block_number);
-    let canonical_won =
-        interpreter_util::canonical_won_sigs(block_store, &parent_hashes, canonical_scan_floor)?;
+    let canonical_won = canonical_won_over_parents(
+        floor_ctx,
+        casper_snapshot,
+        block_store,
+        canonical_scan_floor,
+    )?;
     let mut count = 0usize;
     let mut oldest_time = None;
     for deploy in candidates {
@@ -1894,6 +1963,7 @@ fn in_scope_local_deploy_stats(
     deploy_storage: &Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     block_store: &KeyValueBlockStore,
+    floor_ctx: Option<&FloorContext>,
 ) -> Result<InScopeLocalDeployStats, CasperError> {
     let stored_deploys = deploy_storage.lock().read_all()?;
     if stored_deploys.is_empty() {
@@ -1928,13 +1998,12 @@ fn in_scope_local_deploy_stats(
         .min()
         .map(|h| h.min(earliest_block_number))
         .unwrap_or(earliest_block_number);
-    let parent_hashes: Vec<BlockHash> = casper_snapshot
-        .parents
-        .iter()
-        .map(|p| p.block_hash.clone())
-        .collect();
-    let canonical_won =
-        interpreter_util::canonical_won_sigs(block_store, &parent_hashes, canonical_scan_floor)?;
+    let canonical_won = canonical_won_over_parents(
+        floor_ctx,
+        casper_snapshot,
+        block_store,
+        canonical_scan_floor,
+    )?;
     let finalized_won =
         finalized_ancestor_deploy_sigs(casper_snapshot, block_store, canonical_scan_floor)?;
     let mut count = 0usize;
@@ -1983,6 +2052,7 @@ fn rejected_buffer_has_recoverable_deploys(
     current_time_millis: i64,
     rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     block_store: &KeyValueBlockStore,
+    floor_ctx: Option<&FloorContext>,
 ) -> Result<bool, CasperError> {
     let buffered_deploys = {
         let buffer_guard = rejected_deploy_buffer
@@ -1996,11 +2066,6 @@ fn rejected_buffer_has_recoverable_deploys(
     if buffered_deploys.is_empty() {
         return Ok(false);
     }
-    let parent_hashes: Vec<BlockHash> = casper_snapshot
-        .parents
-        .iter()
-        .map(|p| p.block_hash.clone())
-        .collect();
     let earliest_block_number =
         block_number - casper_snapshot.on_chain_state.shard_conf.deploy_lifespan;
     let candidates: Vec<_> = buffered_deploys
@@ -2025,7 +2090,7 @@ fn rejected_buffer_has_recoverable_deploys(
         .map(|h| h.min(earliest_block_number))
         .unwrap_or(earliest_block_number);
     let canonical_won =
-        interpreter_util::canonical_won_sigs(block_store, &parent_hashes, scan_floor)?;
+        canonical_won_over_parents(floor_ctx, casper_snapshot, block_store, scan_floor)?;
 
     Ok(candidates
         .iter()
@@ -2483,6 +2548,12 @@ pub async fn create(
 
     let shard_id = casper_snapshot.on_chain_state.shard_conf.shard_name.clone();
 
+    // The one derivation of the floor (and its post-state) for this whole
+    // propose; every walk and probe below reads it. `None` only for
+    // parentless fixture shapes, where the floor requirement surfaces at
+    // bonds packaging exactly as before.
+    let floor_ctx = derive_floor_context(casper_snapshot, block_store).await?;
+
     // Prepare deploys
     let (
         user_deploys,
@@ -2555,6 +2626,7 @@ pub async fn create(
             &deploy_storage,
             &rejected_deploy_buffer,
             block_store,
+            floor_ctx.as_ref(),
         )?;
         let in_scope_local_stats = in_scope_local_deploy_stats(
             casper_snapshot,
@@ -2563,6 +2635,7 @@ pub async fn create(
             &deploy_storage,
             &rejected_deploy_buffer,
             block_store,
+            floor_ctx.as_ref(),
         )?;
         let fallback = fresh_admission_fallback(
             casper_snapshot,
@@ -2584,6 +2657,7 @@ pub async fn create(
             now_millis,
             &rejected_deploy_buffer,
             block_store,
+            floor_ctx.as_ref(),
         )?;
         let admission_policy = ordinary_admission_policy(
             casper_snapshot,
@@ -2667,6 +2741,7 @@ pub async fn create(
             block_store,
             allow_recovered_deploys,
             admission_policy,
+            floor_ctx.as_ref(),
         )
         .await?;
         record_deploy_admission_metrics(
@@ -2774,6 +2849,7 @@ pub async fn create(
         &latest_messages,
         None,
         Some(&rejected_deploy_buffer),
+        floor_ctx.as_ref(),
     )
     .await?;
     metrics::histogram!(
@@ -3034,6 +3110,7 @@ pub async fn create(
             block_data.clone(),
             invalid_blocks.clone(),
             Some(&rejected_deploy_buffer),
+            floor_ctx.as_ref(),
         )
         .await
         {
@@ -3124,38 +3201,23 @@ pub async fn create(
     } = checkpoint_data;
 
     let block_bonds = {
-        let parent_hashes: Vec<BlockHash> = parents.iter().map(|p| p.block_hash.clone()).collect();
-        let latest_messages: BTreeMap<Validator, BlockHash> = casper_snapshot
-            .justifications
-            .iter()
-            .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
-            .collect();
-        let floor = crate::rust::finality::floor::finalized_floor(
-            &casper_snapshot.dag,
-            &parent_hashes,
-            &latest_messages,
-            crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-                casper_snapshot
-                    .on_chain_state
-                    .shard_conf
-                    .fault_tolerance_threshold_ppm,
-            ),
-        )
-        .await?;
-        let floor_block = block_store.get(&floor.hash)?.ok_or_else(|| {
-            CasperError::RuntimeError(format!(
-                "finalized-floor block {} not in block store for block bonds",
-                pretty_printer::PrettyPrinter::build_string_bytes(&floor.hash)
-            ))
+        // The floor requirement is real here even for parentless fixture
+        // shapes: a block's bonds are the floor committee, so a snapshot
+        // with no derivable floor cannot package bonds.
+        let ctx = floor_ctx.as_ref().ok_or_else(|| {
+            CasperError::Other(
+                "finalized_floor requires a non-empty parent set; genesis pre-state comes from \
+                 config"
+                    .to_string(),
+            )
         })?;
-        let floor_state_hash = &floor_block.body.state.post_state_hash;
         let committee: Vec<Bond> =
-            crate::rust::finality::floor::floor_committee(runtime_manager, floor_state_hash)
+            crate::rust::finality::floor::floor_committee(runtime_manager, &ctx.floor_state)
                 .await?;
         if committee.len() != new_bonds.len() {
             tracing::info!(
                 target: "f1r3fly.casper.bonds_validation",
-                floor_number = floor.block_number,
+                floor_number = ctx.floor.block_number,
                 committee = committee.len(),
                 post_state_bonds = new_bonds.len(),
                 "block bonds field differs from post-state bonds"
@@ -4933,7 +4995,8 @@ mod tests {
             20,
             now,
             &rejected_deploy_buffer,
-            &block_store
+            &block_store,
+            None
         )
         .expect("check unselectable buffer"));
 
@@ -4955,7 +5018,8 @@ mod tests {
             20,
             now,
             &rejected_deploy_buffer,
-            &block_store
+            &block_store,
+            None
         )
         .expect("check selectable buffer"));
     }
@@ -5152,6 +5216,7 @@ mod tests {
                 fallback: false,
                 backpressure: false,
             },
+            None,
         )
         .await
         .expect("prepare deploys");
@@ -5224,6 +5289,7 @@ mod tests {
                 fallback: true,
                 backpressure: false,
             },
+            None,
         )
         .await
         .expect("prepare deploys");
@@ -5323,6 +5389,7 @@ mod tests {
                 fallback: true,
                 backpressure: false,
             },
+            None,
         )
         .await
         .expect("prepare deploys");
@@ -5408,6 +5475,7 @@ mod tests {
             &deploy_storage,
             &rejected_deploy_buffer,
             &block_store,
+            None,
         )
         .expect("in-scope stats");
         let finalized =
@@ -5433,6 +5501,7 @@ mod tests {
                 fallback: true,
                 backpressure: true,
             },
+            None,
         )
         .await
         .expect("prepare deploys");
@@ -5514,6 +5583,7 @@ mod tests {
             &deploy_storage,
             &rejected_deploy_buffer,
             &block_store,
+            None,
         )
         .expect("in-scope stats");
         assert_eq!(stats.count, 0);
@@ -5535,6 +5605,7 @@ mod tests {
                 fallback: true,
                 backpressure: true,
             },
+            None,
         )
         .await
         .expect("prepare deploys");
@@ -5626,6 +5697,7 @@ mod tests {
             &deploy_storage,
             &rejected_deploy_buffer,
             &block_store,
+            None,
         )
         .expect("in-scope stats");
         assert_eq!(stats.count, 1);
@@ -5648,6 +5720,7 @@ mod tests {
                 fallback: true,
                 backpressure: false,
             },
+            None,
         )
         .await
         .expect("prepare deploys");
@@ -5711,6 +5784,7 @@ mod tests {
             &deploy_storage,
             &rejected_deploy_buffer,
             &block_store,
+            None,
         )
         .expect("in-scope stats");
         let finalized =
@@ -5736,6 +5810,7 @@ mod tests {
                 fallback: true,
                 backpressure: true,
             },
+            None,
         )
         .await
         .expect("prepare deploys");

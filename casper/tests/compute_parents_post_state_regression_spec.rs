@@ -128,6 +128,7 @@ async fn step_block(
         BlockData::from_block(block),
         HashMap::new(),
         None,
+        None,
     )
     .await?;
 
@@ -333,6 +334,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         &latest_messages_without_skew,
         None,
         None,
+        None,
     )
     .await
     .expect("Failed to compute parents post-state without finalized skew");
@@ -365,6 +367,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         &snapshot_with_skew,
         &runtime_manager,
         &latest_messages_with_skew,
+        None,
         None,
         None,
     )
@@ -616,6 +619,7 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         &latest_messages,
         None,
         None,
+        None,
     )
     .await
     .expect("Failed to compute parents post-state");
@@ -826,6 +830,7 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
         &snapshot,
         &runtime_manager,
         &latest_messages,
+        None,
         None,
         None,
     )

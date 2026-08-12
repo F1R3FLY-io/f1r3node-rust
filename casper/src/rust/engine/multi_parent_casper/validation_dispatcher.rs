@@ -102,6 +102,37 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
     }
 
     let (t2_opt, t3_opt) = if !skip_checkpoint_and_bonds {
+        // One floor derivation for this whole validate, from the BLOCK's own
+        // frozen (parents, justifications) pair — the checkpoint's merge and
+        // the bonds cache read the same context. Derived AFTER block_summary
+        // so the step error order is unchanged; a derivation failure surfaces
+        // as the same BlockException the checkpoint path always raised.
+        let floor_ctx = if block.header.parents_hash_list.is_empty() {
+            None
+        } else {
+            let latest_messages: std::collections::BTreeMap<
+                models::rust::validator::Validator,
+                models::rust::block_hash::BlockHash,
+            > = block
+                .justifications
+                .iter()
+                .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+                .collect();
+            match crate::rust::finality::floor_context::FloorContext::derive(
+                &snapshot.dag,
+                &this.block_store,
+                &block.header.parents_hash_list,
+                &latest_messages,
+                crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                    this.casper_shard_conf.fault_tolerance_threshold_ppm,
+                ),
+            )
+            .await
+            {
+                Ok(ctx) => Some(ctx),
+                Err(ex) => return Ok(Either::Left(BlockError::BlockException(ex))),
+            }
+        };
         let (validate_block_checkpoint_result, t2) = timed_step(
             "checkpoint",
             BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC,
@@ -111,6 +142,7 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
                 snapshot,
                 &this.runtime_manager,
                 Some(&this.rejected_deploy_buffer),
+                floor_ctx.as_ref(),
             ),
         )
         .await?;
@@ -138,6 +170,7 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
                     &this.block_store,
                     snapshot,
                     &this.runtime_manager,
+                    floor_ctx.as_ref(),
                 )
                 .await)
             },

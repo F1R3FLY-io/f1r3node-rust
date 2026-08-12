@@ -543,6 +543,7 @@ async fn e1c_re_issues_merge_rejected_slash() {
         &latest_messages,
         None,
         Some(&nodes[1].rejected_deploy_buffer),
+        None,
     )
     .await
     .expect("real merge to seed cache value");
@@ -727,6 +728,7 @@ async fn rejected_slash_recovery_keeps_empty_proposer_alive() {
         &latest_messages,
         None,
         Some(&nodes[1].rejected_deploy_buffer),
+        None,
     )
     .await
     .expect("real merge to seed cache value");
