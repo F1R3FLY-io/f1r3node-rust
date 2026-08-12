@@ -969,7 +969,20 @@ mod tests {
         // early abandonment relies on File.close sweep (step 4f) /
         // deploy-end auto-release (step 5) per spec §Explicit locks
         // MUST safety net.  Same hard-fork discipline.
-        const EXPECTED: &str = "71a7c35aee29d56a0f656eb00f4526895a7433b134531d9f2a43fc1358222b2e";
+        //
+        // Anchor rolled forward again for slice-8a step-4 review cleanup
+        // (2026-08-12): added §Release-reply discards anchor docstring
+        // to LockToken block; added trailing "// reply discarded — see
+        // ..." comments at the 8 auto-acquire wrap sites; added a
+        // clarifying comment at LockToken.release noting its reply is
+        // FORWARDED (not discarded, unlike the wraps).  IMPORTANT:
+        // comments inside File.rho DO flip this hash — the composed
+        // source is hashed as a raw string.  Earlier docstring
+        // language claiming "any edit that isn't a comment-only tweak
+        // flips this hash" was inaccurate; comment-only edits also
+        // roll the anchor, and any future comment cleanup must be
+        // coordinated the same way as functional changes.
+        const EXPECTED: &str = "b895b501a5603b286c80249e676e7d5f8f261e17c852bd7c4a666d24935b2c2e";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

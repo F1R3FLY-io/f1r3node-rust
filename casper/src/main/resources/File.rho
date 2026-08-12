@@ -1027,7 +1027,7 @@ in {
                                                                         (lockId, false) => {
                                                                           lockCell!((lockId, true)) |
                                                                           new relCh in {
-                                                                            fsReleaseLock!(lockId, *relCh) |
+                                                                            fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
                                                                             for (@_r <- relCh) {
                                                                               posCell!((nextOff, rem, pending, idx)) |
                                                                               retCh!([false, "EOS",
@@ -1058,7 +1058,7 @@ in {
                                                                                     (lockId, false) => {
                                                                                       lockCell!((lockId, true)) |
                                                                                       new relCh in {
-                                                                                        fsReleaseLock!(lockId, *relCh) |
+                                                                                        fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
                                                                                         for (@_r <- relCh) {
                                                                                           posCell!((nextOff, rem, pending, idx)) |
                                                                                           retCh!([false, "EOS", "end of file"])
@@ -1096,7 +1096,7 @@ in {
                                                                                 (lockId, false) => {
                                                                                   lockCell!((lockId, true)) |
                                                                                   new relCh in {
-                                                                                    fsReleaseLock!(lockId, *relCh) |
+                                                                                    fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
                                                                                     for (@_r <- relCh) {
                                                                                       posCell!((nextOff, rem, pending, idx)) |
                                                                                       retCh!(reply)
@@ -1320,7 +1320,7 @@ in {
                                                         // outcome.  Errors from
                                                         // the loop forward
                                                         // through finalReply.
-                                                        fsReleaseLock!(lid, *relCh) |
+                                                        fsReleaseLock!(lid, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
                                                         for (@_relReply <- relCh) {
                                                           @[*private, *stateP]!("open") |
                                                           return!(finalReply)
@@ -2835,7 +2835,7 @@ in {
                                                               // writeBytes + seek-back operate on the
                                                               // fd's cursor / user-space buffer, not
                                                               // on the disk range.
-                                                              fsReleaseLock!(lid, *relCh) |
+                                                              fsReleaseLock!(lid, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
                                                               for (@_relReply <- relCh) {
                                                                 match readReply {
                                                                   [true, chunk /\ ByteArray] => {
@@ -3052,7 +3052,7 @@ in {
                                                   fsWrite!(fd, bytes, *writeCh) |
                                                   for (@writeReply <- writeCh) {
                                                     new relCh in {
-                                                      fsReleaseLock!(lid, *relCh) |
+                                                      fsReleaseLock!(lid, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
                                                       for (@_relReply <- relCh) {
                                                         match writeReply {
                                                           [true, n] => {
@@ -3196,7 +3196,7 @@ in {
                                                               // fsReadAt returns — the read result is
                                                               // already in memory; buffer copy + endFill
                                                               // don't need disk-range exclusion.
-                                                              fsReleaseLock!(lid, *relCh) |
+                                                              fsReleaseLock!(lid, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
                                                               for (@_relReply <- relCh) {
                                                                 match readReply {
                                                                   [true, chunk /\ ByteArray] => {
@@ -3367,7 +3367,7 @@ in {
                                                   fsWriteAt!(fd, off, bytes, *writeCh) |
                                                   for (@writeReply <- writeCh) {
                                                     new relCh in {
-                                                      fsReleaseLock!(lid, *relCh) |
+                                                      fsReleaseLock!(lid, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
                                                       for (@_relReply <- relCh) {
                                                         match writeReply {
                                                           [true, n] => {
@@ -3911,6 +3911,19 @@ in {
   // "hold this token but don't release it" use the standard forwarder
   // pattern (spec §Ocap patterns > Attenuation via forwarder) — no
   // LockToken-specific machinery.
+  //
+  // ## Release-reply discards (anchor for File.rho callers)
+  //
+  // Both this agent's `release` method and the auto-acquire wraps in
+  // `File`'s positional methods (`readInto`, `readAtInto`, `writeFrom`,
+  // `writeFromAt`, `writeBytesAt`, `bytesAt`) discard the reply from
+  // `fsReleaseLock` via `for (@_r <- relCh)` or `for (@_relReply <- relCh)`.
+  // The only failure mode `fs_release_lock` surfaces is `FSERR_CLOSED`
+  // (unknown LockId), which happens if a concurrent `File.close` sweep
+  // (step 4f) or deploy-end auto-release (step 5) already released the
+  // lock — nothing to do about it either way at this point in the flow.
+  // Discarding is safe by construction; call sites carry a short inline
+  // reference to this docstring for future readers.
   agent LockToken {
     constructor(@lid) {
       @[*private, *lockStateP]!(lid)
@@ -3928,6 +3941,9 @@ in {
             // syscall.
             @[*private, *lockStateP]!("released") |
             new relCh in {
+              // Reply is FORWARDED, not discarded — this is the sole
+              // explicit-release surface, so the caller sees success/error
+              // directly (unlike auto-acquire wraps that discard).
               fsReleaseLock!(lockId, *relCh) |
               for (@reply <- relCh) {
                 return!(reply)
