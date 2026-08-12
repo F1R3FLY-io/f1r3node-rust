@@ -34,6 +34,22 @@ impl KeyValueDeployStorage {
         )
     }
 
+    /// Atomically insert a deploy by signature, returning false when it already exists.
+    pub fn add_if_absent(&mut self, deploy: Signed<DeployData>) -> Result<bool, KvStoreError> {
+        let key: ByteString = deploy.sig.to_vec();
+        self.store.put_one_if_absent(key, deploy)
+    }
+
+    pub fn contains_sig(&self, sig: &[u8]) -> Result<bool, KvStoreError> {
+        let key: ByteString = sig.to_vec();
+        Ok(self
+            .store
+            .contains(vec![key])?
+            .into_iter()
+            .next()
+            .unwrap_or(false))
+    }
+
     pub fn remove(&mut self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
         self.store
             .delete(deploys.into_iter().map(|d| d.sig.clone().into()).collect())
@@ -65,4 +81,60 @@ impl KeyValueDeployStorage {
 
     /// Check if the storage contains any pending deploys. O(1) time and space.
     pub fn non_empty(&self) -> Result<bool, KvStoreError> { self.store.non_empty() }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Barrier};
+
+    use crypto::rust::private_key::PrivateKey;
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+    use shared::rust::store::key_value_store::KeyValueStore;
+
+    use super::*;
+
+    #[test]
+    fn add_if_absent_is_atomic_across_storage_handles() {
+        let store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let storage = KeyValueDeployStorage {
+            store: KeyValueTypedStoreImpl::new(store),
+        };
+        let deploy = Signed::create(
+            DeployData {
+                term: "Nil".to_string(),
+                time_stamp: 1,
+                phlo_price: 1,
+                phlo_limit: 100_000,
+                valid_after_block_number: 0,
+                shard_id: "root".to_string(),
+                expiration_timestamp: None,
+            },
+            Box::new(Secp256k1),
+            PrivateKey::from_bytes(&[1; 32]),
+        )
+        .unwrap();
+        let barrier = Arc::new(Barrier::new(32));
+
+        let handles = (0..32)
+            .map(|_| {
+                let mut storage = storage.clone();
+                let deploy = deploy.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    storage.add_if_absent(deploy).unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let inserted = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .filter(|inserted| *inserted)
+            .count();
+
+        assert_eq!(inserted, 1);
+        assert_eq!(storage.read_all().unwrap().len(), 1);
+    }
 }
