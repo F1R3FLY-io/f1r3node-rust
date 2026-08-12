@@ -274,12 +274,8 @@ impl WebApiImpl {
                 return;
             }
         };
-        match self
-            .block_report_api
-            .block_report(block_hash_bytes, false)
-            .await
-        {
-            Ok(report) => {
+        match self.block_report_api.cached_block_report(&block_hash_bytes) {
+            Ok(Some(report)) => {
                 let transfers_by_deploy =
                     extract_transfers_from_report(&report, &self.transfer_unforgeable);
                 for deploy in deploys {
@@ -294,7 +290,7 @@ impl WebApiImpl {
                     );
                 }
             }
-            Err(_) => {
+            Ok(None) | Err(_) => {
                 for deploy in deploys {
                     deploy.transfers = None;
                 }

@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::hash::Hash;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::public_key::PublicKey;
@@ -34,7 +35,8 @@ use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreMana
 use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
-use shared::rust::ByteVector;
+use shared::rust::{env, ByteVector};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::rust::errors::CasperError;
 use crate::rust::merging::block_index::BlockIndex;
@@ -60,6 +62,43 @@ struct MergeableKey {
     seq_num: i32,
 }
 
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use tokio::sync::Semaphore;
+
+    use super::RuntimeManager;
+
+    #[tokio::test]
+    async fn exploratory_deploy_permit_is_bounded_and_released() {
+        let semaphore = Arc::new(Semaphore::new(1));
+        let first = RuntimeManager::acquire_exploratory_deploy_permit_with(
+            semaphore.clone(),
+            Duration::from_millis(20),
+        )
+        .await;
+        assert!(first.is_some());
+
+        let second = RuntimeManager::acquire_exploratory_deploy_permit_with(
+            semaphore.clone(),
+            Duration::from_millis(20),
+        )
+        .await;
+        assert!(second.is_none());
+
+        drop(first);
+
+        let third = RuntimeManager::acquire_exploratory_deploy_permit_with(
+            semaphore,
+            Duration::from_millis(20),
+        )
+        .await;
+        assert!(third.is_some());
+    }
+}
+
 #[derive(Clone)]
 pub struct RuntimeManager {
     pub space: RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
@@ -83,6 +122,10 @@ pub struct RuntimeManager {
     pub replay_cache: Option<Arc<InMemoryReplayCache>>,
     /// Optional state hash cache for skipping known replays
     pub state_hash_cache: Option<Arc<StateHashCache>>,
+    exploratory_deploy_semaphore: Arc<Semaphore>,
+    exploratory_deploy_queue_timeout: Duration,
+    exploratory_deploy_phlo_limit: i64,
+    exploratory_deploy_execution_timeout: Duration,
     pub external_services: ExternalServices,
 }
 
@@ -115,6 +158,16 @@ impl RuntimeManager {
     const MAX_REPLAY_CACHE_BYTES: usize = 32 * 1024 * 1024;
     const MAX_REPLAY_CACHE_EVENT_LOG_ENTRIES: usize = 1_536;
     const MAX_STATE_HASH_CACHE_ENTRIES: usize = 0;
+    const EXPLORATORY_DEPLOY_MAX_CONCURRENT_DEFAULT: usize = 1;
+    const EXPLORATORY_DEPLOY_MAX_CONCURRENT_ENV: &str = "F1R3_EXPLORATORY_DEPLOY_MAX_CONCURRENT";
+    const EXPLORATORY_DEPLOY_QUEUE_TIMEOUT_MS_DEFAULT: u64 = 2_000;
+    const EXPLORATORY_DEPLOY_QUEUE_TIMEOUT_MS_ENV: &str =
+        "F1R3_EXPLORATORY_DEPLOY_QUEUE_TIMEOUT_MS";
+    const EXPLORATORY_DEPLOY_PHLO_LIMIT_DEFAULT: i64 = 5_000_000;
+    const EXPLORATORY_DEPLOY_PHLO_LIMIT_ENV: &str = "F1R3_EXPLORATORY_DEPLOY_PHLO_LIMIT";
+    const EXPLORATORY_DEPLOY_EXECUTION_TIMEOUT_MS_DEFAULT: u64 = 15_000;
+    const EXPLORATORY_DEPLOY_EXECUTION_TIMEOUT_MS_ENV: &str =
+        "F1R3_EXPLORATORY_DEPLOY_EXECUTION_TIMEOUT_MS";
 
     fn collect_replay_logs(
         usr_processed: &[ProcessedDeploy],
@@ -239,6 +292,64 @@ impl RuntimeManager {
     }
 
     fn max_state_hash_cache_entries() -> usize { Self::MAX_STATE_HASH_CACHE_ENTRIES }
+
+    fn exploratory_deploy_max_concurrent() -> usize {
+        env::var_or(
+            Self::EXPLORATORY_DEPLOY_MAX_CONCURRENT_ENV,
+            Self::EXPLORATORY_DEPLOY_MAX_CONCURRENT_DEFAULT,
+        )
+        .max(1)
+    }
+
+    fn exploratory_deploy_queue_timeout() -> Duration {
+        Duration::from_millis(
+            env::var_or(
+                Self::EXPLORATORY_DEPLOY_QUEUE_TIMEOUT_MS_ENV,
+                Self::EXPLORATORY_DEPLOY_QUEUE_TIMEOUT_MS_DEFAULT,
+            )
+            .max(1),
+        )
+    }
+
+    fn exploratory_deploy_phlo_limit() -> i64 {
+        env::var_or(
+            Self::EXPLORATORY_DEPLOY_PHLO_LIMIT_ENV,
+            Self::EXPLORATORY_DEPLOY_PHLO_LIMIT_DEFAULT,
+        )
+        .max(1)
+    }
+
+    fn exploratory_deploy_execution_timeout() -> Duration {
+        Duration::from_millis(
+            env::var_or(
+                Self::EXPLORATORY_DEPLOY_EXECUTION_TIMEOUT_MS_ENV,
+                Self::EXPLORATORY_DEPLOY_EXECUTION_TIMEOUT_MS_DEFAULT,
+            )
+            .max(1),
+        )
+    }
+
+    async fn acquire_exploratory_deploy_permit_with(
+        semaphore: Arc<Semaphore>,
+        timeout: Duration,
+    ) -> Option<OwnedSemaphorePermit> {
+        tokio::time::timeout(timeout, semaphore.acquire_owned())
+            .await
+            .ok()?
+            .ok()
+    }
+
+    pub async fn acquire_exploratory_deploy_permit(&self) -> Option<OwnedSemaphorePermit> {
+        Self::acquire_exploratory_deploy_permit_with(
+            self.exploratory_deploy_semaphore.clone(),
+            self.exploratory_deploy_queue_timeout,
+        )
+        .await
+    }
+
+    pub fn exploratory_deploy_execution_timeout_value(&self) -> Duration {
+        self.exploratory_deploy_execution_timeout
+    }
 
     pub fn trim_allocator() {
         #[cfg(target_os = "linux")]
@@ -785,7 +896,12 @@ impl RuntimeManager {
         let runtime = self.spawn_runtime().await;
         let mut runtime_ops = RuntimeOps::new(runtime);
         runtime_ops
-            .play_exploratory_deploy(term, hash, deployer)
+            .play_exploratory_deploy_with_phlo_limit(
+                term,
+                hash,
+                deployer,
+                self.exploratory_deploy_phlo_limit,
+            )
             .await
     }
 
@@ -1247,6 +1363,7 @@ impl RuntimeManager {
     ) -> RuntimeManager {
         let replay_cache_size = Self::max_replay_cache_entries();
         let state_hash_cache_size = Self::max_state_hash_cache_entries();
+        let exploratory_deploy_max_concurrent = Self::exploratory_deploy_max_concurrent();
 
         RuntimeManager {
             space: rspace,
@@ -1270,6 +1387,12 @@ impl RuntimeManager {
             }),
             state_hash_cache: (state_hash_cache_size > 0)
                 .then(|| Arc::new(StateHashCache::new(state_hash_cache_size))),
+            exploratory_deploy_semaphore: Arc::new(Semaphore::new(
+                exploratory_deploy_max_concurrent,
+            )),
+            exploratory_deploy_queue_timeout: Self::exploratory_deploy_queue_timeout(),
+            exploratory_deploy_phlo_limit: Self::exploratory_deploy_phlo_limit(),
+            exploratory_deploy_execution_timeout: Self::exploratory_deploy_execution_timeout(),
             external_services,
         }
     }
