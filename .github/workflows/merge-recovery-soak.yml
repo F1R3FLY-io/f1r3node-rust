@@ -84,11 +84,18 @@ env:
   # hold the envelope + any safe floor — the orchestrator host guardian
   # killed at free 6524MB). Sizing invariant, learned twice (PR #217 review,
   # then 31390673884): ceiling + ~7GB host overhead + floor <= MemTotal,
-  # else the floor fires before this attributable ceiling can. Here:
-  # 28672 + ~7168 + 8192 = ~44GB <= 48GB. 28672 is ~1.5x the measured
-  # envelope — silent on legitimate load, catches a real leak ~9GB before
-  # the floor or the kernel OOM killer get involved.
-  SOAK_RSS_CEILING_MB: "28672"
+  # else the floor fires before this attributable ceiling can.
+  #
+  # 2026-08-11: 28672 -> 45056 with the 64GB soak VM
+  # (RUNNER_MEM_GB_OVERRIDE below). The #197 wedge fix (#228) unmasked the
+  # workload's true footprint: smoke run 31547587950 breached at 36008MB
+  # instant RSS while fully healthy (1200 deploys/300s, 0 errors, tip-LFB
+  # lag 0), matching the 31-37GB envelope measured in the local A/B that
+  # exonerated the merge. The old ceiling was 1.5x the wedge-suppressed
+  # envelope, not the real one. 45056 is ~1.25x the observed 36GB peak —
+  # silent on legitimate load, catches a real leak ~9GB before the floor —
+  # and the invariant holds on 64GB: 45056 + ~7168 + 8192 = ~59GB <= 64GB.
+  SOAK_RSS_CEILING_MB: "45056"
   # 2026-08-10 (PR #217 review): lowered 12288 -> 8192 alongside the ceiling
   # raise — on the then-32GB host, 20480 + 12288 = 32768 meant available RAM
   # crossed the floor before total RSS could reach the ceiling, so the
@@ -718,6 +725,16 @@ jobs:
           # particular is the one whose absence actually breaks routing, and it
           # must stay in step with the soak job's runs-on below.
           RUNNER_LABELS: self-hosted,linux,x64,f1r3fly-rust-soak,oracle-cloud
+          # 64GB for the soak VM only (fleet default stays AMD64_MEM_GB=48).
+          # The #197 wedge fix unmasked the workload's true footprint: smoke
+          # run 31547587950 (2026-08-11) breached at 36008MB instant RSS
+          # while fully healthy — 1200 deploys/300s, 0 errors, tip-LFB lag 0.
+          # 48GB cannot hold that envelope plus any invariant-respecting
+          # guard (max ceiling there is ~33GB, below the observed peak), so
+          # the launch knob SI PR #99 added is used here. Keep in step with
+          # SOAK_RSS_CEILING_MB above — the sizing invariant is
+          # ceiling + ~7GB host overhead + floor <= this VM's MemTotal.
+          RUNNER_MEM_GB_OVERRIDE: "64"
         shell: bash -e {0}
         run: system-integration/ci/oci-runners/launch-runner.sh amd64
 
