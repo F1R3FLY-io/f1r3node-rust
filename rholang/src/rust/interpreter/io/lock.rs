@@ -242,6 +242,32 @@ impl LockRegistry {
     /// `Err(LockError::BadArg)` on zero-length range;
     /// `Err(LockError::QuotaExceeded)` if per-file range cap or
     /// LockId ceiling is hit.
+    ///
+    /// ## Same-holder re-entry (2026-08-12, closing X-1 §Explicit locks gap)
+    ///
+    /// Overlapping ranges from the *same* holder never conflict, regardless
+    /// of mode.  Spec §Explicit locks: `lockRange` "Composes with implicit
+    /// locks acquired by concurrent positional calls."  A File cap that
+    /// holds an explicit `lockRange(0, 1024, "w")` must be able to do
+    /// positional I/O inside that range through the same cap — its inline
+    /// auto-acquire (with the same holder) would otherwise trip a W-vs-W
+    /// self-conflict and return `FSERR_BUSY`, defeating the compositional
+    /// promise.  The File-agent dispatch loop's `stateP`-linear-receive
+    /// already serializes two intra-cap operations at the Rholang layer, so
+    /// there is no kernel-fd race for this rule to guard against; the rule
+    /// just lets the `LockRegistry` reflect the same "no self-conflict"
+    /// semantic Rholang callers observe.
+    ///
+    /// Scope: **positional-vs-positional only**.  Sequential acquisition
+    /// (see `try_acquire_sequential`) stays strict — a File cap holding a
+    /// range lock cannot also open a sequential stream through itself,
+    /// matching FIP §1143's "one active sequential stream per File" and
+    /// "a sequential stream conflicts with any positional stream and vice
+    /// versa."  Same-holder read-vs-write is granted (holder already has
+    /// full cap authority; `lockRange` is for cross-holder coordination,
+    /// not intra-cap access-tier enforcement).  Each same-holder acquire
+    /// still mints a fresh `LockId`; each `release(id)` removes exactly
+    /// the one entry with that id.
     pub fn try_acquire_range(
         &self,
         dev_inode: DevInode,
@@ -268,7 +294,13 @@ impl LockRegistry {
             if !ranges_overlap((entry.offset, entry.length), (offset, length)) {
                 continue;
             }
+            // Two overlapping reads coexist (spec §1143 "Multiple readers
+            // of overlapping ranges coexist").
             if mode == LockMode::Read && entry.mode == LockMode::Read {
+                continue;
+            }
+            // Same-holder overlapping acquires coexist (see docstring).
+            if entry.holder == holder {
                 continue;
             }
             return Err(LockError::Busy);
@@ -569,6 +601,92 @@ mod tests {
         // Same range, different inode: independent state.
         reg.try_acquire_range((1, 43), 0, 100, LockMode::Write, holder(1), deploy(1))
             .expect("different inode must not conflict");
+    }
+
+    // -- same-holder re-entry --------------------------------------------
+    //
+    // Closes the X-1 §Explicit locks compositional-promise gap: a File cap
+    // that holds an explicit `lockRange` must be able to do positional I/O
+    // in that range through the same cap without tripping its own W-vs-W
+    // conflict.  Rule: overlapping ranges from the same holder never
+    // conflict, regardless of mode.  Scope: positional-vs-positional only
+    // (sequential stays strict per FIP §1143).
+
+    #[test]
+    fn same_holder_overlapping_writes_coexist() {
+        let reg = LockRegistry::new();
+        let a = reg
+            .try_acquire_range((1, 42), 0, 1024, LockMode::Write, holder(1), deploy(1))
+            .expect("explicit lockRange must succeed");
+        // Same holder inline-acquires a sub-range at "w" — models
+        // File.writeBytesAt(50, 20) inside the outer explicit lockRange.
+        let b = reg
+            .try_acquire_range((1, 42), 50, 20, LockMode::Write, holder(1), deploy(1))
+            .expect("same-holder overlapping W must coexist (X-1 compositional promise)");
+        assert_ne!(a, b, "same-holder re-entry mints a fresh LockId");
+        assert_eq!(reg.held_locks(), 2);
+    }
+
+    #[test]
+    fn same_holder_read_then_write_overlapping_coexists() {
+        let reg = LockRegistry::new();
+        // Same holder, R lock, then a W in the same range.  The holder
+        // has full cap authority; lockRange is for cross-holder coordination,
+        // not intra-cap access-tier enforcement.
+        reg.try_acquire_range((1, 42), 0, 1024, LockMode::Read, holder(1), deploy(1))
+            .unwrap();
+        reg.try_acquire_range((1, 42), 50, 20, LockMode::Write, holder(1), deploy(1))
+            .expect("same-holder R-then-W must coexist");
+    }
+
+    #[test]
+    fn different_holder_overlapping_still_conflicts_when_outer_is_writer() {
+        let reg = LockRegistry::new();
+        // Same-holder rule must NOT relax cross-holder coordination.
+        reg.try_acquire_range((1, 42), 0, 1024, LockMode::Write, holder(1), deploy(1))
+            .unwrap();
+        let err = reg
+            .try_acquire_range((1, 42), 50, 20, LockMode::Write, holder(2), deploy(1))
+            .unwrap_err();
+        assert_eq!(err, LockError::Busy, "different holder must still conflict");
+    }
+
+    #[test]
+    fn same_holder_range_release_frees_only_matching_entry() {
+        let reg = LockRegistry::new();
+        let outer = reg
+            .try_acquire_range((1, 42), 0, 1024, LockMode::Write, holder(1), deploy(1))
+            .unwrap();
+        let inner = reg
+            .try_acquire_range((1, 42), 50, 20, LockMode::Write, holder(1), deploy(1))
+            .unwrap();
+        // Releasing the inner acquisition must NOT drop the outer explicit
+        // lock — cross-holder writes still conflict on the outer range.
+        reg.release(inner).unwrap();
+        assert_eq!(reg.held_locks(), 1, "outer lock survives inner release");
+        let err = reg
+            .try_acquire_range((1, 42), 100, 50, LockMode::Write, holder(2), deploy(1))
+            .unwrap_err();
+        assert_eq!(err, LockError::Busy);
+        // Releasing the outer now frees the range for other holders.
+        reg.release(outer).unwrap();
+        reg.try_acquire_range((1, 42), 100, 50, LockMode::Write, holder(2), deploy(1))
+            .expect("after outer release, other holder must succeed");
+    }
+
+    #[test]
+    fn same_holder_sequential_still_conflicts_with_own_range() {
+        let reg = LockRegistry::new();
+        // FIP §1143: sequential streams conflict with any positional stream
+        // and vice versa — including from the same cap.  Same-holder skip
+        // is scoped to positional-vs-positional; it does not relax
+        // sequential exclusion.
+        reg.try_acquire_range((1, 42), 0, 100, LockMode::Read, holder(1), deploy(1))
+            .unwrap();
+        let err = reg
+            .try_acquire_sequential((1, 42), holder(1), deploy(1))
+            .unwrap_err();
+        assert_eq!(err, LockError::Busy);
     }
 
     // -- sequential-flag coexistence -------------------------------------
