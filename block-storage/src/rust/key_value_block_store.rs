@@ -487,6 +487,18 @@ mod tests {
             Ok(())
         }
 
+        fn put_one_if_absent(
+            &self,
+            key: shared::rust::ByteBuffer,
+            value: shared::rust::ByteBuffer,
+        ) -> Result<bool, KvStoreError> {
+            if self.get_result.is_some() {
+                return Ok(false);
+            }
+            self.put(vec![(key, value)])?;
+            Ok(true)
+        }
+
         fn delete(&self, _keys: Vec<shared::rust::ByteBuffer>) -> Result<usize, KvStoreError> {
             todo!()
         }
@@ -534,6 +546,14 @@ mod tests {
         }
 
         fn put(&self, _kv_pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError> {
+            todo!()
+        }
+
+        fn put_one_if_absent(
+            &self,
+            _key: ByteBuffer,
+            _value: ByteBuffer,
+        ) -> Result<bool, KvStoreError> {
             todo!()
         }
 
