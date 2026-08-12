@@ -366,10 +366,12 @@ if [ -z "$policy_id" ]; then
 		--query data.id \
 		--raw-output)"
 else
+	# The CLI refuses --statements without --version-date; empty maps to null.
 	oci iam policy update \
 		--profile "$OCI_PROFILE" \
 		--policy-id "$policy_id" \
 		--statements "$statements" \
+		--version-date "" \
 		--force >/dev/null
 fi
 
