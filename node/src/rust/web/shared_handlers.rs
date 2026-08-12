@@ -12,6 +12,7 @@ use casper::rust::api::block_api::{
     ProposeReadOnlyError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
+use casper::rust::casper::DeployError;
 use casper::rust::errors::CasperError;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
@@ -209,6 +210,9 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
     for cause in err.chain() {
         if let Some(ce) = cause.downcast_ref::<CasperError>() {
             return classify_casper_error(ce);
+        }
+        if let Some(DeployError::DuplicateDeploy(_)) = cause.downcast_ref::<DeployError>() {
+            return (StatusCode::CONFLICT, "duplicate_deploy", cause.to_string());
         }
         if cause.downcast_ref::<DeployNotFoundError>().is_some() {
             return (StatusCode::NOT_FOUND, "deploy_not_found", cause.to_string());
@@ -418,6 +422,7 @@ pub async fn status_handler(State(app_state): State<AppState>) -> Response {
     responses(
         (status = 200, description = "Deploy accepted; returns the deploy ID (hex)", body = String),
         (status = 400, description = "Malformed request body or invalid field value (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`)", body = ApiErrorResponse),
+        (status = 409, description = "Deploy is already known (`duplicate_deploy`)", body = ApiErrorResponse),
         (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`)", body = ApiErrorResponse),
         (status = 502, description = "Upstream or peer communication failure (`comm_error`, `external_service_error`)", body = ApiErrorResponse),
