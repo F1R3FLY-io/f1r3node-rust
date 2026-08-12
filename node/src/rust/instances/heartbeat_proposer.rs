@@ -674,22 +674,11 @@ async fn check_lfb_and_propose(
                 })
             }
             ProposerResult::Failure(status, seq_num) => {
-                if matches!(
+                tracing::warn!(
+                    "Heartbeat: Propose failed with {} (seqNum {})",
                     status,
-                    ProposeStatus::Failure(ProposeFailure::RecoveryDeferred)
-                ) {
-                    tracing::debug!(
-                        "Heartbeat: Propose deferred with {} (seqNum {})",
-                        status,
-                        seq_num
-                    );
-                } else {
-                    tracing::warn!(
-                        "Heartbeat: Propose failed with {} (seqNum {})",
-                        status,
-                        seq_num
-                    );
-                }
+                    seq_num
+                );
                 // Only escalate backoff for explicit bug failures.
                 // Recoverable propose races should retry on the normal heartbeat cadence.
                 Ok(HeartbeatCheckResult {
@@ -1123,24 +1112,6 @@ mod tests {
             (count, func)
         }
 
-        fn create_recovery_deferred_propose_function() -> (Arc<AtomicUsize>, Arc<ProposeFunction>) {
-            use casper::rust::blocks::proposer::propose_result::{ProposeFailure, ProposeStatus};
-            use casper::rust::blocks::proposer::proposer::ProposerResult;
-
-            let count = Arc::new(AtomicUsize::new(0));
-            let count_clone = count.clone();
-            let func: Arc<ProposeFunction> = Arc::new(move |_casper, _is_async| {
-                count_clone.fetch_add(1, Ordering::SeqCst);
-                Box::pin(async {
-                    Ok(ProposerResult::Failure(
-                        ProposeStatus::Failure(ProposeFailure::RecoveryDeferred),
-                        7,
-                    ))
-                })
-            });
-            (count, func)
-        }
-
         fn test_hash(byte: u8) -> BlockHash { Bytes::from(vec![byte; 32]) }
 
         fn test_validator(byte: u8) -> Bytes {
@@ -1415,38 +1386,6 @@ mod tests {
                 1,
                 "Should trigger propose when LFB is stale and new parents exist"
             );
-        }
-
-        #[tokio::test]
-        async fn do_heartbeat_check_treats_recovery_deferred_as_non_bug() {
-            let validator = create_test_validator_identity();
-            let validator_id = validator.public_key.bytes.clone();
-            let mut snapshot =
-                casper::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-            casper::rust::casper::test_helpers::TestCasperWithSnapshot::bond_validator_in_snapshot(
-                &mut snapshot,
-                validator_id.into(),
-            );
-            let lfb = create_lfb_with_age(60000);
-            let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(
-                casper::rust::casper::test_helpers::TestCasperWithSnapshot::new(snapshot, lfb),
-            );
-            let (propose_count, propose_func) = create_recovery_deferred_propose_function();
-            let config = HeartbeatConf {
-                enabled: true,
-                check_interval: Duration::from_secs(1),
-                max_lfb_age: Duration::from_secs(1),
-                self_propose_cooldown: Duration::from_secs(15),
-                ..HeartbeatConf::default()
-            };
-
-            let result =
-                do_heartbeat_check(casper, &*propose_func, &validator, &config, false, false)
-                    .await
-                    .expect("heartbeat check");
-
-            assert_eq!(propose_count.load(Ordering::SeqCst), 1);
-            assert!(!result.bug_failure);
         }
 
         #[tokio::test]

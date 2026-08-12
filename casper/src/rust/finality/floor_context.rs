@@ -130,6 +130,69 @@ impl FloorContext {
             .collect())
     }
 
+    /// Sigs whose latest canonical disposition over the operation's parents
+    /// is a REJECTION — the retry contexts the gate adjudicates.
+    pub fn rejected_sigs(
+        &self,
+        block_store: &KeyValueBlockStore,
+        earliest_block_number: i64,
+    ) -> Result<std::collections::HashSet<Bytes>, CasperError> {
+        Ok(self
+            .dispositions(block_store, earliest_block_number)?
+            .iter()
+            .filter(|(_, disposition)| !disposition.won())
+            .map(|(sig, _)| sig.clone())
+            .collect())
+    }
+
+    /// The retry gate — a pure validity predicate over frozen block facts,
+    /// so proposer and every validator compute the identical verdict:
+    /// re-including a rejected sig is legal iff its LATEST kept rejection
+    /// is settled inside this operation's frozen floor closure — the
+    /// adjudication is a fact of the block's own base. There is
+    /// deliberately NO unsettleable-rejection escape: a record visible in
+    /// the parent cone entered it through a merge, every proposal merges
+    /// its full frontier (parent selection never narrows), so the floor
+    /// passes that merge point within rounds — in-cone records settle
+    /// structurally. A stalled floor closes neither the gate's condition
+    /// nor the validity window (both are floor-clock), so deferral under
+    /// stall is custody, never loss. If a genuinely unsettleable in-cone
+    /// rejection ever appears (the old starvation class: recovery re-picks
+    /// and defers until the work is destroyed — watch the "deferred by the
+    /// retry gate" proposer log), an escape must be derived from an
+    /// ON-CHAIN citability bound, never from node-local config.
+    ///
+    /// This is what sequentializes recovery: a loser cannot be re-proposed
+    /// against a live contest — ungated re-proposal regenerated same-sig
+    /// sibling copies faster than merges could adjudicate them and
+    /// livelocked the shard under sustained contention. A sig with no kept
+    /// rejection in the cone is not in a retry context and the gate stays
+    /// closed — first inclusions never consult it, and a standing win is
+    /// governed by the repeat check. A rejection settled DEEPER than the
+    /// walk window (possible while the floor lags the tip by more than the
+    /// deploy lifespan) also reads as no-disposition: retries defer through
+    /// deep floor lag — delay, never loss, since the floor-clock buffer
+    /// retain keeps custody until the floor itself closes the window.
+    pub fn retry_gate_open(
+        &self,
+        dag: &KeyValueDagRepresentation,
+        block_store: &KeyValueBlockStore,
+        earliest_block_number: i64,
+        sig: &Bytes,
+    ) -> Result<bool, CasperError> {
+        let dispositions = self.dispositions(block_store, earliest_block_number)?;
+        let Some(disposition) = dispositions.get(sig) else {
+            return Ok(false);
+        };
+        match &disposition.latest_kept_rejection {
+            None => Ok(false),
+            Some((_, record_block)) => Ok(*record_block == self.floor.hash
+                || dag
+                    .is_dag_ancestor(record_block, &self.floor.hash)
+                    .map_err(CasperError::KvStoreError)?),
+        }
+    }
+
     /// True iff the sig's effect is present in the FLOOR block's committed
     /// post-state, memoized across every probe of this operation.
     pub fn effect_settled_in_floor(

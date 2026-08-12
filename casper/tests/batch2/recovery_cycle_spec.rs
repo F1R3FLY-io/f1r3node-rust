@@ -11,6 +11,7 @@
 // Rholang body is `Nil`, so play execution has no `|` parallel
 // composition and is fully deterministic.
 
+use casper::rust::casper::MultiParentCasper;
 use casper::rust::util::construct_deploy;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
@@ -156,12 +157,20 @@ fn assert_touched_integer_add_channels_single_valued(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
-    let ctx = TestContext::new().await;
-    let shard_id = ctx.genesis.genesis_block.shard_id.clone();
+    // Two validators bonded in genesis (stakes {1, 3}): validator 1 holds a
+    // witnessing majority, so the settle ladder below can advance the floor.
+    // A genesis bonding the full default validator set would strand every
+    // floor at genesis with only two nodes running.
+    let genesis_parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(2));
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(genesis_parameters))
+        .await
+        .unwrap();
+    let shard_id = genesis.genesis_block.shard_id.clone();
 
     // Two validators, no synchrony constraint, unlimited parents so the
     // multi-parent merge actually happens.
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis, 2, None, None, None, None)
         .await
         .expect("create_network(2)");
     for node in nodes.iter_mut() {
@@ -348,15 +357,59 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
             hex::encode(&conflict_sig)
         );
     }
-    nodes[0]
-        .block_dag_storage
-        .record_directly_finalized(merge_block.block_hash.clone(), 1.0, |_| async { Ok(()) })
+    // Settle the adjudication: the retry gate opens only once the rejection
+    // record is inside the proposer's frozen floor closure. Validator 1
+    // (majority stake) mints settle rounds synced to validator 0 until
+    // validator 0's derived floor covers merge_block.
+    let m_height = merge_block.body.state.block_number;
+    let mut settled = false;
+    for round in 0..30i32 {
+        let settle_marker = {
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+            construct_deploy::basic_deploy_data(
+                50 + round,
+                Some(construct_deploy::DEFAULT_SEC2.clone()),
+                Some(shard_id.clone()),
+            )
+            .expect("build settle marker")
+        };
+        let b = nodes[1]
+            .add_block_from_deploys(std::slice::from_ref(&settle_marker))
+            .await
+            .expect("settle round");
+        {
+            let (a, c) = nodes.split_at_mut(1);
+            a[0].sync_with_one(&mut c[0])
+                .await
+                .expect("sync settle round 1 -> 0");
+        }
+        let dag = nodes[0].casper.block_dag().await.expect("dag");
+        let floor = casper::rust::finality::floor::floor_of_block(
+            &dag,
+            &b.block_hash,
+            casper::rust::safety::clique_oracle::FtThreshold::from_f32_lossy(0.0),
+        )
         .await
-        .expect("mark merge frontier finalized for recovery gate");
+        .expect("floor_of_block");
+        if floor.hash == merge_block.block_hash
+            || (floor.block_number >= m_height
+                && dag
+                    .is_dag_ancestor(&merge_block.block_hash, &floor.hash)
+                    .expect("ancestor query"))
+        {
+            settled = true;
+            break;
+        }
+    }
+    assert!(
+        settled,
+        "staging precondition: validator 0's floor must come to cover \
+         merge_block within the settle rounds"
+    );
 
     // Validator 0 proposes another block while its source block is still
-    // visible in unresolved scope. Since the merge rejection is visible and
-    // the deploy is in the rejected-deploy buffer, the rejected sig must be
+    // visible in unresolved scope. The rejection is now settled in the
+    // floor, so the retry gate is open and the rejected sig must be
     // retryable rather than blocked until the source leaves the DAG window.
     let marker_deploy_2 = {
         tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;

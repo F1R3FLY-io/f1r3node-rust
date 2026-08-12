@@ -63,12 +63,33 @@ async fn stage_floor_at(
     floor_height: i64,
     parent_height: i64,
 ) {
+    stage_floor_at_with_records(
+        snapshot,
+        block_store,
+        kvm,
+        floor_height,
+        parent_height,
+        Vec::new(),
+    )
+    .await
+}
+
+/// `stage_floor_at`, with kept rejection records riding in the FLOOR block —
+/// settled adjudications, so the retry gate is open for their sigs.
+async fn stage_floor_at_with_records(
+    snapshot: &mut CasperSnapshot,
+    block_store: &KeyValueBlockStore,
+    kvm: &mut InMemoryStoreManager,
+    floor_height: i64,
+    parent_height: i64,
+    floor_records: Vec<models::rust::casper::protocol::casper_message::RejectedDeploy>,
+) {
     use block_storage::rust::dag::block_dag_key_value_storage::{
         BlockDagKeyValueStorage, InsertMode,
     };
     use models::rust::block_implicits;
 
-    let root = block_implicits::get_random_block(
+    let mut root = block_implicits::get_random_block(
         Some(floor_height),
         Some(0),
         None,
@@ -84,6 +105,7 @@ async fn stage_floor_at(
         Some("test-shard".to_string()),
         None,
     );
+    root.body.rejected_deploys = floor_records;
     let parent = block_implicits::get_random_block(
         Some(parent_height),
         Some(1),
@@ -247,6 +269,16 @@ async fn seen_deploys_wait_for_finalized_recovery_buffer() {
         .expect("rejected buffer lock")
         .add(vec![deploy.clone()])
         .expect("add rejected deploy");
+    // The retry gate needs the rejection SETTLED: stage a floor whose block
+    // carries the deploy's kept rejection record.
+    stage_floor_at_with_records(&mut snapshot, &block_store, &mut kvm, 10, 20, vec![
+        models::rust::casper::protocol::casper_message::RejectedDeploy {
+            sig: deploy.sig.clone(),
+            duplicate: false,
+            carrier: Bytes::new(),
+        },
+    ])
+    .await;
     let prepared = block_creator::prepare_user_deploys(
         &snapshot,
         21,
@@ -261,7 +293,7 @@ async fn seen_deploys_wait_for_finalized_recovery_buffer() {
     .expect("prepare with rejected buffer");
     assert!(
         prepared.deploys.contains(&deploy),
-        "rejected-buffer deploys with a visible rejection must be retryable while the rejected source remains in scope"
+        "rejected-buffer deploys with a settled rejection must be retryable while the rejected source remains in scope"
     );
     assert!(rejected_deploy_buffer
         .lock()
@@ -561,6 +593,29 @@ async fn recovered_deploy_selection_uses_normal_retry_window() {
         .add(recovered.clone())
         .expect("seed rejected deploys");
 
+    // Every buffered retry's kept rejection rides in the staged floor block:
+    // settled adjudications, so the retry gate is open and the WINDOW is the
+    // only thing bounding selection.
+    let floor_records = recovered
+        .iter()
+        .map(
+            |d| models::rust::casper::protocol::casper_message::RejectedDeploy {
+                sig: d.sig.clone(),
+                duplicate: false,
+                carrier: Bytes::new(),
+            },
+        )
+        .collect();
+    stage_floor_at_with_records(
+        &mut snapshot,
+        &block_store,
+        &mut kvm,
+        190,
+        199,
+        floor_records,
+    )
+    .await;
+
     let prepared = block_creator::prepare_user_deploys(
         &snapshot,
         200,
@@ -762,7 +817,7 @@ async fn block_expired_rejected_deploy_is_purged_not_retried() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn recovered_deploys_are_ignored_when_recovery_leadership_is_disabled() {
+async fn buffered_retry_admission_follows_the_recovered_deploys_policy_switch() {
     crate::init_logger();
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
@@ -782,7 +837,7 @@ async fn recovered_deploys_are_ignored_when_recovery_leadership_is_disabled() {
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
         .expect("block store");
-    let snapshot = create_snapshot(20, validator_id);
+    let mut snapshot = create_snapshot(20, validator_id);
     let deploy = create_deploy(1, None, &validator_sk);
 
     rejected_deploy_buffer
@@ -790,6 +845,17 @@ async fn recovered_deploys_are_ignored_when_recovery_leadership_is_disabled() {
         .expect("rejected buffer lock")
         .add(vec![deploy.clone()])
         .expect("seed rejected deploys");
+
+    // A settled rejection in the staged floor opens the retry gate, so the
+    // policy switch is the only thing deciding admission below.
+    stage_floor_at_with_records(&mut snapshot, &block_store, &mut kvm, 10, 20, vec![
+        models::rust::casper::protocol::casper_message::RejectedDeploy {
+            sig: deploy.sig.clone(),
+            duplicate: false,
+            carrier: Bytes::new(),
+        },
+    ])
+    .await;
 
     let prepared = block_creator::prepare_user_deploys(
         &snapshot,
@@ -802,11 +868,11 @@ async fn recovered_deploys_are_ignored_when_recovery_leadership_is_disabled() {
         true,
     )
     .await
-    .expect("prepare without recovery leadership");
+    .expect("prepare with recovered admission disabled");
 
     assert!(
         prepared.deploys.is_empty(),
-        "non-leaders must not propose recovered deploys"
+        "with allow_recovered_deploys off, buffered retries must not be proposed"
     );
     assert!(rejected_deploy_buffer
         .lock()
@@ -829,7 +895,7 @@ async fn recovered_deploys_are_ignored_when_recovery_leadership_is_disabled() {
 
     assert!(
         prepared.deploys.contains(&deploy),
-        "leaders must be able to propose recovered deploys while ordinary deploys are deferred"
+        "with allow_recovered_deploys on, a gate-open retry is proposed even while ordinary deploys are deferred"
     );
 
     let prepared = block_creator::prepare_user_deploys(
@@ -847,7 +913,7 @@ async fn recovered_deploys_are_ignored_when_recovery_leadership_is_disabled() {
 
     assert!(
         prepared.deploys.contains(&deploy),
-        "leaders must be able to propose recovered deploys"
+        "with both switches on, the gate-open retry is proposed"
     );
 }
 

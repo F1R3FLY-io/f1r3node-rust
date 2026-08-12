@@ -22,6 +22,7 @@
 
 use std::sync::Arc;
 
+use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::util::construct_deploy;
 use casper::rust::validate::Validate;
 use dashmap::DashSet;
@@ -78,18 +79,16 @@ fn mk_casper_snapshot(
 /// finalized base), and a child block FABRICATES a rejected_deploys record
 /// for it — no honest merge can reject a chain protected by its floor.
 ///
-/// Under the deterministic exemption, `repeat_deploy` judged in isolation
-/// accepts the re-inclusion (the block's parent scope says latest
-/// disposition = rejected: the predicate deliberately trusts the parent's
-/// on-chain record so that every node returns the SAME verdict). The
-/// double-execution defense for this shape sits one layer down, where it is
-/// also node-deterministic: the fabricating block itself fails
+/// `repeat_deploy` reads the parent's on-chain record and the block's
+/// frozen floor, so every node returns the SAME verdict: the rejection at
+/// block_n is live (unsettled in the floor closure), the retry gate is
+/// closed, and the re-inclusion is the non-slashable premature-retry arm.
+/// The fabricated record itself is separately unbuildable: block_n fails
 /// `validate_block_checkpoint`'s rejected-list equality
-/// (`InvalidRejectedDeploy` — the validator's recomputed merge produces no
-/// such rejection), so the fabricated record never becomes buildable
-/// history and the recovery block is orphaned with it.
+/// (`InvalidRejectedDeploy` — the recomputed merge produces no such
+/// rejection), so the fabricating branch is orphaned regardless.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn repeat_deploy_grants_exemption_on_parent_rejection_record() {
+async fn repeat_deploy_gates_retry_on_a_live_parent_rejection_record() {
     crate::init_logger();
 
     with_storage(|mut block_store, mut block_dag_storage| async move {
@@ -163,20 +162,27 @@ async fn repeat_deploy_grants_exemption_on_parent_rejection_record() {
         rejected.insert(deploy_sig.clone());
         snapshot.rejected_in_scope = Arc::new(rejected);
 
-        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50);
+        let ctx = casper::rust::finality::floor_context::FloorContext::derive(
+            &snapshot.dag,
+            &block_store,
+            std::slice::from_ref(&block_n.block_hash),
+            &std::collections::BTreeMap::new(),
+            casper::rust::safety::clique_oracle::FtThreshold::from_f32_lossy(1.0),
+        )
+        .await
+        .expect("derive floor context");
+        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50, Some(&ctx));
 
-        // Deterministic semantics: repeat_deploy trusts the parent's on-chain
-        // rejection record (same verdict on every node). The fabricated record
-        // itself is what gets rejected — block_n fails the checkpoint
-        // rejected-list equality (InvalidRejectedDeploy) on every validator,
-        // so this Valid verdict can never be reached through buildable history.
+        // Deterministic semantics: repeat_deploy reads the parent's on-chain
+        // rejection record and the block's frozen floor (same verdict on
+        // every node). The rejection at block_n is LIVE — not settled in the
+        // floor closure — so the retry gate is closed and the verdict is the
+        // non-slashable premature-retry arm, never a node-local misfire.
         assert_eq!(
             result,
-            Either::Right(casper::rust::block_status::ValidBlock::Valid),
+            Either::Left(BlockError::Invalid(InvalidBlock::PrematureDeployRetry)),
             "repeat_deploy must return the same verdict on every node: the \
-             parent-scope disposition record (rejection in block_n) grants the \
-             exemption; the fabricated record is caught by checkpoint \
-             validation of block_n, not by repeat_deploy; got {:?}",
+             parent-scope rejection is live, so the retry is premature; got {:?}",
             result
         );
     })
@@ -395,8 +401,31 @@ async fn repeat_deploy_verdict_is_identical_across_divergent_local_views() {
             .expect("dag representation");
         let mut snapshot_b = mk_casper_snapshot(dag_b);
 
-        let verdict_a = Validate::repeat_deploy(&block_w, &mut snapshot_a, &block_store, 50);
-        let verdict_b = Validate::repeat_deploy(&block_w, &mut snapshot_b, &block_store, 50);
+        // Each validator derives the SAME frozen floor from the block's own
+        // parents, so the retry gate — like the record walk — is a pure
+        // function of the block.
+        let ctx_a = casper::rust::finality::floor_context::FloorContext::derive(
+            &snapshot_a.dag,
+            &block_store,
+            std::slice::from_ref(&block_m.block_hash),
+            &std::collections::BTreeMap::new(),
+            casper::rust::safety::clique_oracle::FtThreshold::from_f32_lossy(1.0),
+        )
+        .await
+        .expect("derive floor context (A)");
+        let ctx_b = casper::rust::finality::floor_context::FloorContext::derive(
+            &snapshot_b.dag,
+            &block_store,
+            std::slice::from_ref(&block_m.block_hash),
+            &std::collections::BTreeMap::new(),
+            casper::rust::safety::clique_oracle::FtThreshold::from_f32_lossy(1.0),
+        )
+        .await
+        .expect("derive floor context (B)");
+        let verdict_a =
+            Validate::repeat_deploy(&block_w, &mut snapshot_a, &block_store, 50, Some(&ctx_a));
+        let verdict_b =
+            Validate::repeat_deploy(&block_w, &mut snapshot_b, &block_store, 50, Some(&ctx_b));
 
         assert_eq!(
             verdict_a, verdict_b,
@@ -405,9 +434,10 @@ async fn repeat_deploy_verdict_is_identical_across_divergent_local_views() {
         );
         assert_eq!(
             verdict_a,
-            RE::Right(casper::rust::block_status::ValidBlock::Valid),
-            "the on-chain rejection record in block_m makes the re-inclusion \
-             legal recovery on every node"
+            RE::Left(BlockError::Invalid(InvalidBlock::PrematureDeployRetry)),
+            "the rejection at block_m is live (unsettled in the block's \
+             floor), so every node reads the re-inclusion as a premature \
+             retry — the same verdict whatever the node-local view says"
         );
     })
     .await

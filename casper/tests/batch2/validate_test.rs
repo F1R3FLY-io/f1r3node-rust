@@ -934,10 +934,11 @@ async fn repeat_deploy_validation_should_return_valid_for_empty_blocks() {
             .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
-        let result1 = Validate::repeat_deploy(&block, &mut casper_snapshot, &block_store, 50);
+        let result1 = Validate::repeat_deploy(&block, &mut casper_snapshot, &block_store, 50, None);
         assert_eq!(result1, Either::Right(ValidBlock::Valid));
 
-        let result2 = Validate::repeat_deploy(&block2, &mut casper_snapshot, &block_store, 50);
+        let result2 =
+            Validate::repeat_deploy(&block2, &mut casper_snapshot, &block_store, 50, None);
         assert_eq!(result2, Either::Right(ValidBlock::Valid));
     })
     .await
@@ -983,7 +984,7 @@ async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deplo
             .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
-        let result = Validate::repeat_deploy(&block1, &mut casper_snapshot, &block_store, 50);
+        let result = Validate::repeat_deploy(&block1, &mut casper_snapshot, &block_store, 50, None);
         assert_eq!(
             result,
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
@@ -992,25 +993,20 @@ async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deplo
     .await
 }
 
-/// Regression test for `repeat_deploy`'s `rejected_in_scope` exemption.
-///
-/// Without the exemption, validation rejects any block that re-includes a
-/// sig already present in an ancestor's `body.deploys` — including the
-/// legitimate recovery path where a deploy was rejected by a descendant
-/// merge and is re-proposed through `RejectedDeployBuffer` to land its
-/// effects in canonical state.
-///
-/// Setup models a true recovery scenario with the ON-CHAIN disposition
-/// record the deterministic exemption reads: the deploy's only inclusion
-/// (block_x) is followed by a merge block whose `rejected_deploys` names
-/// the sig — the record every real merge writes and every node sees
-/// identically. The exemption is a pure function of the block's parent
-/// scope, never of the validator's live view.
+/// The retry gate at the validity layer: a re-inclusion whose kept
+/// rejection is LIVE (above the block's frozen floor) is
+/// `PrematureDeployRetry` — never a legal recovery, never
+/// `InvalidRepeatDeploy` (which would misread the retry as a plain
+/// duplicate and slash-classify differently).
 ///
 /// DAG: genesis (no deploys) → block_x (body.deploys=[deploy]) →
 /// block_m (rejected_deploys=[deploy]) → block_w (body.deploys=[deploy],
-/// the re-inclusion). Latest canonical disposition in block_w's parent
-/// scope is the rejection at block_m, so re-inclusion is legal recovery.
+/// the re-inclusion). The floor derived at ftt=1.0 (nothing witnessed)
+/// is genesis, so the rejection at block_m is NOT settled — the latest
+/// canonical disposition in block_w's parent scope is a rejection, the
+/// gate is closed, and the verdict is the non-slashable premature-retry
+/// arm on every node. The gate-OPEN half (settled rejection → Valid) is
+/// pinned by the retry-gate e2e spec and the proposer-side lib test.
 ///
 /// Companion test:
 /// `repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in_scope`
@@ -1018,7 +1014,7 @@ async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deplo
 /// parent scope is a WIN (clean inclusion, never rejected) and the
 /// recovery exemption must NOT apply.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope() {
+async fn repeat_deploy_rejects_premature_retry_of_a_live_rejection() {
     use std::sync::Arc;
 
     use dashmap::DashSet;
@@ -1112,7 +1108,9 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
             None,
         );
 
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let mut snapshot = mk_casper_snapshot(dag);
 
         // The snapshot flag mirrors what the recovery pipeline derives from
@@ -1122,11 +1120,27 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
         rejected.insert(deploy_sig);
         snapshot.rejected_in_scope = Arc::new(rejected);
 
-        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50);
+        let ctx = casper::rust::finality::floor_context::FloorContext::derive(
+            &snapshot.dag,
+            &block_store,
+            std::slice::from_ref(&block_m.block_hash),
+            &std::collections::BTreeMap::new(),
+            casper::rust::safety::clique_oracle::FtThreshold::from_f32_lossy(1.0),
+        )
+        .await
+        .expect("derive floor context");
+        assert_eq!(
+            ctx.floor.hash, genesis.block_hash,
+            "staging precondition: with nothing witnessed the floor is genesis, \
+             so the rejection at block_m is live"
+        );
+
+        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50, Some(&ctx));
         assert_eq!(
             result,
-            Either::Right(ValidBlock::Valid),
-            "recovery re-inclusion of a rejected-in-scope sig with status=Pending must validate; got {:?}",
+            Either::Left(BlockError::Invalid(InvalidBlock::PrematureDeployRetry)),
+            "re-inclusion against a live rejection is a premature retry on \
+             every node; got {:?}",
             result,
         );
     })
@@ -1210,7 +1224,7 @@ async fn repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in
         rejected.insert(deploy_sig);
         snapshot.rejected_in_scope = Arc::new(rejected);
 
-        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50);
+        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50, None);
         assert_eq!(
             result,
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)),
@@ -2442,6 +2456,7 @@ async fn bonds_cache_validation_should_succeed_on_a_valid_block_and_fail_on_modi
             &runtime_manager,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -3159,6 +3174,7 @@ async fn bonds_cache_from_floor_uses_floor_state_for_child_block_bonds() {
             &runtime_manager,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -3288,6 +3304,7 @@ async fn validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_depl
             &runtime_manager,
             None,
             None,
+            None,
         )
         .await
         .expect("checkpoint (baseline)");
@@ -3312,6 +3329,7 @@ async fn validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_depl
             &block_store,
             &mut snap_pre,
             &runtime_manager,
+            None,
             None,
             None,
         )
@@ -3341,6 +3359,7 @@ async fn validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_depl
             &block_store,
             &mut snap_rej,
             &runtime_manager,
+            None,
             None,
             None,
         )

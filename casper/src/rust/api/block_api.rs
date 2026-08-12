@@ -73,9 +73,6 @@ fn recoverable_propose_failure_message(status: &ProposeStatus) -> Option<String>
         ProposeStatus::Failure(ProposeFailure::NoNewDeploys) => {
             Some("No new deploys to propose.".to_string())
         }
-        ProposeStatus::Failure(ProposeFailure::RecoveryDeferred) => {
-            Some("Rejected deploy recovery deferred to selected leader.".to_string())
-        }
         ProposeStatus::Failure(ProposeFailure::CheckConstraintsFailure(
             CheckProposeConstraintsFailure::NotEnoughNewBlocks,
         )) => Some("No new blocks from peers yet; synchronize with network first.".to_string()),
@@ -1704,6 +1701,7 @@ impl BlockAPI {
                             Some(true), // disable_late_block_filtering = true for exploratory deploy
                             None,       // exploratory deploy: no buffer populate needed
                             None,       // per-query call: no per-operation floor context
+                            None,       // no buffer ⇒ no owner scoping needed
                         )
                         .await?
                         .state

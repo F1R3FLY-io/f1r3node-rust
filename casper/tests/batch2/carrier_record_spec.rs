@@ -195,6 +195,7 @@ async fn fresh_carry_must_not_excuse_a_dropped_record() {
         None,
         None,
         None,
+        None,
     )
     .await
     .expect("merge over the full frontier");
@@ -251,6 +252,7 @@ async fn fresh_carry_must_not_excuse_a_dropped_record() {
         &runtime_manager,
         block_data.clone(),
         HashMap::new(),
+        None,
         None,
         None,
     )
@@ -324,6 +326,7 @@ async fn fresh_carry_must_not_excuse_a_dropped_record() {
         &nodes[2].block_store,
         &mut validation_snapshot,
         &runtime_manager,
+        None,
         None,
         None,
     )
@@ -401,6 +404,7 @@ async fn record_carrier_is_consensus_checked() {
         &nodes[1].block_store,
         &mut validation_snapshot,
         &runtime_manager,
+        None,
         None,
         None,
     )

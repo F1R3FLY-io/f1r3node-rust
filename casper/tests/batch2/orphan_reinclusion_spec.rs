@@ -21,7 +21,7 @@
 //
 // The pool-re-proposal path remains reachable only through FOREIGN
 // orphaning: a carrier the shard's fork choice leaves behind AND which has
-// fallen past the citability horizon, so no block may cite it back into
+// fallen past the parent-depth horizon, so no block may cite it back into
 // the cone. That case is covered by the foreign-orphaning spec staged with
 // the retry gate, not here.
 //

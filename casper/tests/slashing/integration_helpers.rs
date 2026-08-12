@@ -194,6 +194,7 @@ pub async fn equivocate_block(
         invalid_blocks,
         Some(&producing_node.rejected_deploy_buffer),
         None,
+        None,
     )
     .await?;
 
@@ -327,6 +328,7 @@ pub async fn propose_with_explicit_justifications(
         block_data.clone(),
         invalid_blocks,
         Some(&producing_node.rejected_deploy_buffer),
+        None,
         None,
     )
     .await?;
@@ -496,6 +498,7 @@ pub async fn propose_with_block_mutation(
         invalid_blocks,
         Some(&producing_node.rejected_deploy_buffer),
         None,
+        None,
     )
     .await?;
 
@@ -638,6 +641,7 @@ pub async fn propose_neglecting_block(
         block_data.clone(),
         invalid_blocks,
         Some(&producing_node.rejected_deploy_buffer),
+        None,
         None,
     )
     .await?;

@@ -56,14 +56,6 @@ pub fn canonical_won_sigs(
     canonical_disposition_sigs(block_store, parents, earliest_block_number, true)
 }
 
-pub fn canonical_rejected_sigs(
-    block_store: &KeyValueBlockStore,
-    parents: &[BlockHash],
-    earliest_block_number: i64,
-) -> Result<HashSet<Bytes>, CasperError> {
-    canonical_disposition_sigs(block_store, parents, earliest_block_number, false)
-}
-
 fn block_in_floor_merge_scope(
     dag: &KeyValueDagRepresentation,
     hash: &BlockHash,
@@ -416,6 +408,11 @@ pub async fn validate_block_checkpoint(
     runtime_manager: &RuntimeManager,
     rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
     floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
+    // This node's validator identity. The rejected-deploy buffer is
+    // OWNER-SCOPED: only the sender of a rejected copy's carrier buffers
+    // its retries, so the populate must know who "we" are. `None`
+    // (observers, exploratory contexts) buffers nothing.
+    local_validator: Option<&Validator>,
 ) -> Result<BlockProcessing<Option<StateHash>>, CasperError> {
     tracing::trace!(target: "f1r3fly.casper.block_validation", "before-unsafe-get-parents");
     let incoming_pre_state_hash = proto_util::pre_state_hash(block);
@@ -439,6 +436,7 @@ pub async fn validate_block_checkpoint(
         None,
         rejected_deploy_buffer,
         floor_ctx,
+        local_validator,
     )
     .await;
     metrics::histogram!(
@@ -812,6 +810,7 @@ pub async fn compute_deploys_checkpoint(
     invalid_blocks: HashMap<BlockHash, Validator>,
     rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
     floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
+    local_validator: Option<&Validator>,
 ) -> Result<DeploysCheckpoint, CasperError> {
     let checkpoint_started = std::time::Instant::now();
     // Using tracing events for async - Span[F] equivalent from Scala
@@ -843,6 +842,7 @@ pub async fn compute_deploys_checkpoint(
         None,
         rejected_deploy_buffer,
         floor_ctx,
+        local_validator,
     )
     .await?;
     let parents_ms = parents_started.elapsed().as_millis();
@@ -990,6 +990,9 @@ pub async fn compute_parents_post_state(
     // derivation, and the settled-sig probes share its memo. `None`
     // derives locally — same inputs, same result.
     floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
+    // This node's validator identity for the OWNER-SCOPED buffer populate;
+    // `None` buffers nothing.
+    local_validator: Option<&Validator>,
 ) -> Result<super::runtime_manager::MergedPreState, CasperError> {
     use super::runtime_manager::MergedPreState;
     let total_started = std::time::Instant::now();
@@ -1540,6 +1543,26 @@ pub async fn compute_parents_post_state(
                         let sig_set: HashSet<Bytes> = sigs.into_iter().collect();
                         match block_store.get(&src_block) {
                             Ok(Some(block)) => {
+                                // Owner-only recovery custody: the buffer
+                                // belongs to the validator that sent the
+                                // rejected copy's carrier — the deploy's
+                                // single holder, matching the one-validator
+                                // deploy model. Everyone else drops the pair
+                                // (the deploy body stays on-chain in the
+                                // carrier; nothing is lost), which
+                                // structurally eliminates same-sig retry
+                                // fan-out. `None` (observers, exploratory
+                                // contexts) buffers nothing.
+                                let owned = local_validator.is_some_and(|me| block.sender == *me);
+                                if !owned {
+                                    tracing::debug!(
+                                        target: "f1r3fly.casper.recovery",
+                                        "RejectedDeployBuffer populate: not the owner of carrier {}; dropping {} pair(s)",
+                                        PrettyPrinter::build_string_bytes(&src_block),
+                                        sig_set.len()
+                                    );
+                                    continue;
+                                }
                                 for pd in &block.body.deploys {
                                     if sig_set.contains(&pd.deploy.sig) {
                                         deploys_to_buffer.push(pd.deploy.clone());

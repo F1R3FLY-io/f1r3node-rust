@@ -67,6 +67,10 @@ pub enum InvalidBlock {
     // `formal/rocq/slashing/theories/BugFixSlashAuthorization.v`).
     UnauthorizedSlashDeploy,
     InvalidRejectedDeploy,
+    // PrematureDeployRetry: a rejected sig re-included before its latest
+    // kept rejection settled into the block's frozen floor closure.
+    // Raised by `Validate::repeat_deploy`'s gated recovery exemption.
+    PrematureDeployRetry,
     ContainsExpiredDeploy,
     ContainsTimeExpiredDeploy,
     ContainsFutureDeploy,
@@ -155,6 +159,10 @@ impl BlockStatus {
         BlockError::Invalid(InvalidBlock::InvalidRejectedDeploy)
     }
 
+    pub fn premature_deploy_retry() -> BlockError {
+        BlockError::Invalid(InvalidBlock::PrematureDeployRetry)
+    }
+
     pub fn contains_expired_deploy() -> BlockError {
         BlockError::Invalid(InvalidBlock::ContainsExpiredDeploy)
     }
@@ -224,6 +232,11 @@ impl InvalidBlock {
             //     the sender's identity can't be verified (Sender).
             //   • InvalidRejectedDeploy: rejected-deploy tracking; not a
             //     consensus offense.
+            //   • PrematureDeployRetry: a retry ahead of the gate. The gate
+            //     is a pure function of the block, so every honest node
+            //     declines the block identically — admission does all the
+            //     enforcement, and a gate rule in its proving phase must
+            //     never be able to burn honest stake through its own bugs.
             //   • NotOfInterest: local node filtering decision.
             //   • LowDeployCost: per-deploy cost threshold; rejected at
             //     admission, not on-chain accountable.
@@ -233,6 +246,7 @@ impl InvalidBlock {
             | InvalidBlock::InvalidVersion
             | InvalidBlock::InvalidTimestamp
             | InvalidBlock::InvalidRejectedDeploy
+            | InvalidBlock::PrematureDeployRetry
             | InvalidBlock::NotOfInterest
             | InvalidBlock::LowDeployCost => false,
         }

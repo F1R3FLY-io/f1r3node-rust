@@ -354,9 +354,43 @@ impl Validate {
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-validation");
+        // Fill the floor slot here — the first consumer (the retry gate
+        // reads the block's frozen floor). Only deploy-carrying blocks pay
+        // the derivation; a derivation failure surfaces at this step as the
+        // same BlockException class every step's storage failure uses.
+        if floor_ctx_slot.is_none()
+            && !block.body.deploys.is_empty()
+            && !block.header.parents_hash_list.is_empty()
+        {
+            let latest_messages: BTreeMap<Validator, BlockHash> = block
+                .justifications
+                .iter()
+                .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+                .collect();
+            match crate::rust::finality::floor_context::FloorContext::derive(
+                &s.dag,
+                block_store,
+                &block.header.parents_hash_list,
+                &latest_messages,
+                crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                    s.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
+                ),
+            )
+            .await
+            {
+                Ok(ctx) => *floor_ctx_slot = Some(ctx),
+                Err(ex) => return Either::Left(BlockError::BlockException(ex)),
+            }
+        }
         match __step!(
             BLOCK_VALIDATION_REPEAT_DEPLOY_TIME_METRIC,
-            Self::repeat_deploy(block, s, block_store, expiration_threshold)
+            Self::repeat_deploy(
+                block,
+                s,
+                block_store,
+                expiration_threshold,
+                floor_ctx_slot.as_ref()
+            )
         ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
@@ -445,34 +479,6 @@ impl Validate {
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-transaction-expired-validation");
-        // Fill the floor slot here — the first consumer. Only deploy-carrying
-        // blocks pay the derivation; a derivation failure surfaces at this
-        // step as the same BlockException class every step's storage failure
-        // uses.
-        if floor_ctx_slot.is_none()
-            && !block.body.deploys.is_empty()
-            && !block.header.parents_hash_list.is_empty()
-        {
-            let latest_messages: BTreeMap<Validator, BlockHash> = block
-                .justifications
-                .iter()
-                .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
-                .collect();
-            match crate::rust::finality::floor_context::FloorContext::derive(
-                &s.dag,
-                block_store,
-                &block.header.parents_hash_list,
-                &latest_messages,
-                crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-                    s.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
-                ),
-            )
-            .await
-            {
-                Ok(ctx) => *floor_ctx_slot = Some(ctx),
-                Err(ex) => return Either::Left(BlockError::BlockException(ex)),
-            }
-        }
         match __step!(
             BLOCK_VALIDATION_TRANSACTION_EXPIRATION_TIME_METRIC,
             Self::transaction_expiration(
@@ -539,21 +545,24 @@ impl Validate {
     /// Validate no deploy with the same sig has been produced in the chain
     /// Agnostic of non-parent justifications.
     ///
-    /// Recovery exemption: a sig whose LATEST canonical disposition within
-    /// the BLOCK'S OWN parent scope is a merge rejection is a legitimate
-    /// recovery re-inclusion — the rejected-deploy buffer pipeline
-    /// re-proposes such deploys so their effects can land in canonical
-    /// state. Without this exemption, every recovery-path block would fail
-    /// `InvalidRepeatDeploy`.
+    /// Recovery exemption, GATED on the block's frozen floor: a sig whose
+    /// LATEST canonical disposition within the BLOCK'S OWN parent scope is
+    /// a merge rejection is a legitimate recovery re-inclusion — but only
+    /// once the retry gate opens (`FloorContext::retry_gate_open`: the
+    /// latest kept rejection is settled in the block's floor closure).
+    /// Re-inclusion against a live contest is `PrematureDeployRetry` —
+    /// non-slashable, never admitted — because ungated re-proposal
+    /// regenerated same-sig sibling copies faster than merges could
+    /// adjudicate them and livelocked the shard under sustained contention.
     ///
-    /// The exemption is a PURE FUNCTION OF THE BLOCK (its parents and the
-    /// disposition records in their ancestry), never of the validating
-    /// node's live view. An earlier version gated it on the sig's LOCAL
-    /// finalization status (`deploy_finalization_status::resolve`) and the
-    /// validator's own `rejected_in_scope` snapshot set — both node-local:
-    /// two honest validators whose finalization progress differed by one
-    /// step returned opposite verdicts for the same block, forking the
-    /// network (the roaming `InvalidRepeatDeploy` Heavy Pipeline failures).
+    /// The exemption is a PURE FUNCTION OF THE BLOCK (its parents, the
+    /// disposition records in their ancestry, and its justification-derived
+    /// floor), never of the validating node's live view. An earlier version
+    /// gated it on the sig's LOCAL finalization status and the validator's
+    /// own `rejected_in_scope` snapshot set — both node-local: two honest
+    /// validators whose finalization progress differed by one step returned
+    /// opposite verdicts for the same block, forking the network (the
+    /// roaming `InvalidRepeatDeploy` Heavy Pipeline failures).
     ///
     /// The double-execution defense is preserved deterministically: if a
     /// re-inclusion already WON above the rejection in the block's parent
@@ -563,11 +572,17 @@ impl Validate {
     /// scope must NOT poison this block: judged in its own context the
     /// re-inclusion is legal recovery, and the eventual merge's keep-one
     /// dedup reconciles the duplicate.
+    ///
+    /// `floor_ctx` is the operation's derivation context; `None` (the
+    /// parentless shape, where no records are visible and no floor is
+    /// derivable) grants no exemption at all — every sig goes through the
+    /// ancestor scan unchanged.
     pub fn repeat_deploy(
         block: &BlockMessage,
         s: &mut CasperSnapshot,
         block_store: &KeyValueBlockStore,
         expiration_threshold: i32,
+        floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
     ) -> ValidBlockProcessing {
         if block.body.deploys.is_empty() {
             return Either::Right(ValidBlock::Valid);
@@ -586,25 +601,53 @@ impl Validate {
         let earliest_block_number = max_block_number + 1 - expiration_threshold as i64;
 
         // Latest canonical dispositions within the block's parent scope,
-        // over the same expiration window the ancestor scan uses. This is
-        // exactly the record the proposer's admission logic consults
-        // (`canonical_won_sigs` from its parents), so proposer and every
-        // validator evaluate the same predicate on the same inputs.
-        let canonical_rejected =
-            match crate::rust::util::rholang::interpreter_util::canonical_rejected_sigs(
-                block_store,
-                &block.header.parents_hash_list,
-                earliest_block_number,
-            ) {
+        // over the same expiration window the ancestor scan uses, from the
+        // operation's ONE record walk. The proposer's admission logic reads
+        // the same walk on its side, so proposer and every validator
+        // evaluate the same predicate on the same inputs.
+        let mut exempt: HashSet<Bytes> = HashSet::new();
+        if let Some(ctx) = floor_ctx {
+            let rejected = match ctx.rejected_sigs(block_store, earliest_block_number) {
                 Ok(sigs) => sigs,
                 Err(e) => return Either::Left(BlockError::BlockException(e)),
             };
+            for pd in &block.body.deploys {
+                let sig = &pd.deploy.sig;
+                if !rejected.contains(sig) {
+                    continue;
+                }
+                match ctx.retry_gate_open(&s.dag, block_store, earliest_block_number, sig) {
+                    Ok(true) => {
+                        exempt.insert(sig.clone());
+                    }
+                    Ok(false) => {
+                        tracing::warn!(
+                            "{}",
+                            Self::ignore(
+                                block,
+                                &format!(
+                                    "deploy {} re-includes a rejected sig whose latest kept \
+                                     rejection is not settled in the block's floor (#{}) — \
+                                     premature retry",
+                                    hex::encode(&sig[..8.min(sig.len())]),
+                                    ctx.floor.block_number,
+                                )
+                            )
+                        );
+                        return Either::Left(BlockError::Invalid(
+                            InvalidBlock::PrematureDeployRetry,
+                        ));
+                    }
+                    Err(e) => return Either::Left(BlockError::BlockException(e)),
+                }
+            }
+        }
 
         let deploy_key_set: HashSet<Vec<u8>> = block
             .body
             .deploys
             .iter()
-            .filter(|pd| !canonical_rejected.contains(&pd.deploy.sig))
+            .filter(|pd| !exempt.contains(&pd.deploy.sig))
             .map(|pd| pd.deploy.sig.to_vec())
             .collect();
         if deploy_key_set.is_empty() {

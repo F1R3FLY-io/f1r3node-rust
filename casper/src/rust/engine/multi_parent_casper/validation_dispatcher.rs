@@ -79,6 +79,12 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
     // The per-validate derivation slot: block_summary fills it at the first
     // floor-consuming step; the checkpoint and bonds steps below reuse it.
     let mut floor_ctx: Option<crate::rust::finality::floor_context::FloorContext> = None;
+    // This node's identity for the owner-scoped buffer populate inside the
+    // checkpoint recompute; observers pass None and buffer nothing.
+    let local_validator: Option<models::rust::validator::Validator> = this
+        .validator_id
+        .as_ref()
+        .map(|id| prost::bytes::Bytes::copy_from_slice(&id.public_key.bytes));
     let (block_summary_result, t1) = timed_step(
         "block-summary",
         BLOCK_VALIDATION_STEP_BLOCK_SUMMARY_TIME_METRIC,
@@ -142,6 +148,7 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
                 &this.runtime_manager,
                 Some(&this.rejected_deploy_buffer),
                 floor_ctx.as_ref(),
+                local_validator.as_ref(),
             ),
         )
         .await?;
