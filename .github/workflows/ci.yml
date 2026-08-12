@@ -66,7 +66,7 @@ jobs:
       SYSTEM_INTEGRATION_REF: ${{ steps.env.outputs.SYSTEM_INTEGRATION_REF }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -147,7 +147,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # Deliberately the first step and deliberately in this job. `Lint` is a
       # required status check on devProtect and masterProtect, so a violation
@@ -210,7 +210,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: cargo-deny check
         uses: EmbarkStudios/cargo-deny-action@v2
@@ -234,7 +234,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Link Checker
         uses: lycheeverse/lychee-action@v2
@@ -294,7 +294,7 @@ jobs:
           - graphz
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
@@ -490,7 +490,7 @@ jobs:
     environment: ephemeral-launch
     steps:
       - name: Checkout (for version)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -660,7 +660,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout (for CHANGELOG.md)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Load Docker artifact (amd64)
         uses: actions/download-artifact@v4

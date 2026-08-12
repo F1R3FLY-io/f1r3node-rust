@@ -52,7 +52,7 @@ jobs:
               ]
     steps:
       - name: Checkout pull request head
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ inputs.head_repo }}
           ref: ${{ inputs.head_sha }}
@@ -126,14 +126,14 @@ jobs:
               ]
     steps:
       - name: Checkout pull request head
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ inputs.head_repo }}
           ref: ${{ inputs.head_sha }}
           persist-credentials: false
 
       - name: Clone trusted system-integration tests
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: F1R3FLY-io/system-integration
           ref: ${{ inputs.system_integration_ref }}
