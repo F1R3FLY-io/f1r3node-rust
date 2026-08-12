@@ -668,7 +668,7 @@ async fn deploy_expiration_validation_should_work() {
             None,
             None,
         );
-        let status = Validate::transaction_expiration(&block, 10);
+        let status = Validate::transaction_expiration(&block, 10, None);
         assert_eq!(status, Either::Right(ValidBlock::Valid));
     })
     .await
@@ -705,7 +705,7 @@ async fn deploy_expiration_validation_should_not_accept_blocks_with_a_deploy_tha
             None,
         );
 
-        let status = Validate::transaction_expiration(&block_with_expired_deploy, 10);
+        let status = Validate::transaction_expiration(&block_with_expired_deploy, 10, None);
         assert_eq!(
             status,
             Either::Left(BlockError::Invalid(InvalidBlock::ContainsExpiredDeploy))
@@ -1774,6 +1774,7 @@ async fn block_summary_validation_should_short_circuit_after_first_invalidity() 
             0,        // depth_buffer: irrelevant when depth check disabled
             &block_store,
             false,
+            &mut None,
         )
         .await;
 

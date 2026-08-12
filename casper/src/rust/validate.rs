@@ -305,6 +305,11 @@ impl Validate {
         depth_buffer: i32,
         block_store: &KeyValueBlockStore,
         disable_validator_progress_check: bool,
+        // Per-operation derivation slot, filled at the first step that
+        // consumes the block's floor (transaction expiration) and reused by
+        // the caller for the checkpoint and bonds steps. Filling lazily
+        // keeps every earlier step's error order exactly as it was.
+        floor_ctx_slot: &mut Option<crate::rust::finality::floor_context::FloorContext>,
     ) -> ValidBlockProcessing {
         use crate::rust::metrics_constants::*;
         macro_rules! __step {
@@ -441,9 +446,41 @@ impl Validate {
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-transaction-expired-validation");
+        // Fill the floor slot here — the first consumer. Only deploy-carrying
+        // blocks pay the derivation; a derivation failure surfaces at this
+        // step as the same BlockException class every step's storage failure
+        // uses.
+        if floor_ctx_slot.is_none()
+            && !block.body.deploys.is_empty()
+            && !block.header.parents_hash_list.is_empty()
+        {
+            let latest_messages: BTreeMap<Validator, BlockHash> = block
+                .justifications
+                .iter()
+                .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+                .collect();
+            match crate::rust::finality::floor_context::FloorContext::derive(
+                &s.dag,
+                block_store,
+                &block.header.parents_hash_list,
+                &latest_messages,
+                crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                    s.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
+                ),
+            )
+            .await
+            {
+                Ok(ctx) => *floor_ctx_slot = Some(ctx),
+                Err(ex) => return Either::Left(BlockError::BlockException(ex)),
+            }
+        }
         match __step!(
             BLOCK_VALIDATION_TRANSACTION_EXPIRATION_TIME_METRIC,
-            Self::transaction_expiration(block, expiration_threshold)
+            Self::transaction_expiration(
+                block,
+                expiration_threshold,
+                floor_ctx_slot.as_ref().map(|ctx| ctx.floor.block_number),
+            )
         ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
@@ -771,12 +808,20 @@ impl Validate {
         maybe_error.map_or(Either::Right(ValidBlock::Valid), Either::Left)
     }
 
+    /// Expiry validity reads the block's own frozen floor when one is
+    /// derivable — the same clock the merge window rule and the buffer
+    /// retain close windows on, so honest floor-clock retries stay valid
+    /// under floor lag. A block with no derivable floor (parentless, or no
+    /// deploys to judge) falls back to its own block number, which is never
+    /// looser than the floor's bound.
     pub fn transaction_expiration(
         b: &BlockMessage,
         expiration_threshold: i32,
+        block_floor_number: Option<i64>,
     ) -> ValidBlockProcessing {
-        let earliest_acceptable_valid_after_block_number =
-            proto_util::block_number(b) - expiration_threshold as i64;
+        let earliest_acceptable_valid_after_block_number = block_floor_number
+            .unwrap_or_else(|| proto_util::block_number(b))
+            - expiration_threshold as i64;
 
         let processed_deploys = proto_util::deploys(b);
         let deploys: Vec<_> = processed_deploys
