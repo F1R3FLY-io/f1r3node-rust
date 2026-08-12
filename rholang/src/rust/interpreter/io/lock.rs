@@ -368,7 +368,26 @@ impl LockRegistry {
     /// Release every lock owned by `deploy`.  Called from the
     /// `WalDeployScope::end` auto-release hook (MUST per X-4 / spec
     /// §Explicit locks).  Returns the number of locks released.
+    ///
+    /// # Sentinel guard: `[0; 32]` is reserved as the slice-8a step-4
+    /// placeholder for "no real DeployScope wired yet."  Step 5's
+    /// natives (`fs_lock_range` / `fs_lock_sequential`) pass this
+    /// placeholder while step 6 is unimplemented.  Calling
+    /// `release_all_for_deploy(&[0; 32])` before step 6 wires real
+    /// deploy identities would sweep EVERY currently-held lock —
+    /// masking a bug as a working sweep.  The debug-assert below
+    /// turns that into a loud test failure so step 6 must land the
+    /// real DeployScope before enabling the auto-release hook.
+    /// Post-step-6 this guard can be removed (or repurposed to
+    /// reject any all-zero scope as caller error).
     pub fn release_all_for_deploy(&self, deploy: &DeployScope) -> usize {
+        debug_assert!(
+            deploy != &[0u8; 32],
+            "release_all_for_deploy called with the [0; 32] sentinel — this is \
+             slice-8a step-4's placeholder DeployScope.  Step 6 must wire real \
+             per-deploy identities before enabling any auto-release hook, or \
+             this sweep will nuke every held lock in the registry."
+        );
         let mut guard = self.inner.write().expect("lock registry poisoned");
         let mut released = 0usize;
         let mut evict: Vec<DevInode> = Vec::new();
@@ -951,6 +970,22 @@ mod tests {
         let released = reg.release_all_for_deploy(&deploy(99));
         assert_eq!(released, 0);
         assert_eq!(reg.held_locks(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "release_all_for_deploy called with the [0; 32] sentinel")]
+    fn release_all_for_deploy_zero_sentinel_panics_in_debug() {
+        // Step-4 placeholder guard: sweeping on `[0; 32]` would
+        // release every held lock in the registry, because natives
+        // (step 5) currently pass this placeholder as their deploy
+        // scope until step 6 wires real per-deploy identities.  This
+        // test pins the guard so a premature step-6 partial-wire that
+        // accidentally invokes `release_all_for_deploy(&[0; 32])`
+        // fails loudly here rather than silently nuking locks.
+        let reg = LockRegistry::new();
+        reg.try_acquire_range((1, 42), 0, 100, LockMode::Read, holder(1), [0u8; 32])
+            .unwrap();
+        reg.release_all_for_deploy(&[0u8; 32]);
     }
 
     #[test]

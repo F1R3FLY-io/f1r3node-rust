@@ -463,6 +463,37 @@ pub const FS_NATIVE_URN_PREFIX: &str = "rho:io:fs:native:1.0.0/";
 /// (`rho::interpreter::rho_runtime::fs_native_def` call sites).
 ///
 /// Order matches the `new`-clause below (documentation aid only).
+///
+/// # Cross-file drift discipline
+///
+/// Any new fs-native URN MUST be added in FIVE places (only the first
+/// three are drift-checked by existing tests; the last two require
+/// manual attention):
+///
+/// 1. **This constant** (`FS_NATIVE_URN_SUFFIXES`) — checked by
+///    `fs_native_urn_suffixes_covers_composed_source` +
+///    `composed_source_urns_covered_by_fs_native_urn_suffixes`
+///    against the composed source below.
+/// 2. **The composed source's top-level `new` clause** below (the
+///    `fs<Xyz>(...` bindings) — checked by the same two drift tests.
+/// 3. **The arity golden table** in
+///    `fs_native_def_arities_match_golden_table` — cross-checks the
+///    `fs_native_def(...)` call sites in
+///    `rholang::interpreter::rho_runtime::std_system_processes`.
+/// 4. **The `all_fs_native_suffixes_are_rejected` iteration list**
+///    in `rholang/tests/fs_native_urn_filter_spec.rs` — HARDCODED,
+///    not auto-iterated over this constant.  A new suffix added
+///    here without adding it there will pass the drift checks but
+///    won't be verified for URN-filter rejection under state-execution.
+///    (The `filter_catches_unknown_fs_native_urn_prefix` test provides
+///    prefix-based defense-in-depth, so the suffix IS rejected in
+///    practice — but not directly asserted.)
+/// 5. **`rho_runtime::std_system_processes`'s `fs_native_def` call**
+///    for that suffix, wiring URN → `BodyRefs::FS_<XYZ>` →
+///    handler.  The arity drift-check in (3) catches missing
+///    entries; but the handler itself must also be added to
+///    `handlers.rs` and the FixedChannel to `system_processes.rs`.
+///    Compilation catches missing pieces.
 pub const FS_NATIVE_URN_SUFFIXES: &[&str] = &[
     "open",
     "close",

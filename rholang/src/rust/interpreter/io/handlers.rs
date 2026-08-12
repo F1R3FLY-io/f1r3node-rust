@@ -2411,6 +2411,31 @@ impl FsProcesses {
     /// Returns `Err((FSERR_CLOSED, ...))` if the fd is unknown to the
     /// handle table or is a shadow handle (replay-only), and
     /// `Err((FSERR_IO, ...))` on fstat failure.
+    ///
+    /// # Concurrent close race — documented as caller-bug behavior
+    ///
+    /// `raw_fd` returns the raw OS fd as a bare `i32` and drops the
+    /// handle-table lock.  Between the return and the `fstat` below,
+    /// a concurrent `fs_close(fd)` on the SAME cap could drop the
+    /// tokio `File`, close the OS fd, and let a subsequent `open` in
+    /// another handler reuse that fd number for a different inode —
+    /// making `fstat` stat the wrong file.
+    ///
+    /// This race is only exploitable by a caller doing incoherent
+    /// concurrent close-and-lock on their OWN cap: under fresh-mint
+    /// semantics each cap owns its own fd; other caps have distinct
+    /// fds and can't close it.  Under H-7's play/replay isolation
+    /// each has its own `FileHandleTable`, so no cross-runtime race
+    /// either.  Under D3's `FuturesUnordered` two Par branches of a
+    /// single deploy sharing the same cap could race — but "close
+    /// while locking" is user-code incoherence, not a security
+    /// vulnerability.  Outcome: either `FSERR_CLOSED` (if raw_fd
+    /// missed too) or a `(dev, ino)` for whatever file happens to
+    /// hold that raw fd at the moment of fstat.  Neither leaks
+    /// authority — the caller closed their own fd; if the lock
+    /// registry ends up keyed on a different inode, only that
+    /// caller sees the confusion, and their subsequent reads/writes
+    /// on the (now closed) fd will fail with `FSERR_CLOSED` anyway.
     async fn dev_inode_from_fd(&self, fd: u64) -> Result<(u64, u64), (&'static str, String)> {
         let Some(raw) = self.handles.raw_fd(fd).await else {
             return Err((FSERR_CLOSED, "fd unknown or shadow handle".to_string()));
