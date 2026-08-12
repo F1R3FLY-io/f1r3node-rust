@@ -51,6 +51,16 @@ fn with_libs(test_snippet: &str) -> String {
             fsSeek, fsTell, fsSize, fsFlush, fsClose,
             fsStat, fsExists, fsOpen, fsTruncate, fsChmod, fsChown,
             fsRemoveFile, fsRemoveDir, fsRename, fsCopyFile, fsEntries,
+            // Phase 8 slice 8a — lock natives (mock preamble additions).
+            // Bound here in advance of File.rho's step 4c-2 introducing
+            // the LockToken agent + fsLockRange/fsLockSequential/
+            // fsReleaseLock call sites and step 4f's File.close sweep
+            // via fsReleaseAllForHolder.  Default mocks below always
+            // succeed; step 4g's integration tests may override with
+            // stateful stand-ins that model per-fd lock accounting.
+            fsLockRange, fsLockSequential, fsReleaseLock,
+            fsReleaseAllForHolder,
+            LockToken, lockStateP,
             mockFdCell, chmodLog, chownLog, truncLog,
             rmFileLog, rmDirLog, renameLog, copyLog,
             writeAtLog, entriesCell
@@ -409,6 +419,40 @@ fn with_libs(test_snippet: &str) -> String {
                 _ => ret!([true, 42])
               }}
             }}
+          }} |
+
+          // -- Phase 8 slice 8a — lock natives (mock preamble) -----
+          //
+          // Always-succeed mocks with monotone fake LockIds.  Enough
+          // for slice-8a step-4c/d/e/f File.rho surgery to compile
+          // and for existing tests to remain green as the auto-acquire
+          // wraps land — none of the existing tests exercise
+          // lock-conflict behavior.  Step 4g's integration tests will
+          // supply richer stand-ins (per-fd lock accounting, double-
+          // release-returns-FSERR_CLOSED, etc.) either by overriding
+          // these or by composing bespoke setups.
+          //
+          // Real natives key on (dev, inode) — the mock's fake fd is
+          // ignored, matching the "single-file" simplification the
+          // rest of this preamble uses.
+
+          contract fsLockRange(@_fd, @_off, @_len, @_mode, @_holder, @_cmode, ret) = {{
+            ret!([true, 1])
+          }} |
+
+          contract fsLockSequential(@_fd, @_holder, @_cmode, ret) = {{
+            ret!([true, 2])
+          }} |
+
+          contract fsReleaseLock(@_lockId, ret) = {{
+            ret!([true])
+          }} |
+
+          contract fsReleaseAllForHolder(@_holder, ret) = {{
+            // File.close (step 4f) invokes this before fsClose; return
+            // [true, N] with N = 0 by default.  Tests that want a
+            // specific sweep-count assertion can override.
+            ret!([true, 0])
           }} |
 
           // -- Library bodies ---------------------------------------
@@ -848,7 +892,13 @@ async fn file_close_propagates_fs_close_error() {
             codepointLen, concatStringsLoop, scanLineForLF,
             fsRead, fsReadAt, fsWrite, fsWriteAt,
             fsSeek, fsTell, fsSize, fsFlush, fsClose,
-            fsTruncate, fsChmod, fsChown, Stream
+            fsTruncate, fsChmod, fsChown, Stream,
+            // Phase 8 slice 8a — lock natives (mock preamble additions).
+            // Same-as-with_libs: bound here so File.rho's step 4c-2+
+            // LockToken agent + close-sweep call sites remain in scope.
+            fsLockRange, fsLockSequential, fsReleaseLock,
+            fsReleaseAllForHolder,
+            LockToken, lockStateP
         in {{
           contract fsRead(@_fd, @_n, ret)  = {{ ret!([true, "".hexToBytes()]) }} |
           contract fsReadAt(@_fd, @_o, @_n, ret) = {{ ret!([true, "".hexToBytes()]) }} |
@@ -864,6 +914,15 @@ async fn file_close_propagates_fs_close_error() {
           contract fsChmod(@_r, @_p, @_b, @_cm, ret) = {{ ret!([true]) }} |
           // Slice 26: fsChown takes cmode as 5th arg.
           contract fsChown(@_r, @_p, @_o, @_g, @_cm, ret) = {{ ret!([true]) }} |
+          // Phase 8 slice 8a — always-succeed lock-native stubs.
+          // This bespoke test drives File.close specifically; the
+          // sweep native is invoked before fsClose (step 4f) and must
+          // succeed so the fsClose failure remains the observable
+          // outcome the test asserts on.
+          contract fsLockRange(@_fd, @_o, @_l, @_m, @_h, @_cm, ret) = {{ ret!([true, 1]) }} |
+          contract fsLockSequential(@_fd, @_h, @_cm, ret) = {{ ret!([true, 2]) }} |
+          contract fsReleaseLock(@_id, ret) = {{ ret!([true]) }} |
+          contract fsReleaseAllForHolder(@_h, ret) = {{ ret!([true, 0]) }} |
           // parseRwxToBits stub — this test doesn't exercise it, but
           // File.rho's chmod method captures it as a free var so it
           // needs to be in scope.  A minimal identity stub suffices.
@@ -5105,6 +5164,10 @@ async fn file_write_line_lf_write_failure_is_forwarded() {
             fsRead, fsReadAt, fsWrite, fsWriteAt,
             fsSeek, fsTell, fsSize, fsFlush, fsClose,
             fsTruncate, fsChmod, fsChown,
+            // Phase 8 slice 8a — lock natives (mock preamble additions).
+            fsLockRange, fsLockSequential, fsReleaseLock,
+            fsReleaseAllForHolder,
+            LockToken, lockStateP,
             writeCallCount,
             listState, producer, charBuilder
         in {{
@@ -5133,6 +5196,13 @@ async fn file_write_line_lf_write_failure_is_forwarded() {
           // Slice 26: fsChown takes cmode as 5th arg.
           contract fsChown(@_r, @_p, @_o, @_g, @_cm, ret) = {{ ret!([true]) }} |
           contract parseRwxToBits(@_s, ret) = {{ ret!([true, 0]) }} |
+          // Phase 8 slice 8a — always-succeed lock-native stubs; this
+          // bespoke test drives writeLine's LF-write-failure path, not
+          // lock semantics.
+          contract fsLockRange(@_fd, @_o, @_l, @_m, @_h, @_cm, ret) = {{ ret!([true, 1]) }} |
+          contract fsLockSequential(@_fd, @_h, @_cm, ret) = {{ ret!([true, 2]) }} |
+          contract fsReleaseLock(@_id, ret) = {{ ret!([true]) }} |
+          contract fsReleaseAllForHolder(@_h, ret) = {{ ret!([true, 0]) }} |
 
 {}
           |
