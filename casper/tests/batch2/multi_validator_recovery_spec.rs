@@ -316,7 +316,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (_merged_state, rejected_sigs, rejected_slashes) = compute_parents_post_state(
+    let merged = compute_parents_post_state(
         &block_store,
         vec![r0.clone(), r1.clone()],
         &snapshot,
@@ -329,13 +329,17 @@ for(@_v <- @"multi-validator-shared") { Nil }
     .expect("compute_parents_post_state over [R0, R1]");
 
     assert!(
-        rejected_slashes.is_empty(),
+        merged.rejected_slashes.is_empty(),
         "no system slashes are involved in this fixture; rejected_slashes \
          must be empty (got {} entries)",
-        rejected_slashes.len()
+        merged.rejected_slashes.len()
     );
 
-    let rejected_set: HashSet<prost::bytes::Bytes> = rejected_sigs.iter().cloned().collect();
+    let rejected_set: HashSet<prost::bytes::Bytes> = merged
+        .rejected_user
+        .iter()
+        .map(|(sig, _)| sig.clone())
+        .collect();
 
     // Dedup must keep the shared recovered sig out of the rejected
     // list. If it appears here, dedup did not run and conflict
@@ -345,7 +349,11 @@ for(@_v <- @"multi-validator-shared") { Nil }
     assert!(
         !rejected_set.contains(&sig_x),
         "sig_x must NOT appear in `rejected_user_deploys`. Got: {:?}",
-        rejected_sigs
+        merged
+            .rejected_user
+            .iter()
+            .map(|(sig, _)| sig.clone())
+            .collect::<Vec<_>>()
             .iter()
             .map(|s| hex::encode(&s[..std::cmp::min(8, s.len())]))
             .collect::<Vec<_>>()
@@ -369,7 +377,11 @@ for(@_v <- @"multi-validator-shared") { Nil }
          fire, dedup did not retain a winning chain.",
         v0_orphaned,
         v1_orphaned,
-        rejected_sigs
+        merged
+            .rejected_user
+            .iter()
+            .map(|(sig, _)| sig.clone())
+            .collect::<Vec<_>>()
             .iter()
             .map(|s| hex::encode(&s[..std::cmp::min(8, s.len())]))
             .collect::<Vec<_>>()

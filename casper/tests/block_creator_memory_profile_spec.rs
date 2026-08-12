@@ -564,18 +564,10 @@ async fn run_block_creator_phase_split_memory_profile() {
 
         let rss_before = vm_rss_kb();
 
-        let (pre_state_hash, _rejected, _rejected_slashes) = if skip_parents_compute {
+        let pre_state_hash = if skip_parents_compute {
             match snapshot.parents.first() {
-                Some(parent) => (
-                    parent.body.state.post_state_hash.clone(),
-                    Vec::new(),
-                    Vec::new(),
-                ),
-                None => (
-                    RuntimeManager::empty_state_hash_fixed(),
-                    Vec::new(),
-                    Vec::new(),
-                ),
+                Some(parent) => parent.body.state.post_state_hash.clone(),
+                None => RuntimeManager::empty_state_hash_fixed(),
             }
         } else {
             let latest_messages: std::collections::BTreeMap<_, _> = snapshot
@@ -594,7 +586,7 @@ async fn run_block_creator_phase_split_memory_profile() {
             )
             .await
             {
-                Ok(result) => result,
+                Ok(result) => result.state,
                 Err(err) => {
                     error_count += 1;
                     if error_samples.len() < 5 {

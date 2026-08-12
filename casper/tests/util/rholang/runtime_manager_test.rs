@@ -2043,7 +2043,7 @@ async fn bridge_query_survives_multi_parent_merge() {
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (merged_state, rejected, rejected_slashes) = compute_parents_post_state(
+    let merged = compute_parents_post_state(
         &block_store,
         parents,
         &snapshot_merge,
@@ -2056,16 +2056,20 @@ async fn bridge_query_survives_multi_parent_merge() {
     .expect("merge parents");
 
     assert!(
-        rejected.is_empty(),
+        merged.rejected_user.is_empty(),
         "Merge rejected deploys: {:?}",
-        rejected
+        merged
+            .rejected_user
+            .iter()
+            .map(|(s, _)| hex::encode(&s[..8.min(s.len())]))
+            .collect::<Vec<_>>()
     );
     // Non-slash merge scenario must surface an empty rejected_slashes list so
     // the block creator's dedup step runs as a no-op.
     assert!(
-        rejected_slashes.is_empty(),
+        merged.rejected_slashes.is_empty(),
         "Merge rejected slashes unexpectedly populated: count={}",
-        rejected_slashes.len()
+        merged.rejected_slashes.len()
     );
 
     // --- Query getNonce from merged state ---
@@ -2092,7 +2096,7 @@ in {{
     let query_block_raw = block_implicits::get_random_block(
         Some(2),
         Some(3),
-        Some(merged_state.clone()),
+        Some(merged.state.clone()),
         Some(StateHash::default()),
         Some(validator.clone()),
         Some(1),
@@ -2555,7 +2559,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (merged_state, rejected, _rejected_slashes) = compute_parents_post_state(
+    let merged = compute_parents_post_state(
         &block_store,
         parents,
         &snapshot_merge,
@@ -2569,18 +2573,22 @@ async fn concurrent_registry_inserts_should_not_conflict() {
 
     tracing::info!(
         "Merge result: rejected={}, merged_state={}",
-        rejected.len(),
-        hex::encode(&merged_state[..8]),
+        merged.rejected_user.len(),
+        hex::encode(&merged.state[..8]),
     );
 
-    if !rejected.is_empty() {
-        let rejected_sigs: Vec<String> = rejected
+    if !merged.rejected_user.is_empty() {
+        let rejected_sigs: Vec<String> = merged
+            .rejected_user
+            .iter()
+            .map(|(s, _)| s.clone())
+            .collect::<Vec<_>>()
             .iter()
             .map(|d| hex::encode(&d[..std::cmp::min(8, d.len())]))
             .collect();
         tracing::warn!(
             "CONFLICT DETECTED: {} deploys rejected: {:?}",
-            rejected.len(),
+            merged.rejected_user.len(),
             rejected_sigs,
         );
 
@@ -2608,11 +2616,11 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     // single-value-cell conflict. A rejection here would be a real regression: a
     // genuinely-mergeable race mis-rejected.
     assert!(
-        rejected.is_empty(),
+        merged.rejected_user.is_empty(),
         "concurrent insertArbitrary to DISTINCT registry leaves must merge with 0 \
          rejected (they share TreeHashMap internal nodes, but the produces there are \
          mergeable); got {} rejected — keep-one wrongly rejected a mergeable race.",
-        rejected.len(),
+        merged.rejected_user.len(),
     );
 
     // Verify both URIs accessible from merged state
@@ -2629,14 +2637,14 @@ async fn concurrent_registry_inserts_should_not_conflict() {
 
     let data_a = rm
         .get_data(
-            merged_state.clone(),
+            merged.state.clone(),
             &make_deploy_id_par(&pd_a[0].deploy.sig),
         )
         .await
         .unwrap();
     let data_b = rm
         .get_data(
-            merged_state.clone(),
+            merged.state.clone(),
             &make_deploy_id_par(&pd_b[0].deploy.sig),
         )
         .await
@@ -3264,7 +3272,7 @@ new deployId(`rho:system:deployId`) in {
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (merged_state, rejected, _rejected_slashes) = compute_parents_post_state(
+    let merged = compute_parents_post_state(
         &block_store,
         vec![block_c.clone(), block_d.clone()],
         &snapshot_cd,
@@ -3276,7 +3284,11 @@ new deployId(`rho:system:deployId`) in {
     .await
     .expect("merge [C, D]");
 
-    let rejected_set: HashSet<prost::bytes::Bytes> = rejected.iter().cloned().collect();
+    let rejected_set: HashSet<prost::bytes::Bytes> = merged
+        .rejected_user
+        .iter()
+        .map(|(s, _)| s.clone())
+        .collect();
     let ba_rejected = rejected_set.contains(&pd_a[0].deploy.sig);
     let bb_rejected = rejected_set.contains(&pd_b[0].deploy.sig);
     let bc_rejected = rejected_set.contains(&pd_c[0].deploy.sig);
@@ -3299,32 +3311,32 @@ new deployId(`rho:system:deployId`) in {
         "BD (trivial, key_B, child of BB)   rejected: {}",
         bd_rejected
     );
-    tracing::info!("Total rejected: {} deploys", rejected.len());
+    tracing::info!("Total rejected: {} deploys", merged.rejected_user.len());
 
     let ba_data = rm
         .get_data(
-            merged_state.clone(),
+            merged.state.clone(),
             &make_deploy_id_par(&pd_a[0].deploy.sig),
         )
         .await
         .unwrap();
     let bb_data = rm
         .get_data(
-            merged_state.clone(),
+            merged.state.clone(),
             &make_deploy_id_par(&pd_b[0].deploy.sig),
         )
         .await
         .unwrap();
     let bc_data = rm
         .get_data(
-            merged_state.clone(),
+            merged.state.clone(),
             &make_deploy_id_par(&pd_c[0].deploy.sig),
         )
         .await
         .unwrap();
     let bd_data = rm
         .get_data(
-            merged_state.clone(),
+            merged.state.clone(),
             &make_deploy_id_par(&pd_d[0].deploy.sig),
         )
         .await
