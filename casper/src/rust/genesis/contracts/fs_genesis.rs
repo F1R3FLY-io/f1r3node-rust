@@ -530,6 +530,12 @@ pub const FS_NATIVE_URN_SUFFIXES: &[&str] = &[
     "lockRange",
     "lockSequential",
     "releaseLock",
+    // Phase 8 slice 8a step-4 — File.close sweep native (X-1 §901).
+    // Invoked inside File.close before dispatching fs_close so a cap
+    // that still holds locks at close time doesn't strand them until
+    // deploy-end auto-release fires.  Scoped by HolderId — cross-cap
+    // locks on the same (dev, inode) survive.
+    "releaseAllForHolder",
 ];
 
 /// Compose the full FsGenesis Rholang source.
@@ -634,6 +640,7 @@ new
   fsLockRange(`rho:io:fs:native:1.0.0/lockRange`),
   fsLockSequential(`rho:io:fs:native:1.0.0/lockSequential`),
   fsReleaseLock(`rho:io:fs:native:1.0.0/releaseLock`),
+  fsReleaseAllForHolder(`rho:io:fs:native:1.0.0/releaseAllForHolder`),
   rs(`rho:registry:insertSigned:secp256k1`),
   uriOut
 in {{
@@ -780,6 +787,8 @@ mod tests {
             ("lockRange", 7),      // (fd, offset, length, mode, holder, cmode, ack)
             ("lockSequential", 4), // (fd, holder, cmode, ack)
             ("releaseLock", 2),    // (lockId, ack)
+            // Phase 8 slice 8a step-4 — File.close sweep native (X-1 §901).
+            ("releaseAllForHolder", 2), // (holder, ack)
         ];
 
         // Read rho_runtime.rs from the sibling rholang crate.
@@ -918,7 +927,12 @@ mod tests {
         // height.  The bindings themselves are unused until File.rho
         // invokes them (slice 8a step 5), but their PRESENCE in the
         // composed source is enough to shift the block hash.
-        const EXPECTED: &str = "cfddec759c6b2ecd3ab6cdb7e8cf9695a0efce544f03890d1bfdbad27381098c";
+        //
+        // Anchor rolled forward again for Phase 8 slice 8a step-4
+        // prep (2026-08-12): added `fsReleaseAllForHolder` URN
+        // binding for the File.close sweep native (X-1 §901).  Same
+        // hard-fork discipline as the initial slice-8a roll.
+        const EXPECTED: &str = "551579e397e0a823b235a1cb50713eb5afc151118a788b8994555c191e6309b7";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

@@ -211,6 +211,8 @@ mod tests {
             "lockRange",
             "lockSequential",
             "releaseLock",
+            // Phase 8 slice 8a step-4 — File.close sweep native.
+            "releaseAllForHolder",
         ] {
             let term = format!(r#"new bad(`rho:io:fs:native:1.0.0/{suffix}`) in {{ bad!(0) }}"#);
             let result = runtime

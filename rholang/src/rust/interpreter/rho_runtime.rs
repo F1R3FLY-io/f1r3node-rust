@@ -1269,6 +1269,14 @@ fn std_system_processes() -> Vec<Definition> {
             BodyRefs::FS_RELEASE_LOCK,
             |sp, args| Box::pin(async move { sp.fs.fs_release_lock(args).await }),
         ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/releaseAllForHolder",
+            FixedChannels::fs_release_all_for_holder(),
+            // (holder, ack)
+            2,
+            BodyRefs::FS_RELEASE_ALL_FOR_HOLDER,
+            |sp, args| Box::pin(async move { sp.fs.fs_release_all_for_holder(args).await }),
+        ),
     ]
 }
 

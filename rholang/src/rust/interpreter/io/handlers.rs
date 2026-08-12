@@ -2495,6 +2495,51 @@ impl FsProcesses {
         produce(&out, ack).await?;
         Ok(out)
     }
+
+    /// Sweep every positional and sequential lock owned by `holder` from
+    /// the `LockRegistry`.  Called by `File.close` before dispatching
+    /// `fs_close`, so a File cap that still holds locks at close time
+    /// doesn't strand them until deploy-end auto-release fires.
+    ///
+    /// Args: `(holder: Par, ack)` — holder is opaque Par (typically the
+    /// caller-cap's `stateP` GPrivate name) hashed to a stable 32-byte
+    /// `HolderId`, matching the derivation used at acquire time.
+    ///
+    /// Reply: `[true, released_count: Int]`.  Zero released is not an
+    /// error — a cap that never acquired anything sweeps zero.  This
+    /// native is deliberately best-effort: it can never fail on
+    /// well-typed input, mirroring the "close is always safe to call"
+    /// invariant of `File.close` / `Stream.close`.  Subsequent
+    /// `lockToken!release()` on now-orphaned tokens returns
+    /// `[false, FSERR_CLOSED, ...]` through `fs_release_lock`'s
+    /// unknown-id path — the caller sees a clean idempotent error.
+    ///
+    /// Cross-cap safety: locks held on the same `(dev, inode)` via
+    /// *other* File caps are unaffected — the sweep is scoped by
+    /// `HolderId` equality, and each fresh-mint `File.openFile` cap
+    /// derives a distinct `HolderId` from its own `stateP`.
+    pub async fn fs_release_all_for_holder(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        let Some((produce, is_replay, previous, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
+            return Err(illegal_argument_error("fs_release_all_for_holder"));
+        };
+        let [holder_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("fs_release_all_for_holder"));
+        };
+        if is_replay {
+            produce(&previous, ack).await?;
+            return Ok(previous);
+        }
+        let holder = holder_id_of(holder_par);
+        let released = self.handles.lock_registry.release_all_for_holder(&holder);
+        let out = vec![ok_u64(released as u64)];
+        produce(&out, ack).await?;
+        Ok(out)
+    }
 }
 
 // ---------------------------------------------------------------------

@@ -303,6 +303,7 @@ impl FixedChannels {
     pub fn fs_lock_range() -> Par { byte_name(62) }
     pub fn fs_lock_sequential() -> Par { byte_name(63) }
     pub fn fs_release_lock() -> Par { byte_name(64) }
+    pub fn fs_release_all_for_holder() -> Par { byte_name(65) }
 }
 
 pub struct BodyRefs;
@@ -368,6 +369,7 @@ impl BodyRefs {
     pub const FS_LOCK_RANGE: i64 = 62;
     pub const FS_LOCK_SEQUENTIAL: i64 = 63;
     pub const FS_RELEASE_LOCK: i64 = 64;
+    pub const FS_RELEASE_ALL_FOR_HOLDER: i64 = 65;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
@@ -411,6 +413,7 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
         BodyRefs::FS_LOCK_RANGE,
         BodyRefs::FS_LOCK_SEQUENTIAL,
         BodyRefs::FS_RELEASE_LOCK,
+        BodyRefs::FS_RELEASE_ALL_FOR_HOLDER,
     ])
 }
 
