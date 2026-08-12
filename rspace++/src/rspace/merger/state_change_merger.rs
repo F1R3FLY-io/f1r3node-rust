@@ -356,9 +356,37 @@ fn make_trie_action<C: Clone, P: Clone, A: Clone, K: Clone>(
 ) -> Result<HotStoreTrieAction<C, P, A, K>, HistoryError> {
     let init = init_value(history_pointer)?;
 
+    // Removing an item the base does not hold is record incoherence — the
+    // availability splitters keep only chains whose consumes are available
+    // at the base, and `ChannelChange::combine` nets producer→consumer
+    // pairs before this point, so a residual absent-removal means the
+    // applied diffs disagree with the base they claim to extend. Hard
+    // error, never a silent no-op: a silent no-op is how stale diffs
+    // "apply" cleanly while the resulting state diverges from the record.
     let new_val = {
-        // Use multiset diff: remove each item in 'removed' exactly once from 'init'
-        let mut result = StateChange::multiset_diff(&init, &changes.removed);
+        let mut remove_counts: std::collections::HashMap<&Vec<u8>, usize> =
+            std::collections::HashMap::new();
+        for item in &changes.removed {
+            *remove_counts.entry(item).or_insert(0) += 1;
+        }
+        let mut result: Vec<ByteVector> = Vec::with_capacity(init.len());
+        for item in &init {
+            match remove_counts.get_mut(item) {
+                Some(count) if *count > 0 => *count -= 1,
+                _ => result.push(item.clone()),
+            }
+        }
+        let unmatched: usize = remove_counts.values().sum();
+        if unmatched > 0 {
+            return Err(HistoryError::MergeError(format!(
+                "channel {}: {} removed datum(s) absent from the base (base holds {}, diff \
+                 removes {}) — applied diffs are incoherent with the base state",
+                hex::encode(history_pointer.clone().bytes()),
+                unmatched,
+                init.len(),
+                changes.removed.len(),
+            )));
+        }
         result.extend(changes.added.clone());
         result
     };
@@ -546,5 +574,54 @@ mod tests {
             }
             other => panic!("expected TrieInsertBinaryProduce, got {:?}", other),
         }
+    }
+
+    /// Removing a datum that is NOT in the base is record incoherence, and
+    /// it must be a hard error, never a silent no-op. Upstream layers
+    /// guarantee the shape cannot occur legitimately: the availability
+    /// splitters keep only chains whose consumes are available at the base,
+    /// and `ChannelChange::combine` nets producer→consumer pairs within one
+    /// application before this point. A silent no-op here is how stale diffs
+    /// apply "cleanly" onto a base without the work they assumed — the
+    /// applied state diverges from the record while every check passes.
+    #[test]
+    fn removal_absent_from_base_is_an_error_not_a_noop() {
+        let phantom_removed: Vec<u8> = vec![0xdd; 32];
+        let datum_new: Vec<u8> = vec![0xee; 32];
+        let channel_hash = Blake2b256Hash::from_bytes(vec![0x02; 32]);
+
+        // Base holds NOTHING on the channel.
+        let base_reader: Box<dyn HistoryReader<Blake2b256Hash, (), (), (), ()>> =
+            Box::new(StubHistoryReaderBinary {
+                data_map: HashMap::new(),
+            });
+
+        let datums_changes = DashMap::new();
+        datums_changes.insert(channel_hash, ChannelChange {
+            added: vec![datum_new],
+            removed: vec![phantom_removed],
+        });
+        let changes = StateChange {
+            datums_changes,
+            cont_changes: DashMap::new(),
+            consume_channels_to_join_serialized_map: DashMap::new(),
+        };
+
+        let mergeable_chs: NumberChannelsDiff = BTreeMap::new();
+        let no_override =
+            |_: &Blake2b256Hash,
+             _: &ChannelChange<Vec<u8>>,
+             _: &NumberChannelsDiff|
+             -> Result<Option<HotStoreTrieAction<(), (), (), ()>>, HistoryError> {
+                Ok(None)
+            };
+
+        let result = compute_trie_actions(&changes, &base_reader, &mergeable_chs, no_override);
+
+        assert!(
+            result.is_err(),
+            "a datum removal absent from the base must hard-error (record incoherence), not \
+             silently no-op"
+        );
     }
 }
