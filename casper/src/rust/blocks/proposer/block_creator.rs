@@ -809,11 +809,41 @@ async fn prepare_user_deploys_with_policy(
         recovered_sigs.contains(&deploy.sig)
             || casper_snapshot.rejected_in_scope.contains(&deploy.sig)
     };
-    let retry_candidates: HashSet<Signed<DeployData>> = valid_unique
-        .iter()
-        .filter(|deploy| is_retry_candidate(deploy))
-        .cloned()
-        .collect();
+    // The gate covers EVERY retry route. `recovered_sigs` already passed it
+    // above; the pool route (rejected-in-scope, not buffered — reachable
+    // under deep floor lag, where the record is in the walk window but its
+    // carrier is below it) must pass the same predicate, or the proposer
+    // mints a block every validator rejects as `PrematureDeployRetry`.
+    let mut retry_candidates: HashSet<Signed<DeployData>> = HashSet::new();
+    let mut gated_pool_retries = 0usize;
+    for deploy in valid_unique.iter().filter(|d| is_retry_candidate(d)) {
+        if recovered_sigs.contains(&deploy.sig) {
+            retry_candidates.insert(deploy.clone());
+            continue;
+        }
+        match floor_ctx {
+            Some(ctx) => {
+                if ctx.retry_gate_open(
+                    &casper_snapshot.dag,
+                    block_store,
+                    earliest_block_number,
+                    &deploy.sig,
+                )? {
+                    retry_candidates.insert(deploy.clone());
+                } else {
+                    gated_pool_retries += 1;
+                }
+            }
+            None => gated_pool_retries += 1,
+        }
+    }
+    if gated_pool_retries > 0 {
+        tracing::info!(
+            target: "f1r3fly.casper.recovery",
+            "Prepare user deploys: {} pool retr(y/ies) deferred by the retry gate",
+            gated_pool_retries
+        );
+    }
     let ordinary_candidates: HashSet<Signed<DeployData>> = valid_unique
         .iter()
         .filter(|deploy| !is_retry_candidate(deploy))

@@ -84,6 +84,29 @@ async fn stage_floor_at_with_records(
     parent_height: i64,
     floor_records: Vec<models::rust::casper::protocol::casper_message::RejectedDeploy>,
 ) {
+    stage_floor_with_block_records(
+        snapshot,
+        block_store,
+        kvm,
+        floor_height,
+        parent_height,
+        floor_records,
+        Vec::new(),
+    )
+    .await
+}
+
+/// Full-control staging: records may ride the floor block (settled — the
+/// retry gate is open) or the live parent (unsettled — the gate is closed).
+async fn stage_floor_with_block_records(
+    snapshot: &mut CasperSnapshot,
+    block_store: &KeyValueBlockStore,
+    kvm: &mut InMemoryStoreManager,
+    floor_height: i64,
+    parent_height: i64,
+    floor_records: Vec<models::rust::casper::protocol::casper_message::RejectedDeploy>,
+    parent_records: Vec<models::rust::casper::protocol::casper_message::RejectedDeploy>,
+) {
     use block_storage::rust::dag::block_dag_key_value_storage::{
         BlockDagKeyValueStorage, InsertMode,
     };
@@ -106,7 +129,7 @@ async fn stage_floor_at_with_records(
         None,
     );
     root.body.rejected_deploys = floor_records;
-    let parent = block_implicits::get_random_block(
+    let mut parent = block_implicits::get_random_block(
         Some(parent_height),
         Some(1),
         None,
@@ -122,6 +145,7 @@ async fn stage_floor_at_with_records(
         Some("test-shard".to_string()),
         None,
     );
+    parent.body.rejected_deploys = parent_records;
     let dag_storage = BlockDagKeyValueStorage::new(kvm)
         .await
         .expect("dag storage");
@@ -703,6 +727,99 @@ async fn rejected_in_scope_ordinary_deploy_waits_for_recovery_buffer() {
         prepared.deploys.len(),
         0,
         "ordinary deploys that are already clean in scope must wait for finalized recovery buffering"
+    );
+}
+
+/// The gate covers EVERY retry route, not just the buffered one. Deep floor
+/// lag makes the geometry: the rejection record is inside the walk window
+/// (so the sig is rejected-in-scope) while its carrier is below it (so the
+/// sig is NOT in deploys_in_scope and nothing suppresses the pool copy).
+/// The record has not settled into the floor closure, so the gate is
+/// closed — a proposal carrying the retry would be `PrematureDeployRetry`
+/// on every validator. The proposer must defer it, never mint it: a
+/// proposal the gate admits is a proposal every validator accepts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pool_retry_of_an_unsettled_rejection_is_deferred_by_the_gate() {
+    crate::init_logger();
+
+    let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
+    let validator_identity = ValidatorIdentity::new(&validator_sk);
+    let validator_id: Bytes = validator_identity.public_key.bytes.clone();
+    let mut kvm = InMemoryStoreManager::new();
+    let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        KeyValueDeployStorage::new(&mut kvm)
+            .await
+            .expect("deploy storage"),
+    ));
+    let rejected_deploy_buffer = Arc::new(Mutex::new(
+        block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer::new(&mut kvm)
+            .await
+            .expect("rejected deploy buffer"),
+    ));
+    let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+        .await
+        .expect("block store");
+    let mut snapshot = create_snapshot(20, validator_id);
+    snapshot
+        .on_chain_state
+        .shard_conf
+        .max_user_deploys_per_block = 777_777;
+    snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+
+    // The pool holds the retry; the buffer does NOT (the deep-lag geometry
+    // reaches the pool route, which bypasses the buffered gate).
+    let deploy = create_deploy(6, None, &validator_sk);
+    snapshot.rejected_in_scope.insert(deploy.sig.clone());
+    deploy_storage
+        .lock()
+        .add(vec![deploy.clone()])
+        .expect("seed pool retry");
+
+    // Floor at 5, tip parent at 199 (block #200): the walk window is
+    // [150, 200], the record rides the LIVE parent (in window, unsettled),
+    // and the carrier is below the window — floor-clock admission keeps
+    // the retry alive while the tip window has long closed over it.
+    stage_floor_with_block_records(
+        &mut snapshot,
+        &block_store,
+        &mut kvm,
+        5,
+        199,
+        Vec::new(),
+        vec![
+            models::rust::casper::protocol::casper_message::RejectedDeploy {
+                sig: deploy.sig.clone(),
+                duplicate: false,
+                carrier: Bytes::new(),
+            },
+        ],
+    )
+    .await;
+
+    let prepared = block_creator::prepare_user_deploys(
+        &snapshot,
+        200,
+        i64::MAX,
+        deploy_storage,
+        rejected_deploy_buffer,
+        &block_store,
+        true,
+        true,
+    )
+    .await
+    .expect("prepare with a live (unsettled) rejection in scope");
+
+    assert!(
+        !prepared.deploys.iter().any(|d| d.sig == deploy.sig),
+        "a pool retry whose rejection has not settled into the floor \
+         closure must be deferred by the gate, not proposed — every \
+         validator would reject the block as PrematureDeployRetry \
+         (selected sigs: {:?})",
+        prepared
+            .deploys
+            .iter()
+            .map(|d| hex::encode(&d.sig[..8.min(d.sig.len())]))
+            .collect::<Vec<_>>()
     );
 }
 
