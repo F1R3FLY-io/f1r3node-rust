@@ -326,18 +326,17 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (state_without_skew, rejected_without_skew, _rejected_slashes) =
-        compute_parents_post_state(
-            &block_store,
-            parents.clone(),
-            &snapshot_without_skew,
-            &runtime_manager,
-            &latest_messages_without_skew,
-            None,
-            None,
-        )
-        .await
-        .expect("Failed to compute parents post-state without finalized skew");
+    let merged_without_skew = compute_parents_post_state(
+        &block_store,
+        parents.clone(),
+        &snapshot_without_skew,
+        &runtime_manager,
+        &latest_messages_without_skew,
+        None,
+        None,
+    )
+    .await
+    .expect("Failed to compute parents post-state without finalized skew");
 
     runtime_manager.parents_post_state_cache.clear();
     runtime_manager.block_index_cache.clear();
@@ -361,7 +360,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (state_with_skew, rejected_with_skew, _rejected_slashes) = compute_parents_post_state(
+    let merged_with_skew = compute_parents_post_state(
         &block_store,
         parents,
         &snapshot_with_skew,
@@ -374,11 +373,11 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
     .expect("Failed to compute parents post-state with finalized skew");
 
     assert_eq!(
-        state_without_skew, state_with_skew,
+        merged_without_skew.state, merged_with_skew.state,
         "Parents post-state should be invariant to finalized-set skew for the same parent set."
     );
     assert_eq!(
-        rejected_without_skew, rejected_with_skew,
+        merged_without_skew.rejected_user, merged_with_skew.rejected_user,
         "Rejected deploy set should be invariant to finalized-set skew for the same parent set."
     );
 }
@@ -610,7 +609,7 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
     runtime_manager.parents_post_state_cache.clear();
     runtime_manager.block_index_cache.clear();
 
-    let (merged_state, rejected, _rejected_slashes) = compute_parents_post_state(
+    let merged = compute_parents_post_state(
         &block_store,
         vec![cover.clone(), side.clone()],
         &snapshot,
@@ -623,11 +622,11 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
     .expect("Failed to compute parents post-state");
 
     assert!(
-        rejected.is_empty(),
+        merged.rejected_user.is_empty(),
         "non-conflicting side deploy should merge cleanly"
     );
     assert_eq!(
-        merged_state,
+        merged.state,
         proto_util::post_state_hash(&cover),
         "a valid DAG-covering parent should already contain the secondary parent's effects"
     );

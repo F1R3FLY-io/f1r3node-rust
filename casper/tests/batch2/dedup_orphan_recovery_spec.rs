@@ -321,7 +321,7 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (_merged_state, rejected_sigs, rejected_slashes) = compute_parents_post_state(
+    let merged = compute_parents_post_state(
         &block_store,
         vec![block_a.clone(), block_b.clone()],
         &snapshot,
@@ -334,13 +334,17 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
     .expect("compute_parents_post_state over [block_a, block_b]");
 
     assert!(
-        rejected_slashes.is_empty(),
+        merged.rejected_slashes.is_empty(),
         "no system slashes are involved in this fixture; rejected_slashes \
          must be empty (got {} entries)",
-        rejected_slashes.len()
+        merged.rejected_slashes.len()
     );
 
-    let rejected_set: HashSet<prost::bytes::Bytes> = rejected_sigs.iter().cloned().collect();
+    let rejected_set: HashSet<prost::bytes::Bytes> = merged
+        .rejected_user
+        .iter()
+        .map(|(sig, _)| sig.clone())
+        .collect();
     let v_orphaned = rejected_set.contains(&sig_v);
     let w_orphaned = rejected_set.contains(&sig_w);
     assert!(
@@ -353,7 +357,11 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
          lines ~563-573) is not reaching the merge output",
         v_orphaned,
         w_orphaned,
-        rejected_sigs
+        merged
+            .rejected_user
+            .iter()
+            .map(|(sig, _)| sig.clone())
+            .collect::<Vec<_>>()
             .iter()
             .map(|s| hex::encode(&s[..std::cmp::min(8, s.len())]))
             .collect::<Vec<_>>()

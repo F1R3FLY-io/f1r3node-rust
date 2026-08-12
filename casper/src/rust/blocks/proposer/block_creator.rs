@@ -2758,8 +2758,6 @@ pub async fn create(
         v
     };
 
-    let has_user_or_dummy_deploys = !user_deploys.is_empty() || !dummy_deploys.is_empty();
-
     // Merge the parents once up front. Two reasons to do this before the
     // empty-block skip check below:
     //   1. To discover slashes that were rejected by cost-optimal merge
@@ -2793,7 +2791,71 @@ pub async fn create(
         "source" => CASPER_METRICS_SOURCE
     )
     .record(__merge_pre_t.elapsed().as_secs_f64());
-    let (_pre_state, _rejected_user_sigs, rejected_slashes) = merge_pre_info;
+    let rejected_slashes = merge_pre_info.rejected_slashes.clone();
+
+    // NEVER EXECUTE A DEPLOY WHOSE EFFECT IS ALREADY IN THE PRE-STATE.
+    //
+    // Selection ran BEFORE the parents were merged, so it cannot know what
+    // the block will actually be built on. Two independent mechanisms return
+    // a rejected deploy's work: recovery re-selects the deploy for fresh
+    // re-proposal, and a merge reinstates the original copy from scope.
+    // Neither can see the other, so both can deliver — and the second
+    // execution is not a harmless duplicate. The deploy's cells are keyed by
+    // a sig-derived rnd, so both executions write the SAME channel and
+    // neither consumes the other's datum: the cell ends up holding two
+    // values, the vault read trips the IntegerAdd single-value invariant,
+    // and the toxic-deploy quarantine then deletes the deploy from BOTH the
+    // pool and the buffer. A double-apply destroys the work rather than
+    // duplicating it.
+    //
+    // The test is the INVARIANT, not a route. Keying on how the effect
+    // arrived misses paths: `applied_from_scope` is empty on the
+    // short-circuit shapes (`single_parent`, `descendant_fast_path`, cache
+    // hit) where the effect arrives via a parent's post-state instead.
+    // Asking the pre-state directly is provenance-independent and therefore
+    // complete. `applied_from_scope` is still consulted first: it is exact
+    // and needs no I/O, so the state probe only runs for what it does not
+    // cover.
+    //
+    // Only the FRESH copy is dropped, never the merge's, so reinstatement
+    // stays intact. A false positive costs a round — the deploy stays in
+    // storage and in the buffer — so this is delay, never loss.
+    let user_deploys: HashSet<Signed<DeployData>> = {
+        let pre_state_hash =
+            rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash::from_bytes_prost(
+                &merge_pre_info.state,
+            );
+        let mut kept: HashSet<Signed<DeployData>> = HashSet::with_capacity(user_deploys.len());
+        let mut dropped: Vec<String> = Vec::new();
+        for deploy in user_deploys {
+            let already_applied = merge_pre_info.applied_from_scope.contains(&deploy.sig)
+                || interpreter_util::deploy_effect_in_state(
+                    &casper_snapshot.dag,
+                    block_store,
+                    runtime_manager,
+                    &pre_state_hash,
+                    &deploy.sig,
+                )?;
+            if already_applied {
+                dropped.push(hex::encode(&deploy.sig[..deploy.sig.len().min(8)]));
+            } else {
+                kept.insert(deploy);
+            }
+        }
+        if !dropped.is_empty() {
+            tracing::info!(
+                target: "f1r3fly.casper.recovery",
+                "Dropped {} selected deploy(s) from block #{}: their effects are already in the \
+                 pre-state this block executes against, so re-executing would double-apply; \
+                 sigs={:?}",
+                dropped.len(),
+                next_block_num,
+                dropped,
+            );
+        }
+        kept
+    };
+    let has_user_or_dummy_deploys = !user_deploys.is_empty() || !dummy_deploys.is_empty();
 
     // Union own slashes with merge-rejected slashes, dedup by
     // `invalid_block_hash`. Own detections take priority — any

@@ -77,6 +77,100 @@ fn block_in_floor_merge_scope(
     Ok(!dag.is_dag_ancestor(hash, floor_hash)?)
 }
 
+/// True iff a deploy's SUCCESSFUL effect is already present in `base_state`
+/// — i.e. the deploy already executed in the lineage that state derives
+/// from. Applying (or re-executing) such a deploy again would double its
+/// per-deploy cells.
+///
+/// Signal: the deploy's own created number cells. Each carries a
+/// sig-derived rnd, so its channel NAME is unique to this deploy and stable
+/// across executions even when the VALUE is base-dependent — a match is
+/// false-positive-free even on shared channels. The check restricts to
+/// channels the deploy CREATED (absent in the executing block's pre-state);
+/// shared channels the pre-charge merely reads are excluded.
+///
+/// CONTRACT — the probe's blind spots, both deliberate:
+/// - A deploy that creates NO number cells is invisible here and always
+///   reads not-settled. Same-sig copies that meet in one merge scope are
+///   still deduped by the freshest-copy rule regardless; only a
+///   base-settled no-cell deploy re-entering via scope escapes both, and
+///   its duplicate effect is additive datums on multi-datum channels,
+///   never a single-value-cell violation.
+/// - A FAILED execution's created cells are not in any committed state, so
+///   the probe correctly reads not-settled: a failed run's charge landed
+///   but its effect did not, and re-execution is legitimate.
+pub(crate) fn deploy_effect_in_state(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    runtime_manager: &RuntimeManager,
+    base_state: &Blake2b256Hash,
+    sig: &Bytes,
+) -> Result<bool, CasperError> {
+    let Some(origin_hash) = dag
+        .lookup_by_deploy_id(&sig.to_vec())
+        .map_err(CasperError::KvStoreError)?
+    else {
+        return Ok(false);
+    };
+    let Some(origin) = block_store.get(&origin_hash)? else {
+        return Ok(false);
+    };
+    let Some(idx) = origin
+        .body
+        .deploys
+        .iter()
+        .position(|pd| pd.deploy.sig == *sig)
+    else {
+        return Ok(false);
+    };
+
+    let mergeable_chs = runtime_manager.load_mergeable_channels(
+        &origin.body.state.post_state_hash,
+        origin.sender.clone(),
+        origin.seq_num,
+    )?;
+    let Some(merge_chs) = mergeable_chs.get(idx) else {
+        return Ok(false);
+    };
+    if merge_chs.is_empty() {
+        return Ok(false);
+    }
+
+    let origin_pre = Blake2b256Hash::from_bytes_prost(&origin.body.state.pre_state_hash);
+    let origin_pre_reader = runtime_manager
+        .history_repo
+        .get_history_reader(&origin_pre)
+        .map_err(CasperError::HistoryError)?;
+    let base_reader = runtime_manager
+        .history_repo
+        .get_history_reader(base_state)
+        .map_err(CasperError::HistoryError)?;
+    for (ch, _) in merge_chs.iter() {
+        let created_by_deploy = origin_pre_reader
+            .get_data(ch)
+            .map_err(CasperError::HistoryError)?
+            .is_empty();
+        if !created_by_deploy {
+            continue;
+        }
+        let in_base = !base_reader
+            .get_data(ch)
+            .map_err(CasperError::HistoryError)?
+            .is_empty();
+        tracing::debug!(
+            target: "f1r3.trace.basecheck",
+            sig = %hex::encode(&sig[..sig.len().min(8)]),
+            channel = %hex::encode(&ch.bytes()[..6]),
+            in_base,
+            "base-check per-deploy created cell"
+        );
+        if in_base {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// BFS-walk the closure of `parents` down to `earliest_block_number`,
 /// returning each sig's latest disposition as `sig -> (height, won)`.
 /// A win and a rejection never share a height (a merge sits one block above
@@ -430,15 +524,18 @@ pub async fn validate_block_checkpoint(
     );
 
     match computed_parents_info {
-        Ok((computed_pre_state_hash, rejected_deploys, _rejected_slashes)) => {
+        Ok(merged) => {
+            let computed_pre_state_hash = merged.state.clone();
             let block_deploy_sigs: HashSet<_> = block
                 .body
                 .deploys
                 .iter()
                 .map(|pd| pd.deploy.sig.clone())
                 .collect();
-            let rejected_deploy_ids: HashSet<_> = rejected_deploys
+            let rejected_deploy_ids: HashSet<_> = merged
+                .rejected_user
                 .iter()
+                .map(|(sig, _)| sig)
                 .filter(|sig| !block_deploy_sigs.contains(*sig))
                 .cloned()
                 .collect();
@@ -810,7 +907,12 @@ pub async fn compute_deploys_checkpoint(
     )
     .await?;
     let parents_ms = parents_started.elapsed().as_millis();
-    let (pre_state_hash, rejected_deploys, _rejected_slashes) = computed_parents_info;
+    let pre_state_hash = computed_parents_info.state.clone();
+    let rejected_deploys: Vec<prost::bytes::Bytes> = computed_parents_info
+        .rejected_user
+        .iter()
+        .map(|(sig, _)| sig.clone())
+        .collect();
 
     // Compute state and bonds using one spawned runtime
     let compute_state_started = std::time::Instant::now();
@@ -948,14 +1050,8 @@ pub async fn compute_parents_post_state(
     latest_messages: &BTreeMap<Validator, BlockHash>,
     disable_late_block_filtering_override: Option<bool>,
     rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
-) -> Result<
-    (
-        StateHash,
-        Vec<Bytes>,
-        Vec<crate::rust::merging::rejected_slash::RejectedSlash>,
-    ),
-    CasperError,
-> {
+) -> Result<super::runtime_manager::MergedPreState, CasperError> {
+    use super::runtime_manager::MergedPreState;
     let total_started = std::time::Instant::now();
 
     // No entered span guard here: the function is async (it awaits floor
@@ -984,7 +1080,13 @@ pub async fn compute_parents_post_state(
                 post_state = %hex::encode(&state[..8.min(state.len())]),
                 "merge.step: exit compute_parents_post_state"
             );
-            Ok((state, Vec::new(), Vec::new()))
+            Ok(MergedPreState {
+                state,
+                rejected_user: Vec::new(),
+                rejected_slashes: Vec::new(),
+                applied_from_scope: HashSet::new(),
+                merge_base: None,
+            })
         }
 
         // For single parent, get its post state hash
@@ -1003,7 +1105,13 @@ pub async fn compute_parents_post_state(
                 post_state = %hex::encode(&state[..8.min(state.len())]),
                 "merge.step: exit compute_parents_post_state"
             );
-            Ok((state, Vec::new(), Vec::new()))
+            Ok(MergedPreState {
+                state,
+                rejected_user: Vec::new(),
+                rejected_slashes: Vec::new(),
+                applied_from_scope: HashSet::new(),
+                merge_base: None,
+            })
         }
 
         // Multiple parents - we might want to take some data from the parent with the most stake,
@@ -1048,7 +1156,13 @@ pub async fn compute_parents_post_state(
                         post_state = %hex::encode(&state[..8.min(state.len())]),
                         "merge.step: exit compute_parents_post_state"
                     );
-                    return Ok((state, Vec::new(), Vec::new()));
+                    return Ok(MergedPreState {
+                        state,
+                        rejected_user: Vec::new(),
+                        rejected_slashes: Vec::new(),
+                        applied_from_scope: HashSet::new(),
+                        merge_base: None,
+                    });
                 }
             }
 
@@ -1067,15 +1181,13 @@ pub async fn compute_parents_post_state(
                     .collect(),
                 disable_late_block_filtering,
             };
-            if let Some((cached_state, cached_rejected, cached_slashes)) =
-                runtime_manager.get_cached_parents_post_state(&cache_key)
-            {
+            if let Some(cached) = runtime_manager.get_cached_parents_post_state(&cache_key) {
                 tracing::debug!(
                     target: "f1r3fly.casper.compute_parents_post_state.cache",
                     "compute_parents_post_state cache hit: parents={}, rejected_deploys={}, rejected_slashes={}",
                     cache_key.sorted_parent_hashes.len(),
-                    cached_rejected.len(),
-                    cached_slashes.len()
+                    cached.rejected_user.len(),
+                    cached.rejected_slashes.len()
                 );
                 tracing::debug!(
                     target: "f1r3fly.casper.compute_parents_post_state.timing",
@@ -1088,12 +1200,12 @@ pub async fn compute_parents_post_state(
                     target: "f1r3fly.merge.step",
                     step = "compute_parents_post_state.CACHE_SKIP",
                     path = "cache_hit",
-                    post_state = %hex::encode(&cached_state[..8.min(cached_state.len())]),
-                    n_rejected = cached_rejected.len(),
-                    n_rejected_slash = cached_slashes.len(),
+                    post_state = %hex::encode(&cached.state[..8.min(cached.state.len())]),
+                    n_rejected = cached.rejected_user.len(),
+                    n_rejected_slash = cached.rejected_slashes.len(),
                     "merge.step: cache hit, merge skipped"
                 );
-                return Ok((cached_state, cached_rejected, cached_slashes));
+                return Ok(cached);
             }
             let cache_lookup_ms = cache_lookup_started.elapsed().as_millis();
 
@@ -1359,6 +1471,14 @@ pub async fn compute_parents_post_state(
                 "merge.step: dag_merger::merge begin"
             );
             let merge_started = std::time::Instant::now();
+            // Settled-sig probe for the merge dedup: a sig whose effect is
+            // already in the base's committed state has no legitimate scope
+            // copy — every one is a stale duplicate no rejection record
+            // covers. Memoization lives inside the merge (one probe per
+            // unique sig per merge call).
+            let sig_settled_in_base = |sig: &Bytes| -> Result<bool, CasperError> {
+                deploy_effect_in_state(&s.dag, block_store, runtime_manager, &floor_state, sig)
+            };
             let merger_result = dag_merger::merge(
                 &s.dag,
                 &floor_hash,
@@ -1371,10 +1491,12 @@ pub async fn compute_parents_post_state(
                 dag_merger::cost_optimal_rejection_alg(),
                 Some(visible_blocks.clone()),
                 disable_late_block_filtering,
+                &sig_settled_in_base,
             )?;
             let merge_ms = merge_started.elapsed().as_millis();
 
-            let (state, mut rejected_user_pairs, rejected_slash_pairs) = merger_result;
+            let (state, mut rejected_user_pairs, rejected_slash_pairs, applied_user_sigs) =
+                merger_result;
             let suppressed = suppress_rejected_pairs_with_later_visible_rejection(
                 block_store,
                 &visible_blocks,
@@ -1558,13 +1680,14 @@ pub async fn compute_parents_post_state(
                     out
                 };
 
-            // Strip block hashes; the cache and callers only need the deploy sigs.
-            let rejected: Vec<Bytes> = rejected_user_pairs
-                .into_iter()
-                .map(|(sig, _)| sig)
-                .collect();
-
             let computed_state = prost::bytes::Bytes::copy_from_slice(&state.bytes());
+            let merged = MergedPreState {
+                state: computed_state.clone(),
+                rejected_user: rejected_user_pairs,
+                rejected_slashes,
+                applied_from_scope: applied_user_sigs,
+                merge_base: Some(floor_hash.clone()),
+            };
             // The floor is a deterministic function of the block's justifications,
             // so the merged state is always cacheable (no snapshot-LFB fallback).
             tracing::debug!(
@@ -1572,18 +1695,12 @@ pub async fn compute_parents_post_state(
                 step = "compute_parents_post_state.CACHE_PUT",
                 path = "merged",
                 post_state = %hex::encode(&computed_state[..8.min(computed_state.len())]),
-                n_rejected = rejected.len(),
-                n_rejected_slash = rejected_slashes.len(),
+                n_rejected = merged.rejected_user.len(),
+                n_rejected_slash = merged.rejected_slashes.len(),
+                n_applied = merged.applied_from_scope.len(),
                 "merge.step: cache put merged parents-post-state"
             );
-            runtime_manager.put_cached_parents_post_state(
-                cache_key,
-                (
-                    computed_state.clone(),
-                    rejected.clone(),
-                    rejected_slashes.clone(),
-                ),
-            );
+            runtime_manager.put_cached_parents_post_state(cache_key, merged.clone());
             tracing::debug!(
                 target: "f1r3fly.casper.compute_parents_post_state.timing",
                 "compute_parents_post_state timing: path=merged, parents={}, cache_lookup_ms={}, collect_ancestors_ms={}, flatten_visible_ms={}, floor_derive_ms={}, merge_ms={}, visible_blocks={}, rejected_deploys={}, rejected_slashes={}, total_ms={}",
@@ -1594,8 +1711,8 @@ pub async fn compute_parents_post_state(
                 floor_derive_ms,
                 merge_ms,
                 visible_blocks_len,
-                rejected.len(),
-                rejected_slashes.len(),
+                merged.rejected_user.len(),
+                merged.rejected_slashes.len(),
                 total_started.elapsed().as_millis()
             );
             tracing::debug!(
@@ -1603,11 +1720,11 @@ pub async fn compute_parents_post_state(
                 step = "compute_parents_post_state.EXIT",
                 path = "merged",
                 post_state = %hex::encode(&computed_state[..8.min(computed_state.len())]),
-                n_rejected = rejected.len(),
-                n_rejected_slash = rejected_slashes.len(),
+                n_rejected = merged.rejected_user.len(),
+                n_rejected_slash = merged.rejected_slashes.len(),
                 "merge.step: exit compute_parents_post_state"
             );
-            Ok((computed_state, rejected, rejected_slashes))
+            Ok(merged)
         }
     }
 }

@@ -1693,18 +1693,17 @@ impl BlockAPI {
                             .iter()
                             .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
                             .collect();
-                        let (merged_state_hash, _rejected, _rejected_slashes) =
-                            crate::rust::util::rholang::interpreter_util::compute_parents_post_state(
-                                casper.block_store(),
-                                parents.clone(),
-                                &snapshot,
-                                &runtime_manager,
-                                &latest_messages,
-                                Some(true), // disable_late_block_filtering = true for exploratory deploy
-                                None,       // exploratory deploy: no buffer populate needed
-                            )
-                            .await?;
-                        merged_state_hash
+                        crate::rust::util::rholang::interpreter_util::compute_parents_post_state(
+                            casper.block_store(),
+                            parents.clone(),
+                            &snapshot,
+                            &runtime_manager,
+                            &latest_messages,
+                            Some(true), // disable_late_block_filtering = true for exploratory deploy
+                            None,       // exploratory deploy: no buffer populate needed
+                        )
+                        .await?
+                        .state
                     };
 
                     tracing::warn!(

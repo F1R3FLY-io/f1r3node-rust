@@ -563,11 +563,22 @@ pub fn merge(
     rejection_cost_f: impl Fn(&DeployChainIndex) -> u64,
     scope: Option<HashSet<BlockHash>>,
     disable_late_block_filtering: bool,
+    // True iff the sig's effect is already present in the BASE state. The
+    // dedup below seeds such sigs with an unbeatable freshest-copy
+    // sentinel so every scope copy drops: the settled copy lives in the
+    // base where scope-level dedup cannot see it, and without the seed the
+    // scope copy re-applies and doubles the deploy's cells.
+    sig_settled_in_base: &dyn Fn(&Bytes) -> Result<bool, CasperError>,
 ) -> Result<
     (
         Blake2b256Hash,
         Vec<(Bytes, BlockHash)>,
         Vec<(Bytes, BlockHash)>,
+        // User sigs whose chains this merge APPLIED from scope: their
+        // effects are in the returned state, so none of them may also be
+        // executed fresh on top of it. The merge is the only place this
+        // set is known.
+        HashSet<Bytes>,
     ),
     CasperError,
 > {
@@ -690,6 +701,10 @@ pub fn merge(
     // recovery path can re-propose them in a subsequent block.
     let mut collateral_lost_pairs: Vec<(Bytes, BlockHash)> = Vec::new();
 
+    // Memoized settled-in-base results, one probe per unique sig per merge.
+    let mut settled_checked: HashSet<Bytes> = HashSet::new();
+    let mut settled_sigs: HashSet<Bytes> = HashSet::new();
+
     // Deploy de-duplication. When the same deploy ID appears in chains from
     // multiple blocks in scope — for example, because a previously-rejected
     // deploy was re-proposed in a later block — keep the copy from the freshest
@@ -699,7 +714,34 @@ pub fn merge(
     // against a pre-state that the fresh execution replaces.
     if !actual_set_vec.is_empty() {
         // Find the freshest source for each deploy_id across all chains.
+        // A sig whose effect is already SETTLED IN THE BASE is seeded with
+        // an unbeatable sentinel: the base itself is the freshest "copy",
+        // so every scope copy is stale and its chain drops. The settled
+        // copy sits in the base where scope-level dedup cannot see it —
+        // without the seed the scope copy re-applies and doubles the
+        // per-deploy cells. (The sentinel hash is empty, which no real
+        // chain source can equal, so the retain below never keeps a
+        // settled copy and the collateral pass correctly treats settled
+        // sigs as not-lost.)
         let mut latest_for_deploy: HashMap<Bytes, (i64, BlockHash)> = HashMap::new();
+        for chain in &actual_set_vec {
+            for deploy in &chain.deploys_with_cost.0 {
+                if is_system_deploy_id(&deploy.deploy_id) {
+                    continue;
+                }
+                if settled_checked.insert(deploy.deploy_id.clone())
+                    && sig_settled_in_base(&deploy.deploy_id)?
+                {
+                    tracing::info!(
+                        "DagMerger dedup: sig {} already settled in the base; dropping all scope copies",
+                        hex::encode(&deploy.deploy_id[..8.min(deploy.deploy_id.len())]),
+                    );
+                    settled_sigs.insert(deploy.deploy_id.clone());
+                    latest_for_deploy
+                        .insert(deploy.deploy_id.clone(), (i64::MAX, BlockHash::new()));
+                }
+            }
+        }
         for chain in &actual_set_vec {
             for deploy in &chain.deploys_with_cost.0 {
                 let candidate = (chain.source_block_number, chain.source_block_hash.clone());
@@ -1463,6 +1505,19 @@ pub fn merge(
         }
     }
 
+    // The user sigs whose chains survived every rejection pass and are
+    // about to be APPLIED into the merged state. Returned to the caller:
+    // these effects are in the merged pre-state, so a deploy among them
+    // must not ALSO be executed fresh on top of it.
+    let applied_user_sigs: HashSet<Bytes> = resolved
+        .to_merge
+        .iter()
+        .flat_map(|branch| branch.0.iter())
+        .flat_map(|chain| chain.deploys_with_cost.0.iter())
+        .filter(|deploy| !is_system_deploy_id(&deploy.deploy_id))
+        .map(|deploy| deploy.deploy_id.clone())
+        .collect();
+
     // Channels where MORE THAN ONE accepted chain contributes datum adds:
     // only these can exhibit cross-writer accumulation, so only these are
     // subject to the base-empty single-value-cell overfill guard.
@@ -1589,7 +1644,12 @@ pub fn merge(
             n_rejected_slash = rejected_slashes.len());
     }
 
-    Ok((new_state, rejected_user_deploys, rejected_slashes))
+    Ok((
+        new_state,
+        rejected_user_deploys,
+        rejected_slashes,
+        applied_user_sigs,
+    ))
 }
 
 #[cfg(test)]
