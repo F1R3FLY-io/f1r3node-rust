@@ -40,11 +40,13 @@ recursively owned types in **80** components, and reports zero recursive derive 
 exposures. It resolves crate/module/import/re-export identity, models `Arc`, `Rc`, references, and
 `ManuallyDrop` per operation, checks enclosing-owner dispositions exactly, and includes a failing
 recursive-derive mutation. `mettail-rust@e831c2ab` adds the admission-free continuation theorem and
-exact once-per-node lifecycle-visit laws. That lifecycle result does **not** close the wider
-function-call strongly connected component (SCC) census. `mettail-rust@e0086c93` subsequently closes
+exact once-per-node lifecycle-visit laws. At that checkpoint, the lifecycle result did **not** by
+itself close the wider function-call strongly connected component (SCC) census.
+`mettail-rust@e0086c93` subsequently closes
 the operational `AnyAlgebra::{is_satisfiable,witness}` re-entry with one heap-frame decision
 executor. `mettail-rust@338d8263` additionally closes the Rholang type-inference variable-use and
-receive-collection SCCs; the remaining non-term-family census remains live work (§5.18.6, §8.5).
+receive-collection SCCs; the remaining non-term-family census was still live at that checkpoint and
+is closed by the subsequent checkpoints summarized below (§5.18.6, §8.5).
 `mettail-rust@b76c5773` closes every production
 recursion cluster in `rholang-runtime/src/rholang_ast.rs`; its one analyzer residual is a deliberate
 `#[cfg(test)]` recursive oracle. `mettail-rust@2a972436`, `580896f3`, and `fec84ffb` close every
@@ -137,6 +139,24 @@ in `f1r3node-rust-mettail` and **1,910/1,910** production files in `mettail-rust
 the prior source-derived 27/0 interim ledger. The separate semantic ownership, representation, and
 consensus-reachability refresh remains an independent closure gate rather than evidence for this
 classic call-graph result.
+
+**Living revalidation (2026-08-12).** Fresh classic runs
+`573791ba-b176-481b-8409-1256ecf576c4` (`mettail-rust`) and
+`cf4a150e-e99c-4167-be85-5c0b67d7e445` (`f1r3node-rust-mettail`) again report **zero direct
+recursion and zero mutual-recursion clusters**, with zero failed files. The mettail scan analyzed
+1,589 supported production files (335 unsupported-language files and one oversized file are
+reported explicitly); the f1r3node scan analyzed 226 supported production files (12
+unsupported-language files are reported explicitly). Fresh default-profile semantic snapshots
+`21c0f93b-7012-4c76-9ef8-58e96bf00388` and
+`8b4279d0-fa40-4e22-8956-a20e133cbdae` add typed call, ownership, representation, memory-slope, and
+consensus-reachability inventories. Source inspection found no new production recursion: their
+apparent residuals are test-only recursive oracles or receiver-resolution aliases such as an
+overloaded trait method treated as a self-call, `Printer::cap` treated as `PrettyPrinter::cap`, and
+`HashMap::remove` treated as the enclosing type's `remove`. The representation and slope selectors
+also label ordinary `Vec::push`, `Iterator::collect`, tuple construction, and canonical key encoding
+as PathMap materialization; those findings are analyzer heuristics, not evidence that an EPathMap
+left its native `PathMap<()>` / `PathMap<Par>` representation. These limitations are recorded in the
+campaign's pgmcp follow-up items rather than converted into source work.
 No production path uses
 `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
 traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
@@ -257,10 +277,10 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-Y1** | introduced `fab6de24`; repaired `6248f156` | mettail | The optional-collection generator defect inside SS-G4: `Option::len` on `Option<Vec<Proc>>` (**E0624**) and `&Vec<Proc>` cast as `*const Proc` (**E0606**) | — | ★ **repaired**; the generated carrier is classified once and `--all-targets` is no longer blocked | [8.6.1a](#86-the-issue-keyed-residuals-at-their-final-dispositions) |
 | **SS-G5** | `ed44c429` | mettail | ★ **the TWELFTH generated driver, `try_eval`** — `CrossKind::OptionalSameCat` replaces a same-category optional child's host recursion with a presence flag; a `compile_error!` refuses the capture-rule shape that would reintroduce it | `ast_try_eval` / `ast_try_eval_cast` **0**, both profiles | **yes** | [5.6.5](#565--the-twelfth-generated-driver-and-the-seven-numerals-beside-it-ed44c429) |
 | **SS-G7** | `b0aa4e09` | mettail | native-evaluator category cycles $`\rightarrow`$ one heterogeneous `Visit`/Reduce PDA per dependency SCC; capture terms and auto projections use the same classifier, and the recursive fallback is deleted | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** alternating edges on a **256 KiB** thread stack | **yes** | [5.6.11](#5611-ss-g7--native-evaluator-cycles-become-one-pda-per-dependency-scc-b0aa4e09) |
-| **SS-G8** | campaign set bookended by `c03e9e04` and `ce60f76f`; hardened gate `a58d0925`; proof `e831c2ab` | mettail | recursively owned production carriers and the final PraTTaIL logic families: lifecycle traits, folds, analysis, Boolean evaluation, compilation, and second-order subset traversal | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack for the named operations; **20,000** levels on **256 KiB**; **2,279 definitions / 84 types / 80 components / 549 files / zero lifecycle exposures**; composed gate **23.73 s / 163,844 KiB RSS / zero swap** | **yes** for the named operations; wider call-SCC closure remains open | [5.18](#518-recursive-carrier-lifecycle-and-weighted-logic-closure-ss-g8) |
-| **SS-G9** | `mettail-rust@8b4644e8`, `e3f2812f`, `e0086c93` | mettail | one cross-combinator `AnyAlgebra` continuation family for evaluation, satisfiability, and witness construction; exact KAT partial-derivative subset decision; arbitrary-width Boolean witness search | **20,000** alternating wrappers / KAT nodes on **256 KiB**; final `AnyAlgebra` decision gate **0.25 s / 46,168 KiB**; old KAT budget false-positive deleted; pipeline case **0.12 s / 59.8 MiB** | **yes for the named decision SCC**; wider call-SCC census remains open | [5.18.8](#5188-post-census-operational-decision-closure-ss-g9) |
-| **SS-G10** | `mettail-rust@338d8263` | mettail | Rholang type inference: mutually recursive `Proc` / `Name` / `InputBind` / `ForRow` variable-use predicates and receive-variable collection | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** continuation levels on **256 KiB**; direct gate **0.05 s / 36,428 KiB** | **yes for the named inference SCCs**; wider call-SCC census remains open | [5.18.9](#5189-rholang-type-inference-closure-ss-g10) |
-| **SS-G11** | `mettail-rust@b76c5773` | mettail | Rholang AST analysis and rewrite: `Proc`/`Name` machine-effect classification, innermost fold discovery, and fold replacement/rebuild | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.42 s / 59,172 KiB** | **yes for every production SCC in `rholang_ast.rs`**; wider call-SCC census remains open | [5.18.10](#51810-rholang-ast-analysis-and-fold-rewrite-closure-ss-g11) |
+| **SS-G8** | campaign set bookended by `c03e9e04` and `ce60f76f`; hardened gate `a58d0925`; proof `e831c2ab` | mettail | recursively owned production carriers and the final PraTTaIL logic families: lifecycle traits, folds, analysis, Boolean evaluation, compilation, and second-order subset traversal | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack for the named operations; **20,000** levels on **256 KiB**; **2,279 definitions / 84 types / 80 components / 549 files / zero lifecycle exposures**; composed gate **23.73 s / 163,844 KiB RSS / zero swap** | **yes** for the named operations; the then-wider call-SCC obligation is closed by later rows and the living revalidation above | [5.18](#518-recursive-carrier-lifecycle-and-weighted-logic-closure-ss-g8) |
+| **SS-G9** | `mettail-rust@8b4644e8`, `e3f2812f`, `e0086c93` | mettail | one cross-combinator `AnyAlgebra` continuation family for evaluation, satisfiability, and witness construction; exact KAT partial-derivative subset decision; arbitrary-width Boolean witness search | **20,000** alternating wrappers / KAT nodes on **256 KiB**; final `AnyAlgebra` decision gate **0.25 s / 46,168 KiB**; old KAT budget false-positive deleted; pipeline case **0.12 s / 59.8 MiB** | **yes for the named decision SCC**; the then-wider census is closed by subsequent checkpoints | [5.18.8](#5188-post-census-operational-decision-closure-ss-g9) |
+| **SS-G10** | `mettail-rust@338d8263` | mettail | Rholang type inference: mutually recursive `Proc` / `Name` / `InputBind` / `ForRow` variable-use predicates and receive-variable collection | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** continuation levels on **256 KiB**; direct gate **0.05 s / 36,428 KiB** | **yes for the named inference SCCs**; the then-wider census is closed by subsequent checkpoints | [5.18.9](#5189-rholang-type-inference-closure-ss-g10) |
+| **SS-G11** | `mettail-rust@b76c5773` | mettail | Rholang AST analysis and rewrite: `Proc`/`Name` machine-effect classification, innermost fold discovery, and fold replacement/rebuild | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.42 s / 59,172 KiB** | **yes for every production SCC in `rholang_ast.rs`**; the then-wider census is closed by subsequent checkpoints | [5.18.10](#51810-rholang-ast-analysis-and-fold-rewrite-closure-ss-g11) |
 | **SS-G12** | `mettail-rust@2a972436` | mettail | lowered guard formulas: `Par`/`Expr` connective encoding and opaque-atom formula substitution | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.27 s / 77,100 KiB** | **yes for the named formula SCCs**; historical operand and bound-value residuals close in SS-G13/SS-G14 | [5.18.11](#51811-lowered-guard-formula-closure-ss-g12) |
 | **SS-G13** | `mettail-rust@580896f3` | mettail | lowered guard operands: optional-`Par` dispatch, integer-form normalization, arithmetic, multiplication, division, and remainder | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.15 s / 113,112 KiB** | **yes for the operand SCC**; ordered variable interning and failure classes preserved | [5.18.12](#51812-lowered-guard-operand-closure-ss-g13) |
 | **SS-G14** | `mettail-rust@fec84ffb` | mettail | bound-`Par` substitution through evaluator-owned guard positions | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.20 s / 131,632 KiB** | **yes**; every genuine production SCC in `guard_par_substrate.rs` is closed | [5.18.13](#51813-lowered-guard-bound-substitution-closure-ss-g14) |
@@ -465,7 +485,7 @@ register rows (SS-C5…SS-C13, SS-Y6) and the stack-safety consequences.
   - [8.2 The derived `Drop` — the refuted direct route, and the route taken](#82-the-derived-drop--the-refuted-direct-route-and-the-route-taken)
   - [8.3 `<Par as Clone>::clone` — closed](#83-par-as-cloneclone--closed)
   - [8.4 The one heap measurement that remains unobtainable](#84-the-one-heap-measurement-that-remains-unobtainable)
-  - [8.5 The `mettail-rust` measured-slope registry — zero measured slopes, wider SCC census still open](#85-the-mettail-rust-measured-slope-registry--zero-measured-slopes-wider-scc-census-still-open)
+  - [8.5 The `mettail-rust` measured-slope registry — zero measured slopes and closed wider SCC census](#85-the-mettail-rust-measured-slope-registry--zero-measured-slopes-and-closed-wider-scc-census)
 - [8.6 The issue-keyed residuals, at their final dispositions](#86-the-issue-keyed-residuals-at-their-final-dispositions)
   - [8.6.1 ★★ #162/#189 — the eleven generated drivers converted, and the root cause that unifies #154 with #162](#861--162189--the-eleven-generated-drivers-converted-and-the-root-cause-that-unifies-154-with-162)
   - [8.6.2 The group-skip trap — why the read cap had to outlive the reader](#862-the-group-skip-trap--why-the-read-cap-had-to-outlive-the-reader)
@@ -3707,10 +3727,12 @@ is the parallel compile/link envelope, not traversal RSS; the focused oracle/run
 families compare product/sum, regular-expression, bag/map, ranked-tree, and carrier-level Boolean
 projection decisions against the generic reference implementations; they require equal
 satisfiability and witness existence, then independently evaluate every returned witness. The
-remaining call-SCC and performance obligations are explicit: the non-term-family census and
-lifecycle mutation calibration remain open, while the list evaluator still needs a paired
-production-shaped comparison against the compiled symbolic finite-automaton lane before it can be
-called time-optimal.
+At this checkpoint, the remaining call-SCC and performance obligations were explicit: the
+non-term-family census and lifecycle mutation calibration were still open, while the list evaluator
+did not yet have a paired production-shaped comparison against the compiled symbolic
+finite-automaton lane. The later closure sequence in §5.18.10–§5.18.44 discharges the campaign's
+production recursion, lifecycle, and measured-slope obligations; this paragraph remains the dated
+SS-G9 checkpoint rather than a current open-work declaration.
 
 #### 5.18.9 Rholang type-inference closure [SS-G10]
 
@@ -3738,8 +3760,9 @@ edited. Focused `ActionArg` tests pass **3/3**, the complete `prattail` library 
 lifecycle compatibility repair, not a wire-format, acceptance, ruled-semantic, or token-metering
 change.
 
-The wider non-term-family call-SCC census and lifecycle mutation calibration remain open. No claim in
-SS-G10 closes those obligations, and no PathMap source was changed.
+At this checkpoint, the wider non-term-family call-SCC census and lifecycle mutation calibration
+remained open. SS-G10 did not itself close those obligations; later checkpoints did. No PathMap
+source was changed.
 
 #### 5.18.10 Rholang AST analysis and fold-rewrite closure [SS-G11]
 
@@ -4720,8 +4743,9 @@ consensus golden passes unchanged. The **20,000**-component gate completes on **
 seconds / 57,372 KiB RSS** under a 1 GiB zero-swap scope. The complete codegen library passes
 **359/359** under a 10 GiB zero-swap, eight-job scope.
 
-**Open resource finding SS-Y7.** Native-stack safety is closed, but the generated direct $`k`$-shift
-network is not heap-optimal. At nesting level $`i`$, its destination lies behind $`2i`$ binders;
+**Historical resource finding SS-Y7 (closed by SS-G41).** Native-stack safety was already closed at
+this checkpoint, but the generated direct $`k`$-shift network was not heap-optimal. At nesting level
+$`i`$, its destination lay behind $`2i`$ binders;
 protobuf represents `locally_free` as one byte per de Bruijn index, so the emitted continuation tree
 repeats prefixes whose total length is
 
@@ -4731,12 +4755,13 @@ repeats prefixes whose total length is
 
 The exact **20,000**-level shift/template gate fits a **256 KiB** native stack but measures **2.04
 seconds / 1,395,560 KiB RSS** under a 2 GiB zero-swap scope. This is not a residual stack-overflow
-risk, but it is an open heap/time defect tracked by pgmcp task 5101 under epic 4131. Replacing the
+risk, but it was an open heap/time defect tracked by pgmcp task 5101 under epic 4131. Replacing the
 network with the existing `^shiftk` call is not an accepted shortcut: it adds approximately $`k`$
 internal COMMs, and accounting is COMM-based. Closure requires a subquadratic emitted-size and RSS
 ladder while preserving shift results and either preserving COMM/charge behavior or explicitly
 proving and registering the coordinated change. No depth cap, enlarged stack, `stacker`, or PathMap
-change is permitted.
+change was permitted. SS-G41 (§5.18.43) later supplied that closure with one fixed-size carrier and
+one native iterative shift traversal.
 
 #### 5.18.32 Reflected host shift and bound AC-template closure [SS-G31]
 
@@ -4792,9 +4817,10 @@ peak RSS**. The combined 20,000-level bound-template and 20,000-element bag gate
 s** at **102,088 KiB peak RSS**, also on 256 KiB. The complete crate suite passed **361/361** library
 tests plus every integration and documentation test under an 8 GiB zero-swap scope; `/usr/bin/time -v`
 reported **5.72 s** elapsed and **1,530,196 KiB peak RSS** for the concurrent suite. These are
-end-to-end test-command measurements, not isolated instruction-count benchmarks. SS-Y7 remains
-independent and open: this checkpoint does not change the generated direct $`k`$-shift network whose
-repeated `locally_free` prefixes cause that separate heap slope.
+end-to-end test-command measurements, not isolated instruction-count benchmarks. At this checkpoint,
+SS-Y7 remained independent and open: SS-G31 did not change the generated direct $`k`$-shift network
+whose repeated `locally_free` prefixes caused that separate heap slope. SS-G41 (§5.18.43) later
+removed it.
 
 #### 5.18.33 Closed-ground validation and deadlock SCC closure [SS-G32]
 
@@ -6791,7 +6817,7 @@ sloped impl left for a caller to reach.
 churn** of the two early de-copying fixes (SS-A1, SS-D2), which a profile of the final
 implementation alone cannot reconstruct — the pre-conversion tree no longer exists.
 
-### 8.5 The `mettail-rust` measured-slope registry — zero measured slopes, wider SCC census still open
+### 8.5 The `mettail-rust` measured-slope registry — zero measured slopes and closed wider SCC census
 
 At the report anchor, `render` measured **3,665 / 911** and `lower_formula` measured
 **4,094 / 978** B/level (debug / release), each with its own gate subject and named owner.
@@ -6854,24 +6880,25 @@ envelope. A 4 GiB attempt became reclaim-bound and was stopped rather than allow
 The 5.58 GiB compile peak is the current optimization baseline for generated-code volume; it is
 not a runtime requirement, a larger thread stack, or part of the stack-safety mechanism.
 
-**Scope correction (2026-08-06).** “Zero” in this subsection means zero live slopes among the
-registered and instrumented subjects above. It never implied that an ownership-lifecycle scan or a
-whole-workspace function-call SCC scan had no remaining work. SS-G8 closes the source-derived
+**Scope correction (2026-08-06; historical checkpoint).** At that date, “zero” in this subsection
+meant zero live slopes among the registered and instrumented subjects above. It did not yet imply
+that an ownership-lifecycle scan or a whole-workspace function-call SCC scan had no remaining work.
+SS-G8 closes the source-derived
 lifecycle population at 84 recursive types in 80 components, and SS-G9 closes the operational
-`AnyAlgebra::{is_satisfiable,witness}` cycle. Section 5.18.6 records the still-open non-term-family
-SCC census and mutation-calibration obligations. Those items must be converted and gated before the
-broader recursion programme can be called complete.
+`AnyAlgebra::{is_satisfiable,witness}` cycle. At that checkpoint, §5.18.6 recorded the still-open
+non-term-family SCC census and mutation-calibration obligations. The subsequent §5.18 checkpoints
+converted or dispositioned them before the broader recursion programme was closed.
 
 SS-G24 subsequently closes the complete production recursion family in
 `macros/src/gen/runtime/dovetail_report.rs`; file-scoped pgmcp analysis reports zero direct and zero
 mutual findings there. This advances, but does not silently redefine, the wider whole-workspace
-closure obligation stated above.
+closure obligation that was still live at that checkpoint.
 
 SS-G25 subsequently closes the Dovetail positional set-automaton evaluator SCC. Its exact recursive
 oracle is test-only, and fresh whole-project analysis falls from seven to six mutual clusters without
-a residual in `dovetail/src/set_automaton.rs`. The remaining direct findings and SCCs stay live until
-each is either converted or shown to be a source-graph ambiguity or non-production oracle and moved
-out of production source scope.
+a residual in `dovetail/src/set_automaton.rs`. At that checkpoint, the remaining direct findings and
+SCCs stayed live until each was either converted or shown to be a source-graph ambiguity or
+non-production oracle and moved out of production source scope.
 
 `mettail-rust@da638fe3` then resolves one such source-graph ambiguity across 12 already-converted
 lifecycle files: their explicit field releases now spell `std::mem::drop`, so they cannot bind to the
@@ -6898,6 +6925,14 @@ alphabet. The type-system selection passes **62/62**, and the existing SetType g
 and automaton lowering at **20,000** levels on a **256 KiB** thread. Fresh analysis falls from
 **86/4** to **86/3** direct/mutual findings. Native-stack complexity was already $`O(1)`$, so this
 source-SCC cleanup is not allocated a stack-safety fix-register row.
+
+**Living closure (2026-08-12).** The later SS-G checkpoints catalogued in §0 and §5.18 convert the
+remaining genuine production components and disposition conservative source-graph aliases and
+test-only recursive oracles. The fresh classic runs recorded in §0 find zero direct recursion and
+zero mutual-recursion clusters in both repositories. The default-profile semantic refresh adds no
+contradicting production witness after receiver-aware source inspection. Thus the wider SCC census,
+lifecycle calibration, and every measured slope in this registry are closed; historical counts above
+remain checkpoint evidence rather than present-tense backlog.
 
 ![converted subjects and live residuals across both repositories](figures/converted-vs-tripwire-cross-repo.svg)
 
