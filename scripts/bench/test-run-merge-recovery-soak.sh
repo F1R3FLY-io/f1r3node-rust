@@ -29,7 +29,11 @@ CSV
 # __system__ row is host state and must not become a grid node, and the
 # non-numeric core id is a malformed row that must be rejected — the grid
 # assertion below proves both filters.
-cat >"$FAKE_ARCHIVE_DIR/session/resource-percore-timeseries.csv" <<'CSV'
+# CRLF endings on purpose: the harness writes this CSV with Python
+# csv.writer, whose default line terminator is \r\n — cpu_percent is the
+# LAST column, so without CR-stripping every row fails the numeric check
+# (smoke run 31547587950 published an all-fallback grid exactly this way).
+cat <<'CSV' | sed 's/$/\r/' >"$FAKE_ARCHIVE_DIR/session/resource-percore-timeseries.csv"
 elapsed_s,node,core,cpu_percent
 1.0,rnode.test.validator1,0,7.5
 1.0,rnode.test.validator1,1,42.0
