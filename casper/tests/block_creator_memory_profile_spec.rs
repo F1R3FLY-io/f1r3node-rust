@@ -583,6 +583,7 @@ async fn run_block_creator_phase_split_memory_profile() {
                 &latest_messages,
                 None,
                 None,
+                None,
             )
             .await
             {

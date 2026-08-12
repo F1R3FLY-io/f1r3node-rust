@@ -2412,6 +2412,7 @@ async fn bonds_cache_validation_should_succeed_on_a_valid_block_and_fail_on_modi
             &mut casper_snapshot,
             &runtime_manager,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -3121,6 +3122,7 @@ async fn bonds_cache_from_floor_uses_floor_state_for_child_block_bonds() {
             &mut casper_snapshot,
             &runtime_manager,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -3163,9 +3165,14 @@ async fn bonds_cache_from_floor_uses_floor_state_for_child_block_bonds() {
                 .expect("dag representation"),
         );
 
-        let result_valid =
-            Validate::bonds_cache_from_floor(&child, &block_store, &snapshot, &runtime_manager)
-                .await;
+        let result_valid = Validate::bonds_cache_from_floor(
+            &child,
+            &block_store,
+            &snapshot,
+            &runtime_manager,
+            None,
+        )
+        .await;
         assert_eq!(result_valid, Either::Right(ValidBlock::Valid));
 
         let mut modified_child = child.clone();
@@ -3176,6 +3183,7 @@ async fn bonds_cache_from_floor_uses_floor_state_for_child_block_bonds() {
             &block_store,
             &snapshot,
             &runtime_manager,
+            None,
         )
         .await;
         assert_eq!(
@@ -3243,6 +3251,7 @@ async fn validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_depl
             &mut snap_ok,
             &runtime_manager,
             None,
+            None,
         )
         .await
         .expect("checkpoint (baseline)");
@@ -3267,6 +3276,7 @@ async fn validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_depl
             &block_store,
             &mut snap_pre,
             &runtime_manager,
+            None,
             None,
         )
         .await
@@ -3295,6 +3305,7 @@ async fn validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_depl
             &block_store,
             &mut snap_rej,
             &runtime_manager,
+            None,
             None,
         )
         .await

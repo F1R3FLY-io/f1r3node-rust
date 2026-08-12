@@ -227,6 +227,7 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         BlockData::from_block(&block_a_raw),
         HashMap::new(),
         None,
+        None,
     )
     .await
     .expect("compute block_a checkpoint");
@@ -281,6 +282,7 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         BlockData::from_block(&block_b_raw),
         HashMap::new(),
         None,
+        None,
     )
     .await
     .expect("compute block_b checkpoint");
@@ -329,6 +331,7 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         &latest_messages,
         None,
         Some(&rejected_deploy_buffer),
+        None,
     )
     .await
     .expect("compute_parents_post_state over [block_a, block_b]");

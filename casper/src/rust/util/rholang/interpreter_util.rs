@@ -177,7 +177,7 @@ pub(crate) fn deploy_effect_in_state(
 /// A win and a rejection never share a height (a merge sits one block above
 /// its siblings), so the highest-block disposition is the latest; a
 /// same-height tie prefers REJECTION so a keep-one loser stays re-proposable.
-fn canonical_dispositions(
+pub(crate) fn canonical_dispositions(
     block_store: &KeyValueBlockStore,
     parents: &[BlockHash],
     earliest_block_number: i64,
@@ -460,6 +460,7 @@ pub async fn validate_block_checkpoint(
     s: &mut CasperSnapshot,
     runtime_manager: &RuntimeManager,
     rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
+    floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
 ) -> Result<BlockProcessing<Option<StateHash>>, CasperError> {
     tracing::trace!(target: "f1r3fly.casper.block_validation", "before-unsafe-get-parents");
     let incoming_pre_state_hash = proto_util::pre_state_hash(block);
@@ -482,6 +483,7 @@ pub async fn validate_block_checkpoint(
         &latest_messages,
         None,
         rejected_deploy_buffer,
+        floor_ctx,
     )
     .await;
     metrics::histogram!(
@@ -854,6 +856,7 @@ pub async fn compute_deploys_checkpoint(
     block_data: BlockData,
     invalid_blocks: HashMap<BlockHash, Validator>,
     rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
+    floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
 ) -> Result<DeploysCheckpoint, CasperError> {
     let checkpoint_started = std::time::Instant::now();
     // Using tracing events for async - Span[F] equivalent from Scala
@@ -884,6 +887,7 @@ pub async fn compute_deploys_checkpoint(
         &latest_messages,
         None,
         rejected_deploy_buffer,
+        floor_ctx,
     )
     .await?;
     let parents_ms = parents_started.elapsed().as_millis();
@@ -1026,6 +1030,11 @@ pub async fn compute_parents_post_state(
     latest_messages: &BTreeMap<Validator, BlockHash>,
     disable_late_block_filtering_override: Option<bool>,
     rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
+    // The caller's per-operation derivation context. When present, the
+    // floor (and its post-state) come from it instead of a second
+    // derivation, and the settled-sig probes share its memo. `None`
+    // derives locally — same inputs, same result.
+    floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
 ) -> Result<super::runtime_manager::MergedPreState, CasperError> {
     use super::runtime_manager::MergedPreState;
     let total_started = std::time::Instant::now();
@@ -1241,31 +1250,40 @@ pub async fn compute_parents_post_state(
             // merged state is MONOTONE, where the LCA base let it churn
             // (path-dependent FS).
             let floor_derive_started = std::time::Instant::now();
-            let floor = crate::rust::finality::floor::finalized_floor(
-                &s.dag,
-                &parent_hashes,
-                latest_messages,
-                crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-                    s.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
+            let (floor_hash, floor_state, floor_block_number) = match floor_ctx {
+                Some(ctx) => (
+                    ctx.floor.hash.clone(),
+                    ctx.floor_state_hash(),
+                    ctx.floor.block_number,
                 ),
-            )
-            .await?;
-            let floor_derive_ms = floor_derive_started.elapsed().as_millis();
-            let floor_hash = floor.hash.clone();
+                None => {
+                    let floor = crate::rust::finality::floor::finalized_floor(
+                        &s.dag,
+                        &parent_hashes,
+                        latest_messages,
+                        crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                            s.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
+                        ),
+                    )
+                    .await?;
+                    let floor_hash = floor.hash.clone();
 
-            // The floor block's committed post-state is FS(floor) — the merge base.
-            // The floor is an ancestor of the parents (which are stored), so this is
-            // present in normal operation; surface a clear error instead of panicking
-            // if the block store and DAG ever desynchronize.
-            let floor_block = block_store.get(&floor_hash)?.ok_or_else(|| {
-                CasperError::RuntimeError(format!(
-                    "finalized-floor block {} not in block store (DAG/store desync)",
-                    hex::encode(&floor_hash[..8.min(floor_hash.len())])
-                ))
-            })?;
-            let floor_state =
-                Blake2b256Hash::from_bytes_prost(&floor_block.body.state.post_state_hash);
-            let floor_block_number = floor_block.body.state.block_number;
+                    // The floor block's committed post-state is FS(floor) — the merge base.
+                    // The floor is an ancestor of the parents (which are stored), so this is
+                    // present in normal operation; surface a clear error instead of panicking
+                    // if the block store and DAG ever desynchronize.
+                    let floor_block = block_store.get(&floor_hash)?.ok_or_else(|| {
+                        CasperError::RuntimeError(format!(
+                            "finalized-floor block {} not in block store (DAG/store desync)",
+                            hex::encode(&floor_hash[..8.min(floor_hash.len())])
+                        ))
+                    })?;
+                    let floor_state =
+                        Blake2b256Hash::from_bytes_prost(&floor_block.body.state.post_state_hash);
+                    (floor_hash, floor_state, floor_block.body.state.block_number)
+                }
+            };
+            let floor_derive_ms = floor_derive_started.elapsed().as_millis();
 
             let include_visible_ancestor =
                 |hash: &BlockHash, dag: &KeyValueDagRepresentation| -> bool {
@@ -1320,7 +1338,7 @@ pub async fn compute_parents_post_state(
                     step = "compute_parents_post_state.FLOOR",
                     floor = %hex::encode(&floor_hash[..8.min(floor_hash.len())]),
                     floor_block = floor_block_number,
-                    base_state = %hex::encode(&floor_block.body.state.post_state_hash[..8.min(floor_block.body.state.post_state_hash.len())]),
+                    base_state = %hex::encode(&floor_state.bytes()[..8]),
                     scope_before = pre_filter_count,
                     scope_after = visible_blocks.len(),
                     n_dropped = dropped.len(),
@@ -1329,7 +1347,7 @@ pub async fn compute_parents_post_state(
                     "merge.step: floor derived; base=floor.post_state; scope filtered to >= floor block"
                 );
             }
-            tracing::debug!(target: "f1r3fly.casper.compute_parents_post_state", floor = %hex::encode(&floor_hash[..8.min(floor_hash.len())]), floor_block = floor_block_number, base_state = %hex::encode(&floor_block.body.state.post_state_hash[..8.min(floor_block.body.state.post_state_hash.len())]), scope_blocks = visible_blocks.len(), n_parents = parents.len(), "merge.compute_parents_post_state: floor+base+scope computed");
+            tracing::debug!(target: "f1r3fly.casper.compute_parents_post_state", floor = %hex::encode(&floor_hash[..8.min(floor_hash.len())]), floor_block = floor_block_number, base_state = %hex::encode(&floor_state.bytes()[..8]), scope_blocks = visible_blocks.len(), n_parents = parents.len(), "merge.compute_parents_post_state: floor+base+scope computed");
             if visible_blocks.len() < pre_filter_count {
                 tracing::debug!(
                     target: "f1r3fly.casper.compute_parents_post_state",
@@ -1453,7 +1471,18 @@ pub async fn compute_parents_post_state(
             // covers. Memoization lives inside the merge (one probe per
             // unique sig per merge call).
             let sig_settled_in_base = |sig: &Bytes| -> Result<bool, CasperError> {
-                deploy_effect_in_state(&s.dag, block_store, runtime_manager, &floor_state, sig)
+                match floor_ctx {
+                    Some(ctx) => {
+                        ctx.effect_settled_in_floor(&s.dag, block_store, runtime_manager, sig)
+                    }
+                    None => deploy_effect_in_state(
+                        &s.dag,
+                        block_store,
+                        runtime_manager,
+                        &floor_state,
+                        sig,
+                    ),
+                }
             };
             let merger_result = dag_merger::merge(
                 &s.dag,
@@ -1506,10 +1535,15 @@ pub async fn compute_parents_post_state(
             // executed onto a state that carries it.
             if let Some(buffer) = rejected_deploy_buffer {
                 if !rejected_user_records.is_empty() {
+                    // Bounded to the deploy-lifespan window below the floor:
+                    // a win deeper than that belongs to a deploy whose
+                    // validity window is closed at this floor, and the
+                    // buffer retain drops window-closed deploys regardless —
+                    // so the unbounded walk to genesis bought nothing.
                     let floor_won = canonical_won_sigs(
                         block_store,
                         std::slice::from_ref(&floor_hash),
-                        i64::MIN,
+                        floor_block_number - s.on_chain_state.shard_conf.deploy_lifespan,
                     )?;
                     let mut by_block: HashMap<BlockHash, Vec<Bytes>> = HashMap::new();
                     for record in &rejected_user_records {

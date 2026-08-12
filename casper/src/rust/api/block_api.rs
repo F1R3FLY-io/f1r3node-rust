@@ -1701,6 +1701,7 @@ impl BlockAPI {
                             &latest_messages,
                             Some(true), // disable_late_block_filtering = true for exploratory deploy
                             None,       // exploratory deploy: no buffer populate needed
+                            None,       // per-query call: no per-operation floor context
                         )
                         .await?
                         .state
