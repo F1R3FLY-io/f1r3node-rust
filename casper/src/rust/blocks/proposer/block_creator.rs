@@ -2064,16 +2064,9 @@ fn in_scope_local_deploy_stats(
 
 /// Admission-time recoverability check: does the rejected-deploy buffer hold
 /// at least one deploy worth re-proposing from THIS proposer's perspective?
-///
-/// Deliberately NOT the same filter as
-/// `snapshot::local_rejected_buffer_has_recoverable_deploys` — that twin runs
-/// inside `compute_snapshot`, before the snapshot's `deploys_in_scope` /
-/// `rejected_in_scope` sets exist, so it can only approximate with the
-/// block-number window. This copy runs after snapshot completion and refines
-/// with the scope sets (clean-in-scope deploys excluded; rejected-in-scope
-/// deploys keep recovery eligibility past the window). Disagreements are
-/// benign by construction: the snapshot copy only drives the parent-narrowing
-/// heuristic, never admission. Do NOT "harmonize" the filters.
+/// Runs after snapshot completion, so it refines the block-number window with
+/// the scope sets (clean-in-scope deploys excluded; rejected-in-scope deploys
+/// keep recovery eligibility past the window).
 ///
 /// Cost: O(1) when the buffer is empty (the common steady state); otherwise
 /// one canonical-won scan bounded below by `scan_floor` (never deeper than
