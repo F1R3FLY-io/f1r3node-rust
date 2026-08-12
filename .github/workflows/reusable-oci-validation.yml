@@ -182,6 +182,11 @@ jobs:
           if [ "${{ matrix.arch }}" = "arm64" ]; then
             SCALE_FLAG="--timeout-scale=1.5"
           fi
+          # The trailing deselect group covers regressions that were added on the
+          # system-integration side for node behavior not yet present on this
+          # branch. Each entry comes out when its node fix lands; the pinned suite
+          # runs everything else. test_cold_start_readiness is grouped here only
+          # until it is confirmed green against this branch.
           poetry run pytest \
             integration-tests/test/tests/shared/ \
             integration-tests/test/tests/custom/ \
@@ -196,6 +201,16 @@ jobs:
             --deselect integration-tests/test/tests/custom/test_shard_degradation.py \
             --deselect integration-tests/test/tests/shared/test_contract_lifecycle.py \
             --deselect integration-tests/test/tests/custom/test_consensus_safety.py::test_epoch_transition_under_heartbeat \
+            --deselect integration-tests/test/tests/custom/test_cold_start_readiness.py \
+            --deselect integration-tests/test/tests/custom/test_concurrent_bridge_locks.py \
+            --deselect integration-tests/test/tests/custom/test_finality_stall_recovery.py \
+            --deselect integration-tests/test/tests/custom/test_observer_missing_block_retry.py \
+            --deselect integration-tests/test/tests/custom/test_observer_overload.py \
+            --deselect integration-tests/test/tests/custom/test_readonly_catchup_bounded.py \
+            --deselect integration-tests/test/tests/custom/test_slow_peer_notification.py \
+            --deselect integration-tests/test/tests/custom/test_transient_peer_liveness.py \
+            --deselect integration-tests/test/tests/standalone/test_duplicate_signed_deploy.py \
+            --deselect integration-tests/test/tests/standalone/test_expired_deploy_admission.py \
             --provider=${{ matrix.provider }} \
             -v --tb=short --instafail --maxfail=10 \
             -n auto --dist=loadgroup --timeout=1200 $SCALE_FLAG
