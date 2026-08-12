@@ -1,12 +1,18 @@
 // Tests covering the rejected-deploy-buffer recovery exemption:
 //
 //   - Validator side (`Validate::repeat_deploy`): the exemption is a PURE
-//     FUNCTION OF THE BLOCK — a sig whose latest canonical disposition in
-//     the block's own parent scope is a merge rejection is legal recovery.
-//     An earlier version gated the exemption on the validating node's LOCAL
-//     finalization status, which forked the network when two honest nodes'
-//     finalization progress differed (roaming InvalidRepeatDeploy Heavy
-//     Pipeline failures). Double-execution defense is layered:
+//     FUNCTION OF THE BLOCK — a sig is legal recovery only when its latest
+//     canonical disposition in the block's own parent scope is a merge
+//     rejection AND that rejection record has settled into the floor
+//     closure (`FloorContext::retry_gate_open`); a retry ahead of the gate
+//     is `PrematureDeployRetry` (non-slashable — delay, never loss). Both
+//     inputs are consensus content (the parent scope and the floor derived
+//     from the block's frozen justifications), so every validator reaches
+//     the same verdict. An earlier version gated the exemption on the
+//     validating node's LOCAL finalization status, which forked the network
+//     when two honest nodes' finalization progress differed (roaming
+//     InvalidRepeatDeploy Heavy Pipeline failures). Double-execution
+//     defense is layered:
 //       * a win never rejected in scope keeps the sig in the check set and
 //         the ancestor scan flags the repeat (deterministic);
 //       * a FABRICATED rejection record (naming a floor-protected deploy an

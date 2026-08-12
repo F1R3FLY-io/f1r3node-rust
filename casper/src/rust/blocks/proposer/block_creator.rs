@@ -1643,10 +1643,9 @@ fn drain_selected_deploys_from_rejected_buffer(
 /// Packaging a recovered deploy removes its ORDINARY deploy-storage copy
 /// (the buffer is the tracking home for merge-rejected work) but deliberately
 /// leaves the rejected-buffer entry in place. The packaged block is not yet
-/// canonical — if it gets orphaned (e.g. single-parent narrowing during a
-/// recovery context leaves the replay on a side branch) the buffer entry is
-/// the only re-proposable copy. Buffer entries are purged only when their sig
-/// is finalized-won (see the terminal purge in `prepare_user_deploys_with_policy`)
+/// canonical — if fork choice leaves it behind, the buffer entry is the only
+/// re-proposable copy. Buffer entries are purged only when their sig is
+/// finalized-won (see the terminal purge in `prepare_user_deploys_with_policy`)
 /// or expired.
 fn drain_selected_recovered_deploys_from_deploy_storage(
     deploy_storage: &Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
@@ -2019,8 +2018,8 @@ fn rejected_buffer_has_recoverable_deploys(
     let earliest_block_number =
         block_number - casper_snapshot.on_chain_state.shard_conf.deploy_lifespan;
     // Buffered work is retry work: its window reads the FLOOR clock, so a
-    // floor-window-closed entry no longer counts as a recovery backlog and
-    // cannot hold admission in recovery mode.
+    // floor-window-closed entry no longer counts as a recovery backlog
+    // for the admission policy.
     let window_bound = floor_ctx
         .map(|ctx| {
             ctx.floor.block_number - casper_snapshot.on_chain_state.shard_conf.deploy_lifespan

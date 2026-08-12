@@ -1147,29 +1147,19 @@ async fn repeat_deploy_rejects_premature_retry_of_a_live_rejection() {
     .await
 }
 
-/// Companion to `repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope`.
-/// Tests the symmetric case the recovery exemption must NOT cover: a sig
-/// that is in `rejected_in_scope` but ALSO has a clean canonical
-/// inclusion (status `Finalized`). Re-including a Finalized sig is
-/// double-execution, not recovery — the catchup gate
-/// (`should_admit_to_rejected_buffer`) is the primary defense, but the
-/// repeat-deploy validator must serve as a second line in case the gate
-/// misses.
+/// Companion to `repeat_deploy_rejects_premature_retry_of_a_live_rejection`.
+/// Tests the case the recovery exemption must NOT cover: a sig whose
+/// canonical inclusion in the block's parent scope is CLEAN. The
+/// exemption reads the sig's latest canonical disposition, and a clean
+/// win is never a kept rejection — so the sig stays in the check set and
+/// the ancestor scan flags the duplicate, regardless of any
+/// `rejected_in_scope` membership. Re-including a cleanly-won sig is
+/// double-execution, not recovery.
 ///
-/// DAG: genesis (body.deploys=[deploy], LFB) → block_w
-/// (body.deploys=[deploy], re-inclusion). Genesis IS the LFB so the
-/// resolver finds a clean canonical inclusion of `deploy` in genesis
-/// and returns `Finalized`. The recovery exemption must therefore NOT
-/// apply, and the repeat check must catch the duplicate inclusion.
-///
-/// Pre-fix: the rejected_in_scope filter in `repeat_deploy` exempts
-/// the sig unconditionally → returns `Valid` → double-execution slips
-/// through. This test fails.
-///
-/// Post-fix: the filter is gated on `status != Finalized`. The sig is
-/// Finalized, so it is NOT exempted; ancestor scan finds the clean
-/// inclusion in genesis and returns `InvalidRepeatDeploy`. This test
-/// passes.
+/// DAG: genesis (body.deploys=[deploy], clean) → block_w
+/// (body.deploys=[deploy], re-inclusion). No rejection record names the
+/// sig anywhere in scope, so no exemption applies and the repeat check
+/// must return `InvalidRepeatDeploy`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in_scope() {
     use std::sync::Arc;
@@ -1195,8 +1185,8 @@ async fn repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in
             None,
         );
 
-        // block_w re-includes the deploy. ancestor scan would find genesis's
-        // clean inclusion if not exempted by the rejected_in_scope filter.
+        // block_w re-includes the deploy. The ancestor scan finds genesis's
+        // clean inclusion; no rejection disposition exists to exempt it.
         let block_w = create_block(
             &mut block_store,
             &mut block_dag_storage,
@@ -1216,10 +1206,9 @@ async fn repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in
         let dag = block_dag_storage.get_representation().expect("dag representation");
         let mut snapshot = mk_casper_snapshot(dag);
 
-        // Same `rejected_in_scope` membership as the recovery test — the
-        // gap is exactly that the repeat_deploy filter cannot distinguish
-        // "rejected somewhere, recoverable" from "finalized somewhere,
-        // non-recoverable" via this set alone.
+        // `rejected_in_scope` membership is set to show it is NOT what
+        // decides: the exemption reads the parent-scope canonical
+        // disposition, and this sig's disposition is a clean win.
         let rejected: DashSet<Bytes> = DashSet::new();
         rejected.insert(deploy_sig);
         snapshot.rejected_in_scope = Arc::new(rejected);

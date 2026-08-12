@@ -891,7 +891,7 @@ async fn buffered_retry_admission_follows_the_recovered_deploys_policy_switch() 
         false,
     )
     .await
-    .expect("prepare recovered-only leadership");
+    .expect("prepare with recovered admission on, ordinary off");
 
     assert!(
         prepared.deploys.contains(&deploy),
@@ -909,7 +909,7 @@ async fn buffered_retry_admission_follows_the_recovered_deploys_policy_switch() 
         true,
     )
     .await
-    .expect("prepare with recovery leadership");
+    .expect("prepare with both admission switches on");
 
     assert!(
         prepared.deploys.contains(&deploy),

@@ -447,17 +447,10 @@ async fn stage_floor_covered_reinstatement() -> (
 /// rejected-in-scope exemption then re-admits it through selection.
 ///
 /// The proposal is driven through `block_creator::create` on the FULL
-/// frontier (own tip + the record branch). Going through the node's own
-/// snapshot instead cannot stage the geometry: parent narrowing collapses
-/// the frontier to a single parent whenever a record is in candidate
-/// scope, so the record branch never enters scope and selection filters
-/// the retry. Narrowing only serializes one node's own proposals — any
-/// validator without the narrowing trigger active legally mints the
-/// widened block from the same view, which is the block this call
-/// constructs. The scope sets are hand-extended to their true
-/// widened-frontier values (the record is visible from these parents),
-/// which is what re-admits the retry through the rejected-in-scope
-/// exemption.
+/// frontier (own tip + the record branch), with the scope sets
+/// hand-extended to their widened-frontier values (the record is visible
+/// from these parents) — which is what re-admits the retry through the
+/// rejected-in-scope exemption.
 ///
 /// Without the pre-state guard the created block executes the deploy
 /// twice: the witness cell holds two datums in its committed post-state.
@@ -485,11 +478,10 @@ async fn reinstated_effect_must_not_be_executed_again() {
         .expect("inject loser into rejected buffer");
 
     // Drive the proposal through `create` on the FULL frontier: nodes[2]'s
-    // own tip plus the record branch — the block any non-narrowed proposer
-    // would mint from this view. The scope sets get their true
-    // widened-frontier values: the record is visible from these parents,
-    // which re-admits the buffered retry through the rejected-in-scope
-    // exemption.
+    // own tip plus the record branch — the block a proposer mints from
+    // this view. The scope sets get their true widened-frontier values:
+    // the record is visible from these parents, which re-admits the
+    // buffered retry through the rejected-in-scope exemption.
     let mut snapshot = nodes[2]
         .casper
         .get_snapshot()
@@ -598,12 +590,9 @@ async fn floor_covered_effect_survives_a_late_record() {
         stage_floor_covered_reinstatement().await;
     let m_height = m_block.body.state.block_number;
 
-    // Join the lineages the way any non-narrowed validator legally would:
-    // one widened merge J over nodes[2]'s own tip and the record branch.
-    // The join cannot be staged through the node's own propose path —
-    // M's record sits in candidate scope, so parent narrowing collapses
-    // every self-proposal to a single parent and the lineages never meet
-    // (same diagnosis as the spec above).
+    // Join the lineages: one widened merge J over nodes[2]'s own tip and
+    // the record branch, staged through `create` on the full frontier
+    // (same technique as the spec above).
     let j_block = {
         let mut snapshot = nodes[2]
             .casper

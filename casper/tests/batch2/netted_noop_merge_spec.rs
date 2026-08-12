@@ -7,7 +7,7 @@
 // whole propose: every validator whose parent view spanned the pair was
 // silenced simultaneously (the error is a pure function of the view).
 // The shape needs no conflict and no rejection — clean dependent
-// execution — so no recovery narrowing exists to route around it.
+// execution — so no recovery path exists to route around it.
 //
 // Choreography (three validators, stakes {1,3,5}; the 5/9-stake v2 stays
 // SILENT so v0+v1's 4/9 can never witness anything and the floor stays

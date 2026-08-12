@@ -146,14 +146,11 @@ fn assert_touched_integer_add_channels_single_valued(
 /// * The larger-sig deploy is routed to `nodes[0]`'s block_a so the
 ///   rejected sig lives in validator 0's own previous block.
 ///
-/// * Validator 0 must NOT propose merge_block. Validator 1 does. That
-///   keeps validator 0's `latest_message_hash` at block_a, so when
-///   validator 0 later creates recovery_block,
-///   `collect_self_chain_deploy_sigs` walks `block_a → genesis` and
-///   block_a's body deploys (including the rejected sig) always land
-///   in `self_chain_deploy_sigs`. The hash-asc tiebreak that decides
-///   merge_block's main parent is irrelevant — we never traverse
-///   merge_block via the self-chain walk.
+/// * Validator 0 must NOT propose merge_block. Validator 1 does. The
+///   rejected copy's carrier is validator 0's own block_a, so the
+///   owner-scoped buffer populate lands the retry with validator 0 —
+///   the node whose later create re-proposes it — while validator 1
+///   (a non-owner) merely records the adjudication.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
@@ -257,8 +254,8 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
     );
 
     // Validator 1 proposes merge_block. Validator 0 deliberately does
-    // not propose it: keeping validator 0's latest at block_a is what
-    // makes the recovery propose's self-chain walk deterministic.
+    // not propose it: the rejected copy's carrier stays validator 0's
+    // own block_a, so the owner-scoped populate buffers the retry there.
     //
     // The marker deploy gives `create_block` something fresh to commit
     // so it doesn't short-circuit on `NoNewDeploys`.
@@ -437,10 +434,9 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
             .collect::<Vec<_>>()
     );
     // Packaging the replay must NOT drain the buffer entry: the recovery
-    // block is not yet canonical (it could be orphaned, e.g. by recovery-
-    // context single-parent narrowing), and the buffer holds the only
-    // re-proposable copy. The entry is purged only once the replay is
-    // finalized-won.
+    // block is not yet canonical (fork choice could leave it behind), and
+    // the buffer holds the only re-proposable copy. The entry is purged
+    // only once the replay is finalized-won.
     {
         let buffer_guard = nodes[0].rejected_deploy_buffer.lock().expect("buffer lock");
         assert!(
