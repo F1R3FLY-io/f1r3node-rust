@@ -1,20 +1,6 @@
 # Stack Safety in the F1r3node Rholang Interpreter: A Technical Report
 
-### Eliminating depth-proportional native-stack consumption over the `Par` term family
-
-| | |
-|---|---|
-| **Genre** | Snapshot technical report (introduction, methods, results, discussion — IMRaD); control and final treatment results only |
-| **Repository** | `f1r3node-rust-mettail`, branch `feature/mettail` |
-| **Companion repository** | `mettail-rust`, branch `feature/rho-native-set-automata` |
-| **Report date** | 2026-08-12 |
-| **Snapshot anchor** | `feature/mettail@9e44e570d` — results recorded after this anchor append to the evidentiary ledger first |
-| **Measurement anchor** | `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`) |
-| **Evidentiary ledger** | [`docs/design/stack-safety/stack-safety-report-2026-07-29.md`](../../design/stack-safety/stack-safety-report-2026-07-29.md) — the complete evidentiary record and experiment log; per-fix bodies, per-clause provenance, bisection ladders |
-| **Companion technical report** | [PathMap/EPM1 (EPathMap format, version 1) technical report](../pathmap/pathmap-technical-report-2026-08-12.md) — the PathMap representation, wire format, and performance results |
-| **Cited audit ledgers** | [`theta-depth-traversals-2026-07-26.md`](../../design/audits/theta-depth-traversals-2026-07-26.md) · [`four-quadrant-s0-baseline-2026-07-28.md`](../../design/audits/four-quadrant-s0-baseline-2026-07-28.md) · [`four-quadrant-s2-protobuf-encoder-2026-07-28.md`](../../design/audits/four-quadrant-s2-protobuf-encoder-2026-07-28.md) |
-
----
+**Eliminating depth-proportional native-stack consumption over the `Par` term family**
 
 ## Abstract
 
@@ -118,7 +104,9 @@ A `Par` is serialized two different ways, by two different codecs, for two diffe
 
 ![One term, two wire formats](../../design/stack-safety/figures/two-wire-formats.svg)
 
-**Figure 1 —** One term, two wire formats: the node-local cold store (bincode over serde, into the LMDB (Lightning Memory-Mapped Database) store) and the network/consensus wire (protobuf via prost), with the conversion status of each side. A component diagram is used because the claim is about which codec sits on which path, not about any single codec's internals. Source: [`two-wire-formats.puml`](../../design/stack-safety/figures/two-wire-formats.puml).
+**Figure 1 —** One term, two wire formats: the node-local cold store (bincode over serde, into the LMDB (Lightning Memory-Mapped Database) store) and the network/consensus wire (protobuf via prost), with the conversion status of each side. A component diagram is used because the claim is about which codec sits on which path, not about any single codec's internals.
+
+<!-- Source: [`two-wire-formats.puml`](../../design/stack-safety/figures/two-wire-formats.puml). -->
 
 | | cold store | network / consensus |
 |---|---|---|
@@ -153,7 +141,9 @@ The quantity that decides liveness is $`D_{\max} = \lfloor (S_{\mathrm{avail}} -
 
 ![Recursive descent versus a trampolined driver](../../design/stack-safety/figures/recursive-vs-trampolined.svg)
 
-**Figure 2 —** The central picture: why recursive descent grows the native stack with input depth while an explicit-worklist driver holds it constant and grows the heap instead. A side-by-side state diagram is used because the difference is where the continuation lives, which only a picture of both stacks at the same instant makes visible. Source: [`recursive-vs-trampolined.puml`](../../design/stack-safety/figures/recursive-vs-trampolined.puml).
+**Figure 2 —** The central picture: why recursive descent grows the native stack with input depth while an explicit-worklist driver holds it constant and grows the heap instead. A side-by-side state diagram is used because the difference is where the continuation lives, which only a picture of both stacks at the same instant makes visible.
+
+<!-- Source: [`recursive-vs-trampolined.puml`](../../design/stack-safety/figures/recursive-vs-trampolined.puml). -->
 
 ### 2.4 Glossary
 
@@ -180,7 +170,8 @@ Every symbol, acronym, and term of art used in this report, defined before first
 | **GSS** | graph-structured stack — the shared-call-stack structure of generalized-LL parsing. |
 | **GLL** | generalized LL (left-to-right scan, leftmost derivation) — the parsing algorithm family of the generated parser. |
 | **RSpace** | the tuple space: the store through which Rholang sends and receives rendezvous. **COMM** is one communication event (a send-receive rendezvous). |
-| **PathMap / EPathMap / EPM1** | PathMap is the persistent trie library; `EPathMap` is the `Par` expression carrying one (set mode `PathMap<()>`, map mode `PathMap<Par>`, plus a distinct empty state); EPM1 is its versioned wire snapshot. **ACTree03** is PathMap's compact trie-topology byte encoding. |
+| **PathMap / EPathMap** | PathMap is the persistent trie library; `EPathMap` is the `Par` expression carrying one (set mode `PathMap<()>`, map mode `PathMap<Par>`, plus a distinct empty state). **ACTree03** is PathMap's compact trie-topology byte encoding. |
+| **EPM1** | EPathMap format, version 1 — the versioned wire snapshot both wire formats embed verbatim. |
 | **CBR** | consensus behavior register — the companion register recording every change that may move consensus-visible bytes; entries are cited as CBR-*n*. |
 | **FLT** | foreign-language term — a guest-language term embedded in Rholang via `mettail-rust`. |
 | **AST** | abstract syntax tree — here usually `mettail-rust`'s generated term enums (`Proc` and category siblings). |
@@ -265,7 +256,9 @@ MIN-STACK-BISECT(subject, depth):
 
 ![The bisection instrument and its 12,288 B floor](../../design/stack-safety/figures/bisection-instrument-floor.svg)
 
-**Figure 3 —** The exponential probe, the bisection, and the typed refusal below the floor. An activity diagram over an annotated interval ladder is used because the floor is a control-flow fact — a subject surviving the first probe never enters the doubling loop — and the claim is only visible if the branch not taken is drawn. Source: [`bisection-instrument-floor.puml`](../../design/stack-safety/figures/bisection-instrument-floor.puml).
+**Figure 3 —** The exponential probe, the bisection, and the typed refusal below the floor. An activity diagram over an annotated interval ladder is used because the floor is a control-flow fact — a subject surviving the first probe never enters the doubling loop — and the claim is only visible if the branch not taken is drawn.
+
+<!-- Source: [`bisection-instrument-floor.puml`](../../design/stack-safety/figures/bisection-instrument-floor.puml). -->
 
 ### 3.7 The paired timing design
 
@@ -283,7 +276,9 @@ The design difference was measured on this host rather than argued. On the encod
 
 ![Blocked versus paired timing design](../../design/stack-safety/figures/blocked-vs-paired.svg)
 
-**Figure 4 —** The blocked design places all of one arm inside one drifting window; the paired design alternates arms within each repetition so the window term cancels in the difference. A two-lane timing diagram is used because the defect is about when each arm runs relative to the drifting host. Source: [`blocked-vs-paired.puml`](../../design/stack-safety/figures/blocked-vs-paired.puml).
+**Figure 4 —** The blocked design places all of one arm inside one drifting window; the paired design alternates arms within each repetition so the window term cancels in the difference. A two-lane timing diagram is used because the defect is about when each arm runs relative to the drifting host.
+
+<!-- Source: [`blocked-vs-paired.puml`](../../design/stack-safety/figures/blocked-vs-paired.puml). -->
 
 ### 3.8 Anti-vacuity discipline
 
@@ -301,15 +296,21 @@ The closure evidence around the register is threefold. First, the strengthened h
 
 ![The register disposition map](figures/register-disposition-map.svg)
 
-**Figure 5 —** All 96 stable SS identifiers at the snapshot anchor, one cell each, colored by final disposition: green for depth-axis conversions, blue for width-axis conversions, slate for instrument/enabling/work-only/no-class-change/superseded rows, amber for SS-Y defect rows (allocated while open, retained after repair), red for the rejected SS-X candidate. A work-breakdown grid is used because the claim is a census — every identifier visible at once, none double-counted. Source: [`register-disposition-map.puml`](figures/register-disposition-map.puml), generated from [`data/headline-metrics.tsv`](data/headline-metrics.tsv) by `tools/mk_tables.py register-map`.
+**Figure 5 —** All 96 stable SS identifiers at the snapshot anchor, one cell each, colored by final disposition: green for depth-axis conversions, blue for width-axis conversions, slate for instrument/enabling/work-only/no-class-change/superseded rows, amber for SS-Y defect rows (allocated while open, retained after repair), red for the rejected SS-X candidate. A work-breakdown grid is used because the claim is a census — every identifier visible at once, none double-counted.
+
+<!-- Source: [`register-disposition-map.puml`](figures/register-disposition-map.puml), generated from [`data/headline-metrics.tsv`](data/headline-metrics.tsv) by `tools/mk_tables.py register-map`. -->
 
 ![Converted and tripwire counts across both repositories](../../design/stack-safety/figures/converted-vs-tripwire-cross-repo.svg)
 
-**Figure 6 —** The converted and tripwire register populations across both repositories, ending at 45 converted and zero tripwires. A grouped bar chart is used because the claim is two counts per repository and their end state. Source: [`converted-vs-tripwire-cross-repo.puml`](../../design/stack-safety/figures/converted-vs-tripwire-cross-repo.puml).
+**Figure 6 —** The converted and tripwire register populations across both repositories, ending at 45 converted and zero tripwires. A grouped bar chart is used because the claim is two counts per repository and their end state.
+
+<!-- Source: [`converted-vs-tripwire-cross-repo.puml`](../../design/stack-safety/figures/converted-vs-tripwire-cross-repo.puml). -->
 
 ![Phase-7 deterministic-time exponents](figures/phase7-ir-exponents.svg)
 
-**Figure 7 —** Fitted Ir exponents for the 40-subject deterministic-time cohort, all between 0.9462 and 1.0970, far below the predeclared 1.80 quadratic bar. A dot plot against the bar is used because the claim is that a population clears a threshold. Source: [`phase7-ir-exponents.wl`](figures/phase7-ir-exponents.wl), data [`phase7-cachegrind-fits-2026-08-03.tsv`](../../design/stack-safety/measurements/phase7-cachegrind-fits-2026-08-03.tsv).
+**Figure 7 —** Fitted Ir exponents for the 40-subject deterministic-time cohort, all between 0.9462 and 1.0970, far below the predeclared 1.80 quadratic bar. A dot plot against the bar is used because the claim is that a population clears a threshold.
+
+<!-- Source: [`phase7-ir-exponents.wl`](figures/phase7-ir-exponents.wl), data [`phase7-cachegrind-fits-2026-08-03.tsv`](../../design/stack-safety/measurements/phase7-cachegrind-fits-2026-08-03.tsv). -->
 
 **Table conventions.** Every SS identifier appears in exactly one family table in §4.2–§4.8, and the tables are generated from the ledger's §0 register by [`tools/mk_tables.py`](../tools/mk_tables.py) and machine-checked against it: `check` byte-compares each embedded fragment against a freshly generated one, and `coverage` asserts the 96-identifier census (95 register-table rows plus the rejected candidate the ledger keeps in prose). In generated rows, the word *unmeasured* marks a cell for which no measurement exists — every such entry is itemized with its reason in ledger §5.9 — and an em-dash marks an axis that does not apply. The tables' contents are not hand-edited; the prose around them carries the interpretation.
 
@@ -341,7 +342,9 @@ The rest of the family followed the same shape with per-subject twists recorded 
 
 ![Per-level slope eliminations](figures/bpl-eliminations.svg)
 
-**Figure 8 —** Pre-conversion native-stack slopes for the headline conversions, every one driven to 0; the horizontal axis is logarithmic, and since a log axis has no zero, the zero endpoint is typographic rather than positional. A dot plot is used because the claim is a set of paired before/after magnitudes spanning three orders of magnitude. Source: [`bpl-eliminations.wl`](figures/bpl-eliminations.wl), data [`data/bpl-conversions.tsv`](data/bpl-conversions.tsv).
+**Figure 8 —** Pre-conversion native-stack slopes for the headline conversions, every one driven to 0; the horizontal axis is logarithmic, and since a log axis has no zero, the zero endpoint is typographic rather than positional. A dot plot is used because the claim is a set of paired before/after magnitudes spanning three orders of magnitude.
+
+<!-- Source: [`bpl-eliminations.wl`](figures/bpl-eliminations.wl), data [`data/bpl-conversions.tsv`](data/bpl-conversions.tsv). -->
 
 ### 4.3 Family G, with Family F — the mettail-rust closures
 
@@ -419,11 +422,15 @@ Three further rows deserve one line each. SS-G44 removed the generated parser's 
 
 ![Peak-memory wins](figures/memory-before-after.svg)
 
-**Figure 9 —** The peak-memory wins, control versus treatment, on a logarithmic axis: the Arc representation fix (two workloads), the malformed-input gate, and the parser prefix closure. A paired dumbbell plot is used because each claim is one measured pair spanning up to five orders of magnitude. Source: [`memory-before-after.wl`](figures/memory-before-after.wl), data [`data/memory-wins.tsv`](data/memory-wins.tsv).
+**Figure 9 —** The peak-memory wins, control versus treatment, on a logarithmic axis: the Arc representation fix (two workloads), the malformed-input gate, and the parser prefix closure. A paired dumbbell plot is used because each claim is one measured pair spanning up to five orders of magnitude.
+
+<!-- Source: [`memory-before-after.wl`](figures/memory-before-after.wl), data [`data/memory-wins.tsv`](data/memory-wins.tsv). -->
 
 ![Time wins](figures/time-before-after.svg)
 
-**Figure 10 —** The wall- and CPU-time wins, control versus treatment: the GSS boundary workload, the detached async driver, and the chain-clone workload. A paired dumbbell plot on a log axis is used for the same reason as Figure 9. Source: [`time-before-after.wl`](figures/time-before-after.wl), data [`data/time-wins.tsv`](data/time-wins.tsv).
+**Figure 10 —** The wall- and CPU-time wins, control versus treatment: the GSS boundary workload, the detached async driver, and the chain-clone workload. A paired dumbbell plot on a log axis is used for the same reason as Figure 9.
+
+<!-- Source: [`time-before-after.wl`](figures/time-before-after.wl), data [`data/time-wins.tsv`](data/time-wins.tsv). -->
 
 ### 4.4 Family C — the codecs
 
@@ -475,11 +482,15 @@ Family D is the end-to-end path a deploy travels — gRPC ingress, admission, no
 
 ![Depth ceilings, before and after](figures/depth-ceilings-dumbbell.svg)
 
-**Figure 11 —** The measured depth ceilings before and after repair — the two lifted ceilings, the two demonstrated bounds, and the control that stayed put — on a logarithmic depth axis. A dumbbell plot is used because each row is one before/after pair and the control's near-zero movement is the point. Source: [`depth-ceilings-dumbbell.wl`](figures/depth-ceilings-dumbbell.wl), data [`data/depth-ceilings.tsv`](data/depth-ceilings.tsv).
+**Figure 11 —** The measured depth ceilings before and after repair — the two lifted ceilings, the two demonstrated bounds, and the control that stayed put — on a logarithmic depth axis. A dumbbell plot is used because each row is one before/after pair and the control's near-zero movement is the point.
+
+<!-- Source: [`depth-ceilings-dumbbell.wl`](figures/depth-ceilings-dumbbell.wl), data [`data/depth-ceilings.tsv`](data/depth-ceilings.tsv). -->
 
 ![The deploy path and its ceilings](../../design/stack-safety/figures/deploy-path-ceilings.svg)
 
-**Figure 12 —** The deploy path end-to-end — ingress, admission, normalization, metering, evaluation — with each traversal's measured ceiling in place. An annotated flow diagram is used because the severity argument depends on where each ceiling sits relative to authentication, storage, and charging, which only a path drawing shows. Source: [`deploy-path-ceilings.puml`](../../design/stack-safety/figures/deploy-path-ceilings.puml).
+**Figure 12 —** The deploy path end-to-end — ingress, admission, normalization, metering, evaluation — with each traversal's measured ceiling in place. An annotated flow diagram is used because the severity argument depends on where each ceiling sits relative to authentication, storage, and charging, which only a path drawing shows.
+
+<!-- Source: [`deploy-path-ceilings.puml`](../../design/stack-safety/figures/deploy-path-ceilings.puml). -->
 
 ### 4.6 Family B — the evaluator and the async driver
 
@@ -499,7 +510,9 @@ The `tokio` result is two fixes, not one, and establishing that was the work. In
 
 ![The detached async driver](../../design/stack-safety/figures/async-detached-driver.svg)
 
-**Figure 13 —** Two resources, two defects, one repair: inline-awaited `poll` nesting on the native stack and the parked-parent chain on the heap, both removed by counted detached spawns. A structural before/after diagram is used because the claim is which resource each chain lived in. Source: [`async-detached-driver.puml`](../../design/stack-safety/figures/async-detached-driver.puml).
+**Figure 13 —** Two resources, two defects, one repair: inline-awaited `poll` nesting on the native stack and the parked-parent chain on the heap, both removed by counted detached spawns. A structural before/after diagram is used because the claim is which resource each chain lived in.
+
+<!-- Source: [`async-detached-driver.puml`](../../design/stack-safety/figures/async-detached-driver.puml). -->
 
 ### 4.7 Family E — the instrument measured on itself
 
@@ -518,7 +531,9 @@ Four self-findings are load-bearing for everything else in this report. First, t
 
 ![Subject depth distributions](figures/subject-depth-histogram.svg)
 
-**Figure 14 —** Observed nesting-depth distributions of the production-facing corpora, one population per subject — shallow everywhere, which is exactly why the eliminated slopes govern adversarial rather than typical inputs (§6). A small-multiples histogram is used because the claim is four separate populations, not one pooled one. Source: [`subject-depth-histogram.wl`](figures/subject-depth-histogram.wl), data [`phase7-depth-histograms-2026-08-03.tsv`](../../design/stack-safety/measurements/phase7-depth-histograms-2026-08-03.tsv).
+**Figure 14 —** Observed nesting-depth distributions of the production-facing corpora, one population per subject — shallow everywhere, which is exactly why the eliminated slopes govern adversarial rather than typical inputs (§6). A small-multiples histogram is used because the claim is four separate populations, not one pooled one.
+
+<!-- Source: [`subject-depth-histogram.wl`](figures/subject-depth-histogram.wl), data [`phase7-depth-histograms-2026-08-03.tsv`](../../design/stack-safety/measurements/phase7-depth-histograms-2026-08-03.tsv). -->
 
 ### 4.8 The honest tail — X, Y, and the unobtainable
 
@@ -567,7 +582,9 @@ The campaign's costs are deterministic measurements in the same register as its 
 
 ![Where the allocations moved](../../design/stack-safety/figures/heap-where-allocations-moved.svg)
 
-**Figure 15 —** The codec conversion's heap result: allocation counts and peaks for the derive, the like-for-like machine, and the reused-buffer machine, with the retained arenas and the 3.25× write cost drawn beside the 770× block win. An annotated bar/flow composite is used because the claim is where state moved, not just how much. Source: [`heap-where-allocations-moved.puml`](../../design/stack-safety/figures/heap-where-allocations-moved.puml).
+**Figure 15 —** The codec conversion's heap result: allocation counts and peaks for the derive, the like-for-like machine, and the reused-buffer machine, with the retained arenas and the 3.25× write cost drawn beside the 770× block win. An annotated bar/flow composite is used because the claim is where state moved, not just how much.
+
+<!-- Source: [`heap-where-allocations-moved.puml`](../../design/stack-safety/figures/heap-where-allocations-moved.puml). -->
 
 ---
 
@@ -579,7 +596,9 @@ Six lessons generalize past their subjects. They are stated here as prose becaus
 
 ![Depth versus minimum stack, the register's ladders](../../design/stack-safety/figures/depth-vs-stack-ladder.svg)
 
-**Figure 16 —** The register at the anchor: converted subjects flat across the full depth and width ladders, with the empty tripwire lists beside them. A ladder/line diagram is used because the converted criterion is literally the flatness of these lines between their two measured ends. Source: [`depth-vs-stack-ladder.puml`](../../design/stack-safety/figures/depth-vs-stack-ladder.puml).
+**Figure 16 —** The register at the anchor: converted subjects flat across the full depth and width ladders, with the empty tripwire lists beside them. A ladder/line diagram is used because the converted criterion is literally the flatness of these lines between their two measured ends.
+
+<!-- Source: [`depth-vs-stack-ladder.puml`](../../design/stack-safety/figures/depth-vs-stack-ladder.puml). -->
 
 **Lesson 2 — scope by Tarjan, not by intuition.** The SCC is the unit of conversion [[Tarjan 1972](#ref-tarjan1972)], because converting a proper subset of a cycle leaves the class intact. Three independent instances drew the boundary wrong by intuition and were corrected by decomposition: the substitution family, where converting a subset would have left the cycle live; the mettail lowering, where the reproducer's cycle ran through twelve iterator-adapter monomorphizations and the eighteen direct self-call sites were not the component at all; and the sorter, where converting the sort alone would have left the comparator depth-proportional while the gate still passed, because a linear chain sorts as a one-element vector on which the sort performs zero comparisons. The complement also holds: a Tarjan run over the schema cannot see a recursive Rust type that is not a schema message, which is why enumeration completeness is a threat (§6) and not a solved problem.
 
@@ -611,7 +630,9 @@ The presentation of that repair — prose specification first, refinement into n
 
 ![The collection-literal arm divergence](../../design/stack-safety/figures/collection-literal-arm-divergence.svg)
 
-**Figure 17 —** The arm divergence that was the root cause: one classifier, two consumer arms, and containers of sub-terms falling through to the leaf arm in every sloped driver. An annotated decision-tree (dispatch-divergence) diagram is used because the defect is a wrong arm being taken, not a wrong value being computed. Source: [`collection-literal-arm-divergence.puml`](../../design/stack-safety/figures/collection-literal-arm-divergence.puml).
+**Figure 17 —** The arm divergence that was the root cause: one classifier, two consumer arms, and containers of sub-terms falling through to the leaf arm in every sloped driver. An annotated decision-tree (dispatch-divergence) diagram is used because the defect is a wrong arm being taken, not a wrong value being computed.
+
+<!-- Source: [`collection-literal-arm-divergence.puml`](../../design/stack-safety/figures/collection-literal-arm-divergence.puml). -->
 
 **Lesson 6 — gate on the resource the defect lives in.** Recapped from §4.3 in one sentence: the same fix was correctly refused on the time axis at 0.78 percent of runtime and correctly accepted on the space axis at 96 percent of peak heap, so an acceptance gate must name its resource or it will refuse fixes worth orders of magnitude on the axis it did not profile.
 

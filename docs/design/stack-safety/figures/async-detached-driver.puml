@@ -18,10 +18,10 @@ title <b>Detached-spawn + atomic-counter reduction driver</b>\ntwo resources, tw
 
 package "**BEFORE** — two separate <latex>\Theta(N)</latex> chains on one path" as BEF #FFEBEE {
 
-  rectangle "**(i) NESTED `poll` — native stack**\n`eval` → `produce`/`consume` → `dispatch` → `eval`\nawaited **inline** through `Box::pin`, so polling the\nouter future polls the inner one **in the same frame**" as I #FFCDD2
-  rectangle "the mitigation that was shipped:\n`StackGrowingFuture` + `stacker::maybe_grow`\n`STACK_RED_ZONE = 1 MiB`, `STACK_GROW_SIZE = 2 MiB`\n<i>grows the stack instead of not needing it</i>" as IM #EF9A9A
+  rectangle "**(i) NESTED ""poll"" — native stack**\n""eval"" → ""produce""/""consume"" → ""dispatch"" → ""eval""\nawaited **inline** through ""Box::pin"", so polling the\nouter future polls the inner one **in the same frame**" as I #FFCDD2
+  rectangle "the mitigation that was shipped:\n""StackGrowingFuture"" + ""stacker::maybe_grow""\n""STACK_RED_ZONE = 1 MiB"", ""STACK_GROW_SIZE = 2 MiB""\n<i>grows the stack instead of not needing it</i>" as IM #EF9A9A
 
-  rectangle "**(ii) PARKED-PARENT CHAIN — heap**\neach parent `await`s its children, so every ancestor's\nfuture stays **live and parked** until the whole\nsubtree finishes.  `shortslow.rho`: **32,768 parked parents**" as II #BBDEFB
+  rectangle "**(ii) PARKED-PARENT CHAIN — heap**\neach parent ""await""s its children, so every ancestor's\nfuture stays **live and parked** until the whole\nsubtree finishes.  ""shortslow.rho"": **32,768 parked parents**" as II #BBDEFB
 
   I -[#C62828,thickness=2]-> IM : guarded by
   note right of IM #FFF3E0
@@ -31,13 +31,13 @@ package "**BEFORE** — two separate <latex>\Theta(N)</latex> chains on one path
 
 package "**AFTER** — one <latex>O(1)</latex>-frame task per branch, joined by a counter" as AFT #E8F5E9 {
 
-  rectangle "`inj` seeds a per-deploy **`DriveState`**\n`live: AtomicUsize` (init **1** = the root eval)\n`sink: Mutex<Vec<InterpreterError>>`\n`done: oneshot::Sender<()>`" as D #80CBC4
+  rectangle "<font:monospaced>inj</font> seeds a per-deploy **""DriveState""**\n""live: AtomicUsize"" (init **1** = the root eval)\n""sink: Mutex<Vec<InterpreterError>>""\n<font:monospaced>done: oneshot::Sender<()></font>" as D #80CBC4
 
-  rectangle "**`spawn_detached(drive, path, fut)`**\n1. `live.fetch_add(1, AcqRel)`  ← **increment BEFORE spawn**\n2. `tokio::spawn(async move { … })`  ← the parent does **not** await\n3. inside: `LiveGuard` (RAII decrement) dropped **last**\n4. `AssertUnwindSafe(fut).catch_unwind().await`\n5. `Err` / panic → `Located { path, source }` into `sink`" as S #A5D6A7
+  rectangle "**""spawn_detached(drive, path, fut)""**\n1. ""live.fetch_add(1, AcqRel)""  ← **increment BEFORE spawn**\n2. ""tokio::spawn(async move { … })""  ← the parent does **not** await\n3. inside: ""LiveGuard"" (RAII decrement) dropped **last**\n4. ""AssertUnwindSafe(fut).catch_unwind().await""\n5. ""Err"" / panic → ""Located { path, source }"" into <font:monospaced>sink</font>" as S #A5D6A7
 
-  rectangle "**`LiveGuard::drop`**\n`if live.fetch_sub(1, AcqRel) == 1 { done.send(()) }`\n⇒ fires **exactly once**, on the <latex>1 \rightarrow 0</latex> transition" as G #A5D6A7
+  rectangle "**""LiveGuard::drop""**\n""if live.fetch_sub(1, AcqRel) == 1 { done.send(()) }""\n⇒ fires **exactly once**, on the <latex>1 \rightarrow 0</latex> transition" as G #A5D6A7
 
-  rectangle "`inj` drops the root guard, `await`s the oneshot,\nthen sorts `sink` by `located_path` for a deterministic\n**display** order (explicitly **not** consensus)" as J #80CBC4
+  rectangle "<font:monospaced>inj</font> drops the root guard, ""await""s the oneshot,\nthen sorts ""sink"" by ""located_path"" for a deterministic\n**display** order (explicitly **not** consensus)" as J #80CBC4
 
   D -[#2E7D32,thickness=2]-> S
   S -[#2E7D32,thickness=2]-> G
@@ -45,17 +45,17 @@ package "**AFTER** — one <latex>O(1)</latex>-frame task per branch, joined by 
 }
 
 IM -[hidden]down-> D
-BEF -[#455A64,thickness=3]down-> AFT : five join sites detached\n(Site 1 = `eval_inner`'s parallel join;\nSites 2–5 = `run_parallel_dispatches`)
+BEF -[#455A64,thickness=3]down-> AFT : five join sites detached\n(Site 1 = ""eval_inner""'s parallel join;\nSites 2–5 = ""run_parallel_dispatches"")
 
 note as NAFT #E8F5E9
   ★ **The stack-safety connection, stated precisely.**
-  `tokio::spawn` roots a task on its own stack, so a
-  spawned-and-awaited child does **not** nest `poll` frames —
+  ""tokio::spawn"" roots a task on its own stack, so a
+  spawned-and-awaited child does **not** nest ""poll"" frames —
   resource (i) is fixed by the fact that the recursion is now
   *spawned* rather than *inlined*.  Resource (ii) is **heap**,
   not stack: <latex>N</latex> parked parents are <latex>\Theta(N)</latex> live future
   objects, not <latex>\Theta(N)</latex> frames.  Detaching removes both, and
-  `StackGrowingFuture` + the `stacker` dependency were then
+  ""StackGrowingFuture"" + the ""stacker"" dependency were then
   **deleted** rather than retuned.
 end note
 
@@ -63,7 +63,7 @@ note as NBEF #FFF3E0
   ⚠ **What "fire-and-forget" does *not* mean here.**  The
   child is not unobserved: completion is tracked by the
   counter and errors by the sink.  What is given up is the
-  **parent's `await`** — i.e. the structural coupling of a
+  **parent's ""await""** — i.e. the structural coupling of a
   send to its continuation — which is what Rholang's
   asynchronous send always meant semantically.  Concurrency
   is unchanged (the same spawns), so COMM order is

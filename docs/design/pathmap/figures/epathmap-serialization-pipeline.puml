@@ -24,16 +24,16 @@ skinparam ActivityDiamondBorderColor #455A64
 title <b>Serialization pipeline, before → after</b>\nbefore: <latex>\Theta\!\left(\sum_{e\in m}|\mathrm{prost}(e)|\right)</latex> re-derived per encode · after: one cold build, then <latex>\Theta(|EPM1(m)|)</latex> memcpy
 
 start
-:`EPathMap` serialization requested;
+:""EPathMap"" serialization requested;
 split
-  -> **BEFORE** — the tag-1 entry walk,\n**deleted by SS-C5** (`1b576c90`);
-  :flatten the trie to a `repeated Par`
+  -> **BEFORE** — the tag-1 entry walk,\n**deleted by SS-C5** (""1b576c90"");
+  :flatten the trie to a ""repeated Par""
   list at **tag 1**;<<#FFCDD2>>
   :re-encode **each entry from scratch**,
   hereditarily through nested maps —
-  on **every** encode AND every `encoded_len`;<<#FFCDD2>>
+  on **every** encode AND every ""encoded_len"";<<#FFCDD2>>
   :far side re-files the list,
-  one `encode_trie_path` per entry,
+  one ""encode_trie_path"" per entry,
   under prost's 100-level read budget
   (ceiling measured at 31–33 levels);<<#FFCDD2>>
   note right #FFEBEE
@@ -44,7 +44,7 @@ split
   end note
   kill
 split again
-  -> **AFTER** — the EPM1 snapshot (SS-C9, `26876b65`);
+  -> **AFTER** — the EPM1 snapshot (SS-C9, ""26876b65"");
   if (snapshot memoized?) then (no — **COLD**, once per clone family)
     :take PathMap's compact-tree accessor →
     **ACTree03 arena**, verbatim;<<#B2DFDB>>
@@ -53,17 +53,17 @@ split again
     (explicit work/value stacks — flat native stack);<<#E1BEE7>>
     :assemble EPM1 = magic · version · mode ·
     arena · value table, stored in
-    `OnceLock<Vec<u8>>` on the `EntryTrie`;<<#B2DFDB>>
+    ""OnceLock<Vec<u8>>"" on the ""EntryTrie"";<<#B2DFDB>>
   else (yes — **WARM**)
   endif
   :**one memcpy** of the snapshot into the carrier:
-  prost **field 9** (`bytes`) / bincode **first field**;<<#C8E6C9>>
+  prost **field 9** (""bytes"") / bincode **first field**;<<#C8E6C9>>
   note right #E8F5E9
     ★ Shared by every clone of the trie: warm
     encode is <latex>\mathcal{O}(1)</latex> work before the
     caller's required copy — measured **20 ns**
     warm accessor at 1,024 entries.  A cached
-    `EpmLayout` keeps only the topology prefix,
+    ""EpmLayout"" keeps only the topology prefix,
     so nested map-value chains do not retain
     <latex>\Theta(d^2)</latex> suffix bytes.
   end note

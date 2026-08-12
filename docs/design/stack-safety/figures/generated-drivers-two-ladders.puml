@@ -14,7 +14,7 @@ skinparam ArrowThickness 1.4
 
 title <b>Two ladders, nine generated drivers</b>\nthe cross-type hop is the mechanism — confirmed 9 for 9
 
-rectangle "**LADDER A — ALTERNATING CATEGORIES**\n`nested_list`: ``Proc::CastList(Arc<List>)`` then ``List::ListLit(Vec<Proc>)``\nthe hop is crossed at EVERY level" as A #FFEBEE {
+rectangle "**LADDER A — ALTERNATING CATEGORIES**\n""nested_list"": ""Proc::CastList(Arc<List>)"" then ""List::ListLit(Vec<Proc>)""\nthe hop is crossed at EVERY level" as A #FFEBEE {
   card tableA #FFFFFF [
     |= driver |= debug B/level |= release B/level |= |
     |<#EF9A9A> ""ast_cmp"" |<#EF9A9A> **""10,592.4""** |<#EF9A9A> **""335.3""** |<#EF9A9A> |
@@ -32,7 +32,7 @@ rectangle "**LADDER A — ALTERNATING CATEGORIES**\n`nested_list`: ``Proc::CastL
   ]
 }
 
-rectangle "**LADDER B — PURE SINGLE CATEGORY**\n`nested_add`: ``Proc::Add(Arc<Proc>, Arc<Proc>)``\nno hop exists to cross" as B #E8F5E9 {
+rectangle "**LADDER B — PURE SINGLE CATEGORY**\n""nested_add"": ""Proc::Add(Arc<Proc>, Arc<Proc>)""\nno hop exists to cross" as B #E8F5E9 {
   card tableB #FFFFFF [
     |<#A5D6A7> **every one of the nine: <latex>\approx 0</latex> B/level** |
     |<#A5D6A7> ""ast_cmp"" ""ast_debug"" ""ast_eq"" ""ast_normalize"" |
@@ -45,7 +45,7 @@ rectangle "**LADDER B — PURE SINGLE CATEGORY**\n`nested_add`: ``Proc::Add(Arc<
 A -[#455A64,thickness=3]down-> B : the ONLY difference is the SHAPE walked
 
 note right of A #FFEBEE
-  ★★ **Eight sloped drivers were a live defect class in `macros/src/gen/`** (since
+  ★★ **Eight sloped drivers were a live defect class in ""macros/src/gen/""** (since
   repaired at the classifier — SS-G4), not a
   documentation gap: depth-independence is these modules' entire purpose.
   Figures are **debug / release** B/level, ladder <latex>16 \rightarrow 4{,}096</latex>,
@@ -62,7 +62,7 @@ end note
 legend bottom
   |= cell |= meaning |
   |<#EF9A9A>| sloped on the alternating ladder — the defect |
-  |<#EF5350>| the one pre-existing subject (`ast_drop`) |
+  |<#EF5350>| the one pre-existing subject (""ast_drop"") |
   |<#A5D6A7>| flat |
   |<#66BB6A>| flat by REPRESENTATION (<latex>\mathtt{Arc::clone}</latex>), not by a driver |
   |<#80CBC4>| control — runs no driver |

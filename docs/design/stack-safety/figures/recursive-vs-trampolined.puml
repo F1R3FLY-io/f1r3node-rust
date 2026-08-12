@@ -26,11 +26,11 @@ NATIVE STACK
 (2 MiB on a tokio worker, fixed,
 terminated by a **guard page**)
 ----
-|<#EF9A9A> frame  d = 0   `substitute(Par)` |
-|<#EF9A9A> frame  d = 1   `substitute(Expr)` |
-|<#EF9A9A> frame  d = 2   `substitute(Par)` |
+|<#EF9A9A> frame  d = 0   ""substitute(Par)"" |
+|<#EF9A9A> frame  d = 1   ""substitute(Expr)"" |
+|<#EF9A9A> frame  d = 2   ""substitute(Par)"" |
 |<#EF9A9A>          ⋮  (one frame group per nesting level) |
-|<#C62828> frame  d = D   —  **guard page**  ⇒  SIGSEGV ⇒ `abort()` |
+|<#C62828> frame  d = D   —  **guard page**  ⇒  SIGSEGV ⇒ ""abort()"" |
 ]
 
   note right of AS #FFF3E0
@@ -47,16 +47,16 @@ terminated by a **guard page**)
 rectangle "**(b) EXPLICIT-WORKLIST DRIVER** — the repair" as B #E3F2FD {
 
   rectangle "NATIVE STACK  —  **one** frame, whatever <latex>d</latex> is" as BS #FFCDD2 {
-    card "frame  `drive(root)`   ← the only frame" as g0 #EF9A9A
+    card "frame  ""drive(root)""   ← the only frame" as g0 #EF9A9A
   }
 
-  rectangle "HEAP  (growable; exhaustion is an `Err`, not a signal)" as BH #BBDEFB {
-    card "**work stack** `Vec<Work>`   LIFO, children pushed reversed" as w #64B5F6
-    card "**value stack(s)** `Vec<Value>`   completed children park here" as v #64B5F6
+  rectangle "HEAP  (growable; exhaustion is an ""Err"", not a signal)" as BH #BBDEFB {
+    card "**work stack** ""Vec<Work>""   LIFO, children pushed reversed" as w #64B5F6
+    card "**value stack(s)** ""Vec<Value>""   completed children park here" as v #64B5F6
   }
 
   g0 -[#1565C0,thickness=2]-> w : **push** / **pop**
-  w  -[#1565C0]->  v : each `Build` drains exactly\nwhat its own `Start` pushed
+  w  -[#1565C0]->  v : each ""Build"" drains exactly\nwhat its own ""Start"" pushed
 
   note right of BH #E8F5E9
     Native stack is <latex>O(1)</latex>; the
@@ -74,8 +74,8 @@ A -[#455A64,thickness=3]down-> B : **defunctionalise the continuation**\n(Reynol
 legend bottom
   |= colour |= meaning |
   |<#FFCDD2>| native stack — fixed, guard-page terminated |
-  |<#BBDEFB>| heap — growable, returns `Err` |
-  |<#C62828>| the fault: SIGSEGV → `abort()`, not catchable |
+  |<#BBDEFB>| heap — growable, returns ""Err"" |
+  |<#C62828>| the fault: SIGSEGV → ""abort()"", not catchable |
 endlegend
 
 @enduml

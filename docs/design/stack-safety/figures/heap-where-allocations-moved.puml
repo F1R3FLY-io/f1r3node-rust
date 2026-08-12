@@ -18,9 +18,9 @@ skinparam nodesep 25
 title <b>Where the allocations moved</b>  —  cold-store codec, MEASURED\nmassif + DHAT, release, one arm per process, pinned cores
 
 package "**A.  Production shape** (depth 2 = 95.43 % of measured produces), 20,000 encodes" as A #E3F2FD {
-  rectangle "**derived** `bincode::serialize`\ntotal **12,828,259 B** in **20,022** blocks\n= **1.001 blocks / call**\npeak **6,187 B** in 15 blocks\nheap **writes** 12.83 MB" as A1 #FFCDD2
-  rectangle "**machine** `bincode_encoder::encode`\ntotal **12,834,467 B** in **20,026** blocks\n= **1.001 blocks / call**\npeak **12,395 B** in 19 blocks\nheap **writes** 41.65 MB" as A2 #BBDEFB
-  rectangle "**reused** `bincode_encoder::with_encoded`\ntotal **14,466 B** in **26** blocks\n= **0.0013 blocks / call**\npeak **12,394 B** in 19 blocks\nheap **writes** 28.83 MB" as A3 #A5D6A7
+  rectangle "**derived** ""bincode::serialize""\ntotal **12,828,259 B** in **20,022** blocks\n= **1.001 blocks / call**\npeak **6,187 B** in 15 blocks\nheap **writes** 12.83 MB" as A1 #FFCDD2
+  rectangle "**machine** ""bincode_encoder::encode""\ntotal **12,834,467 B** in **20,026** blocks\n= **1.001 blocks / call**\npeak **12,395 B** in 19 blocks\nheap **writes** 41.65 MB" as A2 #BBDEFB
+  rectangle "**reused** ""bincode_encoder::with_encoded""\ntotal **14,466 B** in **26** blocks\n= **0.0013 blocks / call**\npeak **12,394 B** in 19 blocks\nheap **writes** 28.83 MB" as A3 #A5D6A7
 
   A1 -[#455A64,thickness=2]down-> A2 : **+6,208 B total** (the two thread-local\narenas, allocated **once**);\npeak **2.00<latex>\times</latex>** because the arenas are **retained**
   A2 -[#2E7D32,thickness=2]down-> A3 : **770<latex>\times</latex> fewer blocks**, **887<latex>\times</latex> fewer bytes**\nwhen the caller does not need ownership
@@ -40,8 +40,8 @@ package "**A.  Production shape** (depth 2 = 95.43 % of measured produces), 20,0
   end note
 }
 
-package "**B.  Deep shape** (a 4,096-deep `Par`)" as B #E3F2FD {
-  rectangle "**encoder working set**, above the live term:\n**786,432 B**\n= op stack **524,288 B** (16,384 <latex>\times</latex> 32 B `Op`)\n+ output buffer **262,144 B** (holds 148,546 B)\n⇒ **64 B / level** of op stack, <latex>2.00</latex> entries/level" as B1 #90CAF9
+package "**B.  Deep shape** (a 4,096-deep ""Par"")" as B #E3F2FD {
+  rectangle "**encoder working set**, above the live term:\n**786,432 B**\n= op stack **524,288 B** (16,384 <latex>\times</latex> 32 B ""Op"")\n+ output buffer **262,144 B** (holds 148,546 B)\n⇒ **64 B / level** of op stack, <latex>2.00</latex> entries/level" as B1 #90CAF9
   rectangle "**decoder transient working set**:\n**1,248,192 B**, reproduced **to the byte** on\nevery one of the observed decodes\n⇒ **304.7 B / level** of heap value stacks" as B2 #64B5F6
   rectangle "the 4,096-deep term itself:\n**3,080,192 B** live, in 8,193 blocks\n(identical whether **built** or **decoded**)" as B3 #E1BEE7
   B1 -[#1565C0]-> B3
@@ -63,12 +63,12 @@ note as NC #FFF3E0
   does not remove the <latex>\Theta(d)</latex> state — a depth-<latex>d</latex> traversal
   must remember <latex>d</latex> things. It **relocates** that state from a
   **fixed 2 MiB region whose exhaustion is a SIGSEGV** to a
-  **growable region whose exhaustion is an `Err`** — and, on
+  **growable region whose exhaustion is an ""Err""** — and, on
   these two codecs, it happens to need 5<latex>\times</latex> to 42<latex>\times</latex> fewer
   bytes per level as well, because a hand-written work item
   carries only what the resumption needs while a
   compiler-laid-out stack frame carries every live local of a
-  40-arm `match`.
+  40-arm ""match"".
 end note
 C1 -[hidden]down-> NC
 

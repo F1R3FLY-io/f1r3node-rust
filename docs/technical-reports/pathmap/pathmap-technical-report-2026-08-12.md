@@ -1,24 +1,6 @@
 # PathMap-Native EPathMap: A Technical Report on Representation, Wire Format, and Performance
 
-### The Rholang path map as a first-class prefix-compressed trie — in memory, on both wire formats, and in every hashing and ordering preimage
-
-**Repository** `f1r3fly.io/f1r3node-rust-mettail`
-**Companion repository** `mettail-rust`
-**Snapshot anchor** `feature/mettail@9e44e570d` — this report describes the campaign as of that
-tree; evidence recorded after it is appended to the evidentiary ledger first.
-**Fixed-scale measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@98901e33`
-**Integration measurement anchor** `f1r3node-rust-mettail@b30a1568` · `mettail-rust@9dccb346`
-(runtime change `bb98055b`)
-**Evidentiary ledger** [`docs/design/pathmap/pathmap-report-2026-08-03.md`](../../design/pathmap/pathmap-report-2026-08-03.md)
-— the complete, living experiment log of record for this campaign: per-fix bodies, per-clause
-provenance, wire-format lineage, golden-move tables, negative results, and discovery narratives.
-**Companion technical report** [`stack-safety-technical-report-2026-08-12.md`](../stack-safety/stack-safety-technical-report-2026-08-12.md)
-— the depth-safety programme whose instruments this report cites.
-**Consensus classification** under the CBR (consensus behavior register): entries CBR-041
-through CBR-044 of the
-[consensus-change register](../../consensus/consensus-change-register.md).
-
----
+**The Rholang path map as a first-class prefix-compressed trie — in memory, on both wire formats, and in every hashing and ordering preimage**
 
 ## Abstract
 
@@ -43,9 +25,10 @@ and generated decoders read the wire without a recursion ceiling (depth 4,096 ro
 zero admissions, a Z3 mode-dispatch counterexample query is unsatisfiable, and language conformance
 passes 64/64 executed cases. Two production defects were found by measurement rather than review
 and repaired without forking PathMap. The costs are reported with the same candour: the stack-safe
-canonical-key classifier pays **$`3.79\times`$ at depth 1** — the production-common case — but crosses
-over before depth 8 and is **$`233.874\times`$ faster by depth 1,024**; and EPM1's gain is canonicity
-and single-sourcing, **not** compression (the compression hypothesis was measured false).
+canonical-key classifier pays **$`3.79\times`$ at depth 1** — the production-common case — but
+[crosses over before depth 8 and is **$`233.874\times`$ faster by depth 1,024**](#48-costs); and
+EPM1's gain is canonicity and single-sourcing, **not** compression (the compression hypothesis was
+measured false).
 
 ## Highlights
 
@@ -64,8 +47,8 @@ and single-sourcing, **not** compression (the compression hypothesis was measure
 - **The laws are machine-checked**: Rocq `EPM1.v` kernel-checked with zero admissions; the Z3
   mode-dispatch counterexample query is unsatisfiable; Rholang conformance 64 passed / 0 failed.
 - **The costs are published beside the wins**: the stack-safe key classifier pays $`3.79\times`$ at depth 1
-  (the production-common case; crossover before depth 8, $`233.874\times`$ faster by depth 1,024), and
-  EPM1 does not compress.
+  (the production-common case; [crossover before depth 8, $`233.874\times`$ faster by depth 1,024](#48-costs)),
+  and EPM1 does not compress.
 
 ## Table of contents
 
@@ -159,8 +142,10 @@ from the neutral empty via value-free topology — the property the wire format 
 
 **Figure 1 — The homogeneous representation and its mode transitions.** A state diagram, because
 mode selection is a one-way transition system over membership operations.
+
 ![EPathMap representation states](../../design/pathmap/figures/epathmap-representation-states.svg)
-*(source: [`epathmap-representation-states.puml`](../../design/pathmap/figures/epathmap-representation-states.puml))*
+
+<!-- *(source: [`epathmap-representation-states.puml`](../../design/pathmap/figures/epathmap-representation-states.puml))* -->
 
 **The two wire lanes.** A `Par` reaches storage and the network on two independent formats: the
 network/consensus lane (protobuf via `prost`) and the node-local cold-store lane (`bincode` over
@@ -176,8 +161,10 @@ the defect class it excludes.
 
 **Figure 2 — The EPM1 wire layout.** A byte-layout diagram, because the format's claim is
 positional: version, mode, framed topology arena, then the ordered value table.
+
 ![EPM1 wire layout](../../design/pathmap/figures/epm1-wire-layout.svg)
-*(source: [`epm1-wire-layout.puml`](../../design/pathmap/figures/epm1-wire-layout.puml))*
+
+<!-- *(source: [`epm1-wire-layout.puml`](../../design/pathmap/figures/epm1-wire-layout.puml))* -->
 
 **Algorithm 1 (EPM1-ENCODE).** The wire production, in literate form; both lanes call it through
 the snapshot cache, so a warm encode never re-enters it.
@@ -292,9 +279,11 @@ the ledger §5.4.1 for its record.)
 
 **Figure 3 — The two arms, distributionally.** A jittered strip plot, because with complete
 separation the distributions themselves are the finding; 51 samples per arm with per-arm mean bars.
+
 ![E-8b per-arm samples](figures/e8b-arm-strips.svg)
-*(source: [`e8b-arm-strips.wl`](figures/e8b-arm-strips.wl); data:
-[`e8b-native-pathmap-par-e6a-2026-08-04.tsv`](../../design/stack-safety/measurements/e8b-native-pathmap-par-e6a-2026-08-04.tsv))*
+
+<!-- *(source: [`e8b-arm-strips.wl`](figures/e8b-arm-strips.wl); data:
+[`e8b-native-pathmap-par-e6a-2026-08-04.tsv`](../../design/stack-safety/measurements/e8b-native-pathmap-par-e6a-2026-08-04.tsv))* -->
 
 ### 4.2 Fixed scale: EPM1 against the list projection
 
@@ -333,9 +322,11 @@ the preceding cold build-plus-run took 4 min 34.55 s at 957,940 KiB — both wit
 **Figure 4 — Fixed-scale dominance.** Dumbbell panels on logarithmic position axes, because the
 gaps span two to four orders of magnitude and position (not bar length) is the honest encoding at
 log scale; every dot carries its value.
+
 ![EPM1 fixed-scale comparison](figures/epm1-fixed-scale-bars.svg)
-*(source: [`epm1-fixed-scale-bars.wl`](figures/epm1-fixed-scale-bars.wl); data:
-[`epm1-fixed-scale-2026-08-03.tsv`](../../design/pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv))*
+
+<!-- *(source: [`epm1-fixed-scale-bars.wl`](figures/epm1-fixed-scale-bars.wl); data:
+[`epm1-fixed-scale-2026-08-03.tsv`](../../design/pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv))* -->
 
 ### 4.3 The native operation surface
 
@@ -353,8 +344,10 @@ test stack, where the inherited protobuf reader had refused ordinary terms at 31
 
 **Figure 5 — The serialization pipeline.** An activity diagram, because the claim is about flow:
 one canonical byte production feeding both lanes, the cache, and every hashing preimage.
+
 ![EPathMap serialization pipeline](../../design/pathmap/figures/epathmap-serialization-pipeline.svg)
-*(source: [`epathmap-serialization-pipeline.puml`](../../design/pathmap/figures/epathmap-serialization-pipeline.puml))*
+
+<!-- *(source: [`epathmap-serialization-pipeline.puml`](../../design/pathmap/figures/epathmap-serialization-pipeline.puml))* -->
 
 ### 4.4 Scaling evidence
 
@@ -367,9 +360,11 @@ the predeclared quadratic red bar of 1.80. No converted subject in the campaign 
 **Figure 6 — The cohort's fitted exponents** (shared with the companion stack-safety report, whose
 §4.1 discusses the full cohort). A dot plot against the linear reference and the predeclared bar;
 the two PathMap subjects are value-labelled.
+
 ![Phase-7 Ir exponents](../stack-safety/figures/phase7-ir-exponents.svg)
-*(source: [`phase7-ir-exponents.wl`](../stack-safety/figures/phase7-ir-exponents.wl); data:
-[`phase7-cachegrind-fits-2026-08-03.tsv`](../../design/stack-safety/measurements/phase7-cachegrind-fits-2026-08-03.tsv))*
+
+<!-- *(source: [`phase7-ir-exponents.wl`](../stack-safety/figures/phase7-ir-exponents.wl); data:
+[`phase7-cachegrind-fits-2026-08-03.tsv`](../../design/stack-safety/measurements/phase7-cachegrind-fits-2026-08-03.tsv))* -->
 
 ### 4.5 Structural wins
 
@@ -393,8 +388,10 @@ preimage is now single-sourced through the same EPM1 bytes as everything else.
 **Figure 7 — Historical (pre-fix) behavior: the spliced walk.** A sequence diagram of the deleted
 dispatch path, kept because it documents what the deletion removed — the depicted site no longer
 exists.
+
 ![The historical spliced walk](../../design/pathmap/figures/spliced-walk-quadratic-time.svg)
-*(source: [`spliced-walk-quadratic-time.puml`](../../design/pathmap/figures/spliced-walk-quadratic-time.puml))*
+
+<!-- *(source: [`spliced-walk-quadratic-time.puml`](../../design/pathmap/figures/spliced-walk-quadratic-time.puml))* -->
 
 ### 4.6 Formal evidence
 
@@ -458,9 +455,11 @@ $`233.874\times`$ would be advocacy rather than measurement.
 
 **Figure 8 — The classifier's price ladder.** A log-log line with the sub-parity region shaded and
 labelled, because the win and the cost are one curve.
+
 ![Classifier price ladder](figures/classifier-price-ladder.svg)
-*(source: [`classifier-price-ladder.wl`](figures/classifier-price-ladder.wl); data:
-[`classifier-ladder.tsv`](data/classifier-ladder.tsv))*
+
+<!-- *(source: [`classifier-price-ladder.wl`](figures/classifier-price-ladder.wl); data:
+[`classifier-ladder.tsv`](data/classifier-ladder.tsv))* -->
 
 ---
 

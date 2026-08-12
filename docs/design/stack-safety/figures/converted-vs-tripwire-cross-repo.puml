@@ -25,30 +25,30 @@ skinparam nodesep 25
 
 title <b>Converted subjects and live residuals — both repositories, at the anchor</b>\ndisjoint families, different repositories, different gate constants
 
-package "**`f1r3node-rust-mettail@e67a6aaa`**\nhand-written + generated `Par` traversals\ngate: `rholang/tests/stack_depth_gate.rs`" as F1 #ECEFF1 {
+package "**""f1r3node-rust-mettail@e67a6aaa""**\nhand-written + generated ""Par"" traversals\ngate: <font:monospaced>rholang/tests/stack_depth_gate.rs</font>" as F1 #ECEFF1 {
 
-  package "**CONVERTED — 40 subjects**\n`CONVERTED_DEPTH` (34) <latex>\cup</latex> `CONVERTED_WIDTH` (6)" as FC #E8F5E9 {
-    card "**depth (34)** — the cores, the cold-store codec pair,\nthe generated trait family (`clone` `par_drop` `eq` `hash`\n`ord` `debug` `message_clear`), the collection arms,\nthe PathMap pair (`hash_pathmap_set` · `hash_pathmap_map`),\nand every former tripwire member at **0 B/level**" as FCD #A5D6A7
-    card "**width (6)**\n`substitute_wide` `sort_wide` `score_cmp_wide`\n`free_check` `pretty_wide` `normalize_wide`\nflat to width **65,536**" as FCW #A5D6A7
+  package "**CONVERTED — 40 subjects**\n""CONVERTED_DEPTH"" (34) <latex>\cup</latex> ""CONVERTED_WIDTH"" (6)" as FC #E8F5E9 {
+    card "**depth (34)** — the cores, the cold-store codec pair,\nthe generated trait family (""clone"" ""par_drop"" ""eq"" ""hash""\n""ord"" ""debug"" ""message_clear""), the collection arms,\nthe PathMap pair (""hash_pathmap_set"" · ""hash_pathmap_map""),\nand every former tripwire member at **0 B/level**" as FCD #A5D6A7
+    card "**width (6)**\n""substitute_wide"" ""sort_wide"" ""score_cmp_wide""\n""free_check"" ""pretty_wide"" ""normalize_wide""\nflat to width **65,536**" as FCW #A5D6A7
   }
 
   card "**TRIPWIRE LISTS: EMPTY on both axes** — an executed claim;\nthe synthetic sloped controls still run and are still rejected" as FT #C8E6C9
 
-  card "★ `min_stack_for` returns typed `MinStack::{Bytes, BelowResolution}`\n— a floor reading renders as a refusal, **never a number**" as FFLOOR #80CBC4
+  card "★ ""min_stack_for"" returns typed ""MinStack::{Bytes, BelowResolution}""\n— a floor reading renders as a refusal, **never a number**" as FFLOOR #80CBC4
 
   FCD -[hidden]down-> FT
   FCW -[hidden]down-> FFLOOR
 }
 
-package "**`mettail-rust@98901e33`**\nGENERATED `ast_*` drivers\ngate: `rholang-runtime/tests/stack_depth_gate.rs`" as MT #ECEFF1 {
+package "**""mettail-rust@98901e33""**\nGENERATED ""ast_*"" drivers\ngate: <font:monospaced>rholang-runtime/tests/stack_depth_gate.rs</font>" as MT #ECEFF1 {
 
-  package "**CONVERTED — all 12 generated drivers**\n`EXPECTED_DRIVER_SHAPE`, every production row `Shape::Flat`" as MC #E8F5E9 {
-    card "`ast_cmp` 10,590 <latex>\rightarrow</latex> **0**   `ast_debug` 10,542 <latex>\rightarrow</latex> **0**\n`ast_eq` 6,144 <latex>\rightarrow</latex> **0**   `ast_match_pattern` 6,136 <latex>\rightarrow</latex> **0**\n`ast_term_depth` 3,408 <latex>\rightarrow</latex> **0**  `ast_is_ground` 2,225 <latex>\rightarrow</latex> **0**\n`ast_hash` `ast_semantic_hash` `ast_drop`\n`ast_subst` `ast_normalize` `ast_try_eval`\n<i>both profiles, alternating AND pure ladders</i>" as MCD #A5D6A7
-    card "★ `ast_recursion_control` — **`Shape::Sloped`**\n<i>the CLASSIFIER's non-vacuity anchor.</i>\nWith the sloped set empty, `measured_shape` would\nreturn `Flat` for everything and the partition would\npass **vacuously**. Never to be converted." as MANCHOR #80CBC4
+  package "**CONVERTED — all 12 generated drivers**\n""EXPECTED_DRIVER_SHAPE"", every production row <font:monospaced>Shape::Flat</font>" as MC #E8F5E9 {
+    card "<font:monospaced>ast_cmp</font> 10,590 <latex>\rightarrow</latex> **0**   ""ast_debug"" 10,542 <latex>\rightarrow</latex> **0**\n""ast_eq"" 6,144 <latex>\rightarrow</latex> **0**   ""ast_match_pattern"" 6,136 <latex>\rightarrow</latex> **0**\n""ast_term_depth"" 3,408 <latex>\rightarrow</latex> **0**  ""ast_is_ground"" 2,225 <latex>\rightarrow</latex> **0**\n""ast_hash"" ""ast_semantic_hash"" ""ast_drop""\n""ast_subst"" ""ast_normalize"" ""ast_try_eval""\n<i>both profiles, alternating AND pure ladders</i>" as MCD #A5D6A7
+    card "★ ""ast_recursion_control"" — **""Shape::Sloped""**\n<i>the CLASSIFIER's non-vacuity anchor.</i>\nWith the sloped set empty, ""measured_shape"" would\nreturn ""Flat"" for everything and the partition would\npass **vacuously**. Never to be converted." as MANCHOR #80CBC4
   }
 
   package "**LIVE RESIDUALS** — the only sloped production subjects\nin either register" as MR #FFF3E0 {
-    card "`render`        **3,665 / 911** B/level (debug / release)\n`lower_formula` **4,094 / 978** B/level\neach with its own gate subject and named owner" as MRES #FFCC80
+    card "<font:monospaced>render</font>        **3,665 / 911** B/level (debug / release)\n""lower_formula"" **4,094 / 978** B/level\neach with its own gate subject and named owner" as MRES #FFCC80
   }
 
   MCD -[hidden]down-> MRES
@@ -60,20 +60,20 @@ FT -[#455A64,thickness=2,norank]down-> MR : **disjoint families** —\nno fix on
 
 note as NF1 #E8F5E9
   **Every former tripwire member left by being CONVERTED,**
-  **never by a raised ceiling** — `clone` via stage F-4 +
+  **never by a raised ceiling** — ""clone"" via stage F-4 +
   SS-A8's generated trait family, the collection arms via the
   generated sorter PDA (SS-Y3), the compositions with them.
   The deterministic-time axis fits all 40 subjects at Ir
   exponents <latex>0.9462</latex>–<latex>1.0970</latex>; the largest data counter is
-  <latex>1.4007</latex> Dw (`score_cmp_wide`).
+  <latex>1.4007</latex> Dw (""score_cmp_wide"").
 end note
 
 note as NMT #FFF3E0
   ★ The optional-collection generator defect that once
-  blocked `--all-targets` (~#197 / SS-Y1) is **repaired**
-  (`6248f156`); the derived traversal table carries
+  blocked ""--all-targets"" (~#197 / SS-Y1) is **repaired**
+  (""6248f156""); the derived traversal table carries
   **zero unmeasured members**, retiring the
-  `UNMEASURED_TRAVERSALS` ratchet by derivation.
+  ""UNMEASURED_TRAVERSALS"" ratchet by derivation.
 end note
 
 MRES -[hidden]down-> NF1

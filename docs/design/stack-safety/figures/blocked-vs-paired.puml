@@ -23,11 +23,11 @@ skinparam PackageBackgroundColor #FAFAFA
 
 title <b>Blocked vs paired two-arm measurement</b>\nthe window term <latex>2\sigma_\delta^2</latex> carries no <latex>n</latex>, so repetitions cannot shrink it
 
-package "BLOCKED — what `measure()` DID\n(and what the header denied)" as BLK #FFF3E0 {
+package "BLOCKED — what ""measure()"" DID\n(and what the header denied)" as BLK #FFF3E0 {
 
-  rectangle "wall-clock window  <latex>w_1</latex>\n<b>all 60 repetitions of arm A</b>\n`derived`" as A1 #BBDEFB
+  rectangle "wall-clock window  <latex>w_1</latex>\n<b>all 60 repetitions of arm A</b>\n<font:monospaced>derived</font>" as A1 #BBDEFB
   rectangle "drift in <latex>w_1</latex>\n<latex>\delta(w_1)</latex>" as D1 #FFE0B2
-  rectangle "wall-clock window  <latex>w_2</latex>\n<b>all 60 repetitions of arm B</b>\n`driven`" as B1 #B2DFDB
+  rectangle "wall-clock window  <latex>w_2</latex>\n<b>all 60 repetitions of arm B</b>\n<font:monospaced>driven</font>" as B1 #B2DFDB
   rectangle "drift in <latex>w_2</latex>\n<latex>\delta(w_2)</latex>" as D2 #FFE0B2
 
   rectangle "estimator\n<latex>\widehat{\Delta}_{\mathrm{blocked}} = \bar t_A - \bar t_B</latex>" as EB #CFD8DC
@@ -41,7 +41,7 @@ package "BLOCKED — what `measure()` DID\n(and what the header denied)" as BLK 
   EB -[#B71C1C]-> RB
 }
 
-package "PAIRED — what the header CLAIMED\n(and what `paired.rs` now does)" as PRD #E8F5E9 {
+package "PAIRED — what the header CLAIMED\n(and what ""paired.rs"" now does)" as PRD #E8F5E9 {
 
   rectangle "window  <latex>w_1</latex>\nrep 1:  <b>A then B</b>" as P1 #E1F5FE
   rectangle "window  <latex>w_2</latex>\nrep 2:  <b>B then A</b>\n<i>order rotated by parity</i>" as P2 #E1F5FE
@@ -74,7 +74,7 @@ end note
 
 note bottom of RP #C8E6C9
   <b><color:#1B5E20>MEASURED on this host — the repair, on the harder case</color></b>
-  `bincode_encoder_bench`, weighted owned `Vec`, three runs of one binary:
+  ""bincode_encoder_bench"", weighted owned ""Vec"", three runs of one binary:
   blocked  1.261× · 1.471× · 1.154×   →  <b>27%</b>  at loadavg 16.7
   paired   1.092× · 1.078× · 1.073×   →  <b>1.9%</b> at loadavg <b>31–37</b>
   <b>14× less spread at roughly DOUBLE the load.</b>

@@ -18,39 +18,39 @@ skinparam nodesep 20
 
 title <b>Minimum surviving stack vs. nesting depth — the register at the anchor</b>\n<latex>S(d) = c + B\,d</latex>  —  a conversion drives the slope <latex>B</latex> to <b>zero</b>, not the intercept <latex>c</latex>
 
-rectangle "**THE OBSERVABLE**\n<latex>B \;=\; \dfrac{S(d_{\mathrm{hi}}) - S(d_{\mathrm{lo}})}{d_{\mathrm{hi}} - d_{\mathrm{lo}}}</latex>  bytes of native stack per nesting level\nobtained by bisecting the smallest `stack_size` on which the\nsubject survives, at each end of a ladder, to a 4,096 B resolution" as OBS #E0F2F1
+rectangle "**THE OBSERVABLE**\n<latex>B \;=\; \dfrac{S(d_{\mathrm{hi}}) - S(d_{\mathrm{lo}})}{d_{\mathrm{hi}} - d_{\mathrm{lo}}}</latex>  bytes of native stack per nesting level\nobtained by bisecting the smallest ""stack_size"" on which the\nsubject survives, at each end of a ladder, to a 4,096 B resolution" as OBS #E0F2F1
 
 rectangle C #E8F5E9 [
 **CONVERTED — <latex>B = 0</latex>**  (34 depth subjects + 6 width subjects;
 flat at both ladder ends, both profiles)
 ----
-|<#A5D6A7> the cores — `substitute*` · `sort` · `score_cmp` · `normalize` · `eval_with_nots` · `pretty` |
-|<#66BB6A> the cold-store codec pair — **`bincode_ser`** · **`bincode_de`** |
-|<#A5D6A7> the generated trait family — `clone` · `par_drop` · `eq` · `hash` · `ord` · `debug` · `message_clear` |
-|<#A5D6A7> the collection arms — `sort_nested_set` · `sort_nested_map` · `clone_nested_set` · `hash_nested_set` |
-|<#66BB6A> the PathMap pair — `hash_pathmap_set` (`PathMap<()>`) · `hash_pathmap_map` (`PathMap<Par>`) |
-|<#A5D6A7> the compositions — `inj_attempt_clone` · `subst_and_charge` · `substitute_deep_binding` · `normalize_drop` |
-|<#A5D6A7> width axis (to 65,536) — `substitute_wide` · `sort_wide` · `score_cmp_wide` · `free_check` · `pretty_wide` · `normalize_wide` |
+|<#A5D6A7> the cores — ""substitute*"" · ""sort"" · ""score_cmp"" · ""normalize"" · ""eval_with_nots"" · ""pretty"" |
+|<#66BB6A> the cold-store codec pair — **""bincode_ser""** · **""bincode_de""** |
+|<#A5D6A7> the generated trait family — ""clone"" · ""par_drop"" · ""eq"" · ""hash"" · ""ord"" · ""debug"" · ""message_clear"" |
+|<#A5D6A7> the collection arms — ""sort_nested_set"" · ""sort_nested_map"" · ""clone_nested_set"" · ""hash_nested_set"" |
+|<#66BB6A> the PathMap pair — ""hash_pathmap_set"" (""PathMap<()>"") · ""hash_pathmap_map"" (""PathMap<Par>"") |
+|<#A5D6A7> the compositions — ""inj_attempt_clone"" · ""subst_and_charge"" · ""substitute_deep_binding"" · ""normalize_drop"" |
+|<#A5D6A7> width axis (to 65,536) — ""substitute_wide"" · ""sort_wide"" · ""score_cmp_wide"" · ""free_check"" · ""pretty_wide"" · ""normalize_wide"" |
 ]
 
 rectangle T #FFF3E0 [
 **FORMER TRIPWIRES — every one CONVERTED**  (release before-slope → after)
 ----
-|<#FFCC80> `sort_nested_map` |<#FFCC80> **7,509** B/level |<#FFCC80> → **0** |<#FFCC80> |
-|<#FFCC80> `substitute_deep_binding` |<#FFCC80> **7,460** B/level |<#FFCC80> → **0** |<#FFCC80> <i>the bound VALUE's depth; the copy IS substitution — now on the generated Clone PDA</i> |
-|<#FFCC80> `sort_nested_set` |<#FFCC80> **4,778** B/level |<#FFCC80> → **0** |<#FFCC80> |
-|<#FFCC80> `clone_nested_set` |<#FFCC80> **4,096** B/level |<#FFCC80> → **0** |<#FFCC80> |
-|<#FFCC80> `clone` = <latex>\langle</latex>`Par as Clone`<latex>\rangle</latex>::clone |<#FFCC80> **3,254** B/level |<#FFCC80> → **0** |<#FFCC80> <i>stage F-4 + SS-A8</i> |
-|<#FFCC80> **`encode`** = prost writer |<#FFCC80> **302** B/level |<#FFCC80> → **0** |<#FFCC80> <i>generated Message PDA</i> |
-|<#FFCC80> `subst_and_charge` |<#FFCC80> **146** B/level |<#FFCC80> → **0** |<#FFCC80> |
-|<#FFCC80> `par_drop` · `normalize_drop` |<#FFCC80> **144** B/level |<#FFCC80> → **0** |<#FFCC80> <i>generated Drop machinery</i> |
+|<#FFCC80> ""sort_nested_map"" |<#FFCC80> **7,509** B/level |<#FFCC80> → **0** |<#FFCC80> |
+|<#FFCC80> ""substitute_deep_binding"" |<#FFCC80> **7,460** B/level |<#FFCC80> → **0** |<#FFCC80> <i>the bound VALUE's depth; the copy IS substitution — now on the generated Clone PDA</i> |
+|<#FFCC80> ""sort_nested_set"" |<#FFCC80> **4,778** B/level |<#FFCC80> → **0** |<#FFCC80> |
+|<#FFCC80> ""clone_nested_set"" |<#FFCC80> **4,096** B/level |<#FFCC80> → **0** |<#FFCC80> |
+|<#FFCC80> ""clone"" = <latex>\langle</latex>""Par as Clone""<latex>\rangle</latex>::clone |<#FFCC80> **3,254** B/level |<#FFCC80> → **0** |<#FFCC80> <i>stage F-4 + SS-A8</i> |
+|<#FFCC80> **""encode""** = prost writer |<#FFCC80> **302** B/level |<#FFCC80> → **0** |<#FFCC80> <i>generated Message PDA</i> |
+|<#FFCC80> ""subst_and_charge"" |<#FFCC80> **146** B/level |<#FFCC80> → **0** |<#FFCC80> |
+|<#FFCC80> ""par_drop"" · ""normalize_drop"" |<#FFCC80> **144** B/level |<#FFCC80> → **0** |<#FFCC80> <i>generated Drop machinery</i> |
 ]
 
 rectangle K #E0F2F1 [
 **CONTROLS** — the checkers are shown to separate the two classes
 ----
-|<#80CBC4> `synthetic_recurse` (a function) |<#80CBC4> **111** B/level |<#80CBC4> — must be REJECTED |
-|<#80CBC4> `synthetic_drop`   (a destructor) |<#80CBC4> **31** B/level |<#80CBC4> — must be REJECTED |
+|<#80CBC4> ""synthetic_recurse"" (a function) |<#80CBC4> **111** B/level |<#80CBC4> — must be REJECTED |
+|<#80CBC4> ""synthetic_drop""   (a destructor) |<#80CBC4> **31** B/level |<#80CBC4> — must be REJECTED |
 |<#80CBC4> their iterative twins |<#80CBC4> **0** B/level |<#80CBC4> — must be ACCEPTED |
 ]
 

@@ -25,14 +25,14 @@ skinparam ArrowThickness 1.4
 
 title <b>EPM1 — one versioned trie snapshot, embedded verbatim on both lanes</b>\nset mode has NO value table; map values are enumerated in the arena's value order
 
-rectangle "**The EPM1 snapshot** — one contiguous byte string, memoized `OnceLock<Vec<u8>>`, shared by the clone family" as EPM1 #FAFAFA {
-  rectangle "`\"EPM1\"`\n4-byte magic" as Magic #B2DFDB
-  rectangle "`version`\n= 1" as Version #B2DFDB
-  rectangle "`mode`\nset | map" as Mode #B2DFDB
-  rectangle "`varint(|ACTree03|)`\narena length" as ALen #C8E6C9
+rectangle "**The EPM1 snapshot** — one contiguous byte string, memoized ""OnceLock<Vec<u8>>"", shared by the clone family" as EPM1 #FAFAFA {
+  rectangle "<font:monospaced>\"EPM1\"</font>\n4-byte magic" as Magic #B2DFDB
+  rectangle "<font:monospaced>version</font>\n= 1" as Version #B2DFDB
+  rectangle "<font:monospaced>mode</font>\nset | map" as Mode #B2DFDB
+  rectangle "<font:monospaced>varint(|ACTree03|)</font>\narena length" as ALen #C8E6C9
   rectangle "**ACTree03 arena**\nPathMap's compact-tree topology,\nverbatim from the accessor" as Arena #C8E6C9
-  rectangle "`varint(value_count)`\n**map mode only**" as VCount #E1BEE7
-  rectangle "`value_count ×`\n`(varint(|Par|) ‖ protobuf(Par))`\nvalues in **arena value order**,\nencoded by the **generated protobuf PDA**" as Values #E1BEE7
+  rectangle "<font:monospaced>varint(value_count)</font>\n**map mode only**" as VCount #E1BEE7
+  rectangle "<font:monospaced>value_count ×</font>\n""(varint(|Par|) ‖ protobuf(Par))""\nvalues in **arena value order**,\nencoded by the **generated protobuf PDA**" as Values #E1BEE7
 }
 
 Magic -[hidden]right-> Version
@@ -42,14 +42,14 @@ ALen -[hidden]right-> Arena
 Arena -[hidden]right-> VCount
 VCount -[hidden]right-> Values
 
-rectangle "**Lane P — prost, network / consensus**\n`EPathMap` **field 9**, wiretype 2 (`bytes`)\ncopies the SAME snapshot byte string" as LaneP #BBDEFB
-rectangle "**Lane B — bincode, cold store / LMDB**\nthe first `EPathMap` field\ncopies the SAME snapshot byte string" as LaneB #FFE0B2
+rectangle "**Lane P — prost, network / consensus**\n""EPathMap"" **field 9**, wiretype 2 (""bytes"")\ncopies the SAME snapshot byte string" as LaneP #BBDEFB
+rectangle "**Lane B — bincode, cold store / LMDB**\nthe first ""EPathMap"" field\ncopies the SAME snapshot byte string" as LaneB #FFE0B2
 
 EPM1 -[#1565C0,bold]-> LaneP : verbatim copy
 EPM1 -[#E65100,bold]-> LaneB : verbatim copy
 
 note bottom of LaneP #E3F2FD
-  ★ **Neither surface reconstructs a `Vec<Par>`.**  A tag-9 `bytes`
+  ★ **Neither surface reconstructs a ""Vec<Par>"".**  A tag-9 ""bytes""
   field costs prost **zero** message levels, and the generated
   decode PDA reads the snapshot without a recursion ceiling —
   depth 4,096 round-trips on a 256 KiB test stack.
@@ -58,12 +58,12 @@ end note
 note bottom of LaneB #FFF8E1
   ★ **Set mode ends at the arena** — there is no value table to
   parse, and value-free terminating topology is representable
-  (something a `ps: Vec<Par>` projection structurally cannot say).
+  (something a ""ps: Vec<Par>"" projection structurally cannot say).
 end note
 
 note right of Values #F3E5F5
   ★ The cold snapshot cost is linear in trie nodes plus encoded
-  values.  A cached `EpmLayout` retains only the topology prefix,
+  values.  A cached ""EpmLayout"" retains only the topology prefix,
   avoiding <latex>\Theta(d^2)</latex> retained suffix bytes in
   nested map-value chains.  Warm access is
   <latex>\mathcal{O}(1)</latex> before the caller's required copy.

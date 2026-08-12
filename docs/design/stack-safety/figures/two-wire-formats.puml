@@ -17,20 +17,20 @@ skinparam nodesep 30
 
 title <b>One term, two wire formats</b>\nonly the cold-store pair was trampolined on <i>both</i> sides
 
-rectangle "  **`models::rhoapi::Par`**  —  the in-memory term  \n37-member recursive SCC; <latex>\{\mathtt{Par}\}</latex> is a feedback vertex set of size 1" as PAR #ECEFF1
+rectangle "  **""models::rhoapi::Par""**  —  the in-memory term  \n37-member recursive SCC; <latex>\{\mathtt{Par}\}</latex> is a feedback vertex set of size 1" as PAR #ECEFF1
 
 package "**(1) COLD STORE**  —  bincode over serde, LMDB, node-local" as COLD #E8F5E9 {
-  rectangle "**writer**  `bincode_encoder::encode`\nsingle-walk op-stack machine\n**CONVERTED (Stage H)**\n<latex>0</latex> B/level native" as CW #A5D6A7
+  rectangle "**writer**  ""bincode_encoder::encode""\nsingle-walk op-stack machine\n**CONVERTED (Stage H)**\n<latex>0</latex> B/level native" as CW #A5D6A7
   rectangle "bytes\n(non-self-describing;\nserde declaration order)" as CB #E1BEE7
-  rectangle "**reader**  `bincode_decoder::cold_decode`\nobligation stack + 18 value stacks\n**CONVERTED (Stage F)**\n<latex>0</latex> B/level native" as CR #A5D6A7
+  rectangle "**reader**  ""bincode_decoder::cold_decode""\nobligation stack + 18 value stacks\n**CONVERTED (Stage F)**\n<latex>0</latex> B/level native" as CR #A5D6A7
   CW -[#6A1B9A,thickness=2]down-> CB
   CB -[#6A1B9A,thickness=2]down-> CR
 }
 
-package "**(2) NETWORK / CONSENSUS**  —  protobuf via `prost`" as NET #FFF3E0 {
-  rectangle "**writer**  `<Par as Message>::encode_raw`\nDERIVED, recursive\n**TRIPWIRE**: gate subject `encode`\n**302 B/level** release (MEASURED)\n<b>no write-side limit</b>" as NW #FFCC80
+package "**(2) NETWORK / CONSENSUS**  —  protobuf via <font:monospaced>prost</font>" as NET #FFF3E0 {
+  rectangle "**writer**  ""<Par as Message>::encode_raw""\nDERIVED, recursive\n**TRIPWIRE**: gate subject ""encode""\n**302 B/level** release (MEASURED)\n<b>no write-side limit</b>" as NW #FFCC80
   rectangle "bytes\n(protobuf; ascending tag order)" as NB #E1BEE7
-  rectangle "**reader**  `<Par as Message>::merge_field`\nDERIVED, recursive\n**4,096 B/level** release (MEASURED)\n<b>`RECURSION_LIMIT = 100`</b>\n⇒ term depth **33 / 32 / 31** per envelope" as NR #EF9A9A
+  rectangle "**reader**  ""<Par as Message>::merge_field""\nDERIVED, recursive\n**4,096 B/level** release (MEASURED)\n<b>""RECURSION_LIMIT = 100""</b>\n⇒ term depth **33 / 32 / 31** per envelope" as NR #EF9A9A
   NW -[#6A1B9A,thickness=2]down-> NB
   NB -[#6A1B9A,thickness=2]down-> NR
 }
@@ -53,9 +53,9 @@ note bottom of NR #FFEBEE
   A term therefore exists that can be **built, reduced**
   **and serialised** and **cannot be read back**.
   Four independent instances of this one shape:
-  ~#120 (the audit's §7.3) · ~#129 (`output_value`) ·
+  ~#120 (the audit's §7.3) · ~#129 (""output_value"") ·
   ~#130 (the trie value slot) ·
-  ~#4 (`EPathMap`'s own prost wire, tag 8)
+  ~#4 (""EPathMap""'s own prost wire, tag 8)
 end note
 
 legend bottom
