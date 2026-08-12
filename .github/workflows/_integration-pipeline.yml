@@ -512,6 +512,10 @@ jobs:
           if [ "${{ matrix.arch }}" = "arm64" ]; then
             SCALE_FLAG="--timeout-scale=1.5"
           fi
+          NODE_CAPABILITY_ARGS=()
+          while IFS= read -r capability; do
+            [ -z "$capability" ] || NODE_CAPABILITY_ARGS+=("--node-capability=$capability")
+          done < <(bash "$GITHUB_WORKSPACE/.github/scripts/read-system-integration-node-capabilities.sh" "$GITHUB_WORKSPACE/.github/system-integration-node-capabilities.txt")
           poetry run pytest \
             integration-tests/test/tests/shared/ \
             integration-tests/test/tests/custom/ \
@@ -530,6 +534,7 @@ jobs:
             --deselect integration-tests/test/tests/custom/test_user_contract_concurrency.py \
             --deselect integration-tests/test/tests/custom/test_active_validator_cap.py \
             --provider=${{ matrix.provider }} \
+            "${NODE_CAPABILITY_ARGS[@]}" \
             -v --tb=short --instafail --maxfail=10 \
             -n 16 --dist=loadgroup --timeout=1200 $SCALE_FLAG
 

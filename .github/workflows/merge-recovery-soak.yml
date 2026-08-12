@@ -104,9 +104,9 @@ env:
   # of normal-operation clearance; both the pytest floor (subprocess
   # iterations) and the orchestrator host guardian (every iteration) use it.
   SOAK_HOST_FREE_FLOOR_MB: "8192"
-  # THIRD pin site. The other two — .github/oci-validation.env and
-  # _integration-pipeline.yml — are held identical by build_base's drift check;
-  # this one is outside that check and rotted unnoticed as a result. It sat at
+  # THIRD pin site. CI's pin-consistency check holds this identical to
+  # .github/oci-validation.env and _integration-pipeline.yml. Before that guard
+  # covered the soak pin, it rotted unnoticed and sat at
   # a50eeb19 while CI advanced to 06f2020c, and a50eeb19 predates
   # system-integration 81284fc, which added integration-tests/certs/validator4.
   # compose.py bind-mounts that path, so with no host file Docker created a
