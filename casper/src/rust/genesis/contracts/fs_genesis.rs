@@ -615,6 +615,12 @@ new
   writeBytesLoop, writeBytesAtLoop, writeCharsLoop, writeLinesLoop,
   readLinesIntoLoop, drainToNextLF,
   codepointLen, concatStringsLoop, scanLineForLF,
+  // Phase 8 slice 8a — LockToken agent + per-instance state key.
+  // See File.rho's module-level `new` docstring for the design
+  // rationale; must be bound at THIS outer scope because File.rho
+  // gets its own top-level `new` stripped by `lib_body` at
+  // composition time.
+  LockToken, lockStateP,
   fsOpen(`rho:io:fs:native:1.0.0/open`),
   fsClose(`rho:io:fs:native:1.0.0/close`),
   fsRead(`rho:io:fs:native:1.0.0/read`),
@@ -932,7 +938,15 @@ mod tests {
         // prep (2026-08-12): added `fsReleaseAllForHolder` URN
         // binding for the File.close sweep native (X-1 §901).  Same
         // hard-fork discipline as the initial slice-8a roll.
-        const EXPECTED: &str = "551579e397e0a823b235a1cb50713eb5afc151118a788b8994555c191e6309b7";
+        //
+        // Anchor rolled forward again for Phase 8 slice 8a step 4c-2
+        // (2026-08-12): File.rho now contains the `agent LockToken`
+        // block and the `method lockRange` implementation, and the
+        // outer new-clause binds `LockToken, lockStateP`.  File.rho is
+        // embedded in the composed source, so any File.rho edit that
+        // isn't a comment-only tweak flips this hash.  Same hard-fork
+        // discipline as previous rolls.
+        const EXPECTED: &str = "6f8d85b912e1827aada3dc9c220cd7395d7259ed31af3d710838655688b513af";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

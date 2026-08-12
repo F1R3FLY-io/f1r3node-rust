@@ -35,7 +35,16 @@
 
 new File, fdP, stateP, cmodeP,
     writeBytesLoop, writeBytesAtLoop, writeCharsLoop,
-    codepointLen, concatStringsLoop, scanLineForLF
+    codepointLen, concatStringsLoop, scanLineForLF,
+    // Phase 8 slice 8a — LockToken agent + per-instance state key.
+    // LockToken wraps an opaque `LockId` (Int) returned by
+    // `fs_lock_range` / `fs_lock_sequential`; its sole method
+    // `release` calls `fs_release_lock` and marks the state cell
+    // "released" so a second call returns FSERR_CLOSED idempotently.
+    // Inline in File.rho per §X-1 §899 rather than a separate
+    // LockToken.rho module — the release path needs the same
+    // fs-native URN scope File.rho already has.
+    LockToken, lockStateP
 in {
 
   agent File {
@@ -601,6 +610,125 @@ in {
             _ => return!([false, "FSERR_IO", "chown validation malformed"])
           }
         }
+      }
+    } |
+
+    // -- lockRange(offset, length, mode) ---------------------------
+    //
+    // Phase 8 slice 8a step 4c-2 — spec §Explicit locks.  Acquire a
+    // positional range lock over `[offset, offset+length)` in mode
+    // `mode ∈ {"r", "w"}` and return a LockToken the caller can
+    // `release` when done.  Held until `release` OR deploy-end auto-
+    // release (§Explicit locks MUST) OR File.close's sweep of every
+    // lock held via this cap (§File > close).
+    //
+    // Composition with implicit locks: same-holder overlapping
+    // acquires never conflict per spec §Range locks (2026-08-12
+    // refinement).  A caller holding an explicit `lockRange(0, 1024,
+    // "w")` may continue to invoke `writeBytesAt` / `bytesAt` / etc.
+    // on the same cap; the positional call's implicit auto-acquire
+    // coexists with the explicit lock rather than tripping FSERR_BUSY.
+    // Cross-cap acquires (distinct holder) still coordinate under the
+    // normal read-vs-write rules.
+    //
+    // Mode attenuation (spec §Explicit locks): a "w" lock request on
+    // a File opened "r" is refused with FSERR_UNSUPPORTED — the
+    // attenuation matches every other write-capable method.
+    //
+    // Same-holder self-conflict is not possible from THIS cap because
+    // the LockRegistry's same-holder-skip rule (X-1 §Slice-1 addendum)
+    // permits overlapping same-holder acquires; the two entries coexist
+    // and each releases independently.
+    method lockRange(@offset, @length, @mode) {
+      match offset {
+        off /\ Int => {
+          match off < 0 {
+            true => return!([false, "FSERR_BAD_ARG",
+              "offset must be non-negative"])
+            false => {
+              match length {
+                len /\ Int => {
+                  match len <= 0 {
+                    true => return!([false, "FSERR_BAD_ARG",
+                      "length must be > 0 (LockRegistry rejects zero-length ranges as BadArg)"])
+                    false => {
+                      match mode {
+                        m /\ String => {
+                          match m {
+                            "r" \/ "w" => {
+                              for (@state <- @[*private, *stateP]) {
+                                match state {
+                                  "closed" => {
+                                    @[*private, *stateP]!("closed") |
+                                    return!([false, "FSERR_CLOSED", "file is closed"])
+                                  }
+                                  "open" => {
+                                    for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
+                                      match params {
+                                        (fd, _root, _rel, fmode) => {
+                                          // Mode attenuation: "w" lock requires write-capable file mode.
+                                          match [m, fmode] {
+                                            ["w", "r"] => {
+                                              @[*private, *stateP]!("open") |
+                                              return!([false, "FSERR_UNSUPPORTED",
+                                                "cannot acquire write lock on read-only file"])
+                                            }
+                                            _ => {
+                                              new lockCh in {
+                                                // holder MUST be *stateP — cross-cap coordination
+                                                // depends on it.  Each fresh-mint File cap derives
+                                                // a distinct HolderId (Blake2b256 of *stateP's
+                                                // GPrivate name); passing any other Par would
+                                                // collapse cross-cap holders and break §Range
+                                                // locks' different-holder rule.
+                                                fsLockRange!(fd, off, len, m, *stateP, cmode, *lockCh) |
+                                                for (@reply <- lockCh) {
+                                                  @[*private, *stateP]!("open") |
+                                                  match reply {
+                                                    [true, lid] => {
+                                                      // Mint a LockToken agent wrapping the LockId;
+                                                      // return the bundle+ handle to the caller.
+                                                      for (@token <- LockToken!?(lid)) {
+                                                        return!([true, token])
+                                                      }
+                                                    }
+                                                    _ => return!(reply)
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                        _ => {
+                                          @[*private, *stateP]!("open") |
+                                          return!([false, "FSERR_IO", "fd params malformed"])
+                                        }
+                                      }
+                                    }
+                                  }
+                                  _ => {
+                                    @[*private, *stateP]!("closed") |
+                                    return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                                  }
+                                }
+                              }
+                            }
+                            _ => return!([false, "FSERR_BAD_ARG",
+                              "mode must be \"r\" or \"w\""])
+                          }
+                        }
+                        _ => return!([false, "FSERR_BAD_ARG",
+                          "mode must be a String"])
+                      }
+                    }
+                  }
+                }
+                _ => return!([false, "FSERR_BAD_ARG", "length must be an integer"])
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "offset must be an integer"])
       }
     } |
 
@@ -3338,6 +3466,90 @@ in {
     default(...@args) {
       match args {
         [*ret, ..._] => ret!([false, "FSERR_UNSUPPORTED", "unknown method"])
+      }
+    }
+  } |
+
+  // ==================================================================
+  // Phase 8 slice 8a step 4c-2 — LockToken agent.
+  // ==================================================================
+  //
+  // Wraps an opaque `LockId` returned by `fs_lock_range` /
+  // `fs_lock_sequential`.  Sole method `release` calls
+  // `fs_release_lock` and marks the state cell "released" so a
+  // second call returns FSERR_CLOSED idempotently.
+  //
+  // ## Lifecycle
+  //
+  // - **Mint**: `File.lockRange` calls `LockToken!?(lockId)`; the
+  //   agent's constructor stashes the LockId in a per-instance
+  //   state cell and returns `bundle+{*this}` — the LockToken
+  //   handle the caller holds.
+  // - **Release (explicit)**: caller sends `!?("release")`; the
+  //   release method linearly consumes the state cell, calls
+  //   `fs_release_lock(lockId)` if active, marks "released", and
+  //   forwards the native's reply.
+  // - **Release (implicit, via File.close)**: `File.close` invokes
+  //   `fs_release_all_for_holder(*stateP)` (step 4f) which sweeps
+  //   every lock owned by this cap's holder.  Subsequent
+  //   `token!release()` returns FSERR_CLOSED via the unknown-LockId
+  //   branch of `fs_release_lock` — spec §File > close.
+  // - **Release (implicit, via deploy-end)**: `WalDeployScope::end`
+  //   (step 5) invokes `release_all_for_deploy(scope)` which sweeps
+  //   every lock owned by this deploy.  Same FSERR_CLOSED semantics
+  //   for post-sweep `release`.
+  //
+  // ## Idempotence
+  //
+  // Second `release` on an already-released token sees the "released"
+  // sentinel in the state cell and returns
+  // `[false, "FSERR_CLOSED", "lock already released"]` — matches
+  // `File.close` / `Stream.close` idempotence style.
+  //
+  // ## Ocap attenuation
+  //
+  // The bundled `LockToken` handle is send-only (bundle+); anyone
+  // holding it may invoke `release`.  Callers who want to hand out
+  // "hold this token but don't release it" use the standard forwarder
+  // pattern (spec §Ocap patterns > Attenuation via forwarder) — no
+  // LockToken-specific machinery.
+  agent LockToken {
+    constructor(@lid) {
+      @[*private, *lockStateP]!(lid)
+    } |
+    method release() {
+      // Linear consume serializes concurrent release attempts on the
+      // same LockToken (D3 FuturesUnordered can interleave method
+      // sends from Par branches sharing the token).
+      for (@state <- @[*private, *lockStateP]) {
+        match state {
+          lockId /\ Int => {
+            // Active: mark released BEFORE the native dispatch so a
+            // concurrent second release sees "released" immediately
+            // and returns FSERR_CLOSED without racing the fs_release
+            // syscall.
+            @[*private, *lockStateP]!("released") |
+            new relCh in {
+              fsReleaseLock!(lockId, *relCh) |
+              for (@reply <- relCh) {
+                return!(reply)
+              }
+            }
+          }
+          _ => {
+            // Already released, or state cell holds an unknown value
+            // — treat as released.  Restore state as-is and return
+            // idempotent FSERR_CLOSED.
+            @[*private, *lockStateP]!(state) |
+            return!([false, "FSERR_CLOSED", "lock already released"])
+          }
+        }
+      }
+    } |
+    default(...@args) {
+      match args {
+        [*ret, ..._] => ret!([false, "FSERR_UNSUPPORTED",
+          "unknown LockToken method"])
       }
     }
   } |
