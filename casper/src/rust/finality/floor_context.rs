@@ -33,9 +33,11 @@ use crate::rust::errors::CasperError;
 use crate::rust::safety::clique_oracle::FtThreshold;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
-/// Per-sig latest canonical disposition over the operation's parents:
-/// `sig -> (height, won)`.
-pub type CanonicalDispositions = Arc<HashMap<Bytes, (i64, bool)>>;
+/// Per-sig canonical disposition facts over the operation's parents — the
+/// latest disposition, the latest kept rejection record, and the first
+/// carrier (see `interpreter_util::SigDisposition`).
+pub(crate) type CanonicalDispositions =
+    Arc<HashMap<Bytes, crate::rust::util::rholang::interpreter_util::SigDisposition>>;
 
 pub struct FloorContext {
     pub floor: Floor,
@@ -123,7 +125,7 @@ impl FloorContext {
         Ok(self
             .dispositions(block_store, earliest_block_number)?
             .iter()
-            .filter(|(_, (_, won))| *won)
+            .filter(|(_, disposition)| disposition.won())
             .map(|(sig, _)| sig.clone())
             .collect())
     }

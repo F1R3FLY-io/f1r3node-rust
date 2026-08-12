@@ -171,17 +171,87 @@ pub(crate) fn deploy_effect_in_state(
     Ok(false)
 }
 
+/// Per-sig canonical disposition facts over one operation's parent cone.
+/// One walk collects everything recovery reads: the latest disposition
+/// (who currently stands), the latest kept rejection record (the
+/// adjudication a retry settles against), and the first carrier (whose
+/// sender is the deploy's recovery owner).
+#[derive(Debug, Clone)]
+pub(crate) struct SigDisposition {
+    /// Latest disposition as `(height, won)`. A win and a rejection never
+    /// share a height (a merge sits one block above its siblings), so the
+    /// highest-block disposition is the latest; a same-height tie prefers
+    /// REJECTION so a keep-one loser stays re-proposable.
+    pub latest: (i64, bool),
+    /// The highest-block kept rejection RECORD naming this sig, as
+    /// `(height, record-bearing block)`. A same-height tie breaks to the
+    /// lexicographically LARGER hash so every node lands on one block.
+    pub latest_kept_rejection: Option<(i64, BlockHash)>,
+    /// The lowest-block INCLUSION of this sig, as
+    /// `(height, carrier, carrier sender)`. A same-height tie breaks to
+    /// the lexicographically SMALLER hash.
+    pub first_carrier: Option<(i64, BlockHash, Bytes)>,
+}
+
+impl SigDisposition {
+    pub fn won(&self) -> bool { self.latest.1 }
+}
+
+/// The latest-disposition tie logic shared by every disposition map: keep
+/// the higher block; at equal height an existing REJECTION stands.
+fn update_latest(latest: &mut (i64, bool), bn: i64, won: bool) {
+    let (best_bn, best_won) = *latest;
+    if best_bn > bn || (best_bn == bn && !best_won) {
+        return;
+    }
+    *latest = (bn, won);
+}
+
+fn note_inclusion(
+    dispositions: &mut HashMap<Bytes, SigDisposition>,
+    sig: Bytes,
+    bn: i64,
+    carrier: &BlockHash,
+    sender: &Bytes,
+) {
+    let disposition = dispositions.entry(sig).or_insert(SigDisposition {
+        latest: (bn, true),
+        latest_kept_rejection: None,
+        first_carrier: None,
+    });
+    update_latest(&mut disposition.latest, bn, true);
+    match &disposition.first_carrier {
+        Some((h, b, _)) if *h < bn || (*h == bn && b <= carrier) => {}
+        _ => disposition.first_carrier = Some((bn, carrier.clone(), sender.clone())),
+    }
+}
+
+fn note_kept_rejection(
+    dispositions: &mut HashMap<Bytes, SigDisposition>,
+    sig: Bytes,
+    bn: i64,
+    record_block: &BlockHash,
+) {
+    let disposition = dispositions.entry(sig).or_insert(SigDisposition {
+        latest: (bn, false),
+        latest_kept_rejection: None,
+        first_carrier: None,
+    });
+    update_latest(&mut disposition.latest, bn, false);
+    match &disposition.latest_kept_rejection {
+        Some((h, b)) if *h > bn || (*h == bn && b >= record_block) => {}
+        _ => disposition.latest_kept_rejection = Some((bn, record_block.clone())),
+    }
+}
+
 /// BFS-walk the closure of `parents` down to `earliest_block_number`,
-/// returning each sig's latest disposition as `sig -> (height, won)`.
-/// A win and a rejection never share a height (a merge sits one block above
-/// its siblings), so the highest-block disposition is the latest; a
-/// same-height tie prefers REJECTION so a keep-one loser stays re-proposable.
+/// collecting each sig's `SigDisposition`.
 pub(crate) fn canonical_dispositions(
     block_store: &KeyValueBlockStore,
     parents: &[BlockHash],
     earliest_block_number: i64,
-) -> Result<HashMap<Bytes, (i64, bool)>, CasperError> {
-    let mut disposition: HashMap<Bytes, (i64, bool)> = HashMap::new();
+) -> Result<HashMap<Bytes, SigDisposition>, CasperError> {
+    let mut dispositions: HashMap<Bytes, SigDisposition> = HashMap::new();
     let mut visited: HashSet<BlockHash> = HashSet::new();
     let mut queue: VecDeque<BlockHash> = parents.iter().cloned().collect();
     while let Some(hash) = queue.pop_front() {
@@ -196,16 +266,22 @@ pub(crate) fn canonical_dispositions(
             continue;
         }
         for pd in &block.body.deploys {
-            record_disposition(&mut disposition, pd.deploy.sig.clone(), bn, true);
+            note_inclusion(
+                &mut dispositions,
+                pd.deploy.sig.clone(),
+                bn,
+                &hash,
+                &block.sender,
+            );
         }
         for rd in proto_util::kept_rejected_records(&block) {
-            record_disposition(&mut disposition, rd.sig.clone(), bn, false);
+            note_kept_rejection(&mut dispositions, rd.sig.clone(), bn, &hash);
         }
         for p in &block.header.parents_hash_list {
             queue.push_back(p.clone());
         }
     }
-    Ok(disposition)
+    Ok(dispositions)
 }
 
 fn canonical_disposition_sigs(
@@ -217,7 +293,7 @@ fn canonical_disposition_sigs(
     Ok(
         canonical_dispositions(block_store, parents, earliest_block_number)?
             .into_iter()
-            .filter_map(|(sig, (_, won))| (won == target_won).then_some(sig))
+            .filter_map(|(sig, disposition)| (disposition.won() == target_won).then_some(sig))
             .collect(),
     )
 }
@@ -321,11 +397,12 @@ fn record_disposition(
     bn: i64,
     won: bool,
 ) {
-    match disposition.get(&sig) {
-        Some((best_bn, _)) if *best_bn > bn => {}
-        Some((best_bn, best_won)) if *best_bn == bn && !*best_won => {}
-        _ => {
-            disposition.insert(sig, (bn, won));
+    match disposition.entry(sig) {
+        std::collections::hash_map::Entry::Occupied(mut entry) => {
+            update_latest(entry.get_mut(), bn, won)
+        }
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert((bn, won));
         }
     }
 }
@@ -1639,9 +1716,10 @@ mod backstop_tests {
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::{
-        block_in_floor_merge_scope, canonical_won_sigs, merge_scope_backstop_exceeded,
-        rejected_sig_has_visible_non_source_win, retain_recoverable_rejected_deploys_for_buffer,
-        suppress_already_recorded_rejections, MAX_FLOOR_DISTANCE_BLOCKS,
+        block_in_floor_merge_scope, canonical_dispositions, canonical_won_sigs,
+        merge_scope_backstop_exceeded, rejected_sig_has_visible_non_source_win,
+        retain_recoverable_rejected_deploys_for_buffer, suppress_already_recorded_rejections,
+        MAX_FLOOR_DISTANCE_BLOCKS,
     };
     use crate::rust::util::construct_deploy;
 
@@ -1667,6 +1745,180 @@ mod backstop_tests {
         let below = merge_scope_backstop_exceeded(MAX_FLOOR_DISTANCE_BLOCKS);
         let above = merge_scope_backstop_exceeded(MAX_FLOOR_DISTANCE_BLOCKS + 1);
         assert!(!below && above);
+    }
+
+    /// The walk collects three facts per sig in ONE pass; each has its own
+    /// determinism contract. First carrier: LOWEST block, same-height tie to
+    /// the lexicographically SMALLER hash; its sender is the recovery owner.
+    /// Latest disposition: highest block, rejection wins a same-height tie.
+    #[tokio::test]
+    async fn disposition_walk_first_carrier_is_lowest_block_smaller_hash_tie() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let deploy = construct_deploy::source_deploy_now_full(
+            "@7!(7)".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("deploy");
+        let sig = deploy.sig.clone();
+        let secp = Secp256k1;
+        let (_, s_root) = secp.new_key_pair();
+        let (_, s_b) = secp.new_key_pair();
+        let (_, s_c) = secp.new_key_pair();
+
+        let root = disposition_test_block(1, s_root.bytes.clone(), Vec::new(), Vec::new());
+        // Two same-height sibling carriers with distinct senders, then a
+        // higher inclusion — the walk must pick the smaller-hash sibling
+        // and ignore the later copy for first-carrier purposes.
+        let carrier_b =
+            disposition_test_block(2, s_b.bytes.clone(), vec![root.block_hash.clone()], vec![
+                ProcessedDeploy::empty(deploy.clone()),
+            ]);
+        let carrier_c =
+            disposition_test_block(2, s_c.bytes.clone(), vec![root.block_hash.clone()], vec![
+                ProcessedDeploy::empty(deploy.clone()),
+            ]);
+        let tip = disposition_test_block(
+            3,
+            s_root.bytes.clone(),
+            vec![carrier_b.block_hash.clone(), carrier_c.block_hash.clone()],
+            vec![ProcessedDeploy::empty(deploy)],
+        );
+        for block in [&root, &carrier_b, &carrier_c, &tip] {
+            block_store.put_block_message(block).expect("store block");
+        }
+
+        let dispositions =
+            canonical_dispositions(&block_store, &[tip.block_hash.clone()], i64::MIN)
+                .expect("walk");
+        let disposition = dispositions.get(&sig).expect("sig disposition");
+
+        assert_eq!(disposition.latest, (3, true), "latest is the tip inclusion");
+        let (expected_hash, expected_sender) = if carrier_b.block_hash <= carrier_c.block_hash {
+            (carrier_b.block_hash.clone(), s_b.bytes.clone())
+        } else {
+            (carrier_c.block_hash.clone(), s_c.bytes.clone())
+        };
+        assert_eq!(
+            disposition.first_carrier,
+            Some((2, expected_hash, expected_sender)),
+            "first carrier is the lowest inclusion; the same-height tie \
+             breaks to the smaller hash, and its sender is the owner",
+        );
+    }
+
+    /// Latest kept rejection: HIGHEST record-bearing block, same-height tie
+    /// to the lexicographically LARGER hash — the adjudication the retry
+    /// gate settles against must be node-identical.
+    #[tokio::test]
+    async fn disposition_walk_latest_kept_rejection_is_highest_block_larger_hash_tie() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let deploy = construct_deploy::source_deploy_now_full(
+            "@8!(8)".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("deploy");
+        let sig = deploy.sig.clone();
+        let secp = Secp256k1;
+        let (_, s_root) = secp.new_key_pair();
+
+        let carrier = disposition_test_block(1, s_root.bytes.clone(), Vec::new(), vec![
+            ProcessedDeploy::empty(deploy),
+        ]);
+        let mut record_d = disposition_test_block(
+            2,
+            s_root.bytes.clone(),
+            vec![carrier.block_hash.clone()],
+            Vec::new(),
+        );
+        record_d.body.rejected_deploys = vec![RejectedDeploy {
+            sig: sig.clone(),
+            duplicate: false,
+            carrier: carrier.block_hash.clone(),
+        }];
+        let mut record_e = disposition_test_block(
+            2,
+            s_root.bytes.clone(),
+            vec![carrier.block_hash.clone()],
+            Vec::new(),
+        );
+        record_e.body.rejected_deploys = vec![RejectedDeploy {
+            sig: sig.clone(),
+            duplicate: false,
+            carrier: carrier.block_hash.clone(),
+        }];
+        let tip = disposition_test_block(
+            3,
+            s_root.bytes.clone(),
+            vec![record_d.block_hash.clone(), record_e.block_hash.clone()],
+            Vec::new(),
+        );
+        for block in [&carrier, &record_d, &record_e, &tip] {
+            block_store.put_block_message(block).expect("store block");
+        }
+
+        let dispositions =
+            canonical_dispositions(&block_store, &[tip.block_hash.clone()], i64::MIN)
+                .expect("walk");
+        let disposition = dispositions.get(&sig).expect("sig disposition");
+
+        assert_eq!(
+            disposition.latest,
+            (2, false),
+            "the height-2 rejection outranks the height-1 inclusion",
+        );
+        let expected_hash = std::cmp::max(record_d.block_hash.clone(), record_e.block_hash.clone());
+        assert_eq!(
+            disposition.latest_kept_rejection,
+            Some((2, expected_hash)),
+            "the latest kept rejection is the highest record-bearing block; \
+             the same-height tie breaks to the larger hash",
+        );
+        assert_eq!(
+            disposition
+                .first_carrier
+                .as_ref()
+                .map(|(h, b, _)| (*h, b.clone())),
+            Some((1, carrier.block_hash.clone())),
+            "the height-1 inclusion is the first carrier",
+        );
+    }
+
+    fn disposition_test_block(
+        block_number: i64,
+        sender: Bytes,
+        parents: Vec<BlockHash>,
+        deploys: Vec<ProcessedDeploy>,
+    ) -> BlockMessage {
+        block_implicits::get_random_block(
+            Some(block_number),
+            Some(1),
+            None,
+            None,
+            Some(sender),
+            Some(1),
+            Some(0),
+            Some(parents),
+            Some(Vec::new()),
+            Some(deploys),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some("root".to_string()),
+            None,
+        )
     }
 
     fn scope_test_block(
