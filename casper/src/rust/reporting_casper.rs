@@ -165,6 +165,8 @@ impl RhoReporterCasper {
         runtime.set_block_data(block_data.clone()).await;
         runtime.set_invalid_blocks(invalid_blocks).await;
 
+        let mut replay_failed = false;
+
         let mut deploy_results = Vec::new();
         for (idx, term) in terms.iter().enumerate() {
             tracing::debug!(
@@ -185,6 +187,7 @@ impl RhoReporterCasper {
                         error = %e,
                         "Deploy replay failed, returning empty events"
                     );
+                    replay_failed = true;
                     Vec::new()
                 }
             };
@@ -217,6 +220,7 @@ impl RhoReporterCasper {
                         error = %e,
                         "System deploy replay failed, returning empty events"
                     );
+                    replay_failed = true;
                     Vec::new()
                 }
             };
@@ -230,6 +234,16 @@ impl RhoReporterCasper {
                 processed_system_deploy: system_deploy_data,
                 events,
             });
+        }
+
+        if replay_failed {
+            // A failed deploy/system-deploy replay leaves the replay space with
+            // unmatched COMM events. Calling create_checkpoint() in that state
+            // triggers an unwrap() panic deep in the replay RSpace (BugFoundError:
+            // Unused COMM event), so bail out instead of reaching it.
+            return Err(
+                "Reporting replay aborted: one or more deploys failed to replay".to_string(),
+            );
         }
 
         let checkpoint = runtime.create_checkpoint().await;
