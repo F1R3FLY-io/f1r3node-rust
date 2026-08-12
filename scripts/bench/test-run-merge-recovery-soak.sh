@@ -100,6 +100,14 @@ for _ in $(seq 1 20); do
 	sleep 0.25
 done
 test -e "$TMP/output/iteration-00001-docker/.started"
+jq -e '
+  .target_ref == "unknown"
+  and .target_sha == "unknown"
+  and (.started_at | type) == "number"
+  and .requested_seconds == 120
+  and .iterations == 1
+  and .failures == 0
+' "$TMP/output/.soak-checkpoint-state.json" >/dev/null
 for _ in $(seq 1 20); do
 	[ -s "$TMP/output/iteration-00001-docker/node-metrics-timeseries.csv" ] &&
 		grep -q 'test.validator1.*12.*1048576.*2.*2.*7' \
