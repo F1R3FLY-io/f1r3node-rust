@@ -502,6 +502,22 @@ async fn reinstated_effect_must_not_be_executed_again() {
         panic!("create must mint a block on the full frontier; got a non-Created result");
     };
 
+    // Positive purge pin: the loser's effect is settled in nodes[2]'s floor
+    // state (the floor covers its carrier — staged above), and the loser
+    // creates a number cell, so the effect probe attests it. The prepare
+    // inside `create` must therefore evict the buffer entry: floor-settled
+    // work has left recovery custody.
+    assert!(
+        !nodes[2]
+            .rejected_deploy_buffer
+            .lock()
+            .expect("buffer lock")
+            .contains_sig(&loser_sig)
+            .expect("buffer.contains_sig"),
+        "a buffer entry whose effect is settled in the floor state must be \
+         purged by the proposer's prepare"
+    );
+
     // THE RED: the loser's witness cell must hold EXACTLY ONE datum in B's
     // committed post-state. Two datums = the same signature executed twice
     // into one state (the verified [0,0] twin-initialization class).

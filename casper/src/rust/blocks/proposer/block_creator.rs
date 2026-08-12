@@ -340,6 +340,7 @@ pub async fn prepare_user_deploys(
         deploy_storage,
         rejected_deploy_buffer,
         block_store,
+        None,
         allow_recovered_deploys,
         DeployAdmissionPolicy {
             allow_ordinary: allow_ordinary_deploys,
@@ -425,6 +426,9 @@ async fn prepare_user_deploys_with_policy(
         Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>,
     >,
     block_store: &KeyValueBlockStore,
+    // The purge probe needs a runtime; fixtures pass None and the purge
+    // defers.
+    runtime_manager: Option<&RuntimeManager>,
     allow_recovered_deploys: bool,
     admission_policy: DeployAdmissionPolicy,
     floor_ctx: Option<&FloorContext>,
@@ -514,44 +518,46 @@ async fn prepare_user_deploys_with_policy(
         .map(|h| h.min(earliest_block_number))
         .unwrap_or(earliest_block_number);
 
-    // Terminal purge: a rejected-buffer entry is dropped only once its sig is
-    // canonically WON inside the FINALIZED ancestry (latest finalized
-    // disposition is a win) AND that finalized win sits strictly above every
-    // rejection visible from the current parents. A win that is merely
-    // canonical-but-unfinalized can still be orphaned, so the entry must
-    // survive until finality; symmetrically, a finalized win with a visible
-    // rejection at or above its height is not terminal — block finalization
-    // does not finalize effects, and the pending rejection can finalize and
-    // drop the win from canonical state (finalized-win blindness,
-    // finalized_win_pending_rejection_spec). The buffer is the only
-    // re-proposable copy of merge-rejected work.
-    let finalized_won_buffered: Vec<Signed<DeployData>> = if buffered_deploys.is_empty() {
-        Vec::new()
-    } else {
-        let finalized_won = interpreter_util::finalized_won_terminal_sigs(
-            block_store,
-            &casper_snapshot.last_finalized_block,
-            &parent_hashes,
-            buffer_scan_floor,
-        )?;
-        buffered_deploys
-            .iter()
-            .filter(|d| finalized_won.contains(&d.sig))
-            .cloned()
-            .collect()
+    // Terminal purge: eviction is irreversible, so it keys on the one
+    // irreversible fact — the deploy's effect present in the FLOOR block's
+    // committed post-state. Floor coverage is monotone (floor-covered
+    // effects are in every future merge base), so a purged entry can never
+    // be needed again. No node-local finality marker may evict: a win the
+    // finalizer marked final can still sit above the justification-derived
+    // floor, where a later merge can reject it, and the buffer holds the
+    // only re-proposable copy. Without floor facts (parentless shapes) or
+    // a runtime (fixtures), the purge defers — delay, never loss. A deploy
+    // that creates no number cells is invisible to the probe and is never
+    // purged here; it leaves the buffer at window close via the retain.
+    let settled_buffered: Vec<Signed<DeployData>> = match (floor_ctx, runtime_manager) {
+        (Some(ctx), Some(rm)) if !buffered_deploys.is_empty() => {
+            let mut settled = Vec::new();
+            for deploy in &buffered_deploys {
+                if ctx.effect_settled_in_floor(
+                    &casper_snapshot.dag,
+                    block_store,
+                    rm,
+                    &deploy.sig,
+                )? {
+                    settled.push(deploy.clone());
+                }
+            }
+            settled
+        }
+        _ => Vec::new(),
     };
-    if !finalized_won_buffered.is_empty() {
+    if !settled_buffered.is_empty() {
         rejected_deploy_buffer
             .lock()
             .map_err(|e| CasperError::LockError(e.to_string()))?
-            .remove(finalized_won_buffered.clone())?;
+            .remove(settled_buffered.clone())?;
         tracing::info!(
             target: "f1r3fly.casper.recovery",
-            "Purged {} rejected-buffer entr(y/ies) with finalized canonical wins before block #{}",
-            finalized_won_buffered.len(),
+            "Purged {} rejected-buffer entr(y/ies) with floor-settled effects before block #{}",
+            settled_buffered.len(),
             block_number
         );
-        for deploy in &finalized_won_buffered {
+        for deploy in &settled_buffered {
             buffered_deploys.remove(deploy);
             buffered_sigs.remove(&deploy.sig);
         }
@@ -2739,6 +2745,7 @@ pub async fn create(
             deploy_storage.clone(),
             rejected_deploy_buffer.clone(),
             block_store,
+            Some(runtime_manager),
             allow_recovered_deploys,
             admission_policy,
             floor_ctx.as_ref(),
@@ -5206,6 +5213,7 @@ mod tests {
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
+            None,
             false,
             DeployAdmissionPolicy {
                 allow_ordinary: true,
@@ -5279,6 +5287,7 @@ mod tests {
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
+            None,
             false,
             DeployAdmissionPolicy {
                 allow_ordinary: true,
@@ -5379,6 +5388,7 @@ mod tests {
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
+            None,
             false,
             DeployAdmissionPolicy {
                 allow_ordinary: true,
@@ -5491,6 +5501,7 @@ mod tests {
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
+            None,
             false,
             DeployAdmissionPolicy {
                 allow_ordinary: false,
@@ -5595,6 +5606,7 @@ mod tests {
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
+            None,
             false,
             DeployAdmissionPolicy {
                 allow_ordinary: false,
@@ -5710,6 +5722,7 @@ mod tests {
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
+            None,
             false,
             DeployAdmissionPolicy {
                 allow_ordinary: false,
@@ -5800,6 +5813,7 @@ mod tests {
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
+            None,
             false,
             DeployAdmissionPolicy {
                 allow_ordinary: false,
@@ -6245,5 +6259,83 @@ mod tests {
             .expect("rejected buffer lock")
             .contains_sig(&deploy.sig)
             .expect("contains sig"));
+    }
+
+    /// The terminal purge is irreversible, so it may key only on the one
+    /// irreversible fact — the deploy's effect present in the FLOOR block's
+    /// committed post-state. A win merely marked finalized by this node's
+    /// finalizer can still sit above the justification-derived floor, where
+    /// a later merge can reject it; evicting on that marker loses the only
+    /// re-proposable copy. Absent floor-state evidence, the entry stays.
+    #[tokio::test]
+    async fn buffer_entry_is_kept_without_floor_state_evidence_of_its_effect() {
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+            KeyValueDeployStorage::new(&mut kvm)
+                .await
+                .expect("deploy storage"),
+        ));
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 10;
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+        let buffered = construct_deploy::basic_deploy_data(95, None, Some("test".to_string()))
+            .expect("buffered deploy");
+
+        // The node-local finalizer marks the winning block finalized; the
+        // floor derivable from this snapshot never covers its effect.
+        let won_block = test_block(invalid_block_hash(0x99), validator(1), Vec::new(), 1, vec![
+            models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(
+                buffered.clone(),
+            ),
+        ]);
+        block_store
+            .put_block_message(&won_block)
+            .expect("store won block");
+        snapshot.last_finalized_block = won_block.block_hash.clone();
+
+        deploy_storage
+            .lock()
+            .add(vec![buffered.clone()])
+            .expect("seed deploy storage");
+        rejected_deploy_buffer
+            .lock()
+            .expect("rejected buffer lock")
+            .add(vec![buffered.clone()])
+            .expect("seed rejected buffer");
+
+        let _prepared = prepare_user_deploys(
+            &snapshot,
+            20,
+            buffered.data.time_stamp,
+            deploy_storage,
+            rejected_deploy_buffer.clone(),
+            &block_store,
+            true,
+            true,
+        )
+        .await
+        .expect("prepare deploys");
+
+        assert!(
+            rejected_deploy_buffer
+                .lock()
+                .expect("rejected buffer lock")
+                .contains_sig(&buffered.sig)
+                .expect("contains sig"),
+            "a buffer entry may be evicted only on floor-state evidence of \
+             its effect; a node-local finality marker is not that evidence"
+        );
     }
 }
