@@ -302,7 +302,6 @@ impl Validate {
         expiration_threshold: i32,
         max_number_of_parents: i32,
         max_parent_depth: i32,
-        depth_buffer: i32,
         block_store: &KeyValueBlockStore,
         disable_validator_progress_check: bool,
         // Per-operation derivation slot, filled at the first step that
@@ -510,7 +509,6 @@ impl Validate {
                 s,
                 max_number_of_parents,
                 max_parent_depth,
-                depth_buffer,
                 disable_validator_progress_check,
             )
         ) {
@@ -1028,7 +1026,6 @@ impl Validate {
         s: &mut CasperSnapshot,
         max_number_of_parents: i32,
         max_parent_depth: i32,
-        depth_buffer: i32,
         disable_validator_progress_check: bool,
     ) -> ValidBlockProcessing {
         // Check if block contains user deploys (non-system deploys)
@@ -1071,7 +1068,7 @@ impl Validate {
 
         // Parent-depth enforcement: symmetric to proposer-side `Estimator::filterDeepParents`.
         // Reject any block whose parents fall outside the consensus-permitted horizon
-        // (depth from highest tip > max_parent_depth + depth_buffer). An honest proposer
+        // (depth from the block's highest parent > max_parent_depth). An honest proposer
         // already drops these parents before signing; this check rejects blocks from
         // buggy or malicious proposers that would otherwise hit `UnknownRootError` on
         // joiners that don't carry pre-horizon rspace history.
@@ -1086,29 +1083,63 @@ impl Validate {
         // genesis ended up indexed (test fixtures may assign genesis a non-zero
         // block_number; production assigns 0).
         if max_parent_depth != i32::MAX {
-            let max_allowed_depth = (max_parent_depth as i64) + (depth_buffer as i64);
-            let highest_tip_height = s.dag.latest_block_number();
+            // ANCHOR: the block's OWN parent frontier, never this node's tip.
+            // The proposer drops parents more than `max_parent_depth` below the
+            // highest parent it selected (`snapshot.rs`), so anchoring the check
+            // on that same value makes proposer and validator agree by
+            // construction — filtering only ever removes LOW parents, so the max
+            // over the declared parents is the max the proposer used.
+            //
+            // Reading `latest_block_number()` here instead made a validity
+            // verdict depend on how far ahead the validating node happened to
+            // be: two nodes at different heights could reach different verdicts
+            // on the same block, and a node catching up (or joined by LFS)
+            // rejected history that was perfectly legal when it was produced.
+            // `depth_buffer` existed only to absorb that skew, and the skew it
+            // absorbed was unbounded, so it is gone with the anchor.
+            let mut parent_numbers: Vec<(BlockHash, i64)> = Vec::with_capacity(parent_hashes.len());
+            let mut frontier_known = true;
             for parent_hash in &parent_hashes {
-                if parent_hash == &genesis.block_hash {
-                    continue; // genesis exempt
+                match s.dag.lookup_unsafe(parent_hash) {
+                    Ok(meta) => parent_numbers.push((parent_hash.clone(), meta.block_number)),
+                    // A parent with no metadata leaves the frontier unknown, and
+                    // an anchor derived from a partial parent set could reject a
+                    // legal block. Skip the check and let the dependency gate
+                    // handle the missing parent.
+                    Err(_) => {
+                        frontier_known = false;
+                        break;
+                    }
                 }
-                let parent_meta = match s.dag.lookup_unsafe(parent_hash) {
-                    Ok(meta) => meta,
-                    Err(_) => continue, // missing-parent handled by dependency gate, not here
-                };
-                let depth = highest_tip_height - parent_meta.block_number;
-                if depth > max_allowed_depth {
-                    let message = format!(
-                        "parent {} at block_number {} is at depth {} from highest tip {} \
-                         (exceeds max_parent_depth + depth_buffer = {})",
-                        PrettyPrinter::build_string_bytes(parent_hash),
-                        parent_meta.block_number,
-                        depth,
-                        highest_tip_height,
-                        max_allowed_depth
-                    );
-                    tracing::warn!("{}", Self::ignore(b, &message));
-                    return Either::Left(BlockError::Invalid(InvalidBlock::InvalidParents));
+            }
+            if frontier_known {
+                // Stated as what the rule actually is — no two of this block's
+                // parents may spread more than `max_parent_depth` apart — rather
+                // than as a comparison against a derived maximum. There is then
+                // no "highest parent" to be absent, so no default to invent: an
+                // empty parent set simply has no pair that violates it, which is
+                // the right answer. The pass is quadratic in the parent count,
+                // which `max_number_of_parents` has already bounded above.
+                for (deep_hash, deep_number) in &parent_numbers {
+                    if deep_hash == &genesis.block_hash {
+                        continue; // genesis exempt
+                    }
+                    for (_, other_number) in &parent_numbers {
+                        let spread = *other_number - *deep_number;
+                        if spread > max_parent_depth as i64 {
+                            let message = format!(
+                                "parent {} at block_number {} is {} below the block's parent \
+                                 at block_number {} (exceeds max_parent_depth = {})",
+                                PrettyPrinter::build_string_bytes(deep_hash),
+                                deep_number,
+                                spread,
+                                other_number,
+                                max_parent_depth
+                            );
+                            tracing::warn!("{}", Self::ignore(b, &message));
+                            return Either::Left(BlockError::Invalid(InvalidBlock::InvalidParents));
+                        }
+                    }
                 }
             }
         }
@@ -1144,12 +1175,41 @@ impl Validate {
                 // This breaks the deadlock after genesis ceremony when all validators are at genesis
                 let is_genesis = prev_block_meta.parents.is_empty();
 
-                // BFS traverse to get ancestor closure of previous block
-                // Stop traversal at finalized blocks to prevent unbounded traversal on long chains
+                // BFS the ancestor closure of the previous block, bounded by
+                // HEIGHT rather than by finality.
+                //
+                // The bound exists only to stop the traversal running the length
+                // of the chain — the original stopped at finalized blocks for
+                // that reason alone, and finality carries no meaning in this
+                // rule. But `is_finalized` is node-local state, so it made a
+                // VALIDITY verdict depend on how much the validating node had
+                // finalized: a node holding fewer markers walks deeper, sees a
+                // larger closure, finds fewer parents "new", and can reject a
+                // block its peers accepted. The node that is behind is the strict
+                // one, so catching up rejects legal history.
+                //
+                // The lowest declared parent is the exact bound. Ancestry is
+                // strictly height-decreasing, so every path from the previous
+                // block down to a parent stays at or above that parent's height;
+                // nothing below the lowest parent can BE a parent, and no path to
+                // a parent passes through it. Truncating there is therefore
+                // lossless, not merely conservative. Seeded from the block's own
+                // number — every parent is below it — so there is no empty case
+                // and no default.
+                let mut lowest_parent_height = b.body.state.block_number;
+                for parent_hash in &parent_hashes {
+                    if let Ok(Some(meta)) = s.dag.lookup(parent_hash) {
+                        if meta.block_number < lowest_parent_height {
+                            lowest_parent_height = meta.block_number;
+                        }
+                    }
+                }
                 let ancestor_hashes: Vec<BlockHash> =
                     dag_ops::bf_traverse(vec![prev_block_hash.clone()], |hash| {
                         match s.dag.lookup(hash) {
-                            Ok(Some(meta)) if !s.dag.is_finalized(hash) => meta.parents.clone(),
+                            Ok(Some(meta)) if meta.block_number >= lowest_parent_height => {
+                                meta.parents.clone()
+                            }
                             _ => vec![],
                         }
                     });

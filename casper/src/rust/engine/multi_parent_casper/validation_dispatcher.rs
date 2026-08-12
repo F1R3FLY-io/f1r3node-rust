@@ -91,7 +91,6 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
                 this.casper_shard_conf.deploy_lifespan as i32,
                 this.casper_shard_conf.max_number_of_parents,
                 this.casper_shard_conf.max_parent_depth,
-                this.casper_shard_conf.mergeable_channels_gc_depth_buffer,
                 &this.block_store,
                 this.casper_shard_conf.disable_validator_progress_check,
                 &mut floor_ctx,
