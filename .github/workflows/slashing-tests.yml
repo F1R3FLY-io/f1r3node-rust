@@ -330,6 +330,8 @@ jobs:
         # rely on the .mutants.toml include-list to scope to the
         # slashing modules only.
         env:
+          # The larger runner provides memory headroom for cargo-mutants;
+          # keep concurrency at 2 to bound peak memory during workspace builds.
           CARGO_BUILD_JOBS: 2
         run: cargo mutants --in-place --no-shuffle --timeout 120 --baseline=skip
 
