@@ -12,6 +12,7 @@ pub mod merge_window_spec;
 pub mod multi_validator_recovery_spec;
 pub mod netted_noop_merge_spec;
 pub mod orphan_reinclusion_spec;
+pub mod populate_cache_shadow_spec;
 pub mod recovery_cycle_spec;
 pub mod recovery_repeat_deploy_misfire_spec;
 pub mod retry_gate_spec;

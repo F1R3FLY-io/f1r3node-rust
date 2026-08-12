@@ -98,6 +98,12 @@ pub struct ParentsPostStateCacheKey {
     // sharing a cache entry.
     pub sorted_latest_messages: Vec<(Validator, BlockHash)>,
     pub disable_late_block_filtering: bool,
+    // Whether the computation ran with a rejected-deploy buffer attached.
+    // Buffer population is a side effect of the merge, not part of the
+    // cached value — a bufferless computation (exploratory deploy) must
+    // never satisfy a lookup from the create/validate path, or that
+    // path's buffer populate is silently skipped.
+    pub buffer_populated: bool,
 }
 
 /// The merged pre-state a block builds on, with every fact the merge

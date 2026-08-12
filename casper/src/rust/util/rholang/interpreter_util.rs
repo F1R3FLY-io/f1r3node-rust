@@ -1123,6 +1123,7 @@ pub async fn compute_parents_post_state(
                     .map(|(v, h)| (v.clone(), h.clone()))
                     .collect(),
                 disable_late_block_filtering,
+                buffer_populated: rejected_deploy_buffer.is_some(),
             };
             if let Some(cached) = runtime_manager.get_cached_parents_post_state(&cache_key) {
                 tracing::debug!(
