@@ -167,7 +167,7 @@ env:
   # by ancestry (a0c6fba6 is an ancestor, so the 48GB default and
   # RUNNER_LABELS override carry forward) and by content at the SHA
   # (state.env AMD64_MEM_GB=48; resource_monitor.py emits the per-core CSV).
-  SYSTEM_INTEGRATION_REF: 483d7d4f1aa51d87c3eb3064531b630a36257639
+  SYSTEM_INTEGRATION_REF: fe91755ed16774a5f56f33da9712f7df1f52ca9d
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
