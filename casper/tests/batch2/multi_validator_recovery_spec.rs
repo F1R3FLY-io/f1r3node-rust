@@ -210,7 +210,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
         Some(shard_name.clone()),
         None,
     );
-    let (_, post_state_r0, pd_r0, _, sys_pd_r0, bonds_r0) = compute_deploys_checkpoint(
+    let checkpoint_r0 = compute_deploys_checkpoint(
         &mut block_store,
         vec![genesis_block.clone()],
         proto_util::deploys(&r0_raw)
@@ -226,7 +226,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
     )
     .await
     .expect("compute R0 checkpoint");
-    for pd in &pd_r0 {
+    for pd in &checkpoint_r0.deploys {
         assert!(
             !pd.is_failed,
             "deploy in R0 must execute cleanly (sig {}): {:?}",
@@ -235,10 +235,10 @@ for(@_v <- @"multi-validator-shared") { Nil }
         );
     }
     let mut r0 = r0_raw;
-    r0.body.state.post_state_hash = post_state_r0.clone();
-    r0.body.deploys = pd_r0;
-    r0.body.system_deploys = sys_pd_r0;
-    r0.body.state.bonds = bonds_r0;
+    r0.body.state.post_state_hash = checkpoint_r0.post_state_hash.clone();
+    r0.body.deploys = checkpoint_r0.deploys;
+    r0.body.system_deploys = checkpoint_r0.system_deploys;
+    r0.body.state.bonds = checkpoint_r0.bonds;
     block_store.put_block_message(&r0).expect("store R0");
     dag_storage.insert(&r0, InsertMode::Normal).expect("dag R0");
 
@@ -262,7 +262,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
         Some(shard_name.clone()),
         None,
     );
-    let (_, post_state_r1, pd_r1, _, sys_pd_r1, bonds_r1) = compute_deploys_checkpoint(
+    let checkpoint_r1 = compute_deploys_checkpoint(
         &mut block_store,
         vec![genesis_block.clone()],
         proto_util::deploys(&r1_raw)
@@ -278,7 +278,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
     )
     .await
     .expect("compute R1 checkpoint");
-    for pd in &pd_r1 {
+    for pd in &checkpoint_r1.deploys {
         assert!(
             !pd.is_failed,
             "deploy in R1 must execute cleanly (sig {}): {:?}",
@@ -287,10 +287,10 @@ for(@_v <- @"multi-validator-shared") { Nil }
         );
     }
     let mut r1 = r1_raw;
-    r1.body.state.post_state_hash = post_state_r1.clone();
-    r1.body.deploys = pd_r1;
-    r1.body.system_deploys = sys_pd_r1;
-    r1.body.state.bonds = bonds_r1;
+    r1.body.state.post_state_hash = checkpoint_r1.post_state_hash.clone();
+    r1.body.deploys = checkpoint_r1.deploys;
+    r1.body.system_deploys = checkpoint_r1.system_deploys;
+    r1.body.state.bonds = checkpoint_r1.bonds;
     block_store.put_block_message(&r1).expect("store R1");
     dag_storage.insert(&r1, InsertMode::Normal).expect("dag R1");
 
@@ -338,7 +338,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
     let rejected_set: HashSet<prost::bytes::Bytes> = merged
         .rejected_user
         .iter()
-        .map(|(sig, _)| sig.clone())
+        .map(|record| record.sig.clone())
         .collect();
 
     // Dedup must keep the shared recovered sig out of the rejected
@@ -352,10 +352,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
         merged
             .rejected_user
             .iter()
-            .map(|(sig, _)| sig.clone())
-            .collect::<Vec<_>>()
-            .iter()
-            .map(|s| hex::encode(&s[..std::cmp::min(8, s.len())]))
+            .map(|record| hex::encode(&record.sig[..std::cmp::min(8, record.sig.len())]))
             .collect::<Vec<_>>()
     );
 
@@ -380,10 +377,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
         merged
             .rejected_user
             .iter()
-            .map(|(sig, _)| sig.clone())
-            .collect::<Vec<_>>()
-            .iter()
-            .map(|s| hex::encode(&s[..std::cmp::min(8, s.len())]))
+            .map(|record| hex::encode(&record.sig[..std::cmp::min(8, record.sig.len())]))
             .collect::<Vec<_>>()
     );
 }

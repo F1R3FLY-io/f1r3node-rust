@@ -131,9 +131,12 @@ impl KeyValueBlockStore {
         Ok(has_any)
     }
 
-    /// Fetch rejected deploy signatures for a block without decoding a full BlockMessage.
-    /// Returns the `body.rejected_deploys[*].sig` values. Most blocks have none; only
-    /// multi-parent merge blocks that dropped a conflicting deploy populate this list.
+    /// Fetch KEPT rejected deploy signatures for a block without decoding a
+    /// full BlockMessage. Returns the `body.rejected_deploys[*].sig` values
+    /// of non-duplicate records only: a duplicate-flagged record discarded a
+    /// redundant copy and does not dispute the sig's standing win, so
+    /// disposition readers skip it. Most blocks have none; only multi-parent
+    /// merge blocks that dropped a conflicting deploy populate this list.
     pub fn rejected_deploy_sigs(
         &self,
         block_hash: &BlockHash,
@@ -144,7 +147,12 @@ impl KeyValueBlockStore {
             None => return Ok(None),
         };
         let body = Self::decode_block_deploy_sigs(&bytes)?;
-        let sigs = body.rejected_deploys.into_iter().map(|r| r.sig).collect();
+        let sigs = body
+            .rejected_deploys
+            .into_iter()
+            .filter(|r| !r.duplicate)
+            .map(|r| r.sig)
+            .collect();
         Ok(Some(sigs))
     }
 
@@ -429,6 +437,8 @@ struct BlockDeploySigsDeploy {
 struct BlockDeploySigsRejectedDeploy {
     #[prost(bytes = "vec", tag = "1")]
     sig: Vec<u8>,
+    #[prost(bool, tag = "2")]
+    duplicate: bool,
 }
 
 // See block-storage/src/test/scala/coop/rchain/blockstorage/KeyValueBlockStoreSpec.scala

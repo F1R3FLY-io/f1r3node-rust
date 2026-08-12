@@ -1211,6 +1211,8 @@ mod tests {
         );
         rejected.body.rejected_deploys = vec![RejectedDeploy {
             sig: prost::bytes::Bytes::from_static(b"sig"),
+            duplicate: false,
+            carrier: prost::bytes::Bytes::new(),
         }];
 
         block_store

@@ -1,3 +1,4 @@
+pub mod carrier_record_spec;
 pub mod clique_oracle_test;
 pub mod dedup_orphan_recovery_spec;
 pub mod estimator_test;

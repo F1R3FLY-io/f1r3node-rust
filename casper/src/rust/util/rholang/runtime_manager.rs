@@ -109,9 +109,10 @@ pub struct ParentsPostStateCacheKey {
 #[derive(Clone, Debug)]
 pub struct MergedPreState {
     pub state: StateHash,
-    /// Rejected user deploys as (sig, carrier) — the carrier is the source
-    /// block whose copy the merge adjudicated.
-    pub rejected_user: Vec<(prost::bytes::Bytes, BlockHash)>,
+    /// Rejected user deploys as full records — each names the carrier it
+    /// adjudicated and carries the formation-time duplicate flag. These
+    /// travel to the block body as-is; the record IS the consensus content.
+    pub rejected_user: Vec<models::rust::casper::protocol::casper_message::RejectedDeploy>,
     pub rejected_slashes: Vec<crate::rust::merging::rejected_slash::RejectedSlash>,
     /// User sigs whose chains the merge APPLIED from scope: their effects
     /// are in `state`, so executing any of them on top would double-apply.

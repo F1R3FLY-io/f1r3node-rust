@@ -6,6 +6,7 @@ use std::sync::Arc;
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use models::rhoapi::ListParWithRandom;
 use models::rust::block_hash::BlockHash;
+use models::rust::casper::protocol::casper_message::RejectedDeploy;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
@@ -572,7 +573,11 @@ pub fn merge(
 ) -> Result<
     (
         Blake2b256Hash,
-        Vec<(Bytes, BlockHash)>,
+        // Rejected user deploys as full records: each names the CARRIER it
+        // adjudicated (the rejected chain's source block) and carries the
+        // formation-time duplicate flag. The record is consensus content —
+        // it travels to the block body as-is.
+        Vec<RejectedDeploy>,
         Vec<(Bytes, BlockHash)>,
         // User sigs whose chains this merge APPLIED from scope: their
         // effects are in the returned state, so none of them may also be
@@ -1572,11 +1577,33 @@ pub fn merge(
         })
         .collect();
 
-    let mut rejected_user_deploys: Vec<(Bytes, BlockHash)> = all_pairs
-        .iter()
-        .filter(|(id, _)| !is_system_deploy_id(id))
-        .cloned()
-        .collect();
+    // Duplicate flag: the record does not dispute the sig's standing win
+    // when the effect is present in THIS merge's own post-state — either a
+    // kept chain in the same merge carries a copy, or the effect is
+    // settled in the base. Both are frozen, validator-recomputable facts
+    // of this merge; readers discard duplicate-flagged records from the
+    // disposition ordering.
+    let mut duplicate_of = |sig: &Bytes| -> Result<bool, CasperError> {
+        if applied_user_sigs.contains(sig) || settled_sigs.contains(sig) {
+            return Ok(true);
+        }
+        if settled_checked.insert(sig.clone()) && sig_settled_in_base(sig)? {
+            settled_sigs.insert(sig.clone());
+            return Ok(true);
+        }
+        Ok(false)
+    };
+
+    let mut rejected_user_deploys: Vec<RejectedDeploy> = Vec::new();
+    for (id, src) in &all_pairs {
+        if !is_system_deploy_id(id) {
+            rejected_user_deploys.push(RejectedDeploy {
+                sig: id.clone(),
+                duplicate: duplicate_of(id)?,
+                carrier: src.clone(),
+            });
+        }
+    }
     let mut rejected_slashes: Vec<(Bytes, BlockHash)> = all_pairs
         .into_iter()
         .filter(|(id, _)| is_slash_deploy_id(id))
@@ -1589,11 +1616,16 @@ pub fn merge(
     if !collateral_lost_pairs.is_empty() {
         let existing_ids: HashSet<Bytes> = rejected_user_deploys
             .iter()
-            .map(|(id, _)| id.clone())
+            .map(|record| record.sig.clone())
             .collect();
-        for pair in collateral_lost_pairs {
-            if !existing_ids.contains(&pair.0) {
-                rejected_user_deploys.push(pair);
+        for (id, src) in collateral_lost_pairs {
+            if !existing_ids.contains(&id) {
+                let duplicate = duplicate_of(&id)?;
+                rejected_user_deploys.push(RejectedDeploy {
+                    sig: id,
+                    duplicate,
+                    carrier: src,
+                });
             }
         }
     }
@@ -1617,7 +1649,13 @@ pub fn merge(
     if !rejected_user_deploys.is_empty() {
         let rejected_str: Vec<_> = rejected_user_deploys
             .iter()
-            .map(|(sig, _)| hex::encode(&sig[..std::cmp::min(8, sig.len())]))
+            .map(|record| {
+                format!(
+                    "{}{}",
+                    hex::encode(&record.sig[..std::cmp::min(8, record.sig.len())]),
+                    if record.duplicate { "(dup)" } else { "" }
+                )
+            })
             .collect();
         tracing::info!(
             "DagMerger rejected {} user deploys: {}",

@@ -118,25 +118,24 @@ async fn step_block(
         .map(|d| d.deploy)
         .collect::<Vec<_>>();
 
-    let (_, post_state_hash, processed_deploys, _, processed_system_deploys, bonds) =
-        compute_deploys_checkpoint(
-            block_store,
-            parents,
-            deploys,
-            Vec::<SystemDeployEnum>::new(),
-            &snapshot,
-            runtime_manager,
-            BlockData::from_block(block),
-            HashMap::new(),
-            None,
-        )
-        .await?;
+    let checkpoint = compute_deploys_checkpoint(
+        block_store,
+        parents,
+        deploys,
+        Vec::<SystemDeployEnum>::new(),
+        &snapshot,
+        runtime_manager,
+        BlockData::from_block(block),
+        HashMap::new(),
+        None,
+    )
+    .await?;
 
     let mut updated = block.clone();
-    updated.body.state.post_state_hash = post_state_hash;
-    updated.body.deploys = processed_deploys;
-    updated.body.system_deploys = processed_system_deploys;
-    updated.body.state.bonds = bonds;
+    updated.body.state.post_state_hash = checkpoint.post_state_hash;
+    updated.body.deploys = checkpoint.deploys;
+    updated.body.system_deploys = checkpoint.system_deploys;
+    updated.body.state.bonds = checkpoint.bonds;
 
     block_store
         .put_block_message(&updated)

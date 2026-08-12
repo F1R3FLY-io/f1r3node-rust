@@ -1923,7 +1923,7 @@ async fn bridge_query_survives_multi_parent_merge() {
         .map(|d| d.deploy)
         .collect();
     let snapshot_a = mk_snapshot(&genesis_hash);
-    let (_, post_state_a, pd_a, _, sys_pd_a, bonds_a) = compute_deploys_checkpoint(
+    let checkpoint_a = compute_deploys_checkpoint(
         &mut block_store,
         parents_a,
         deploys_a,
@@ -1938,16 +1938,16 @@ async fn bridge_query_survives_multi_parent_merge() {
     .expect("compute block A");
 
     assert!(
-        !pd_a[0].is_failed,
+        !checkpoint_a.deploys[0].is_failed,
         "Bridge deploy failed: {:?}",
-        pd_a[0].system_deploy_error
+        checkpoint_a.deploys[0].system_deploy_error
     );
 
     let mut block_a = block_a_raw;
-    block_a.body.state.post_state_hash = post_state_a.clone();
-    block_a.body.deploys = pd_a.clone();
-    block_a.body.system_deploys = sys_pd_a;
-    block_a.body.state.bonds = bonds_a;
+    block_a.body.state.post_state_hash = checkpoint_a.post_state_hash.clone();
+    block_a.body.deploys = checkpoint_a.deploys.clone();
+    block_a.body.system_deploys = checkpoint_a.system_deploys;
+    block_a.body.state.bonds = checkpoint_a.bonds;
     block_store.put_block_message(&block_a).expect("store A");
     dag_storage
         .insert(
@@ -1959,8 +1959,8 @@ async fn bridge_query_survives_multi_parent_merge() {
     // Verify bridge wrote data and extract queryUri
     let bridge_data = rm
         .get_data(
-            post_state_a.clone(),
-            &make_deploy_id_par(&pd_a[0].deploy.sig),
+            checkpoint_a.post_state_hash.clone(),
+            &make_deploy_id_par(&checkpoint_a.deploys[0].deploy.sig),
         )
         .await
         .unwrap();
@@ -2008,7 +2008,7 @@ async fn bridge_query_survives_multi_parent_merge() {
 
     let parents_b = vec![genesis_block.clone()];
     let snapshot_b = mk_snapshot(&genesis_hash);
-    let (_, post_state_b, pd_b, _, sys_pd_b, bonds_b) = compute_deploys_checkpoint(
+    let checkpoint_b = compute_deploys_checkpoint(
         &mut block_store,
         parents_b,
         Vec::new(),
@@ -2023,10 +2023,10 @@ async fn bridge_query_survives_multi_parent_merge() {
     .expect("compute block B");
 
     let mut block_b = block_b_raw;
-    block_b.body.state.post_state_hash = post_state_b.clone();
-    block_b.body.deploys = pd_b;
-    block_b.body.system_deploys = sys_pd_b;
-    block_b.body.state.bonds = bonds_b;
+    block_b.body.state.post_state_hash = checkpoint_b.post_state_hash.clone();
+    block_b.body.deploys = checkpoint_b.deploys;
+    block_b.body.system_deploys = checkpoint_b.system_deploys;
+    block_b.body.state.bonds = checkpoint_b.bonds;
     block_store.put_block_message(&block_b).expect("store B");
     dag_storage
         .insert(
@@ -2061,7 +2061,7 @@ async fn bridge_query_survives_multi_parent_merge() {
         merged
             .rejected_user
             .iter()
-            .map(|(s, _)| hex::encode(&s[..8.min(s.len())]))
+            .map(|record| hex::encode(&record.sig[..8.min(record.sig.len())]))
             .collect::<Vec<_>>()
     );
     // Non-slash merge scenario must surface an empty rejected_slashes list so
@@ -2116,7 +2116,7 @@ in {{
         .map(|d| d.deploy)
         .collect();
     let snapshot_q = mk_snapshot(&genesis_hash);
-    let (_, post_state_q, pd_q, _, _, _) = compute_deploys_checkpoint(
+    let checkpoint_q = compute_deploys_checkpoint(
         &mut block_store,
         parents_q,
         deploys_q,
@@ -2131,13 +2131,16 @@ in {{
     .expect("compute query block");
 
     assert!(
-        !pd_q[0].is_failed,
+        !checkpoint_q.deploys[0].is_failed,
         "Query deploy failed: {:?}",
-        pd_q[0].system_deploy_error
+        checkpoint_q.deploys[0].system_deploy_error
     );
 
     let query_data = rm
-        .get_data(post_state_q, &make_deploy_id_par(&pd_q[0].deploy.sig))
+        .get_data(
+            checkpoint_q.post_state_hash,
+            &make_deploy_id_par(&checkpoint_q.deploys[0].deploy.sig),
+        )
         .await
         .unwrap();
 
@@ -2297,7 +2300,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         .map(|d| d.deploy)
         .collect();
     let snapshot_a = mk_snapshot(&genesis_hash);
-    let (_, post_state_a, pd_a, _, sys_pd_a, bonds_a) = compute_deploys_checkpoint(
+    let checkpoint_a = compute_deploys_checkpoint(
         &mut block_store,
         parents_a,
         deploys_a,
@@ -2312,21 +2315,21 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     .expect("compute block A");
 
     assert!(
-        !pd_a[0].is_failed,
+        !checkpoint_a.deploys[0].is_failed,
         "Contract A deploy failed: {:?}",
-        pd_a[0].system_deploy_error
+        checkpoint_a.deploys[0].system_deploy_error
     );
     tracing::info!(
         "Block A: cost={}, events={}",
-        pd_a[0].cost.cost,
-        pd_a[0].deploy_log.len()
+        checkpoint_a.deploys[0].cost.cost,
+        checkpoint_a.deploys[0].deploy_log.len()
     );
 
     let mut block_a = block_a_raw;
-    block_a.body.state.post_state_hash = post_state_a.clone();
-    block_a.body.deploys = pd_a.clone();
-    block_a.body.system_deploys = sys_pd_a;
-    block_a.body.state.bonds = bonds_a;
+    block_a.body.state.post_state_hash = checkpoint_a.post_state_hash.clone();
+    block_a.body.deploys = checkpoint_a.deploys.clone();
+    block_a.body.system_deploys = checkpoint_a.system_deploys;
+    block_a.body.state.bonds = checkpoint_a.bonds;
     block_store.put_block_message(&block_a).expect("store A");
     dag_storage
         .insert(&block_a, InsertMode::Normal)
@@ -2360,7 +2363,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         .map(|d| d.deploy)
         .collect();
     let snapshot_b = mk_snapshot(&genesis_hash);
-    let (_, post_state_b, pd_b, _, sys_pd_b, bonds_b) = compute_deploys_checkpoint(
+    let checkpoint_b = compute_deploys_checkpoint(
         &mut block_store,
         parents_b,
         deploys_b,
@@ -2375,21 +2378,21 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     .expect("compute block B");
 
     assert!(
-        !pd_b[0].is_failed,
+        !checkpoint_b.deploys[0].is_failed,
         "Contract B deploy failed: {:?}",
-        pd_b[0].system_deploy_error
+        checkpoint_b.deploys[0].system_deploy_error
     );
     tracing::info!(
         "Block B: cost={}, events={}",
-        pd_b[0].cost.cost,
-        pd_b[0].deploy_log.len()
+        checkpoint_b.deploys[0].cost.cost,
+        checkpoint_b.deploys[0].deploy_log.len()
     );
 
     let mut block_b = block_b_raw;
-    block_b.body.state.post_state_hash = post_state_b.clone();
-    block_b.body.deploys = pd_b.clone();
-    block_b.body.system_deploys = sys_pd_b;
-    block_b.body.state.bonds = bonds_b;
+    block_b.body.state.post_state_hash = checkpoint_b.post_state_hash.clone();
+    block_b.body.deploys = checkpoint_b.deploys.clone();
+    block_b.body.system_deploys = checkpoint_b.system_deploys;
+    block_b.body.state.bonds = checkpoint_b.bonds;
     block_store.put_block_message(&block_b).expect("store B");
     dag_storage
         .insert(&block_b, InsertMode::Normal)
@@ -2407,13 +2410,13 @@ async fn concurrent_registry_inserts_should_not_conflict() {
             );
 
         let eli_a = create_event_log_index(
-            &pd_a[0].deploy_log,
+            &checkpoint_a.deploys[0].deploy_log,
             history_repo.clone(),
             &genesis_hash_b256,
             std::collections::BTreeMap::new(),
         );
         let eli_b = create_event_log_index(
-            &pd_b[0].deploy_log,
+            &checkpoint_b.deploys[0].deploy_log,
             history_repo.clone(),
             &genesis_hash_b256,
             std::collections::BTreeMap::new(),
@@ -2465,9 +2468,9 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         // Search deploy A's event log for COMMs involving racing channels
         tracing::info!(
             "Searching deploy A events ({} total) for racing channels...",
-            pd_a[0].deploy_log.len()
+            checkpoint_a.deploys[0].deploy_log.len()
         );
-        for (idx, event) in pd_a[0].deploy_log.iter().enumerate() {
+        for (idx, event) in checkpoint_a.deploys[0].deploy_log.iter().enumerate() {
             use models::rust::casper::protocol::casper_message::Event as CasperEvent;
             match event {
                 CasperEvent::Comm(comm) => {
@@ -2581,10 +2584,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         let rejected_sigs: Vec<String> = merged
             .rejected_user
             .iter()
-            .map(|(s, _)| s.clone())
-            .collect::<Vec<_>>()
-            .iter()
-            .map(|d| hex::encode(&d[..std::cmp::min(8, d.len())]))
+            .map(|record| hex::encode(&record.sig[..std::cmp::min(8, record.sig.len())]))
             .collect();
         tracing::warn!(
             "CONFLICT DETECTED: {} deploys rejected: {:?}",
@@ -2593,8 +2593,8 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         );
 
         // Identify which deploy was rejected
-        let a_sig = hex::encode(&pd_a[0].deploy.sig[..8]);
-        let b_sig = hex::encode(&pd_b[0].deploy.sig[..8]);
+        let a_sig = hex::encode(&checkpoint_a.deploys[0].deploy.sig[..8]);
+        let b_sig = hex::encode(&checkpoint_b.deploys[0].deploy.sig[..8]);
         let a_rejected = rejected_sigs.contains(&a_sig);
         let b_rejected = rejected_sigs.contains(&b_sig);
         tracing::warn!(
@@ -2638,14 +2638,14 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     let data_a = rm
         .get_data(
             merged.state.clone(),
-            &make_deploy_id_par(&pd_a[0].deploy.sig),
+            &make_deploy_id_par(&checkpoint_a.deploys[0].deploy.sig),
         )
         .await
         .unwrap();
     let data_b = rm
         .get_data(
             merged.state.clone(),
-            &make_deploy_id_par(&pd_b[0].deploy.sig),
+            &make_deploy_id_par(&checkpoint_b.deploys[0].deploy.sig),
         )
         .await
         .unwrap();
@@ -3068,7 +3068,7 @@ new deployId(`rho:system:deployId`) in {
         Some(shard_name.clone()),
         None,
     );
-    let (_, post_state_a, pd_a, _, sys_pd_a, bonds_a) = compute_deploys_checkpoint(
+    let checkpoint_a = compute_deploys_checkpoint(
         &mut block_store,
         vec![genesis_block.clone()],
         proto_util::deploys(&block_a_raw)
@@ -3085,15 +3085,15 @@ new deployId(`rho:system:deployId`) in {
     .await
     .expect("compute block A");
     assert!(
-        !pd_a[0].is_failed,
+        !checkpoint_a.deploys[0].is_failed,
         "Bridge A failed: {:?}",
-        pd_a[0].system_deploy_error
+        checkpoint_a.deploys[0].system_deploy_error
     );
     let mut block_a = block_a_raw;
-    block_a.body.state.post_state_hash = post_state_a.clone();
-    block_a.body.deploys = pd_a.clone();
-    block_a.body.system_deploys = sys_pd_a;
-    block_a.body.state.bonds = bonds_a;
+    block_a.body.state.post_state_hash = checkpoint_a.post_state_hash.clone();
+    block_a.body.deploys = checkpoint_a.deploys.clone();
+    block_a.body.system_deploys = checkpoint_a.system_deploys;
+    block_a.body.state.bonds = checkpoint_a.bonds;
     block_store.put_block_message(&block_a).expect("store A");
     dag_storage
         .insert(&block_a, InsertMode::Normal)
@@ -3125,7 +3125,7 @@ new deployId(`rho:system:deployId`) in {
         Some(shard_name.clone()),
         None,
     );
-    let (_, post_state_b, pd_b, _, sys_pd_b, bonds_b) = compute_deploys_checkpoint(
+    let checkpoint_b = compute_deploys_checkpoint(
         &mut block_store,
         vec![genesis_block.clone()],
         proto_util::deploys(&block_b_raw)
@@ -3142,15 +3142,15 @@ new deployId(`rho:system:deployId`) in {
     .await
     .expect("compute block B");
     assert!(
-        !pd_b[0].is_failed,
+        !checkpoint_b.deploys[0].is_failed,
         "Bridge B failed: {:?}",
-        pd_b[0].system_deploy_error
+        checkpoint_b.deploys[0].system_deploy_error
     );
     let mut block_b = block_b_raw;
-    block_b.body.state.post_state_hash = post_state_b.clone();
-    block_b.body.deploys = pd_b.clone();
-    block_b.body.system_deploys = sys_pd_b;
-    block_b.body.state.bonds = bonds_b;
+    block_b.body.state.post_state_hash = checkpoint_b.post_state_hash.clone();
+    block_b.body.deploys = checkpoint_b.deploys.clone();
+    block_b.body.system_deploys = checkpoint_b.system_deploys;
+    block_b.body.state.bonds = checkpoint_b.bonds;
     block_store.put_block_message(&block_b).expect("store B");
     dag_storage
         .insert(&block_b, InsertMode::Normal)
@@ -3169,7 +3169,7 @@ new deployId(`rho:system:deployId`) in {
     let block_c_raw = block_implicits::get_random_block(
         Some(2),
         Some(3),
-        Some(post_state_a.clone()),
+        Some(checkpoint_a.post_state_hash.clone()),
         Some(StateHash::default()),
         Some(validator.clone()),
         Some(1),
@@ -3182,7 +3182,7 @@ new deployId(`rho:system:deployId`) in {
         Some(shard_name.clone()),
         None,
     );
-    let (_, post_state_c, pd_c, _, sys_pd_c, bonds_c) = compute_deploys_checkpoint(
+    let checkpoint_c = compute_deploys_checkpoint(
         &mut block_store,
         vec![block_a.clone()],
         proto_util::deploys(&block_c_raw)
@@ -3199,15 +3199,15 @@ new deployId(`rho:system:deployId`) in {
     .await
     .expect("compute block C");
     assert!(
-        !pd_c[0].is_failed,
+        !checkpoint_c.deploys[0].is_failed,
         "Trivial C failed: {:?}",
-        pd_c[0].system_deploy_error
+        checkpoint_c.deploys[0].system_deploy_error
     );
     let mut block_c = block_c_raw;
-    block_c.body.state.post_state_hash = post_state_c.clone();
-    block_c.body.deploys = pd_c.clone();
-    block_c.body.system_deploys = sys_pd_c;
-    block_c.body.state.bonds = bonds_c;
+    block_c.body.state.post_state_hash = checkpoint_c.post_state_hash.clone();
+    block_c.body.deploys = checkpoint_c.deploys.clone();
+    block_c.body.system_deploys = checkpoint_c.system_deploys;
+    block_c.body.state.bonds = checkpoint_c.bonds;
     block_store.put_block_message(&block_c).expect("store C");
     dag_storage
         .insert(&block_c, InsertMode::Normal)
@@ -3220,7 +3220,7 @@ new deployId(`rho:system:deployId`) in {
     let block_d_raw = block_implicits::get_random_block(
         Some(2),
         Some(4),
-        Some(post_state_b.clone()),
+        Some(checkpoint_b.post_state_hash.clone()),
         Some(StateHash::default()),
         Some(validator.clone()),
         Some(1),
@@ -3233,7 +3233,7 @@ new deployId(`rho:system:deployId`) in {
         Some(shard_name.clone()),
         None,
     );
-    let (_, post_state_d, pd_d, _, sys_pd_d, bonds_d) = compute_deploys_checkpoint(
+    let checkpoint_d = compute_deploys_checkpoint(
         &mut block_store,
         vec![block_b.clone()],
         proto_util::deploys(&block_d_raw)
@@ -3250,15 +3250,15 @@ new deployId(`rho:system:deployId`) in {
     .await
     .expect("compute block D");
     assert!(
-        !pd_d[0].is_failed,
+        !checkpoint_d.deploys[0].is_failed,
         "Trivial D failed: {:?}",
-        pd_d[0].system_deploy_error
+        checkpoint_d.deploys[0].system_deploy_error
     );
     let mut block_d = block_d_raw;
-    block_d.body.state.post_state_hash = post_state_d.clone();
-    block_d.body.deploys = pd_d.clone();
-    block_d.body.system_deploys = sys_pd_d;
-    block_d.body.state.bonds = bonds_d;
+    block_d.body.state.post_state_hash = checkpoint_d.post_state_hash.clone();
+    block_d.body.deploys = checkpoint_d.deploys.clone();
+    block_d.body.system_deploys = checkpoint_d.system_deploys;
+    block_d.body.state.bonds = checkpoint_d.bonds;
     block_store.put_block_message(&block_d).expect("store D");
     dag_storage
         .insert(&block_d, InsertMode::Normal)
@@ -3287,12 +3287,12 @@ new deployId(`rho:system:deployId`) in {
     let rejected_set: HashSet<prost::bytes::Bytes> = merged
         .rejected_user
         .iter()
-        .map(|(s, _)| s.clone())
+        .map(|record| record.sig.clone())
         .collect();
-    let ba_rejected = rejected_set.contains(&pd_a[0].deploy.sig);
-    let bb_rejected = rejected_set.contains(&pd_b[0].deploy.sig);
-    let bc_rejected = rejected_set.contains(&pd_c[0].deploy.sig);
-    let bd_rejected = rejected_set.contains(&pd_d[0].deploy.sig);
+    let ba_rejected = rejected_set.contains(&checkpoint_a.deploys[0].deploy.sig);
+    let bb_rejected = rejected_set.contains(&checkpoint_b.deploys[0].deploy.sig);
+    let bc_rejected = rejected_set.contains(&checkpoint_c.deploys[0].deploy.sig);
+    let bd_rejected = rejected_set.contains(&checkpoint_d.deploys[0].deploy.sig);
 
     tracing::info!("──────── Rejection outcome ────────");
     tracing::info!(
@@ -3316,28 +3316,28 @@ new deployId(`rho:system:deployId`) in {
     let ba_data = rm
         .get_data(
             merged.state.clone(),
-            &make_deploy_id_par(&pd_a[0].deploy.sig),
+            &make_deploy_id_par(&checkpoint_a.deploys[0].deploy.sig),
         )
         .await
         .unwrap();
     let bb_data = rm
         .get_data(
             merged.state.clone(),
-            &make_deploy_id_par(&pd_b[0].deploy.sig),
+            &make_deploy_id_par(&checkpoint_b.deploys[0].deploy.sig),
         )
         .await
         .unwrap();
     let bc_data = rm
         .get_data(
             merged.state.clone(),
-            &make_deploy_id_par(&pd_c[0].deploy.sig),
+            &make_deploy_id_par(&checkpoint_c.deploys[0].deploy.sig),
         )
         .await
         .unwrap();
     let bd_data = rm
         .get_data(
             merged.state.clone(),
-            &make_deploy_id_par(&pd_d[0].deploy.sig),
+            &make_deploy_id_par(&checkpoint_d.deploys[0].deploy.sig),
         )
         .await
         .unwrap();
