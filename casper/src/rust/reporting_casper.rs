@@ -178,6 +178,16 @@ impl RhoReporterCasper {
                 .replay_deploy_e(with_cost_accounting, term)
                 .await
                 .map_err(|error| {
+                    // Logged where it is raised: the failure now aborts the whole report, and
+                    // several callers of the block-report API discard the error, so this is the
+                    // only record that survives regardless of which one asked.
+                    tracing::warn!(
+                        target: "f1r3fly.casper.reporting",
+                        deploy_index = idx,
+                        deploy_sig = %hex::encode(&term.deploy.sig),
+                        error = %error,
+                        "Deploy replay failed; aborting block report"
+                    );
                     format!(
                         "Deploy replay failed at index {} for {}: {}",
                         idx,
@@ -211,6 +221,12 @@ impl RhoReporterCasper {
                 .replay_block_system_deploy(block_data, system_deploy)
                 .await
                 .map_err(|error| {
+                    tracing::warn!(
+                        target: "f1r3fly.casper.reporting",
+                        system_deploy_index = idx,
+                        error = %error,
+                        "System deploy replay failed; aborting block report"
+                    );
                     format!("System deploy replay failed at index {}: {}", idx, error)
                 })?;
             let events = runtime.get_report().map_err(|error| {

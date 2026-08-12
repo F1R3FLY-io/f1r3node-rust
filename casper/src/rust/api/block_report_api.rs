@@ -108,6 +108,19 @@ impl BlockReportAPI {
 
         let expected_post_state = proto_util::post_state_hash(block);
         if report_result.post_state_hash.as_slice() != expected_post_state.as_ref() {
+            // A replay that succeeded yet produced divergent state is a state-integrity signal, not
+            // routine reporting noise. Counted and logged here because callers of this API vary in
+            // what they do with the error — one discards it outright and another files it under an
+            // expected condition — so neither the metric nor the record can be left to them.
+            metrics::counter!("block_report.post_state_mismatch", "source" => "casper")
+                .increment(1);
+            tracing::error!(
+                target: "f1r3fly.casper.reporting",
+                block = %hex::encode(&block.block_hash),
+                computed = %hex::encode(&report_result.post_state_hash),
+                recorded = %hex::encode(&expected_post_state),
+                "Replay post-state does not match the block's recorded post-state; refusing to cache the report"
+            );
             return Err(BlockReportError::PostStateMismatch {
                 block: hex::encode(&block.block_hash),
                 computed: hex::encode(&report_result.post_state_hash),
