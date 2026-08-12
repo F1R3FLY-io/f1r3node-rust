@@ -899,105 +899,254 @@ in {
                             return!([false, "FSERR_CLOSED", "file is closed"])
                           }
                           "open" => {
-                            for (@params <<- @[*private, *fdP]) {
+                            for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
                               match params {
                                 (fd, _root, _rel, _mode) => {
-                                  new patProducer, patBuilder, posCell in {
-                                    // posCell: (nextOffset, remaining,
-                                    //           pending, idx)
-                                    // - remaining: Nil or Int (bytes still
-                                    //   allowed to read from user's length)
-                                    // - pending: 4KB chunk from last fsReadAt
-                                    // - idx: index into pending
-                                    posCell!((off, validLen, "".hexToBytes(), 0)) |
-
-                                    contract patProducer(retCh) = {
-                                      for (@(nextOff, rem, pending, idx) <- posCell) {
-                                        match idx < pending.length() {
-                                          true => {
-                                            posCell!((nextOff, rem, pending, idx + 1)) |
-                                            retCh!([true, pending.slice(idx, idx + 1)])
+                                  // Phase 8 slice 8a step 4d-2b — stream-lifetime
+                                  // range lock.  Spec §Range locks: "positional
+                                  // stream implicitly acquires a range lock over
+                                  // its byte range for the stream's lifetime."
+                                  //
+                                  // Lock extent:
+                                  // - length=Int n: (off, n) — exactly the bytes
+                                  //   the stream may vend.
+                                  // - length=Nil (to-EOF): (off, 2^62) — a
+                                  //   pessimistic sentinel wider than any real
+                                  //   file (4 EB, leaves ample headroom against
+                                  //   i64::MAX overflow in the LockRegistry's
+                                  //   saturating-add overlap check).  Any
+                                  //   concurrent writer at any offset >= our
+                                  //   start conflicts, which matches the
+                                  //   "unbounded read of a mutable file" semantic.
+                                  //
+                                  // Release: fires exactly once from patProducer's
+                                  // three termination paths (length-exhausted EOS,
+                                  // EOF EOS, fsReadAt error) guarded by a
+                                  // separate `lockCell` holding `(lockId, released:Bool)`.
+                                  // Repeated post-EOS polls hit the released branch
+                                  // and skip the syscall — bounded, not amplifying.
+                                  //
+                                  // Caller-driven early abandonment (consumer drops
+                                  // stream without consuming to EOS): the lock
+                                  // leaks until File.close's sweep (step 4f) or
+                                  // deploy-end auto-release (step 5).  Matches spec
+                                  // §Explicit locks' MUST auto-release-at-deploy-end
+                                  // safety net.
+                                  new lockLenCh in {
+                                    match validLen {
+                                      Nil => lockLenCh!(4611686018427387904)
+                                      n /\ Int => lockLenCh!(n)
+                                    } |
+                                    for (@lockLen <- lockLenCh) {
+                                      match lockLen {
+                                        0 => {
+                                          // Zero-length: mint an empty stream
+                                          // directly, no lock needed.  Preserves
+                                          // pre-lock semantic that a bytesAt(_, 0)
+                                          // stream is immediately-EOS.  LockRegistry
+                                          // would reject len=0 as BadArg; short-
+                                          // circuit both syscalls.
+                                          new patProducer, patBuilder in {
+                                            contract patProducer(retCh) = {
+                                              retCh!([false, "EOS", "length exhausted"])
+                                            } |
+                                            contract patBuilder(@values, retCh) = {
+                                              match values {
+                                                v /\ List => retCh!([true, v.concatBytes()])
+                                                _ => retCh!([false, "FSERR_IO",
+                                                  "chunk builder expected List"])
+                                              }
+                                            } |
+                                            for (@streamHandle <- Stream!?(*patProducer, *patBuilder)) {
+                                              @[*private, *stateP]!("open") |
+                                              return!([true, streamHandle])
+                                            }
                                           }
-                                          false => {
-                                            // Need to refill.  Compute how
-                                            // many bytes we may still read
-                                            // and cap the request accordingly.
-                                            new nToReadCh in {
-                                              match rem {
-                                                Nil => nToReadCh!(4096)
-                                                r /\ Int => {
-                                                  match r <= 0 {
-                                                    true => nToReadCh!(0)
-                                                    false => {
-                                                      match r < 4096 {
-                                                        true => nToReadCh!(r)
-                                                        false => nToReadCh!(4096)
-                                                      }
-                                                    }
-                                                  }
-                                                }
-                                              } |
-                                              for (@nToRead <- nToReadCh) {
-                                                match nToRead {
-                                                  0 => {
-                                                    posCell!((nextOff, rem, pending, idx)) |
-                                                    retCh!([false, "EOS",
-                                                      "length exhausted"])
-                                                  }
-                                                  _ => {
-                                                    new readCh in {
-                                                      fsReadAt!(fd, nextOff, nToRead, *readCh) |
-                                                      for (@reply <- readCh) {
-                                                        match reply {
-                                                          [true, ba /\ ByteArray] => {
-                                                            match ba.length() {
-                                                              0 => {
-                                                                posCell!((nextOff, rem, pending, idx)) |
-                                                                retCh!([false, "EOS", "end of file"])
-                                                              }
-                                                              got => {
-                                                                // Update pending, advance offset,
-                                                                // decrement remaining (if Int).
-                                                                new newRemCh in {
-                                                                  match rem {
-                                                                    Nil => newRemCh!(Nil)
-                                                                    r /\ Int => newRemCh!(r - got)
-                                                                  } |
-                                                                  for (@newRem <- newRemCh) {
-                                                                    posCell!((nextOff + got, newRem, ba, 1)) |
-                                                                    retCh!([true, ba.slice(0, 1)])
+                                        }
+                                        _ => {
+                                          new lockCh in {
+                                            // holder MUST be *stateP — cross-cap
+                                            // coordination depends on it.
+                                            fsLockRange!(fd, off, lockLen, "r", *stateP, cmode, *lockCh) |
+                                            for (@lockReply <- lockCh) {
+                                              match lockReply {
+                                                [true, lid] => {
+                                                  new patProducer, patBuilder, posCell, lockCell in {
+                                                    // posCell: (nextOffset, remaining,
+                                                    //           pending, idx)
+                                                    // - remaining: Nil or Int (bytes still
+                                                    //   allowed to read from user's length)
+                                                    // - pending: 4KB chunk from last fsReadAt
+                                                    // - idx: index into pending
+                                                    //
+                                                    // lockCell: (lockId, released:Bool)
+                                                    // - separate from posCell so state-shape
+                                                    //   changes to posCell (adding fields
+                                                    //   later, migrating to BTreeMap, etc.)
+                                                    //   don't churn the release-guard logic.
+                                                    // - released=false → first termination
+                                                    //   releases once and flips to true.
+                                                    // - released=true → subsequent termination
+                                                    //   paths skip the syscall (bounded).
+                                                    posCell!((off, validLen, "".hexToBytes(), 0)) |
+                                                    lockCell!((lid, false)) |
+
+                                                    contract patProducer(retCh) = {
+                                                      for (@(nextOff, rem, pending, idx) <- posCell) {
+                                                        match idx < pending.length() {
+                                                          true => {
+                                                            posCell!((nextOff, rem, pending, idx + 1)) |
+                                                            retCh!([true, pending.slice(idx, idx + 1)])
+                                                          }
+                                                          false => {
+                                                            // Need to refill.  Compute how
+                                                            // many bytes we may still read
+                                                            // and cap the request accordingly.
+                                                            new nToReadCh in {
+                                                              match rem {
+                                                                Nil => nToReadCh!(4096)
+                                                                r /\ Int => {
+                                                                  match r <= 0 {
+                                                                    true => nToReadCh!(0)
+                                                                    false => {
+                                                                      match r < 4096 {
+                                                                        true => nToReadCh!(r)
+                                                                        false => nToReadCh!(4096)
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              } |
+                                                              for (@nToRead <- nToReadCh) {
+                                                                match nToRead {
+                                                                  0 => {
+                                                                    // TERMINATION: length exhausted.
+                                                                    // Release-once via lockCell.
+                                                                    for (@lockState <- lockCell) {
+                                                                      match lockState {
+                                                                        (lockId, false) => {
+                                                                          lockCell!((lockId, true)) |
+                                                                          new relCh in {
+                                                                            fsReleaseLock!(lockId, *relCh) |
+                                                                            for (@_r <- relCh) {
+                                                                              posCell!((nextOff, rem, pending, idx)) |
+                                                                              retCh!([false, "EOS",
+                                                                                "length exhausted"])
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                        already => {
+                                                                          lockCell!(already) |
+                                                                          posCell!((nextOff, rem, pending, idx)) |
+                                                                          retCh!([false, "EOS",
+                                                                            "length exhausted"])
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                  _ => {
+                                                                    new readCh in {
+                                                                      fsReadAt!(fd, nextOff, nToRead, *readCh) |
+                                                                      for (@reply <- readCh) {
+                                                                        match reply {
+                                                                          [true, ba /\ ByteArray] => {
+                                                                            match ba.length() {
+                                                                              0 => {
+                                                                                // TERMINATION: EOF.
+                                                                                for (@lockState <- lockCell) {
+                                                                                  match lockState {
+                                                                                    (lockId, false) => {
+                                                                                      lockCell!((lockId, true)) |
+                                                                                      new relCh in {
+                                                                                        fsReleaseLock!(lockId, *relCh) |
+                                                                                        for (@_r <- relCh) {
+                                                                                          posCell!((nextOff, rem, pending, idx)) |
+                                                                                          retCh!([false, "EOS", "end of file"])
+                                                                                        }
+                                                                                      }
+                                                                                    }
+                                                                                    already => {
+                                                                                      lockCell!(already) |
+                                                                                      posCell!((nextOff, rem, pending, idx)) |
+                                                                                      retCh!([false, "EOS", "end of file"])
+                                                                                    }
+                                                                                  }
+                                                                                }
+                                                                              }
+                                                                              got => {
+                                                                                // Update pending, advance offset,
+                                                                                // decrement remaining (if Int).
+                                                                                new newRemCh in {
+                                                                                  match rem {
+                                                                                    Nil => newRemCh!(Nil)
+                                                                                    r /\ Int => newRemCh!(r - got)
+                                                                                  } |
+                                                                                  for (@newRem <- newRemCh) {
+                                                                                    posCell!((nextOff + got, newRem, ba, 1)) |
+                                                                                    retCh!([true, ba.slice(0, 1)])
+                                                                                  }
+                                                                                }
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                          _ => {
+                                                                            // TERMINATION: fsReadAt error.
+                                                                            for (@lockState <- lockCell) {
+                                                                              match lockState {
+                                                                                (lockId, false) => {
+                                                                                  lockCell!((lockId, true)) |
+                                                                                  new relCh in {
+                                                                                    fsReleaseLock!(lockId, *relCh) |
+                                                                                    for (@_r <- relCh) {
+                                                                                      posCell!((nextOff, rem, pending, idx)) |
+                                                                                      retCh!(reply)
+                                                                                    }
+                                                                                  }
+                                                                                }
+                                                                                already => {
+                                                                                  lockCell!(already) |
+                                                                                  posCell!((nextOff, rem, pending, idx)) |
+                                                                                  retCh!(reply)
+                                                                                }
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
                                                                   }
                                                                 }
                                                               }
                                                             }
                                                           }
-                                                          _ => {
-                                                            posCell!((nextOff, rem, pending, idx)) |
-                                                            retCh!(reply)
-                                                          }
                                                         }
                                                       }
+                                                    } |
+
+                                                    contract patBuilder(@values, retCh) = {
+                                                      match values {
+                                                        v /\ List => retCh!([true, v.concatBytes()])
+                                                        _ => retCh!([false, "FSERR_IO",
+                                                          "chunk builder expected List"])
+                                                      }
+                                                    } |
+
+                                                    for (@streamHandle <- Stream!?(*patProducer, *patBuilder)) {
+                                                      @[*private, *stateP]!("open") |
+                                                      return!([true, streamHandle])
                                                     }
                                                   }
+                                                }
+                                                _ => {
+                                                  // Lock acquire failed — forward.
+                                                  @[*private, *stateP]!("open") |
+                                                  return!(lockReply)
                                                 }
                                               }
                                             }
                                           }
                                         }
                                       }
-                                    } |
-
-                                    contract patBuilder(@values, retCh) = {
-                                      match values {
-                                        v /\ List => retCh!([true, v.concatBytes()])
-                                        _ => retCh!([false, "FSERR_IO",
-                                          "chunk builder expected List"])
-                                      }
-                                    } |
-
-                                    for (@streamHandle <- Stream!?(*patProducer, *patBuilder)) {
-                                      @[*private, *stateP]!("open") |
-                                      return!([true, streamHandle])
                                     }
                                   }
                                 }

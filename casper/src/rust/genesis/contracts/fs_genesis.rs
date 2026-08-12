@@ -960,7 +960,16 @@ mod tests {
         // dispatch with a range lock over the DECLARED maxLength
         // (spec §959: caller commits to the max write extent so the
         // lock is known at construction).  Same hard-fork discipline.
-        const EXPECTED: &str = "4d993debcf44e566d5eeeed41853389d7ac6c37d22b370112630e0fe47b70d55";
+        //
+        // Anchor rolled forward again for Phase 8 slice 8a step 4d-2b
+        // (2026-08-12): bytesAt now acquires a stream-lifetime range
+        // lock — extent = length (Int) OR 2^62 sentinel (Nil, to-EOF).
+        // Release via a separate lockCell that guards against amplifying
+        // release syscalls on repeated post-EOS polls.  Caller-driven
+        // early abandonment relies on File.close sweep (step 4f) /
+        // deploy-end auto-release (step 5) per spec §Explicit locks
+        // MUST safety net.  Same hard-fork discipline.
+        const EXPECTED: &str = "71a7c35aee29d56a0f656eb00f4526895a7433b134531d9f2a43fc1358222b2e";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \
