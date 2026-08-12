@@ -366,10 +366,13 @@ if [ -z "$policy_id" ]; then
 		--query data.id \
 		--raw-output)"
 else
+	# OCI CLI 3.82.0 documents empty as selecting current service behavior;
+	# policy updates require --version-date whenever --statements is supplied.
 	oci iam policy update \
 		--profile "$OCI_PROFILE" \
 		--policy-id "$policy_id" \
 		--statements "$statements" \
+		--version-date "" \
 		--force >/dev/null
 fi
 
