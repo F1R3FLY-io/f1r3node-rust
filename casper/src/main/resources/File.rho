@@ -2579,7 +2579,7 @@ in {
             return!([false, "FSERR_CLOSED", "file is closed"])
           }
           "open" => {
-            for (@params <<- @[*private, *fdP]) {
+            for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
               match params {
                 (fd, _root, _rel, _mode) => {
                   // (1) Acquire lease FIRST (M-9a-1 TOCTOU narrowing).
@@ -2594,51 +2594,112 @@ in {
                               for (@unitReply <- @buf!?("unit")) {
                                 match unitReply {
                                   [true, unit] => {
-                                    // (3) fsRead.
-                                    new readCh in {
-                                      fsRead!(fd, remBytes, *readCh) |
-                                      for (@readReply <- readCh) {
-                                        match readReply {
-                                          [true, chunk /\ ByteArray] => {
-                                            // (4) UTF-8 truncation.
-                                            new toWrite in {
-                                              match unit == "utf8" {
-                                                true => {
-                                                  match chunk.length() {
-                                                    0 => toWrite!(chunk)
-                                                    _ => toWrite!(chunk.slice(0, chunk.validUtf8PrefixLen()))
-                                                  }
-                                                }
-                                                false => toWrite!(chunk)
-                                              } |
-                                              for (@writeChunk <- toWrite) {
-                                                // (5) writeBytes.
-                                                new wCh in {
-                                                  @buf!(*wCh, "writeBytes", writeChunk) |
-                                                  for (@wReply <- wCh) {
-                                                    match wReply {
-                                                      [true, actualN] => {
-                                                        // (6) Seek back for unwritten bytes
-                                                        // (UTF-8 truncation OR buffer short-write).
-                                                        new overshotCh in {
-                                                          overshotCh!(chunk.length() - actualN) |
-                                                          for (@overshot <- overshotCh) {
-                                                            match overshot > 0 {
-                                                              true => {
-                                                                new seekCh in {
-                                                                  fsSeek!(fd, 0 - overshot, "cur", *seekCh) |
-                                                                  for (@_seekReply <- seekCh) {
-                                                                    for (@_endReply <- @buf!?("endFill", token)) {
-                                                                      @[*private, *stateP]!("open") |
-                                                                      return!([true, [actualN, chunk.length() == 0]])
+                                    // Phase 8 slice 8a step 4d-1 — cursor-relative
+                                    // read.  fsTell before fsLockRange so the lock
+                                    // covers exactly [cursor, cursor+remBytes),
+                                    // which is what fsRead will touch.  Skip both
+                                    // syscalls when remBytes <= 0 (LockRegistry
+                                    // rejects zero-length as BadArg, and fsRead(0)
+                                    // is a no-op).
+                                    match remBytes <= 0 {
+                                      true => {
+                                        for (@_endReply <- @buf!?("endFill", token)) {
+                                          @[*private, *stateP]!("open") |
+                                          return!([true, [0, false]])
+                                        }
+                                      }
+                                      false => {
+                                        new tellCh in {
+                                          fsTell!(fd, *tellCh) |
+                                          for (@tellReply <- tellCh) {
+                                            match tellReply {
+                                              [true, tellPos /\ Int] => {
+                                                new lockCh in {
+                                                  // holder MUST be *stateP — cross-cap
+                                                  // coordination depends on it.
+                                                  fsLockRange!(fd, tellPos, remBytes, "r", *stateP, cmode, *lockCh) |
+                                                  for (@lockReply <- lockCh) {
+                                                    match lockReply {
+                                                      [true, lid] => {
+                                                        // (3) fsRead.
+                                                        new readCh in {
+                                                          fsRead!(fd, remBytes, *readCh) |
+                                                          for (@readReply <- readCh) {
+                                                            new relCh in {
+                                                              // Release lock immediately after fsRead;
+                                                              // the disk-range exclusion is only needed
+                                                              // for the syscall itself.  Subsequent
+                                                              // writeBytes + seek-back operate on the
+                                                              // fd's cursor / user-space buffer, not
+                                                              // on the disk range.
+                                                              fsReleaseLock!(lid, *relCh) |
+                                                              for (@_relReply <- relCh) {
+                                                                match readReply {
+                                                                  [true, chunk /\ ByteArray] => {
+                                                                    // (4) UTF-8 truncation.
+                                                                    new toWrite in {
+                                                                      match unit == "utf8" {
+                                                                        true => {
+                                                                          match chunk.length() {
+                                                                            0 => toWrite!(chunk)
+                                                                            _ => toWrite!(chunk.slice(0, chunk.validUtf8PrefixLen()))
+                                                                          }
+                                                                        }
+                                                                        false => toWrite!(chunk)
+                                                                      } |
+                                                                      for (@writeChunk <- toWrite) {
+                                                                        // (5) writeBytes.
+                                                                        new wCh in {
+                                                                          @buf!(*wCh, "writeBytes", writeChunk) |
+                                                                          for (@wReply <- wCh) {
+                                                                            match wReply {
+                                                                              [true, actualN] => {
+                                                                                // (6) Seek back for unwritten bytes
+                                                                                // (UTF-8 truncation OR buffer short-write).
+                                                                                new overshotCh in {
+                                                                                  overshotCh!(chunk.length() - actualN) |
+                                                                                  for (@overshot <- overshotCh) {
+                                                                                    match overshot > 0 {
+                                                                                      true => {
+                                                                                        new seekCh in {
+                                                                                          fsSeek!(fd, 0 - overshot, "cur", *seekCh) |
+                                                                                          for (@_seekReply <- seekCh) {
+                                                                                            for (@_endReply <- @buf!?("endFill", token)) {
+                                                                                              @[*private, *stateP]!("open") |
+                                                                                              return!([true, [actualN, chunk.length() == 0]])
+                                                                                            }
+                                                                                          }
+                                                                                        }
+                                                                                      }
+                                                                                      false => {
+                                                                                        for (@_endReply <- @buf!?("endFill", token)) {
+                                                                                          @[*private, *stateP]!("open") |
+                                                                                          return!([true, [actualN, chunk.length() == 0]])
+                                                                                        }
+                                                                                      }
+                                                                                    }
+                                                                                  }
+                                                                                }
+                                                                              }
+                                                                              _ => {
+                                                                                for (@_endReply <- @buf!?("endFill", token)) {
+                                                                                  @[*private, *stateP]!("open") |
+                                                                                  return!(wReply)
+                                                                                }
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                      }
                                                                     }
                                                                   }
-                                                                }
-                                                              }
-                                                              false => {
-                                                                for (@_endReply <- @buf!?("endFill", token)) {
-                                                                  @[*private, *stateP]!("open") |
-                                                                  return!([true, [actualN, chunk.length() == 0]])
+                                                                  _ => {
+                                                                    // fsRead failed; release lease.
+                                                                    for (@_endReply <- @buf!?("endFill", token)) {
+                                                                      @[*private, *stateP]!("open") |
+                                                                      return!(readReply)
+                                                                    }
+                                                                  }
                                                                 }
                                                               }
                                                             }
@@ -2646,22 +2707,23 @@ in {
                                                         }
                                                       }
                                                       _ => {
+                                                        // Lock acquire failed — release lease, forward.
                                                         for (@_endReply <- @buf!?("endFill", token)) {
                                                           @[*private, *stateP]!("open") |
-                                                          return!(wReply)
+                                                          return!(lockReply)
                                                         }
                                                       }
                                                     }
                                                   }
                                                 }
                                               }
-                                            }
-                                          }
-                                          _ => {
-                                            // fsRead failed; release lease.
-                                            for (@_endReply <- @buf!?("endFill", token)) {
-                                              @[*private, *stateP]!("open") |
-                                              return!(readReply)
+                                              _ => {
+                                                // fsTell failed — release lease, forward.
+                                                for (@_endReply <- @buf!?("endFill", token)) {
+                                                  @[*private, *stateP]!("open") |
+                                                  return!(tellReply)
+                                                }
+                                              }
                                             }
                                           }
                                         }
@@ -2745,7 +2807,7 @@ in {
             return!([false, "FSERR_CLOSED", "file is closed"])
           }
           "open" => {
-            for (@params <<- @[*private, *fdP]) {
+            for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
               match params {
                 (fd, _root, _rel, mode) => {
                   match mode {
@@ -2758,17 +2820,65 @@ in {
                       for (@baReply <- @buf!?("toByteArray")) {
                         match baReply {
                           [true, bytes /\ ByteArray] => {
-                            new writeCh in {
-                              fsWrite!(fd, bytes, *writeCh) |
-                              for (@writeReply <- writeCh) {
-                                match writeReply {
-                                  [true, n] => {
-                                    @[*private, *stateP]!("open") |
-                                    return!([true, n])
-                                  }
-                                  _ => {
-                                    @[*private, *stateP]!("open") |
-                                    return!(writeReply)
+                            // Phase 8 slice 8a step 4d-1 — cursor-relative
+                            // write.  fsTell before fsLockRange so the lock
+                            // covers exactly [cursor, cursor+bytes.length()),
+                            // matching what fsWrite will touch.  Skip both
+                            // syscalls on empty payload — LockRegistry
+                            // rejects len=0 as BadArg, and fsWrite(0) would
+                            // return [true, 0] anyway.
+                            match bytes.length() <= 0 {
+                              true => {
+                                @[*private, *stateP]!("open") |
+                                return!([true, 0])
+                              }
+                              false => {
+                                new tellCh in {
+                                  fsTell!(fd, *tellCh) |
+                                  for (@tellReply <- tellCh) {
+                                    match tellReply {
+                                      [true, tellPos /\ Int] => {
+                                        new lockCh in {
+                                          // holder MUST be *stateP — cross-cap
+                                          // coordination depends on it.
+                                          fsLockRange!(fd, tellPos, bytes.length(), "w", *stateP, cmode, *lockCh) |
+                                          for (@lockReply <- lockCh) {
+                                            match lockReply {
+                                              [true, lid] => {
+                                                new writeCh in {
+                                                  fsWrite!(fd, bytes, *writeCh) |
+                                                  for (@writeReply <- writeCh) {
+                                                    new relCh in {
+                                                      fsReleaseLock!(lid, *relCh) |
+                                                      for (@_relReply <- relCh) {
+                                                        match writeReply {
+                                                          [true, n] => {
+                                                            @[*private, *stateP]!("open") |
+                                                            return!([true, n])
+                                                          }
+                                                          _ => {
+                                                            @[*private, *stateP]!("open") |
+                                                            return!(writeReply)
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                              _ => {
+                                                @[*private, *stateP]!("open") |
+                                                return!(lockReply)
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                      _ => {
+                                        @[*private, *stateP]!("open") |
+                                        return!(tellReply)
+                                      }
+                                    }
                                   }
                                 }
                               }
@@ -2838,7 +2948,7 @@ in {
                     return!([false, "FSERR_CLOSED", "file is closed"])
                   }
                   "open" => {
-                    for (@params <<- @[*private, *fdP]) {
+                    for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
                       match params {
                         (fd, _root, _rel, _mode) => {
                           for (@leaseReply <- @buf!?("beginFill")) {
@@ -2850,52 +2960,101 @@ in {
                                       for (@unitReply <- @buf!?("unit")) {
                                         match unitReply {
                                           [true, unit] => {
-                                            new readCh in {
-                                              fsReadAt!(fd, off, remBytes, *readCh) |
-                                              for (@readReply <- readCh) {
-                                                match readReply {
-                                                  [true, chunk /\ ByteArray] => {
-                                                    // UTF-8 truncation for utf8 buffers.
-                                                    new toWrite in {
-                                                      match unit == "utf8" {
-                                                        true => {
-                                                          match chunk.length() {
-                                                            0 => toWrite!(chunk)
-                                                            _ => toWrite!(chunk.slice(0, chunk.validUtf8PrefixLen()))
-                                                          }
-                                                        }
-                                                        false => toWrite!(chunk)
-                                                      } |
-                                                      for (@writeChunk <- toWrite) {
-                                                        new wCh in {
-                                                          @buf!(*wCh, "writeBytes", writeChunk) |
-                                                          for (@wReply <- wCh) {
-                                                            match wReply {
-                                                              [true, actualN] => {
-                                                                // No seek-back for positional
-                                                                // reads — the fd cursor is
-                                                                // unchanged by fsReadAt.
-                                                                for (@_endReply <- @buf!?("endFill", token)) {
-                                                                  @[*private, *stateP]!("open") |
-                                                                  return!([true, [actualN, chunk.length() == 0]])
-                                                                }
-                                                              }
-                                                              _ => {
-                                                                for (@_endReply <- @buf!?("endFill", token)) {
-                                                                  @[*private, *stateP]!("open") |
-                                                                  return!(wReply)
+                                            // Phase 8 slice 8a step 4d-1 — acquire
+                                            // a positional read lock over
+                                            // [off, off+remBytes) around fsReadAt.
+                                            // holder MUST be *stateP — cross-cap
+                                            // coordination depends on it.  Zero-
+                                            // length reads (remBytes == 0) hit the
+                                            // native's BadArg branch and short-
+                                            // circuit before fsReadAt fires; the
+                                            // lease + stateP cleanup still runs.
+                                            match remBytes <= 0 {
+                                              true => {
+                                                // Zero-remaining: skip lock+read,
+                                                // return [true, [0, false]].  Not
+                                                // an error — buffer is already full.
+                                                for (@_endReply <- @buf!?("endFill", token)) {
+                                                  @[*private, *stateP]!("open") |
+                                                  return!([true, [0, false]])
+                                                }
+                                              }
+                                              false => {
+                                                new lockCh in {
+                                                  fsLockRange!(fd, off, remBytes, "r", *stateP, cmode, *lockCh) |
+                                                  for (@lockReply <- lockCh) {
+                                                    match lockReply {
+                                                      [true, lid] => {
+                                                        new readCh in {
+                                                          fsReadAt!(fd, off, remBytes, *readCh) |
+                                                          for (@readReply <- readCh) {
+                                                            new relCh in {
+                                                              // Release the lock IMMEDIATELY after
+                                                              // fsReadAt returns — the read result is
+                                                              // already in memory; buffer copy + endFill
+                                                              // don't need disk-range exclusion.
+                                                              fsReleaseLock!(lid, *relCh) |
+                                                              for (@_relReply <- relCh) {
+                                                                match readReply {
+                                                                  [true, chunk /\ ByteArray] => {
+                                                                    // UTF-8 truncation for utf8 buffers.
+                                                                    new toWrite in {
+                                                                      match unit == "utf8" {
+                                                                        true => {
+                                                                          match chunk.length() {
+                                                                            0 => toWrite!(chunk)
+                                                                            _ => toWrite!(chunk.slice(0, chunk.validUtf8PrefixLen()))
+                                                                          }
+                                                                        }
+                                                                        false => toWrite!(chunk)
+                                                                      } |
+                                                                      for (@writeChunk <- toWrite) {
+                                                                        new wCh in {
+                                                                          @buf!(*wCh, "writeBytes", writeChunk) |
+                                                                          for (@wReply <- wCh) {
+                                                                            match wReply {
+                                                                              [true, actualN] => {
+                                                                                // No seek-back for positional
+                                                                                // reads — the fd cursor is
+                                                                                // unchanged by fsReadAt.
+                                                                                for (@_endReply <- @buf!?("endFill", token)) {
+                                                                                  @[*private, *stateP]!("open") |
+                                                                                  return!([true, [actualN, chunk.length() == 0]])
+                                                                                }
+                                                                              }
+                                                                              _ => {
+                                                                                for (@_endReply <- @buf!?("endFill", token)) {
+                                                                                  @[*private, *stateP]!("open") |
+                                                                                  return!(wReply)
+                                                                                }
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                  _ => {
+                                                                    for (@_endReply <- @buf!?("endFill", token)) {
+                                                                      @[*private, *stateP]!("open") |
+                                                                      return!(readReply)
+                                                                    }
+                                                                  }
                                                                 }
                                                               }
                                                             }
                                                           }
                                                         }
                                                       }
-                                                    }
-                                                  }
-                                                  _ => {
-                                                    for (@_endReply <- @buf!?("endFill", token)) {
-                                                      @[*private, *stateP]!("open") |
-                                                      return!(readReply)
+                                                      _ => {
+                                                        // Lock acquire failed —
+                                                        // release lease, forward
+                                                        // acquire error.
+                                                        for (@_endReply <- @buf!?("endFill", token)) {
+                                                          @[*private, *stateP]!("open") |
+                                                          return!(lockReply)
+                                                        }
+                                                      }
                                                     }
                                                   }
                                                 }
@@ -2968,7 +3127,7 @@ in {
                     return!([false, "FSERR_CLOSED", "file is closed"])
                   }
                   "open" => {
-                    for (@params <<- @[*private, *fdP]) {
+                    for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
                       match params {
                         (fd, _root, _rel, mode) => {
                           match mode {
@@ -2981,17 +3140,53 @@ in {
                               for (@baReply <- @buf!?("toByteArray")) {
                                 match baReply {
                                   [true, bytes /\ ByteArray] => {
-                                    new writeCh in {
-                                      fsWriteAt!(fd, off, bytes, *writeCh) |
-                                      for (@writeReply <- writeCh) {
-                                        match writeReply {
-                                          [true, n] => {
-                                            @[*private, *stateP]!("open") |
-                                            return!([true, n])
-                                          }
-                                          _ => {
-                                            @[*private, *stateP]!("open") |
-                                            return!(writeReply)
+                                    // Phase 8 slice 8a step 4d-1 — acquire a
+                                    // positional write lock over
+                                    // [off, off+bytes.length()) around fsWriteAt.
+                                    // holder MUST be *stateP — cross-cap
+                                    // coordination depends on it.  Zero-length
+                                    // writes short-circuit before both lock
+                                    // acquire and fsWriteAt (the native rejects
+                                    // len=0 as BadArg; skip both to match
+                                    // "empty buffer → [true, 0]" semantics).
+                                    match bytes.length() <= 0 {
+                                      true => {
+                                        @[*private, *stateP]!("open") |
+                                        return!([true, 0])
+                                      }
+                                      false => {
+                                        new lockCh in {
+                                          fsLockRange!(fd, off, bytes.length(), "w", *stateP, cmode, *lockCh) |
+                                          for (@lockReply <- lockCh) {
+                                            match lockReply {
+                                              [true, lid] => {
+                                                new writeCh in {
+                                                  fsWriteAt!(fd, off, bytes, *writeCh) |
+                                                  for (@writeReply <- writeCh) {
+                                                    new relCh in {
+                                                      fsReleaseLock!(lid, *relCh) |
+                                                      for (@_relReply <- relCh) {
+                                                        match writeReply {
+                                                          [true, n] => {
+                                                            @[*private, *stateP]!("open") |
+                                                            return!([true, n])
+                                                          }
+                                                          _ => {
+                                                            @[*private, *stateP]!("open") |
+                                                            return!(writeReply)
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                              _ => {
+                                                // Lock acquire failed — forward.
+                                                @[*private, *stateP]!("open") |
+                                                return!(lockReply)
+                                              }
+                                            }
                                           }
                                         }
                                       }

@@ -946,7 +946,15 @@ mod tests {
         // embedded in the composed source, so any File.rho edit that
         // isn't a comment-only tweak flips this hash.  Same hard-fork
         // discipline as previous rolls.
-        const EXPECTED: &str = "6f8d85b912e1827aada3dc9c220cd7395d7259ed31af3d710838655688b513af";
+        //
+        // Anchor rolled forward again for Phase 8 slice 8a step 4d-1
+        // (2026-08-12): four positional methods (readInto, readAtInto,
+        // writeFrom, writeFromAt) now wrap their native call with
+        // fsLockRange acquire + fsReleaseLock release.  Cursor-based
+        // variants (readInto, writeFrom) additionally do an fsTell
+        // before the lock acquire to know the range extent.  Same
+        // hard-fork discipline.
+        const EXPECTED: &str = "d1f8dfa07b6c0176e6701665ad14e148eb7d455e6c4c507788b5df982243b644";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

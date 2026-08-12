@@ -689,6 +689,44 @@ mod tests {
         assert_eq!(err, LockError::Busy);
     }
 
+    #[test]
+    fn sequential_after_same_holder_range_still_conflicts() {
+        // Mirror of `same_holder_sequential_still_conflicts_with_own_range`
+        // (fold-in edge test from Prep A review): a positional acquire
+        // followed by a sequential attempt from the same holder must return
+        // Busy, matching FIP §1143.  Guards against a future refactor
+        // extending same-holder-skip to sequential.
+        let reg = LockRegistry::new();
+        reg.try_acquire_range((1, 42), 0, 100, LockMode::Write, holder(1), deploy(1))
+            .unwrap();
+        // The mirror-case W range instead of the R range from the
+        // pre-existing test; both must fail sequential acquisition.
+        let err = reg
+            .try_acquire_sequential((1, 42), holder(1), deploy(1))
+            .unwrap_err();
+        assert_eq!(err, LockError::Busy);
+    }
+
+    #[test]
+    fn same_holder_range_hits_max_ranges_cap() {
+        // Fold-in edge test from Prep A review: MAX_RANGES_PER_FILE
+        // (line 264 in try_acquire_range) fires BEFORE the same-holder
+        // skip.  A future refactor reordering the checks could silently
+        // let a single cap consume unbounded entries; this pin catches it.
+        let reg = LockRegistry::new();
+        for i in 0..MAX_RANGES_PER_FILE as u64 {
+            reg.try_acquire_range((1, 42), i * 100, 50, LockMode::Read, holder(1), deploy(1))
+                .expect("acquires up to the cap must succeed");
+        }
+        // Same-holder overlapping-writer would normally be admitted by
+        // the same-holder-skip; but at the cap it must fire QuotaExceeded
+        // before the skip check even runs.
+        let err = reg
+            .try_acquire_range((1, 42), 0, 50, LockMode::Write, holder(1), deploy(1))
+            .unwrap_err();
+        assert_eq!(err, LockError::QuotaExceeded);
+    }
+
     // -- sequential-flag coexistence -------------------------------------
 
     #[test]
