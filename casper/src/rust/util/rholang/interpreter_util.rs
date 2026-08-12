@@ -1374,6 +1374,8 @@ pub async fn compute_parents_post_state(
                 dag_merger::cost_optimal_rejection_alg(),
                 Some(visible_blocks.clone()),
                 disable_late_block_filtering,
+                floor_block_number,
+                s.on_chain_state.shard_conf.deploy_lifespan,
                 &sig_settled_in_base,
             )?;
             let merge_ms = merge_started.elapsed().as_millis();

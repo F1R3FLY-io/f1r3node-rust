@@ -555,6 +555,43 @@ fn resolve_conflicts_with_unavailable_retry(
     }
 }
 
+/// Merge-time validity-window rule, keyed on the merging block's FLOOR: a
+/// chain carrying a USER deploy whose window is closed at the floor
+/// (`valid_after <= floor_block_number - deploy_lifespan`) must not merge.
+/// A silent validator's stale tip stays mergeable indefinitely (below-floor
+/// sibling), so a within-window carrier can arrive arbitrarily late;
+/// executing it would land effects after the deploy's validity window
+/// closed and reopen a settled Expired verdict.
+///
+/// The floor — never the merge height — is the correct clock: for any
+/// VALIDLY included chain, inclusion height `h <= valid_after + lifespan`,
+/// so if the rule fires (`floor > valid_after + lifespan >= h`) the
+/// chain's block lies below the floor — an above-floor ancestor being
+/// routinely re-applied onto the floor base can never be hit. The rule
+/// fires exactly on the below-floor-sibling (late-carrier) class. The
+/// floor is a pure function of the block's parents and justifications, and
+/// justification-regression validation stops a proposer from faking a
+/// lower one, so once any canonical block's floor passes a deploy's
+/// window, every future canonical merge rejects its late carriers — which
+/// is what makes a floor-keyed `Expired` verdict terminal.
+///
+/// Rejected chains are recorded like any other loser; the block-expired
+/// selection filter uses the same bound, so recovery never re-proposes
+/// them. Chains with no window entries (system-only) are exempt.
+fn split_window_closed_chains(
+    chains: Vec<DeployChainIndex>,
+    floor_block_number: i64,
+    deploy_lifespan: i64,
+) -> (Vec<DeployChainIndex>, Vec<DeployChainIndex>) {
+    let earliest_valid_after = floor_block_number - deploy_lifespan;
+    chains.into_iter().partition(|chain| {
+        chain
+            .deploy_windows
+            .values()
+            .all(|valid_after| *valid_after > earliest_valid_after)
+    })
+}
+
 pub fn merge(
     dag: &KeyValueDagRepresentation,
     lfb: &BlockHash,
@@ -564,6 +601,8 @@ pub fn merge(
     rejection_cost_f: impl Fn(&DeployChainIndex) -> u64,
     scope: Option<HashSet<BlockHash>>,
     disable_late_block_filtering: bool,
+    floor_block_number: i64,
+    deploy_lifespan: i64,
     // True iff the sig's effect is already present in the BASE state. The
     // dedup below seeds such sigs with an unbeatable freshest-copy
     // sentinel so every scope copy drops: the settled copy lives in the
@@ -883,6 +922,30 @@ pub fn merge(
                 collateral_lost_pairs.len(),
             );
         }
+    }
+
+    // Merge-time validity-window rule (see split_window_closed_chains):
+    // closed-window chains join the LATE set — `resolve_conflicts` rejects
+    // late chains unconditionally (they reach the block's rejection record
+    // through the standard pair assembly) and rejects actual chains that
+    // depend on them; the stale-diff lineage expansion afterward covers
+    // state-lineage descendants. The floor-relative window is the
+    // deterministic lateness definition the legacy (nondeterministic,
+    // disabled) late-block query lacked. A chain both settled-in-base and
+    // window-closed was already dropped record-less by the dedup sentinel
+    // above — fine: its effect stands, a record would be dup-flagged
+    // testimony.
+    let (in_window, window_rejected) =
+        split_window_closed_chains(actual_set_vec, floor_block_number, deploy_lifespan);
+    actual_set_vec = in_window;
+    if !window_rejected.is_empty() {
+        tracing::info!(
+            target: "f1r3fly.merge.step",
+            "DagMerger window rule: rejected {} late chain(s) whose deploy validity window is closed at floor #{}",
+            window_rejected.len(),
+            floor_block_number,
+        );
+        late_set_vec.extend(window_rejected);
     }
 
     // Sort the deploy chain indices for deterministic iteration order
@@ -1755,6 +1818,73 @@ mod tests {
             Bytes::from(vec![deploy_id; 32]),
             source_block_number,
         )
+    }
+
+    fn chain_with_window(
+        deploy_id: u8,
+        cost: u64,
+        source_block_number: i64,
+        valid_after: i64,
+        state_changes: StateChange,
+    ) -> DeployChainIndex {
+        let mut c = chain(deploy_id, cost, source_block_number, state_changes);
+        c.deploy_windows =
+            std::collections::HashMap::from([(Bytes::from(vec![deploy_id]), valid_after)]);
+        c
+    }
+
+    /// The window rule keys on `valid_after <= floor - lifespan` — the
+    /// proposer's block-expired bound evaluated at the merging block's
+    /// FLOOR (never the merge height: above-floor ancestors being
+    /// re-applied onto the floor base must be unreachable, which the floor
+    /// key guarantees arithmetically). Closed-window chains are split out
+    /// for rejection-with-record; the boundary (valid_after == floor -
+    /// lifespan) is CLOSED (matches the selection filter); window-less
+    /// (system-only) chains are exempt.
+    #[test]
+    fn window_rule_splits_closed_window_chains_only() {
+        let closed = chain_with_window(1, 10, 3, 0, StateChange::empty());
+        let at_boundary = chain_with_window(2, 10, 3, 5, StateChange::empty());
+        let open = chain_with_window(3, 10, 3, 6, StateChange::empty());
+        let system_only = {
+            let mut c = chain(4, 10, 3, StateChange::empty());
+            c.deploy_windows.clear();
+            c
+        };
+
+        // floor #55, lifespan 50 → earliest_valid_after = 5.
+        let (kept, rejected) = split_window_closed_chains(
+            vec![
+                closed.clone(),
+                at_boundary.clone(),
+                open.clone(),
+                system_only.clone(),
+            ],
+            55,
+            50,
+        );
+
+        let kept_ids: Vec<u8> = kept
+            .iter()
+            .flat_map(|c| c.deploys_with_cost.0.iter())
+            .map(|d| d.deploy_id[0])
+            .collect();
+        let rejected_ids: Vec<u8> = rejected
+            .iter()
+            .flat_map(|c| c.deploys_with_cost.0.iter())
+            .map(|d| d.deploy_id[0])
+            .collect();
+
+        assert!(
+            rejected_ids.contains(&1) && rejected_ids.contains(&2),
+            "closed and boundary windows must be split out (got rejected={:?})",
+            rejected_ids
+        );
+        assert!(
+            kept_ids.contains(&3) && kept_ids.contains(&4),
+            "open-window and window-less chains must be kept (got kept={:?})",
+            kept_ids
+        );
     }
 
     fn mergeable_chain(

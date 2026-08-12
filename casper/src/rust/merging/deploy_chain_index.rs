@@ -36,6 +36,11 @@ pub struct DeployChainIndex {
     // whose diffs were computed against a block that was subsequently rejected.
     pub source_block_hash: BlockHash,
     pub source_block_number: i64,
+    /// `valid_after_block_number` per USER deploy in this chain (system
+    /// deploy ids are absent — they carry no validity window). Feeds the
+    /// merge-time window rule; NOT part of the chain's identity
+    /// (`PartialEq`/`Hash`/`Ord` cover `deploys_with_cost` only).
+    pub deploy_windows: std::collections::HashMap<Bytes, i64>,
 }
 
 impl DeployChainIndex {
@@ -46,6 +51,7 @@ impl DeployChainIndex {
         history_repository: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
         source_block_hash: BlockHash,
         source_block_number: i64,
+        deploy_windows: std::collections::HashMap<Bytes, i64>,
     ) -> Result<Self, HistoryError>
     where
         C: std::clone::Clone
@@ -93,6 +99,11 @@ impl DeployChainIndex {
         let state_changes =
             StateChange::new(pre_history_reader, post_history_reader, &event_log_index)?;
 
+        let deploy_windows = deploy_windows
+            .into_iter()
+            .filter(|(id, _)| deploys_with_cost.iter().any(|d| d.deploy_id == *id))
+            .collect();
+
         Ok(Self {
             deploys_with_cost: HashableSet(deploys_with_cost),
             post_state_hash: post_state_hash.clone(),
@@ -102,10 +113,14 @@ impl DeployChainIndex {
             state_changes,
             source_block_hash,
             source_block_number,
+            deploy_windows,
         })
     }
 
     /// Construct a DeployChainIndex directly from its parts (for testing).
+    /// Every deploy id is given an in-window `valid_after` one below the
+    /// source block, so the merge-time window rule is inert unless a test
+    /// overrides `deploy_windows` explicitly.
     pub fn from_parts(
         deploys_with_cost: HashableSet<DeployIdWithCost>,
         post_state_hash: Blake2b256Hash,
@@ -119,6 +134,11 @@ impl DeployChainIndex {
         let event_log_index =
             EventLogIndex::combine(&user_event_log_index, &system_event_log_index)
                 .expect("EventLogIndex::combine in DeployChainIndex::from_parts must not fail");
+        let deploy_windows = deploys_with_cost
+            .0
+            .iter()
+            .map(|d| (d.deploy_id.clone(), source_block_number - 1))
+            .collect();
         DeployChainIndex {
             deploys_with_cost,
             post_state_hash,
@@ -128,6 +148,7 @@ impl DeployChainIndex {
             state_changes,
             source_block_hash,
             source_block_number,
+            deploy_windows,
         }
     }
 }
@@ -257,6 +278,7 @@ mod tests {
             state_changes: StateChange::empty(),
             source_block_hash: Bytes::from(vec![post_state_seed; 32]),
             source_block_number: 0,
+            deploy_windows: std::collections::HashMap::new(),
         }
     }
 

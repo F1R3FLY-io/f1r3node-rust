@@ -53,6 +53,7 @@ fn mk_snapshot(
     let mut shard_conf = CasperShardConf::new();
     shard_conf.shard_name = shard_name;
     shard_conf.max_parent_depth = 0;
+    shard_conf.deploy_lifespan = 50;
     shard_conf.disable_late_block_filtering = false;
     shard_conf.disable_validator_progress_check = false;
 
