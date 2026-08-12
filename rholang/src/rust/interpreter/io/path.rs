@@ -225,7 +225,11 @@ pub fn capture_root_identity(root: &Path) -> std::io::Result<(u64, u64)> {
 /// `stat`-by-path helper (`capture_root_identity`) so we compare
 /// what we just OPENED, not a subsequent by-path lookup that
 /// could resolve to a different inode under an active attack.
-fn fstat_dev_inode(fd: i32) -> Result<(u64, u64), QuarantineError> {
+///
+/// Also used by Phase 8 slice 8a's `stat_leaf_dev_inode` helper to
+/// key the `LockRegistry` on the physical file identity a Rholang
+/// `File` cap addresses.
+pub fn fstat_dev_inode(fd: i32) -> Result<(u64, u64), QuarantineError> {
     #[cfg(unix)]
     {
         unsafe {
@@ -243,6 +247,54 @@ fn fstat_dev_inode(fd: i32) -> Result<(u64, u64), QuarantineError> {
     }
     #[cfg(not(unix))]
     {
+        Ok((0, 0))
+    }
+}
+
+/// Phase 8 slice 8a helper: safely resolve `(root, rel)` and return
+/// the leaf's `(st_dev, st_ino)`.  Composes `safe_descend_verified`
+/// (H-5 root-identity check) with `openat(O_NOFOLLOW)` on the leaf
+/// and `fstat` on the resulting fd — the fd is scoped to this call
+/// (dropped on return) so we're strictly querying identity, not
+/// consuming an fd slot.
+///
+/// The (dev, inode) return value is used to key the `LockRegistry`
+/// per Phase 8 §X-1 memo: keying on physical file identity collapses
+/// two fresh-mint `File` caps opened over the same on-disk file to
+/// a single lock-coordination entry.
+///
+/// Symlinks at the leaf reject with `QuarantineError::SymlinkComponent`
+/// per the FIP's §Non-regular-file rejection rule.
+pub fn stat_leaf_dev_inode(
+    root: &Path,
+    rel: &str,
+    expected_root_id: Option<(u64, u64)>,
+) -> Result<(u64, u64), QuarantineError> {
+    let parent = safe_descend_verified(root, rel, expected_root_id)?;
+    #[cfg(unix)]
+    {
+        unsafe {
+            let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+            let fd = libc::openat(parent.as_raw_fd(), parent.leaf_ptr(), flags);
+            if fd < 0 {
+                let e = std::io::Error::last_os_error();
+                // A symlink at the leaf under O_NOFOLLOW returns ELOOP
+                // on Linux and ENOTDIR on macOS.  Map to SymlinkComponent
+                // uniformly, matching openat_dir's behavior.
+                let raw = e.raw_os_error();
+                if raw == Some(libc::ELOOP) || raw == Some(libc::ENOTDIR) {
+                    return Err(QuarantineError::SymlinkComponent);
+                }
+                return Err(map_open_err(e));
+            }
+            let owned = OwnedFd::from_raw_fd(fd);
+            fstat_dev_inode(owned.as_raw_fd())
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // Non-unix: no dev/ino, matches capture_root_identity's stub.
+        let _ = parent;
         Ok((0, 0))
     }
 }
@@ -759,5 +811,84 @@ mod tests {
              got: {:?}",
             verified.as_ref().err()
         );
+    }
+
+    // -- Phase 8 slice 8a — stat_leaf_dev_inode ------------------------
+
+    #[test]
+    fn stat_leaf_dev_inode_returns_pair_for_regular_file() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let leaf = root.join("data.bin");
+        fs::write(&leaf, b"hello").unwrap();
+        // Sanity: the pair should match a direct fs::metadata call.
+        let expected = fs::metadata(&leaf).unwrap();
+        let (dev, ino) =
+            stat_leaf_dev_inode(&root, "data.bin", None).expect("regular file must resolve");
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(dev, expected.dev());
+        assert_eq!(ino, expected.ino());
+    }
+
+    #[test]
+    fn stat_leaf_dev_inode_rejects_symlink_at_leaf() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let target = root.join("target.bin");
+        fs::write(&target, b"x").unwrap();
+        symlink(&target, root.join("link.bin")).unwrap();
+        // openat(O_NOFOLLOW) at the leaf returns ELOOP (Linux) /
+        // ENOTDIR (macOS); both map uniformly to SymlinkComponent.
+        assert_qe_dev_inode(
+            stat_leaf_dev_inode(&root, "link.bin", None),
+            QuarantineError::SymlinkComponent,
+        );
+    }
+
+    #[test]
+    fn stat_leaf_dev_inode_rejects_escape() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        assert_qe_dev_inode(
+            stat_leaf_dev_inode(&root, "../escape.txt", None),
+            QuarantineError::EscapesRoot,
+        );
+    }
+
+    #[test]
+    fn stat_leaf_dev_inode_reports_io_on_missing_leaf() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        // No file at `data.bin` — openat returns ENOENT which maps
+        // to IoError via `map_open_err`.
+        let result = stat_leaf_dev_inode(&root, "data.bin", None);
+        assert!(
+            matches!(&result, Err(QuarantineError::IoError(_))),
+            "missing leaf must surface as IoError; got: {:?}",
+            result.as_ref().err()
+        );
+    }
+
+    #[test]
+    fn stat_leaf_dev_inode_detects_root_identity_drift() {
+        // H-5 inheritance: if the caller passes the expected boot-id
+        // and the on-disk (dev, inode) has drifted, safe_descend_verified
+        // catches it BEFORE we ever try to open the leaf.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        fs::write(root.join("data.bin"), b"x").unwrap();
+        // Deliberately-wrong expected identity.
+        let bogus_id = (u64::MAX, u64::MAX);
+        assert_qe_dev_inode(
+            stat_leaf_dev_inode(&root, "data.bin", Some(bogus_id)),
+            QuarantineError::RootIdentityChanged,
+        );
+    }
+
+    fn assert_qe_dev_inode(actual: Result<(u64, u64), QuarantineError>, expected: QuarantineError) {
+        match actual {
+            Ok(pair) => panic!("expected {expected:?}, got Ok({pair:?})"),
+            Err(e) => assert_eq!(e, expected),
+        }
     }
 }

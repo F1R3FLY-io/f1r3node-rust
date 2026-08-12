@@ -299,6 +299,10 @@ impl FixedChannels {
     pub fn fs_chmod() -> Par { byte_name(59) }
     pub fn fs_chown() -> Par { byte_name(60) }
     pub fn fs_quarantine() -> Par { byte_name(61) }
+    // Phase 8 slice 8a — range-lock natives.
+    pub fn fs_lock_range() -> Par { byte_name(62) }
+    pub fn fs_lock_sequential() -> Par { byte_name(63) }
+    pub fn fs_release_lock() -> Par { byte_name(64) }
 }
 
 pub struct BodyRefs;
@@ -360,6 +364,10 @@ impl BodyRefs {
     pub const FS_CHMOD: i64 = 59;
     pub const FS_CHOWN: i64 = 60;
     pub const FS_QUARANTINE: i64 = 61;
+    // Phase 8 slice 8a.
+    pub const FS_LOCK_RANGE: i64 = 62;
+    pub const FS_LOCK_SEQUENTIAL: i64 = 63;
+    pub const FS_RELEASE_LOCK: i64 = 64;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
@@ -396,6 +404,13 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
         BodyRefs::FS_CHMOD,
         BodyRefs::FS_CHOWN,
         BodyRefs::FS_QUARANTINE,
+        // Phase 8 slice 8a — range-lock natives.  Replay-cached so
+        // followers see byte-identical LockId / FSERR_* replies even
+        // though the LockRegistry's own state advances independently
+        // per validator.
+        BodyRefs::FS_LOCK_RANGE,
+        BodyRefs::FS_LOCK_SEQUENTIAL,
+        BodyRefs::FS_RELEASE_LOCK,
     ])
 }
 

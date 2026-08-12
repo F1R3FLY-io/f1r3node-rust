@@ -36,13 +36,14 @@ use super::super::rho_runtime::RhoISpace;
 use super::super::rho_type::{RhoBoolean, RhoByteArray, RhoNumber, RhoString};
 use super::errors::*;
 use super::handle_table::{FileHandle, FileHandleTable};
-use super::mode::{fopen_flags, parse_open_mode, AccessMode};
 // C-R1 review fix: `extract_ok_u64` is used from fs_open's is_replay
 // branch to reconstruct the leader's returned fd for shadow-handle
 // insertion.
+use super::lock::{DeployScope, HolderId, LockError, LockId, LockMode};
+use super::mode::{fopen_flags, parse_open_mode, AccessMode};
 use super::path::{
     canonicalize_lexical, io_msg_scrub, quarantine_err_reply, safe_descend_verified, safe_open,
-    SafeParent,
+    stat_leaf_dev_inode, SafeParent,
 };
 use super::response::*;
 use super::stat::{error_record, stat_record};
@@ -2199,6 +2200,250 @@ impl FsProcesses {
         produce(&out, ack).await?;
         Ok(out)
     }
+
+    // -------------------------------------------------------------------
+    // Phase 8 slice 8a — range-lock natives.
+    //
+    // These acquire and release entries in `self.handles.lock_registry`,
+    // the RuntimeManager-broadcast `LockRegistry` (X-1 design memo).
+    // The lock table is keyed on `(dev, inode)` so cross-cap
+    // coordination on the same physical file collapses to one entry
+    // regardless of which fresh-mint `File` cap holds it (slice 27).
+    //
+    // Wait:false only for MVP.  Blocking acquisition (wait:true) is
+    // slice 8b via Rig-protocol; every acquire here returns immediately
+    // with either `[true, lock_id]` or `[false, FSERR_BUSY, ...]`.
+    //
+    // WAL journaling of `LockAcquire` / `LockRelease` entries is step 4
+    // of slice 8a — deferred here.  The natives resolve the acquire
+    // outcome but do not yet append WAL entries.  Under consensus mode
+    // they will need to (per X-1 §4); under oracular they will not
+    // (per §Mode-differentiated invariants — oracular locks are
+    // in-process hints, not consensus state).
+    //
+    // Deploy-end auto-release (MUST per X-4 / spec §Explicit locks)
+    // is step 6 — wired at the WalDeployScope::end hook site in the
+    // casper crate.  For now handlers pass `DeployScope::default()`
+    // as a placeholder; step 6 threads the real per-deploy identity.
+    // Callers holding `LockToken`s must explicitly `release` in the
+    // meantime — this is safe for tests + the eventual deploy-end
+    // sweep will supersede the placeholder deploy id uniformly.
+    //
+    // Replay semantics: on `is_replay = true` these natives echo
+    // `previous` and do NOT touch `LockRegistry`.  Follower registry
+    // state diverges from the leader's, but that divergence is never
+    // consensus-observable because every reply is captured — no
+    // consensus-observable code path consults `LockRegistry` outside
+    // the replay-cached natives.  When step 4 adds WAL journaling of
+    // `LockAcquire` / `LockRelease` entries, the follower's state
+    // MUST be reconstituted from the WAL during replay (mirror slice
+    // 29's `journal_write` / `finalize_write_journal` pattern) so
+    // that step 7's consensus-mode unlink gate (`is_locked` in
+    // `fs_remove_file` / `fs_remove_dir`) sees the same state on
+    // leader and follower.  Under oracular mode the LockRegistry is
+    // best-effort per §Mode-differentiated invariants, so follower
+    // state doesn't matter there either way.
+    // -------------------------------------------------------------------
+
+    /// Acquire a positional range lock on `(root, rel)`.
+    ///
+    /// Args: `(root: String, rel: String, offset: u64, length: u64,
+    /// mode: String("r" | "w"), holder: Par, cmode: String, ack)`
+    ///
+    /// - `holder` is opaque Par (typically the caller-cap's `stateP`
+    ///   GPrivate name) hashed to a stable 32-byte `HolderId` — used
+    ///   by `File.close`'s `release_all_for_holder` sweep to release
+    ///   only locks owned by this cap.
+    /// - `cmode` is validated but not currently branched on at acquire
+    ///   time; the mode affects WAL journaling (step 4) and unlink
+    ///   gating (step 7), not the acquire outcome itself.
+    ///
+    /// Reply: `[true, lock_id: Int]` on success, `[false, code, msg]`
+    /// on error (FSERR_BUSY, FSERR_BAD_ARG, FSERR_QUOTA_EXCEEDED,
+    /// FSERR_UNSUPPORTED for symlink components at leaf, or the
+    /// canonical quarantine error codes on path issues).
+    pub async fn fs_lock_range(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        let Some((produce, is_replay, previous, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
+            return Err(illegal_argument_error("fs_lock_range"));
+        };
+        let [root_par, rel_par, off_par, len_par, mode_par, holder_par, cmode_par, ack] =
+            args.as_slice()
+        else {
+            return Err(illegal_argument_error("fs_lock_range"));
+        };
+        if is_replay {
+            produce(&previous, ack).await?;
+            return Ok(previous);
+        }
+        // cmode validation: rejects bad shapes even though acquire
+        // outcome doesn't currently branch on it — step 4 (WAL) and
+        // step 7 (unlink gate) will.  Fail-closed matches the pattern
+        // of every other cmode-taking native.
+        let _cmode = match resolve_cmode(cmode_par) {
+            Some(m) => m,
+            None => {
+                let out = vec![err(
+                    FSERR_BAD_ARG,
+                    "cmode must be String \"oracular\" or \"consensus\"",
+                )];
+                produce(&out, ack).await?;
+                return Ok(out);
+            }
+        };
+        let reply = match (
+            RhoString::unapply(root_par),
+            RhoString::unapply(rel_par),
+            RhoNumber::unapply(off_par),
+            RhoNumber::unapply(len_par),
+            RhoString::unapply(mode_par),
+            resolve_lock_mode(mode_par),
+        ) {
+            (Some(root), Some(rel), Some(off), Some(len), Some(_), Some(lm))
+                if off >= 0 && len > 0 =>
+            {
+                let root_pb = PathBuf::from(root);
+                let expected = self.handles.root_registry.get(&root_pb);
+                let dev_inode = match stat_leaf_dev_inode(&root_pb, &rel, expected) {
+                    Ok(id) => id,
+                    Err(qe) => {
+                        let (c, m) = quarantine_err_reply(&qe);
+                        let out = vec![err(c, m)];
+                        produce(&out, ack).await?;
+                        return Ok(out);
+                    }
+                };
+                let holder = holder_id_of(holder_par);
+                let deploy = DeployScope::default(); // step 6 threads real id
+                match self
+                    .handles
+                    .lock_registry
+                    .try_acquire_range(dev_inode, off as u64, len as u64, lm, holder, deploy)
+                {
+                    Ok(id) => ok_u64(id.0),
+                    Err(le) => lock_err_reply(le),
+                }
+            }
+            _ => err(
+                FSERR_BAD_ARG,
+                "expected (String, String, u64, u64>0, String\"r|w\", Par, String)",
+            ),
+        };
+        let out = vec![reply];
+        produce(&out, ack).await?;
+        Ok(out)
+    }
+
+    /// Acquire the whole-file sequential lock on `(root, rel)`.
+    ///
+    /// Called by sequential-stream constructors (`chars`, `bytes`,
+    /// `lines`, `readLine`, `writeChars`, `writeBytes`, `writeLine`,
+    /// `writeLines`, `writeString`, `writeByteArray`) before they
+    /// begin producing.  Enforces "one active sequential stream per
+    /// File" (FIP §1132) at the physical file level rather than at
+    /// the cap level, so cross-cap sequential streams on the same
+    /// inode also conflict per §1182.
+    ///
+    /// Args: `(root: String, rel: String, holder: Par, cmode: String, ack)`
+    /// Reply: `[true, lock_id: Int]` or `[false, code, msg]`.
+    pub async fn fs_lock_sequential(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        let Some((produce, is_replay, previous, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
+            return Err(illegal_argument_error("fs_lock_sequential"));
+        };
+        let [root_par, rel_par, holder_par, cmode_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("fs_lock_sequential"));
+        };
+        if is_replay {
+            produce(&previous, ack).await?;
+            return Ok(previous);
+        }
+        let _cmode = match resolve_cmode(cmode_par) {
+            Some(m) => m,
+            None => {
+                let out = vec![err(
+                    FSERR_BAD_ARG,
+                    "cmode must be String \"oracular\" or \"consensus\"",
+                )];
+                produce(&out, ack).await?;
+                return Ok(out);
+            }
+        };
+        let reply = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
+            (Some(root), Some(rel)) => {
+                let root_pb = PathBuf::from(root);
+                let expected = self.handles.root_registry.get(&root_pb);
+                let dev_inode = match stat_leaf_dev_inode(&root_pb, &rel, expected) {
+                    Ok(id) => id,
+                    Err(qe) => {
+                        let (c, m) = quarantine_err_reply(&qe);
+                        let out = vec![err(c, m)];
+                        produce(&out, ack).await?;
+                        return Ok(out);
+                    }
+                };
+                let holder = holder_id_of(holder_par);
+                let deploy = DeployScope::default(); // step 6
+                match self
+                    .handles
+                    .lock_registry
+                    .try_acquire_sequential(dev_inode, holder, deploy)
+                {
+                    Ok(id) => ok_u64(id.0),
+                    Err(le) => lock_err_reply(le),
+                }
+            }
+            _ => err(FSERR_BAD_ARG, "expected (String, String, Par, String)"),
+        };
+        let out = vec![reply];
+        produce(&out, ack).await?;
+        Ok(out)
+    }
+
+    /// Release a previously-acquired lock by id.  Both positional
+    /// (`fs_lock_range`) and sequential (`fs_lock_sequential`) locks
+    /// release through this native — the id space is unified.
+    ///
+    /// Args: `(lock_id: u64, ack)`
+    /// Reply: `[true]` on success, `[false, FSERR_CLOSED, msg]` if
+    /// the id isn't held (double release, cap-close swept it first,
+    /// etc.  Idempotent behavior mirrors `File.close` /
+    /// `Stream.close`).
+    pub async fn fs_release_lock(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        let Some((produce, is_replay, previous, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
+            return Err(illegal_argument_error("fs_release_lock"));
+        };
+        let [id_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("fs_release_lock"));
+        };
+        if is_replay {
+            produce(&previous, ack).await?;
+            return Ok(previous);
+        }
+        let reply = match RhoNumber::unapply(id_par) {
+            Some(n) if n >= 0 => match self.handles.lock_registry.release(LockId(n as u64)) {
+                Ok(()) => ok_bare(),
+                Err(le) => lock_err_reply(le),
+            },
+            _ => err(FSERR_BAD_ARG, "expected (u64)"),
+        };
+        let out = vec![reply];
+        produce(&out, ack).await?;
+        Ok(out)
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -2231,6 +2476,54 @@ fn resolve_cmode(par: &Par) -> Option<ConsensusMode> {
         Some(s) if s == CMODE_CONSENSUS_STR => Some(ConsensusMode::Consensus),
         Some(s) if s == CMODE_ORACULAR_STR => Some(ConsensusMode::Oracular),
         _ => None,
+    }
+}
+
+/// Phase 8 slice 8a — parse the Rholang-supplied lock-mode string
+/// into a `LockMode`.  Accepts exactly `"r"` and `"w"` per FIP
+/// §Explicit locks; any other shape returns `None` and the caller
+/// surfaces `FSERR_BAD_ARG`.  Fail-closed mirrors `resolve_cmode`.
+fn resolve_lock_mode(par: &Par) -> Option<LockMode> {
+    match RhoString::unapply(par).as_deref() {
+        Some("r") => Some(LockMode::Read),
+        Some("w") => Some(LockMode::Write),
+        _ => None,
+    }
+}
+
+/// Phase 8 slice 8a — derive a stable 32-byte `HolderId` from an
+/// opaque Rholang Par (typically the caller-cap's `stateP` GPrivate
+/// name).  Uses the same Blake2b256 stable-hash provider that rspace
+/// uses for channel identity, so equal-Par callers hash to the same
+/// bytes across runtimes deterministically.
+fn holder_id_of(par: &Par) -> HolderId {
+    let h = rspace_plus_plus::rspace::hashing::stable_hash_provider::hash(par).bytes();
+    // Same 32-byte hard-dep as `ack_channel_hash`.  A Blake2b256
+    // provider swap producing shorter output would silently
+    // collide HolderIds; fail loudly at first call instead.
+    assert_eq!(
+        h.len(),
+        32,
+        "Blake2b256 must produce 32-byte digest; got {} — HolderId hard-depends on \
+         a fixed 32-byte hash width",
+        h.len()
+    );
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&h);
+    HolderId::from_bytes(out)
+}
+
+/// Phase 8 slice 8a — map a `LockError` from the LockRegistry to
+/// the FSERR reply shape.
+fn lock_err_reply(le: LockError) -> Par {
+    match le {
+        LockError::Busy => err(FSERR_BUSY, "range lock unavailable"),
+        LockError::Closed => err(FSERR_CLOSED, "lock id not held"),
+        LockError::BadArg => err(FSERR_BAD_ARG, "invalid lock argument"),
+        LockError::QuotaExceeded => err(
+            FSERR_QUOTA_EXCEEDED,
+            "range-lock cap exceeded for this file",
+        ),
     }
 }
 
@@ -2605,5 +2898,69 @@ mod cmode_tests {
     fn cmode_string_constants_are_stable() {
         assert_eq!(CMODE_ORACULAR_STR, "oracular");
         assert_eq!(CMODE_CONSENSUS_STR, "consensus");
+    }
+
+    // -- Phase 8 slice 8a — lock-native helpers -------------------------
+
+    #[test]
+    fn resolve_lock_mode_accepts_r_and_w() {
+        assert_eq!(resolve_lock_mode(&s("r")), Some(LockMode::Read));
+        assert_eq!(resolve_lock_mode(&s("w")), Some(LockMode::Write));
+    }
+
+    #[test]
+    fn resolve_lock_mode_rejects_capitalized_and_padded() {
+        assert_eq!(resolve_lock_mode(&s("R")), None);
+        assert_eq!(resolve_lock_mode(&s("W")), None);
+        assert_eq!(resolve_lock_mode(&s(" r")), None);
+        assert_eq!(resolve_lock_mode(&s("r ")), None);
+    }
+
+    #[test]
+    fn resolve_lock_mode_rejects_other_strings() {
+        assert_eq!(resolve_lock_mode(&s("")), None);
+        assert_eq!(resolve_lock_mode(&s("rw")), None);
+        assert_eq!(resolve_lock_mode(&s("read")), None);
+        assert_eq!(resolve_lock_mode(&s("write")), None);
+        assert_eq!(resolve_lock_mode(&s("x")), None);
+    }
+
+    #[test]
+    fn resolve_lock_mode_rejects_non_string_par() {
+        // Fail-closed on any Par shape other than a String.  Mirrors
+        // `resolve_cmode`'s discipline — a caller passing an Int or
+        // Bool must not be silently downgraded to a default mode.
+        assert_eq!(resolve_lock_mode(&nil()), None);
+        assert_eq!(resolve_lock_mode(&i(0)), None);
+        assert_eq!(resolve_lock_mode(&b(true)), None);
+        assert_eq!(resolve_lock_mode(&bytes()), None);
+    }
+
+    #[test]
+    fn holder_id_of_is_deterministic() {
+        // Equal Pars must hash to the same HolderId across calls —
+        // this is what makes `release_all_for_holder` work across
+        // deploys.  A drift here would break File.close's ability to
+        // release the specific cap's locks.
+        let a = s("holder-1");
+        let b = s("holder-1");
+        assert_eq!(holder_id_of(&a), holder_id_of(&b));
+    }
+
+    #[test]
+    fn holder_id_of_distinguishes_different_pars() {
+        assert_ne!(holder_id_of(&s("holder-1")), holder_id_of(&s("holder-2")));
+        assert_ne!(holder_id_of(&s("holder")), holder_id_of(&nil()));
+        assert_ne!(holder_id_of(&i(1)), holder_id_of(&i(2)));
+    }
+
+    #[test]
+    fn holder_id_of_hash_width_contract() {
+        // The module docstring + runtime assertion require Blake2b256
+        // → 32 bytes.  Pinned here so a provider swap producing a
+        // shorter digest is caught at test time rather than at first
+        // runtime call.
+        let h = holder_id_of(&s("any-par"));
+        assert_eq!(h.bytes.len(), 32);
     }
 }

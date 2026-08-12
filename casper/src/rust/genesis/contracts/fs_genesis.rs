@@ -494,6 +494,11 @@ pub const FS_NATIVE_URN_SUFFIXES: &[&str] = &[
     // pins the correspondence in both directions.
     "entriesStream",
     "quarantine",
+    // Phase 8 slice 8a — range-lock natives.  File.rho binds these
+    // via lexical `new` capture the same way it binds fsRead/fsWrite/etc.
+    "lockRange",
+    "lockSequential",
+    "releaseLock",
 ];
 
 /// Compose the full FsGenesis Rholang source.
@@ -595,6 +600,9 @@ new
   fsEntries(`rho:io:fs:native:1.0.0/entries`),
   fsEntriesStream(`rho:io:fs:native:1.0.0/entriesStream`),
   fsQuarantine(`rho:io:fs:native:1.0.0/quarantine`),
+  fsLockRange(`rho:io:fs:native:1.0.0/lockRange`),
+  fsLockSequential(`rho:io:fs:native:1.0.0/lockSequential`),
+  fsReleaseLock(`rho:io:fs:native:1.0.0/releaseLock`),
   rs(`rho:registry:insertSigned:secp256k1`),
   uriOut
 in {{
@@ -735,6 +743,10 @@ mod tests {
             ("entries", 4),       // (root, rel, cmode, ack) — Slice 26
             ("entriesStream", 3), // (root, rel, ack)
             ("quarantine", 3),    // (root, rel, ack)
+            // Phase 8 slice 8a — range-lock natives.
+            ("lockRange", 8), // (root, rel, offset, length, mode, holder, cmode, ack)
+            ("lockSequential", 5), // (root, rel, holder, cmode, ack)
+            ("releaseLock", 2), // (lockId, ack)
         ];
 
         // Read rho_runtime.rs from the sibling rholang crate.
@@ -861,7 +873,19 @@ mod tests {
         // Regenerate deliberately via
         // `cargo test -p casper --lib -- --nocapture \
         //   compose_fs_genesis_source_golden_hex`.
-        const EXPECTED: &str = "c7d8d81852c372a11b3eeeb43adff0cb1038840a1ba7686911174ca42452ba31";
+        // Anchor rolled forward for Phase 8 slice 8a: added three
+        // range-lock URN bindings (`fsLockRange`, `fsLockSequential`,
+        // `fsReleaseLock`) to the composed source's top-level `new`
+        // clause.  IS a Genesis-composed-source hard fork: any
+        // validator running pre-slice-8a code composes without the
+        // new URNs, hashes to the previous anchor, and diverges on
+        // the genesis block.  Not a live-network concern for this
+        // branch (unreleased), but any future backport must land
+        // atomically across all validators at a coordinated block
+        // height.  The bindings themselves are unused until File.rho
+        // invokes them (slice 8a step 5), but their PRESENCE in the
+        // composed source is enough to shift the block hash.
+        const EXPECTED: &str = "cfddec759c6b2ecd3ab6cdb7e8cf9695a0efce544f03890d1bfdbad27381098c";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

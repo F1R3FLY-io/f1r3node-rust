@@ -1243,6 +1243,31 @@ fn std_system_processes() -> Vec<Definition> {
             BodyRefs::FS_QUARANTINE,
             |sp, args| Box::pin(async move { sp.fs.fs_quarantine(args).await }),
         ),
+        // Phase 8 slice 8a — range-lock natives.
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/lockRange",
+            FixedChannels::fs_lock_range(),
+            // (rootCanon, rel, offset, length, mode, holder, cmode, ack)
+            8,
+            BodyRefs::FS_LOCK_RANGE,
+            |sp, args| Box::pin(async move { sp.fs.fs_lock_range(args).await }),
+        ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/lockSequential",
+            FixedChannels::fs_lock_sequential(),
+            // (rootCanon, rel, holder, cmode, ack)
+            5,
+            BodyRefs::FS_LOCK_SEQUENTIAL,
+            |sp, args| Box::pin(async move { sp.fs.fs_lock_sequential(args).await }),
+        ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/releaseLock",
+            FixedChannels::fs_release_lock(),
+            // (lockId, ack)
+            2,
+            BodyRefs::FS_RELEASE_LOCK,
+            |sp, args| Box::pin(async move { sp.fs.fs_release_lock(args).await }),
+        ),
     ]
 }
 
