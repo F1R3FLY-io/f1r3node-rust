@@ -656,7 +656,7 @@ jobs:
       cancel-in-progress: true
     steps:
       - name: Clone trusted runner launcher
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: F1R3FLY-io/system-integration
           ref: ${{ env.SYSTEM_INTEGRATION_REF }}
@@ -698,7 +698,7 @@ jobs:
 
       - name: Create runner-management token
         id: app-token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         with:
           app-id: ${{ vars.CI_GITHUB_APP_ID }}
           private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
@@ -1058,7 +1058,7 @@ jobs:
       cancel-in-progress: true
     steps:
       - name: Checkout CI control files
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.workflow_sha }}
           path: ci-control
@@ -1167,7 +1167,7 @@ jobs:
           echo "tagged $iid — reapable after $(date -u -d "@${deadline}" +%FT%TZ)"
 
       - name: Checkout code under test
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ needs.schedule_gate.outputs.target_ref }}
           path: node-under-test
@@ -1181,7 +1181,7 @@ jobs:
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Clone trusted integration harness
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: F1R3FLY-io/system-integration
           ref: ${{ env.SYSTEM_INTEGRATION_REF }}
@@ -1534,7 +1534,7 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - name: Checkout CI control files
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.workflow_sha }}
           path: ci-control
