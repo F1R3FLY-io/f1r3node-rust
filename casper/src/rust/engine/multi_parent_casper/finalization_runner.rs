@@ -59,7 +59,6 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
 // Phase 9 (A-3): deploy_storage uses parking_lot::Mutex.
 use parking_lot::Mutex;
-use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use shared::rust::store::key_value_store::KvStoreError;
 
@@ -71,7 +70,6 @@ use super::types::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
 use crate::rust::finality::finalizer::Finalizer;
 use crate::rust::finality::floor::floor_of_block;
-use crate::rust::util::rholang::interpreter_util::deploy_effect_in_state;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 // Phase 13 (TC-1): the previous `FINALIZER_BLOCKING_TIMEOUT = 15s`
@@ -324,13 +322,6 @@ pub(crate) async fn compute_last_finalized_block(
     // bounded by the window-close arm.
     if new_lfb_found {
         let floor = floor_of_block(&dag, &final_lfb_hash, ftt).await?;
-        let floor_block = block_store.get(&floor.hash)?.ok_or_else(|| {
-            CasperError::RuntimeError(format!(
-                "floor block {} not present in store",
-                PrettyPrinter::build_string_bytes(&floor.hash)
-            ))
-        })?;
-        let floor_state = Blake2b256Hash::from_bytes_prost(&floor_block.body.state.post_state_hash);
         let stored = deploy_storage
             .lock()
             .read_all()
@@ -349,12 +340,11 @@ pub(crate) async fn compute_last_finalized_block(
                 evicted.push(deploy);
                 continue;
             }
-            if deploy_effect_in_state(
-                &dag,
+            if crate::rust::finality::deploy_lifecycle::effect_in_state_of(
                 &block_store,
-                &runtime_manager,
-                &floor_state,
+                &floor.hash,
                 &deploy.sig,
+                deploy.data.valid_after_block_number,
             )? {
                 settled_count += 1;
                 evicted.push(deploy);

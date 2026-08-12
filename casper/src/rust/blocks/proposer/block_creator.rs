@@ -340,7 +340,6 @@ pub async fn prepare_user_deploys(
         deploy_storage,
         rejected_deploy_buffer,
         block_store,
-        None,
         allow_recovered_deploys,
         DeployAdmissionPolicy {
             allow_ordinary: allow_ordinary_deploys,
@@ -426,9 +425,6 @@ async fn prepare_user_deploys_with_policy(
         Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>,
     >,
     block_store: &KeyValueBlockStore,
-    // The purge probe needs a runtime; fixtures pass None and the purge
-    // defers.
-    runtime_manager: Option<&RuntimeManager>,
     allow_recovered_deploys: bool,
     admission_policy: DeployAdmissionPolicy,
     floor_ctx: Option<&FloorContext>,
@@ -524,23 +520,21 @@ async fn prepare_user_deploys_with_policy(
 
     // Terminal purge: eviction is irreversible, so it keys on the one
     // irreversible fact — the deploy's effect present in the FLOOR block's
-    // committed post-state. Floor coverage is monotone (floor-covered
-    // effects are in every future merge base), so a purged entry can never
-    // be needed again. No node-local finality marker may evict: a win the
-    // finalizer marked final can still sit above the justification-derived
-    // floor, where a later merge can reject it, and the buffer holds the
-    // only re-proposable copy. Without floor facts (parentless shapes) or
-    // a runtime (fixtures), the purge defers — delay, never loss. A deploy
-    // that creates no number cells is invisible to the probe and is never
-    // purged here; it leaves the buffer at window close via the retain.
-    let settled_buffered: Vec<Signed<DeployData>> = match (floor_ctx, runtime_manager) {
-        (Some(ctx), Some(rm)) if !buffered_deploys.is_empty() => {
+    // committed post-state, read from the recorded construction facts.
+    // Floor coverage is monotone (floor-covered effects are in every
+    // future merge base), so a purged entry can never be needed again. No
+    // node-local finality marker may evict: a win the finalizer marked
+    // final can still sit above the justification-derived floor, where a
+    // later merge can reject it, and the buffer holds the only
+    // re-proposable copy. Without floor facts (parentless shapes) the
+    // purge defers — delay, never loss.
+    let settled_buffered: Vec<Signed<DeployData>> = match floor_ctx {
+        Some(ctx) if !buffered_deploys.is_empty() => {
             let mut settled = Vec::new();
             for deploy in &buffered_deploys {
                 if ctx.effect_settled_in_floor(
-                    &casper_snapshot.dag,
                     block_store,
-                    rm,
+                    deploy.data.valid_after_block_number,
                     &deploy.sig,
                 )? {
                     settled.push(deploy.clone());
@@ -2644,7 +2638,6 @@ pub async fn create(
             deploy_storage.clone(),
             rejected_deploy_buffer.clone(),
             block_store,
-            Some(runtime_manager),
             allow_recovered_deploys,
             admission_policy,
             floor_ctx.as_ref(),
@@ -2755,33 +2748,33 @@ pub async fn create(
     // pool and the buffer. A double-apply destroys the work rather than
     // duplicating it.
     //
-    // The test is the INVARIANT, not a route. Keying on how the effect
-    // arrived misses paths: `applied_from_scope` is empty on the
-    // short-circuit shapes (`single_parent`, `descendant_fast_path`, cache
-    // hit) where the effect arrives via a parent's post-state instead.
-    // Asking the pre-state directly is provenance-independent and therefore
-    // complete. `applied_from_scope` is still consulted first: it is exact
-    // and needs no I/O, so the state probe only runs for what it does not
-    // cover.
+    // The test is the INVARIANT, not a route. `applied_from_scope` alone
+    // misses paths: it is empty on the short-circuit shapes
+    // (`single_parent`, `descendant_fast_path`, cache hit) where the effect
+    // arrives via a parent's post-state instead. The membership walk over
+    // the pre-state's recorded lineage — the merge base where one is
+    // recorded, the sole parent otherwise — is provenance-independent and
+    // therefore complete. `applied_from_scope` is still consulted first:
+    // it is exact and needs no I/O, so the walk only runs for what it
+    // does not cover.
     //
     // Only the FRESH copy is dropped, never the merge's, so reinstatement
     // stays intact. A false positive costs a round — the deploy stays in
     // storage and in the buffer — so this is delay, never loss.
     let user_deploys: HashSet<Signed<DeployData>> = {
-        let pre_state_hash =
-            rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash::from_bytes_prost(
-                &merge_pre_info.state,
-            );
+        let base_lineage_root: BlockHash = merge_pre_info
+            .merge_base
+            .clone()
+            .unwrap_or_else(|| parents[0].block_hash.clone());
         let mut kept: HashSet<Signed<DeployData>> = HashSet::with_capacity(user_deploys.len());
         let mut dropped: Vec<String> = Vec::new();
         for deploy in user_deploys {
             let already_applied = merge_pre_info.applied_from_scope.contains(&deploy.sig)
-                || interpreter_util::deploy_effect_in_state(
-                    &casper_snapshot.dag,
+                || crate::rust::finality::deploy_lifecycle::effect_in_state_of(
                     block_store,
-                    runtime_manager,
-                    &pre_state_hash,
+                    &base_lineage_root,
                     &deploy.sig,
+                    deploy.data.valid_after_block_number,
                 )?;
             if already_applied {
                 dropped.push(hex::encode(&deploy.sig[..deploy.sig.len().min(8)]));
@@ -4740,7 +4733,6 @@ mod tests {
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
-            None,
             false,
             DeployAdmissionPolicy {
                 allow_ordinary: true,
@@ -4814,7 +4806,6 @@ mod tests {
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
-            None,
             false,
             DeployAdmissionPolicy {
                 allow_ordinary: true,
@@ -4915,7 +4906,6 @@ mod tests {
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
-            None,
             false,
             DeployAdmissionPolicy {
                 allow_ordinary: true,
@@ -5028,7 +5018,6 @@ mod tests {
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
-            None,
             false,
             DeployAdmissionPolicy {
                 allow_ordinary: false,
@@ -5133,7 +5122,6 @@ mod tests {
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
-            None,
             false,
             DeployAdmissionPolicy {
                 allow_ordinary: false,
@@ -5249,7 +5237,6 @@ mod tests {
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
-            None,
             false,
             DeployAdmissionPolicy {
                 allow_ordinary: false,
@@ -5340,7 +5327,6 @@ mod tests {
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
-            None,
             false,
             DeployAdmissionPolicy {
                 allow_ordinary: false,

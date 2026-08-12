@@ -31,7 +31,6 @@ use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use super::floor::{self, Floor};
 use crate::rust::errors::CasperError;
 use crate::rust::safety::clique_oracle::FtThreshold;
-use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 /// Per-sig canonical disposition facts over the operation's parents — the
 /// latest disposition, the latest kept rejection record, and the first
@@ -86,8 +85,8 @@ impl FloorContext {
         })
     }
 
-    /// The floor block's post-state as a history-repository hash (the merge
-    /// base and the effect probe's target).
+    /// The floor block's post-state as a history-repository hash (the
+    /// merge base state).
     pub fn floor_state_hash(&self) -> Blake2b256Hash {
         Blake2b256Hash::from_bytes_prost(&self.floor_state)
     }
@@ -195,22 +194,25 @@ impl FloorContext {
 
     /// True iff the sig's effect is present in the FLOOR block's committed
     /// post-state, memoized across every probe of this operation.
+    /// `min_height` bounds the membership walk below (callers with the
+    /// deploy pass its `valid_after`; sig-only callers the validity-window
+    /// bound — see `deploy_lifecycle::effect_in_state_of`). The memo stays
+    /// sig-keyed even though bounds differ per caller: no execution
+    /// precedes validity, so every correct lower bound yields one answer.
     pub fn effect_settled_in_floor(
         &self,
-        dag: &KeyValueDagRepresentation,
         block_store: &KeyValueBlockStore,
-        runtime_manager: &RuntimeManager,
+        min_height: i64,
         sig: &Bytes,
     ) -> Result<bool, CasperError> {
         if let Some(cached) = self.effect_memo.lock().get(sig) {
             return Ok(*cached);
         }
-        let settled = crate::rust::util::rholang::interpreter_util::deploy_effect_in_state(
-            dag,
+        let settled = crate::rust::finality::deploy_lifecycle::effect_in_state_of(
             block_store,
-            runtime_manager,
-            &self.floor_state_hash(),
+            &self.floor.hash,
             sig,
+            min_height,
         )?;
         self.effect_memo.lock().insert(sig.clone(), settled);
         Ok(settled)

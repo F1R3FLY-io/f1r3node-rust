@@ -69,100 +69,6 @@ fn block_in_floor_merge_scope(
     Ok(!dag.is_dag_ancestor(hash, floor_hash)?)
 }
 
-/// True iff a deploy's SUCCESSFUL effect is already present in `base_state`
-/// — i.e. the deploy already executed in the lineage that state derives
-/// from. Applying (or re-executing) such a deploy again would double its
-/// per-deploy cells.
-///
-/// Signal: the deploy's own created number cells. Each carries a
-/// sig-derived rnd, so its channel NAME is unique to this deploy and stable
-/// across executions even when the VALUE is base-dependent — a match is
-/// false-positive-free even on shared channels. The check restricts to
-/// channels the deploy CREATED (absent in the executing block's pre-state);
-/// shared channels the pre-charge merely reads are excluded.
-///
-/// CONTRACT — the probe's blind spots, both deliberate:
-/// - A deploy that creates NO number cells is invisible here and always
-///   reads not-settled. Same-sig copies that meet in one merge scope are
-///   still deduped by the freshest-copy rule regardless; only a
-///   base-settled no-cell deploy re-entering via scope escapes both, and
-///   its duplicate effect is additive datums on multi-datum channels,
-///   never a single-value-cell violation.
-/// - A FAILED execution's created cells are not in any committed state, so
-///   the probe correctly reads not-settled: a failed run's charge landed
-///   but its effect did not, and re-execution is legitimate.
-pub(crate) fn deploy_effect_in_state(
-    dag: &KeyValueDagRepresentation,
-    block_store: &KeyValueBlockStore,
-    runtime_manager: &RuntimeManager,
-    base_state: &Blake2b256Hash,
-    sig: &Bytes,
-) -> Result<bool, CasperError> {
-    let Some(origin_hash) = dag
-        .lookup_by_deploy_id(&sig.to_vec())
-        .map_err(CasperError::KvStoreError)?
-    else {
-        return Ok(false);
-    };
-    let Some(origin) = block_store.get(&origin_hash)? else {
-        return Ok(false);
-    };
-    let Some(idx) = origin
-        .body
-        .deploys
-        .iter()
-        .position(|pd| pd.deploy.sig == *sig)
-    else {
-        return Ok(false);
-    };
-
-    let mergeable_chs = runtime_manager.load_mergeable_channels(
-        &origin.body.state.post_state_hash,
-        origin.sender.clone(),
-        origin.seq_num,
-    )?;
-    let Some(merge_chs) = mergeable_chs.get(idx) else {
-        return Ok(false);
-    };
-    if merge_chs.is_empty() {
-        return Ok(false);
-    }
-
-    let origin_pre = Blake2b256Hash::from_bytes_prost(&origin.body.state.pre_state_hash);
-    let origin_pre_reader = runtime_manager
-        .history_repo
-        .get_history_reader(&origin_pre)
-        .map_err(CasperError::HistoryError)?;
-    let base_reader = runtime_manager
-        .history_repo
-        .get_history_reader(base_state)
-        .map_err(CasperError::HistoryError)?;
-    for (ch, _) in merge_chs.iter() {
-        let created_by_deploy = origin_pre_reader
-            .get_data(ch)
-            .map_err(CasperError::HistoryError)?
-            .is_empty();
-        if !created_by_deploy {
-            continue;
-        }
-        let in_base = !base_reader
-            .get_data(ch)
-            .map_err(CasperError::HistoryError)?
-            .is_empty();
-        tracing::debug!(
-            target: "f1r3.trace.basecheck",
-            sig = %hex::encode(&sig[..sig.len().min(8)]),
-            channel = %hex::encode(&ch.bytes()[..6]),
-            in_base,
-            "base-check per-deploy created cell"
-        );
-        if in_base {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 /// Per-sig canonical disposition facts over one operation's parent cone.
 /// One walk collects everything recovery reads: the latest disposition
 /// (who currently stands), the latest kept rejection record (the
@@ -1483,18 +1389,19 @@ pub async fn compute_parents_post_state(
             // already in the base's committed state has no legitimate scope
             // copy — every one is a stale duplicate no rejection record
             // covers. Memoization lives inside the merge (one probe per
-            // unique sig per merge call).
+            // unique sig per merge call). The walk bound is the validity
+            // window's floor edge: a scope-live sig's window was open at
+            // its execution, so nothing deeper can hold its effect.
+            let settled_walk_bound =
+                floor_block_number - s.on_chain_state.shard_conf.deploy_lifespan;
             let sig_settled_in_base = |sig: &Bytes| -> Result<bool, CasperError> {
                 match floor_ctx {
-                    Some(ctx) => {
-                        ctx.effect_settled_in_floor(&s.dag, block_store, runtime_manager, sig)
-                    }
-                    None => deploy_effect_in_state(
-                        &s.dag,
+                    Some(ctx) => ctx.effect_settled_in_floor(block_store, settled_walk_bound, sig),
+                    None => crate::rust::finality::deploy_lifecycle::effect_in_state_of(
                         block_store,
-                        runtime_manager,
-                        &floor_state,
+                        &floor_hash,
                         sig,
+                        settled_walk_bound,
                     ),
                 }
             };

@@ -16,6 +16,7 @@ pub mod populate_cache_shadow_spec;
 pub mod recovery_cycle_spec;
 pub mod recovery_repeat_deploy_misfire_spec;
 pub mod retry_gate_spec;
+pub mod settled_membership_spec;
 pub mod rholang_build_test;
 pub mod rnode_key_value_store_manager_spec;
 pub mod single_parent_casper_spec;
