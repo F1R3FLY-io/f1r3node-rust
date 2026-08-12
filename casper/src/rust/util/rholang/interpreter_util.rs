@@ -399,6 +399,23 @@ fn record_disposition(
     }
 }
 
+/// The applied set and merge base are frozen merge facts the
+/// state-membership walk reads; a block recording facts its
+/// validator-recomputed merge did not produce is invalid, the same
+/// contract as the rejected records.
+fn state_facts_mismatch(
+    block: &BlockMessage,
+    merged: &super::runtime_manager::MergedPreState,
+) -> bool {
+    let block_applied: HashSet<Bytes> = block.body.applied_from_scope.iter().cloned().collect();
+    let block_base: Option<BlockHash> = if block.body.merge_base.is_empty() {
+        None
+    } else {
+        Some(block.body.merge_base.clone())
+    };
+    block_applied != merged.applied_from_scope || block_base != merged.merge_base
+}
+
 // Returns (None, checkpoints) if the block's tuplespace hash
 // does not match the computed hash based on the deploys
 pub async fn validate_block_checkpoint(
@@ -519,6 +536,20 @@ pub async fn validate_block_checkpoint(
                     missing_in_computed = ?missing_in_computed,
                     duplicate_count,
                     "rejected deploy mismatch: validator and block creator disagree on rejected records"
+                );
+
+                Ok(Either::Left(BlockStatus::invalid_rejected_deploy()))
+            } else if state_facts_mismatch(block, &merged) {
+                tracing::error!(
+                    target: "f1r3fly.casper.block_validation",
+                    block_num = block.body.state.block_number,
+                    block_hash = %PrettyPrinter::build_string_bytes(&block.block_hash),
+                    sender = %PrettyPrinter::build_string_bytes(&block.sender),
+                    block_applied = block.body.applied_from_scope.len(),
+                    validator_applied = merged.applied_from_scope.len(),
+                    block_base = %PrettyPrinter::build_string_bytes(&block.body.merge_base),
+                    "applied-from-scope / merge-base mismatch: validator and \
+                     block creator disagree on the merge's recorded state facts"
                 );
 
                 Ok(Either::Left(BlockStatus::invalid_rejected_deploy()))
@@ -797,6 +828,11 @@ pub struct DeploysCheckpoint {
     pub rejected_deploys: Vec<RejectedDeploy>,
     pub system_deploys: Vec<ProcessedSystemDeploy>,
     pub bonds: Vec<Bond>,
+    // The merge's recorded state-construction facts, packaged into the
+    // block body (sorted sigs; base empty where the header derives it)
+    // and consensus-checked at validation beside the rejected records.
+    pub applied_from_scope: Vec<Bytes>,
+    pub merge_base: Option<BlockHash>,
 }
 
 pub async fn compute_deploys_checkpoint(
@@ -848,6 +884,19 @@ pub async fn compute_deploys_checkpoint(
     let parents_ms = parents_started.elapsed().as_millis();
     let pre_state_hash = computed_parents_info.state.clone();
     let rejected_deploys: Vec<RejectedDeploy> = computed_parents_info.rejected_user.clone();
+    // Sorted so the packaged field is deterministic — the equality check at
+    // validation compares recomputed sets, but the block bytes must not
+    // depend on HashSet iteration order.
+    let applied_from_scope: Vec<Bytes> = {
+        let mut sigs: Vec<Bytes> = computed_parents_info
+            .applied_from_scope
+            .iter()
+            .cloned()
+            .collect();
+        sigs.sort();
+        sigs
+    };
+    let merge_base = computed_parents_info.merge_base.clone();
 
     // Compute state and bonds using one spawned runtime
     let compute_state_started = std::time::Instant::now();
@@ -881,6 +930,8 @@ pub async fn compute_deploys_checkpoint(
         rejected_deploys,
         system_deploys: processed_system_deploys,
         bonds,
+        applied_from_scope,
+        merge_base,
     })
 }
 
@@ -1099,12 +1150,16 @@ pub async fn compute_parents_post_state(
                         post_state = %hex::encode(&state[..8.min(state.len())]),
                         "merge.step: exit compute_parents_post_state"
                     );
+                    // The covering parent is the state parent. Multi-parent
+                    // headers cannot derive which parent carried the state,
+                    // so the fast path records it — the state-membership
+                    // walk continues there instead of guessing.
                     return Ok(MergedPreState {
                         state,
                         rejected_user: Vec::new(),
                         rejected_slashes: Vec::new(),
                         applied_from_scope: HashSet::new(),
-                        merge_base: None,
+                        merge_base: Some(candidate.block_hash.clone()),
                     });
                 }
             }

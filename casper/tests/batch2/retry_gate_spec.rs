@@ -285,6 +285,8 @@ async fn premature_retry_is_rejected_by_every_validator() {
         rejected_deploys: checkpoint.rejected_deploys,
         system_deploys: checkpoint.system_deploys,
         extra_bytes: Bytes::new(),
+        applied_from_scope: checkpoint.applied_from_scope,
+        merge_base: checkpoint.merge_base.unwrap_or_default(),
     };
     let header = Header {
         parents_hash_list: snapshot

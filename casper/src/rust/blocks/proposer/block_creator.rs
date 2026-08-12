@@ -3068,6 +3068,8 @@ pub async fn create(
         rejected_deploys,
         system_deploys: processed_system_deploys,
         bonds: new_bonds,
+        applied_from_scope,
+        merge_base,
     } = checkpoint_data;
 
     let block_bonds = {
@@ -3118,6 +3120,8 @@ pub async fn create(
         rejected_deploys,
         processed_system_deploys,
         block_bonds,
+        applied_from_scope,
+        merge_base,
         shard_id,
         casper_version,
     );
@@ -3195,6 +3199,8 @@ fn package_block(
     rejected_deploys: Vec<RejectedDeploy>,
     system_deploys: Vec<ProcessedSystemDeploy>,
     bonds_map: Vec<Bond>,
+    applied_from_scope: Vec<Bytes>,
+    merge_base: Option<BlockHash>,
     shard_id: String,
     version: i64,
 ) -> BlockMessage {
@@ -3211,6 +3217,10 @@ fn package_block(
         rejected_deploys,
         system_deploys,
         extra_bytes: Bytes::new(),
+        applied_from_scope,
+        // None = header-derivable (single-parent, genesis): recorded as
+        // empty bytes per the field contract.
+        merge_base: merge_base.unwrap_or_default(),
     };
 
     let header = Header {
@@ -3277,6 +3287,8 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
+            None,
             "test".to_string(),
             1,
         );

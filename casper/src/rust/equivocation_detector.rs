@@ -612,6 +612,8 @@ mod tests {
                 rejected_deploys: Vec::new(),
                 system_deploys: Vec::new(),
                 extra_bytes: Bytes::new(),
+                applied_from_scope: Vec::new(),
+                merge_base: Bytes::new(),
             },
             justifications,
             sender: sender.clone(),

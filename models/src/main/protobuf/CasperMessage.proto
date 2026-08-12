@@ -187,6 +187,20 @@ message BodyProto {
   repeated ProcessedSystemDeployProto systemDeploys = 3;
   bytes extraBytes                                  = 4;
   repeated RejectedDeployProto rejectedDeploys      = 5;
+  // User-deploy sigs whose chains this block's merge APPLIED from scope
+  // into its pre-state. The state plane's positive fact: a deploy's
+  // effect enters a state either by fresh execution (a `deploys` entry)
+  // or by a merge re-applying its chain — which, without this field, no
+  // block data records. Empty for non-merged blocks. Validator-recomputed
+  // and consensus-checked alongside rejectedDeploys.
+  repeated bytes appliedFromScope                   = 6;
+  // The block whose committed state this block's pre-state derives from:
+  // the floor block for merged blocks, the covering parent for the
+  // fast path, empty where the header derives it (single-parent and
+  // genesis). Recording it makes state-membership a walk over recorded
+  // pointers instead of a per-block re-derivation:
+  // state(B) = state(mergeBase) + appliedFromScope + deploys.
+  bytes mergeBase                                   = 7;
 }
 
 message RejectedDeployProto{

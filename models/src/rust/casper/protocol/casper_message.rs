@@ -460,6 +460,8 @@ pub struct Body {
     pub rejected_deploys: Vec<RejectedDeploy>,
     pub system_deploys: Vec<ProcessedSystemDeploy>,
     pub extra_bytes: ByteString,
+    pub applied_from_scope: Vec<ByteString>,
+    pub merge_base: ByteString,
 }
 
 impl Body {
@@ -486,6 +488,8 @@ impl Body {
                 .map(|s| ProcessedSystemDeploy::from_proto(s))
                 .collect::<Result<Vec<ProcessedSystemDeploy>, String>>()?,
             extra_bytes: proto.extra_bytes,
+            applied_from_scope: proto.applied_from_scope,
+            merge_base: proto.merge_base,
         })
     }
 
@@ -511,6 +515,8 @@ impl Body {
                 .map(|s| s.to_proto())
                 .collect(),
             extra_bytes: self.extra_bytes.clone(),
+            applied_from_scope: self.applied_from_scope.clone(),
+            merge_base: self.merge_base.clone(),
         }
     }
 }

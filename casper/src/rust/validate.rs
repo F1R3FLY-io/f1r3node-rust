@@ -1821,6 +1821,8 @@ mod merge_recovery_validation_tests {
                 rejected_deploys: Vec::new(),
                 system_deploys,
                 extra_bytes: Bytes::new(),
+                applied_from_scope: Vec::new(),
+                merge_base: Bytes::new(),
             },
             justifications: vec![Justification {
                 validator: offender,
