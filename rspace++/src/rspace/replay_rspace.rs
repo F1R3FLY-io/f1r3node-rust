@@ -350,11 +350,10 @@ where
                 .take(8)
                 .map(|e| format!("{:?}", e.key()))
                 .collect();
-            Err(RSpaceError::BugFoundError(format!(
-                "Unused COMM event: replayData multimap has {} elements left; leftover={:?}",
-                replay_data.map.len(),
-                leftover
-            )))
+            Err(RSpaceError::UnusedCommEvent {
+                leftover_count: replay_data.map.len(),
+                leftover,
+            })
         }
     }
 
