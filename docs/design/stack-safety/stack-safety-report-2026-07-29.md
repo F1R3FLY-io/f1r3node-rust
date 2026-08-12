@@ -2,6 +2,14 @@
 
 ### A design and results report on the elimination of depth-proportional native-stack consumption over the `Par` term family
 
+> **Reader orientation.** This document is the campaign's **evidentiary ledger and experiment log
+> of record**: machine-oriented, complete, provenance-tagged per clause, and living (new evidence
+> is appended here first). For the human-readable technical report — control and final treatment
+> results only — see
+> [`docs/technical-reports/stack-safety/stack-safety-technical-report-2026-08-12.md`](../../technical-reports/stack-safety/stack-safety-technical-report-2026-08-12.md).
+> Section numbers below are externally cited ([Appendix H](#appendix-h--external-citation-map)) and
+> must not be renumbered.
+
 **Repository** `f1r3node-rust-mettail`, branch `feature/mettail`
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
 **Report date** 2026-07-29, revised through 2026-08-11

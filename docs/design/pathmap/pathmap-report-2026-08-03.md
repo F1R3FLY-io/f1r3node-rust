@@ -2,6 +2,13 @@
 
 ### A design and results report on making the Rholang path map a first-class prefix-compressed trie — in memory, on both wire formats, and in every hashing and ordering preimage
 
+> **Reader orientation.** This document is the **evidentiary ledger and experiment log of record**
+> for the PathMap wire-format and representation work: machine-oriented, complete, and living (new
+> evidence is appended here first). For the human-readable technical report — control and final treatment results only — see
+> [`docs/technical-reports/pathmap/pathmap-technical-report-2026-08-12.md`](../../technical-reports/pathmap/pathmap-technical-report-2026-08-12.md).
+> The fix index and section numbers below are cited by the consensus-change register and the
+> companion stack-safety report and must not be renumbered.
+
 **Repository** `f1r3node-rust-mettail`, branch `feature/mettail`
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata`
 **Report date** 2026-08-03, revised 2026-08-04 · **Fixed-scale measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@98901e33` · **Latest integration anchor** `f1r3node-rust-mettail@b30a1568` · `mettail-rust@9dccb346` (runtime change `bb98055b`)
