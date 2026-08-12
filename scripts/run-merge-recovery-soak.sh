@@ -254,7 +254,8 @@ iteration_cpu_peak_per_node_percent() {
 		printf '{}'
 		return 0
 	}
-	LC_ALL=C awk -F, 'NR > 1 && $2 != "__system__" && $4 ~ /^[0-9]+([.][0-9]+)?$/ {
+	LC_ALL=C awk -F, 'NR > 1 { sub(/\r$/, "") }
+	         NR > 1 && $2 != "__system__" && $4 ~ /^[0-9]+([.][0-9]+)?$/ {
 	           n = $2; sub(/^rnode\.[^.]*\./, "", n)
 	           if (!(n in peak) || $4 + 0 > peak[n]) peak[n] = $4 + 0 }
 	         END { printf "{"; sep = ""
@@ -284,7 +285,16 @@ iteration_cpu_peak_per_node_core_percent() {
 	# distort the grid, not just add noise). Core ids are bare CPU indices
 	# per the telemetry contract — anything non-numeric is a malformed row,
 	# rejected rather than sanitized into a phantom core.
-	LC_ALL=C awk -F, 'NR > 1 && $2 != "__system__" && $3 ~ /^[0-9]+$/ &&
+	#
+	# The leading sub() strips a CR before the fields are tested: the harness
+	# writes this CSV with Python csv.writer, whose default line terminator
+	# is \r\n, so cpu_percent — the LAST column — arrives as "1.5\r" and
+	# would fail the numeric check on every row (smoke run 31547587950
+	# published an all-fallback grid exactly this way). The per-node
+	# extractor above gets the same guard for symmetry, though its CSV
+	# carries a 5th column that happened to absorb the CR.
+	LC_ALL=C awk -F, 'NR > 1 { sub(/\r$/, "") }
+	         NR > 1 && $2 != "__system__" && $3 ~ /^[0-9]+$/ &&
 	           $4 ~ /^[0-9]+([.][0-9]+)?$/ {
 	           n = $2; sub(/^rnode\.[^.]*\./, "", n)
 	           cell = n SUBSEP $3
