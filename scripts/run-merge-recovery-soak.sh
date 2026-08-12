@@ -443,6 +443,15 @@ iteration_too_far_ahead_errors() {
 		wc -l | tr -d ' '
 }
 
+iteration_lfb_spread() {
+	local iteration_dir="$1"
+	grep -oE 'All-node LFBs at drain:.*\(spread [0-9]+ blocks\)' \
+		"$iteration_dir/pytest.log" 2>/dev/null |
+		grep -oE 'spread [0-9]+ blocks' |
+		grep -oE '[0-9]+' |
+		tail -1 || true
+}
+
 # Parse the pytest terminal summary line ("== 1 failed, 64 passed, ... ==")
 # and emit a per-iteration metrics.json with resource + latency samples.
 # Metrics are additive: missing jq or an unparseable log must never fail
@@ -479,9 +488,18 @@ emit_iteration_metrics() {
 		"$iteration_dir/.started" \
 		"$(
 			IFS=:
-			printf '%s' "${HARNESS_TELEMETRY_DIRS[*]}"
+			printf '%s:%s' "${HARNESS_TELEMETRY_DIRS[*]}" "$iteration_dir"
 		)" 2>/dev/null || printf '{}')"
 	jq -e . >/dev/null 2>&1 <<<"$registry_metrics" || registry_metrics='{}'
+	local lfb_spread
+	if ! jq -e '.lfb_spread.samples > 0' >/dev/null 2>&1 <<<"$registry_metrics"; then
+		lfb_spread="$(iteration_lfb_spread "$iteration_dir")"
+		if [[ "$lfb_spread" =~ ^[0-9]+$ ]]; then
+			registry_metrics="$(jq -c --argjson value "$lfb_spread" \
+				'. + {lfb_spread: {p50: $value, p95: $value, max: $value, min: $value, samples: 1}}' \
+				<<<"$registry_metrics")"
+		fi
+	fi
 	jq -n \
 		--argjson metrics "$registry_metrics" \
 		--argjson iteration "$iteration" \
