@@ -23,7 +23,6 @@ use rspace_plus_plus::rspace::history::Either;
 
 use super::replay_failure::ReplayFailure;
 use super::runtime_manager::RuntimeManager;
-use crate::rust::api::deploy_finalization_status::{self, DeployFinalizationState};
 use crate::rust::block_status::BlockStatus;
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
@@ -360,79 +359,31 @@ fn suppress_already_recorded_rejections(
     Ok(before.saturating_sub(rejected_records.len()))
 }
 
-fn retain_pending_rejected_deploys_for_buffer(
-    dag: &KeyValueDagRepresentation,
-    block_store: &KeyValueBlockStore,
+/// Buffer retain as a pure floor-window rule: keep a rejected deploy while
+/// its validity window is open at the merging block's floor
+/// (node-identical — the floor derives from the block's frozen
+/// justifications), drop it only once the floor passes the window. A
+/// window-closed deploy could never land again anyway, and no node-local
+/// verdict may shorten the buffer's custody: the floor is the only
+/// irreversibility line — a win merely marked finalized by this node's
+/// finalizer can still sit above the floor where a later merge can reject
+/// it, and the buffer holds the only re-proposable copy. Settled work
+/// leaves through the terminal purge or at window close, never through a
+/// local verdict.
+fn retain_recoverable_rejected_deploys_for_buffer(
+    floor_block_number: i64,
     deploy_lifespan: i64,
     deploys: &mut Vec<Signed<DeployData>>,
-    rejecting_block_number: i64,
-) -> Result<usize, CasperError> {
-    if deploys.is_empty() {
-        return Ok(0);
-    }
-
-    let sigs: HashSet<Bytes> = deploys.iter().map(|deploy| deploy.sig.clone()).collect();
-    let statuses =
-        deploy_finalization_status::resolve_batch(dag, block_store, deploy_lifespan, &sigs)
-            .map_err(|err| {
-                CasperError::RuntimeError(format!(
-                    "RejectedDeployBuffer finalization-status filter failed: {}",
-                    err
-                ))
-            })?;
-
-    // `Finalized` is not terminal by itself: the resolver scans only the
-    // finalized chain, so it cannot see the rejection this populate call is
-    // servicing. A finalized win only settles the sig when it sits strictly
-    // ABOVE the rejecting block — otherwise the pending rejection can
-    // finalize and drop the win's effects from canonical state, and the
-    // buffer holds the only re-proposable copy (regression:
-    // finalized_win_pending_rejection_spec). A win above the rejection
-    // (late validation of an already-recovered rejection) stays terminal.
-    let scan_floor = deploys
-        .iter()
-        .map(|d| d.data.valid_after_block_number)
-        .min()
-        .unwrap_or(rejecting_block_number)
-        .min(rejecting_block_number);
-    let finalized_dispositions = canonical_dispositions(
-        block_store,
-        std::slice::from_ref(&dag.last_finalized_block()),
-        scan_floor,
-    )?;
-
+) -> usize {
     let before = deploys.len();
     deploys.retain(|deploy| {
-        let state = statuses.get(&deploy.sig).map(|status| status.state);
-        match state {
-            None | Some(DeployFinalizationState::Pending) => true,
-            Some(DeployFinalizationState::Finalized) => {
-                match finalized_dispositions.get(&deploy.sig) {
-                    Some((win_height, true)) => *win_height <= rejecting_block_number,
-                    disagreement => {
-                        // The resolver and the finalized-chain disposition scan
-                        // disagree: `Finalized` without a winning finalized
-                        // disposition (or none at all). Retaining is the safe
-                        // direction — the buffer holds the only re-proposable
-                        // copy — but the disagreement itself is the resolver's
-                        // known blindness to rejections above the LFB, so make
-                        // it visible rather than silent.
-                        tracing::warn!(
-                            target: "f1r3fly.casper.recovery",
-                            "RejectedDeployBuffer populate: resolver reports Finalized for {} but the \
-                             finalized-chain disposition is {:?} (rejecting block #{}); retaining",
-                            PrettyPrinter::build_string_bytes(&deploy.sig),
-                            disagreement,
-                            rejecting_block_number
-                        );
-                        true
-                    }
-                }
-            }
-            Some(_) => false,
-        }
+        deploy
+            .data
+            .valid_after_block_number
+            .saturating_add(deploy_lifespan)
+            > floor_block_number
     });
-    Ok(before - deploys.len())
+    before - deploys.len()
 }
 
 /// Update `disposition[sig]` toward the latest (highest-block) verdict. A higher
@@ -1604,28 +1555,17 @@ pub async fn compute_parents_post_state(
                             }
                         }
                     }
-                    match retain_pending_rejected_deploys_for_buffer(
-                        &s.dag,
-                        block_store,
+                    let skipped = retain_recoverable_rejected_deploys_for_buffer(
+                        floor_block_number,
                         s.on_chain_state.shard_conf.deploy_lifespan,
                         &mut deploys_to_buffer,
-                        max_parent_block_number.saturating_add(1),
-                    ) {
-                        Ok(skipped) if skipped > 0 => {
-                            tracing::info!(
-                                target: "f1r3fly.casper.recovery",
-                                "RejectedDeployBuffer populate: skipped {} terminal deploy(s)",
-                                skipped
-                            );
-                        }
-                        Ok(_) => {}
-                        Err(err) => {
-                            tracing::warn!(
-                                "RejectedDeployBuffer populate: finalization-status filter failed; skipping populate: {}",
-                                err
-                            );
-                            deploys_to_buffer.clear();
-                        }
+                    );
+                    if skipped > 0 {
+                        tracing::info!(
+                            target: "f1r3fly.casper.recovery",
+                            "RejectedDeployBuffer populate: skipped {} window-closed deploy(s)",
+                            skipped
+                        );
                     }
                     if !deploys_to_buffer.is_empty() {
                         match buffer.lock() {
@@ -1771,7 +1711,7 @@ mod backstop_tests {
 
     use super::{
         block_in_floor_merge_scope, canonical_won_sigs, merge_scope_backstop_exceeded,
-        rejected_sig_has_visible_non_source_win, retain_pending_rejected_deploys_for_buffer,
+        rejected_sig_has_visible_non_source_win, retain_recoverable_rejected_deploys_for_buffer,
         suppress_already_recorded_rejections, MAX_FLOOR_DISTANCE_BLOCKS,
     };
     use crate::rust::util::construct_deploy;
@@ -2363,103 +2303,56 @@ mod backstop_tests {
         );
     }
 
-    #[tokio::test]
-    async fn finalized_rejected_deploys_are_not_buffered_again() {
-        let mut kvm = InMemoryStoreManager::new();
-        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
-            .await
-            .expect("block store");
-        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
-            .await
-            .expect("dag storage");
-
-        let genesis = block_implicits::get_random_block(
-            Some(0),
-            Some(0),
+    /// The retain is a pure floor-window rule: a rejected deploy whose
+    /// validity window is OPEN at the merging block's floor stays
+    /// buffered, regardless of any node-local verdict about it. The floor
+    /// is the only irreversibility line — a win merely marked finalized by
+    /// this node's finalizer can still sit above the floor, inside the
+    /// merge scope of future blocks, where a later merge can reject it;
+    /// the buffer holds the only re-proposable copy. Settled work leaves
+    /// through the purge (effect in floor state) or at window close.
+    #[test]
+    fn window_open_rejected_deploys_stay_buffered_and_window_closed_drop() {
+        let open = construct_deploy::source_deploy_now_full(
+            "@31!(31)".to_string(),
             None,
             None,
             None,
+            Some(60),
             None,
-            Some(0),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some("root".to_string()),
-            None,
-        );
-        let finalized = construct_deploy::source_deploy_now_full(
-            "@1!(1)".to_string(),
+        )
+        .expect("window-open deploy");
+        let closed = construct_deploy::source_deploy_now_full(
+            "@32!(32)".to_string(),
             None,
             None,
             None,
             Some(0),
             None,
         )
-        .expect("finalized deploy");
-        let pending = construct_deploy::source_deploy_now_full(
-            "@2!(2)".to_string(),
-            None,
-            None,
-            None,
-            Some(0),
-            None,
-        )
-        .expect("pending deploy");
-        let finalized_block = block_implicits::get_random_block(
-            Some(1),
-            Some(1),
-            None,
-            None,
-            None,
-            None,
-            Some(1),
-            Some(vec![genesis.block_hash.clone()]),
-            Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty(finalized.clone())]),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some("root".to_string()),
-            None,
+        .expect("window-closed deploy");
+
+        // Floor at #100, lifespan 50: valid_after 60 keeps its window open
+        // (60 + 50 > 100); valid_after 0 closed it at floor #50.
+        let mut deploys = vec![open.clone(), closed.clone()];
+        let skipped = retain_recoverable_rejected_deploys_for_buffer(100, 50, &mut deploys);
+
+        assert_eq!(
+            skipped, 1,
+            "exactly the window-closed deploy leaves the buffer"
         );
-
-        block_store
-            .put_block_message(&genesis)
-            .expect("store genesis");
-        block_store
-            .put_block_message(&finalized_block)
-            .expect("store finalized");
-        dag_storage
-            .insert(&genesis, InsertMode::Approved)
-            .expect("insert genesis");
-        dag_storage
-            .insert(&finalized_block, InsertMode::Normal)
-            .expect("insert finalized");
-
-        let mut dag = dag_storage.get_representation().expect("dag");
-        dag.last_finalized_block_hash = finalized_block.block_hash.clone();
-
-        // Rejection below the finalized win (late validation of an
-        // already-recovered rejection): the finalized sig is terminal.
-        let mut deploys = vec![finalized.clone(), pending.clone()];
-        let skipped =
-            retain_pending_rejected_deploys_for_buffer(&dag, &block_store, 50, &mut deploys, 0)
-                .expect("retain pending");
-
-        assert_eq!(skipped, 1);
         assert_eq!(deploys.len(), 1);
-        assert_eq!(deploys[0].sig, pending.sig);
+        assert_eq!(
+            deploys[0].sig, open.sig,
+            "the window-open deploy stays buffered regardless of local verdicts"
+        );
 
-        // Rejection ABOVE the finalized win: `Finalized` is not terminal —
-        // the pending rejection can finalize and drop the win's effects, so
-        // the deploy must stay buffered (finalized-win blindness fix).
-        let mut deploys = vec![finalized.clone(), pending.clone()];
-        let skipped =
-            retain_pending_rejected_deploys_for_buffer(&dag, &block_store, 50, &mut deploys, 2)
-                .expect("retain pending with rejection above win");
-
-        assert_eq!(skipped, 0);
-        assert_eq!(deploys.len(), 2);
+        // At the exact boundary (valid_after + lifespan == floor) the
+        // window is closed — the same boundary the merge window rule and
+        // selection expiry use on the floor clock.
+        let mut boundary = vec![closed.clone()];
+        let skipped = retain_recoverable_rejected_deploys_for_buffer(50, 50, &mut boundary);
+        assert_eq!(skipped, 1);
+        assert!(boundary.is_empty());
     }
 }
