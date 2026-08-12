@@ -1,7 +1,7 @@
 ---
 doc_type: backlog
 version: "1.0"
-last_updated: 2026-04-15
+last_updated: 2026-08-11
 ---
 
 # Backlog
@@ -26,7 +26,41 @@ Items are organized by category and rough priority within each category.
 
 <!-- Items that improve code quality, performance, or maintainability -->
 
+#### BACKLOG-TD-001: Deterministic test for the soak finalization-lag failure
+
+```yaml
 ---
+backlog_id: BACKLOG-TD-001
+title: "Encode the 'N deploy(s) not finalized within 45s' soak failure as a deterministic test once root-caused"
+category: technical_debt
+priority: p2
+added_at: 2026-08-11
+blocked_by: root cause unknown (flake vs VM-shape behavior)
+repo_scope: node-side (casper finalization) and/or system-integration (test_load assertion)
+---
+```
+
+**Evidence:** Canary run 31554271086 (2026-08-12T01:38Z, target dev
+`3ed832a2`, first soak on the 64GB/32-core VM.Standard.E6.Flex shape)
+failed iteration 1 ~14 minutes in with
+`AssertionError: 234 deploy(s) not finalized within 45s`, immediately after
+the 1200-deploy sustained phase (4.0/sec). The shard was otherwise healthy:
+no guardian breach, RSS peak 16.6GB (vs the 31–37GB envelope observed on
+prior shapes), finalization p95 5928ms over 786 samples earlier in the run.
+
+**Why deferred:** per the causal-diagnosis-before-resources rule, no
+assertion-loosening or timeout-raising without per-component attribution.
+It is not yet known whether this is an intermittent finalization-lag flake,
+a real throughput/finality regression, or an E6.Flex behavior difference
+(first run on 32 cores). The 2026-08-12 02:30Z scheduled run is the next
+data point.
+
+**Done means:** the failure mode is reproduced in a deterministic test —
+either a node-side unit/integration test pinning finalization progress under
+a burst-deploy schedule (precedent: the planned floor-divergence regression
+test), or a system-integration harness test with a fixed seed/schedule —
+so the soak stops being the only detector. The 45s assertion itself lives in
+system-integration's `test_load.py`; node-side work belongs in `casper`.
 
 ### Feature Ideas
 
