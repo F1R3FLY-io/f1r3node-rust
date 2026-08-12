@@ -422,15 +422,35 @@ impl Header {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RejectedDeploy {
     pub sig: ByteString,
+    /// Set by the merge that formed this record when the sig's effect is
+    /// present in that merge's own post-state (a kept copy in the same
+    /// merge, or already settled in its base): the record discarded a
+    /// redundant copy and does not dispute the sig's standing win.
+    pub duplicate: bool,
+    /// The block that held the copy this record adjudicated — the rejected
+    /// chain's source block, recorded by the forming merge.
+    pub carrier: ByteString,
 }
 
 impl RejectedDeploy {
-    pub fn from_proto(proto: RejectedDeployProto) -> Self { Self { sig: proto.sig } }
+    pub fn from_proto(proto: RejectedDeployProto) -> Self {
+        Self {
+            sig: proto.sig,
+            duplicate: proto.duplicate,
+            carrier: proto.carrier,
+        }
+    }
 
-    pub fn to_proto(self) -> RejectedDeployProto { RejectedDeployProto { sig: self.sig } }
+    pub fn to_proto(self) -> RejectedDeployProto {
+        RejectedDeployProto {
+            sig: self.sig,
+            duplicate: self.duplicate,
+            carrier: self.carrier,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

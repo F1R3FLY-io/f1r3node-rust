@@ -1645,16 +1645,6 @@ fn drain_selected_recovered_deploys_from_deploy_storage(
     Ok(removed_from_storage)
 }
 
-fn filter_unprocessed_rejected_deploys(
-    rejected_deploys: Vec<Bytes>,
-    processed_deploy_sigs: &HashSet<Bytes>,
-) -> Vec<Bytes> {
-    rejected_deploys
-        .into_iter()
-        .filter(|sig| !processed_deploy_sigs.contains(sig))
-        .collect()
-}
-
 /// Removes the ordinary deploy-storage copies of recovered deploys whose sig
 /// already shows a canonical win in the parent scope. The rejected-buffer
 /// entry is NOT touched here: a canonical-but-unfinalized win can still be
@@ -3124,20 +3114,14 @@ pub async fn create(
     )
     .record(checkpoint_started.elapsed().as_secs_f64());
 
-    let (
+    let interpreter_util::DeploysCheckpoint {
         pre_state_hash,
         post_state_hash,
-        processed_deploys,
+        deploys: processed_deploys,
         rejected_deploys,
-        processed_system_deploys,
-        new_bonds,
-    ) = checkpoint_data;
-    let processed_deploy_sigs: HashSet<Bytes> = processed_deploys
-        .iter()
-        .map(|pd| pd.deploy.sig.clone())
-        .collect();
-    let rejected_deploys =
-        filter_unprocessed_rejected_deploys(rejected_deploys, &processed_deploy_sigs);
+        system_deploys: processed_system_deploys,
+        bonds: new_bonds,
+    } = checkpoint_data;
 
     let block_bonds = {
         let parent_hashes: Vec<BlockHash> = parents.iter().map(|p| p.block_hash.clone()).collect();
@@ -3276,7 +3260,7 @@ fn package_block(
     pre_state_hash: Bytes,
     post_state_hash: Bytes,
     deploys: Vec<ProcessedDeploy>,
-    rejected_deploys: Vec<Bytes>,
+    rejected_deploys: Vec<RejectedDeploy>,
     system_deploys: Vec<ProcessedSystemDeploy>,
     bonds_map: Vec<Bond>,
     shard_id: String,
@@ -3289,15 +3273,10 @@ fn package_block(
         block_number: block_data.block_number,
     };
 
-    let rejected_deploys_wrapped: Vec<RejectedDeploy> = rejected_deploys
-        .into_iter()
-        .map(|r| RejectedDeploy { sig: r })
-        .collect();
-
     let body = Body {
         state,
         deploys,
-        rejected_deploys: rejected_deploys_wrapped,
+        rejected_deploys,
         system_deploys,
         extra_bytes: Bytes::new(),
     };
@@ -4536,21 +4515,6 @@ mod tests {
 
         snapshot.last_finalized_block = parent_hash;
         assert!(!parent_frontier_extends_lfb(&snapshot, &block_store).expect("lfb parent"));
-    }
-
-    #[test]
-    fn processed_deploys_are_not_packaged_as_rejected_deploys() {
-        let processed_sig = Bytes::from_static(b"processed");
-        let other_sig = Bytes::from_static(b"other");
-        let fresh_sig = Bytes::from_static(b"fresh");
-        let processed_deploy_sigs: HashSet<Bytes> = [processed_sig.clone()].into_iter().collect();
-
-        let filtered = filter_unprocessed_rejected_deploys(
-            vec![processed_sig, other_sig.clone(), fresh_sig.clone()],
-            &processed_deploy_sigs,
-        );
-
-        assert_eq!(filtered, vec![other_sig, fresh_sig]);
     }
 
     /// A bonded validator that PoS still considers active is slashable

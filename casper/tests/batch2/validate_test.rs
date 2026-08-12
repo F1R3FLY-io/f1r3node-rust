@@ -1197,6 +1197,8 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
         block_m.body.rejected_deploys = vec![
             models::rust::casper::protocol::casper_message::RejectedDeploy {
                 sig: deploy_sig.clone(),
+                duplicate: false,
+                carrier: prost::bytes::Bytes::new(),
             },
         ];
         block_store
@@ -3279,6 +3281,8 @@ async fn validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_depl
         let mut tampered_rej = genesis.clone();
         tampered_rej.body.rejected_deploys.push(RejectedDeploy {
             sig: Bytes::from(vec![0xABu8; 64]),
+            duplicate: false,
+            carrier: Bytes::new(),
         });
 
         let mut snap_rej = mk_casper_snapshot(
