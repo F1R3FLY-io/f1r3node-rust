@@ -869,3 +869,133 @@ fn find_returns_ok_none_for_unknown_valid_prefix() {
         }
     });
 }
+
+/// The lifecycle event ingest rides `insert`'s body pass: a valid block's
+/// executions and records project into per-sig rows; an invalid block's
+/// body contributes nothing (it is not canonical history).
+#[test]
+fn insert_projects_lifecycle_events_from_valid_bodies_only() {
+    use models::rust::block_implicits::processed_deploy_gen;
+    use models::rust::casper::protocol::casper_message::RejectedDeploy;
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let genesis = genesis_block();
+        let dag_storage = create_dag_storage(&genesis).await;
+
+        let mut runner = TestRunner::default();
+        let executed = processed_deploy_gen()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
+        let rejected_sig = prost::bytes::Bytes::from(vec![0xAA; 70]);
+        let carrier = prost::bytes::Bytes::from(vec![0xBB; 32]);
+
+        let mut valid_block = get_random_block(
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![genesis.block_hash.clone()]),
+            None,
+            Some(vec![executed.clone()]),
+            None,
+            Some(vec![]),
+            None,
+            None,
+        );
+        valid_block.body.rejected_deploys = vec![RejectedDeploy {
+            sig: rejected_sig.clone(),
+            duplicate: true,
+            carrier: carrier.clone(),
+        }];
+        dag_storage
+            .insert(
+                &valid_block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+            )
+            .expect("insert valid block");
+
+        let invalid_deploy = processed_deploy_gen()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
+        let invalid_block = get_random_block(
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![genesis.block_hash.clone()]),
+            None,
+            Some(vec![invalid_deploy.clone()]),
+            None,
+            Some(vec![]),
+            None,
+            None,
+        );
+        dag_storage
+            .insert(
+                &invalid_block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid,
+            )
+            .expect("insert invalid block");
+
+        let dag = dag_storage
+            .get_representation()
+            .expect("dag representation");
+
+        let included_row = dag
+            .deploy_lifecycle_events(&executed.deploy.sig)
+            .expect("read row")
+            .expect("executed deploy has a row");
+        assert_eq!(
+            included_row.valid_after,
+            Some(executed.deploy.data.valid_after_block_number),
+            "the first inclusion records the deploy's window start"
+        );
+        assert!(
+            matches!(
+                included_row.events.as_slice(),
+                [block_storage::rust::dag::deploy_lifecycle_types::LifecycleEvent {
+                    height: 1,
+                    kind: block_storage::rust::dag::deploy_lifecycle_types::LifecycleEventKind::Included { is_failed: false },
+                    ..
+                }]
+            ),
+            "one Included event at the block's height; got {:?}",
+            included_row.events
+        );
+
+        let rejected_row = dag
+            .deploy_lifecycle_events(&rejected_sig)
+            .expect("read row")
+            .expect("rejected sig has a row");
+        assert!(
+            matches!(
+                rejected_row.events.as_slice(),
+                [block_storage::rust::dag::deploy_lifecycle_types::LifecycleEvent {
+                    kind: block_storage::rust::dag::deploy_lifecycle_types::LifecycleEventKind::Rejected { duplicate: true, .. },
+                    ..
+                }]
+            ),
+            "one Rejected event carrying the record's duplicate flag; got {:?}",
+            rejected_row.events
+        );
+
+        assert!(
+            dag.deploy_lifecycle_events(&invalid_deploy.deploy.sig)
+                .expect("read row")
+                .is_none(),
+            "an invalid block's body must contribute no lifecycle events"
+        );
+    });
+}

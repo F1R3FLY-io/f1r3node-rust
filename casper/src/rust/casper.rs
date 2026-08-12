@@ -530,6 +530,9 @@ pub mod test_helpers {
                 )))),
                 floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
                 frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+                lifecycle: Arc::new(RwLock::new(
+                    block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(),
+                )),
             };
 
             CasperSnapshot::new(dag)

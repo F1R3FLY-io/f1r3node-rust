@@ -59,6 +59,9 @@ use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
 use super::block_metadata_store::BlockMetadataStore;
+use super::deploy_lifecycle_types::{
+    DeployLifecycleTables, LifecycleEvent, LifecycleEventKind, LifecycleEvents, TerminalRecord,
+};
 use super::equivocation_tracker_store::EquivocationTrackerStore;
 
 pub type DeployId = shared::rust::ByteString;
@@ -117,6 +120,12 @@ pub struct KeyValueDagRepresentation {
     /// per-merge floor walk from O(Delta^2) into an amortized-O(1) incremental
     /// up-walk (finalized-floor fix; see finality/floor.rs).
     pub frontier_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
+    /// The deploy-lifecycle tables (see `deploy_lifecycle_types`): per-sig
+    /// event rows fed by `insert`'s body pass, and the WRITE-ONCE terminal
+    /// verdicts the finality layer's register writes. The status API reads
+    /// these — Pending/Finalized/Expired/Failed are lookups, never
+    /// computations.
+    pub lifecycle: Arc<PlRwLock<DeployLifecycleTables>>,
 }
 
 impl KeyValueDagRepresentation {
@@ -189,6 +198,34 @@ impl KeyValueDagRepresentation {
             .put_one(BlockHashSerde(block_hash), BlockHashSerde(frontier_hash))
     }
 
+    /// Lifecycle: the write-once terminal record for a sig, if determined.
+    pub fn deploy_terminal(&self, sig: &[u8]) -> Result<Option<TerminalRecord>, KvStoreError> {
+        self.lifecycle.read().get_terminal(sig)
+    }
+
+    /// Lifecycle: the open event row for a sig (pruned once terminal).
+    pub fn deploy_lifecycle_events(
+        &self,
+        sig: &[u8],
+    ) -> Result<Option<LifecycleEvents>, KvStoreError> {
+        self.lifecycle.read().get_events(sig)
+    }
+
+    /// Lifecycle: WRITE-ONCE terminal write (prunes the event row on a
+    /// fresh write; returns the survivor on a duplicate attempt).
+    pub fn put_deploy_terminal_if_absent(
+        &self,
+        sig: &[u8],
+        record: TerminalRecord,
+    ) -> Result<TerminalRecord, KvStoreError> {
+        self.lifecycle.write().put_terminal_if_absent(sig, record)
+    }
+
+    /// Lifecycle: every open sig — the register's schedule rebuild input.
+    pub fn open_lifecycle_sigs(&self) -> Result<Vec<DeployId>, KvStoreError> {
+        self.lifecycle.read().open_sigs()
+    }
+
     pub fn last_finalized_block(&self) -> BlockHash { self.last_finalized_block_hash.clone() }
 
     // latestBlockNumber, topoSort and lookupByDeployId are only used in BlockAPI.
@@ -211,8 +248,9 @@ impl KeyValueDagRepresentation {
     pub fn block_number_unsafe(&self, block_hash: &BlockHash) -> Result<i64, KvStoreError> {
         self.block_number(block_hash).ok_or_else(|| {
             KvStoreError::InvalidArgument(format!(
-                "DAG storage is missing hash {}",
-                PrettyPrinter::build_string_bytes(block_hash)
+                "DAG storage is missing hash {} [block_number_unsafe]{}",
+                PrettyPrinter::build_string_bytes(block_hash),
+                missing_hash_context()
             ))
         })
     }
@@ -305,12 +343,14 @@ impl KeyValueDagRepresentation {
     // See block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockDagRepresentationSyntax.scala
 
     // Get block metadata, "unsafe" because method expects block already in the DAG.
+    // (see `missing_hash_context` below for why these errors carry a backtrace)
     pub fn lookup_unsafe(&self, block_hash: &BlockHash) -> Result<BlockMetadata, KvStoreError> {
         match self.lookup(block_hash) {
             Ok(Some(metadata)) => Ok(metadata),
             _ => Err(KvStoreError::InvalidArgument(format!(
-                "DAG storage is missing hash {}",
-                PrettyPrinter::build_string_bytes(block_hash)
+                "DAG storage is missing hash {} [lookup_unsafe]{}",
+                PrettyPrinter::build_string_bytes(block_hash),
+                missing_hash_context()
             ))),
         }
     }
@@ -452,8 +492,9 @@ impl KeyValueDagRepresentation {
         // Keep behavior for blocks that intentionally have no self-justification.
         if !self.contains(block_hash) {
             return Err(KvStoreError::InvalidArgument(format!(
-                "DAG storage is missing hash {}",
-                PrettyPrinter::build_string_bytes(block_hash)
+                "DAG storage is missing hash {} [self_justification]{}",
+                PrettyPrinter::build_string_bytes(block_hash),
+                missing_hash_context()
             )));
         }
         Ok(None)
@@ -684,6 +725,8 @@ pub struct BlockDagKeyValueStorage {
     /// Equivocation tracker — RMW MUST route through
     /// `access_equivocations_tracker` (Bug #2 / T-9.2).
     pub(crate) equivocation_tracker_index: EquivocationTrackerStore,
+    /// Deploy-lifecycle tables (see `KeyValueDagRepresentation::lifecycle`).
+    pub(crate) lifecycle: Arc<PlRwLock<DeployLifecycleTables>>,
     /// Monotonically increasing counter incremented on every successful block insert.
     /// Used by caches to detect when the DAG has changed.
     pub(crate) dag_generation: Arc<AtomicU64>,
@@ -721,6 +764,12 @@ impl BlockDagKeyValueStorage {
         let deploy_index_db: KeyValueTypedStoreImpl<DeployId, BlockHashSerde> =
             KeyValueTypedStoreImpl::new(deploy_index_kv_store);
 
+        let lifecycle_events_kv_store = kvm.store("deploy-lifecycle-events".to_string()).await?;
+        let lifecycle_terminal_kv_store =
+            kvm.store("deploy-lifecycle-terminal".to_string()).await?;
+        let lifecycle_tables =
+            DeployLifecycleTables::new(lifecycle_events_kv_store, lifecycle_terminal_kv_store);
+
         Ok(Self {
             global_lock: Arc::new(PlRwLock::new(())),
             block_metadata_index: Arc::new(PlRwLock::new(block_metadata_store)),
@@ -729,6 +778,7 @@ impl BlockDagKeyValueStorage {
             floor_index: floor_index_db,
             frontier_index: frontier_index_db,
             equivocation_tracker_index: equivocation_tracker_store,
+            lifecycle: Arc::new(PlRwLock::new(lifecycle_tables)),
             latest_messages_index: latest_messages_db,
             dag_generation: Arc::new(AtomicU64::new(0)),
         })
@@ -799,6 +849,7 @@ impl BlockDagKeyValueStorage {
             floor_index,
             frontier_index,
             equivocation_tracker_index,
+            lifecycle: Arc::new(PlRwLock::new(DeployLifecycleTables::in_memory())),
             dag_generation,
         }
     }
@@ -909,6 +960,7 @@ impl BlockDagKeyValueStorage {
             deploy_index: self.deploy_index.clone(),
             floor_index: self.floor_index.clone(),
             frontier_index: self.frontier_index.clone(),
+            lifecycle: self.lifecycle.clone(),
         })
     }
 
@@ -1100,6 +1152,41 @@ impl BlockDagKeyValueStorage {
             let deploy_index_guard = self.deploy_index.write();
             deploy_index_guard.put(deploy_entries)?;
             drop(deploy_index_guard);
+
+            // Lifecycle event ingest: the same body pass that feeds the
+            // deploy index projects inclusion and rejection events into the
+            // per-sig lifecycle rows. Invalid blocks contribute nothing —
+            // their bodies are not canonical history. Every insert path
+            // (validated, proposed, genesis, LFS, fixtures) flows through
+            // here, so ingest coverage is total by construction.
+            if !invalid {
+                let block_number = block.body.state.block_number;
+                let lifecycle_guard = self.lifecycle.write();
+                for pd in &block.body.deploys {
+                    lifecycle_guard.append_events(
+                        &pd.deploy.sig,
+                        Some(pd.deploy.data.valid_after_block_number),
+                        vec![LifecycleEvent {
+                            height: block_number,
+                            block_hash: block.block_hash.to_vec(),
+                            kind: LifecycleEventKind::Included {
+                                is_failed: pd.is_failed,
+                            },
+                        }],
+                    )?;
+                }
+                for rd in &block.body.rejected_deploys {
+                    lifecycle_guard.append_events(&rd.sig, None, vec![LifecycleEvent {
+                        height: block_number,
+                        block_hash: block.block_hash.to_vec(),
+                        kind: LifecycleEventKind::Rejected {
+                            duplicate: rd.duplicate,
+                            carrier: rd.carrier.to_vec(),
+                        },
+                    }])?;
+                }
+                drop(lifecycle_guard);
+            }
 
             if invalid {
                 self.invalid_blocks_index
@@ -1302,4 +1389,24 @@ impl super::equivocations_access::EquivocationsAccess for BlockDagKeyValueStorag
     ) -> Result<A, KvStoreError> {
         BlockDagKeyValueStorage::access_equivocations_tracker(self, f)
     }
+}
+
+/// Caller context for a "DAG storage is missing hash" error.
+///
+/// These lookups assume the block is already in the DAG, so a miss is always a
+/// caller bug — but the message names only the hash, and the same text is
+/// reachable from three methods and many call sites. In a live shard the error
+/// surfaces as "block processing failed" with no indication of WHICH lookup
+/// asked, which is not enough to tell a gated dependency from an ancestor walk
+/// that was never gated at all (ucc runs: 7-12 occurrences per run, every run,
+/// escalating into propose failures).
+///
+/// Captured only on the error path, so the cost is paid exactly when something
+/// is already going wrong. `force_capture` rather than `capture` so it does not
+/// depend on RUST_BACKTRACE being set in the shard's environment.
+fn missing_hash_context() -> String {
+    format!(
+        "\n  caller backtrace:\n{}",
+        std::backtrace::Backtrace::force_capture()
+    )
 }

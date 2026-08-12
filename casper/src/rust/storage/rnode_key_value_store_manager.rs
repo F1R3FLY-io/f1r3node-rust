@@ -106,6 +106,19 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             dag_storage_env_config(),
         ),
         (
+            // Deploy-lifecycle event rows (per-sig body projection, bounded to
+            // open sigs — pruned at the terminal write). Opened in
+            // BlockDagKeyValueStorage::new like the indices above.
+            Db::new("deploy-lifecycle-events".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
+            // WRITE-ONCE terminal deploy verdicts (Finalized/Expired/Failed),
+            // written by the finality layer's lifecycle register.
+            Db::new("deploy-lifecycle-terminal".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
             Db::new("last-finalized-block".to_string(), None),
             dag_storage_env_config(),
         ),

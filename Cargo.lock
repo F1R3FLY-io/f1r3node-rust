@@ -614,6 +614,7 @@ dependencies = [
  "prost 0.14.4",
  "rayon",
  "rspace_plus_plus",
+ "serde",
  "shared",
  "tokio",
  "tracing",
