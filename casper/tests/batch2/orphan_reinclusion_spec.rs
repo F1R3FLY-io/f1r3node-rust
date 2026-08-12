@@ -22,8 +22,7 @@
 // The pool-re-proposal path remains reachable only through FOREIGN
 // orphaning: a carrier the shard's fork choice leaves behind AND which has
 // fallen past the parent-depth horizon, so no block may cite it back into
-// the cone. That case is covered by the foreign-orphaning spec staged with
-// the retry gate, not here.
+// the cone. That case is pinned by the second test below.
 //
 // DAG choreography (three validators; validator 1 risks orphaning itself):
 //
@@ -36,9 +35,10 @@
 //   v0 syncs I/A/B/M and proposes: X must stay among its parents.
 
 use casper::rust::casper::MultiParentCasper;
-use casper::rust::util::construct_deploy;
+use casper::rust::util::{construct_deploy, proto_util};
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
+use rspace_plus_plus::rspace::history::Either;
 use serial_test::serial;
 
 use crate::helper::test_node::TestNode;
@@ -247,4 +247,173 @@ async fn own_unmerged_carrier_is_merged_back_never_orphaned() {
             .map(|pd| hex::encode(&pd.deploy.sig[..8.min(pd.deploy.sig.len())]))
             .collect::<Vec<_>>()
     );
+}
+
+// FOREIGN orphaning: the carrier is known to every validator, but the
+// parent-depth spread rule forbids any block from citing it — the branch is
+// left behind by fork choice AND past the citability horizon, so merging it
+// back is impossible. The deploy's only route back is its owner's pool copy,
+// and re-proposing it is legal shard-wide: the carrier is outside every
+// selected cone, so the deploy is in no scope walk (no repeat), and it has
+// no rejection record, so the retry gate does not apply.
+//
+// DAG choreography (three validators, max_parent_depth = 3):
+//
+//   genesis <- X(d)          v0's carrier, height 1; withheld
+//   genesis <- b1 <- ... <- b6   v1's chain climbs past the spread horizon
+//   X delivered LATE to v1/v2: everyone holds it, no one may cite it
+//   v0 syncs b1..b6 and proposes: X is depth-capped out of its parents,
+//   and d rides again from v0's pool.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn foreign_orphaned_work_returns_by_owner_pool_reproposal() {
+    let n_validators = 3usize;
+    let genesis_parameters =
+        GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(n_validators));
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(genesis_parameters))
+        .await
+        .unwrap();
+    let shard_id = genesis.genesis_block.shard_id.clone();
+
+    let max_parent_depth = 3i32;
+    let mut nodes = TestNode::create_network(
+        genesis,
+        n_validators,
+        None,
+        None,
+        Some(max_parent_depth),
+        None,
+    )
+    .await
+    .expect("create_network");
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
+
+    // Phase 1 — validator 1 proposes X carrying d, then goes dark. X is
+    // withheld from the shard while the chain advances.
+    let orphan_deploy = construct_deploy::source_deploy_now_full(
+        r#"@"foreignorphan"!(1)"#.to_string(),
+        None,
+        None,
+        Some(construct_deploy::DEFAULT_SEC.clone()),
+        Some(0),
+        Some(shard_id.clone()),
+    )
+    .expect("build orphan deploy");
+    let orphan_sig: Bytes = orphan_deploy.sig.clone();
+    let block_x = nodes[0]
+        .add_block_from_deploys(std::slice::from_ref(&orphan_deploy))
+        .await
+        .expect("validator 1 proposes the carrier X");
+
+    // Phase 2 — validator 2 chains rounds until the frontier's height
+    // spread from X exceeds max_parent_depth: X falls past the citability
+    // horizon while still unknown to the rest of the shard.
+    let mut main_chain: Vec<BlockMessage> = Vec::new();
+    for round in 0..6i32 {
+        let marker = construct_deploy::basic_deploy_data(
+            100 + round,
+            Some(construct_deploy::DEFAULT_SEC2.clone()),
+            Some(shard_id.clone()),
+        )
+        .expect("build round marker");
+        let b = nodes[1]
+            .add_block_from_deploys(std::slice::from_ref(&marker))
+            .await
+            .expect("validator 2 advances the chain");
+        nodes[2]
+            .process_block(b.clone())
+            .await
+            .expect("validator 3 follows the chain");
+        main_chain.push(b);
+    }
+    let tip_height = proto_util::block_number(main_chain.last().expect("rounds ran"));
+    let x_height = proto_util::block_number(&block_x);
+    assert!(
+        tip_height - x_height > max_parent_depth as i64,
+        "staging precondition: the frontier must be more than \
+         max_parent_depth above X (tip {}, X {})",
+        tip_height,
+        x_height
+    );
+
+    // Phase 3 — X arrives late. Every validator now HOLDS the carrier
+    // (so blocks citing it in justifications have no missing
+    // dependencies), but the spread rule forbids CITING it as a parent:
+    // the branch is orphaned shard-wide.
+    for idx in [1usize, 2] {
+        let outcome = nodes[idx]
+            .process_block(block_x.clone())
+            .await
+            .expect("late delivery of X");
+        assert!(
+            matches!(outcome, Either::Right(_)),
+            "X is a valid block and must be accepted on late delivery, got {:?}",
+            outcome
+        );
+    }
+
+    // Phase 4 — validator 1 syncs the main chain and proposes. Its own
+    // latest message X is past the horizon: the depth cap drops it
+    // (protocol-forced orphaning), its cone leaves the scope walk, and
+    // the pool copy of d is the only route back — the proposer takes it.
+    for b in &main_chain {
+        nodes[0]
+            .process_block(b.clone())
+            .await
+            .expect("validator 1 syncs the main chain");
+    }
+    let reproposal = nodes[0]
+        .create_block_unsafe(&[])
+        .await
+        .expect("validator 1 proposes past the horizon");
+    assert!(
+        !reproposal
+            .header
+            .parents_hash_list
+            .contains(&block_x.block_hash),
+        "staging precondition: X is past the parent-depth horizon and must \
+         be depth-capped out of the parents; citing it would be \
+         InvalidParents. parents={:?}",
+        reproposal
+            .header
+            .parents_hash_list
+            .iter()
+            .map(|h| hex::encode(&h[..4.min(h.len())]))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        reproposal
+            .body
+            .deploys
+            .iter()
+            .any(|pd| pd.deploy.sig == orphan_sig && !pd.is_failed),
+        "the owner must re-propose d from its pool: the carrier left every \
+         cone, so the pool copy is the last route back for the work \
+         (body sigs: {:?})",
+        reproposal
+            .body
+            .deploys
+            .iter()
+            .map(|pd| hex::encode(&pd.deploy.sig[..8.min(pd.deploy.sig.len())]))
+            .collect::<Vec<_>>()
+    );
+
+    // The re-proposal is legal on every validator: d is in no scope walk
+    // (X is outside every selected cone) and has no rejection record, so
+    // neither the repeat rule nor the retry gate rejects it.
+    for idx in [1usize, 2] {
+        let outcome = nodes[idx]
+            .process_block(reproposal.clone())
+            .await
+            .expect("re-proposal delivery");
+        assert!(
+            matches!(outcome, Either::Right(_)),
+            "validator {} must validate the owner's re-proposal, got {:?}",
+            idx + 1,
+            outcome
+        );
+    }
 }
