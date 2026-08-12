@@ -92,6 +92,13 @@ pub struct FileHandleTable {
     /// shared across runtimes via `RuntimeManager` so a single
     /// boot-time population is visible everywhere.
     pub root_registry: super::path::RootIdentityRegistry,
+    /// Phase 8 slice 8a: shared range-lock registry.  Colocated on
+    /// `RuntimeManager` alongside `root_id_registry`; broadcast to
+    /// every spawned runtime via `share_lock_registry` so cross-cap
+    /// coordination on the same `(dev, inode)` collapses to a single
+    /// entry regardless of which runtime holds each cap.  See X-1
+    /// design memo in the plan.
+    pub lock_registry: super::lock::LockRegistry,
 }
 
 #[derive(Debug)]
@@ -114,6 +121,7 @@ impl FileHandleTable {
             // sees None → skips the identity check, preserving
             // pre-H-5 behavior).
             root_registry: super::path::RootIdentityRegistry::new(),
+            lock_registry: super::lock::LockRegistry::new(),
         }
     }
 
@@ -124,6 +132,15 @@ impl FileHandleTable {
     /// `fs_snapshot_writer` sharing pattern.
     pub fn share_root_registry(&mut self, shared: super::path::RootIdentityRegistry) {
         self.root_registry = shared;
+    }
+
+    /// Phase 8 slice 8a: attach the manager-shared range-lock
+    /// registry so all runtimes spawned from this manager see the
+    /// same `(dev, inode) → FileLockState` map.  Mirrors
+    /// `share_root_registry` — called from `RuntimeManager::
+    /// spawn_runtime` and `spawn_replay_runtime`.
+    pub fn share_lock_registry(&mut self, shared: super::lock::LockRegistry) {
+        self.lock_registry = shared;
     }
 
     /// Allocate a fresh fd and register the handle.

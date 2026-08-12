@@ -141,6 +141,17 @@
 //    by `manifest_line_format_is_pinned_at_v1` +
 //    `manifest_sign_bytes_layout_is_pinned` +
 //    `from_line_rejects_unknown_manifest_version`.
+// 12. **Range-lock caps** (Phase 8 slice 8a, 2026-08-12) —
+//    `MAX_RANGES_PER_FILE` and `LOCK_ID_CEILING` in `lock.rs`.
+//    Both govern when `fs_lock_range` returns `FSERR_QUOTA_EXCEEDED`,
+//    a consensus-observable reply.  A validator with a different
+//    cap would produce a divergent reply on the same call
+//    sequence.  Pinned by `max_ranges_per_file_pinned_at_1024`
+//    and `lock_id_ceiling_pinned` in `lock.rs`'s test module.
+//    A change to either is a hard fork of the fs_lock_range
+//    reply distribution.  Note: `LockId` VALUES themselves are
+//    per-runtime and NOT consensus-observable; only the
+//    QuotaExceeded THRESHOLD is.
 //
 // # Platform scope (H-30-3 review note)
 //

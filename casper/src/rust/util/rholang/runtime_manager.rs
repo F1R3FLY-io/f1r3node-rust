@@ -136,6 +136,15 @@ pub struct RuntimeManager {
     /// via `share_root_registry` (mirror of `fs_snapshot_writer`
     /// pattern).
     pub root_id_registry: rholang::rust::interpreter::io::path::RootIdentityRegistry,
+
+    /// Phase 8 slice 8a: shared range-lock registry.  Colocated with
+    /// `root_id_registry` and broadcast to every spawned runtime via
+    /// `FileHandleTable::share_lock_registry`.  Cross-cap lock
+    /// coordination on the same `(dev, inode)` — the fresh-mint
+    /// posture of slice 27 means each `File` cap has its own fd, so
+    /// coordination must live above the fd table.  See X-1 memo in
+    /// the plan.
+    pub lock_registry: rholang::rust::interpreter::io::lock::LockRegistry,
 }
 
 #[derive(Clone, Hash, PartialEq, Eq)]
@@ -375,6 +384,12 @@ impl RuntimeManager {
         runtime
             .fs_handles
             .share_root_registry(self.root_id_registry.clone());
+        // Phase 8 slice 8a: share the range-lock registry so
+        // cross-cap coordination on the same (dev, inode) is
+        // visible to every runtime spawned from this manager.
+        runtime
+            .fs_handles
+            .share_lock_registry(self.lock_registry.clone());
         metrics::histogram!(RUNTIME_SPAWN_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
 
@@ -420,6 +435,12 @@ impl RuntimeManager {
         runtime
             .fs_handles
             .share_root_registry(self.root_id_registry.clone());
+        // Phase 8 slice 8a: share the range-lock registry so
+        // cross-cap coordination on the same (dev, inode) is
+        // visible to every runtime spawned from this manager.
+        runtime
+            .fs_handles
+            .share_lock_registry(self.lock_registry.clone());
         metrics::histogram!(RUNTIME_SPAWN_REPLAY_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
 
@@ -1393,6 +1414,9 @@ impl RuntimeManager {
             // pipeline calls `register_root_identity` for each
             // provisioned root path before any deploy runs.
             root_id_registry: rholang::rust::interpreter::io::path::RootIdentityRegistry::new(),
+            // Phase 8 slice 8a: empty range-lock registry at boot.
+            // Populated per-acquire by `fs_lock_range` handlers.
+            lock_registry: rholang::rust::interpreter::io::lock::LockRegistry::new(),
         }
     }
 
