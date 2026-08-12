@@ -464,14 +464,23 @@ async fn prepare_user_deploys_with_policy(
         .collect();
     let earliest_block_number =
         block_number - casper_snapshot.on_chain_state.shard_conf.deploy_lifespan;
-    // Both expiry kinds are terminal for buffered work: a block-expired deploy can
-    // never again pass Validate::transaction_expiration, so holding it "recoverable"
-    // only re-offers it to a proposer that must reject it (issue #197).
+    // The FLOOR-clock window bound for retry work. The floor is the only
+    // clock that closes a validity window irreversibly (the merge window
+    // rule and the buffer retain read the same bound); the tip clock runs
+    // ahead of it, so tip-expired floor-live retries must stay admissible
+    // and must never be deleted. `None` (no derivable floor) defers every
+    // irreversible removal of retry work — delay, never loss.
+    let floor_expiry_bound = floor_ctx.map(|ctx| {
+        ctx.floor.block_number - casper_snapshot.on_chain_state.shard_conf.deploy_lifespan
+    });
+    // Both expiry kinds are terminal for buffered work: a floor-window-closed
+    // deploy can never again pass the merge window rule, so holding it
+    // "recoverable" only re-offers it to a proposer that must reject it.
     let expired_buffered: Vec<Signed<DeployData>> = buffered_deploys
         .iter()
         .filter(|deploy| {
             deploy.data.is_expired_at(current_time_millis)
-                || !not_expired_deploy(earliest_block_number, &deploy.data)
+                || floor_expiry_bound.is_some_and(|bound| !not_expired_deploy(bound, &deploy.data))
         })
         .cloned()
         .collect();
@@ -667,6 +676,23 @@ async fn prepare_user_deploys_with_policy(
         .map(|h| h.min(earliest_block_number))
         .unwrap_or(earliest_block_number);
 
+    // Retry work (buffered or rejected-in-scope) reads the FLOOR-clock
+    // window for block expiry; ordinary deploys keep the tip clock, which
+    // is never looser than the floor's, so nothing leaks back. Absent a
+    // derivable floor, retry work also falls back to the tip clock for
+    // ADMISSION only (removal below defers instead — deletion is
+    // irreversible, admission is retried next round).
+    let is_retry_sig = |sig: &Bytes| {
+        buffered_sigs.contains(sig) || casper_snapshot.rejected_in_scope.contains(sig)
+    };
+    let block_expiry_bound = |deploy: &Signed<DeployData>| {
+        if is_retry_sig(&deploy.sig) {
+            floor_expiry_bound.unwrap_or(earliest_block_number)
+        } else {
+            earliest_block_number
+        }
+    };
+
     // Categorize deploys for logging
     let future_deploys: Vec<_> = unfinalized
         .iter()
@@ -674,26 +700,26 @@ async fn prepare_user_deploys_with_policy(
         .collect();
     let block_expired_deploys: Vec<_> = unfinalized
         .iter()
-        .filter(|d| !not_expired_deploy(earliest_block_number, &d.data))
+        .filter(|d| !not_expired_deploy(block_expiry_bound(d), &d.data))
         .collect();
     let time_expired_deploys: Vec<_> = unfinalized
         .iter()
         .filter(|d| d.data.is_expired_at(current_time_millis))
         .collect();
 
-    // Filter valid deploys (not expired by block, not expired by time, and not future).
-    // Block expiry applies to recovered and rejected-retry deploys too: validation
-    // (Validate::transaction_expiration) has no recovery carve-out, so a block-expired
-    // deploy admitted here can only yield a self-created block that fails its own
-    // validation with ContainsExpiredDeploy — and, because nothing purged the deploy,
-    // every subsequent propose rebuilt the same invalid block (the permanent
-    // finalization wedge of issue #197). Expiry is a chain-level invariant; recovery
-    // cannot outlive it.
+    // Filter valid deploys (not expired by block, not expired by time, and
+    // not future). Block expiry applies to recovered and rejected-retry
+    // deploys too — on the floor clock: the merge window rule and expiry
+    // validity read the same bound, so a floor-window-closed deploy
+    // admitted here could only yield a block that fails its own
+    // validation, rebuilt every propose (the permanent finalization
+    // wedge). Expiry is a chain-level invariant; recovery cannot outlive
+    // it — but the clock that closes it is the floor's, never the tip's.
     let valid: HashSet<Signed<DeployData>> = unfinalized
         .iter()
         .filter(|deploy| {
             not_future_deploy(block_number, &deploy.data)
-                && not_expired_deploy(earliest_block_number, &deploy.data)
+                && not_expired_deploy(block_expiry_bound(deploy), &deploy.data)
                 && !deploy.data.is_expired_at(current_time_millis)
         })
         .cloned()
@@ -1017,10 +1043,15 @@ async fn prepare_user_deploys_with_policy(
         );
     }
 
-    // Remove all expired deploys from storage to prevent them from triggering future proposals
-    // Combine block-expired and time-expired, avoiding duplicates
+    // Remove all expired deploys from storage to prevent them from triggering
+    // future proposals. Combine block-expired and time-expired, avoiding
+    // duplicates. Removal is irreversible, so block-expiry removal of RETRY
+    // work requires the floor bound — with no derivable floor, retry work is
+    // excluded here and re-judged next round (delay, never loss); its
+    // admission-side filter above already deferred on the same fact.
     let all_expired: HashSet<&Signed<DeployData>> = block_expired_deploys
         .iter()
+        .filter(|d| floor_expiry_bound.is_some() || !is_retry_sig(&d.sig))
         .chain(time_expired_deploys.iter())
         .cloned()
         .collect();
@@ -2074,6 +2105,14 @@ fn rejected_buffer_has_recoverable_deploys(
     }
     let earliest_block_number =
         block_number - casper_snapshot.on_chain_state.shard_conf.deploy_lifespan;
+    // Buffered work is retry work: its window reads the FLOOR clock, so a
+    // floor-window-closed entry no longer counts as a recovery backlog and
+    // cannot hold admission in recovery mode.
+    let window_bound = floor_ctx
+        .map(|ctx| {
+            ctx.floor.block_number - casper_snapshot.on_chain_state.shard_conf.deploy_lifespan
+        })
+        .unwrap_or(earliest_block_number);
     let candidates: Vec<_> = buffered_deploys
         .iter()
         .filter(|deploy| {
@@ -2083,7 +2122,7 @@ fn rejected_buffer_has_recoverable_deploys(
             !clean_in_scope
                 && not_future_deploy(block_number, &deploy.data)
                 && !deploy.data.is_expired_at(current_time_millis)
-                && (rejected_in_scope || not_expired_deploy(earliest_block_number, &deploy.data))
+                && not_expired_deploy(window_bound, &deploy.data)
         })
         .collect();
     if candidates.is_empty() {
@@ -6336,6 +6375,125 @@ mod tests {
                 .expect("contains sig"),
             "a buffer entry may be evicted only on floor-state evidence of \
              its effect; a node-local finality marker is not that evidence"
+        );
+    }
+
+    /// Retry admission and removal read the FLOOR-clock validity window,
+    /// not the tip clock. A rejected deploy whose window is closed at the
+    /// tip but open at the floor can still land — the merge window and
+    /// expiry validity both key on the floor — so selection must keep
+    /// offering it and removal (irreversible) must not delete the only
+    /// re-proposable copy on the faster clock.
+    #[tokio::test]
+    async fn tip_expired_floor_live_rejected_deploy_stays_retryable() {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+            KeyValueDeployStorage::new(&mut kvm)
+                .await
+                .expect("deploy storage"),
+        ));
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 10;
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+
+        // Floor pinned at genesis (#0): the parent chain is unwitnessed, so
+        // the cold frontier walk lands on the parentless root. The tip sits
+        // at #60, so the tip-clock window (bound #10) is closed for a
+        // valid_after-5 deploy while the floor-clock window is wide open.
+        let genesis_block = test_block(
+            invalid_block_hash(0xA0),
+            validator(1),
+            Vec::new(),
+            0,
+            Vec::new(),
+        );
+        let parent_block = test_block(
+            invalid_block_hash(0xA1),
+            validator(1),
+            vec![genesis_block.block_hash.clone()],
+            60,
+            Vec::new(),
+        );
+        block_store
+            .put_block_message(&genesis_block)
+            .expect("store genesis");
+        block_store
+            .put_block_message(&parent_block)
+            .expect("store parent");
+        dag_storage
+            .insert(&genesis_block, InsertMode::Approved)
+            .expect("insert genesis");
+        dag_storage
+            .insert(&parent_block, InsertMode::Normal)
+            .expect("insert parent");
+        snapshot.dag = dag_storage.get_representation().expect("dag");
+        snapshot.parents = vec![parent_block];
+
+        let retry = construct_deploy::source_deploy(
+            "@71!(71)".to_string(),
+            1_000,
+            None,
+            None,
+            None,
+            Some(5),
+            Some("test".to_string()),
+        )
+        .expect("retry deploy");
+        deploy_storage
+            .lock()
+            .add(vec![retry.clone()])
+            .expect("seed deploy storage");
+        rejected_deploy_buffer
+            .lock()
+            .expect("rejected buffer lock")
+            .add(vec![retry.clone()])
+            .expect("seed rejected buffer");
+
+        let prepared = prepare_user_deploys(
+            &snapshot,
+            61,
+            10_000,
+            deploy_storage,
+            rejected_deploy_buffer.clone(),
+            &block_store,
+            true,
+            true,
+        )
+        .await
+        .expect("prepare deploys");
+
+        assert!(
+            rejected_deploy_buffer
+                .lock()
+                .expect("rejected buffer lock")
+                .contains_sig(&retry.sig)
+                .expect("contains sig"),
+            "removal is floor-clock: a floor-live entry must not be deleted \
+             on the tip clock"
+        );
+        assert!(
+            prepared.deploys.iter().any(|d| d.sig == retry.sig),
+            "retry admission is floor-clock: a tip-expired floor-live \
+             rejected deploy stays selectable"
         );
     }
 }
