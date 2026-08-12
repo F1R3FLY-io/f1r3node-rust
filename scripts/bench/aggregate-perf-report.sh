@@ -214,14 +214,21 @@ jq -n \
   | ($baseline.passive // null) as $bp
   | ($current.active) as $a
   | ($baseline.active // null) as $ba
+  # Failures that are completed facts even mid-run: a failed iteration stays
+  # failed and a guardian breach stays breached no matter how much of the
+  # window remains. These survive into checkpoint verdicts, unlike the
+  # completion-only signals below.
   | (
       []
-      | if $p == null
-          then . + ["no passive soak summary was produced (no data)"] else . end
       | if $p != null and (($p.failures // 0) > 0)
           then . + ["\($p.failures) passive soak iteration(s) failed"] else . end
       | if $protection_breach
           then . + ["host protection breach aborted the soak"] else . end
+    ) as $midrun_failures
+  | (
+      $midrun_failures
+      | if $p == null
+          then . + ["no passive soak summary was produced (no data)"] else . end
       | if $bp != null and $p != null and $p.failure_rate != null and $bp.failure_rate != null
            and $p.failure_rate > ($bp.failure_rate + $thresholds.failure_rate_max_increase_pts)
           then . + ["failure rate \($p.failure_rate) exceeds baseline \($bp.failure_rate) by more than \($thresholds.failure_rate_max_increase_pts * 100)pts"] else . end
@@ -242,15 +249,19 @@ jq -n \
           then . + ["active-segment throughput \($a.throughput)/s < baseline \($ba.throughput)/s -\($thresholds.active_throughput_warn_decrease_pct * 100)%"] else . end
     ) as $warnings
   | {
-      # A checkpoint reports progress, never a judgement. Failures and
-      # warnings are dropped rather than shown, because the only ones that
-      # could fire mid-run are "no data yet" artefacts of an incomplete run,
-      # and surfacing those would put a red strip on a healthy soak.
+      # A checkpoint reports progress, never a full judgement: baseline
+      # comparisons on a partial run measure the clock, and the no-data
+      # line is an artefact of a run that has not written a summary yet —
+      # both wait for completion. But $midrun_failures are completed facts,
+      # and hiding them left run 31563121791 showing a healthy "running"
+      # tab for 14 hours while every iteration failed. The verdict stays
+      # in_progress (a checkpoint is still not a release-gate result);
+      # consumers read .failures for the provisional state.
       verdict: (if $status == "in_progress" then "in_progress"
                 elif ($failures | length) > 0 then "regress" else "pass" end),
       status: $status,
       bootstrap: ($status != "in_progress" and $baseline == null),
-      failures: (if $status == "in_progress" then [] else $failures end),
+      failures: (if $status == "in_progress" then $midrun_failures else $failures end),
       warnings: (if $status == "in_progress" then [] else $warnings end),
       thresholds: $thresholds,
       run: $current.run,
@@ -284,15 +295,17 @@ jq \
     # from claiming a comparison it never made.
     message:
       (if .verdict == "in_progress"
-         then ((.run.elapsed_seconds | hours) as $e
-               | (.run.duration_seconds | hours) as $t
-               | if $e == null or $t == null then "in progress"
-                 else "\($e)h/\($t)h" end)
+         then (((.run.elapsed_seconds | hours) as $e
+                | (.run.duration_seconds | hours) as $t
+                | if $e == null or $t == null then "in progress"
+                  else "\($e)h/\($t)h" end)
+               + (if (.failures | length) > 0 then " · failing" else "" end))
        elif .verdict == "regress" then "regress"
        elif .bootstrap then "pass · no baseline"
        else "pass" end),
     color:
-      (if .verdict == "in_progress" then "lightgrey"
+      (if .verdict == "in_progress"
+         then (if (.failures | length) > 0 then "orange" else "lightgrey" end)
        elif .verdict == "regress" then "red"
        elif .bootstrap then "yellowgreen"
        else "brightgreen" end)

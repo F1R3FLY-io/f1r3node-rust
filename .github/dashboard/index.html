@@ -430,13 +430,19 @@
     const v = verdict && typeof verdict.verdict === "string" ? verdict.verdict : null;
     // in_progress is a mid-run checkpoint, not a result. It has to be matched
     // before the pass/regress split, or "not pass" would read as a regression
-    // and show a red tab for a soak that is running perfectly well.
+    // and show a red tab for a soak that is running perfectly well. A
+    // checkpoint verdict does carry provisional failures, though — completed
+    // facts like failed iterations — and a run in that state must not wear
+    // the healthy blue: run 31563121791 sat behind a neutral "running" tab
+    // for 14 hours while every iteration failed.
     if (v === "in_progress") {
-      cls = "running";
+      const failing = Array.isArray(verdict.failures) && verdict.failures.length > 0;
+      cls = failing ? "regress" : "running";
       const r = verdict.run || {};
       const h = s => (typeof s === "number" && s > 0) ? Math.floor(s / 3600) : null;
       const done = h(r.elapsed_seconds), total = h(r.duration_seconds);
-      text = "running" + (done !== null && total !== null ? ` · ${done}h of ${total}h` : "");
+      text = "running" + (done !== null && total !== null ? ` · ${done}h of ${total}h` : "")
+        + (failing ? " — failing" : "");
     } else if (runs === 0) {
       text = "no runs yet";
     } else if (v === null) {
@@ -553,7 +559,10 @@
     const failures = (verdict && Array.isArray(verdict.failures)) ? verdict.failures : [];
     if (failures.length === 0) return;
     const box = element("div", "failures");
-    box.appendChild(element("strong", "", "Latest run regressed"));
+    // A mid-run checkpoint with failures is a run going wrong, not a
+    // finished regression — say which one it is.
+    box.appendChild(element("strong", "",
+      verdict.verdict === "in_progress" ? "Run in progress is failing" : "Latest run regressed"));
     const list = document.createElement("ul");
     for (const failure of failures) list.appendChild(element("li", "", failure));
     box.appendChild(list);
