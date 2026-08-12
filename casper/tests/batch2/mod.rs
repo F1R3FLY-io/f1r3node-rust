@@ -9,6 +9,7 @@ pub mod limited_parent_depth_spec;
 pub mod lmdb_key_value_store_spec;
 pub mod map_cell_convergence_spec;
 pub mod multi_validator_recovery_spec;
+pub mod netted_noop_merge_spec;
 pub mod recovery_cycle_spec;
 pub mod recovery_repeat_deploy_misfire_spec;
 pub mod rholang_build_test;
