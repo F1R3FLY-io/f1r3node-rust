@@ -44,7 +44,7 @@ env:
   # the old..new range in system-integration; never replace with a tag/branch.
   # MUST be kept identical to .github/oci-validation.env (the Full OCI
   # Validation workflow sources that file) — bump both in the same commit.
-  SYSTEM_INTEGRATION_REF: a0c6fba626e4db8310180d0a90a213314424dd92
+  SYSTEM_INTEGRATION_REF: fe91755ed16774a5f56f33da9712f7df1f52ca9d
   # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
   # install.sh checksum fails closed if the tag is ever moved; OCI_CLI_VERSION
   # pins what the installer pulls from PyPI (without it the installer floats to
@@ -512,6 +512,11 @@ jobs:
           if [ "${{ matrix.arch }}" = "arm64" ]; then
             SCALE_FLAG="--timeout-scale=1.5"
           fi
+          NODE_CAPABILITIES=$(bash "$GITHUB_WORKSPACE/.github/scripts/read-system-integration-node-capabilities.sh" "$GITHUB_WORKSPACE/.github/system-integration-node-capabilities.txt")
+          NODE_CAPABILITY_ARGS=()
+          while IFS= read -r capability; do
+            [ -z "$capability" ] || NODE_CAPABILITY_ARGS+=("--node-capability=$capability")
+          done <<< "$NODE_CAPABILITIES"
           poetry run pytest \
             integration-tests/test/tests/shared/ \
             integration-tests/test/tests/custom/ \
@@ -529,7 +534,17 @@ jobs:
             --deselect integration-tests/test/tests/custom/test_validator_lifecycle.py \
             --deselect integration-tests/test/tests/custom/test_user_contract_concurrency.py \
             --deselect integration-tests/test/tests/custom/test_active_validator_cap.py \
+            --deselect integration-tests/test/tests/custom/test_cold_start_readiness.py \
+            --deselect integration-tests/test/tests/custom/test_concurrent_bridge_locks.py \
+            --deselect integration-tests/test/tests/custom/test_finality_stall_recovery.py \
+            --deselect integration-tests/test/tests/custom/test_observer_missing_block_retry.py \
+            --deselect integration-tests/test/tests/custom/test_observer_overload.py \
+            --deselect integration-tests/test/tests/custom/test_readonly_catchup_bounded.py \
+            --deselect integration-tests/test/tests/custom/test_slow_peer_notification.py \
+            --deselect integration-tests/test/tests/custom/test_transient_peer_liveness.py \
+            --deselect integration-tests/test/tests/standalone/test_expired_deploy_admission.py \
             --provider=${{ matrix.provider }} \
+            "${NODE_CAPABILITY_ARGS[@]}" \
             -v --tb=short --instafail --maxfail=10 \
             -n 16 --dist=loadgroup --timeout=1200 $SCALE_FLAG
 

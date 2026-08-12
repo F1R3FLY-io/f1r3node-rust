@@ -1,0 +1,7 @@
+# Node behaviors implemented by the current f1r3node baseline and required by
+# capability-gated tests at SYSTEM_INTEGRATION_REF. Add a kebab-case identifier
+# only when its behavior is present on the target branch; the reader rejects
+# malformed and duplicate entries before pytest starts.
+duplicate-signed-deploy-race
+finality-stall-recovery
+slow-peer-notification-quorum

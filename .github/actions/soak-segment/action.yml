@@ -32,6 +32,12 @@ inputs:
   target_ref:
     required: true
     description: Branch under test.
+  trigger_source:
+    description: oci-resource-scheduler | cron-fallback | manual — how the run was triggered.
+    default: manual
+  slot_delay_seconds:
+    description: Seconds between the intended slot and the actual trigger; 0 for manual runs.
+    default: "0"
   target_sha:
     required: true
     description: Pinned revision under test.
@@ -143,6 +149,8 @@ runs:
         SOAK_OUTPUT_DIR: /tmp/merge-recovery-soak
         SOAK_TARGET_REF: ${{ inputs.target_ref }}
         SOAK_TARGET_SHA: ${{ inputs.target_sha }}
+        SOAK_TRIGGER_SOURCE: ${{ inputs.trigger_source }}
+        SOAK_SLOT_DELAY_SECONDS: ${{ inputs.slot_delay_seconds }}
         SOAK_RUN_BENCHMARKS: ${{ inputs.run_benchmarks }}
         SOAK_MERGE_EXIT_MIN_SECONDS: ${{ inputs.merge_exit_min_seconds }}
         SOAK_NODE_REPO_DIR: ${{ inputs.node_repo_dir }}
