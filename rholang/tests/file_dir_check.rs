@@ -14626,3 +14626,231 @@ async fn native_fs_copy_file_consensus_returns_unsupported() {
     assert!(!ok);
     assert_eq!(code, "FSERR_UNSUPPORTED");
 }
+
+// ---------------------------------------------------------------------
+// Phase 8 slice 8a step-4 review smoke-check — File.lockRange + LockToken.
+//
+// These tests use the always-succeed lock-native mocks from step 4c-1
+// (fsLockRange returns [true, 1]; fsReleaseLock returns [true]).  They
+// exercise the Rholang agent-dispatch plumbing end-to-end: the mint,
+// the argument-validation branches, mode attenuation, closed-file
+// gating, and LockToken's own idempotent-release state machine (which
+// operates on lockStateP independently of what fsReleaseLock returns).
+//
+// Coverage NOT provided by these smoke-checks:
+//   - Real cross-cap FSERR_BUSY (requires stateful lock mock; deferred
+//     to step 4g's dedicated integration tests)
+//   - Real File.close sweep releasing outstanding tokens (blocked on
+//     step 4f wiring fs_release_all_for_holder into close())
+//   - Auto-acquire wrap semantics on positional methods (only observable
+//     with a stateful mock that tracks lock ranges)
+//
+// The smoke-checks catch: syntax bugs in the wrap surface, misrouted
+// dispatch, dropped return channels, argument-validation regressions,
+// mode-attenuation regressions.  Enough to keep steps 4e/4f from
+// resting on compile-only verification.
+// ---------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_lock_range_release_roundtrip() {
+    // Mint File, acquire lock, release it — both replies must succeed.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@lockReply <- @f!?("lockRange", 0, 100, "w")) {
+            match lockReply {
+              [true, token] => {
+                for (@relReply <- @token!?("release")) {
+                  @"out"!([lockReply, relReply])
+                }
+              }
+              [false, code, msg] => @"out"!([lockReply, [false, "SKIPPED", "lock acquire failed"]])
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected list reply"),
+    };
+    let (lock_ok, _, _, _) = extract_reply(&outer.ps[0]);
+    assert!(lock_ok, "lockRange must succeed under always-succeed mock");
+    let (rel_ok, _, _, _) = extract_reply(&outer.ps[1]);
+    assert!(
+        rel_ok,
+        "token.release must succeed under always-succeed mock"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lock_token_second_release_returns_fserr_closed() {
+    // LockToken's own state machine handles idempotent double-release
+    // via lockStateP — INDEPENDENTLY of what fsReleaseLock returns.
+    // First release: state=Int (LockId) → put "released", call
+    // fsReleaseLock, forward reply.  Second release: state="released"
+    // → FSERR_CLOSED without touching fsReleaseLock.  This test
+    // therefore works with the always-succeed mock — the FSERR_CLOSED
+    // comes from LockToken.release's own dispatch, not from the native.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@lockReply <- @f!?("lockRange", 0, 100, "w")) {
+            match lockReply {
+              [true, token] => {
+                for (@rel1 <- @token!?("release")) {
+                  for (@rel2 <- @token!?("release")) {
+                    @"out"!([rel1, rel2])
+                  }
+                }
+              }
+              _ => @"out"!([lockReply, [false, "SKIPPED", "lock acquire failed"]])
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected list reply"),
+    };
+    let (rel1_ok, _, _, _) = extract_reply(&outer.ps[0]);
+    assert!(rel1_ok, "first release must succeed");
+    let (rel2_ok, rel2_code, _, _) = extract_reply(&outer.ps[1]);
+    assert!(!rel2_ok, "second release must fail");
+    assert_eq!(
+        rel2_code, "FSERR_CLOSED",
+        "second release must return FSERR_CLOSED (idempotent-close semantics)"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_lock_range_negative_offset_rejects() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@r <- @f!?("lockRange", -1, 100, "w")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_BAD_ARG");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_lock_range_zero_length_rejects() {
+    // LockRegistry rejects zero-length ranges as BadArg; File.rho's
+    // lockRange short-circuits before the native and returns
+    // FSERR_BAD_ARG directly.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@r <- @f!?("lockRange", 0, 0, "w")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_BAD_ARG");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_lock_range_invalid_mode_rejects() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@r <- @f!?("lockRange", 0, 100, "x")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_BAD_ARG");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_lock_range_write_on_readonly_rejects() {
+    // Mode attenuation per spec §Explicit locks: requesting "w" on a
+    // File opened "r" returns FSERR_UNSUPPORTED.  Matches the
+    // attenuation pattern of every other write-capable method
+    // (writeByteArray, writeBytes, writeBytesAt, ...).
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "r", "oracular")) {
+          for (@r <- @f!?("lockRange", 0, 100, "w")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_UNSUPPORTED");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_lock_range_read_on_readonly_succeeds() {
+    // Same File cap as the previous test, but requesting an "r" lock
+    // — mode attenuation should NOT trip.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "r", "oracular")) {
+          for (@r <- @f!?("lockRange", 0, 100, "r")) {
+            match r {
+              [true, _token] => @"out"!([true])
+              [false, code, msg] => @"out"!([false, code, msg])
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(ok, "read lock on read-only file must succeed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_lock_range_on_closed_file_rejects() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@_ <- @f!?("close")) {
+            for (@r <- @f!?("lockRange", 0, 100, "w")) { @"out"!(r) }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_CLOSED");
+}
