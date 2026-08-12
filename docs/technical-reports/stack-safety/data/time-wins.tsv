@@ -1,0 +1,9 @@
+# Wall/CPU-time wins (control -> treatment). ratio is treatment-relative speedup where the ledger states one.
+# Source of truth: docs/design/stack-safety/stack-safety-report-2026-07-29.md (in-repo snapshot; §0 register lines 244-348). §5.22 = SS-G45; §5.2.2 = SS-B2 tokio driver; §5.11 = SS-G1.
+# The boundary-visits row is a work counter (unit=visits) recorded beside the wall-clock row per the ledger table.
+# Curated 2026-08-12 for the 2026-08-12 technical reports; verify with: python3 docs/technical-reports/tools/mk_tables.py provenance
+label	control	treatment	unit	ratio	note	ledger_section	source_quote
+GSS boundary workload wall clock	248.42	10.83	s	22.94	SS-G45; binders/output_width/1000	stack-safety §5.22	| wall clock | 248.42 s | **10.83 s** | **22.94×** faster |
+GSS boundary ancestry visits	336387001	0	visits		SS-G45; root mechanism eliminated	stack-safety §5.22	| GSS ancestry nodes visited | 336,387,001 | **0** | root mechanism eliminated |
+tokio fire-and-forget driver budget	300	93.7	s CPU	3.2	SS-B2; ≈3.2× less work for the same contract	stack-safety §5.2.2	required a **300 s** budget for the same work; the heap-bound driver needs **93.7 s of CPU**
+chain_2000 clone wall clock	4.34	0.11	s	39	SS-G1	stack-safety §5.11	| `chain_2000` wall clock | 4.34 s | **0.11 s** | $`39\times`$ |

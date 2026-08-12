@@ -1,0 +1,7 @@
+# Canonical-key classifier conversion price ladder: ratio = converted / recursive (values < 1 are slowdowns).
+# Source of truth: docs/design/pathmap/pathmap-report-2026-08-03.md (in-repo snapshot). §5.5 table (lines 680-684); bench provenance models/benches/trie_key_bench.rs:100-108.
+# Curated 2026-08-12 for the 2026-08-12 technical reports; verify with: python3 docs/technical-reports/tools/mk_tables.py provenance
+depth	ratio	interpretation	ledger_section	source_quote
+1	0.264	3.79× slower (+278%); ≈96 ns → ≈363 ns per escape payload — the production-common shallow case	pathmap §5.5	| 1 | **0.264×** | **3.79× slower** (+278 %)
+8	1.071	crossover lies between depth 1 and depth 8	pathmap §5.5	| 8 | 1.071× | crossover lies between depth 1 and depth 8 |
+1024	233.874	faster by more than two orders of magnitude	pathmap §5.5	| 1,024 | **233.874×** | faster by more than two orders of magnitude |

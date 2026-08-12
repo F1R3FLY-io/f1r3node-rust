@@ -1,0 +1,11 @@
+# Depth ceilings: maximum nesting depth before (control_depth) and after (treatment_depth).
+# censored=yes means the treatment number is a demonstrated/instrument bound, not an observed failure ceiling.
+# Source of truth: docs/design/stack-safety/stack-safety-report-2026-07-29.md (in-repo snapshot; §0 register lines 244-348).
+# Curated 2026-08-12 for the 2026-08-12 technical reports; verify with: python3 docs/technical-reports/tools/mk_tables.py provenance
+label	control_depth	treatment_depth	censored	note	ledger_section	source_quote
+inj_attempt metering handshake	729	1048576	yes	instrument ceiling; treatment is a lower bound (≥)	stack-safety §5.5.4	| `inj_attempt_clone` (release) | 2,852 B/level, $`D_{\max}=729`$ | **0**, $`\geq 1{,}048{,}576`$
+gRPC ingress teardown	21781	262144	yes	no ceiling below 262,144 observed	stack-safety §5.5.4	| ingress teardown (release) | 96.0 B/level, ceiling 21,781 | **0**, no ceiling $`< 262{,}144`$
+plain_deploy end-to-end (2 MiB worker)	286	6831	no	exact bisection; reproduced at 8853f839	stack-safety §5.5.4	| **`plain_deploy`**, end-to-end, 2 MiB worker | 286 levels | **6,831** (reproduced exactly at `8853f839`)
+env_get_deploy end-to-end	283	274	no	control; depth 274 runs, 275 aborts	stack-safety §5.5.4	| 283 levels (at `64a5d2bc`) | **274** (final bisection, `8853f839`: depth 274 runs, 275 aborts
+node JSON RhoExpr boundary		16384	yes	256 KiB stack; demonstrated depth, no ceiling found	stack-safety §5.13	conversion + Clone + Serialize + Debug + Drop at depth **16,384** on a **256 KiB** stack
+generated Par decode (prost reader)	31–33	4096	yes	256 KiB stack; control = prost RECURSION_LIMIT envelope ceilings {31, 32, 33} (§2.2)	stack-safety §5.12	the former depth-34 boundary and depth 4,096 both play and replay clean

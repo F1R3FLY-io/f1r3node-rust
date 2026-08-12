@@ -1,0 +1,14 @@
+# Bytes-per-level (B/level) conversions: native-stack slope before (control) and after (treatment).
+# Source of truth: docs/design/stack-safety/stack-safety-report-2026-07-29.md (in-repo snapshot; §0 register lines 244-348). Quotes are from the Abstract headline table (lines 390-405).
+# control keeps the numeric value only; the cold-store encoder's ledger value is "~224" (tilde kept in source_quote).
+# Curated 2026-08-12 for the 2026-08-12 technical reports; verify with: python3 docs/technical-reports/tools/mk_tables.py provenance
+label	control	treatment	unit	profile	ledger_section	source_quote
+substitution driver substitute_no_sort	195728	0	B/level	debug	stack-safety abstract	| substitution driver, `substitute_no_sort` (debug) | 195,728 B/level | **0** | class change |
+normalizer normalize	43542	0	B/level	debug	stack-safety abstract	| the normalizer, `normalize` (debug / release) | 43,542 / 7,261 B/level | **0 / 0** | class change |
+normalizer normalize	7261	0	B/level	release	stack-safety abstract	| the normalizer, `normalize` (debug / release) | 43,542 / 7,261 B/level | **0 / 0** | class change |
+cold-store decoder	28362	0	B/level	debug	stack-safety abstract	| cold-store **decoder** (debug / release) | 28,362 / 12,894 B/level | **0 / 0** | class change |
+cold-store decoder	12894	0	B/level	release	stack-safety abstract	| cold-store **decoder** (debug / release) | 28,362 / 12,894 B/level | **0 / 0** | class change |
+metering handshake inj_attempt	2852	0	B/level	release	stack-safety abstract	| `inj_attempt` metering handshake (release) | 2,852 B/level, $`D_{\max}=729`$ | **0**
+cold-store encoder	224	0	B/level	release	stack-safety abstract	| cold-store **encoder** (release, in-binary control) | ~224 B/level | **0** | class change |
+metered wrapper subst_and_charge	2852	0	B/level	release	stack-safety abstract	| metered wrapper `subst_and_charge` (release) | 2,852 B/level | **0** B/level after generated `Clone` + `encoded_len`
+gRPC ingress teardown	96.0	0	B/level	release	stack-safety abstract	| gRPC ingress teardown (release) | 96.0 B/level, $`D_{\max}=21{,}781`$ | **0**

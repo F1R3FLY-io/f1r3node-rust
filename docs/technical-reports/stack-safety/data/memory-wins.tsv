@@ -1,0 +1,10 @@
+# Peak-memory wins (control -> treatment).
+# Source of truth: docs/design/stack-safety/stack-safety-report-2026-07-29.md (in-repo snapshot; §0 register lines 244-348). §5.11 = SS-G1 Arc fix; §5.19 = SS-C12 malformed gate; §5.21 = SS-G44.
+# The malformed-gate row quotes the §0 register cell because it is the one ledger span carrying both numbers;
+#   the measured detail is §5.19.5 (6,573,944,832-byte cgroup peak; 682,548 KiB process RSS; observables named separately).
+# Curated 2026-08-12 for the 2026-08-12 technical reports; verify with: python3 docs/technical-reports/tools/mk_tables.py provenance
+label	control	treatment	unit	note	ledger_section	source_quote
+chain_10000 clone peak memory	~30 GB (OOM kill)	112 MB	peak memory	~270×; SS-G1 Arc representation fix	stack-safety §5.11	| `chain_10000` peak memory | $`\approx`$ 30 GB (OOM kill) | **112 MB** | $`\approx 270\times`$ |
+chain_2000 clone peak memory	1.53 GB	26.5 MB	peak memory	57×; SS-G1	stack-safety §5.11	| `chain_2000` peak memory | 1.53 GB | **26.5 MB** | $`57\times`$ |
+malformed-input gate peak	6.12 GiB	682548 KiB	peak RSS	SS-C12; pre-fix cgroup peak vs final process peak, conservative 9.4-fold (§5.19.5)	stack-safety §0	malformed gate **6.12 GiB $`\rightarrow`$ 682,548 KiB** peak
+unary depth-20000 parse RSS	8286196 KiB	188924 KiB	peak RSS	SS-G44; 8.57 s → 2.22 s in the same rows	stack-safety §5.21	| unary, depth 20,000 | **8.57 s / 8,286,196 KiB RSS** | **2.22 s / 188,924 KiB RSS** | 1 GiB |
