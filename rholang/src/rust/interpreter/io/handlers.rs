@@ -43,7 +43,7 @@ use super::lock::{DeployScope, HolderId, LockError, LockId, LockMode};
 use super::mode::{fopen_flags, parse_open_mode, AccessMode};
 use super::path::{
     canonicalize_lexical, io_msg_scrub, quarantine_err_reply, safe_descend_verified, safe_open,
-    stat_leaf_dev_inode, SafeParent,
+    SafeParent,
 };
 use super::response::*;
 use super::stat::{error_record, stat_record};
@@ -2245,23 +2245,32 @@ impl FsProcesses {
     // state doesn't matter there either way.
     // -------------------------------------------------------------------
 
-    /// Acquire a positional range lock on `(root, rel)`.
+    /// Acquire a positional range lock on the file behind `fd`.
     ///
-    /// Args: `(root: String, rel: String, offset: u64, length: u64,
-    /// mode: String("r" | "w"), holder: Par, cmode: String, ack)`
+    /// Args: `(fd: u64, offset: u64, length: u64, mode: String("r"|"w"),
+    /// holder: Par, cmode: String, ack)`
+    ///
+    /// **Fd-based keying — critical for oracular correctness.**  The
+    /// lock keys on `fstat(fd).(st_dev, st_ino)` — the physical file
+    /// `fd` points at — NOT on any current-path resolution.  Under
+    /// oracular mode a caller's fd may point at an inode different
+    /// from whatever's currently at the original path (external
+    /// process could have `mv`d the file); keying on the fd's inode
+    /// keeps the lock consistent with the reads/writes it protects
+    /// (which also operate through `fd`).  Under consensus mode the
+    /// path is stable so either keying would be correct — but fd is
+    /// uniformly right.
     ///
     /// - `holder` is opaque Par (typically the caller-cap's `stateP`
     ///   GPrivate name) hashed to a stable 32-byte `HolderId` — used
-    ///   by `File.close`'s `release_all_for_holder` sweep to release
-    ///   only locks owned by this cap.
+    ///   by `File.close`'s `release_all_for_holder` sweep.
     /// - `cmode` is validated but not currently branched on at acquire
-    ///   time; the mode affects WAL journaling (step 4) and unlink
-    ///   gating (step 7), not the acquire outcome itself.
+    ///   time; step 4 (WAL) and step 7 (unlink gate) will.
     ///
     /// Reply: `[true, lock_id: Int]` on success, `[false, code, msg]`
-    /// on error (FSERR_BUSY, FSERR_BAD_ARG, FSERR_QUOTA_EXCEEDED,
-    /// FSERR_UNSUPPORTED for symlink components at leaf, or the
-    /// canonical quarantine error codes on path issues).
+    /// on error (FSERR_CLOSED if fd unknown or shadow handle,
+    /// FSERR_BUSY, FSERR_BAD_ARG, FSERR_QUOTA_EXCEEDED, FSERR_IO on
+    /// fstat failure).
     pub async fn fs_lock_range(
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
@@ -2271,8 +2280,7 @@ impl FsProcesses {
         else {
             return Err(illegal_argument_error("fs_lock_range"));
         };
-        let [root_par, rel_par, off_par, len_par, mode_par, holder_par, cmode_par, ack] =
-            args.as_slice()
+        let [fd_par, off_par, len_par, mode_par, holder_par, cmode_par, ack] = args.as_slice()
         else {
             return Err(illegal_argument_error("fs_lock_range"));
         };
@@ -2296,41 +2304,32 @@ impl FsProcesses {
             }
         };
         let reply = match (
-            RhoString::unapply(root_par),
-            RhoString::unapply(rel_par),
+            RhoNumber::unapply(fd_par),
             RhoNumber::unapply(off_par),
             RhoNumber::unapply(len_par),
             RhoString::unapply(mode_par),
             resolve_lock_mode(mode_par),
         ) {
-            (Some(root), Some(rel), Some(off), Some(len), Some(_), Some(lm))
-                if off >= 0 && len > 0 =>
+            (Some(fd), Some(off), Some(len), Some(_), Some(lm))
+                if fd >= 0 && off >= 0 && len > 0 =>
             {
-                let root_pb = PathBuf::from(root);
-                let expected = self.handles.root_registry.get(&root_pb);
-                let dev_inode = match stat_leaf_dev_inode(&root_pb, &rel, expected) {
-                    Ok(id) => id,
-                    Err(qe) => {
-                        let (c, m) = quarantine_err_reply(&qe);
-                        let out = vec![err(c, m)];
-                        produce(&out, ack).await?;
-                        return Ok(out);
+                match self.dev_inode_from_fd(fd as u64).await {
+                    Ok(dev_inode) => {
+                        let holder = holder_id_of(holder_par);
+                        let deploy = DeployScope::default(); // step 6 threads real id
+                        match self.handles.lock_registry.try_acquire_range(
+                            dev_inode, off as u64, len as u64, lm, holder, deploy,
+                        ) {
+                            Ok(id) => ok_u64(id.0),
+                            Err(le) => lock_err_reply(le),
+                        }
                     }
-                };
-                let holder = holder_id_of(holder_par);
-                let deploy = DeployScope::default(); // step 6 threads real id
-                match self
-                    .handles
-                    .lock_registry
-                    .try_acquire_range(dev_inode, off as u64, len as u64, lm, holder, deploy)
-                {
-                    Ok(id) => ok_u64(id.0),
-                    Err(le) => lock_err_reply(le),
+                    Err((code, msg)) => err(code, msg),
                 }
             }
             _ => err(
                 FSERR_BAD_ARG,
-                "expected (String, String, u64, u64>0, String\"r|w\", Par, String)",
+                "expected (u64, u64, u64>0, String\"r|w\", Par, String)",
             ),
         };
         let out = vec![reply];
@@ -2338,7 +2337,7 @@ impl FsProcesses {
         Ok(out)
     }
 
-    /// Acquire the whole-file sequential lock on `(root, rel)`.
+    /// Acquire the whole-file sequential lock on the file behind `fd`.
     ///
     /// Called by sequential-stream constructors (`chars`, `bytes`,
     /// `lines`, `readLine`, `writeChars`, `writeBytes`, `writeLine`,
@@ -2346,9 +2345,11 @@ impl FsProcesses {
     /// begin producing.  Enforces "one active sequential stream per
     /// File" (FIP §1132) at the physical file level rather than at
     /// the cap level, so cross-cap sequential streams on the same
-    /// inode also conflict per §1182.
+    /// inode also conflict per §1182 — using fd-based keying (see
+    /// `fs_lock_range` docstring for the oracular-correctness
+    /// rationale).
     ///
-    /// Args: `(root: String, rel: String, holder: Par, cmode: String, ack)`
+    /// Args: `(fd: u64, holder: Par, cmode: String, ack)`
     /// Reply: `[true, lock_id: Int]` or `[false, code, msg]`.
     pub async fn fs_lock_sequential(
         &self,
@@ -2359,7 +2360,7 @@ impl FsProcesses {
         else {
             return Err(illegal_argument_error("fs_lock_sequential"));
         };
-        let [root_par, rel_par, holder_par, cmode_par, ack] = args.as_slice() else {
+        let [fd_par, holder_par, cmode_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_lock_sequential"));
         };
         if is_replay {
@@ -2377,35 +2378,60 @@ impl FsProcesses {
                 return Ok(out);
             }
         };
-        let reply = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
-            (Some(root), Some(rel)) => {
-                let root_pb = PathBuf::from(root);
-                let expected = self.handles.root_registry.get(&root_pb);
-                let dev_inode = match stat_leaf_dev_inode(&root_pb, &rel, expected) {
-                    Ok(id) => id,
-                    Err(qe) => {
-                        let (c, m) = quarantine_err_reply(&qe);
-                        let out = vec![err(c, m)];
-                        produce(&out, ack).await?;
-                        return Ok(out);
+        let reply = match RhoNumber::unapply(fd_par) {
+            Some(fd) if fd >= 0 => match self.dev_inode_from_fd(fd as u64).await {
+                Ok(dev_inode) => {
+                    let holder = holder_id_of(holder_par);
+                    let deploy = DeployScope::default(); // step 6
+                    match self
+                        .handles
+                        .lock_registry
+                        .try_acquire_sequential(dev_inode, holder, deploy)
+                    {
+                        Ok(id) => ok_u64(id.0),
+                        Err(le) => lock_err_reply(le),
                     }
-                };
-                let holder = holder_id_of(holder_par);
-                let deploy = DeployScope::default(); // step 6
-                match self
-                    .handles
-                    .lock_registry
-                    .try_acquire_sequential(dev_inode, holder, deploy)
-                {
-                    Ok(id) => ok_u64(id.0),
-                    Err(le) => lock_err_reply(le),
                 }
-            }
-            _ => err(FSERR_BAD_ARG, "expected (String, String, Par, String)"),
+                Err((code, msg)) => err(code, msg),
+            },
+            _ => err(FSERR_BAD_ARG, "expected (u64, Par, String)"),
         };
         let out = vec![reply];
         produce(&out, ack).await?;
         Ok(out)
+    }
+
+    /// Resolve a Rholang-supplied fd to its `(st_dev, st_ino)` pair
+    /// via `fstat(2)`.  Common core of `fs_lock_range` /
+    /// `fs_lock_sequential` (post-review-2 fix, 2026-08-12): both
+    /// natives key their LockRegistry entry on the physical file the
+    /// fd points at, not on any current-path resolution, so cross-cap
+    /// coordination is oracular-correct.
+    ///
+    /// Returns `Err((FSERR_CLOSED, ...))` if the fd is unknown to the
+    /// handle table or is a shadow handle (replay-only), and
+    /// `Err((FSERR_IO, ...))` on fstat failure.
+    async fn dev_inode_from_fd(&self, fd: u64) -> Result<(u64, u64), (&'static str, String)> {
+        let Some(raw) = self.handles.raw_fd(fd).await else {
+            return Err((FSERR_CLOSED, "fd unknown or shadow handle".to_string()));
+        };
+        #[cfg(unix)]
+        {
+            unsafe {
+                let mut st: libc::stat = std::mem::zeroed();
+                if libc::fstat(raw, &mut st) < 0 {
+                    let e = std::io::Error::last_os_error();
+                    return Err((FSERR_IO, io_msg_scrub(&e)));
+                }
+                #[allow(clippy::unnecessary_cast)]
+                Ok((st.st_dev as u64, st.st_ino as u64))
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = raw;
+            Ok((0, 0))
+        }
     }
 
     /// Release a previously-acquired lock by id.  Both positional

@@ -743,10 +743,12 @@ mod tests {
             ("entries", 4),       // (root, rel, cmode, ack) — Slice 26
             ("entriesStream", 3), // (root, rel, ack)
             ("quarantine", 3),    // (root, rel, ack)
-            // Phase 8 slice 8a — range-lock natives.
-            ("lockRange", 8), // (root, rel, offset, length, mode, holder, cmode, ack)
-            ("lockSequential", 5), // (root, rel, holder, cmode, ack)
-            ("releaseLock", 2), // (lockId, ack)
+            // Phase 8 slice 8a — range-lock natives (fd-based after
+            // review-2 fix, 2026-08-12: keys correctly under oracular
+            // file swap; path-based keying was semantically wrong).
+            ("lockRange", 7),      // (fd, offset, length, mode, holder, cmode, ack)
+            ("lockSequential", 4), // (fd, holder, cmode, ack)
+            ("releaseLock", 2),    // (lockId, ack)
         ];
 
         // Read rho_runtime.rs from the sibling rholang crate.

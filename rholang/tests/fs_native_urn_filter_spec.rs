@@ -207,6 +207,10 @@ mod tests {
             "rename",
             "copyFile",
             "entries",
+            // Phase 8 slice 8a — range-lock natives.
+            "lockRange",
+            "lockSequential",
+            "releaseLock",
         ] {
             let term = format!(r#"new bad(`rho:io:fs:native:1.0.0/{suffix}`) in {{ bad!(0) }}"#);
             let result = runtime
