@@ -954,7 +954,13 @@ mod tests {
         // variants (readInto, writeFrom) additionally do an fsTell
         // before the lock acquire to know the range extent.  Same
         // hard-fork discipline.
-        const EXPECTED: &str = "d1f8dfa07b6c0176e6701665ad14e148eb7d455e6c4c507788b5df982243b644";
+        //
+        // Anchor rolled forward again for Phase 8 slice 8a step 4d-2a
+        // (2026-08-12): writeBytesAt now wraps its writeBytesAtLoop
+        // dispatch with a range lock over the DECLARED maxLength
+        // (spec §959: caller commits to the max write extent so the
+        // lock is known at construction).  Same hard-fork discipline.
+        const EXPECTED: &str = "4d993debcf44e566d5eeeed41853389d7ac6c37d22b370112630e0fe47b70d55";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

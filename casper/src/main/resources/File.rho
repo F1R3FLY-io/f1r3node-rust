@@ -1121,7 +1121,7 @@ in {
                             return!([false, "FSERR_CLOSED", "file is closed"])
                           }
                           "open" => {
-                            for (@params <<- @[*private, *fdP]) {
+                            for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
                               match params {
                                 (fd, _root, _rel, fmode) => {
                                   match fmode {
@@ -1131,11 +1131,65 @@ in {
                                         "writeBytesAt requires a write-capable mode"])
                                     }
                                     _ => {
-                                      new loopRet in {
-                                        writeBytesAtLoop!(byteStream, fd, off, mx, 0, *loopRet) |
-                                        for (@finalReply <- loopRet) {
+                                      // Phase 8 slice 8a step 4d-2 — acquire a
+                                      // positional write lock over the DECLARED
+                                      // maxLength before dispatching the drain
+                                      // loop.  Spec §959: "The range-lock needs
+                                      // to know the write's extent when the
+                                      // lock is acquired... or a concurrent
+                                      // positional writer at a higher offset
+                                      // would conflict spuriously."  Actual
+                                      // bytes written may be shorter if the
+                                      // byteStream exhausts early; the lock
+                                      // still covers the full declared range
+                                      // for its lifetime.  Release fires after
+                                      // the loop terminates (success OR error).
+                                      match mx <= 0 {
+                                        true => {
+                                          // Zero-maxLength: loop would fire 0
+                                          // writes and return success; skip
+                                          // both the lock (BadArg on len=0)
+                                          // and the loop.
                                           @[*private, *stateP]!("open") |
-                                          return!(finalReply)
+                                          return!([true, 0])
+                                        }
+                                        false => {
+                                          new lockCh in {
+                                            // holder MUST be *stateP — cross-cap
+                                            // coordination depends on it.
+                                            fsLockRange!(fd, off, mx, "w", *stateP, cmode, *lockCh) |
+                                            for (@lockReply <- lockCh) {
+                                              match lockReply {
+                                                [true, lid] => {
+                                                  new loopRet in {
+                                                    writeBytesAtLoop!(byteStream, fd, off, mx, 0, *loopRet) |
+                                                    for (@finalReply <- loopRet) {
+                                                      new relCh in {
+                                                        // Release once the loop
+                                                        // has drained its ack,
+                                                        // regardless of loop
+                                                        // outcome.  Errors from
+                                                        // the loop forward
+                                                        // through finalReply.
+                                                        fsReleaseLock!(lid, *relCh) |
+                                                        for (@_relReply <- relCh) {
+                                                          @[*private, *stateP]!("open") |
+                                                          return!(finalReply)
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                                _ => {
+                                                  // Lock acquire failed —
+                                                  // forward (typically
+                                                  // FSERR_BUSY).
+                                                  @[*private, *stateP]!("open") |
+                                                  return!(lockReply)
+                                                }
+                                              }
+                                            }
+                                          }
                                         }
                                       }
                                     }
