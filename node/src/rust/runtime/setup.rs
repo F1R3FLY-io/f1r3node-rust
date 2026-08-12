@@ -958,6 +958,7 @@ async fn handle_block_finalized(
 
             let deploy_transfers: Vec<DeployTransfers> = transfers_by_deploy
                 .into_iter()
+                .filter(|(_, transfers)| !transfers.is_empty())
                 .map(|(deploy_id, transfers)| DeployTransfers {
                     deploy_id,
                     transfers: transfers
