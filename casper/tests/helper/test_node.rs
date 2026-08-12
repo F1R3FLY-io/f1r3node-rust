@@ -1084,7 +1084,11 @@ impl TestNode {
             parent_shard_id: "".to_string(),
             finalization_rate,
             max_number_of_parents,
-            max_parent_depth: max_parent_depth.unwrap_or(i32::MAX),
+            // Realistic depth bound by default: i32::MAX disabled the depth
+            // check entirely, so fixtures could lean on unbounded parent
+            // spread that no configured shard permits. Specs that need the
+            // check off pass an explicit override.
+            max_parent_depth: max_parent_depth.unwrap_or(30),
             synchrony_constraint_threshold: synchrony_constraint_threshold as f32,
             height_constraint_threshold: i64::MAX,
             // Validators will try to put deploy in a block only for next `deployLifespan` blocks.
