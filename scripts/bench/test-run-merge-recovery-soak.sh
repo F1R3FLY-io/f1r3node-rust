@@ -81,6 +81,7 @@ METRICS
 SH
 chmod +x "$TMP/bin/poetry" "$TMP/bin/docker" "$TMP/bin/curl"
 
+test ! -e "$TMP/output"
 PATH="$TMP/bin:$PATH" \
 	FAKE_POETRY_PID_FILE="$TMP/fake-poetry.pid" \
 	FAKE_DATA_DIR="$TMP/system-integration/integration-tests/data" \

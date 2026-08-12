@@ -199,6 +199,7 @@ persist_soak_state() {
 	local state_tmp="${STATE_FILE}.tmp"
 	local checkpoint_state="$OUTPUT_DIR/.soak-checkpoint-state.json"
 	local checkpoint_tmp="${checkpoint_state}.tmp"
+	mkdir -p "$OUTPUT_DIR"
 	{
 		printf 'STARTED_AT=%s\n' "$STARTED_AT"
 		printf 'ITERATIONS=%s\n' "$ITERATIONS"
