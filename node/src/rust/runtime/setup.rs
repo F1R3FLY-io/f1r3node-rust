@@ -861,7 +861,6 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             disable_validator_progress_check: conf.standalone,
             enable_mergeable_channel_gc: conf.casper.enable_mergeable_channel_gc,
             mergeable_channels_gc_depth_buffer: conf.casper.mergeable_channels_gc_depth_buffer,
-            finalizer_conf: conf.casper.finalizer.clone(),
             synchrony_recovery_stall_window: conf.casper.synchrony_recovery_stall_window,
             synchrony_recovery_cooldown: conf.casper.synchrony_recovery_cooldown,
             synchrony_recovery_max_bypasses: conf.casper.synchrony_recovery_max_bypasses,
@@ -877,7 +876,6 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             // `casper::rust::casper`. When `CasperConf` gains corresponding
             // fields, plumb them through here; the consts are then the
             // documented fallback.
-            finalizer_blocking_timeout: casper::rust::casper::FINALIZER_BLOCKING_TIMEOUT_DEFAULT,
             active_validators_cache_max_entries:
                 casper::rust::casper::ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT,
         };

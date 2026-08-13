@@ -1,19 +1,19 @@
-// See casper/src/test/scala/coop/rchain/casper/batch2/FinalizerTest.scala
+//! The LFB decision over the live view (`floor::floor_of_view`) — the one
+//! finality clock. Re-targets the retired Finalizer's contract pins: the
+//! stagings are unchanged; the decision they pin is now the floor-of-view
+//! derivation (exact `>= θ` witness + capture-gated advancement) instead of
+//! the Finalizer's discontinuous highest-FT search.
 
-use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::collections::HashMap;
 use std::time::Instant;
 
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
-use casper::rust::casper_conf::FinalizerConf;
-use casper::rust::finality::finalizer::Finalizer;
+use casper::rust::finality::floor::{floor_of_view, Floor};
 use casper::rust::safety::clique_oracle::FtThreshold;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
 use models::rust::validator::Validator;
-use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
 use crate::helper::block_generator::{create_block, create_genesis_block};
@@ -61,41 +61,20 @@ fn create_block_creator<'a>(
     }
 }
 
-#[test]
-fn cannot_be_orphaned_should_return_false_for_non_positive_agreeing_stake() {
-    let v1 = generate_validator(Some("v1"));
-    let v2 = generate_validator(Some("v2"));
-
-    let message_weight_map = HashMap::from([(v1.clone(), 10_i64), (v2.clone(), 10_i64)]);
-    let agreeing_weight_map = HashMap::from([(v1.clone(), 10_i64), (v2.clone(), 0_i64)]);
-
-    assert!(!Finalizer::cannot_be_orphaned(
-        &message_weight_map,
-        &agreeing_weight_map
-    ));
-}
-
-#[test]
-fn cannot_be_orphaned_should_return_false_on_stake_sum_overflow() {
-    let v1 = generate_validator(Some("v1"));
-    let v2 = generate_validator(Some("v2"));
-
-    let message_weight_map = HashMap::from([(v1.clone(), i64::MAX), (v2.clone(), 1_i64)]);
-    let agreeing_weight_map = HashMap::from([(v1.clone(), i64::MAX)]);
-
-    assert!(!Finalizer::cannot_be_orphaned(
-        &message_weight_map,
-        &agreeing_weight_map
-    ));
+fn at(block: &BlockMessage) -> Floor {
+    Floor {
+        hash: block.block_hash.clone(),
+        block_number: block.body.state.block_number,
+    }
 }
 
 //   *  *            b8 b9
-//   *               b7         <- should not be LFB
+//   *               b7         <- must NOT become the LFB yet
 //   *  *  *  *  *   b2 b3 b4 b5 b6
-//   *               b1         <- should be LFB
+//   *               b1         <- becomes the LFB
 //   v1 v2 v3 v4 v5
 #[tokio::test]
-async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_invoke_all_effects() {
+async fn floor_of_view_holds_until_witnessed_then_advances() {
     with_storage(|mut store, mut dag_store| async move {
         let validators = [
             generate_validator(Some("Validator 1")),
@@ -111,9 +90,6 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
                 stake: 3,
             })
             .collect();
-
-        let lfb_store = Rc::new(RefCell::new(BlockHash::default()));
-        let lfb_effect_invoked = Rc::new(RefCell::new(false));
 
         let genesis = create_genesis_block(
             &mut store,
@@ -141,7 +117,6 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
             (&validators[3], &genesis),
             (&validators[4], &genesis),
         ]);
-        let finalised_store = Rc::new(RefCell::new(HashSet::<BlockHash>::new()));
 
         let b1 = creator1(
             &mut store,
@@ -149,7 +124,6 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
             vec![&genesis],
             &genesis_justification,
         );
-
         let b2 = creator1(
             &mut store,
             &mut dag_store,
@@ -181,44 +155,25 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
             &genesis_justification,
         );
 
+        let thr = FtThreshold::from_f32_lossy(0.1);
         let dag = dag_store.get_representation().expect("dag representation");
-        let _lms: Vec<(Validator, BlockHash)> = dag
-            .latest_messages()
-            .unwrap()
-            .into_iter()
-            .map(|(v, m)| (v, m.block_hash))
-            .collect();
-        let lfb = {
-            let lfb_store = lfb_store.clone();
-            Finalizer::run(
-                &dag,
-                FtThreshold::from_f32_lossy(-1.0),
-                0,
-                move |(m, _ft)| {
-                    let lfb_store = lfb_store.clone();
-                    async move {
-                        *lfb_store.borrow_mut() = m;
-                        Ok(())
-                    }
-                },
-                &FinalizerConf::default(),
-            )
+        let advanced = floor_of_view(&dag, &at(&genesis), thr)
             .await
-            .unwrap()
-        };
+            .expect("floor of view");
+        assert_eq!(
+            advanced.as_ref().map(|f| &f.hash),
+            Some(&b1.block_hash),
+            "b1 is witnessed by every latest message and becomes the LFB"
+        );
 
-        // check output
-        assert_eq!(lfb.as_ref().map(|(h, _)| h), Some(&b1.block_hash));
-        // check if new LFB effect is invoked
-        assert_eq!(*lfb_store.borrow(), b1.block_hash);
-
-        let finalized_height = dag.lookup_unsafe(&lfb.unwrap().0).unwrap().block_number;
-
-        /* next layer */
+        /* next layer — b7 on b2's chain (single-parent: capture walks derive
+         * its base from the header; the retired staging's multi-parent b7
+         * only "advanced" under the Finalizer's θ=-1, which bypassed the
+         * clique's mutual-visibility requirement entirely) */
         let b7 = creator1(
             &mut store,
             &mut dag_store,
-            vec![&b2, &b3, &b4, &b5, &b6],
+            vec![&b2],
             &HashMap::from([
                 (&validators[0], &b2),
                 (&validators[1], &b3),
@@ -228,122 +183,62 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
             ]),
         );
 
-        // add 2 children, this is not sufficient for finalization to advance
-        creator1(
-            &mut store,
-            &mut dag_store,
-            vec![&b7],
-            &HashMap::from([
-                (&validators[0], &b7),
-                (&validators[1], &b3),
-                (&validators[2], &b4),
-                (&validators[3], &b5),
-                (&validators[4], &b6),
-            ]),
-        );
-        creator2(
-            &mut store,
-            &mut dag_store,
-            vec![&b7],
-            &HashMap::from([
-                (&validators[0], &b7),
-                (&validators[1], &b3),
-                (&validators[2], &b4),
-                (&validators[3], &b5),
-                (&validators[4], &b6),
-            ]),
-        );
+        // A first layer above b7 — descent alone is not witness (no mutual
+        // visibility of the agreement yet): the LFB must hold at b1.
+        let above_b7 = HashMap::from([
+            (&validators[0], &b7),
+            (&validators[1], &b3),
+            (&validators[2], &b4),
+            (&validators[3], &b5),
+            (&validators[4], &b6),
+        ]);
+        let c1 = creator1(&mut store, &mut dag_store, vec![&b7], &above_b7);
+        let c2 = creator2(&mut store, &mut dag_store, vec![&b7], &above_b7);
+        let c3 = creator3(&mut store, &mut dag_store, vec![&b7], &above_b7);
+        let c4 = creator4(&mut store, &mut dag_store, vec![&b7], &above_b7);
+        let c5 = creator5(&mut store, &mut dag_store, vec![&b7], &above_b7);
 
         let dag = dag_store.get_representation().expect("dag representation");
-        let lfb = {
-            let lfb_effect_invoked = lfb_effect_invoked.clone();
-            Finalizer::run(
-                &dag,
-                FtThreshold::from_f32_lossy(-1.0),
-                finalized_height,
-                move |(_m, _ft)| {
-                    let lfb_effect_invoked = lfb_effect_invoked.clone();
-                    async move {
-                        *lfb_effect_invoked.borrow_mut() = true;
-                        Ok(())
-                    }
-                },
-                &FinalizerConf::default(),
-            )
+        let held = floor_of_view(&dag, &at(&b1), thr)
             .await
-            .unwrap()
-        };
+            .expect("floor of view");
+        assert_eq!(
+            held, None,
+            "descent without mutual visibility does not witness b7 — the LFB \
+             holds at b1"
+        );
 
-        // check output
-        assert_eq!(lfb, None);
-        // check if new LFB effect is invoked
-        assert!(!(*lfb_effect_invoked.borrow()));
-
-        // add more 3 children - finalization should advance
-        creator3(
-            &mut store,
-            &mut dag_store,
-            vec![&b7],
-            &HashMap::from([
-                (&validators[0], &b7),
-                (&validators[1], &b3),
-                (&validators[2], &b4),
-                (&validators[3], &b5),
-                (&validators[4], &b6),
-            ]),
-        );
-        creator4(
-            &mut store,
-            &mut dag_store,
-            vec![&b7],
-            &HashMap::from([
-                (&validators[0], &b7),
-                (&validators[1], &b3),
-                (&validators[2], &b4),
-                (&validators[3], &b5),
-                (&validators[4], &b6),
-            ]),
-        );
-        creator5(
-            &mut store,
-            &mut dag_store,
-            vec![&b7],
-            &HashMap::from([
-                (&validators[0], &b7),
-                (&validators[1], &b3),
-                (&validators[2], &b4),
-                (&validators[3], &b5),
-                (&validators[4], &b6),
-            ]),
-        );
+        // A second layer whose justifications cite the whole first layer:
+        // every validator now SEES every other validator's agreement on b7
+        // — the clique forms and the LFB advances onto b7's chain.
+        let mutual = HashMap::from([
+            (&validators[0], &c1),
+            (&validators[1], &c2),
+            (&validators[2], &c3),
+            (&validators[3], &c4),
+            (&validators[4], &c5),
+        ]);
+        creator1(&mut store, &mut dag_store, vec![&c1], &mutual);
+        creator2(&mut store, &mut dag_store, vec![&c2], &mutual);
+        creator3(&mut store, &mut dag_store, vec![&c3], &mutual);
+        creator4(&mut store, &mut dag_store, vec![&c4], &mutual);
+        creator5(&mut store, &mut dag_store, vec![&c5], &mutual);
 
         let dag = dag_store.get_representation().expect("dag representation");
-        let lfb = {
-            let lfb_store = lfb_store.clone();
-            let finalised_store = finalised_store.clone();
-            Finalizer::run(
-                &dag,
-                FtThreshold::from_f32_lossy(-1.0),
-                0,
-                move |(m, _ft)| {
-                    let lfb_store = lfb_store.clone();
-                    let finalised_store = finalised_store.clone();
-                    async move {
-                        *lfb_store.borrow_mut() = m.clone();
-                        finalised_store.borrow_mut().insert(m);
-                        Ok(())
-                    }
-                },
-                &FinalizerConf::default(),
-            )
+        let advanced = floor_of_view(&dag, &at(&b1), thr)
             .await
-            .unwrap()
-        };
-
-        // check output
-        assert_eq!(lfb.as_ref().map(|(h, _)| h), Some(&b7.block_hash));
-        // check if new LFB effect is invoked
-        assert_eq!(*lfb_store.borrow(), b7.block_hash);
+            .expect("floor of view")
+            .expect("mutual visibility witnesses b7's chain — the LFB advances");
+        assert!(
+            advanced.block_number >= b7.body.state.block_number
+                && dag
+                    .is_dag_ancestor(&b7.block_hash, &advanced.hash)
+                    .expect("ancestry"),
+            "the advanced LFB must sit at-or-above b7 on its chain \
+             (advanced {}#{})",
+            hex::encode(&advanced.hash[..8]),
+            advanced.block_number,
+        );
 
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     })
@@ -351,8 +246,10 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
     .expect("Test should complete successfully");
 }
 
+/// A candidate already marked directly-finalized ahead of the LFB pointer
+/// is still the view's derived floor — the pointer catches up to it.
 #[tokio::test]
-async fn finalizer_invokes_effect_for_finalized_candidate_ahead_of_lfb() {
+async fn floor_of_view_advances_onto_the_already_finalized_candidate() {
     with_storage(|mut store, mut dag_store| async move {
         let validators = [
             generate_validator(Some("Finalized Candidate Validator 1")),
@@ -413,36 +310,13 @@ async fn finalizer_invokes_effect_for_finalized_candidate_ahead_of_lfb() {
             .await
             .expect("record candidate finalized");
         let dag = dag_store.get_representation().expect("dag representation");
-        let effect_invoked = Rc::new(RefCell::new(false));
-        let selected = Rc::new(RefCell::new(BlockHash::default()));
-        let result = {
-            let effect_invoked = effect_invoked.clone();
-            let selected = selected.clone();
-            Finalizer::run(
-                &dag,
-                FtThreshold::from_f32_lossy(-1.0),
-                0,
-                move |(hash, _)| {
-                    let effect_invoked = effect_invoked.clone();
-                    let selected = selected.clone();
-                    async move {
-                        *effect_invoked.borrow_mut() = true;
-                        *selected.borrow_mut() = hash;
-                        Ok(())
-                    }
-                },
-                &FinalizerConf::default(),
-            )
+        let advanced = floor_of_view(&dag, &at(&genesis), FtThreshold::from_f32_lossy(0.1))
             .await
-            .expect("finalizer run")
-        };
-
+            .expect("floor of view");
         assert_eq!(
-            result.as_ref().map(|(hash, _)| hash),
+            advanced.as_ref().map(|f| &f.hash),
             Some(&candidate.block_hash)
         );
-        assert_eq!(*selected.borrow(), candidate.block_hash);
-        assert!(*effect_invoked.borrow());
 
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     })
@@ -450,9 +324,16 @@ async fn finalizer_invokes_effect_for_finalized_candidate_ahead_of_lfb() {
     .expect("validation fixture");
 }
 
+/// Manual diagnostic (run with --ignored): floor-of-view cost at growing
+/// heights over a STALE-justification chain — each validator cites only its
+/// own latest message, the historical growth-feedback geometry for the
+/// retired Finalizer's agreement aggregation. The floor path's persisted
+/// caches must keep the cost flat; a super-linear trend here is a
+/// regression finding to report.
 #[tokio::test]
-#[ignore = "diagnostic: run manually for fast finalizer growth feedback"]
-async fn finalizer_growth_feedback_loop_stale_justification_chain() {
+#[ignore = "diagnostic: run manually for floor-of-view growth feedback"]
+async fn floor_of_view_growth_feedback_loop_stale_justification_chain() {
+    shared::rust::tracing_init::init_for_tests();
     with_storage(|mut store, mut dag_store| async move {
         let validators = [
             generate_validator(Some("Growth Validator 1")),
@@ -513,23 +394,21 @@ async fn finalizer_growth_feedback_loop_stale_justification_chain() {
             if checkpoints.contains(&height) {
                 let dag = dag_store.get_representation().expect("dag representation");
                 let started = Instant::now();
-                let _ = Finalizer::run(
-                    &dag,
-                    FtThreshold::from_f32_lossy(-1.0),
-                    0,
-                    |(_m, _ft)| async { Ok::<(), KvStoreError>(()) },
-                    &FinalizerConf::default(),
-                )
-                .await
-                .expect("Finalizer run should succeed");
+                let _ = floor_of_view(&dag, &at(&genesis), FtThreshold::from_f32_lossy(0.1))
+                    .await
+                    .expect("floor of view");
                 timing_samples.push((height, started.elapsed().as_millis()));
             }
         }
 
         assert_eq!(timing_samples.len(), checkpoints.len());
-        eprintln!("finalizer growth feedback (stale-justification chain):");
         for (height, elapsed_ms) in timing_samples {
-            eprintln!("  height={height:>3} finalizer_run_ms={elapsed_ms}");
+            tracing::info!(
+                target: "f1r3fly.finalizer",
+                height,
+                floor_of_view_ms = elapsed_ms,
+                "floor-of-view growth feedback sample (stale-justification chain)"
+            );
         }
 
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())

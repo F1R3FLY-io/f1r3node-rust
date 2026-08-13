@@ -61,9 +61,6 @@ pub struct CasperConf {
     #[serde(rename = "heartbeat")]
     pub heartbeat_conf: HeartbeatConf,
 
-    #[serde(rename = "finalizer", default)]
-    pub finalizer: FinalizerConf,
-
     #[serde(
         rename = "synchrony-recovery-stall-window",
         deserialize_with = "de_duration",
@@ -408,53 +405,6 @@ fn default_pending_deploy_max_lag() -> i64 { 20 }
 fn default_deploy_recovery_max_lag() -> i64 { 64 }
 
 fn default_empty_frontier_max_unfinalized_blocks() -> i64 { 64 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FinalizerConf {
-    #[serde(
-        rename = "work-budget",
-        deserialize_with = "de_duration",
-        default = "default_finalizer_work_budget"
-    )]
-    pub work_budget: Duration,
-    #[serde(
-        rename = "step-timeout",
-        deserialize_with = "de_duration",
-        default = "default_finalizer_step_timeout"
-    )]
-    pub step_timeout: Duration,
-    #[serde(
-        rename = "catchup-work-budget",
-        deserialize_with = "de_duration",
-        default = "default_finalizer_catchup_work_budget"
-    )]
-    pub catchup_work_budget: Duration,
-    #[serde(
-        rename = "catchup-step-timeout",
-        deserialize_with = "de_duration",
-        default = "default_finalizer_catchup_step_timeout"
-    )]
-    pub catchup_step_timeout: Duration,
-}
-
-impl Default for FinalizerConf {
-    fn default() -> Self {
-        Self {
-            work_budget: default_finalizer_work_budget(),
-            step_timeout: default_finalizer_step_timeout(),
-            catchup_work_budget: default_finalizer_catchup_work_budget(),
-            catchup_step_timeout: default_finalizer_catchup_step_timeout(),
-        }
-    }
-}
-
-fn default_finalizer_work_budget() -> Duration { Duration::from_secs(8) }
-
-fn default_finalizer_step_timeout() -> Duration { Duration::from_secs(1) }
-
-fn default_finalizer_catchup_work_budget() -> Duration { Duration::from_secs(8) }
-
-fn default_finalizer_catchup_step_timeout() -> Duration { Duration::from_secs(1) }
 
 pub fn de_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where D: serde::Deserializer<'de> {

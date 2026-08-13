@@ -619,46 +619,6 @@ impl CliqueOracle {
         Ok(decision)
     }
 
-    /// Finalizer decision + display value in one clique pass. Computes the max
-    /// clique weight `q` and total stake `S` once and returns `(decision,
-    /// ft_value)` where `decision` is the EXACT verdict
-    /// [`ft_decides_exact`]`(agreeing, q, S, num, den, strict)` and `ft_value` =
-    /// (2q−S)/S as `f32` for display/telemetry only. The `agreeing ≤ S/2`
-    /// short-circuit returns `(false, MIN_FAULT_TOLERANCE)`, matching
-    /// [`CliqueOracle::compute_output_with_cache`].
-    pub async fn compute_decision_with_cache(
-        target_msg: &M,
-        message_weight_map: &WeightMap,
-        agreeing_weight_map: &WeightMap,
-        dag: &KeyValueDagRepresentation,
-        run_cache: &mut CliqueOracleRunCache,
-        latest_messages: &BTreeMap<V, M>,
-        num: i64,
-        den: i64,
-        strict: bool,
-    ) -> Result<(bool, f32), KvStoreError> {
-        let total_stake = message_weight_map.values().sum::<i64>();
-        assert!(total_stake > 0, "Long overflow when computing total stake");
-        let agreeing = agreeing_weight_map.values().sum::<i64>();
-        if (agreeing as i128) * 2 <= total_stake as i128 {
-            return Ok((false, MIN_FAULT_TOLERANCE));
-        }
-        let max_clique_weight = CliqueOracle::compute_max_clique_weight(
-            target_msg,
-            agreeing_weight_map,
-            dag,
-            run_cache,
-            latest_messages,
-        )
-        .await?;
-        // Display value only: identical formula to compute_output_with_cache.
-        let ft_value = (max_clique_weight as f32 * 2.0 - total_stake as f32) / total_stake as f32;
-        Ok((
-            ft_decides_exact(agreeing, max_clique_weight, total_stake, num, den, strict),
-            ft_value,
-        ))
-    }
-
     /// Deterministic fault tolerance over a FROZEN latest-message snapshot.
     ///
     /// Every "validator V's latest message" read is resolved from `latest_messages`

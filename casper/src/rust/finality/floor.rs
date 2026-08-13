@@ -116,6 +116,49 @@ pub(crate) fn state_captures(
     }
 }
 
+/// The LFB decision over the LIVE view — the one finality clock: derive the
+/// floor of the current frontier (the deduped latest-message blocks, over
+/// the live snapshot) and advance only onto a strictly higher floor that
+/// CAPTURES the current LFB — the same soundness the per-block derivation
+/// runs, so the read surface can never designate a state missing settled
+/// content. `None` = hold (empty view, no advance, or an uncapturing
+/// derivation, which is logged). Both the finalization runner and the API
+/// path consume exactly this.
+pub async fn floor_of_view(
+    dag: &KeyValueDagRepresentation,
+    current: &Floor,
+    ftt: FtThreshold,
+) -> Result<Option<Floor>, CasperError> {
+    let mut tips: Vec<BlockHash> = dag
+        .latest_message_hashes()
+        .into_iter()
+        .map(|(_, hash)| hash)
+        .collect();
+    tips.sort();
+    tips.dedup();
+    if tips.is_empty() {
+        return Ok(None);
+    }
+    let live_snapshot: BTreeMap<Validator, BlockHash> =
+        dag.latest_message_hashes().into_iter().collect();
+    let derived = finalized_floor(dag, &tips, &live_snapshot, ftt).await?;
+    if derived.hash == current.hash || derived.block_number <= current.block_number {
+        return Ok(None);
+    }
+    if state_captures(dag, &derived, current)? {
+        Ok(Some(derived))
+    } else {
+        tracing::warn!(
+            target: "f1r3fly.finalizer",
+            derived = %PrettyPrinter::build_string_bytes(&derived.hash),
+            derived_number = derived.block_number,
+            current = %PrettyPrinter::build_string_bytes(&current.hash),
+            "floor-of-view does not capture the current LFB; holding"
+        );
+        Ok(None)
+    }
+}
+
 /// The active committee derived from a finalized-floor block's post-state: the
 /// PoS bonds at that state, filtered to the currently-active validator set.
 ///
