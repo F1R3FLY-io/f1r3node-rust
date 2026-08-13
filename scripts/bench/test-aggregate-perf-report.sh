@@ -131,6 +131,21 @@ jq -e '.color == "lightgrey" and (.message | contains("failing") | not)' \
 # The "no passive summary" line is a completion-only signal: a checkpoint
 # before the first summary write must not paint a healthy soak red.
 mkdir -p "$TMP/nodata" "$TMP/nodata-checkpoint-report"
+cat >"$TMP/nodata/.soak-checkpoint-state.json" <<'JSON'
+{
+  "target_ref": "dev",
+  "target_sha": "0123456789abcdef",
+  "trigger_source": "manual",
+  "slot_delay_seconds": 0,
+  "version": "0.4.43",
+  "started_at": 1000,
+  "requested_seconds": 1800,
+  "iterations": 0,
+  "failures": 0,
+  "bench_segments": 0,
+  "bench_failures": 0
+}
+JSON
 SOAK_DIR="$TMP/nodata" OUT_DIR="$TMP/nodata-checkpoint-report" RUN_ID=5 RUN_ATTEMPT=1 \
 	SOAK_KIND=daily DURATION_SECONDS=1800 WINDOW_SECONDS=79200 RETRY_ATTEMPT=0 \
 	SOAK_STATUS=in_progress \
