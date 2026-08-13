@@ -2760,6 +2760,12 @@ fn lock_err_reply(le: LockError) -> Par {
             FSERR_QUOTA_EXCEEDED,
             "range-lock cap exceeded for this file",
         ),
+        // Slice-8b: `wait: true` acquire cancelled while parked
+        // (explicit cancel_wait / deploy-end sweep / registry drop).
+        // Sub-2 additionally synthesizes a Produce::with_error() for
+        // deterministic replay per plan §X-2; the string reply body
+        // still maps through this helper.
+        LockError::Cancelled => err(FSERR_CANCELLED, "wait:true lock acquisition cancelled"),
     }
 }
 

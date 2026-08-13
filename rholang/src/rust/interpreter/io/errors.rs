@@ -13,6 +13,12 @@ pub const FSERR_CLOSED: &str = "FSERR_CLOSED";
 pub const FSERR_BUSY: &str = "FSERR_BUSY";
 pub const FSERR_QUOTA_EXCEEDED: &str = "FSERR_QUOTA_EXCEEDED";
 pub const FSERR_CROSS_DEVICE: &str = "FSERR_CROSS_DEVICE";
+/// Slice-8b `wait: true` acquisition cancelled — either explicitly
+/// via `LockRegistry::cancel_wait`, or by the deploy-end sweep in
+/// `WalDeployScope::drop` when a deploy ends with waiters still
+/// parked.  Distinct from `FSERR_BUSY` so callers can tell "conflict
+/// at request time" apart from "was in the queue but got cancelled".
+pub const FSERR_CANCELLED: &str = "FSERR_CANCELLED";
 
 use std::io;
 
@@ -51,6 +57,10 @@ pub const FSERR_CODE_CLOSED: u32 = 8;
 pub const FSERR_CODE_BUSY: u32 = 9;
 pub const FSERR_CODE_QUOTA_EXCEEDED: u32 = 10;
 pub const FSERR_CODE_CROSS_DEVICE: u32 = 11;
+/// Slice-8b `wait: true` cancellation — appended (code 12) per the
+/// "new codes append at the end" convention.  DO NOT reorder or
+/// renumber existing codes.
+pub const FSERR_CODE_CANCELLED: u32 = 12;
 
 /// Map a spec-canonical FSERR string to its stable u32 code for
 /// on-wire encoding in the WAL.  Unknown / non-canonical inputs
@@ -69,6 +79,7 @@ pub fn fserr_to_code(s: &str) -> u32 {
         FSERR_BUSY => FSERR_CODE_BUSY,
         FSERR_QUOTA_EXCEEDED => FSERR_CODE_QUOTA_EXCEEDED,
         FSERR_CROSS_DEVICE => FSERR_CODE_CROSS_DEVICE,
+        FSERR_CANCELLED => FSERR_CODE_CANCELLED,
         _ => FSERR_CODE_UNKNOWN,
     }
 }
