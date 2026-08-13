@@ -37,6 +37,7 @@ use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::{env, ByteVector};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::task::JoinHandle;
 
 use crate::rust::errors::CasperError;
 use crate::rust::merging::block_index::BlockIndex;
@@ -54,6 +55,10 @@ use crate::rust::util::rholang::state_hash_cache::StateHashCache;
 
 type MergeableStore = KeyValueTypedStoreImpl<ByteVector, Vec<DeployMergeableData>>;
 
+pub struct ExploratoryDeployExecution {
+    pub task: JoinHandle<Result<(Vec<Par>, u64), CasperError>>,
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct MergeableKey {
     state_hash: StateHashSerde,
@@ -70,6 +75,14 @@ mod tests {
     use tokio::sync::Semaphore;
 
     use super::RuntimeManager;
+
+    #[test]
+    fn exploratory_deploy_phlo_limit_preserves_legacy_default() {
+        assert_eq!(
+            RuntimeManager::EXPLORATORY_DEPLOY_PHLO_LIMIT_DEFAULT,
+            100_000_000
+        );
+    }
 
     #[tokio::test]
     async fn exploratory_deploy_permit_is_bounded_and_released() {
@@ -163,7 +176,7 @@ impl RuntimeManager {
     const EXPLORATORY_DEPLOY_QUEUE_TIMEOUT_MS_DEFAULT: u64 = 2_000;
     const EXPLORATORY_DEPLOY_QUEUE_TIMEOUT_MS_ENV: &str =
         "F1R3_EXPLORATORY_DEPLOY_QUEUE_TIMEOUT_MS";
-    const EXPLORATORY_DEPLOY_PHLO_LIMIT_DEFAULT: i64 = 5_000_000;
+    const EXPLORATORY_DEPLOY_PHLO_LIMIT_DEFAULT: i64 = 100_000_000;
     const EXPLORATORY_DEPLOY_PHLO_LIMIT_ENV: &str = "F1R3_EXPLORATORY_DEPLOY_PHLO_LIMIT";
     const EXPLORATORY_DEPLOY_EXECUTION_TIMEOUT_MS_DEFAULT: u64 = 15_000;
     const EXPLORATORY_DEPLOY_EXECUTION_TIMEOUT_MS_ENV: &str =
@@ -903,6 +916,24 @@ impl RuntimeManager {
                 self.exploratory_deploy_phlo_limit,
             )
             .await
+    }
+
+    pub async fn start_exploratory_deploy(
+        &self,
+        term: String,
+        hash: StateHash,
+        deployer: Option<PublicKey>,
+    ) -> ExploratoryDeployExecution {
+        let runtime = self.spawn_runtime().await;
+        let phlo_limit = self.exploratory_deploy_phlo_limit;
+        let task = tokio::spawn(async move {
+            let mut runtime_ops = RuntimeOps::new(runtime);
+            runtime_ops
+                .play_exploratory_deploy_with_phlo_limit(term, &hash, deployer, phlo_limit)
+                .await
+        });
+
+        ExploratoryDeployExecution { task }
     }
 
     pub async fn get_data(&self, hash: StateHash, channel: &Par) -> Result<Vec<Par>, CasperError> {

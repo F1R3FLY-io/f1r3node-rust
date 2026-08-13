@@ -206,6 +206,28 @@ pub struct ExploratoryDeployTimeoutError {
     pub timeout_ms: u128,
 }
 
+struct ExploratoryDeployMetricsGuard {
+    started: Instant,
+}
+
+impl ExploratoryDeployMetricsGuard {
+    fn new() -> Self {
+        metrics::gauge!("exploratory_deploy.active", "source" => "casper").increment(1.0);
+        Self {
+            started: Instant::now(),
+        }
+    }
+}
+
+impl Drop for ExploratoryDeployMetricsGuard {
+    fn drop(&mut self) {
+        metrics::gauge!("exploratory_deploy.active", "source" => "casper").decrement(1.0);
+        metrics::histogram!("exploratory_deploy.duration", "source" => "casper")
+            .record(self.started.elapsed().as_secs_f64());
+        RuntimeManager::trim_allocator();
+    }
+}
+
 #[derive(Debug)]
 pub enum LatestBlockMessageError {
     NodeReadOnlyError,
@@ -1674,15 +1696,36 @@ impl BlockAPI {
                     .ok_or_else(|| eyre::Report::new(ExploratoryDeployBusyError))?;
 
                 let (state_hash, target_block) = if block_hash.is_none() {
-                    let dag = casper.block_dag().await?;
-                    let lfb_hash = dag.last_finalized_block();
-                    let lfb = casper.block_store().get(&lfb_hash)?.ok_or_else(|| {
-                        eyre::eyre!(
-                            "Failure to find last finalized block with hash: {}",
-                            PrettyPrinter::build_string_no_limit(&lfb_hash)
-                        )
-                    })?;
-                    (proto_util::post_state_hash(&lfb), Some(lfb))
+                    let snapshot = casper.get_snapshot().await?;
+                    let lfb = casper.last_finalized_block().await?;
+                    let parents = &snapshot.parents;
+                    let merged_state = if parents.len() <= 1 {
+                        proto_util::post_state_hash(&lfb)
+                    } else {
+                        let latest_messages: std::collections::BTreeMap<_, _> = snapshot
+                            .justifications
+                            .iter()
+                            .map(|justification| {
+                                (
+                                    justification.validator.clone(),
+                                    justification.latest_block_hash.clone(),
+                                )
+                            })
+                            .collect();
+                        let (merged_state_hash, _, _) =
+                            crate::rust::util::rholang::interpreter_util::compute_parents_post_state(
+                                casper.block_store(),
+                                parents.clone(),
+                                &snapshot,
+                                &runtime_manager,
+                                &latest_messages,
+                                Some(true),
+                                None,
+                            )
+                            .await?;
+                        merged_state_hash
+                    };
+                    (merged_state, Some(lfb))
                 } else {
                     // Specific block requested: use its post-state
                     let hash_str = block_hash.as_ref().unwrap();
@@ -1714,29 +1757,12 @@ impl BlockAPI {
 
                 match target_block {
                     Some(b) => {
-                        let started = Instant::now();
-                        metrics::gauge!(
-                            "exploratory_deploy.active",
-                            "source" => "casper"
-                        )
-                        .increment(1.0);
+                        let _metrics = ExploratoryDeployMetricsGuard::new();
                         let timeout = runtime_manager.exploratory_deploy_execution_timeout_value();
-                        let result = tokio::time::timeout(
-                            timeout,
-                            runtime_manager.play_exploratory_deploy(term, &state_hash, deployer),
-                        )
-                        .await;
-                        metrics::gauge!(
-                            "exploratory_deploy.active",
-                            "source" => "casper"
-                        )
-                        .decrement(1.0);
-                        metrics::histogram!(
-                            "exploratory_deploy.duration",
-                            "source" => "casper"
-                        )
-                        .record(started.elapsed().as_secs_f64());
-                        RuntimeManager::trim_allocator();
+                        let mut execution = runtime_manager
+                            .start_exploratory_deploy(term, state_hash, deployer)
+                            .await;
+                        let result = tokio::time::timeout(timeout, &mut execution.task).await;
 
                         let (res, cost) = match result {
                             Ok(result) => {
@@ -1745,9 +1771,11 @@ impl BlockAPI {
                                     "source" => "casper"
                                 )
                                 .increment(1);
-                                result?
+                                result??
                             }
                             Err(_) => {
+                                execution.task.abort();
+                                let _ = execution.task.await;
                                 metrics::counter!(
                                     "exploratory_deploy.timed_out",
                                     "source" => "casper"
