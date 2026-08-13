@@ -804,6 +804,182 @@ in {
       }
     } |
 
+    // -- lockRange (arity-4, options-map variant) — Phase 8 slice 8b sub-4
+    //
+    // Explicit range-lock acquisition with per-spec §Explicit locks
+    // + §1181 options-map argument.  Callers pass `{"wait": true}`
+    // to opt into blocking acquisition; on lock conflict, the acquire
+    // parks in the LockRegistry's FIFO waiter queue (slice 8b sub-1)
+    // and admits when the conflicting holder releases (deploy end via
+    // sub-3, explicit release via LockToken, or File.close sweep).
+    //
+    // Options extraction: `options.get("wait")` returns Nil for
+    // absent key (spec §Options-map convention); we normalize
+    // wait ∈ {Nil, false} → false, wait == true → true, anything
+    // else → FSERR_BAD_ARG.  This mirrors the native's Bool-only
+    // wait argument.
+    //
+    // Method body deliberately duplicates the arity-3 method above.
+    // Rholang agent methods don't cross-invoke cleanly (would nest
+    // stateP-linear-receive → deadlock).  Any change to the shared
+    // structure (offset/length/mode validation, state-machine dance,
+    // mode attenuation) MUST be mirrored across both methods; a
+    // drift-detector test lives at rholang/tests/file_dir_check.rs
+    // in the slice-8b integration suite.
+    //
+    // The arity-3 method remains as a backward-compatible convenience
+    // for callers that don't need wait:true (defaults wait:false).
+    // Both call the same native (arity-8, wait: Bool at slot 7); the
+    // arity-3 relies on the native's legacy 7-arg shim to default
+    // wait:false — sub-4 does NOT tighten that shim.
+    method lockRange(@offset, @length, @mode, @options) {
+      match offset {
+        off /\ Int => {
+          match off < 0 {
+            true => return!([false, "FSERR_BAD_ARG",
+              "offset must be non-negative"])
+            false => {
+              match length {
+                len /\ Int => {
+                  match len <= 0 {
+                    true => return!([false, "FSERR_BAD_ARG",
+                      "length must be > 0 (LockRegistry rejects zero-length ranges as BadArg)"])
+                    false => {
+                      match mode {
+                        m /\ String => {
+                          match m {
+                            "r" \/ "w" => {
+                              // Extract wait option.  Nil (absent) or
+                              // literal false → wait:false (fail-fast);
+                              // literal true → wait:true (park on
+                              // conflict).  Any other value is
+                              // rejected as FSERR_BAD_ARG.
+                              match options.get("wait") {
+                                Nil => {
+                                  // Same body as arity-3, wait:false.
+                                  for (@state <- @[*private, *stateP]) {
+                                    match state {
+                                      "closed" => {
+                                        @[*private, *stateP]!("closed") |
+                                        return!([false, "FSERR_CLOSED", "file is closed"])
+                                      }
+                                      "open" => {
+                                        for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
+                                          match params {
+                                            (fd, _root, _rel, fmode) => {
+                                              match [m, fmode] {
+                                                ["w", "r"] => {
+                                                  @[*private, *stateP]!("open") |
+                                                  return!([false, "FSERR_UNSUPPORTED",
+                                                    "cannot acquire write lock on read-only file"])
+                                                }
+                                                _ => {
+                                                  new lockCh in {
+                                                    // Native arity-8 with wait:false.
+                                                    fsLockRange!(fd, off, len, m, *this, cmode, false, *lockCh) |
+                                                    for (@reply <- lockCh) {
+                                                      @[*private, *stateP]!("open") |
+                                                      match reply {
+                                                        [true, lid] => {
+                                                          for (@token <- LockToken!?(lid)) {
+                                                            return!([true, token])
+                                                          }
+                                                        }
+                                                        _ => return!(reply)
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                            _ => {
+                                              @[*private, *stateP]!("open") |
+                                              return!([false, "FSERR_IO", "fd params malformed"])
+                                            }
+                                          }
+                                        }
+                                      }
+                                      _ => {
+                                        @[*private, *stateP]!("closed") |
+                                        return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                                      }
+                                    }
+                                  }
+                                }
+                                w /\ Bool => {
+                                  // Same body, wait extracted from options.
+                                  for (@state <- @[*private, *stateP]) {
+                                    match state {
+                                      "closed" => {
+                                        @[*private, *stateP]!("closed") |
+                                        return!([false, "FSERR_CLOSED", "file is closed"])
+                                      }
+                                      "open" => {
+                                        for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
+                                          match params {
+                                            (fd, _root, _rel, fmode) => {
+                                              match [m, fmode] {
+                                                ["w", "r"] => {
+                                                  @[*private, *stateP]!("open") |
+                                                  return!([false, "FSERR_UNSUPPORTED",
+                                                    "cannot acquire write lock on read-only file"])
+                                                }
+                                                _ => {
+                                                  new lockCh in {
+                                                    // Native arity-8 with caller-supplied wait.
+                                                    fsLockRange!(fd, off, len, m, *this, cmode, w, *lockCh) |
+                                                    for (@reply <- lockCh) {
+                                                      @[*private, *stateP]!("open") |
+                                                      match reply {
+                                                        [true, lid] => {
+                                                          for (@token <- LockToken!?(lid)) {
+                                                            return!([true, token])
+                                                          }
+                                                        }
+                                                        _ => return!(reply)
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                            _ => {
+                                              @[*private, *stateP]!("open") |
+                                              return!([false, "FSERR_IO", "fd params malformed"])
+                                            }
+                                          }
+                                        }
+                                      }
+                                      _ => {
+                                        @[*private, *stateP]!("closed") |
+                                        return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                                      }
+                                    }
+                                  }
+                                }
+                                _ => return!([false, "FSERR_BAD_ARG",
+                                  "options.wait must be Bool"])
+                              }
+                            }
+                            _ => return!([false, "FSERR_BAD_ARG",
+                              "mode must be \"r\" or \"w\""])
+                          }
+                        }
+                        _ => return!([false, "FSERR_BAD_ARG",
+                          "mode must be a String"])
+                      }
+                    }
+                  }
+                }
+                _ => return!([false, "FSERR_BAD_ARG", "length must be an integer"])
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "offset must be an integer"])
+      }
+    } |
+
     // -- bytes() ---------------------------------------------------
     //
     // Sequential ByteStream producer.  Reads bytes from the file's

@@ -1060,7 +1060,18 @@ mod tests {
         // handlers.rs (`fs_lock_range` / `fs_release_all_for_holder`
         // / `holder_id_of`) updated with the same *stateP → *this
         // correction + rationale.  Same hard-fork discipline.
-        const EXPECTED: &str = "30535c12572389271ec04d9e1c037941de02d844013f9094d8505e83265f9b66";
+        //
+        // Anchor rolled forward again for Phase 8 slice 8b sub-4
+        // (2026-08-12): added arity-4 `method lockRange(@offset,
+        // @length, @mode, @options)` alongside the existing arity-3
+        // method.  The new method extracts `wait: Bool` from the
+        // options map per spec §1181 and passes it through to
+        // fsLockRange (arity-8, wait: Bool at slot 7).  The arity-3
+        // method is unchanged and continues to invoke fsLockRange
+        // arity-7 (native's legacy shim defaults wait:false); both
+        // paths coexist for backward compat.  Same hard-fork
+        // discipline as previous rolls.
+        const EXPECTED: &str = "c7da25dcbb0a37a03097708e7d7b55725af0769d04e0363348080f52ccb43b3c";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \
