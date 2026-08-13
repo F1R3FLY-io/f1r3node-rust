@@ -2748,7 +2748,21 @@ impl FsProcesses {
         }
         let holder = holder_id_of(holder_par);
         let released = self.handles.lock_registry.release_all_for_holder(&holder);
-        let out = vec![ok_u64(released as u64)];
+        // Slice-8b sub-6 review-fix (2026-08-12): also cancel this
+        // holder's parked `wait: true` acquires so File.close's
+        // cleanup semantic is complete — otherwise a caller who
+        // closes a cap with parked waits would leave the wait entries
+        // in the registry attached to a dead cap.  Symmetrical with
+        // the WalDeployScope::drop cancel+release pair.  Cancelled
+        // waiters signal Err(Cancelled) on their admit oneshot; the
+        // parked native's `admit.await` resumes with an
+        // FSERR_CANCELLED reply on the caller's ack channel.
+        let cancelled = self
+            .handles
+            .lock_registry
+            .cancel_all_waiters_for_holder(&holder);
+        let _ = cancelled; // count merged into the released total below
+        let out = vec![ok_u64((released + cancelled) as u64)];
         produce(&out, ack).await?;
         Ok(out)
     }

@@ -282,48 +282,41 @@ impl Drop for WalDeployScope {
                 );
             }
         }
-        // Phase 8 slice 8a step 5: sweep leaked locks per spec
-        // §Explicit locks "Implementations MUST auto-release at
-        // deploy-end".  Runs on EVERY exit path (success via
-        // take_and_commit + Drop, `?`-propagated error via Drop
-        // alone, panic-unwind via Drop alone).  Symmetrical with the
-        // WAL discard-drain above — both close deploy-end resource
-        // cleanup at the same point.
+        // Phase 8 slice 8a step 5 + 8b sub-3 + 8b sub-6 review-fix
+        // (2026-08-12): cancel THIS deploy's parked wait:true acquires
+        // FIRST, then sweep THIS deploy's held locks.
         //
-        // The sentinel guard in release_all_for_deploy is not
-        // exercised here: new_with_lock_sweep's debug_assert rejects
-        // sentinel scopes at construction, and the legacy test
-        // constructor uses `[0xAA; 32]` — also non-sentinel.
-        let n_released = self
-            .lock_registry
-            .release_all_for_deploy(&self.deploy_scope);
-        if n_released > 0 {
-            tracing::debug!(
-                target: "f1r3fly.casper.fs_locks",
-                n_locks = n_released,
-                "deploy-end auto-release: swept locks the caller did not release"
-            );
-        }
-        // Phase 8 slice 8b sub-3 (2026-08-12): sweep any `wait: true`
-        // acquires that are still parked at deploy-end.  Cancellation
-        // signals `Err(LockError::Cancelled)` on each parked waiter's
-        // admit oneshot; the parked native's `admit.await` resumes
-        // and produces an `FSERR_CANCELLED` reply on the caller's ack
-        // channel, so the Rholang caller observes deterministic
-        // closure of the acquire attempt rather than a silent leak.
+        // ## Ordering rationale (sub-6 review-fix)
         //
-        // Ordering: cancel_all_waiters_for_deploy runs AFTER
-        // release_all_for_deploy.  Rationale: releases may admit
-        // waiters (waking them into held state), so cancelling first
-        // would prematurely fail waiters that would otherwise admit
-        // during the same drop.  In practice the two operations touch
-        // disjoint sets (this deploy's held locks vs. this deploy's
-        // parked waiters), but the ordering is defensively correct
-        // for future scenarios where a waiter's deploy matches the
-        // releasing deploy.
+        // The prior order (release-first, cancel-second) had a subtle
+        // same-deploy leak: `release_all_for_deploy` internally calls
+        // `wake_waiters(state)` after removing this deploy's held
+        // entries, which admits ANY parked waiter whose range now
+        // fits — INCLUDING a waiter whose own `deploy` field matches
+        // the dropping scope.  Once admitted, the waiter is promoted
+        // to `state.ranges` with `deploy == self.deploy_scope`.  The
+        // subsequent `cancel_all_waiters_for_deploy` finds nothing to
+        // cancel (waiter is now held, not parked).  The now-held
+        // lock's deploy is dead → nothing ever releases it → leaks
+        // past deploy boundary forever.
         //
-        // Sentinel guard is symmetrical with release_all_for_deploy —
-        // panics on `[0; 32]` scope.
+        // Reversed order:
+        //   1. cancel_all_waiters_for_deploy(deploy) — kills THIS
+        //      deploy's parked waiters (Err(Cancelled) on oneshot);
+        //      they can never be admitted.
+        //   2. release_all_for_deploy(deploy) — sweeps THIS deploy's
+        //      held locks + wake_waiters admits ONLY other-deploy
+        //      waiters (this deploy's are gone).
+        //
+        // Runs on EVERY exit path (success via take_and_commit + Drop,
+        // `?`-propagated error via Drop alone, panic-unwind via Drop
+        // alone).  Symmetrical with the WAL discard-drain above.
+        //
+        // Sentinel guards: both `cancel_all_waiters_for_deploy` and
+        // `release_all_for_deploy` panic on `[0; 32]`.
+        // new_with_lock_sweep's assert! rejects sentinel scopes at
+        // construction; legacy test constructor uses `[0xAA; 32]` —
+        // also non-sentinel.
         let n_cancelled = self
             .lock_registry
             .cancel_all_waiters_for_deploy(&self.deploy_scope);
@@ -332,6 +325,16 @@ impl Drop for WalDeployScope {
                 target: "f1r3fly.casper.fs_locks",
                 n_waiters = n_cancelled,
                 "deploy-end auto-cancel: signalled Cancelled to parked wait:true acquires"
+            );
+        }
+        let n_released = self
+            .lock_registry
+            .release_all_for_deploy(&self.deploy_scope);
+        if n_released > 0 {
+            tracing::debug!(
+                target: "f1r3fly.casper.fs_locks",
+                n_locks = n_released,
+                "deploy-end auto-release: swept locks the caller did not release"
             );
         }
         // Clear the per-runtime "current scope" cell back to sentinel
@@ -2613,8 +2616,9 @@ mod tests {
         let impl_start = src
             .find("impl Drop for WalDeployScope")
             .expect("runtime.rs missing impl Drop for WalDeployScope");
-        // 3KB window covers the drop body comfortably.
-        let window = &src[impl_start..std::cmp::min(impl_start + 3000, src.len())];
+        // 4KB window (was 3KB; sub-6 review-fix expanded the drop
+        // body's rationale comment for the reversed ordering).
+        let window = &src[impl_start..std::cmp::min(impl_start + 4000, src.len())];
         assert!(
             window.contains("cancel_all_waiters_for_deploy"),
             "sub-3 regression: WalDeployScope::drop MUST invoke \
@@ -2627,6 +2631,103 @@ mod tests {
             "sub-3 regression: both release AND cancel sweeps must \
              fire on drop"
         );
+    }
+
+    /// **Sub-6 review-fix B1 source-scan pin**: cancel MUST precede
+    /// release in `WalDeployScope::drop`.  Reversed order (release
+    /// first) has a same-deploy admission-then-leak bug — a waiter
+    /// tagged with this deploy_scope can be admitted by
+    /// wake_waiters (invoked internally by release_all_for_deploy)
+    /// before the cancel_all sees it, creating a held lock scoped to
+    /// a dying deploy that leaks past drop.
+    #[test]
+    fn wal_deploy_scope_drop_cancels_before_release() {
+        let src = include_str!("runtime.rs");
+        let impl_start = src
+            .find("impl Drop for WalDeployScope")
+            .expect("runtime.rs missing impl Drop for WalDeployScope");
+        let window = &src[impl_start..std::cmp::min(impl_start + 4000, src.len())];
+        let cancel_pos = window
+            .find("cancel_all_waiters_for_deploy(&self.deploy_scope)")
+            .expect("cancel_all_waiters_for_deploy invocation not found");
+        let release_pos = window
+            .find("release_all_for_deploy(&self.deploy_scope)")
+            .expect("release_all_for_deploy invocation not found");
+        assert!(
+            cancel_pos < release_pos,
+            "sub-6 review-fix B1 regression: cancel_all_waiters_for_\
+             deploy MUST precede release_all_for_deploy — reversing \
+             would allow same-deploy waiters to be admitted via \
+             wake_waiters and leak past drop"
+        );
+    }
+
+    /// **Sub-6 review-fix B1 behavioral test**: exercise the exact
+    /// same-deploy admission-then-leak path that the reversed
+    /// ordering fixes.  A waiter with `deploy = self.deploy_scope`
+    /// that would be admissible after this deploy's release must
+    /// NOT be admitted — it must be cancelled first.
+    #[tokio::test]
+    async fn wal_deploy_scope_drop_no_same_deploy_admission_leak() {
+        let wal = Wal::new();
+        let lock_registry = LockRegistry::new();
+        let current_scope_cell = std::sync::Arc::new(std::sync::RwLock::new([0u8; 32]));
+        let deploy_scope: DeployScope = [0xD4u8; 32];
+
+        // Cap A (holder 1) acquires W under deploy_scope.
+        // Cap B (holder 2, different holder, same deploy!) parks W
+        // wait:true on the same range — conflicts with A.
+        //
+        // Under reversed order (post-fix):
+        //   1. cancel_all_waiters_for_deploy(deploy_scope) —
+        //      cancels B (its deploy matches)
+        //   2. release_all_for_deploy(deploy_scope) — sweeps A;
+        //      wake_waiters finds no B (already cancelled); nothing
+        //      else to admit
+        // Result: registry is EMPTY after drop.
+        //
+        // Under the pre-fix release-first order:
+        //   1. release_all_for_deploy(deploy_scope) — sweeps A;
+        //      wake_waiters admits B (same deploy, different holder
+        //      → different holder passes conflict → admits with
+        //      deploy = deploy_scope)
+        //   2. cancel_all_waiters_for_deploy(deploy_scope) — finds
+        //      nothing parked (B was just admitted)
+        // Result: B's admitted range LEAKS with a dead deploy_scope.
+        {
+            let _scope = WalDeployScope::new_with_lock_sweep(
+                wal.clone(),
+                lock_registry.clone(),
+                deploy_scope,
+                current_scope_cell.clone(),
+            );
+            lock_registry
+                .try_acquire_range((1, 42), 0, 100, LockMode::Write, holder(1), deploy_scope)
+                .expect("A acquires");
+            let _b_outcome = lock_registry
+                .try_acquire_range_wait(
+                    (1, 42),
+                    0,
+                    100,
+                    LockMode::Write,
+                    holder(2),
+                    deploy_scope,
+                    WaitPolicy::Wait,
+                )
+                .expect("B parks");
+            assert_eq!(lock_registry.held_locks(), 1);
+            assert_eq!(lock_registry.parked_waiters(), 1);
+        }
+        // After drop: no leak.  Both A (released) and B (cancelled)
+        // are gone.
+        assert_eq!(
+            lock_registry.held_locks(),
+            0,
+            "sub-6 B1 regression: same-deploy waiter must not be \
+             admitted-and-leaked through release-first ordering"
+        );
+        assert_eq!(lock_registry.parked_waiters(), 0);
+        assert_eq!(lock_registry.tracked_files(), 0);
     }
 
     /// **Gap 3a: user-deploy path pin.**  Verify

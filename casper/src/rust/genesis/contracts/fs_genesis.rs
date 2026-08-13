@@ -1071,7 +1071,18 @@ mod tests {
         // arity-7 (native's legacy shim defaults wait:false); both
         // paths coexist for backward compat.  Same hard-fork
         // discipline as previous rolls.
-        const EXPECTED: &str = "c7da25dcbb0a37a03097708e7d7b55725af0769d04e0363348080f52ccb43b3c";
+        //
+        // Anchor rolled forward again for Phase 8 slice 8b sub-6
+        // review-fix (2026-08-12): the arity-4 lockRange method now
+        // releases stateP EARLY (immediately after the state check)
+        // rather than late (after the native reply arrives).  Under
+        // wait:true, the native's admit await can block indefinitely
+        // — holding stateP through that wait would block every other
+        // method on the same cap, including close().  Early release
+        // is the fix per the review; body-comments in the method
+        // document the concurrent-close scenario.  Same hard-fork
+        // discipline as previous rolls.
+        const EXPECTED: &str = "c5d5be358612c8cd6a8cdd7ac005010e1868fbaebaecc93d874f4698903e00e4";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

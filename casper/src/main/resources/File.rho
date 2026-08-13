@@ -854,9 +854,51 @@ in {
                               // literal true → wait:true (park on
                               // conflict).  Any other value is
                               // rejected as FSERR_BAD_ARG.
+                              // ## Sub-6 review-fix (2026-08-12): early
+                              // stateP release
+                              //
+                              // The stateP linear cell is put back to
+                              // "open" IMMEDIATELY after the state
+                              // check, BEFORE the fsLockRange native
+                              // call.  Rationale: under wait:true, the
+                              // native's `admit.await` can block
+                              // indefinitely (until a conflicting
+                              // holder releases or the deploy ends).
+                              // Holding stateP through that wait would
+                              // block every other method on the same
+                              // cap — including `close()`, the
+                              // caller's escape hatch.  Releasing
+                              // early accepts a small semantic window
+                              // where "open" is observed while a lock
+                              // is pending; concurrent callers on
+                              // this cap proceed at the LockRegistry
+                              // level (which is thread-safe by design)
+                              // rather than blocking at the stateP
+                              // gate.
+                              //
+                              // Concurrent-close scenario: close()
+                              // takes stateP, sets "closed", calls
+                              // fs_release_all_for_holder which
+                              // cancels this method's parked waiter
+                              // (sub-6 review-fix added
+                              // cancel_all_waiters_for_holder to that
+                              // sweep) → this method's `admit.await`
+                              // returns Err(Cancelled) → produces
+                              // FSERR_CANCELLED reply.  Deterministic
+                              // closure of the wait attempt.
+                              //
+                              // The arity-3 method above deliberately
+                              // keeps the tight stateP hold pattern —
+                              // it's always wait:false, so the native
+                              // returns quickly and the concurrency
+                              // window is negligible.  Only the
+                              // arity-4 method needs the early
+                              // release.
                               match options.get("wait") {
                                 Nil => {
-                                  // Same body as arity-3, wait:false.
+                                  // Nil → wait:false.  Body identical
+                                  // to the Bool branch modulo `false`
+                                  // literal vs. bound `w`.
                                   for (@state <- @[*private, *stateP]) {
                                     match state {
                                       "closed" => {
@@ -864,12 +906,12 @@ in {
                                         return!([false, "FSERR_CLOSED", "file is closed"])
                                       }
                                       "open" => {
+                                        @[*private, *stateP]!("open") |
                                         for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
                                           match params {
                                             (fd, _root, _rel, fmode) => {
                                               match [m, fmode] {
                                                 ["w", "r"] => {
-                                                  @[*private, *stateP]!("open") |
                                                   return!([false, "FSERR_UNSUPPORTED",
                                                     "cannot acquire write lock on read-only file"])
                                                 }
@@ -878,7 +920,6 @@ in {
                                                     // Native arity-8 with wait:false.
                                                     fsLockRange!(fd, off, len, m, *this, cmode, false, *lockCh) |
                                                     for (@reply <- lockCh) {
-                                                      @[*private, *stateP]!("open") |
                                                       match reply {
                                                         [true, lid] => {
                                                           for (@token <- LockToken!?(lid)) {
@@ -893,7 +934,6 @@ in {
                                               }
                                             }
                                             _ => {
-                                              @[*private, *stateP]!("open") |
                                               return!([false, "FSERR_IO", "fd params malformed"])
                                             }
                                           }
@@ -907,7 +947,6 @@ in {
                                   }
                                 }
                                 w /\ Bool => {
-                                  // Same body, wait extracted from options.
                                   for (@state <- @[*private, *stateP]) {
                                     match state {
                                       "closed" => {
@@ -915,12 +954,12 @@ in {
                                         return!([false, "FSERR_CLOSED", "file is closed"])
                                       }
                                       "open" => {
+                                        @[*private, *stateP]!("open") |
                                         for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
                                           match params {
                                             (fd, _root, _rel, fmode) => {
                                               match [m, fmode] {
                                                 ["w", "r"] => {
-                                                  @[*private, *stateP]!("open") |
                                                   return!([false, "FSERR_UNSUPPORTED",
                                                     "cannot acquire write lock on read-only file"])
                                                 }
@@ -929,7 +968,6 @@ in {
                                                     // Native arity-8 with caller-supplied wait.
                                                     fsLockRange!(fd, off, len, m, *this, cmode, w, *lockCh) |
                                                     for (@reply <- lockCh) {
-                                                      @[*private, *stateP]!("open") |
                                                       match reply {
                                                         [true, lid] => {
                                                           for (@token <- LockToken!?(lid)) {
@@ -944,7 +982,6 @@ in {
                                               }
                                             }
                                             _ => {
-                                              @[*private, *stateP]!("open") |
                                               return!([false, "FSERR_IO", "fd params malformed"])
                                             }
                                           }

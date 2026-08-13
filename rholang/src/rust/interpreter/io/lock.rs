@@ -599,11 +599,13 @@ impl LockRegistry {
                 state.sequential_holder = None;
                 released += 1;
             }
-            // Wake any waiters that now fit — including waiters whose
-            // own holder was the one being swept: their sender is
-            // dropped by the wake path when their own state slot is
-            // gone, but this holder's parked waits are proactively
-            // cancelled below rather than left in the queue.
+            // Wake any waiters (from OTHER holders) that now fit.
+            // This holder's OWN parked waiters are separately swept by
+            // `cancel_all_waiters_for_holder` — the caller (typically
+            // `fs_release_all_for_holder` on File.close) invokes both.
+            // Concerns kept separate for the same reason as the
+            // release_all_for_deploy / cancel_all_waiters_for_deploy
+            // split.
             wake_waiters(state);
             if state_is_empty(state) {
                 evict.push(*dev_inode);
@@ -613,6 +615,39 @@ impl LockRegistry {
             guard.remove(&k);
         }
         released
+    }
+
+    /// Sweep every parked waiter belonging to `holder` — signals each
+    /// `Err(LockError::Cancelled)` and returns the count cancelled.
+    /// Called from `fs_release_all_for_holder` (File.close path) so
+    /// the closed cap's parked wait:true acquires resolve
+    /// deterministically with a Cancelled reply instead of hanging in
+    /// the queue attached to a dead cap.
+    ///
+    /// Symmetrical with `cancel_all_waiters_for_deploy` but keyed on
+    /// `HolderId` (per-cap) rather than `DeployScope` (per-deploy).
+    /// A holder can span multiple `(dev, inode)` entries; the sweep
+    /// visits all.
+    pub fn cancel_all_waiters_for_holder(&self, holder: &HolderId) -> usize {
+        let mut guard = self.inner.write().expect("lock registry poisoned");
+        let mut cancelled = 0usize;
+        let mut evict: Vec<DevInode> = Vec::new();
+        for (dev_inode, state) in guard.iter_mut() {
+            let (matching, keep): (VecDeque<Waiter>, VecDeque<Waiter>) =
+                state.waiters.drain(..).partition(|w| &w.holder == holder);
+            state.waiters = keep;
+            for waiter in matching {
+                let _ = waiter.admit.send(Err(LockError::Cancelled));
+                cancelled += 1;
+            }
+            if state_is_empty(state) {
+                evict.push(*dev_inode);
+            }
+        }
+        for k in evict {
+            guard.remove(&k);
+        }
+        cancelled
     }
 
     /// Release every lock owned by `deploy`.  Called from the
@@ -2650,5 +2685,75 @@ mod tests {
         );
         // Cap is full — even wait:true is QuotaExceeded (no slot).
         assert_eq!(out.err(), Some(LockError::QuotaExceeded));
+    }
+
+    // -- sub-6 review-fix: cancel_all_waiters_for_holder -----------------
+
+    #[tokio::test]
+    async fn cancel_all_waiters_for_holder_sweeps_matching_only() {
+        // Sub-6 review-fix B2: File.close's fs_release_all_for_holder
+        // needs a symmetrical waiter-sweep so parked wait:true acquires
+        // by the closed cap resolve deterministically (Cancelled)
+        // instead of leaking in the queue with a stale HolderId.
+        let reg = LockRegistry::new();
+        // Pre-holder to force parking.
+        let pre = deploy(0xEE);
+        reg.try_acquire_range((1, 42), 0, 100, LockMode::Write, holder(9), pre)
+            .expect("pre acquire");
+        // Holder A parks 2 waiters, holder B parks 1.
+        let (_a1, a1_rx) = expect_parked(
+            reg.try_acquire_range_wait(
+                (1, 42),
+                0,
+                100,
+                LockMode::Write,
+                holder(1),
+                deploy(1),
+                WaitPolicy::Wait,
+            )
+            .unwrap(),
+        );
+        let (_a2, a2_rx) = expect_parked(
+            reg.try_acquire_range_wait(
+                (1, 42),
+                0,
+                100,
+                LockMode::Write,
+                holder(1),
+                deploy(1),
+                WaitPolicy::Wait,
+            )
+            .unwrap(),
+        );
+        let (_b1, mut b1_rx) = expect_parked(
+            reg.try_acquire_range_wait(
+                (1, 42),
+                0,
+                100,
+                LockMode::Write,
+                holder(2),
+                deploy(2),
+                WaitPolicy::Wait,
+            )
+            .unwrap(),
+        );
+        assert_eq!(reg.parked_waiters(), 3);
+        let cancelled = reg.cancel_all_waiters_for_holder(&holder(1));
+        assert_eq!(cancelled, 2);
+        assert_eq!(reg.parked_waiters(), 1);
+        assert_eq!(a1_rx.await.unwrap(), Err(LockError::Cancelled));
+        assert_eq!(a2_rx.await.unwrap(), Err(LockError::Cancelled));
+        // B's waiter still parked.
+        assert!(matches!(
+            b1_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancel_all_waiters_for_holder_zero_returns_no_matches_gracefully() {
+        // Called on a holder with no parked waiters — no-op, returns 0.
+        let reg = LockRegistry::new();
+        assert_eq!(reg.cancel_all_waiters_for_holder(&holder(99)), 0);
     }
 }
