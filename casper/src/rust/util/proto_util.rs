@@ -646,6 +646,7 @@ mod fork_choice_b1_repro_tests {
             finalized: false,
             fault_tolerance_value: 0.0,
             merge_base: Bytes::new(),
+            rejected_carriers: vec![],
         }
     }
 

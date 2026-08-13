@@ -228,6 +228,7 @@ mod tests {
                 finalized: true,
                 fault_tolerance_value: 1.0,
                 merge_base: Bytes::new(),
+                rejected_carriers: vec![],
             })
             .expect("add metadata");
         }

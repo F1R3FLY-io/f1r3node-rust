@@ -639,6 +639,7 @@ mod tests {
             finalized: false,
             fault_tolerance_value: 0.0,
             merge_base: Bytes::new(),
+            rejected_carriers: vec![],
         }
     }
 

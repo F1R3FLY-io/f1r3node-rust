@@ -49,6 +49,73 @@ pub(crate) fn in_floor_closure(
         .map_err(CasperError::KvStoreError)
 }
 
+/// True iff `cand`'s state provably CONTAINS `x`'s state: capture is DAG
+/// containment minus recorded erasure. `x` in `cand`'s DAG past means every
+/// chain of `x` entered the scope of some merge on `cand`'s state
+/// derivation; absent a recorded rejection those chains were APPLIED, so
+/// the state built forward from them (a merged sibling's effects arrive as
+/// applied-from-scope diffs, not via the base chain). The one way `x`'s
+/// content does NOT survive is a merge on `cand`'s base lineage keep-one'ing
+/// it out — which layer-2 records as that merge's non-duplicate rejection
+/// records, naming the carriers they adjudicated. So the walk descends
+/// `cand`'s merge-base lineage down to `x`'s height and fails on any
+/// recorded carrier inside `x`'s closure. Raw DAG ancestry alone is NOT
+/// capture: the erasing block descends from `x` while its state derives
+/// from a base older than `x`.
+///
+/// The lineage step is the metadata-cached recorded base; a single-parent
+/// block's base is its sole parent; a multi-parent block without a
+/// recorded base is malformed — refused, never guessed.
+pub(crate) fn state_captures(
+    dag: &KeyValueDagRepresentation,
+    cand: &Floor,
+    x: &Floor,
+) -> Result<bool, CasperError> {
+    if !dag.is_dag_ancestor(&x.hash, &cand.hash)? {
+        return Ok(false);
+    }
+    let mut cur = cand.hash.clone();
+    let mut steps: usize = 0;
+    loop {
+        if cur == x.hash {
+            return Ok(true);
+        }
+        let meta = dag.lookup_unsafe(&cur)?;
+        if meta.block_number <= x.block_number {
+            return Ok(true);
+        }
+        for carrier in &meta.rejected_carriers {
+            if dag.is_dag_ancestor(carrier, &x.hash)? {
+                return Ok(false);
+            }
+        }
+        cur = if !meta.merge_base.is_empty() {
+            meta.merge_base.clone()
+        } else {
+            match meta.parents.as_slice() {
+                [] => return Ok(true),
+                [parent] => parent.clone(),
+                _ => {
+                    return Err(CasperError::Other(format!(
+                        "state_captures: multi-parent block {} carries no \
+                         recorded merge base — refusing to guess its state lineage",
+                        PrettyPrinter::build_string_bytes(&cur),
+                    )))
+                }
+            }
+        };
+        steps += 1;
+        if steps == DEEP_WALK_WARN_THRESHOLD {
+            tracing::warn!(
+                target: "f1r3.trace.floor",
+                cand = %PrettyPrinter::build_string_bytes(&cand.hash),
+                captured = %PrettyPrinter::build_string_bytes(&x.hash),
+                "state-capture lineage walk unusually deep"
+            );
+        }
+    }
+}
+
 /// The active committee derived from a finalized-floor block's post-state: the
 /// PoS bonds at that state, filtered to the currently-active validator set.
 ///
@@ -142,6 +209,7 @@ async fn derive_floor(
         ));
     }
 
+    let inherited_floors = inherited.clone();
     let mut candidates = inherited;
     let inherited_max = candidates.iter().map(|f| f.block_number).max();
     let mut frontiers: Vec<Floor> = Vec::with_capacity(parents.len());
@@ -152,26 +220,40 @@ async fn derive_floor(
     let main_parent_frontier = frontiers[0].clone();
     candidates.extend(frontiers);
 
-    // The floor is the merge base the block being created re-bases every parent onto.
-    // Pick the HIGHEST candidate that is a SOUND base, considering candidates from the
-    // top down. A candidate `c` is sound when EITHER:
+    // The floor is the merge base the block being created re-bases every parent
+    // onto — AND the position settled truth advances to — so a candidate is
+    // sound only when choosing it cannot regress settled state. What
+    // monotonicity protects is the INHERITED floors: positions some parent's
+    // chain actually held. Frontier candidates are merely witnessed
+    // (orphan-safe) blocks — a witnessed carrier whose chain lost a merge is
+    // adjudicated by the record and re-landed by recovery, not owed capture —
+    // so soundness quantifies over the inherited floors only. Candidates are
+    // considered from the top down; `cand` is sound when every inherited
+    // floor `x` satisfies one of:
     //
-    //   A. `c` is a general DAG-ancestor of EVERY parent (or is one). Then `c` lies below
-    //      all inputs, and since the new block merges every parent it descends from `c`
-    //      and from every (parent-derived) candidate — nothing finalized is dropped. This
-    //      is the multi-parent co-finalization case where two co-finalized siblings are
-    //      both DIRECT parents (test_trim_state / run 28135973777): neither sibling is a
-    //      base for the other, so the floor descends to their shared finalized cut.
+    //   A. `cand`'s state CAPTURES `x` (`state_captures`): `x` is in `cand`'s
+    //      DAG past and no merge on `cand`'s base lineage recorded a
+    //      rejection of `x`'s content — its chains were applied, so the
+    //      state built forward from them. Raw DAG ancestry is NOT capture: a
+    //      block can descend from `x` while a lineage merge keep-one'd `x`'s
+    //      chains out (its rejection records say so), and designating such a
+    //      block the floor erases settled state (the ucc round-0 erasure
+    //      this predicate exists to prevent).
     //
-    //   B. every OTHER finalized candidate is compatible with `c` — it lies in `c`'s
-    //      general DAG past (a lower cut whose state `c` already captures), or it is
-    //      MERGEABLE with `c` via an EXISTING common-descendant parent (run 8c2952a8).
-    //      This keeps the highest finalized tip as the floor when it dominates the rest
-    //      (the in-place finalization-advance case).
+    //   B. `x` re-enters THIS merge as diffs: `x` and `cand` both lie at-or-
+    //      below a common parent, so the merge over base `cand` re-collects
+    //      `x`'s chains. Covers the co-finalized-sibling descend (both
+    //      siblings are DIRECT parents; the floor descends to their shared
+    //      cut — test_trim_state / run 28135973777) and the dominating-tip
+    //      advance over a co-finalized branch joined below an existing parent
+    //      (run 8c2952a8). The merge-time settled-rejection tripwire guards
+    //      these arms: a re-collected settled chain must land, never be
+    //      keep-one'd out.
     //
-    // The highest candidate satisfying neither A nor B is skipped; if NO candidate is a
-    // sound base (no finalized cut common to all parents), that is a genuinely
-    // incompatible fork and is surfaced as an error, never papered over.
+    // The highest candidate satisfying neither is skipped; if NO candidate is
+    // sound (no finalized cut common to all parents), that is a genuinely
+    // incompatible finalized fork and is surfaced as an error, never papered
+    // over.
     let mut ordered: Vec<&Floor> = candidates.iter().collect();
     ordered.sort_by(|a, b| {
         b.block_number
@@ -180,43 +262,31 @@ async fn derive_floor(
     });
 
     let mut chosen: Option<Floor> = None;
-    for cand in ordered {
-        // Case A: general-ancestor of every parent.
-        let mut covers_all_parents = true;
-        for parent in parents {
-            if cand.hash != *parent && !dag.is_dag_ancestor(&cand.hash, parent)? {
-                covers_all_parents = false;
-                break;
-            }
-        }
-        if covers_all_parents {
-            chosen = Some(cand.clone());
-            break;
-        }
-        // Case B: every other candidate is in `cand`'s past or mergeable via a parent.
-        let mut all_compatible = true;
-        for other in &candidates {
-            if other.hash == cand.hash || dag.is_dag_ancestor(&other.hash, &cand.hash)? {
+    'cands: for cand in ordered {
+        for other in &inherited_floors {
+            if other.hash == cand.hash {
                 continue;
             }
-            let mut mergeable_via_parent = false;
-            for parent in parents {
-                if dag.is_dag_ancestor(&other.hash, parent)?
-                    && dag.is_dag_ancestor(&cand.hash, parent)?
-                {
-                    mergeable_via_parent = true;
-                    break;
+            let sound_with_other = if dag.is_dag_ancestor(&other.hash, &cand.hash)? {
+                state_captures(dag, cand, other)?
+            } else {
+                let mut re_merged = false;
+                for parent in parents {
+                    if dag.is_dag_ancestor(&other.hash, parent)?
+                        && dag.is_dag_ancestor(&cand.hash, parent)?
+                    {
+                        re_merged = true;
+                        break;
+                    }
                 }
-            }
-            if !mergeable_via_parent {
-                all_compatible = false;
-                break;
+                re_merged
+            };
+            if !sound_with_other {
+                continue 'cands;
             }
         }
-        if all_compatible {
-            chosen = Some(cand.clone());
-            break;
-        }
+        chosen = Some(cand.clone());
+        break;
     }
 
     let floor = chosen.ok_or_else(|| {
@@ -637,6 +707,7 @@ mod frontier_determinism_tests {
             finalized: false,
             fault_tolerance_value: 0.0,
             merge_base: Bytes::new(),
+            rejected_carriers: vec![],
         }
     }
 
@@ -769,6 +840,7 @@ mod frontier_determinism_tests {
             finalized: false,
             fault_tolerance_value: 0.0,
             merge_base: Bytes::new(),
+            rejected_carriers: vec![],
         }
     }
 
@@ -809,6 +881,192 @@ mod frontier_determinism_tests {
                 ),
             )),
         }
+    }
+
+    fn based(mut m: BlockMetadata, base: &Bytes) -> BlockMetadata {
+        m.merge_base = base.clone();
+        m
+    }
+
+    fn rejecting(mut m: BlockMetadata, carrier: &Bytes) -> BlockMetadata {
+        m.rejected_carriers.push(carrier.clone());
+        m
+    }
+
+    /// Capture is DAG containment without recorded erasure: a linear chain
+    /// captures its whole past, and a merge that rejected NOTHING captures
+    /// the siblings it absorbed (their chains were applied from scope) —
+    /// even though they are not on its base lineage. Nothing captures
+    /// blocks outside its DAG past.
+    #[test]
+    fn state_capture_is_containment_without_erasure() {
+        let v = val();
+        let (e, c, d, m) = (h(0), h(1), h(2), h(3));
+        let dag = build_dag(vec![
+            md(e.clone(), vec![], 0, &v),
+            md(c.clone(), vec![e.clone()], 1, &v),
+            md(d.clone(), vec![e.clone()], 1, &v),
+            based(md(m.clone(), vec![c.clone(), d.clone()], 2, &v), &e),
+        ]);
+        let at = |hash: &Bytes, n: i64| Floor {
+            hash: hash.clone(),
+            block_number: n,
+        };
+        assert!(state_captures(&dag, &at(&m, 2), &at(&e, 0)).unwrap());
+        assert!(state_captures(&dag, &at(&m, 2), &at(&c, 1)).unwrap());
+        assert!(state_captures(&dag, &at(&m, 2), &at(&d, 1)).unwrap());
+        assert!(state_captures(&dag, &at(&c, 1), &at(&e, 0)).unwrap());
+        // Not in the DAG past: never captured.
+        assert!(!state_captures(&dag, &at(&c, 1), &at(&d, 1)).unwrap());
+        assert!(!state_captures(&dag, &at(&e, 0), &at(&m, 2)).unwrap());
+    }
+
+    /// A NON-duplicate rejection record on the lineage defeats capture for
+    /// exactly the rejected carrier's closure — the record is the merge's
+    /// testimony that it kept that content out — and for nothing else. The
+    /// defeat persists up the lineage: blocks built on the rejecting merge
+    /// inherit its erasure.
+    #[test]
+    fn a_recorded_rejection_on_the_lineage_defeats_capture() {
+        let v = val();
+        let (e, c, d, m, t) = (h(0), h(1), h(2), h(3), h(4));
+        let dag = build_dag(vec![
+            md(e.clone(), vec![], 0, &v),
+            md(c.clone(), vec![e.clone()], 1, &v),
+            md(d.clone(), vec![e.clone()], 1, &v),
+            rejecting(
+                based(md(m.clone(), vec![c.clone(), d.clone()], 2, &v), &e),
+                &c,
+            ),
+            md(t.clone(), vec![m.clone()], 3, &v),
+        ]);
+        let at = |hash: &Bytes, n: i64| Floor {
+            hash: hash.clone(),
+            block_number: n,
+        };
+        assert!(!state_captures(&dag, &at(&m, 2), &at(&c, 1)).unwrap());
+        assert!(!state_captures(&dag, &at(&t, 3), &at(&c, 1)).unwrap());
+        assert!(state_captures(&dag, &at(&m, 2), &at(&d, 1)).unwrap());
+        assert!(state_captures(&dag, &at(&t, 3), &at(&d, 1)).unwrap());
+        assert!(state_captures(&dag, &at(&t, 3), &at(&e, 0)).unwrap());
+    }
+
+    /// A multi-parent block with no recorded base has an underivable state
+    /// lineage — the walk refuses rather than guesses.
+    #[test]
+    fn state_captures_refuses_multi_parent_without_base() {
+        let v = val();
+        let (e, c, d, m) = (h(0), h(1), h(2), h(3));
+        let dag = build_dag(vec![
+            md(e.clone(), vec![], 0, &v),
+            md(c.clone(), vec![e.clone()], 1, &v),
+            md(d.clone(), vec![e.clone()], 1, &v),
+            md(m.clone(), vec![c.clone(), d.clone()], 2, &v),
+        ]);
+        let err = state_captures(
+            &dag,
+            &Floor {
+                hash: m.clone(),
+                block_number: 2,
+            },
+            &Floor {
+                hash: e.clone(),
+                block_number: 0,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("no recorded merge base"),
+            "must refuse to guess a multi-parent block's lineage: {err}"
+        );
+    }
+
+    /// THE ucc round-0 erasure falsifier (session 1f9bbf8f): the floor
+    /// reached a carrier block C, and the next witnessed spine block S — a
+    /// pre-existing merge whose recorded base PREDATES C and which recorded
+    /// a rejection of C's chain — was accepted as the next floor because C
+    /// is in S's DAG past. S's state never contained C's effects;
+    /// designating it the floor erased settled state. The floor must SKIP S
+    /// (its record defeats capture of the inherited floor C) and hold at C.
+    #[tokio::test]
+    async fn derive_floor_skips_witnessed_candidate_that_rejected_the_floors_content() {
+        let v = val();
+        let (e, c, d, s) = (h(0), h(1), h(2), h(3));
+        let dag = build_dag(vec![
+            md_wm(e.clone(), vec![], 0, &v, vec![(v.clone(), 1)]),
+            md_wm(c.clone(), vec![e.clone()], 1, &v, vec![(v.clone(), 1)]),
+            md_wm(d.clone(), vec![e.clone()], 1, &v, vec![(v.clone(), 1)]),
+            rejecting(
+                based(
+                    md_wm(s.clone(), vec![c.clone(), d.clone()], 2, &v, vec![(
+                        v.clone(),
+                        1,
+                    )]),
+                    &e,
+                ),
+                &c,
+            ),
+        ]);
+        let mut j = BTreeMap::new();
+        j.insert(v.clone(), s.clone());
+        let thr = FtThreshold::from_f32_lossy(0.1);
+        let inherited = vec![Floor {
+            hash: c.clone(),
+            block_number: 1,
+        }];
+
+        let (floor, _frontier) = derive_floor(&dag, &[s.clone()], &j, thr, inherited)
+            .await
+            .expect("derive_floor");
+
+        assert_eq!(
+            floor.hash,
+            c,
+            "the floor must hold at the settled carrier C: the witnessed spine \
+             block S recorded a rejection of C's chain and never captured C's \
+             state — chosen {}#{}",
+            PrettyPrinter::build_string_bytes(&floor.hash),
+            floor.block_number,
+        );
+    }
+
+    /// The complement of the falsifier — the geometry that WEDGED the first
+    /// predicate: a witnessed merge that absorbed the floor's branch WITHOUT
+    /// rejecting anything captures it (applied from scope), and the floor
+    /// must advance onto it.
+    #[tokio::test]
+    async fn derive_floor_advances_onto_a_candidate_that_absorbed_the_floor() {
+        let v = val();
+        let (e, c, d, s) = (h(0), h(1), h(2), h(3));
+        let dag = build_dag(vec![
+            md_wm(e.clone(), vec![], 0, &v, vec![(v.clone(), 1)]),
+            md_wm(c.clone(), vec![e.clone()], 1, &v, vec![(v.clone(), 1)]),
+            md_wm(d.clone(), vec![e.clone()], 1, &v, vec![(v.clone(), 1)]),
+            based(
+                md_wm(s.clone(), vec![c.clone(), d.clone()], 2, &v, vec![(
+                    v.clone(),
+                    1,
+                )]),
+                &e,
+            ),
+        ]);
+        let mut j = BTreeMap::new();
+        j.insert(v.clone(), s.clone());
+        let thr = FtThreshold::from_f32_lossy(0.1);
+        let inherited = vec![Floor {
+            hash: c.clone(),
+            block_number: 1,
+        }];
+
+        let (floor, _frontier) = derive_floor(&dag, &[s.clone()], &j, thr, inherited)
+            .await
+            .expect("derive_floor");
+
+        assert_eq!(
+            floor.hash, s,
+            "a record-free absorbing merge captures the floor's content \
+             (applied from scope) and soundly becomes the next floor"
+        );
     }
 
     /// Guard-trip: a committee CHANGE inside the band (a bonding / re-stake between
@@ -1167,6 +1425,89 @@ mod frontier_determinism_tests {
                     floor.hash, h(expected_num as u8),
                     "derive_floor must select the chain block at the highest candidate number"
                 );
+                Ok::<(), TestCaseError>(())
+            })?;
+        }
+    }
+
+    prop_compose! {
+        /// A settled chain `b_0 <- … <- b_n`, a carrier `c` on `b_n`, and a
+        /// witnessed merge `s` above `c` whose RECORDED base is `b_j`
+        /// (`j < n`). In the ERASURE arm `s` also records a rejection of
+        /// `c`'s chain (the ucc round-0 geometry); in the absorption arm it
+        /// records nothing (c's chain was applied from scope). The inherited
+        /// floor is `c` in both.
+        fn stale_spine_scenario()(n in 2usize..=5)(
+            j in 0usize..n,
+            erasure in any::<bool>(),
+            n in Just(n),
+        ) -> (usize, usize, bool) {
+            (n, j, erasure)
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 32, max_shrink_iters: 8, ..ProptestConfig::default() })]
+
+        // State-monotone advancement at randomized depths: a witnessed
+        // candidate that RECORDED a rejection of the inherited floor's chain
+        // is never chosen over it, while the same candidate absorbing that
+        // chain without a record (applied from scope) advances soundly.
+        #[test]
+        fn derive_floor_advance_is_capture_gated(
+            (n, j, erasure) in stale_spine_scenario()
+        ) {
+            FLOOR_RUNTIME.block_on(async move {
+                let v = h(50);
+                let (c, s) = (h(20), h(21));
+                let mut blocks: Vec<BlockMetadata> = Vec::new();
+                for i in 0..=n {
+                    let parents = if i == 0 { vec![] } else { vec![h((i - 1) as u8)] };
+                    blocks.push(md_wm(h(i as u8), parents, i as i64, &v, vec![(v.clone(), 1)]));
+                }
+                blocks.push(md_wm(
+                    c.clone(),
+                    vec![h(n as u8)],
+                    (n + 1) as i64,
+                    &v,
+                    vec![(v.clone(), 1)],
+                ));
+                let s_meta = based(
+                    md_wm(
+                        s.clone(),
+                        vec![c.clone(), h(n as u8)],
+                        (n + 2) as i64,
+                        &v,
+                        vec![(v.clone(), 1)],
+                    ),
+                    &h(j as u8),
+                );
+                blocks.push(if erasure { rejecting(s_meta, &c) } else { s_meta });
+                let dag = build_dag(blocks);
+
+                let mut jmap = BTreeMap::new();
+                jmap.insert(v.clone(), s.clone());
+                let thr = FtThreshold::from_f32_lossy(0.1);
+                let inherited =
+                    vec![Floor { hash: c.clone(), block_number: (n + 1) as i64 }];
+
+                let (floor, _f) = derive_floor(&dag, &[s.clone()], &jmap, thr, inherited)
+                    .await
+                    .expect("derive_floor");
+
+                if erasure {
+                    prop_assert_eq!(
+                        floor.hash, c,
+                        "a candidate that recorded a rejection of the floor's \
+                         chain must never displace it"
+                    );
+                } else {
+                    prop_assert_eq!(
+                        floor.hash, s,
+                        "a record-free absorbing candidate captures the floor \
+                         and advances soundly"
+                    );
+                }
                 Ok::<(), TestCaseError>(())
             })?;
         }
