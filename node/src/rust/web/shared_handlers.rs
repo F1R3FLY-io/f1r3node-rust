@@ -7,9 +7,9 @@ use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use casper::rust::api::block_api::{
-    BlockNotFoundError, DeployNotFoundError, DeployValidationError, ExploratoryDeployReadOnlyError,
-    InvalidHashError, InvalidPublicKeyError, LatestBlockMessageError, NoNewDeploysError,
-    ProposeReadOnlyError,
+    BlockNotFoundError, DeployNotFoundError, DeployValidationError, ExploratoryDeployBusyError,
+    ExploratoryDeployReadOnlyError, ExploratoryDeployTimeoutError, InvalidHashError,
+    InvalidPublicKeyError, LatestBlockMessageError, NoNewDeploysError, ProposeReadOnlyError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::casper::DeployError;
@@ -233,6 +233,23 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
                 cause.to_string(),
             );
         }
+        if cause.downcast_ref::<ExploratoryDeployBusyError>().is_some() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "observer_busy",
+                cause.to_string(),
+            );
+        }
+        if cause
+            .downcast_ref::<ExploratoryDeployTimeoutError>()
+            .is_some()
+        {
+            return (
+                StatusCode::GATEWAY_TIMEOUT,
+                "exploratory_timeout",
+                cause.to_string(),
+            );
+        }
         if cause.downcast_ref::<InvalidPublicKeyError>().is_some() {
             return (
                 StatusCode::BAD_REQUEST,
@@ -450,6 +467,8 @@ pub async fn deploy_handler(
         (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
         (status = 502, description = "External service failure (`external_service_error`)", body = ApiErrorResponse),
+        (status = 503, description = "Observer query capacity is occupied (`observer_busy`)", body = ApiErrorResponse),
+        (status = 504, description = "Exploratory execution exceeded its deadline (`exploratory_timeout`)", body = ApiErrorResponse),
     ),
     tag = "Deployment"
 )]
@@ -479,6 +498,8 @@ pub async fn explore_deploy_handler(
         (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
         (status = 502, description = "External service failure (`external_service_error`)", body = ApiErrorResponse),
+        (status = 503, description = "Observer query capacity is occupied (`observer_busy`)", body = ApiErrorResponse),
+        (status = 504, description = "Exploratory execution exceeded its deadline (`exploratory_timeout`)", body = ApiErrorResponse),
     ),
     tag = "Deployment"
 )]
@@ -579,5 +600,31 @@ where
     {
         Ok(inner) => inner,
         Err(join_err) => Err(eyre::eyre!("handler task panicked: {}", join_err)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::StatusCode;
+    use casper::rust::api::block_api::{ExploratoryDeployBusyError, ExploratoryDeployTimeoutError};
+
+    use super::classify_error;
+
+    #[test]
+    fn exploratory_deploy_busy_is_service_unavailable() {
+        let error = eyre::Report::new(ExploratoryDeployBusyError);
+        let (status, kind, _) = classify_error(&error);
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(kind, "observer_busy");
+    }
+
+    #[test]
+    fn exploratory_deploy_timeout_is_gateway_timeout() {
+        let error = eyre::Report::new(ExploratoryDeployTimeoutError { timeout_ms: 15_000 });
+        let (status, kind, _) = classify_error(&error);
+
+        assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(kind, "exploratory_timeout");
     }
 }

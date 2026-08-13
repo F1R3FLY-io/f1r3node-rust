@@ -833,9 +833,18 @@ impl RuntimeOps {
         hash: &StateHash,
         deployer: Option<PublicKey>,
     ) -> Result<(Vec<Par>, u64), CasperError> {
+        self.play_exploratory_deploy_with_phlo_limit(term, hash, deployer, 100 * 1000 * 1000)
+            .await
+    }
+
+    pub async fn play_exploratory_deploy_with_phlo_limit(
+        &mut self,
+        term: String,
+        hash: &StateHash,
+        deployer: Option<PublicKey>,
+        phlo_limit: i64,
+    ) -> Result<(Vec<Par>, u64), CasperError> {
         let deploy_result = async {
-            // Hardcoded phlogiston limit / 1 REV if phloPrice=1
-            let phlo_limit = 100 * 1000 * 1000;
             let data = DeployData {
                 term,
                 time_stamp: 0,
