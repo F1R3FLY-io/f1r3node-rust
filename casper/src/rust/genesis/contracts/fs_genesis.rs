@@ -1005,7 +1005,15 @@ mod tests {
         // at every termination path.  bytes() has 2 termination paths
         // (EOF, fsRead error); chars() has 5 (2 EOS variants + 3 error
         // variants for UTF-8 boundary handling).
-        const EXPECTED: &str = "14491f47dfa2d61eb00b553a9de4a89915af1ea89a24560fb4c2ead9426224b4";
+        //
+        // Anchor rolled forward again for Phase 8 slice 8a step 4e-3
+        // (2026-08-12): readLine() acquires a stream-lifetime sequential
+        // lock with 9 termination-path guards (2 repeat-EOS variants +
+        // 1 LF-consumption EOS with 2 seek-back sub-cases + 5 error
+        // variants).  LF-consumption is the primary termination for
+        // well-behaved consumers; other paths cover EOF-before-LF and
+        // UTF-8 boundary failures.
+        const EXPECTED: &str = "050c0a7268494d9691fa6f33c260144bd8e88af92ece993b6cb7cbe767581fde";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \
