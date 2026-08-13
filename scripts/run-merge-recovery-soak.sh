@@ -479,6 +479,15 @@ iteration_too_far_ahead_errors() {
 		wc -l | tr -d ' '
 }
 
+iteration_lfb_spread() {
+	local iteration_dir="$1"
+	grep -oE 'All-node LFBs at drain:.*\(spread [0-9]+ blocks\)' \
+		"$iteration_dir/pytest.log" 2>/dev/null |
+		grep -oE 'spread [0-9]+ blocks' |
+		grep -oE '[0-9]+' |
+		tail -1 || true
+}
+
 # Parse the pytest terminal summary line ("== 1 failed, 64 passed, ... ==")
 # and emit a per-iteration metrics.json with resource + latency samples.
 # Metrics are additive: missing jq or an unparseable log must never fail
@@ -510,14 +519,25 @@ emit_iteration_metrics() {
 	# bespoke extractors above, adding a metric here needs no code change: the
 	# harness emits a SOAK_METRIC line and the registry declares it. Fail-soft
 	# by the same contract — the collector yields {} rather than erroring.
-	local registry_metrics
+	local registry_metrics metric_log_roots root
+	metric_log_roots="$iteration_dir"
+	for root in "${HARNESS_TELEMETRY_DIRS[@]-}"; do
+		[ -n "$root" ] || continue
+		metric_log_roots="${metric_log_roots}:$root"
+	done
 	registry_metrics="$("$SCRIPT_DIR/bench/collect-soak-metrics.sh" \
-		"$iteration_dir/.started" \
-		"$(
-			IFS=:
-			printf '%s' "${HARNESS_TELEMETRY_DIRS[*]}"
-		)" 2>/dev/null || printf '{}')"
+		"$iteration_dir/.started" "$metric_log_roots" \
+		2>/dev/null || printf '{}')"
 	jq -e . >/dev/null 2>&1 <<<"$registry_metrics" || registry_metrics='{}'
+	local lfb_spread
+	if ! jq -e '.lfb_spread.samples > 0' >/dev/null 2>&1 <<<"$registry_metrics"; then
+		lfb_spread="$(iteration_lfb_spread "$iteration_dir")"
+		if [[ "$lfb_spread" =~ ^[0-9]+$ ]]; then
+			registry_metrics="$(jq -c --argjson value "$lfb_spread" \
+				'. + {lfb_spread: {p50: $value, p95: $value, max: $value, min: $value, samples: 1}}' \
+				<<<"$registry_metrics")"
+		fi
+	fi
 	jq -n \
 		--argjson metrics "$registry_metrics" \
 		--argjson iteration "$iteration" \

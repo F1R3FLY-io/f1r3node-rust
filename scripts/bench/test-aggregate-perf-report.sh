@@ -42,13 +42,20 @@ jq -e '
   and .run.shard_up_seconds == null
 ' "$TMP/failed-report/verdict.json" >/dev/null
 
+# A checkpoint keeps the in_progress verdict but surfaces mid-run-valid
+# failures (completed iteration failures), and the badge turns orange.
 mkdir -p "$TMP/checkpoint-report"
 SOAK_DIR="$TMP/failed" OUT_DIR="$TMP/checkpoint-report" RUN_ID=1 RUN_ATTEMPT=1 \
 	SOAK_KIND=daily DURATION_SECONDS=1800 WINDOW_SECONDS=79200 RETRY_ATTEMPT=1 \
 	SOAK_STATUS=in_progress \
 	"$ROOT/scripts/bench/aggregate-perf-report.sh"
-jq -e '.verdict == "in_progress" and .failures == []' \
-	"$TMP/checkpoint-report/verdict.json" >/dev/null
+jq -e '
+  .verdict == "in_progress"
+  and (.failures | any(test("1 passive soak iteration\\(s\\) failed")))
+  and .warnings == []
+' "$TMP/checkpoint-report/verdict.json" >/dev/null
+jq -e '.color == "orange" and (.message | endswith("· failing"))' \
+	"$TMP/checkpoint-report/badge.json" >/dev/null
 
 mkdir -p "$TMP/recovered" "$TMP/recovered-report"
 cat >"$TMP/recovered/.soak-checkpoint-state.json" <<'JSON'
@@ -110,6 +117,42 @@ jq -e '.verdict == "pass" and .bootstrap == true and .failures == []
 	and .run.shard_up_seconds == 90' \
 	"$TMP/passing-report/verdict.json" >/dev/null
 
+# A healthy checkpoint stays clean: no failures, neutral badge.
+mkdir -p "$TMP/passing-checkpoint-report"
+SOAK_DIR="$TMP/passing" OUT_DIR="$TMP/passing-checkpoint-report" RUN_ID=2 RUN_ATTEMPT=1 \
+	SOAK_KIND=daily DURATION_SECONDS=1800 WINDOW_SECONDS=79200 RETRY_ATTEMPT=0 \
+	SOAK_STATUS=in_progress \
+	"$ROOT/scripts/bench/aggregate-perf-report.sh"
+jq -e '.verdict == "in_progress" and .failures == []' \
+	"$TMP/passing-checkpoint-report/verdict.json" >/dev/null
+jq -e '.color == "lightgrey" and (.message | contains("failing") | not)' \
+	"$TMP/passing-checkpoint-report/badge.json" >/dev/null
+
+# The "no passive summary" line is a completion-only signal: a checkpoint
+# before the first summary write must not paint a healthy soak red.
+mkdir -p "$TMP/nodata" "$TMP/nodata-checkpoint-report"
+cat >"$TMP/nodata/.soak-checkpoint-state.json" <<'JSON'
+{
+  "target_ref": "dev",
+  "target_sha": "0123456789abcdef",
+  "trigger_source": "manual",
+  "slot_delay_seconds": 0,
+  "version": "0.4.43",
+  "started_at": 1000,
+  "requested_seconds": 1800,
+  "iterations": 0,
+  "failures": 0,
+  "bench_segments": 0,
+  "bench_failures": 0
+}
+JSON
+SOAK_DIR="$TMP/nodata" OUT_DIR="$TMP/nodata-checkpoint-report" RUN_ID=5 RUN_ATTEMPT=1 \
+	SOAK_KIND=daily DURATION_SECONDS=1800 WINDOW_SECONDS=79200 RETRY_ATTEMPT=0 \
+	SOAK_STATUS=in_progress \
+	"$ROOT/scripts/bench/aggregate-perf-report.sh"
+jq -e '.verdict == "in_progress" and .failures == []' \
+	"$TMP/nodata-checkpoint-report/verdict.json" >/dev/null
+
 mkdir -p "$TMP/segments/bench-segment-00001/bench" "$TMP/segments-report"
 cp "$TMP/passing/summary.json" "$TMP/segments/summary.json"
 cat >"$TMP/segments/bench-segment-00001/metrics.json" <<'JSON'
@@ -149,5 +192,17 @@ jq -e '
   and .run.protection_breach == true
   and (.failures | any(. == "host protection breach aborted the soak"))
 ' "$TMP/breach-report/verdict.json" >/dev/null
+
+# A breach is a completed fact mid-run too: a checkpoint after the guardian
+# fired reports it instead of a neutral "running".
+mkdir -p "$TMP/breach-checkpoint-report"
+SOAK_DIR="$TMP/breach" OUT_DIR="$TMP/breach-checkpoint-report" RUN_ID=3 RUN_ATTEMPT=1 \
+	SOAK_KIND=daily DURATION_SECONDS=1800 WINDOW_SECONDS=79200 RETRY_ATTEMPT=0 \
+	SOAK_STATUS=in_progress \
+	"$ROOT/scripts/bench/aggregate-perf-report.sh"
+jq -e '
+  .verdict == "in_progress"
+  and (.failures | any(. == "host protection breach aborted the soak"))
+' "$TMP/breach-checkpoint-report/verdict.json" >/dev/null
 
 printf 'soak report verdict tests passed\n'

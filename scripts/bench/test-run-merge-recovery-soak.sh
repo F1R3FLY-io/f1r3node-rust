@@ -54,6 +54,10 @@ proposal rejected: too far ahead of the last finalized block
 LOG
 cp "$FAKE_DATA_DIR/session/validator1.log" "$FAKE_ARCHIVE_DIR/session/validator1.log"
 printf 'fake pytest started\n'
+printf 'All-node LFBs at drain: {validator1: 12, validator2: 9} (spread 3 blocks)\n'
+if [ "${FAKE_EMIT_SOAK_METRIC:-false}" = "true" ]; then
+	printf 'SOAK_METRIC name=lfb_spread value=4 phase=drain\n'
+fi
 while :; do sleep 1; done
 SH
 cat >"$TMP/bin/docker" <<'SH'
@@ -157,6 +161,8 @@ jq -e '
   and .iteration_metrics[0].cpu_peak_per_node_pct == {"validator1": 10, "validator2": 20}
   and .iteration_metrics[0].cpu_peak_per_node_core_pct == {"validator1": {"0": 7.5, "1": 42}}
   and .iteration_metrics[0].too_far_ahead_errors == 1
+  and .iteration_metrics[0].metrics.lfb_spread == {p50: 3, p95: 3, max: 3, min: 3, samples: 1}
+  and .tracked_metrics.lfb_spread == {p50: 3, p95: 3, max: 3, samples: 1}
 ' "$TMP/output/summary.json" >/dev/null
 grep -q 'replay_cache_retained_bytes,1048576' \
 	"$TMP/output/iteration-00001-docker/node-metrics-timeseries.csv"
@@ -178,6 +184,7 @@ PATH="$TMP/bin:$PATH" \
 	FAKE_POETRY_PID_FILE="$TMP/fake-poetry-2.pid" \
 	FAKE_DATA_DIR="$TMP/si2/integration-tests/data" \
 	FAKE_ARCHIVE_DIR="$TMP/si2/integration-tests/log-archive" \
+	FAKE_EMIT_SOAK_METRIC=true \
 	SOAK_DURATION_SECONDS=6 \
 	SYSTEM_INTEGRATION_DIR="$TMP/si2" \
 	SOAK_OUTPUT_DIR="$TMP/output2" \
@@ -222,6 +229,8 @@ jq -e '
   and .iteration_metrics[0].rss_peak_mb == 768
   and .iteration_metrics[0].cpu_peak_per_node_pct == {"validator1": 10, "validator2": 20}
   and .iteration_metrics[0].cpu_peak_per_node_core_pct == {"validator1": {"0": 7.5, "1": 42}}
+  and .iteration_metrics[0].metrics.lfb_spread == {p50: 4, p95: 4, max: 4, min: 4, samples: 1}
+  and .tracked_metrics.lfb_spread == {p50: 4, p95: 4, max: 4, samples: 1}
 ' "$TMP/output2/summary.json" >/dev/null
 test -s "$TMP/fake-poetry-2.pid"
 ! kill -0 "$(cat "$TMP/fake-poetry-2.pid")" 2>/dev/null
