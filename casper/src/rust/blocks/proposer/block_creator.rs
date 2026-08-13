@@ -780,11 +780,6 @@ async fn prepare_user_deploys_with_policy(
         .filter(|deploy| !canonical_won.contains(&deploy.sig) && !blocked_by_scope(deploy))
         .collect();
 
-    let finalized_won = if allow_in_scope_recovery && !already_in_scope.is_empty() {
-        finalized_ancestor_deploy_sigs(casper_snapshot, block_store, canonical_scan_floor)?
-    } else {
-        HashSet::new()
-    };
     let already_in_scope_count = already_in_scope.len();
     let purged_recovered_already_in_scope = purge_recovered_already_in_scope(
         &mut deploy_storage_guard,
@@ -848,7 +843,6 @@ async fn prepare_user_deploys_with_policy(
             .iter()
             .filter(|deploy| {
                 !canonical_won.contains(&deploy.sig)
-                    && !finalized_won.contains(&deploy.sig)
                     && casper_snapshot.deploys_in_scope.contains(&deploy.sig)
                     && !casper_snapshot.rejected_in_scope.contains(&deploy.sig)
             })
@@ -1753,37 +1747,6 @@ fn current_proposal_validators(casper_snapshot: &CasperSnapshot) -> Vec<Validato
     validators
 }
 
-fn finalized_ancestor_deploy_sigs(
-    casper_snapshot: &CasperSnapshot,
-    block_store: &KeyValueBlockStore,
-    earliest_block_number: i64,
-) -> Result<HashSet<Bytes>, CasperError> {
-    let mut sigs = HashSet::new();
-    let mut stack = vec![casper_snapshot.last_finalized_block.clone()];
-    let mut seen: HashSet<BlockHash> = HashSet::new();
-
-    while let Some(block_hash) = stack.pop() {
-        if !seen.insert(block_hash.clone()) {
-            continue;
-        }
-
-        let Some(block) = block_store.get(&block_hash)? else {
-            continue;
-        };
-
-        if block.body.state.block_number < earliest_block_number {
-            continue;
-        }
-
-        for deploy in &block.body.deploys {
-            sigs.insert(deploy.deploy.sig.clone());
-        }
-        stack.extend(block.header.parents_hash_list.iter().cloned());
-    }
-
-    Ok(sigs)
-}
-
 fn deploy_inclusion_progress(
     casper_snapshot: &CasperSnapshot,
     block_store: &KeyValueBlockStore,
@@ -1984,13 +1947,11 @@ fn in_scope_local_deploy_stats(
         block_store,
         canonical_scan_floor,
     )?;
-    let finalized_won =
-        finalized_ancestor_deploy_sigs(casper_snapshot, block_store, canonical_scan_floor)?;
     let mut count = 0usize;
     let mut stranded_count = 0usize;
     let mut oldest_time = None;
     for deploy in candidates {
-        if canonical_won.contains(&deploy.sig) || finalized_won.contains(&deploy.sig) {
+        if canonical_won.contains(&deploy.sig) {
             continue;
         }
         count += 1;
@@ -5005,10 +4966,6 @@ mod tests {
             None,
         )
         .expect("in-scope stats");
-        let finalized =
-            finalized_ancestor_deploy_sigs(&snapshot, &block_store, -200).expect("finalized sigs");
-
-        assert!(finalized.is_empty());
         assert_eq!(stats.count, 20);
 
         let prepared = prepare_user_deploys_with_policy(
@@ -5211,11 +5168,7 @@ mod tests {
         let canonical_won =
             interpreter_util::canonical_won_sigs(&block_store, &parent_hashes, -200)
                 .expect("canonical wins");
-        let finalized_won =
-            finalized_ancestor_deploy_sigs(&snapshot, &block_store, -200).expect("finalized sigs");
-
         assert!(!canonical_won.contains(&deploy.sig));
-        assert!(!finalized_won.contains(&deploy.sig));
 
         let stats = in_scope_local_deploy_stats(
             &snapshot,
@@ -5296,6 +5249,9 @@ mod tests {
             .lock()
             .add(vec![deploy.clone()])
             .expect("seed deploy storage");
+        // Real geometry: the winning inclusion rides a block the parents
+        // descend from (here: the parent itself), so the CANONICAL walk
+        // over the parents excludes the sig — no finality marker consulted.
         let lfb_hash = invalid_block_hash(0x93);
         let lfb = test_block(lfb_hash.clone(), validator(1), Vec::new(), 250, vec![
             ProcessedDeploy::empty(deploy.clone()),
@@ -5303,6 +5259,7 @@ mod tests {
         block_store.put_block_message(&lfb).expect("put lfb");
         snapshot.last_finalized_block = lfb_hash;
         snapshot.max_block_num = 250;
+        snapshot.parents = vec![lfb];
 
         let stats = in_scope_local_deploy_stats(
             &snapshot,
@@ -5314,10 +5271,6 @@ mod tests {
             None,
         )
         .expect("in-scope stats");
-        let finalized =
-            finalized_ancestor_deploy_sigs(&snapshot, &block_store, -200).expect("finalized sigs");
-
-        assert!(finalized.contains(&deploy.sig));
         assert_eq!(stats.count, 0);
 
         let prepared = prepare_user_deploys_with_policy(
