@@ -196,10 +196,17 @@ impl RhoReporterCasper {
                 processed_deploy: term.clone(),
                 events,
             });
+
+            if replay_failed {
+                break;
+            }
         }
 
         let mut system_deploy_results = Vec::new();
         for (idx, system_deploy) in system_deploys.iter().enumerate() {
+            if replay_failed {
+                break;
+            }
             tracing::debug!(
                 target: "f1r3fly.casper.reporting",
                 system_deploy_index = idx,

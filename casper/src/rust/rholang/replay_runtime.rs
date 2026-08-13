@@ -642,7 +642,7 @@ impl ReplayRuntimeOps {
             Ok(()) => Ok(()),
             Err(err) => {
                 let err_msg = err.to_string();
-                if err_msg.contains("unused") && err_msg.contains("COMM") {
+                if err_msg.contains("Unused") && err_msg.contains("COMM") {
                     if !eval_successful {
                         // Suppress UnusedCOMMEvent when eval was not successful
                         Ok(())
