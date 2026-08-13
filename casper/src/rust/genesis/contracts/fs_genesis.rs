@@ -1027,7 +1027,16 @@ mod tests {
         // all 10 sequential-stream methods (4 read constructors + 4
         // write methods) are auto-locked; writeString and writeLines
         // deliberately delegate to writeByteArray / writeLine.
-        const EXPECTED: &str = "7f0a4834c81a8921477dcdf6e630671c3a9a6ad5c604e86a24aca391ef82a81b";
+        //
+        // Anchor rolled forward again for Phase 8 slice 8a step 4f
+        // (2026-08-12): File.close now invokes fsReleaseAllForHolder!
+        // (*stateP, ...) BEFORE fsClose!, sweeping every lock held via
+        // this cap.  Spec §File > close: "Implicitly releases every
+        // range lock held via this File cap; any subsequent
+        // lockToken!release() on those tokens returns [false,
+        // FSERR_CLOSED, ...]."  Sweep is scoped by HolderId so cross-
+        // cap locks on the same (dev, inode) survive.
+        const EXPECTED: &str = "6110f25835b2c5d5686eb349921c16b7319488ed94e0c460e24ab6ff0743d7ae";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

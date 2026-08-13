@@ -392,13 +392,44 @@ in {
             for (@params <<- @[*private, *fdP]) {
               match params {
                 (fd, _root, _rel, _mode) => {
-                  new retCh in {
-                    fsClose!(fd, *retCh) |
-                    for (@reply <- retCh) {
-                      @[*private, *stateP]!("closed") |
-                      match reply {
-                        [true] => return!([true])
-                        _      => return!(reply)
+                  // Phase 8 slice 8a step 4f: sweep every lock held via
+                  // this cap BEFORE dispatching fsClose.  Spec §File >
+                  // close: "Implicitly releases every range lock held
+                  // via this File cap (both implicit locks on active
+                  // streams and explicit lockRange locks whose lockToken
+                  // was issued by this cap); any subsequent
+                  // lockToken!release() on those tokens returns
+                  // [false, FSERR_CLOSED, ...]."  The sweep is scoped
+                  // by HolderId (Blake2b256(*stateP)) so locks held on
+                  // the same (dev, inode) via other File caps survive.
+                  //
+                  // holder MUST be *stateP — cross-cap coordination
+                  // depends on it; same invariant as the auto-acquire
+                  // wraps in every positional / sequential method.
+                  //
+                  // Rationale for sweep-before-close ordering: fsClose
+                  // drops the OS fd, at which point subsequent
+                  // fs_release_lock calls would still succeed at the
+                  // LockRegistry layer (the registry is keyed on
+                  // (dev, inode), not fd — see lock.rs §Cross-cap
+                  // forgery safety), but stranding locks past the
+                  // fd close is a foot-gun: the closed-File caller
+                  // can no longer meaningfully act on them, and any
+                  // cross-cap holder waiting on the same range is
+                  // blocked until deploy-end auto-release (§Explicit
+                  // locks MUST) sweeps.  Sweeping here closes the gap.
+                  new sweepCh in {
+                    fsReleaseAllForHolder!(*stateP, *sweepCh) |
+                    for (@_sweepReply <- sweepCh) {  // reply is [true, N] — count discarded (see LockToken §Release-reply discards)
+                      new retCh in {
+                        fsClose!(fd, *retCh) |
+                        for (@reply <- retCh) {
+                          @[*private, *stateP]!("closed") |
+                          match reply {
+                            [true] => return!([true])
+                            _      => return!(reply)
+                          }
+                        }
                       }
                     }
                   }
