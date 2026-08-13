@@ -74,6 +74,19 @@ in {
     } |
 
     // -- writeByteArray ---------------------------------------------
+    //
+    // Phase 8 slice 8a step 4e-1: acquires a whole-file sequential
+    // lock around the fsWrite call.  Sequential (not range) because
+    // writeByteArray operates at the file's cursor — consistent with
+    // spec §Sequential vs. positional and FIP §1143's "one active
+    // sequential stream per File" invariant.  Under Prep A's rule,
+    // sequential remains STRICT even for same-holder: an explicit
+    // lockRange or another sequential stream on the same cap will
+    // block this write with FSERR_BUSY (correct — the cursor is a
+    // per-cap shared resource that concurrent operations MUST
+    // serialize on).  Zero-length write short-circuits before both
+    // the lock (LockRegistry rejects, but sequential doesn't have a
+    // length arg — different reason: match pre-lock no-op semantics).
     method writeByteArray(@bytes) {
       match bytes {
         b /\ ByteArray => {
@@ -84,7 +97,7 @@ in {
                 return!([false, "FSERR_CLOSED", "file is closed"])
               }
               "open" => {
-                for (@params <<- @[*private, *fdP]) {
+                for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
                   match params {
                     (fd, _root, _rel, mode) => {
                       match mode {
@@ -93,11 +106,32 @@ in {
                           return!([false, "FSERR_UNSUPPORTED", "read-only file"])
                         }
                         _ => {
-                          new retCh in {
-                            fsWrite!(fd, b, *retCh) |
-                            for (@reply <- retCh) {
-                              @[*private, *stateP]!("open") |
-                              return!(reply)
+                          new lockCh in {
+                            // holder MUST be *stateP — cross-cap
+                            // coordination depends on it.
+                            fsLockSequential!(fd, *stateP, cmode, *lockCh) |
+                            for (@lockReply <- lockCh) {
+                              match lockReply {
+                                [true, lid] => {
+                                  new retCh in {
+                                    fsWrite!(fd, b, *retCh) |
+                                    for (@reply <- retCh) {
+                                      new relCh in {
+                                        fsReleaseLock!(lid, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                        for (@_relReply <- relCh) {
+                                          @[*private, *stateP]!("open") |
+                                          return!(reply)
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                                _ => {
+                                  // Lock acquire failed — forward.
+                                  @[*private, *stateP]!("open") |
+                                  return!(lockReply)
+                                }
+                              }
                             }
                           }
                         }
@@ -1201,7 +1235,7 @@ in {
             return!([false, "FSERR_CLOSED", "file is closed"])
           }
           "open" => {
-            for (@params <<- @[*private, *fdP]) {
+            for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
               match params {
                 (fd, _root, _rel, mode) => {
                   match mode {
@@ -1211,11 +1245,35 @@ in {
                         "writeBytes requires a write-capable mode"])
                     }
                     _ => {
-                      new loopRet in {
-                        writeBytesLoop!(byteStream, fd, 0, *loopRet) |
-                        for (@finalReply <- loopRet) {
-                          @[*private, *stateP]!("open") |
-                          return!(finalReply)
+                      // Phase 8 slice 8a step 4e-1: sequential lock spans
+                      // the entire writeBytesLoop drain — writeBytes is a
+                      // sequential ByteStream consumer at the file's
+                      // cursor.  Lock released after the loop's finalReply.
+                      new lockCh in {
+                        // holder MUST be *stateP — cross-cap coordination
+                        // depends on it.
+                        fsLockSequential!(fd, *stateP, cmode, *lockCh) |
+                        for (@lockReply <- lockCh) {
+                          match lockReply {
+                            [true, lid] => {
+                              new loopRet in {
+                                writeBytesLoop!(byteStream, fd, 0, *loopRet) |
+                                for (@finalReply <- loopRet) {
+                                  new relCh in {
+                                    fsReleaseLock!(lid, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                    for (@_relReply <- relCh) {
+                                      @[*private, *stateP]!("open") |
+                                      return!(finalReply)
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                            _ => {
+                              @[*private, *stateP]!("open") |
+                              return!(lockReply)
+                            }
+                          }
                         }
                       }
                     }
@@ -2532,7 +2590,7 @@ in {
             return!([false, "FSERR_CLOSED", "file is closed"])
           }
           "open" => {
-            for (@params <<- @[*private, *fdP]) {
+            for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
               match params {
                 (fd, _root, _rel, mode) => {
                   match mode {
@@ -2542,11 +2600,34 @@ in {
                         "writeChars requires a write-capable mode"])
                     }
                     _ => {
-                      new loopRet in {
-                        writeCharsLoop!(charStream, fd, 0, *loopRet) |
-                        for (@finalReply <- loopRet) {
-                          @[*private, *stateP]!("open") |
-                          return!(finalReply)
+                      // Phase 8 slice 8a step 4e-1: sequential lock around
+                      // the entire writeCharsLoop drain — writeChars is a
+                      // sequential CharStream consumer at the cursor.
+                      new lockCh in {
+                        // holder MUST be *stateP — cross-cap coordination
+                        // depends on it.
+                        fsLockSequential!(fd, *stateP, cmode, *lockCh) |
+                        for (@lockReply <- lockCh) {
+                          match lockReply {
+                            [true, lid] => {
+                              new loopRet in {
+                                writeCharsLoop!(charStream, fd, 0, *loopRet) |
+                                for (@finalReply <- loopRet) {
+                                  new relCh in {
+                                    fsReleaseLock!(lid, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                    for (@_relReply <- relCh) {
+                                      @[*private, *stateP]!("open") |
+                                      return!(finalReply)
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                            _ => {
+                              @[*private, *stateP]!("open") |
+                              return!(lockReply)
+                            }
+                          }
                         }
                       }
                     }
@@ -2588,7 +2669,7 @@ in {
             return!([false, "FSERR_CLOSED", "file is closed"])
           }
           "open" => {
-            for (@params <<- @[*private, *fdP]) {
+            for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
               match params {
                 (fd, _root, _rel, mode) => {
                   match mode {
@@ -2598,34 +2679,68 @@ in {
                         "writeLine requires a write-capable mode"])
                     }
                     _ => {
-                      new loopRet in {
-                        writeCharsLoop!(charStream, fd, 0, *loopRet) |
-                        for (@charsReply <- loopRet) {
-                          match charsReply {
-                            [true] => {
-                              // Append LF (0x0A) at the current cursor.
-                              new lfCh in {
-                                fsWrite!(fd, "0a".hexToBytes(), *lfCh) |
-                                for (@lfReply <- lfCh) {
-                                  match lfReply {
-                                    [true, _] => {
-                                      @[*private, *stateP]!("open") |
-                                      return!([true])
-                                    }
-                                    [false, code, msg] => {
-                                      // Forward fsWrite's error unchanged
-                                      // — spec §938 reply shape preserved.
-                                      @[*private, *stateP]!("open") |
-                                      return!([false, code, msg])
+                      // Phase 8 slice 8a step 4e-1: sequential lock spans
+                      // BOTH the char-drain loop AND the LF-terminator
+                      // fsWrite — so a concurrent sequential caller can't
+                      // interleave between the line body and its LF.  This
+                      // is what makes writeLine "atomic per line" rather
+                      // than "atomic per char" — critical for readLine
+                      // consumers that rely on LF delimiting exactly one
+                      // line's worth of chars.
+                      new lockCh in {
+                        // holder MUST be *stateP — cross-cap coordination
+                        // depends on it.
+                        fsLockSequential!(fd, *stateP, cmode, *lockCh) |
+                        for (@lockReply <- lockCh) {
+                          match lockReply {
+                            [true, lid] => {
+                              new loopRet in {
+                                writeCharsLoop!(charStream, fd, 0, *loopRet) |
+                                for (@charsReply <- loopRet) {
+                                  match charsReply {
+                                    [true] => {
+                                      // Append LF (0x0A) at the current cursor.
+                                      new lfCh in {
+                                        fsWrite!(fd, "0a".hexToBytes(), *lfCh) |
+                                        for (@lfReply <- lfCh) {
+                                          new relCh in {
+                                            fsReleaseLock!(lid, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                            for (@_relReply <- relCh) {
+                                              match lfReply {
+                                                [true, _] => {
+                                                  @[*private, *stateP]!("open") |
+                                                  return!([true])
+                                                }
+                                                [false, code, msg] => {
+                                                  // Forward fsWrite's error unchanged
+                                                  // — spec §938 reply shape preserved.
+                                                  @[*private, *stateP]!("open") |
+                                                  return!([false, code, msg])
+                                                }
+                                                _ => {
+                                                  // Malformed fsWrite reply — normalize
+                                                  // to FSERR_IO so callers pattern-
+                                                  // matching [true] | [false, code, msg]
+                                                  // never see an unexpected shape.
+                                                  @[*private, *stateP]!("open") |
+                                                  return!([false, "FSERR_IO",
+                                                    "fsWrite for LF terminator returned malformed reply"])
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
                                     }
                                     _ => {
-                                      // Malformed fsWrite reply — normalize
-                                      // to FSERR_IO so callers pattern-
-                                      // matching [true] | [false, code, msg]
-                                      // never see an unexpected shape.
-                                      @[*private, *stateP]!("open") |
-                                      return!([false, "FSERR_IO",
-                                        "fsWrite for LF terminator returned malformed reply"])
+                                      // Char-drain failed — release lock and forward.
+                                      new relCh in {
+                                        fsReleaseLock!(lid, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                        for (@_relReply <- relCh) {
+                                          @[*private, *stateP]!("open") |
+                                          return!(charsReply)
+                                        }
+                                      }
                                     }
                                   }
                                 }
@@ -2633,7 +2748,7 @@ in {
                             }
                             _ => {
                               @[*private, *stateP]!("open") |
-                              return!(charsReply)
+                              return!(lockReply)
                             }
                           }
                         }

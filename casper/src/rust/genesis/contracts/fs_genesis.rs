@@ -982,7 +982,22 @@ mod tests {
         // flips this hash" was inaccurate; comment-only edits also
         // roll the anchor, and any future comment cleanup must be
         // coordinated the same way as functional changes.
-        const EXPECTED: &str = "b895b501a5603b286c80249e676e7d5f8f261e17c852bd7c4a666d24935b2c2e";
+        //
+        // Anchor rolled forward again for Phase 8 slice 8a step 4e-1
+        // (2026-08-12): four sequential write methods (writeByteArray,
+        // writeBytes, writeChars, writeLine) now acquire a whole-file
+        // sequential lock via fsLockSequential around their native/loop
+        // dispatch.  Sequential (not range) matches spec §1143 "one
+        // active sequential stream per File" — same-holder sequential
+        // stays STRICT even under Prep A's rule (sequential-vs-anything
+        // exclusion applies to the same cap).  writeString and writeLines
+        // deliberately DO NOT acquire their own locks; they delegate to
+        // writeByteArray / writeLine respectively and inherit per-inner-
+        // call atomicity from those wraps.  writeLines' atomicity is
+        // therefore per-line, not per-writeLines — documented in the
+        // method's block comment for callers who need cross-cap atomic
+        // multi-line writes (they must hold an outer lockRange).
+        const EXPECTED: &str = "d432bf4957654113c9eab142277a7114bef41dcfe5ea56dd6e750006819b1567";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \
