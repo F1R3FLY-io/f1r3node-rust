@@ -2756,4 +2756,91 @@ mod tests {
         let reg = LockRegistry::new();
         assert_eq!(reg.cancel_all_waiters_for_holder(&holder(99)), 0);
     }
+
+    /// **Sub-6 review round-2 regression pin (BL-1)**:
+    /// fs_release_all_for_holder MUST cancel-first-release-second —
+    /// same ordering as WalDeployScope::drop (B1 fix).  Concrete
+    /// failure mode this test exercises: same holder holds sequential
+    /// AND parks wait:true range.  release_all_for_holder first would
+    /// wake the range waiter (sequential is gone → sequential_conflicts
+    /// false; ranges empty → range_conflicts false); waiter admits →
+    /// held range tied to a now-closed cap → leaks.
+    ///
+    /// The registry-level primitives support BOTH orderings; this
+    /// test uses the primitives DIRECTLY in the correct order to
+    /// simulate the fixed native.  The handler-level fix is at
+    /// handlers.rs:fs_release_all_for_holder; the source-scan pin
+    /// there catches regressions to release-first.
+    #[tokio::test]
+    async fn cancel_then_release_avoids_same_holder_cross_kind_admission_leak() {
+        let reg = LockRegistry::new();
+        // Same holder acquires sequential AND parks wait:true range.
+        reg.try_acquire_sequential((1, 42), holder(1), deploy(1))
+            .expect("sequential acquire");
+        let (_wait_id, wait_rx) = expect_parked(
+            reg.try_acquire_range_wait(
+                (1, 42),
+                0,
+                100,
+                LockMode::Read,
+                holder(1),
+                deploy(1),
+                WaitPolicy::Wait,
+            )
+            .unwrap(),
+        );
+        assert_eq!(reg.held_locks(), 1);
+        assert_eq!(reg.parked_waiters(), 1);
+        // Cancel-first-release-second (matches the fixed native).
+        let cancelled = reg.cancel_all_waiters_for_holder(&holder(1));
+        let released = reg.release_all_for_holder(&holder(1));
+        assert_eq!(cancelled, 1);
+        assert_eq!(released, 1);
+        // Waiter got Cancelled (not admitted).
+        assert_eq!(wait_rx.await.unwrap(), Err(LockError::Cancelled));
+        // Registry is empty — no leaked range entry.
+        assert_eq!(
+            reg.held_locks(),
+            0,
+            "sub-6 round-2 BL-1 regression: same-holder cross-kind \
+             wait must be cancelled, not admitted-then-leaked"
+        );
+        assert_eq!(reg.parked_waiters(), 0);
+        assert_eq!(reg.tracked_files(), 0);
+    }
+
+    /// Companion: demonstrate the PRE-FIX bug when using release-first
+    /// order — the waiter IS admitted and leaks.  Documents the bug
+    /// shape unambiguously so a future refactor that reverses to
+    /// release-first is identifiable via test output.
+    #[tokio::test]
+    async fn release_first_admits_same_holder_waiter_documenting_bug_shape() {
+        let reg = LockRegistry::new();
+        reg.try_acquire_sequential((1, 42), holder(1), deploy(1))
+            .expect("sequential acquire");
+        let (wait_id, wait_rx) = expect_parked(
+            reg.try_acquire_range_wait(
+                (1, 42),
+                0,
+                100,
+                LockMode::Read,
+                holder(1),
+                deploy(1),
+                WaitPolicy::Wait,
+            )
+            .unwrap(),
+        );
+        // Release-first (BUG order): wake_waiters sees empty state,
+        // admits waiter into held range.
+        let released = reg.release_all_for_holder(&holder(1));
+        let cancelled = reg.cancel_all_waiters_for_holder(&holder(1));
+        assert_eq!(released, 1);
+        // Cancel found nothing — waiter was already admitted.
+        assert_eq!(cancelled, 0);
+        // The waiter's admit oneshot received Ok — it thinks it holds.
+        assert_eq!(wait_rx.await.unwrap(), Ok(wait_id));
+        // AND the registry has a live range entry.  If this were the
+        // real close() path, the entry would leak until deploy-end.
+        assert_eq!(reg.held_locks(), 1);
+    }
 }

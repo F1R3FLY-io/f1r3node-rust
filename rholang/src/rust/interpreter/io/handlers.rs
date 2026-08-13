@@ -2747,21 +2747,25 @@ impl FsProcesses {
             return Ok(previous);
         }
         let holder = holder_id_of(holder_par);
-        let released = self.handles.lock_registry.release_all_for_holder(&holder);
-        // Slice-8b sub-6 review-fix (2026-08-12): also cancel this
-        // holder's parked `wait: true` acquires so File.close's
-        // cleanup semantic is complete — otherwise a caller who
-        // closes a cap with parked waits would leave the wait entries
-        // in the registry attached to a dead cap.  Symmetrical with
-        // the WalDeployScope::drop cancel+release pair.  Cancelled
-        // waiters signal Err(Cancelled) on their admit oneshot; the
-        // parked native's `admit.await` resumes with an
-        // FSERR_CANCELLED reply on the caller's ack channel.
+        // Slice-8b sub-6 review round-2 (2026-08-12): cancel-first,
+        // release-second — SAME ordering as WalDeployScope::drop
+        // (B1 fix).  Rationale: `release_all_for_holder` internally
+        // calls `wake_waiters(state)` after removing this holder's
+        // held entries.  If this same holder has a parked waiter
+        // (concrete: cap held sequential + parked wait:true range),
+        // the wake path admits it — sequential-vs-positional exclusion
+        // no longer blocks (sequential just got released; ranges
+        // empty), and same-holder-skip trivially permits self.
+        // The subsequently-run cancel_all_waiters_for_holder then
+        // finds nothing to cancel; the just-admitted entry LEAKS
+        // attached to a now-closed cap.  Reversed order (cancel first,
+        // then release) kills the parked waiter before wake_waiters
+        // can promote it.  Mirrors the B1 fix pattern exactly.
         let cancelled = self
             .handles
             .lock_registry
             .cancel_all_waiters_for_holder(&holder);
-        let _ = cancelled; // count merged into the released total below
+        let released = self.handles.lock_registry.release_all_for_holder(&holder);
         let out = vec![ok_u64((released + cancelled) as u64)];
         produce(&out, ack).await?;
         Ok(out)
@@ -3739,6 +3743,38 @@ mod cmode_tests {
             window.contains("[fd, holder, cmode, ack]"),
             "sub-2 shim: fs_lock_sequential must accept the legacy \
              4-arg form (removed in sub-4)"
+        );
+    }
+
+    /// **Sub-6 review round-2 source-scan pin (BL-1)**:
+    /// fs_release_all_for_holder MUST invoke
+    /// `cancel_all_waiters_for_holder` BEFORE `release_all_for_holder`.
+    /// Reverse order (release-first) is a same-holder cross-kind
+    /// admission-then-leak bug: parked wait:true range with same
+    /// holder as an about-to-be-released sequential holder gets
+    /// admitted by release's internal wake_waiters, then cancel finds
+    /// nothing to sweep, leaking the admitted range attached to a
+    /// closed cap.  Mirrors the B1 fix on WalDeployScope::drop.
+    #[test]
+    fn fs_release_all_for_holder_cancels_before_releases() {
+        let src = include_str!("handlers.rs");
+        let fn_start = src
+            .find("pub async fn fs_release_all_for_holder")
+            .expect("handlers.rs missing fs_release_all_for_holder definition");
+        let window = &src[fn_start..std::cmp::min(fn_start + 3000, src.len())];
+        let cancel_pos = window
+            .find("cancel_all_waiters_for_holder(&holder)")
+            .expect("cancel_all_waiters_for_holder call not found");
+        let release_pos = window
+            .find("release_all_for_holder(&holder)")
+            .expect("release_all_for_holder call not found");
+        assert!(
+            cancel_pos < release_pos,
+            "sub-6 review round-2 BL-1 regression: \
+             cancel_all_waiters_for_holder MUST precede \
+             release_all_for_holder — same ordering as WalDeployScope::\
+             drop's B1 fix.  Reversing allows same-holder waiters to be \
+             admitted-then-leaked via release's internal wake_waiters."
         );
     }
 }
