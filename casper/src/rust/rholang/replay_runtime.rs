@@ -264,8 +264,34 @@ impl ReplayRuntimeOps {
         // but the important side effect is that the scope
         // released ITS entries from the shared per-runtime WAL,
         // matching the leader-side lifecycle byte-for-byte.
-        let mut wal_scope = crate::rust::rholang::runtime::WalDeployScope::new(
+        // Step 5: replay uses the same Blake2b256(deploy.sig) scope
+        // derivation as the leader path so the sweep at drop clears
+        // exactly the set of locks the leader's LockRegistry would
+        // have swept.  Cross-validator consistency is upheld by
+        // is_replay short-circuits in the lock natives (LockRegistry
+        // state on the follower is never populated during replay;
+        // sweep is a no-op returning 0 released) — the scope value
+        // itself has no observable effect during replay, but keeping
+        // the derivation identical to the leader path avoids a
+        // divergence trap if a future refactor makes the follower's
+        // LockRegistry state track leader's.
+        let deploy_scope: rholang::rust::interpreter::io::lock::DeployScope = {
+            let h = crypto::rust::hash::blake2b256::Blake2b256::hash(
+                processed_deploy.deploy.sig.to_vec(),
+            );
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&h);
+            arr
+        };
+        let mut wal_scope = crate::rust::rholang::runtime::WalDeployScope::new_with_lock_sweep(
             self.runtime_ops.runtime.fs_handles.wal.clone(),
+            self.runtime_ops.runtime.fs_handles.lock_registry.clone(),
+            deploy_scope,
+            self.runtime_ops
+                .runtime
+                .fs_handles
+                .current_deploy_scope
+                .clone(),
         );
 
         let eval_successful = if with_cost_accounting {

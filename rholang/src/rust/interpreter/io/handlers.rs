@@ -39,7 +39,7 @@ use super::handle_table::{FileHandle, FileHandleTable};
 // C-R1 review fix: `extract_ok_u64` is used from fs_open's is_replay
 // branch to reconstruct the leader's returned fd for shadow-handle
 // insertion.
-use super::lock::{DeployScope, HolderId, LockError, LockId, LockMode};
+use super::lock::{HolderId, LockError, LockId, LockMode};
 use super::mode::{fopen_flags, parse_open_mode, AccessMode};
 use super::path::{
     canonicalize_lexical, io_msg_scrub, quarantine_err_reply, safe_descend_verified, safe_open,
@@ -2222,12 +2222,15 @@ impl FsProcesses {
     // in-process hints, not consensus state).
     //
     // Deploy-end auto-release (MUST per X-4 / spec §Explicit locks)
-    // is step 6 — wired at the WalDeployScope::end hook site in the
-    // casper crate.  For now handlers pass `DeployScope::default()`
-    // as a placeholder; step 6 threads the real per-deploy identity.
-    // Callers holding `LockToken`s must explicitly `release` in the
-    // meantime — this is safe for tests + the eventual deploy-end
-    // sweep will supersede the placeholder deploy id uniformly.
+    // is wired at `casper::rholang::runtime::WalDeployScope`'s Drop
+    // in the casper crate (step 5, 2026-08-13).  The RAII guard
+    // constructed at deploy-entry sets `handles.current_deploy_scope`
+    // to a Blake2b256-derived scope; on Drop, the guard calls
+    // `lock_registry.release_all_for_deploy(&scope)` before clearing
+    // the scope cell back to the `[0; 32]` sentinel.  These handlers
+    // read the scope from `handles.current_deploy_scope` at acquire
+    // time, so a leaked lock (caller neither released nor closed
+    // File before deploy end) gets swept transparently at deploy end.
     //
     // Replay semantics: on `is_replay = true` these natives echo
     // `previous` and do NOT touch `LockRegistry`.  Follower registry
@@ -2320,7 +2323,17 @@ impl FsProcesses {
                 match self.dev_inode_from_fd(fd as u64).await {
                     Ok(dev_inode) => {
                         let holder = holder_id_of(holder_par);
-                        let deploy = DeployScope::default(); // step 6 threads real id
+                        // Step 5: read the per-runtime "current deploy
+                        // scope" cell set by WalDeployScope::new at
+                        // deploy entry.  Sentinel [0; 32] means "no
+                        // deploy in flight" (test or genesis path);
+                        // that's safe here — acquire doesn't validate
+                        // the scope, only release_all_for_deploy does.
+                        let deploy = *self
+                            .handles
+                            .current_deploy_scope
+                            .read()
+                            .expect("current_deploy_scope RwLock poisoned");
                         match self.handles.lock_registry.try_acquire_range(
                             dev_inode, off as u64, len as u64, lm, holder, deploy,
                         ) {
@@ -2386,7 +2399,12 @@ impl FsProcesses {
             Some(fd) if fd >= 0 => match self.dev_inode_from_fd(fd as u64).await {
                 Ok(dev_inode) => {
                     let holder = holder_id_of(holder_par);
-                    let deploy = DeployScope::default(); // step 6
+                    // Step 5: read per-runtime "current deploy scope" cell.
+                    let deploy = *self
+                        .handles
+                        .current_deploy_scope
+                        .read()
+                        .expect("current_deploy_scope RwLock poisoned");
                     match self
                         .handles
                         .lock_registry

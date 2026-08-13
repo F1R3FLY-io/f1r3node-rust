@@ -39,6 +39,7 @@ use rholang::rust::interpreter::interpreter::EvaluateResult;
 // slice 30b this hash goes on-chain via a proto extension of
 // ProcessedDeploy (hard fork); until then it's logged for operator
 // diagnostics.
+use rholang::rust::interpreter::io::lock::{DeployScope, LockRegistry};
 use rholang::rust::interpreter::io::snapshot::compute_wal_root;
 use rholang::rust::interpreter::io::wal::{Wal, WalEntry, WalMark};
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
@@ -75,14 +76,22 @@ use crate::rust::util::{construct_deploy, event_converter};
 
 static EXPLORATORY_DEPLOY_KEY: OnceLock<crypto::rust::private_key::PrivateKey> = OnceLock::new();
 
-/// C-30-1 review fix (slice 30 round 2): RAII drain guard for the
-/// per-deploy WAL boundary.  Captures `Wal::begin_deploy` on
-/// construction and guarantees `Wal::take_deploy_entries` runs on
-/// **every** exit path (success, `?`-propagated error, panic),
-/// preventing per-deploy WAL entries from leaking into the next
-/// deploy's slice.
+/// RAII per-deploy resource guard.  Two responsibilities:
 ///
-/// # Correctness
+/// 1. **WAL boundary** (C-30-1 review fix, 2026 slice 30 round 2):
+///    captures `Wal::begin_deploy` on construction and guarantees
+///    `Wal::take_deploy_entries` runs on **every** exit path (success,
+///    `?`-propagated error, panic), preventing per-deploy WAL entries
+///    from leaking into the next deploy's slice.
+/// 2. **Lock deploy-end sweep** (Phase 8 slice 8a step 5, 2026-08-13):
+///    calls `LockRegistry::release_all_for_deploy(&deploy_scope)` on
+///    Drop, sweeping every lock the deploy acquired but didn't release
+///    via `token!release()` or `File.close`.  Spec §Explicit locks
+///    MUST auto-release at deploy end for cross-validator determinism
+///    (a MAY leak would diverge the lock table across validators that
+///    make different MAY choices).
+///
+/// # WAL correctness
 ///
 /// The pre-round-2 code drained only on the two `Ok`-return paths;
 /// five `?` operators between `begin_deploy` and the drain sites
@@ -92,6 +101,17 @@ static EXPLORATORY_DEPLOY_KEY: OnceLock<crypto::rust::private_key::PrivateKey> =
 /// C-30-1).  This guard closes the gap by making drain-on-drop the
 /// default and drain-and-attach the explicit opt-in via
 /// `take_and_commit`.
+///
+/// # Lock-sweep correctness
+///
+/// The Drop-based sweep symmetrically closes any leaked locks on all
+/// three exit paths (success, `?`-propagated error, panic).  The
+/// sweep is scope-scoped: it clears only entries whose
+/// `RangeEntry.deploy` / `SequentialEntry.deploy` matches this
+/// guard's `deploy_scope`, so a prior deploy's locks (if any survived
+/// its own sweep — shouldn't happen absent a bug) are unaffected.
+/// The `current_scope_cell` is set at construction so concurrent
+/// lock-native handlers record the correct scope; cleared on drop.
 pub(crate) struct WalDeployScope {
     /// Arc-shared clone of the per-runtime WAL — cheap; shares the
     /// underlying `Arc<Mutex<Vec<WalEntry>>>` so appends and drains
@@ -101,6 +121,25 @@ pub(crate) struct WalDeployScope {
     /// Once `take_and_commit` runs, Drop skips the discard-drain
     /// (the entries are already in the caller's hands).
     committed: bool,
+    /// Phase 8 slice 8a step 5: manager-shared range-lock registry
+    /// (Arc-cloned).  Drop sweeps every lock acquired under this
+    /// deploy's scope via `release_all_for_deploy(&deploy_scope)`
+    /// AFTER the WAL discard-drain, so both the WAL contribution
+    /// AND any leaked locks are cleaned up atomically at deploy end.
+    lock_registry: LockRegistry,
+    /// Phase 8 slice 8a step 5: the deploy-derived scope this guard
+    /// is responsible for.  Blake2b256(deploy.sig) for user deploys;
+    /// a state-hash-derived value for system deploys.  MUST be
+    /// non-sentinel (`!= [0; 32]`); the `release_all_for_deploy`
+    /// debug_assert guards against sentinel input.
+    deploy_scope: DeployScope,
+    /// Phase 8 slice 8a step 5: per-runtime "current deploy scope"
+    /// cell shared with `FileHandleTable::current_deploy_scope`.
+    /// Constructor sets it to `deploy_scope`; Drop clears back to
+    /// `[0; 32]` after the sweep.  Handlers read this cell at
+    /// acquire time so the LockRegistry entry records the correct
+    /// scope for the eventual sweep.
+    current_scope_cell: std::sync::Arc<std::sync::RwLock<DeployScope>>,
 }
 
 impl WalDeployScope {
@@ -112,12 +151,63 @@ impl WalDeployScope {
     // (hits `MAX_WAL_ENTRIES` only on follower → follower fails
     // deploys the leader accepted) and making per-deploy WAL
     // comparison impossible.
+    /// Legacy constructor — used only by pre-step-5 unit tests that
+    /// don't exercise the lock-sweep behavior.  Uses a per-instance
+    /// throwaway `LockRegistry` and a fresh scope cell, so Drop's
+    /// `release_all_for_deploy` is a no-op (the registry is empty).
+    /// New code MUST use `new_with_lock_sweep` and pass a real
+    /// deploy-derived scope.
+    #[cfg(test)]
     pub(crate) fn new(wal: Wal) -> Self {
+        // Test-only fallback scope: any non-sentinel value avoids
+        // the debug_assert in release_all_for_deploy.  `[0xAA; 32]`
+        // is arbitrary but recognizable in test-failure diagnostics.
+        Self::new_with_lock_sweep(
+            wal,
+            LockRegistry::new(),
+            [0xAAu8; 32],
+            std::sync::Arc::new(std::sync::RwLock::new([0u8; 32])),
+        )
+    }
+
+    /// Phase 8 slice 8a step 5 — production constructor with lock
+    /// sweep.  Sets `current_scope_cell` to `deploy_scope` so
+    /// concurrent lock-native handlers record their acquires under
+    /// this deploy's scope.  On Drop, sweeps `deploy_scope`'s locks
+    /// from the shared `LockRegistry` and clears the cell back to
+    /// sentinel.
+    ///
+    /// `deploy_scope` MUST be non-sentinel (`!= [0; 32]`); a sentinel
+    /// scope would trip the `release_all_for_deploy` debug_assert
+    /// on drop.  Blake2b256 output always produces a non-sentinel
+    /// value under any real input (chance of collision with `[0; 32]`
+    /// is 2⁻²⁵⁶ — negligible), so the enforcement is by construction
+    /// via how callers derive scopes.
+    pub(crate) fn new_with_lock_sweep(
+        wal: Wal,
+        lock_registry: LockRegistry,
+        deploy_scope: DeployScope,
+        current_scope_cell: std::sync::Arc<std::sync::RwLock<DeployScope>>,
+    ) -> Self {
+        debug_assert!(
+            deploy_scope != [0u8; 32],
+            "WalDeployScope::new_with_lock_sweep called with sentinel scope [0; 32]; \
+             this would trip the release_all_for_deploy guard on Drop.  Callers \
+             must derive a non-sentinel scope (Blake2b256 of deploy identifier)."
+        );
         let mark = wal.begin_deploy();
+        // Publish this deploy's scope to the shared cell so
+        // concurrent-in-this-deploy lock-native calls record it.
+        *current_scope_cell
+            .write()
+            .expect("current_deploy_scope RwLock poisoned") = deploy_scope;
         Self {
             wal,
             mark,
             committed: false,
+            lock_registry,
+            deploy_scope,
+            current_scope_cell,
         }
     }
 
@@ -183,6 +273,35 @@ impl Drop for WalDeployScope {
                 );
             }
         }
+        // Phase 8 slice 8a step 5: sweep leaked locks per spec
+        // §Explicit locks "Implementations MUST auto-release at
+        // deploy-end".  Runs on EVERY exit path (success via
+        // take_and_commit + Drop, `?`-propagated error via Drop
+        // alone, panic-unwind via Drop alone).  Symmetrical with the
+        // WAL discard-drain above — both close deploy-end resource
+        // cleanup at the same point.
+        //
+        // The sentinel guard in release_all_for_deploy is not
+        // exercised here: new_with_lock_sweep's debug_assert rejects
+        // sentinel scopes at construction, and the legacy test
+        // constructor uses `[0xAA; 32]` — also non-sentinel.
+        let n_released = self
+            .lock_registry
+            .release_all_for_deploy(&self.deploy_scope);
+        if n_released > 0 {
+            tracing::debug!(
+                target: "f1r3fly.casper.fs_locks",
+                n_locks = n_released,
+                "deploy-end auto-release: swept locks the caller did not release"
+            );
+        }
+        // Clear the per-runtime "current scope" cell back to sentinel
+        // so between-deploy handler calls (test-path only under
+        // normal operation) see the sentinel value.
+        *self
+            .current_scope_cell
+            .write()
+            .expect("current_deploy_scope RwLock poisoned") = [0u8; 32];
     }
 }
 
@@ -602,7 +721,25 @@ impl RuntimeOps {
         // so entries produced by a failed deploy do not leak into the
         // next deploy's slice.  Pre-fix, five `?` operators between
         // begin_deploy and the drain sites could leak entries.
-        let mut wal_scope = WalDeployScope::new(self.runtime.fs_handles.wal.clone());
+        // Step 5: derive deploy_scope from the deploy signature so
+        // every lock acquired under this deploy is tagged with a
+        // unique 32-byte identifier.  Blake2b256 output is
+        // consensus-observable through no path other than the sweep
+        // count (which isn't consensus-observable — see Drop
+        // comment).  On drop, the guard sweeps this scope's locks
+        // from the shared LockRegistry.
+        let deploy_scope: DeployScope = {
+            let h = crypto::rust::hash::blake2b256::Blake2b256::hash(deploy.sig.to_vec());
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&h);
+            arr
+        };
+        let mut wal_scope = WalDeployScope::new_with_lock_sweep(
+            self.runtime.fs_handles.wal.clone(),
+            self.runtime.fs_handles.lock_registry.clone(),
+            deploy_scope,
+            self.runtime.fs_handles.current_deploy_scope.clone(),
+        );
 
         let deploy_pk = deploy.pk.bytes.clone();
         let deploy_pk_hex = hex::encode(&deploy_pk);
@@ -951,7 +1088,26 @@ impl RuntimeOps {
         // contributions (needs a proto extension: system deploys
         // don't have per-deploy WAL attribution on
         // `ProcessedSystemDeploy` today).
-        let _wal_scope = WalDeployScope::new(self.runtime.fs_handles.wal.clone());
+        // Step 5: system deploys don't have a signature (they're
+        // internal PoS/vault/system operations), so derive scope from
+        // `state_hash` prefixed by a system-deploy marker.  System
+        // deploys currently don't touch fs-native URNs — the sweep is
+        // a no-op — but a non-sentinel scope is required to avoid
+        // tripping the `release_all_for_deploy` debug_assert on drop.
+        let deploy_scope: DeployScope = {
+            let mut input = b"phase8-system-deploy:".to_vec();
+            input.extend_from_slice(state_hash);
+            let h = crypto::rust::hash::blake2b256::Blake2b256::hash(input);
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&h);
+            arr
+        };
+        let _wal_scope = WalDeployScope::new_with_lock_sweep(
+            self.runtime.fs_handles.wal.clone(),
+            self.runtime.fs_handles.lock_registry.clone(),
+            deploy_scope,
+            self.runtime.fs_handles.current_deploy_scope.clone(),
+        );
 
         let (event_log, result, mergeable_channels) =
             self.play_system_deploy_internal(system_deploy).await?;
@@ -1994,6 +2150,176 @@ mod tests {
         assert!(!b_entries
             .iter()
             .any(|e| e.path == std::path::Path::new("/failed")));
+    }
+
+    // ---------------------------------------------------------------
+    // Phase 8 slice 8a step 5 — WalDeployScope::end auto-release hook.
+    //
+    // Tests below verify that WalDeployScope's Drop calls
+    // LockRegistry::release_all_for_deploy(&deploy_scope) so any
+    // locks the deploy acquired but did NOT release get swept at
+    // deploy end (spec §Explicit locks MUST auto-release).  The
+    // sweep is deploy-scope-scoped: locks acquired under OTHER
+    // deploy scopes (e.g., prior/next deploys, if they interleave in
+    // the shared LockRegistry) are unaffected.
+    // ---------------------------------------------------------------
+
+    use rholang::rust::interpreter::io::lock::{HolderId, LockMode, LockRegistry};
+
+    fn holder(byte: u8) -> HolderId { HolderId::from_bytes([byte; 32]) }
+
+    /// Deploy-end sweep: a lock acquired under this deploy's scope
+    /// gets released when the WalDeployScope drops (caller neither
+    /// released it explicitly nor closed the File cap).
+    #[test]
+    fn wal_deploy_scope_drop_releases_leaked_locks() {
+        let wal = Wal::new();
+        let lock_registry = LockRegistry::new();
+        let current_scope_cell = std::sync::Arc::new(std::sync::RwLock::new([0u8; 32]));
+        let deploy_scope: DeployScope = [0xA1u8; 32];
+
+        // Acquire a lock under this deploy scope, then drop the
+        // scope guard without releasing.
+        {
+            let _scope = WalDeployScope::new_with_lock_sweep(
+                wal.clone(),
+                lock_registry.clone(),
+                deploy_scope,
+                current_scope_cell.clone(),
+            );
+            lock_registry
+                .try_acquire_range((1, 42), 0, 100, LockMode::Write, holder(1), deploy_scope)
+                .expect("acquire under fresh scope must succeed");
+            assert_eq!(
+                lock_registry.held_locks(),
+                1,
+                "lock must be held BEFORE drop"
+            );
+            // _scope drops here — Drop calls release_all_for_deploy.
+        }
+        assert_eq!(
+            lock_registry.held_locks(),
+            0,
+            "WalDeployScope::drop MUST sweep the deploy's leaked locks \
+             (spec §Explicit locks MUST auto-release at deploy end)"
+        );
+    }
+
+    /// Deploy-end sweep is scoped: locks acquired under OTHER
+    /// deploy scopes survive.  Simulates two deploys sharing a
+    /// LockRegistry (as would happen across two sequential deploys
+    /// on the same runtime).
+    #[test]
+    fn wal_deploy_scope_drop_only_releases_matching_scope() {
+        let wal = Wal::new();
+        let lock_registry = LockRegistry::new();
+        let current_scope_cell = std::sync::Arc::new(std::sync::RwLock::new([0u8; 32]));
+        let deploy_a: DeployScope = [0xA1u8; 32];
+        let deploy_b: DeployScope = [0xB2u8; 32];
+
+        // Deploy B acquires first (not yet in scope guard).
+        lock_registry
+            .try_acquire_range((1, 42), 200, 100, LockMode::Read, holder(2), deploy_b)
+            .expect("deploy B's acquire must succeed");
+
+        // Deploy A runs in its scope guard, acquires another lock,
+        // then drops — sweep must only clear A's, leaving B's alone.
+        {
+            let _scope = WalDeployScope::new_with_lock_sweep(
+                wal.clone(),
+                lock_registry.clone(),
+                deploy_a,
+                current_scope_cell.clone(),
+            );
+            lock_registry
+                .try_acquire_range((1, 43), 0, 100, LockMode::Write, holder(1), deploy_a)
+                .expect("deploy A's acquire must succeed");
+            assert_eq!(lock_registry.held_locks(), 2);
+        }
+        assert_eq!(
+            lock_registry.held_locks(),
+            1,
+            "sweep MUST be scope-scoped: only deploy A's lock cleared, \
+             deploy B's survives"
+        );
+    }
+
+    /// Constructor sets the current-scope cell so concurrent
+    /// handler calls record the correct scope; Drop clears it back
+    /// to sentinel.
+    #[test]
+    fn wal_deploy_scope_publishes_scope_to_shared_cell() {
+        let wal = Wal::new();
+        let lock_registry = LockRegistry::new();
+        let current_scope_cell = std::sync::Arc::new(std::sync::RwLock::new([0u8; 32]));
+        let deploy_scope: DeployScope = [0xC3u8; 32];
+
+        // Before the guard: sentinel.
+        assert_eq!(*current_scope_cell.read().unwrap(), [0u8; 32]);
+
+        {
+            let _scope = WalDeployScope::new_with_lock_sweep(
+                wal.clone(),
+                lock_registry.clone(),
+                deploy_scope,
+                current_scope_cell.clone(),
+            );
+            // Inside the guard: real scope.
+            assert_eq!(
+                *current_scope_cell.read().unwrap(),
+                deploy_scope,
+                "constructor must publish scope to the shared cell so \
+                 concurrent lock-native handlers can read it at acquire time"
+            );
+        }
+        // After drop: back to sentinel.
+        assert_eq!(
+            *current_scope_cell.read().unwrap(),
+            [0u8; 32],
+            "Drop MUST clear the scope cell back to sentinel so \
+             between-deploy handler calls see no live scope"
+        );
+    }
+
+    /// Multiple locks under one deploy scope all get swept.
+    #[test]
+    fn wal_deploy_scope_sweeps_multiple_locks_under_same_deploy() {
+        let wal = Wal::new();
+        let lock_registry = LockRegistry::new();
+        let current_scope_cell = std::sync::Arc::new(std::sync::RwLock::new([0u8; 32]));
+        let deploy_scope: DeployScope = [0xD4u8; 32];
+
+        {
+            let _scope = WalDeployScope::new_with_lock_sweep(
+                wal.clone(),
+                lock_registry.clone(),
+                deploy_scope,
+                current_scope_cell.clone(),
+            );
+            // Acquire 5 range locks + 1 sequential (on different inode).
+            for i in 0..5 {
+                lock_registry
+                    .try_acquire_range(
+                        (1, 42),
+                        i * 200,
+                        100,
+                        LockMode::Read,
+                        holder(1),
+                        deploy_scope,
+                    )
+                    .expect("range acquire must succeed");
+            }
+            lock_registry
+                .try_acquire_sequential((1, 43), holder(2), deploy_scope)
+                .expect("sequential acquire must succeed");
+            assert_eq!(lock_registry.held_locks(), 6);
+        }
+        assert_eq!(
+            lock_registry.held_locks(),
+            0,
+            "sweep MUST release EVERY lock under the deploy scope, \
+             both range and sequential"
+        );
     }
 
     // ---------------------------------------------------------------

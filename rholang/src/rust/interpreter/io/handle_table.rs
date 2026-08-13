@@ -99,6 +99,28 @@ pub struct FileHandleTable {
     /// entry regardless of which runtime holds each cap.  See X-1
     /// design memo in the plan.
     pub lock_registry: super::lock::LockRegistry,
+    /// Phase 8 slice 8a step 5: the per-runtime "current deploy
+    /// scope" cell.  Set by `casper::rholang::runtime::WalDeployScope::
+    /// new` at deploy-entry to the deploy-derived `DeployScope`
+    /// (Blake2b256(deploy.sig) for user deploys; a state-hash-
+    /// derived scope for system deploys).  Cleared to `[0; 32]` when
+    /// the `WalDeployScope` guard drops.
+    ///
+    /// The `fs_lock_range` / `fs_lock_sequential` handlers read this
+    /// cell at acquire time and record it in the `LockRegistry`
+    /// entry's `deploy` field, so `release_all_for_deploy(&scope)`
+    /// on `WalDeployScope::drop` can sweep exactly the current
+    /// deploy's leaked locks.
+    ///
+    /// Default `[0; 32]` is the sentinel value guarded against in
+    /// `LockRegistry::release_all_for_deploy`; nothing calls
+    /// `release_all_for_deploy(&[0; 32])`, so the sentinel guard
+    /// only fires when a deploy-end sweep is attempted OUTSIDE a
+    /// live `WalDeployScope` — which would be a code bug.  Per-
+    /// runtime cell (not manager-broadcast): each runtime processes
+    /// deploys sequentially, so a single cell suffices; concurrent
+    /// runtimes have independent `FileHandleTable` instances.
+    pub current_deploy_scope: Arc<std::sync::RwLock<super::lock::DeployScope>>,
 }
 
 #[derive(Debug)]
@@ -122,6 +144,10 @@ impl FileHandleTable {
             // pre-H-5 behavior).
             root_registry: super::path::RootIdentityRegistry::new(),
             lock_registry: super::lock::LockRegistry::new(),
+            // Step 5: sentinel default.  A live deploy overwrites
+            // this via WalDeployScope::new at deploy entry; the
+            // guard clears it back to sentinel on drop.
+            current_deploy_scope: Arc::new(std::sync::RwLock::new([0u8; 32])),
         }
     }
 
