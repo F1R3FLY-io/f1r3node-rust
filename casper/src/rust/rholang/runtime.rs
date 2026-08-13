@@ -189,7 +189,16 @@ impl WalDeployScope {
         deploy_scope: DeployScope,
         current_scope_cell: std::sync::Arc<std::sync::RwLock<DeployScope>>,
     ) -> Self {
-        debug_assert!(
+        // Promoted from debug_assert to assert during step-5 review
+        // (2026-08-13) for release-build defense-in-depth: the 3 call
+        // sites (play_deploy_with_cost_accounting, play_system_deploy,
+        // replay_deploy_e) derive via Blake2b256 → non-sentinel by
+        // construction, but a future refactor that introduces a
+        // sentinel-scope path would silently pass in release builds
+        // and end up sweeping every stray sentinel-scoped entry in
+        // Drop.  The one-comparison cost is negligible; keep the
+        // guard on for all build modes.
+        assert!(
             deploy_scope != [0u8; 32],
             "WalDeployScope::new_with_lock_sweep called with sentinel scope [0; 32]; \
              this would trip the release_all_for_deploy guard on Drop.  Callers \

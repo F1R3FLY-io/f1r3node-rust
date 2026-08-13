@@ -415,21 +415,26 @@ impl LockRegistry {
     /// # Sentinel guard: `[0; 32]` is reserved as the slice-8a step-4
     /// placeholder for "no real DeployScope wired yet."  Step 5's
     /// natives (`fs_lock_range` / `fs_lock_sequential`) pass this
-    /// placeholder while step 6 is unimplemented.  Calling
-    /// `release_all_for_deploy(&[0; 32])` before step 6 wires real
-    /// deploy identities would sweep EVERY currently-held lock —
-    /// masking a bug as a working sweep.  The debug-assert below
-    /// turns that into a loud test failure so step 6 must land the
-    /// real DeployScope before enabling the auto-release hook.
-    /// Post-step-6 this guard can be removed (or repurposed to
-    /// reject any all-zero scope as caller error).
+    /// placeholder while step 5 was unimplemented.  Calling
+    /// `release_all_for_deploy(&[0; 32])` outside a live
+    /// `WalDeployScope` would sweep EVERY currently-held lock with a
+    /// sentinel-scope entry — under normal step-5 operation there
+    /// should be none (every acquire under a live WalDeployScope
+    /// records the real deploy scope), but a pre-step-5 partial-wire
+    /// bug could leave stray sentinel-scoped entries.  The assert
+    /// turns that into a loud panic in release builds too — defense-
+    /// in-depth promoted from debug_assert during the step-5 review
+    /// (2026-08-13).  Small runtime cost (one comparison per sweep)
+    /// vs. catching a "silently nuke every lock" regression.
     pub fn release_all_for_deploy(&self, deploy: &DeployScope) -> usize {
-        debug_assert!(
+        assert!(
             deploy != &[0u8; 32],
             "release_all_for_deploy called with the [0; 32] sentinel — this is \
-             slice-8a step-4's placeholder DeployScope.  Step 6 must wire real \
-             per-deploy identities before enabling any auto-release hook, or \
-             this sweep will nuke every held lock in the registry."
+             the pre-step-5 placeholder DeployScope.  A live WalDeployScope \
+             derives a non-sentinel scope via Blake2b256; the sentinel guard \
+             fires only when a caller invokes release_all_for_deploy outside \
+             a WalDeployScope guard, which would sweep every stray sentinel-\
+             scoped entry."
         );
         let mut guard = self.inner.write().expect("lock registry poisoned");
         let mut released = 0usize;
@@ -1141,14 +1146,18 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "release_all_for_deploy called with the [0; 32] sentinel")]
-    fn release_all_for_deploy_zero_sentinel_panics_in_debug() {
-        // Step-4 placeholder guard: sweeping on `[0; 32]` would
-        // release every held lock in the registry, because natives
-        // (step 5) currently pass this placeholder as their deploy
-        // scope until step 6 wires real per-deploy identities.  This
-        // test pins the guard so a premature step-6 partial-wire that
-        // accidentally invokes `release_all_for_deploy(&[0; 32])`
-        // fails loudly here rather than silently nuking locks.
+    fn release_all_for_deploy_zero_sentinel_panics() {
+        // Sentinel guard: sweeping on `[0; 32]` would release every
+        // sentinel-scoped entry in the registry.  Under step-5 normal
+        // operation there should be none (every acquire under a live
+        // WalDeployScope records the real deploy scope via
+        // FileHandleTable::current_deploy_scope), but a caller
+        // invoking release_all_for_deploy(&[0; 32]) directly — outside
+        // a WalDeployScope guard — would sweep stray sentinel entries.
+        //
+        // Guard promoted from debug_assert to assert during step-5
+        // review (2026-08-13) so the panic fires in release builds
+        // too; test renamed from `_panics_in_debug` accordingly.
         let reg = LockRegistry::new();
         reg.try_acquire_range((1, 42), 0, 100, LockMode::Read, holder(1), [0u8; 32])
             .unwrap();
