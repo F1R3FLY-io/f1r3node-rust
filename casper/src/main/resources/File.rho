@@ -1771,6 +1771,271 @@ in {
       }
     } |
 
+    // -- bytesAt(offset, length, options) — slice 8d-3-stream-2 arity-3
+    //
+    // Per spec §1181.  Stream-lifetime range lock — uses
+    // acquireRangeForStream hand-off helper to acquire the lock and
+    // hand back the LockId, then stream construction is identical to
+    // arity-2.
+    //
+    // Body deliberately duplicates the arity-2 method (identical
+    // stream construction after the acquire) — Rholang agent methods
+    // don't cross-invoke cleanly.  Any change to the patProducer /
+    // lockCell / stream-termination guards MUST be mirrored across
+    // both methods.
+    method bytesAt(@offset, @length, @options) {
+      match offset {
+        off /\ Int => {
+          match off < 0 {
+            true => return!([false, "FSERR_BAD_ARG",
+              "offset must be non-negative"])
+            false => {
+              new lenOk in {
+                match length {
+                  n /\ Int => {
+                    match n < 0 {
+                      true => lenOk!([false, "FSERR_BAD_ARG",
+                        "length must be non-negative"])
+                      false => lenOk!([true, n])
+                    }
+                  }
+                  Nil => lenOk!([true, Nil])
+                  _ => lenOk!([false, "FSERR_BAD_ARG",
+                    "length must be Int or Nil"])
+                } |
+                for (@lenValidated <- lenOk) {
+                  match lenValidated {
+                    [false, code, msg] => return!([false, code, msg])
+                    [true, validLen] => {
+                      match options.get("wait") {
+                        wOpt /\ (Nil \/ Bool) => {
+                          new waitCh in {
+                            match wOpt {
+                              Nil        => waitCh!(false)
+                              bb /\ Bool => waitCh!(bb)
+                            } |
+                            for (@w <- waitCh) {
+                              for (@state <- @[*private, *stateP]) {
+                                match state {
+                                  "closed" => {
+                                    @[*private, *stateP]!("closed") |
+                                    return!([false, "FSERR_CLOSED", "file is closed"])
+                                  }
+                                  "open" => {
+                                    @[*private, *stateP]!("open") |
+                                    for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
+                                      match params {
+                                        (fd, _root, _rel, _mode) => {
+                                          new lockLenCh in {
+                                            match validLen {
+                                              Nil => lockLenCh!(4611686018427387904)
+                                              n /\ Int => lockLenCh!(n)
+                                            } |
+                                            for (@lockLen <- lockLenCh) {
+                                              match lockLen {
+                                                0 => {
+                                                  // Zero-length: mint an empty
+                                                  // stream directly, no lock
+                                                  // needed (identical to arity-2).
+                                                  new patProducer, patBuilder in {
+                                                    contract patProducer(retCh) = {
+                                                      retCh!([false, "EOS", "length exhausted"])
+                                                    } |
+                                                    contract patBuilder(@values, retCh) = {
+                                                      match values {
+                                                        v /\ List => retCh!([true, v.concatBytes()])
+                                                        _ => retCh!([false, "FSERR_IO",
+                                                          "chunk builder expected List"])
+                                                      }
+                                                    } |
+                                                    for (@streamHandle <- Stream!?(*patProducer, *patBuilder)) {
+                                                      return!([true, streamHandle])
+                                                    }
+                                                  }
+                                                }
+                                                _ => {
+                                                  new lockOut, acqRet in {
+                                                    acquireRangeForStream!(fd, off, lockLen, "r", *this, cmode, w, *lockOut, *acqRet) |
+                                                    for (@acqReply <- acqRet) {
+                                                      match acqReply {
+                                                        [true] => {
+                                                          for (@lid <- lockOut) {
+                                                            new patProducer, patBuilder, posCell, lockCell in {
+                                                              posCell!((off, validLen, "".hexToBytes(), 0)) |
+                                                              lockCell!((lid, false)) |
+
+                                                              contract patProducer(retCh) = {
+                                                                for (@(nextOff, rem, pending, idx) <- posCell) {
+                                                                  match idx < pending.length() {
+                                                                    true => {
+                                                                      posCell!((nextOff, rem, pending, idx + 1)) |
+                                                                      retCh!([true, pending.slice(idx, idx + 1)])
+                                                                    }
+                                                                    false => {
+                                                                      new nToReadCh in {
+                                                                        match rem {
+                                                                          Nil => nToReadCh!(4096)
+                                                                          r /\ Int => {
+                                                                            match r <= 0 {
+                                                                              true => nToReadCh!(0)
+                                                                              false => {
+                                                                                match r < 4096 {
+                                                                                  true => nToReadCh!(r)
+                                                                                  false => nToReadCh!(4096)
+                                                                                }
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                        } |
+                                                                        for (@nToRead <- nToReadCh) {
+                                                                          match nToRead {
+                                                                            0 => {
+                                                                              for (@lockState <- lockCell) {
+                                                                                match lockState {
+                                                                                  (lockId, false) => {
+                                                                                    lockCell!((lockId, true)) |
+                                                                                    new relCh in {
+                                                                                      fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                                                      for (@_r <- relCh) {
+                                                                                        posCell!((nextOff, rem, pending, idx)) |
+                                                                                        retCh!([false, "EOS",
+                                                                                          "length exhausted"])
+                                                                                      }
+                                                                                    }
+                                                                                  }
+                                                                                  already => {
+                                                                                    lockCell!(already) |
+                                                                                    posCell!((nextOff, rem, pending, idx)) |
+                                                                                    retCh!([false, "EOS",
+                                                                                      "length exhausted"])
+                                                                                  }
+                                                                                }
+                                                                              }
+                                                                            }
+                                                                            _ => {
+                                                                              new readCh in {
+                                                                                fsReadAt!(fd, nextOff, nToRead, *readCh) |
+                                                                                for (@reply <- readCh) {
+                                                                                  match reply {
+                                                                                    [true, ba /\ ByteArray] => {
+                                                                                      match ba.length() {
+                                                                                        0 => {
+                                                                                          for (@lockState <- lockCell) {
+                                                                                            match lockState {
+                                                                                              (lockId, false) => {
+                                                                                                lockCell!((lockId, true)) |
+                                                                                                new relCh in {
+                                                                                                  fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                                                                  for (@_r <- relCh) {
+                                                                                                    posCell!((nextOff, rem, pending, idx)) |
+                                                                                                    retCh!([false, "EOS", "end of file"])
+                                                                                                  }
+                                                                                                }
+                                                                                              }
+                                                                                              already => {
+                                                                                                lockCell!(already) |
+                                                                                                posCell!((nextOff, rem, pending, idx)) |
+                                                                                                retCh!([false, "EOS", "end of file"])
+                                                                                              }
+                                                                                            }
+                                                                                          }
+                                                                                        }
+                                                                                        got => {
+                                                                                          new newRemCh in {
+                                                                                            match rem {
+                                                                                              Nil => newRemCh!(Nil)
+                                                                                              r /\ Int => newRemCh!(r - got)
+                                                                                            } |
+                                                                                            for (@newRem <- newRemCh) {
+                                                                                              posCell!((nextOff + got, newRem, ba, 1)) |
+                                                                                              retCh!([true, ba.slice(0, 1)])
+                                                                                            }
+                                                                                          }
+                                                                                        }
+                                                                                      }
+                                                                                    }
+                                                                                    _ => {
+                                                                                      for (@lockState <- lockCell) {
+                                                                                        match lockState {
+                                                                                          (lockId, false) => {
+                                                                                            lockCell!((lockId, true)) |
+                                                                                            new relCh in {
+                                                                                              fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                                                              for (@_r <- relCh) {
+                                                                                                posCell!((nextOff, rem, pending, idx)) |
+                                                                                                retCh!(reply)
+                                                                                              }
+                                                                                            }
+                                                                                          }
+                                                                                          already => {
+                                                                                            lockCell!(already) |
+                                                                                            posCell!((nextOff, rem, pending, idx)) |
+                                                                                            retCh!(reply)
+                                                                                          }
+                                                                                        }
+                                                                                      }
+                                                                                    }
+                                                                                  }
+                                                                                }
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              } |
+
+                                                              contract patBuilder(@values, retCh) = {
+                                                                match values {
+                                                                  v /\ List => retCh!([true, v.concatBytes()])
+                                                                  _ => retCh!([false, "FSERR_IO",
+                                                                    "chunk builder expected List"])
+                                                                }
+                                                              } |
+
+                                                              for (@streamHandle <- Stream!?(*patProducer, *patBuilder)) {
+                                                                return!([true, streamHandle])
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                        _ => return!(acqReply)
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                        _ => return!([false, "FSERR_IO", "fd params malformed"])
+                                      }
+                                    }
+                                  }
+                                  _ => {
+                                    @[*private, *stateP]!("closed") |
+                                    return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                        _ => return!([false, "FSERR_BAD_ARG", "options.wait must be Bool"])
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "offset must be an integer"])
+      }
+    } |
+
     // -- writeBytes(byteStream) ------------------------------------
     //
     // Sequential ByteStream consumer.  Drains `byteStream` via next()
@@ -2471,6 +2736,306 @@ in {
       }
     } |
 
+    // -- chars(options) — slice 8d-3-stream-2 arity-1 variant
+    //
+    // Per spec §1181.  Stream-lifetime sequential lock — uses
+    // acquireSequentialForStream hand-off helper, stream construction
+    // identical to arity-0.
+    //
+    // Body deliberately duplicates the arity-0 method (identical
+    // charProducer / lockCell / codepoint machinery after the acquire).
+    // Any change to the producer state or termination guards MUST be
+    // mirrored across both methods.
+    method chars(@options) {
+      match options.get("wait") {
+        wOpt /\ (Nil \/ Bool) => {
+          new waitCh in {
+            match wOpt {
+              Nil        => waitCh!(false)
+              bb /\ Bool => waitCh!(bb)
+            } |
+            for (@w <- waitCh) {
+              for (@state <- @[*private, *stateP]) {
+                match state {
+                  "closed" => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file is closed"])
+                  }
+                  "open" => {
+                    @[*private, *stateP]!("open") |
+                    for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
+                      match params {
+                        (fd, _root, _rel, _mode) => {
+                          new lockOut, acqRet in {
+                            acquireSequentialForStream!(fd, *this, cmode, w, *lockOut, *acqRet) |
+                            for (@acqReply <- acqRet) {
+                              match acqReply {
+                                [true] => {
+                                  for (@lid <- lockOut) {
+                                    new charProducer, charBuilder, pendingCell, lockCell in {
+                                      pendingCell!(("".hexToBytes(), 0, false)) |
+                                      lockCell!((lid, false)) |
+
+                                      contract charProducer(retCh) = {
+                                        for (@(pending, idx, eofSeen) <- pendingCell) {
+                                          match idx >= pending.length() {
+                                            true => {
+                                              match eofSeen {
+                                                true => {
+                                                  for (@lockState <- lockCell) {
+                                                    match lockState {
+                                                      (lockId, false) => {
+                                                        lockCell!((lockId, true)) |
+                                                        new relCh in {
+                                                          fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                          for (@_r <- relCh) {
+                                                            pendingCell!((pending, idx, true)) |
+                                                            retCh!([false, "EOS", "end of file"])
+                                                          }
+                                                        }
+                                                      }
+                                                      already => {
+                                                        lockCell!(already) |
+                                                        pendingCell!((pending, idx, true)) |
+                                                        retCh!([false, "EOS", "end of file"])
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                                false => {
+                                                  new readCh in {
+                                                    fsRead!(fd, 4096, *readCh) |
+                                                    for (@reply <- readCh) {
+                                                      match reply {
+                                                        [true, ba /\ ByteArray] => {
+                                                          match ba.length() {
+                                                            0 => {
+                                                              for (@lockState <- lockCell) {
+                                                                match lockState {
+                                                                  (lockId, false) => {
+                                                                    lockCell!((lockId, true)) |
+                                                                    new relCh in {
+                                                                      fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                                      for (@_r <- relCh) {
+                                                                        pendingCell!((pending, idx, true)) |
+                                                                        retCh!([false, "EOS", "end of file"])
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                  already => {
+                                                                    lockCell!(already) |
+                                                                    pendingCell!((pending, idx, true)) |
+                                                                    retCh!([false, "EOS", "end of file"])
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                            _ => {
+                                                              pendingCell!((ba, 0, false)) |
+                                                              charProducer!(*retCh)
+                                                            }
+                                                          }
+                                                        }
+                                                        _ => {
+                                                          for (@lockState <- lockCell) {
+                                                            match lockState {
+                                                              (lockId, false) => {
+                                                                lockCell!((lockId, true)) |
+                                                                new relCh in {
+                                                                  fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                                  for (@_r <- relCh) {
+                                                                    pendingCell!((pending, idx, eofSeen)) |
+                                                                    retCh!(reply)
+                                                                  }
+                                                                }
+                                                              }
+                                                              already => {
+                                                                lockCell!(already) |
+                                                                pendingCell!((pending, idx, eofSeen)) |
+                                                                retCh!(reply)
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                            false => {
+                                              new lenCh in {
+                                                codepointLen!(pending.nth(idx), *lenCh) |
+                                                for (@n <- lenCh) {
+                                                  match n {
+                                                    -1 => {
+                                                      for (@lockState <- lockCell) {
+                                                        match lockState {
+                                                          (lockId, false) => {
+                                                            lockCell!((lockId, true)) |
+                                                            new relCh in {
+                                                              fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                              for (@_r <- relCh) {
+                                                                pendingCell!((pending, idx, eofSeen)) |
+                                                                retCh!([false, "FSERR_IO",
+                                                                  "invalid UTF-8 start byte"])
+                                                              }
+                                                            }
+                                                          }
+                                                          already => {
+                                                            lockCell!(already) |
+                                                            pendingCell!((pending, idx, eofSeen)) |
+                                                            retCh!([false, "FSERR_IO",
+                                                              "invalid UTF-8 start byte"])
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                    _ => {
+                                                      match idx + n <= pending.length() {
+                                                        true => {
+                                                          pendingCell!((pending, idx + n, eofSeen)) |
+                                                          retCh!([true,
+                                                            pending.slice(idx, idx + n).decodeUtf8()])
+                                                        }
+                                                        false => {
+                                                          match eofSeen {
+                                                            true => {
+                                                              for (@lockState <- lockCell) {
+                                                                match lockState {
+                                                                  (lockId, false) => {
+                                                                    lockCell!((lockId, true)) |
+                                                                    new relCh in {
+                                                                      fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                                      for (@_r <- relCh) {
+                                                                        pendingCell!((pending, idx, true)) |
+                                                                        retCh!([false, "FSERR_IO",
+                                                                          "truncated UTF-8 at EOF"])
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                  already => {
+                                                                    lockCell!(already) |
+                                                                    pendingCell!((pending, idx, true)) |
+                                                                    retCh!([false, "FSERR_IO",
+                                                                      "truncated UTF-8 at EOF"])
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                            false => {
+                                                              new readCh in {
+                                                                fsRead!(fd, 4096, *readCh) |
+                                                                for (@reply <- readCh) {
+                                                                  match reply {
+                                                                    [true, ba /\ ByteArray] => {
+                                                                      match ba.length() {
+                                                                        0 => {
+                                                                          for (@lockState <- lockCell) {
+                                                                            match lockState {
+                                                                              (lockId, false) => {
+                                                                                lockCell!((lockId, true)) |
+                                                                                new relCh in {
+                                                                                  fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                                                  for (@_r <- relCh) {
+                                                                                    pendingCell!((pending, idx, true)) |
+                                                                                    retCh!([false, "FSERR_IO",
+                                                                                      "truncated UTF-8 at EOF"])
+                                                                                  }
+                                                                                }
+                                                                              }
+                                                                              already => {
+                                                                                lockCell!(already) |
+                                                                                pendingCell!((pending, idx, true)) |
+                                                                                retCh!([false, "FSERR_IO",
+                                                                                  "truncated UTF-8 at EOF"])
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                        _ => {
+                                                                          pendingCell!((
+                                                                            [pending.slice(idx, pending.length()), ba].concatBytes(),
+                                                                            0,
+                                                                            false
+                                                                          )) |
+                                                                          charProducer!(*retCh)
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                    _ => {
+                                                                      for (@lockState <- lockCell) {
+                                                                        match lockState {
+                                                                          (lockId, false) => {
+                                                                            lockCell!((lockId, true)) |
+                                                                            new relCh in {
+                                                                              fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                                              for (@_r <- relCh) {
+                                                                                pendingCell!((pending, idx, eofSeen)) |
+                                                                                retCh!(reply)
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                          already => {
+                                                                            lockCell!(already) |
+                                                                            pendingCell!((pending, idx, eofSeen)) |
+                                                                            retCh!(reply)
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      } |
+
+                                      contract charBuilder(@vals, retCh) = {
+                                        match vals {
+                                          v /\ List => concatStringsLoop!(v, "", *retCh)
+                                          _ => retCh!([false, "FSERR_IO",
+                                            "chunk builder expected List"])
+                                        }
+                                      } |
+
+                                      for (@streamHandle <- Stream!?(*charProducer, *charBuilder)) {
+                                        return!([true, streamHandle])
+                                      }
+                                    }
+                                  }
+                                }
+                                _ => return!(acqReply)
+                              }
+                            }
+                          }
+                        }
+                        _ => return!([false, "FSERR_IO", "fd params malformed"])
+                      }
+                    }
+                  }
+                  _ => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                  }
+                }
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "options.wait must be Bool"])
+      }
+    } |
+
     // -- readLine() ------------------------------------------------
     //
     // Single-shot CharStream over the next line from the cursor.
@@ -2925,6 +3490,397 @@ in {
             return!([false, "FSERR_CLOSED", "file state unrecognized"])
           }
         }
+      }
+    } |
+
+    // -- readLine(options) — slice 8d-3-stream-2 arity-1 variant
+    //
+    // Per spec §1181.  Stream-lifetime sequential lock — uses
+    // acquireSequentialForStream hand-off helper, stream construction
+    // identical to arity-0.
+    //
+    // Body deliberately duplicates the arity-0 method (all 9
+    // termination paths preserved: 2 EOS variants + LF-consumption EOS
+    // + 5 error variants).  Any change to lineProducer / lockCell
+    // guards MUST be mirrored across both methods.
+    method readLine(@options) {
+      match options.get("wait") {
+        wOpt /\ (Nil \/ Bool) => {
+          new waitCh in {
+            match wOpt {
+              Nil        => waitCh!(false)
+              bb /\ Bool => waitCh!(bb)
+            } |
+            for (@w <- waitCh) {
+              for (@state <- @[*private, *stateP]) {
+                match state {
+                  "closed" => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file is closed"])
+                  }
+                  "open" => {
+                    @[*private, *stateP]!("open") |
+                    for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
+                      match params {
+                        (fd, _root, _rel, _mode) => {
+                          new lockOut, acqRet in {
+                            acquireSequentialForStream!(fd, *this, cmode, w, *lockOut, *acqRet) |
+                            for (@acqReply <- acqRet) {
+                              match acqReply {
+                                [true] => {
+                                  for (@lid <- lockOut) {
+                                    new lineProducer, lineBuilder, lineCell, lockCell in {
+                                      lineCell!(("".hexToBytes(), 0, false, false)) |
+                                      lockCell!((lid, false)) |
+
+                                      contract lineProducer(retCh) = {
+                                        for (@(pending, idx, eofSeen, doneAtLF) <- lineCell) {
+                                          match doneAtLF {
+                                            true => {
+                                              for (@lockState <- lockCell) {
+                                                match lockState {
+                                                  (lockId, false) => {
+                                                    lockCell!((lockId, true)) |
+                                                    new relCh in {
+                                                      fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                      for (@_r <- relCh) {
+                                                        lineCell!((pending, idx, eofSeen, true)) |
+                                                        retCh!([false, "EOS", "end of line"])
+                                                      }
+                                                    }
+                                                  }
+                                                  already => {
+                                                    lockCell!(already) |
+                                                    lineCell!((pending, idx, eofSeen, true)) |
+                                                    retCh!([false, "EOS", "end of line"])
+                                                  }
+                                                }
+                                              }
+                                            }
+                                            false => {
+                                              match idx >= pending.length() {
+                                                true => {
+                                                  match eofSeen {
+                                                    true => {
+                                                      for (@lockState <- lockCell) {
+                                                        match lockState {
+                                                          (lockId, false) => {
+                                                            lockCell!((lockId, true)) |
+                                                            new relCh in {
+                                                              fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                              for (@_r <- relCh) {
+                                                                lineCell!((pending, idx, true, false)) |
+                                                                retCh!([false, "EOS", "end of file"])
+                                                              }
+                                                            }
+                                                          }
+                                                          already => {
+                                                            lockCell!(already) |
+                                                            lineCell!((pending, idx, true, false)) |
+                                                            retCh!([false, "EOS", "end of file"])
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                    false => {
+                                                      new readCh in {
+                                                        fsRead!(fd, 4096, *readCh) |
+                                                        for (@reply <- readCh) {
+                                                          match reply {
+                                                            [true, ba /\ ByteArray] => {
+                                                              match ba.length() {
+                                                                0 => {
+                                                                  for (@lockState <- lockCell) {
+                                                                    match lockState {
+                                                                      (lockId, false) => {
+                                                                        lockCell!((lockId, true)) |
+                                                                        new relCh in {
+                                                                          fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                                          for (@_r <- relCh) {
+                                                                            lineCell!((pending, idx, true, false)) |
+                                                                            retCh!([false, "EOS", "end of file"])
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                      already => {
+                                                                        lockCell!(already) |
+                                                                        lineCell!((pending, idx, true, false)) |
+                                                                        retCh!([false, "EOS", "end of file"])
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                                _ => {
+                                                                  lineCell!((ba, 0, false, false)) |
+                                                                  lineProducer!(*retCh)
+                                                                }
+                                                              }
+                                                            }
+                                                            _ => {
+                                                              for (@lockState <- lockCell) {
+                                                                match lockState {
+                                                                  (lockId, false) => {
+                                                                    lockCell!((lockId, true)) |
+                                                                    new relCh in {
+                                                                      fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                                      for (@_r <- relCh) {
+                                                                        lineCell!((pending, idx, eofSeen, false)) |
+                                                                        retCh!(reply)
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                  already => {
+                                                                    lockCell!(already) |
+                                                                    lineCell!((pending, idx, eofSeen, false)) |
+                                                                    retCh!(reply)
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                                false => {
+                                                  new byteAt in {
+                                                    byteAt!(pending.nth(idx)) |
+                                                    for (@b <- byteAt) {
+                                                      match b {
+                                                        10 => {
+                                                          new overshotCh in {
+                                                            overshotCh!(pending.length() - (idx + 1)) |
+                                                            for (@overshot <- overshotCh) {
+                                                              match overshot > 0 {
+                                                                true => {
+                                                                  new seekCh in {
+                                                                    fsSeek!(fd, 0 - overshot, "cur", *seekCh) |
+                                                                    for (@_seekReply <- seekCh) {
+                                                                      for (@lockState <- lockCell) {
+                                                                        match lockState {
+                                                                          (lockId, false) => {
+                                                                            lockCell!((lockId, true)) |
+                                                                            new relCh in {
+                                                                              fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                                              for (@_r <- relCh) {
+                                                                                lineCell!((pending, idx + 1, eofSeen, true)) |
+                                                                                retCh!([false, "EOS", "end of line"])
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                          already => {
+                                                                            lockCell!(already) |
+                                                                            lineCell!((pending, idx + 1, eofSeen, true)) |
+                                                                            retCh!([false, "EOS", "end of line"])
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                                false => {
+                                                                  for (@lockState <- lockCell) {
+                                                                    match lockState {
+                                                                      (lockId, false) => {
+                                                                        lockCell!((lockId, true)) |
+                                                                        new relCh in {
+                                                                          fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                                          for (@_r <- relCh) {
+                                                                            lineCell!((pending, idx + 1, eofSeen, true)) |
+                                                                            retCh!([false, "EOS", "end of line"])
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                      already => {
+                                                                        lockCell!(already) |
+                                                                        lineCell!((pending, idx + 1, eofSeen, true)) |
+                                                                        retCh!([false, "EOS", "end of line"])
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                        _ => {
+                                                          new lenCh in {
+                                                            codepointLen!(b, *lenCh) |
+                                                            for (@n <- lenCh) {
+                                                              match n {
+                                                                -1 => {
+                                                                  for (@lockState <- lockCell) {
+                                                                    match lockState {
+                                                                      (lockId, false) => {
+                                                                        lockCell!((lockId, true)) |
+                                                                        new relCh in {
+                                                                          fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                                          for (@_r <- relCh) {
+                                                                            lineCell!((pending, idx, eofSeen, false)) |
+                                                                            retCh!([false, "FSERR_IO",
+                                                                              "invalid UTF-8 start byte"])
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                      already => {
+                                                                        lockCell!(already) |
+                                                                        lineCell!((pending, idx, eofSeen, false)) |
+                                                                        retCh!([false, "FSERR_IO",
+                                                                          "invalid UTF-8 start byte"])
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                                _ => {
+                                                                  match idx + n <= pending.length() {
+                                                                    true => {
+                                                                      lineCell!((pending, idx + n, eofSeen, false)) |
+                                                                      retCh!([true,
+                                                                        pending.slice(idx, idx + n).decodeUtf8()])
+                                                                    }
+                                                                    false => {
+                                                                      match eofSeen {
+                                                                        true => {
+                                                                          for (@lockState <- lockCell) {
+                                                                            match lockState {
+                                                                              (lockId, false) => {
+                                                                                lockCell!((lockId, true)) |
+                                                                                new relCh in {
+                                                                                  fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                                                  for (@_r <- relCh) {
+                                                                                    lineCell!((pending, idx, true, false)) |
+                                                                                    retCh!([false, "FSERR_IO",
+                                                                                      "truncated UTF-8 at EOF"])
+                                                                                  }
+                                                                                }
+                                                                              }
+                                                                              already => {
+                                                                                lockCell!(already) |
+                                                                                lineCell!((pending, idx, true, false)) |
+                                                                                retCh!([false, "FSERR_IO",
+                                                                                  "truncated UTF-8 at EOF"])
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                        false => {
+                                                                          new readCh in {
+                                                                            fsRead!(fd, 4096, *readCh) |
+                                                                            for (@reply <- readCh) {
+                                                                              match reply {
+                                                                                [true, ba /\ ByteArray] => {
+                                                                                  match ba.length() {
+                                                                                    0 => {
+                                                                                      for (@lockState <- lockCell) {
+                                                                                        match lockState {
+                                                                                          (lockId, false) => {
+                                                                                            lockCell!((lockId, true)) |
+                                                                                            new relCh in {
+                                                                                              fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                                                              for (@_r <- relCh) {
+                                                                                                lineCell!((pending, idx, true, false)) |
+                                                                                                retCh!([false, "FSERR_IO",
+                                                                                                  "truncated UTF-8 at EOF"])
+                                                                                              }
+                                                                                            }
+                                                                                          }
+                                                                                          already => {
+                                                                                            lockCell!(already) |
+                                                                                            lineCell!((pending, idx, true, false)) |
+                                                                                            retCh!([false, "FSERR_IO",
+                                                                                              "truncated UTF-8 at EOF"])
+                                                                                          }
+                                                                                        }
+                                                                                      }
+                                                                                    }
+                                                                                    _ => {
+                                                                                      lineCell!((
+                                                                                        [pending.slice(idx, pending.length()), ba].concatBytes(),
+                                                                                        0,
+                                                                                        false,
+                                                                                        false
+                                                                                      )) |
+                                                                                      lineProducer!(*retCh)
+                                                                                    }
+                                                                                  }
+                                                                                }
+                                                                                _ => {
+                                                                                  for (@lockState <- lockCell) {
+                                                                                    match lockState {
+                                                                                      (lockId, false) => {
+                                                                                        lockCell!((lockId, true)) |
+                                                                                        new relCh in {
+                                                                                          fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                                                          for (@_r <- relCh) {
+                                                                                            lineCell!((pending, idx, eofSeen, false)) |
+                                                                                            retCh!(reply)
+                                                                                          }
+                                                                                        }
+                                                                                      }
+                                                                                      already => {
+                                                                                        lockCell!(already) |
+                                                                                        lineCell!((pending, idx, eofSeen, false)) |
+                                                                                        retCh!(reply)
+                                                                                      }
+                                                                                    }
+                                                                                  }
+                                                                                }
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      } |
+
+                                      contract lineBuilder(@vals, retCh) = {
+                                        match vals {
+                                          v /\ List => concatStringsLoop!(v, "", *retCh)
+                                          _ => retCh!([false, "FSERR_IO",
+                                            "chunk builder expected List"])
+                                        }
+                                      } |
+
+                                      for (@streamHandle <- Stream!?(*lineProducer, *lineBuilder)) {
+                                        return!([true, streamHandle])
+                                      }
+                                    }
+                                  }
+                                }
+                                _ => return!(acqReply)
+                              }
+                            }
+                          }
+                        }
+                        _ => return!([false, "FSERR_IO", "fd params malformed"])
+                      }
+                    }
+                  }
+                  _ => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                  }
+                }
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "options.wait must be Bool"])
       }
     } |
 
@@ -3515,6 +4471,463 @@ in {
             return!([false, "FSERR_CLOSED", "file state unrecognized"])
           }
         }
+      }
+    } |
+
+    // -- lines(options) — slice 8d-3-stream-2 arity-1 variant
+    //
+    // Per spec §1181.  Stream-lifetime sequential lock — uses
+    // acquireSequentialForStream hand-off helper, outer LineStream
+    // construction identical to arity-0.
+    //
+    // Body deliberately duplicates the arity-0 method (identical
+    // outer/inner producer wiring, sourceCell, activeInnerCell,
+    // scanForLFRefilling helper, and single-active-inner rule).  Any
+    // change to the outer/inner protocol MUST be mirrored across both
+    // methods.
+    method lines(@options) {
+      match options.get("wait") {
+        wOpt /\ (Nil \/ Bool) => {
+          new waitCh in {
+            match wOpt {
+              Nil        => waitCh!(false)
+              bb /\ Bool => waitCh!(bb)
+            } |
+            for (@w <- waitCh) {
+              for (@state <- @[*private, *stateP]) {
+                match state {
+                  "closed" => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file is closed"])
+                  }
+                  "open" => {
+                    @[*private, *stateP]!("open") |
+                    for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
+                      match params {
+                        (fd, _root, _rel, _mode) => {
+                          new lockOut, acqRet in {
+                            acquireSequentialForStream!(fd, *this, cmode, w, *lockOut, *acqRet) |
+                            for (@acqReply <- acqRet) {
+                              match acqReply {
+                                [true] => {
+                                  for (@lid <- lockOut) {
+                                    new sourceCell, activeInnerCell,
+                                        scanForLFRefilling, outerMint,
+                                        outerProducer, outerBuilder, lockCell in {
+                                      sourceCell!(("".hexToBytes(), 0, false)) |
+                                      activeInnerCell!(Nil) |
+                                      lockCell!((lid, false)) |
+
+                                      contract scanForLFRefilling(@pending, @idx, @eofSeen, ret) = {
+                                        new scanRet in {
+                                          scanLineForLF!(pending, idx, 0,
+                                            pending.length() + 1, *scanRet) |
+                                          for (@scanReply <- scanRet) {
+                                            match scanReply {
+                                              [true, "LF_FOUND", lfPos, _] => {
+                                                ret!((pending, lfPos + 1, eofSeen))
+                                              }
+                                              _ => {
+                                                match eofSeen {
+                                                  true => {
+                                                    ret!(
+                                                      (pending, pending.length(), true))
+                                                  }
+                                                  false => {
+                                                    new readCh in {
+                                                      fsRead!(fd, 4096, *readCh) |
+                                                      for (@rr <- readCh) {
+                                                        match rr {
+                                                          [true, ba /\ ByteArray] => {
+                                                            match ba.length() {
+                                                              0 => {
+                                                                ret!(
+                                                                  (pending,
+                                                                   pending.length(),
+                                                                   true))
+                                                              }
+                                                              _ => {
+                                                                new nextP in {
+                                                                  nextP!(
+                                                                    [pending.slice(idx,
+                                                                       pending.length()),
+                                                                     ba].concatBytes()) |
+                                                                  for (@np <- nextP) {
+                                                                    scanForLFRefilling!(
+                                                                      np, 0, false, *ret)
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                          _ => {
+                                                            ret!(
+                                                              (pending, idx, eofSeen))
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      } |
+
+                                      contract outerMint(@pending, @idx, @eofSeen, retCh) = {
+                                        new innerStatusCh, innerProducer, innerBuilder in {
+                                          innerStatusCh!("open") |
+
+                                          contract innerBuilder(@vals, cbRet) = {
+                                            match vals {
+                                              v /\ List =>
+                                                concatStringsLoop!(v, "", *cbRet)
+                                              _ => cbRet!(
+                                                [false, "FSERR_IO",
+                                                 "chunk builder expected List"])
+                                            }
+                                          } |
+
+                                          contract innerProducer(ipRet) = {
+                                            for (@stat <- innerStatusCh) {
+                                              match stat {
+                                                "revoked" => {
+                                                  innerStatusCh!("revoked") |
+                                                  ipRet!(
+                                                    [false, "FSERR_CLOSED",
+                                                     "inner drained by outer"])
+                                                }
+                                                "eos" => {
+                                                  innerStatusCh!("eos") |
+                                                  ipRet!(
+                                                    [false, "EOS", "end of line"])
+                                                }
+                                                "open" => {
+                                                  for (@(p, i, eof) <- sourceCell) {
+                                                    match i >= p.length() {
+                                                      true => {
+                                                        match eof {
+                                                          true => {
+                                                            sourceCell!((p, i, true)) |
+                                                            innerStatusCh!("eos") |
+                                                            ipRet!(
+                                                              [false, "EOS",
+                                                               "end of file"])
+                                                          }
+                                                          false => {
+                                                            new readCh in {
+                                                              fsRead!(fd, 4096, *readCh) |
+                                                              for (@rr <- readCh) {
+                                                                match rr {
+                                                                  [true, ba /\ ByteArray] => {
+                                                                    match ba.length() {
+                                                                      0 => {
+                                                                        sourceCell!(
+                                                                          (p, i, true)) |
+                                                                        innerStatusCh!("eos") |
+                                                                        ipRet!(
+                                                                          [false, "EOS",
+                                                                           "end of file"])
+                                                                      }
+                                                                      _ => {
+                                                                        sourceCell!(
+                                                                          (ba, 0, false)) |
+                                                                        innerStatusCh!("open") |
+                                                                        innerProducer!(*ipRet)
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                  _ => {
+                                                                    sourceCell!((p, i, eof)) |
+                                                                    innerStatusCh!("open") |
+                                                                    ipRet!(rr)
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                      false => {
+                                                        match p.nth(i) {
+                                                          10 => {
+                                                            sourceCell!(
+                                                              (p, i + 1, eof)) |
+                                                            innerStatusCh!("eos") |
+                                                            ipRet!(
+                                                              [false, "EOS",
+                                                               "end of line"])
+                                                          }
+                                                          b => {
+                                                            new lenCh in {
+                                                              codepointLen!(b, *lenCh) |
+                                                              for (@n <- lenCh) {
+                                                                match n {
+                                                                  -1 => {
+                                                                    sourceCell!((p, i, eof)) |
+                                                                    innerStatusCh!("open") |
+                                                                    ipRet!(
+                                                                      [false, "FSERR_IO",
+                                                                       "invalid UTF-8 start byte"])
+                                                                  }
+                                                                  _ => {
+                                                                    match i + n <= p.length() {
+                                                                      true => {
+                                                                        sourceCell!(
+                                                                          (p, i + n, eof)) |
+                                                                        innerStatusCh!("open") |
+                                                                        ipRet!(
+                                                                          [true,
+                                                                           p.slice(i, i + n).decodeUtf8()])
+                                                                      }
+                                                                      false => {
+                                                                        match eof {
+                                                                          true => {
+                                                                            sourceCell!((p, i, true)) |
+                                                                            innerStatusCh!("open") |
+                                                                            ipRet!(
+                                                                              [false, "FSERR_IO",
+                                                                               "truncated UTF-8 at EOF"])
+                                                                          }
+                                                                          false => {
+                                                                            new readCh in {
+                                                                              fsRead!(fd, 4096, *readCh) |
+                                                                              for (@rr <- readCh) {
+                                                                                match rr {
+                                                                                  [true, ba /\ ByteArray] => {
+                                                                                    match ba.length() {
+                                                                                      0 => {
+                                                                                        sourceCell!((p, i, true)) |
+                                                                                        innerStatusCh!("open") |
+                                                                                        ipRet!(
+                                                                                          [false, "FSERR_IO",
+                                                                                           "truncated UTF-8 at EOF"])
+                                                                                      }
+                                                                                      _ => {
+                                                                                        sourceCell!(
+                                                                                          ([p.slice(i, p.length()),
+                                                                                            ba].concatBytes(),
+                                                                                           0, false)) |
+                                                                                        innerStatusCh!("open") |
+                                                                                        innerProducer!(*ipRet)
+                                                                                      }
+                                                                                    }
+                                                                                  }
+                                                                                  _ => {
+                                                                                    sourceCell!((p, i, eof)) |
+                                                                                    innerStatusCh!("open") |
+                                                                                    ipRet!(rr)
+                                                                                  }
+                                                                                }
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                                _ => {
+                                                  innerStatusCh!(stat) |
+                                                  ipRet!(
+                                                    [false, "FSERR_IO",
+                                                     "inner state unrecognized"])
+                                                }
+                                              }
+                                            }
+                                          } |
+
+                                          for (@innerHandle <-
+                                            Stream!?(*innerProducer, *innerBuilder)) {
+                                            activeInnerCell!(*innerStatusCh) |
+                                            sourceCell!((pending, idx, eofSeen)) |
+                                            retCh!([true, innerHandle])
+                                          }
+                                        }
+                                      } |
+
+                                      contract outerProducer(retCh) = {
+                                        new needsDrainCh in {
+                                          for (@innerRef <- activeInnerCell) {
+                                            match innerRef {
+                                              Nil => needsDrainCh!(false)
+                                              _ => {
+                                                for (@innerStatus <- @innerRef) {
+                                                  match innerStatus {
+                                                    "open" => {
+                                                      @innerRef!("revoked") |
+                                                      needsDrainCh!(true)
+                                                    }
+                                                    _ => {
+                                                      @innerRef!("revoked") |
+                                                      needsDrainCh!(false)
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          } |
+                                          for (@needsDrain <- needsDrainCh) {
+                                            for (@(pending, idx, eofSeen) <- sourceCell) {
+                                              new drainedCh in {
+                                                match needsDrain {
+                                                  true => scanForLFRefilling!(
+                                                    pending, idx, eofSeen, *drainedCh)
+                                                  false => drainedCh!(
+                                                    (pending, idx, eofSeen))
+                                                } |
+                                                for (@(p, i, eof) <- drainedCh) {
+                                                  match i >= p.length() {
+                                                    true => {
+                                                      match eof {
+                                                        true => {
+                                                          for (@lockState <- lockCell) {
+                                                            match lockState {
+                                                              (lockId, false) => {
+                                                                lockCell!((lockId, true)) |
+                                                                new relCh in {
+                                                                  fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                                  for (@_r <- relCh) {
+                                                                    activeInnerCell!(Nil) |
+                                                                    sourceCell!((p, i, true)) |
+                                                                    retCh!(
+                                                                      [false, "EOS",
+                                                                       "end of file"])
+                                                                  }
+                                                                }
+                                                              }
+                                                              already => {
+                                                                lockCell!(already) |
+                                                                activeInnerCell!(Nil) |
+                                                                sourceCell!((p, i, true)) |
+                                                                retCh!(
+                                                                  [false, "EOS",
+                                                                   "end of file"])
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                        false => {
+                                                          new readCh in {
+                                                            fsRead!(fd, 4096, *readCh) |
+                                                            for (@rr <- readCh) {
+                                                              match rr {
+                                                                [true, ba /\ ByteArray] => {
+                                                                  match ba.length() {
+                                                                    0 => {
+                                                                      for (@lockState <- lockCell) {
+                                                                        match lockState {
+                                                                          (lockId, false) => {
+                                                                            lockCell!((lockId, true)) |
+                                                                            new relCh in {
+                                                                              fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                                              for (@_r <- relCh) {
+                                                                                activeInnerCell!(Nil) |
+                                                                                sourceCell!((p, i, true)) |
+                                                                                retCh!(
+                                                                                  [false, "EOS",
+                                                                                   "end of file"])
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                          already => {
+                                                                            lockCell!(already) |
+                                                                            activeInnerCell!(Nil) |
+                                                                            sourceCell!((p, i, true)) |
+                                                                            retCh!(
+                                                                              [false, "EOS",
+                                                                               "end of file"])
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                    _ => {
+                                                                      outerMint!(
+                                                                        ba, 0, false, *retCh)
+                                                                    }
+                                                                  }
+                                                                }
+                                                                _ => {
+                                                                  for (@lockState <- lockCell) {
+                                                                    match lockState {
+                                                                      (lockId, false) => {
+                                                                        lockCell!((lockId, true)) |
+                                                                        new relCh in {
+                                                                          fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                                          for (@_r <- relCh) {
+                                                                            activeInnerCell!(Nil) |
+                                                                            sourceCell!((p, i, eof)) |
+                                                                            retCh!(rr)
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                      already => {
+                                                                        lockCell!(already) |
+                                                                        activeInnerCell!(Nil) |
+                                                                        sourceCell!((p, i, eof)) |
+                                                                        retCh!(rr)
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                    false => {
+                                                      outerMint!(p, i, eof, *retCh)
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      } |
+
+                                      contract outerBuilder(@_vals, cbRet) = {
+                                        cbRet!(
+                                          [false, "FSERR_UNSUPPORTED",
+                                           "chunk unsupported on LineStream (single-active-inner rule)"])
+                                      } |
+
+                                      for (@outerHandle <-
+                                        Stream!?(*outerProducer, *outerBuilder)) {
+                                        return!([true, outerHandle])
+                                      }
+                                    }
+                                  }
+                                }
+                                _ => return!(acqReply)
+                              }
+                            }
+                          }
+                        }
+                        _ => return!([false, "FSERR_IO", "fd params malformed"])
+                      }
+                    }
+                  }
+                  _ => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                  }
+                }
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "options.wait must be Bool"])
       }
     } |
 

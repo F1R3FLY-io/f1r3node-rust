@@ -1162,7 +1162,20 @@ mod tests {
         // methods (bytesAt, chars, lines, readLine) still lack
         // options-map plumbing — scoped as slice 8d-3-stream-2
         // follow-up.  Same hard-fork discipline.
-        const EXPECTED: &str = "ba1daa55d515efe5fc07728c1693289dcd076c76164eea82635e84dac3e24018";
+        //
+        // Anchor rolled forward again for Phase 8 slice 8d-3-stream-2
+        // (2026-08-13): added arity-N+1 variants for the remaining 4
+        // stream-lifetime methods per spec §1181 — arity-3
+        // `bytesAt(@offset, @length, @options)` (acquireRangeForStream +
+        // zero-length short-circuit preserved), arity-1 `chars(@options)`
+        // (acquireSequentialForStream + codepoint machinery preserved),
+        // arity-1 `readLine(@options)` (acquireSequentialForStream + 9
+        // termination paths preserved), arity-1 `lines(@options)`
+        // (acquireSequentialForStream + full outer/inner LineStream
+        // wiring preserved).  All bodies deliberately duplicate their
+        // arity-N counterparts; only the acquire dispatch differs.
+        // Same hard-fork discipline.
+        const EXPECTED: &str = "c243b4db253b7cb5fa9088f5aa3d71d805fc49a9cb54a13f7ad50fc8e0c7373b";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

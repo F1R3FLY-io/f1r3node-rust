@@ -1525,6 +1525,168 @@ async fn file_bytes_arity_1_wait_true_returns_stream_via_hand_off() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_bytes_at_arity_3_wait_true_returns_stream_via_hand_off() {
+    // arity-3 stream-lifetime variant using acquireRangeForStream
+    // hand-off.  Writes 2 bytes, then reads them back via
+    // bytesAt(0, 2, {"wait": true}).  Verifies the caller receives a
+    // stream handle and can drain it (which releases the range lock
+    // via lockCell).
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@_ <- @f!?("writeByteArray", "ab".toUtf8Bytes())) {
+            for (@streamReply <- @f!?("bytesAt", 0, 2, {"wait": true})) {
+              match streamReply {
+                [true, stream] => {
+                  for (@_ <- @stream!?("next")) {
+                    for (@_ <- @stream!?("next")) {
+                      for (@_ <- @stream!?("next")) {
+                        @"out"!([true])
+                      }
+                    }
+                  }
+                }
+                _ => @"out"!(streamReply)
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(
+        ok,
+        "bytesAt arity-3 with wait:true must return a stream handle via hand-off helper"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_chars_arity_1_wait_true_returns_stream_via_hand_off() {
+    // arity-1 stream-lifetime variant using acquireSequentialForStream.
+    // Writes 2 ASCII bytes, seeks back, calls chars({"wait": true}).
+    // Verifies the caller receives a stream handle and can drain it.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@_ <- @f!?("writeByteArray", "ab".toUtf8Bytes())) {
+            for (@_ <- @f!?("seek", 0, "set")) {
+              for (@streamReply <- @f!?("chars", {"wait": true})) {
+                match streamReply {
+                  [true, stream] => {
+                    for (@_ <- @stream!?("next")) {
+                      for (@_ <- @stream!?("next")) {
+                        for (@_ <- @stream!?("next")) {
+                          @"out"!([true])
+                        }
+                      }
+                    }
+                  }
+                  _ => @"out"!(streamReply)
+                }
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(
+        ok,
+        "chars arity-1 with wait:true must return a stream handle via hand-off helper"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_read_line_arity_1_wait_true_returns_stream_via_hand_off() {
+    // arity-1 stream-lifetime variant using acquireSequentialForStream.
+    // Writes "ab\n", seeks back, calls readLine({"wait": true}).
+    // Verifies the caller receives a stream handle and can drain it.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@_ <- @f!?("writeByteArray", "ab\n".toUtf8Bytes())) {
+            for (@_ <- @f!?("seek", 0, "set")) {
+              for (@streamReply <- @f!?("readLine", {"wait": true})) {
+                match streamReply {
+                  [true, stream] => {
+                    for (@_ <- @stream!?("next")) {
+                      for (@_ <- @stream!?("next")) {
+                        for (@_ <- @stream!?("next")) {
+                          @"out"!([true])
+                        }
+                      }
+                    }
+                  }
+                  _ => @"out"!(streamReply)
+                }
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(
+        ok,
+        "readLine arity-1 with wait:true must return a stream handle via hand-off helper"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_lines_arity_1_wait_true_returns_stream_via_hand_off() {
+    // arity-1 stream-lifetime variant using acquireSequentialForStream.
+    // Writes "ab\ncd\n", seeks back, calls lines({"wait": true}).
+    // Verifies the caller receives an outer LineStream handle and can
+    // drain it to EOS (which releases the sequential lock via lockCell).
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@_ <- @f!?("writeByteArray", "ab\ncd\n".toUtf8Bytes())) {
+            for (@_ <- @f!?("seek", 0, "set")) {
+              for (@streamReply <- @f!?("lines", {"wait": true})) {
+                match streamReply {
+                  [true, stream] => {
+                    // Drain outer: two inner mints + EOS.
+                    for (@_ <- @stream!?("next")) {
+                      for (@_ <- @stream!?("next")) {
+                        for (@_ <- @stream!?("next")) {
+                          @"out"!([true])
+                        }
+                      }
+                    }
+                  }
+                  _ => @"out"!(streamReply)
+                }
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(
+        ok,
+        "lines arity-1 with wait:true must return a stream handle via hand-off helper"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn file_write_from_at_arity_3_wait_true_dispatches() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
