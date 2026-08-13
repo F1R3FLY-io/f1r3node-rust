@@ -929,6 +929,44 @@ async fn file_write_bytes_options_wait_non_bool_rejects() {
     assert_eq!(code, "FSERR_BAD_ARG");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_write_bytes_arity_1_and_arity_2_coexist() {
+    // Slice 8c review follow-up F-1 (2026-08-13): symmetry with the
+    // writeByteArray / writeBytesAt coexistence tests.  Pins that
+    // arity-1 (pre-existing) and arity-2 (new) writeBytes dispatch
+    // independently on the same File cap.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        new emptyProducer, byteBuilder in {
+          contract emptyProducer(retCh) = { retCh!([false, "EOS", ""]) } |
+          contract byteBuilder(@vs, retCh) = { retCh!([true, vs.concatBytes()]) } |
+          for (@s1 <- Stream!?(*emptyProducer, *byteBuilder);
+               @s2 <- Stream!?(*emptyProducer, *byteBuilder)) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+              for (@r1 <- @f!?("writeBytes", s1)) {
+                for (@r2 <- @f!?("writeBytes", s2, {"wait": true})) {
+                  @"out"!([r1, r2])
+                }
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected list"),
+    };
+    let (r1_ok, _, _, _) = extract_reply(&outer.ps[0]);
+    let (r2_ok, _, _, _) = extract_reply(&outer.ps[1]);
+    assert!(r1_ok, "arity-1 writeBytes must succeed");
+    assert!(r2_ok, "arity-2 writeBytes must succeed on same cap");
+}
+
 // -- writeBytesAt arity-4 smoke-checks ---------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
