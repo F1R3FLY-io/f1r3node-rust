@@ -1036,7 +1036,15 @@ mod tests {
         // lockToken!release() on those tokens returns [false,
         // FSERR_CLOSED, ...]."  Sweep is scoped by HolderId so cross-
         // cap locks on the same (dev, inode) survive.
-        const EXPECTED: &str = "6110f25835b2c5d5686eb349921c16b7319488ed94e0c460e24ab6ff0743d7ae";
+        //
+        // Anchor rolled forward again for slice-8a step-4e-1 review
+        // follow-up (2026-08-12): added §Atomicity scope block to
+        // writeLines docstring, spelling out the per-line-not-per-
+        // writeLines semantic + cross-cap-lockRange workaround +
+        // rejected-alternatives (hoisted lock deferred as YAGNI).
+        // Docs-only; no behavior change.  Rolled because File.rho is
+        // hashed as raw source including comments.
+        const EXPECTED: &str = "eb916bb28118077b819e0fc6e0e8b27327a9010c280ada3ed4af784a71dc3a67";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

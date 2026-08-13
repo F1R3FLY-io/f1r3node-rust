@@ -3335,6 +3335,37 @@ in {
     //
     // Mode gate: requires a write-capable mode ("w" or "rw"); "r"
     // returns FSERR_UNSUPPORTED with no side effects.
+    //
+    // ## Atomicity scope (Phase 8 slice 8a step 4e-1)
+    //
+    // **Atomicity is per-line, NOT per-writeLines.**  writeLines
+    // releases `stateP` early (below) so `writeLinesLoop` can call
+    // back into `writeLine` per inner-line iteration.  Each `writeLine`
+    // call independently acquires + releases a whole-file sequential
+    // lock (spec §1143) — so between two internal writeLine calls,
+    // another sequential caller (from another File cap on the same
+    // physical file, or from another Par branch on this cap) can slip
+    // in and interleave its own writes.
+    //
+    // For cross-call atomic multi-line writes, callers must hold an
+    // explicit `lockRange(offset, length, "w")` covering the target
+    // region for the duration of the `writeLines` call.  Under Prep A's
+    // same-holder skip rule, the explicit range lock and the internal
+    // sequential-per-writeLine locks... wait, no: sequential is STRICT
+    // same-holder.  An outer explicit range lock does NOT compose with
+    // an inner sequential lock via the same cap — they conflict.
+    // Concretely, a caller who does `file!lockRange(0, N, "w")` and
+    // then `file!writeLines(stream)` will trip FSERR_BUSY on the very
+    // first internal writeLine because the outer range lock prevents
+    // sequential acquisition.  To atomicize multi-line writes across
+    // caps, the outer range lock must be held via a DIFFERENT cap on
+    // the same (dev, inode) — cross-cap coordination blocks other
+    // sequential attempts while this cap does per-line writeLine.
+    //
+    // A future refactor could hoist the sequential lock to writeLines'
+    // entry (acquire once, hold across the loop, split writeLine into
+    // public + internal variants where internal skips its own acquire).
+    // Deferred as YAGNI unless a concrete use case surfaces.
     method writeLines(@lineStream) {
       for (@state <- @[*private, *stateP]) {
         match state {
