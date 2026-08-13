@@ -132,9 +132,9 @@ in the system-integration repository.
 ## Where to look
 
 - **Trend dashboard** (charts, per-provider split, run links):
-  <https://f1r3fly-io.github.io/f1r3node-rust/> — two tabs, Weekend and Daily,
-  each showing its own verdict on the tab button so both series are readable
-  without clicking through.
+  [Weekend](https://f1r3fly-io.github.io/f1r3node-rust/?series=weekend) and
+  [Daily](https://f1r3fly-io.github.io/f1r3node-rust/?series=daily) — each tab
+  shows its own verdict, and every chart title and image is directly linkable.
 - **Weekly email alert**: plain-text summary with the verdict and dashboard
   links, sent via OCI Notifications when the soak concludes.
 - **Per-run detail**: the `merge-recovery-soak-*` artifact on the workflow run
@@ -198,7 +198,15 @@ charts on a temporal axis (throughput adds a low-opacity trend area); with only
 a few they render as value-labelled bars or points, because a two-point line
 chart is mostly empty axis. A panel with no recorded data emits nothing, and
 the too-far-ahead counter is suppressed while it is all-zero — the page shows a
-"0 · target 0" badge instead of a flat line.
+"0 · target 0" badge instead of a flat line. LFB spread is the exception to
+no-data suppression: its stable eighth slot remains visible with an awaiting-data
+message until the harness emits its first sample, preventing a missing upstream
+contract from masquerading as a seven-chart layout.
+
+Dashboard deep links use `?series=weekend` or `?series=daily`; chart permalinks
+add a stable fragment such as `#chart-weekend-lfb-spread`. The README badges use
+those series links, and clicking a chart image opens the corresponding SVG at
+full resolution.
 
 Peak CPU steps up through three representations as richer data appears, each
 the honest chart for what exists: an aggregate line chart with a dashed
@@ -433,10 +441,11 @@ per-run → dashboard pipeline:
   Charted as "Too-far-ahead errors".
 - **LFB convergence spread (p95 / max)** — the `lfb_spread` metric already
   declared in `scripts/bench/soak-metrics.json` (max−min last-finalized-block
-  across shard nodes) was captured per iteration but never reached the
-  dashboard: `summary.json` only rolled up the fixed passive fields, not the
-  registry's `SOAK_METRIC` output. `run-merge-recovery-soak.sh` now folds
-  every registry-declared metric into `summary.json.tracked_metrics`
+  across shard nodes) is read from the harness's structured `SOAK_METRIC`
+  output. During the transition, the driver also extracts the existing
+  `All-node LFBs at drain … (spread N blocks)` pytest line, so the dashboard
+  does not depend on synchronized deployment of both repositories.
+  `run-merge-recovery-soak.sh` now folds every registry-declared metric into `summary.json.tracked_metrics`
   generically (max/min aggregates fold with cross-iteration max/min, any other
   declared aggregate — p50, p95, ... — folds with the cross-iteration
   median), so declaring a new metric in `soak-metrics.json` is enough for it
