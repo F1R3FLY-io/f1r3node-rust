@@ -174,20 +174,33 @@ impl RhoReporterCasper {
                 "Replaying deploy for report"
             );
 
-            let replay_result = runtime.replay_deploy_e(with_cost_accounting, term).await;
-
-            let events = match replay_result {
-                Ok(_) => runtime.get_report().unwrap_or_default(),
-                Err(e) => {
+            runtime
+                .replay_deploy_e(with_cost_accounting, term)
+                .await
+                .map_err(|error| {
+                    // Logged where it is raised: the failure now aborts the whole report, and
+                    // several callers of the block-report API discard the error, so this is the
+                    // only record that survives regardless of which one asked.
                     tracing::warn!(
                         target: "f1r3fly.casper.reporting",
                         deploy_index = idx,
-                        error = %e,
-                        "Deploy replay failed, returning empty events"
+                        deploy_sig = %hex::encode(&term.deploy.sig),
+                        error = %error,
+                        "Deploy replay failed; aborting block report"
                     );
-                    Vec::new()
-                }
-            };
+                    format!(
+                        "Deploy replay failed at index {} for {}: {}",
+                        idx,
+                        hex::encode(&term.deploy.sig),
+                        error
+                    )
+                })?;
+            let events = runtime.get_report().map_err(|error| {
+                format!(
+                    "Failed to collect deploy report at index {}: {}",
+                    idx, error
+                )
+            })?;
 
             deploy_results.push(DeployReportResult {
                 processed_deploy: term.clone(),
@@ -204,22 +217,24 @@ impl RhoReporterCasper {
                 "Replaying system deploy for report"
             );
 
-            let replay_result = runtime
+            runtime
                 .replay_block_system_deploy(block_data, system_deploy)
-                .await;
-
-            let events = match replay_result {
-                Ok(_) => runtime.get_report().unwrap_or_default(),
-                Err(e) => {
+                .await
+                .map_err(|error| {
                     tracing::warn!(
                         target: "f1r3fly.casper.reporting",
                         system_deploy_index = idx,
-                        error = %e,
-                        "System deploy replay failed, returning empty events"
+                        error = %error,
+                        "System deploy replay failed; aborting block report"
                     );
-                    Vec::new()
-                }
-            };
+                    format!("System deploy replay failed at index {}: {}", idx, error)
+                })?;
+            let events = runtime.get_report().map_err(|error| {
+                format!(
+                    "Failed to collect system deploy report at index {}: {}",
+                    idx, error
+                )
+            })?;
 
             let system_deploy_data = match system_deploy {
                 ProcessedSystemDeploy::Succeeded { system_deploy, .. } => system_deploy.clone(),
