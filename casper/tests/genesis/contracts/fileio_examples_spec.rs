@@ -270,3 +270,120 @@ in {{
         .await
         .expect("fileio_lockrange spec failed");
 }
+
+/// Slice 10a-3: canonical example `fileio_static.rho`.
+///
+/// Static-config file-to-file line copy: read every line from a pre-
+/// populated bundled source file via `source!lines()`, hand the
+/// resulting LineStream to `dest!writeLines(...)`, and verify the
+/// destination file's on-disk content matches the source.
+///
+/// End-to-end proof of the stream-producer / stream-consumer wiring
+/// (Phase 4 stream library + Phase 5 File.lines / File.writeLines).
+/// The writeLines drain iterates line-by-line, and each iteration
+/// acquires + releases a whole-file sequential lock on dest (Phase 8
+/// §Sequential-vs-positional coordination), so a real syscall path
+/// exercises both the stream plumbing and the lock protocol.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fileio_static_line_copy() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let source_path = dir.path().join("source.txt");
+    let dest_path = dir.path().join("dest.txt");
+
+    let source_content = b"hello\nworld\n";
+    std::fs::write(&source_path, source_content).expect("seed source");
+    std::fs::write(&dest_path, b"").expect("seed dest");
+
+    let source_canon = std::fs::canonicalize(&source_path).expect("canonicalize source");
+    let dest_canon = std::fs::canonicalize(&dest_path).expect("canonicalize dest");
+
+    let source_entry = BundleEntry::try_new(
+        "source".to_string(),
+        source_canon,
+        BundleEntryKind::File,
+        "r".to_string(),
+        BundleConsensusMode::Oracular,
+    )
+    .expect("source bundle entry");
+    let dest_entry = BundleEntry::try_new(
+        "dest".to_string(),
+        dest_canon.clone(),
+        BundleEntryKind::File,
+        "rw".to_string(),
+        BundleConsensusMode::Oracular,
+    )
+    .expect("dest bundle entry");
+
+    let mut params = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    params.2.fs_bundle = vec![source_entry, dest_entry];
+
+    let fs_uri = fs_genesis::fs_genesis_uri(&standard_deploys::FS_GENERATOR_PUB_KEY);
+
+    let test_source = format!(
+        r#"
+new
+  rl(`rho:registry:lookup`),
+  RhoSpecCh,
+  fsCh,
+  test_write_lines_from_source_to_dest
+in {{
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for(@(_, RhoSpec) <- RhoSpecCh) {{
+    @RhoSpec!("testSuite",
+      [
+        ("writeLines drains source LineStream into dest file",
+         *test_write_lines_from_source_to_dest)
+      ])
+  }} |
+
+  rl!(`{fs_uri}`, *fsCh) |
+  for(@(_, fs) <- fsCh) {{
+    contract test_write_lines_from_source_to_dest(rhoSpec, _, ackCh) = {{
+      for(@[true, src] <- @fs!?("openFile", "source", {{"mode": "r"}});
+          @[true, dst] <- @fs!?("openFile", "dest", {{"mode": "rw"}})) {{
+        for(@linesReply <- @src!?("lines")) {{
+          match linesReply {{
+            [true, sourceLines] => {{
+              for(@wlReply <- @dst!?("writeLines", sourceLines)) {{
+                match wlReply {{
+                  [true] => {{
+                    rhoSpec!("assert", (true, "==", true),
+                      "writeLines drain returns [true]", *ackCh)
+                  }}
+                  _ => {{
+                    rhoSpec!("assert", (wlReply, "==", "[true]"),
+                      "writeLines drain returns [true]", *ackCh)
+                  }}
+                }}
+              }}
+            }}
+            _ => {{
+              rhoSpec!("assert", (linesReply, "==", "[true, sourceLines]"),
+                "source.lines() must succeed", *ackCh)
+            }}
+          }}
+        }}
+      }}
+    }}
+  }}
+}}
+"#
+    );
+
+    let compiled =
+        CompiledRholangSource::new(test_source, HashMap::new(), "FileioStaticSpec".to_string())
+            .expect("compile fileio_static test source");
+
+    let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
+    spec.run_tests().await.expect("fileio_static spec failed");
+
+    // Verify on-disk: dest must contain what source had.  writeLines
+    // emits each line followed by LF, so a source ending in LF
+    // produces a dest that also ends in LF (byte-identical for this
+    // input).
+    let dest_bytes = std::fs::read(&dest_canon).expect("read dest after copy");
+    assert_eq!(
+        dest_bytes, source_content,
+        "dest file content after writeLines must match source"
+    );
+}

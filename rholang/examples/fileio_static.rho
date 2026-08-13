@@ -1,0 +1,48 @@
+// fileio_static.rho — Phase 10 canonical example
+//
+// Static-config file-to-file line copy: read every line from a pre-
+// populated bundled source file, write them (each followed by LF)
+// into a bundled destination file, print the writeLines reply.
+//
+// Demonstrates:
+//   - openFile lookup for two distinct bundle entries (source in "r"
+//     mode, dest in "rw" mode).
+//   - LineStream construction via `source!lines()` — the returned
+//     stream cap can be handed to any consumer (including writeLines
+//     on another File).
+//   - `dest!writeLines(sourceStream)` drains the source LineStream
+//     one line at a time, appending each line + LF to dest.  Under
+//     the hood, each iteration acquires + releases a whole-file
+//     sequential lock on dest (per Phase 8 §Sequential-vs-positional
+//     coordination).
+//
+// Prerequisite: the node must publish two bundle entries — "source"
+// (a pre-populated text file, mode "r") and "dest" (an empty
+// writable file, mode "rw").
+//
+// Companion regression: casper/tests/genesis/contracts/
+// fileio_examples_spec.rs :: fileio_static_line_copy.
+
+new
+  rl(`rho:registry:lookup`),
+  stdout(`rho:io:stdout`),
+  fsCh
+in {
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *fsCh) |
+  for(@(_, fs) <- fsCh) {
+    for(@[true, src] <- @fs!?("openFile", "source", {"mode": "r"});
+        @[true, dst] <- @fs!?("openFile", "dest", {"mode": "rw"})) {
+      for(@linesReply <- @src!?("lines")) {
+        match linesReply {
+          [true, sourceLines] => {
+            for(@wlReply <- @dst!?("writeLines", sourceLines)) {
+              stdout!(("writeLines reply", wlReply))
+              // Expected on a successful drain: [true]
+            }
+          }
+          _ => stdout!(("source.lines() failed", linesReply))
+        }
+      }
+    }
+  }
+}
