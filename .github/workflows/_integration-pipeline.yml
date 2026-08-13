@@ -510,8 +510,12 @@ jobs:
         run: |
           cd system-integration
           SCALE_FLAG=""
+          PYTEST_WORKERS=16
           if [ "${{ matrix.arch }}" = "arm64" ]; then
             SCALE_FLAG="--timeout-scale=1.5"
+          fi
+          if [ "${{ matrix.arch }}-${{ matrix.provider }}" = "arm64-docker" ]; then
+            PYTEST_WORKERS=8
           fi
           NODE_CAPABILITIES=$(bash "$GITHUB_WORKSPACE/.github/scripts/read-system-integration-node-capabilities.sh" "$GITHUB_WORKSPACE/.github/system-integration-node-capabilities.txt")
           NODE_CAPABILITY_ARGS=()
@@ -546,7 +550,7 @@ jobs:
             --provider=${{ matrix.provider }} \
             "${NODE_CAPABILITY_ARGS[@]}" \
             -v --tb=short --instafail --maxfail=10 \
-            -n 16 --dist=loadgroup --timeout=1200 $SCALE_FLAG
+            -n "$PYTEST_WORKERS" --dist=loadgroup --timeout=1200 $SCALE_FLAG
 
       - name: Upload Integration Test Logs
         if: always()
