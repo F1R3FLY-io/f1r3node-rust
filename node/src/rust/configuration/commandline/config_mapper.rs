@@ -127,6 +127,18 @@ impl ConfigMapper<Options> for NodeConf {
                 run.api_max_blocks_limit,
             );
             Self::try_override_value(
+                &mut self.api_server.exploratory_deploy_max_concurrent,
+                run.api_exploratory_deploy_max_concurrent,
+            );
+            Self::try_override_value(
+                &mut self.api_server.exploratory_deploy_phlo_limit,
+                run.api_exploratory_deploy_phlo_limit,
+            );
+            Self::try_override_value(
+                &mut self.api_server.exploratory_deploy_execution_timeout,
+                run.api_exploratory_deploy_execution_timeout,
+            );
+            Self::try_override_value(
                 &mut self.api_server.keep_alive_time,
                 run.api_keep_alive_time,
             );
@@ -452,6 +464,9 @@ mod tests {
         "--api-grpc-max-recv-message-size=111111",
         "--api-max-blocks-limit=111111",
         "--api-enable-reporting",
+        "--api-exploratory-deploy-max-concurrent=111111",
+        "--api-exploratory-deploy-phlo-limit=111111",
+        "--api-exploratory-deploy-execution-timeout=111111seconds",
         "--api-keep-alive-time=111111seconds",
         "--api-keep-alive-timeout=111111seconds",
         "--api-tcp-keepalive-time=111111seconds",
@@ -624,6 +639,9 @@ mod tests {
                 api_port_admin_http: Some(11111),
                 api_max_blocks_limit: Some(111111),
                 api_enable_reporting: true,
+                api_exploratory_deploy_max_concurrent: Some(111111),
+                api_exploratory_deploy_phlo_limit: Some(111111),
+                api_exploratory_deploy_execution_timeout: Some(Duration::from_secs(111111)),
                 api_keep_alive_time: Some(Duration::from_secs(111111)),
                 api_keep_alive_timeout: Some(Duration::from_secs(111111)),
                 api_tcp_keepalive_time: Some(Duration::from_secs(111111)),
@@ -917,17 +935,17 @@ mod tests {
         assert_eq!(default_config.api_server.max_blocks_limit, 111111);
         assert_eq!(
             default_config.api_server.exploratory_deploy_max_concurrent,
-            1
+            111111
         );
         assert_eq!(
             default_config.api_server.exploratory_deploy_phlo_limit,
-            5_000_000
+            111111
         );
         assert_eq!(
             default_config
                 .api_server
                 .exploratory_deploy_execution_timeout,
-            Duration::from_secs(15)
+            Duration::from_secs(111111)
         );
         assert_eq!(
             default_config.api_server.keep_alive_time,

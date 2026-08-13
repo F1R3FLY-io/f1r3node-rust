@@ -275,6 +275,21 @@ pub struct RunOptions {
     #[arg(long = "api-enable-reporting", action = ArgAction::SetTrue)]
     pub api_enable_reporting: bool,
 
+    /// Concurrent exploratory queries admitted before further ones are rejected
+    #[arg(long = "api-exploratory-deploy-max-concurrent")]
+    pub api_exploratory_deploy_max_concurrent: Option<usize>,
+
+    /// Maximum phlogiston available to one exploratory query
+    #[arg(long = "api-exploratory-deploy-phlo-limit")]
+    pub api_exploratory_deploy_phlo_limit: Option<i64>,
+
+    /// Best-effort deadline for one exploratory query
+    #[arg(
+        long = "api-exploratory-deploy-execution-timeout",
+        value_parser = ValueParser::new(parse_duration)
+    )]
+    pub api_exploratory_deploy_execution_timeout: Option<Duration>,
+
     /// Sets a custom keepalive time
     #[arg(long = "api-keep-alive-time", value_parser = ValueParser::new(parse_duration))]
     pub api_keep_alive_time: Option<Duration>,
