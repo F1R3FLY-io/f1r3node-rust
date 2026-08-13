@@ -396,22 +396,10 @@ pub async fn block_dag_storage_from_dyn(
     let invalid_blocks_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
         KeyValueTypedStoreImpl::new(invalid_blocks_kv_store);
 
-    let deploy_index_kv_store = kvm.store("deploy-index".to_string()).await.map_err(|e| {
-        shared::rust::store::key_value_store::KvStoreError::IoError(format!(
-            "Failed to get deploy-index store: {:?}",
-            e
-        ))
-    })?;
-    let deploy_index_db: KeyValueTypedStoreImpl<
-        block_storage::rust::dag::block_dag_key_value_storage::DeployId,
-        BlockHashSerde,
-    > = KeyValueTypedStoreImpl::new(deploy_index_kv_store);
-
     Ok(BlockDagKeyValueStorage::from_parts(
         Arc::new(RwLock::new(())),
         latest_messages_db,
         Arc::new(RwLock::new(block_metadata_store)),
-        Arc::new(RwLock::new(deploy_index_db)),
         invalid_blocks_db,
         KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
@@ -574,9 +562,6 @@ pub fn new_key_value_dag_representation() -> KeyValueDagRepresentation {
         last_finalized_block_hash: BlockHash::new(),
         finalized_blocks_set: imbl::HashSet::new(),
         block_metadata_index: Arc::new(RwLock::new(BlockMetadataStore::new(block_metadata_store))),
-        deploy_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
-            InMemoryKeyValueStore::new(),
-        )))),
         floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         lifecycle: Arc::new(RwLock::new(

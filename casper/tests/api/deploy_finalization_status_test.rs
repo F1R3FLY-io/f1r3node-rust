@@ -213,17 +213,14 @@ async fn terminal_lookup_is_write_once() {
     assert_eq!(status.rejection_count, 1);
 }
 
-/// Deploy-index corruption (a sig indexed at a block whose body does not
-/// list it) still propagates the typed sentinel for the API layer to
-/// downcast — the fallback path preserved from the pre-register resolver.
+/// A caller-claimed block whose body does not list the sig still
+/// propagates the typed sentinel for the API layer to downcast — the
+/// known-block fallback's consistency check.
 #[tokio::test]
-async fn resolve_returns_typed_err_for_indexed_but_missing_from_body() {
+async fn resolve_returns_typed_err_for_claimed_but_missing_from_body() {
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::api::deploy_finalization_status::DeployFinalizationCorruption;
-    use models::rust::block_hash::BlockHashSerde;
     use models::rust::block_implicits;
-    use prost::bytes::Bytes;
-    use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 
     use crate::util::rholang::resources::{
         block_dag_storage_from_dyn, generate_scope_id, mk_test_rnode_store_manager_shared,
@@ -270,26 +267,19 @@ async fn resolve_returns_typed_err_for_indexed_but_missing_from_body() {
         .insert(&block_a, InsertMode::Normal)
         .expect("dag insert A");
 
-    // Inject the inconsistency: write a fake mapping into the deploy index
-    // claiming `corrupt_sig` lives in block_a, even though A's body does
-    // not list it.
+    // The inconsistency arrives from the CALLER: a claimed block hash for a
+    // sig that block's body does not list.
     let corrupt_sig = vec![0xDEu8; 32];
-    {
-        let deploy_index_handle = dag_storage.deploy_index_for_tests();
-        let deploy_index_guard = deploy_index_handle.write();
-        deploy_index_guard
-            .put(vec![(
-                Bytes::from(corrupt_sig.clone()).into(),
-                BlockHashSerde(block_a.block_hash.clone()),
-            )])
-            .expect("inject corrupt deploy_index entry");
-    }
-
     let dag = dag_storage
         .get_representation()
         .expect("get_representation");
 
-    let result = deploy_finalization_status::resolve(&dag, &block_store, &corrupt_sig, None);
+    let result = deploy_finalization_status::resolve(
+        &dag,
+        &block_store,
+        &corrupt_sig,
+        Some(&block_a.block_hash),
+    );
 
     let err = result.expect_err(
         "indexed-but-missing-from-body must propagate a typed Err for the API layer to downcast",

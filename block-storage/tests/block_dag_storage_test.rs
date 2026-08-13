@@ -572,33 +572,45 @@ fn dag_storage_should_advance_latest_message_to_invalid_block_from_same_sender()
     );
 }
 
+/// Every deploy in a VALID inserted body resolves to its carrier; invalid
+/// bodies are not canonical history and resolve to nothing.
 #[test]
-fn dag_storage_should_be_able_to_restore_deploy_index_on_startup() {
+fn deploy_appearance_resolves_valid_bodies_and_ignores_invalid_ones() {
     let genesis = genesis_block();
     proptest!(proptest_config(), |(block_elements in block_elements_with_parents_gen(genesis.clone(), 0, 10))| {
-      let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
+      for mode in [
+          block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+          block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid,
+      ] {
+          let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
 
-      for block_element in &block_elements {
-        dag_storage.insert(block_element, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid).unwrap();
-      }
-
-      let dag = dag_storage.get_representation().expect("dag representation");
-      let mut deploy_sigs = Vec::new();
-      let mut block_hashes = Vec::new();
-
-      for block in &block_elements {
-          for deploy in &block.body.deploys {
-              deploy_sigs.push(deploy.deploy.sig.clone());
-              block_hashes.push(block.block_hash.clone());
+          for block_element in &block_elements {
+            dag_storage.insert(block_element, mode).unwrap();
           }
+
+          let dag = dag_storage.get_representation().expect("dag representation");
+          let mut deploy_sigs = Vec::new();
+          let mut block_hashes = Vec::new();
+
+          for block in &block_elements {
+              for deploy in &block.body.deploys {
+                  deploy_sigs.push(deploy.deploy.sig.clone());
+                  block_hashes.push(block.block_hash.clone());
+              }
+          }
+
+          let deploy_lookups: Vec<Option<BlockHash>> = deploy_sigs
+              .iter()
+              .map(|sig| dag.deploy_canonical_appearance(sig).unwrap())
+              .collect();
+
+          let expected: Vec<Option<BlockHash>> = match mode {
+              block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid =>
+                  vec![None; deploy_sigs.len()],
+              _ => block_hashes.iter().map(|h| Some(h.clone())).collect(),
+          };
+          assert_eq!(deploy_lookups, expected, "mode {:?}", mode);
       }
-
-      let deploy_lookups: Vec<Option<BlockHash>> = deploy_sigs
-          .iter()
-          .map(|sig| dag.lookup_by_deploy_id(&sig.to_vec()).unwrap())
-          .collect();
-
-      assert_eq!(deploy_lookups, block_hashes.iter().map(|h| Some(h.clone())).collect::<Vec<_>>());
     });
 }
 
@@ -866,6 +878,76 @@ fn find_returns_ok_none_for_unknown_valid_prefix() {
                 assert!(hex::encode(&*h).starts_with("deadbeef"));
             }
             Err(e) => panic!("find() returned Err for valid hex prefix: {e:?}"),
+        }
+    });
+}
+
+/// A re-included sig's canonical appearance is a function of the DAG, not
+/// of node-local insertion order: whichever order the two carriers arrive
+/// in, the answer is the latest inclusion by (height, hash).
+#[test]
+fn deploy_appearance_is_insertion_order_independent() {
+    use models::rust::block_implicits::processed_deploy_gen;
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut runner = TestRunner::default();
+        let deploy = processed_deploy_gen()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
+
+        for reversed in [false, true] {
+            let genesis = genesis_block();
+            let dag_storage = create_dag_storage(&genesis).await;
+            let mk = |height: i64| {
+                get_random_block(
+                    Some(height),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(vec![genesis.block_hash.clone()]),
+                    None,
+                    Some(vec![deploy.clone()]),
+                    None,
+                    Some(vec![]),
+                    None,
+                    None,
+                )
+            };
+            let early = mk(1);
+            let late = mk(2);
+            let order = if reversed {
+                [&late, &early]
+            } else {
+                [&early, &late]
+            };
+            for b in order {
+                dag_storage
+                    .insert(
+                        b,
+                        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+                    )
+                    .expect("insert carrier");
+            }
+            let dag = dag_storage
+                .get_representation()
+                .expect("dag representation");
+            assert_eq!(
+                dag.deploy_canonical_appearance(&deploy.deploy.sig)
+                    .expect("appearance lookup"),
+                Some(late.block_hash.clone()),
+                "reversed={}: the canonical appearance is the latest \
+                 inclusion by (height, hash), independent of which carrier \
+                 this node inserted first",
+                reversed
+            );
         }
     });
 }

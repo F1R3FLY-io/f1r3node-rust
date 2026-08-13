@@ -486,12 +486,12 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
             .block_dag_storage
             .get_representation()
             .expect("dag representation")
-            .lookup_by_deploy_id(&surviving_sig.to_vec())
+            .deploy_canonical_appearance(&surviving_sig)
             .ok()
             .flatten()
             .is_some(),
         "the surviving sig {} must be reachable in the canonical view via \
-         the deploy index",
+         its lifecycle row",
         hex::encode(&surviving_sig)
     );
 

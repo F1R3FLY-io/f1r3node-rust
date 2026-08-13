@@ -21,8 +21,8 @@
 //!
 //! * `global_lock: Arc<parking_lot::RwLock<()>>` coordinates pure-read
 //!   snapshot acquisition (via `.read()`) against mutators (`.write()`).
-//! * `block_metadata_index`, `deploy_index` are themselves
-//!   `parking_lot::RwLock`-wrapped for fine-grained concurrency.
+//! * `block_metadata_index` is itself `parking_lot::RwLock`-wrapped for
+//!   fine-grained concurrency.
 //!
 //! See `docs/theory/slashing/slashing-verification.md` for the
 //! protocol-level theorems whose witnesses are recorded here.
@@ -100,15 +100,13 @@ pub struct KeyValueDagRepresentation {
     pub invalid_blocks_set: imbl::HashSet<BlockMetadata>,
     pub last_finalized_block_hash: BlockHash,
     pub finalized_blocks_set: imbl::HashSet<BlockHash>,
-    // P2-14: the metadata + deploy indices are kept `pub` for cross-crate
-    // test fixtures that build a `KeyValueDagRepresentation` from raw
+    // P2-14: the metadata index is kept `pub` for cross-crate test
+    // fixtures that build a `KeyValueDagRepresentation` from raw
     // components. Production code on the same crate (block-storage)
-    // accesses them through the inherent methods on this type; treat
+    // accesses it through the inherent methods on this type; treat
     // direct manipulation as a test-only escape hatch.
     #[doc(hidden)]
     pub block_metadata_index: Arc<PlRwLock<BlockMetadataStore>>,
-    #[doc(hidden)]
-    pub deploy_index: Arc<PlRwLock<KeyValueTypedStoreImpl<DeployId, BlockHashSerde>>>,
     /// Memoized justification-derived floor per block (block hash -> floor hash).
     /// Pure function of the block, so node-identical; persistent to avoid
     /// re-walking to genesis on every floor query.
@@ -226,6 +224,34 @@ impl KeyValueDagRepresentation {
         self.lifecycle.read().open_sigs()
     }
 
+    /// The sig's most recent canonical appearance — the latest lifecycle
+    /// event by (height, hash), or the terminal record's frozen display
+    /// block once the row is pruned. A pure function of the DAG's bodies,
+    /// so the answer never depends on node-local insertion order.
+    pub fn deploy_canonical_appearance(
+        &self,
+        sig: &[u8],
+    ) -> Result<Option<BlockHash>, KvStoreError> {
+        if let Some(terminal) = self.deploy_terminal(sig)? {
+            if terminal.latest_block_hash.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(BlockHash::from(terminal.latest_block_hash)));
+        }
+        let Some(row) = self.deploy_lifecycle_events(sig)? else {
+            return Ok(None);
+        };
+        Ok(row
+            .events
+            .iter()
+            .max_by(|a, b| {
+                a.height
+                    .cmp(&b.height)
+                    .then_with(|| a.block_hash.cmp(&b.block_hash))
+            })
+            .map(|e| BlockHash::from(e.block_hash.clone())))
+    }
+
     pub fn last_finalized_block(&self) -> BlockHash { self.last_finalized_block_hash.clone() }
 
     // latestBlockNumber, topoSort and lookupByDeployId are only used in BlockAPI.
@@ -328,16 +354,6 @@ impl KeyValueDagRepresentation {
                 start_number, end_number
             )))
         }
-    }
-
-    pub fn lookup_by_deploy_id(
-        &self,
-        deploy_id: &DeployId,
-    ) -> Result<Option<BlockHash>, KvStoreError> {
-        let deploy_index_guard = self.deploy_index.read();
-        deploy_index_guard
-            .get_one(deploy_id)
-            .map(|result| result.map(|block_hash_serde| block_hash_serde.into()))
     }
 
     // See block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockDagRepresentationSyntax.scala
@@ -692,7 +708,7 @@ impl KeyValueDagRepresentation {
 /// test fixtures that previously poked at these fields must now go
 /// through the `#[cfg(any(test, feature = "test-internals"))]`-gated
 /// constructor (`from_parts`) and the matching `metadata_index_for_tests`
-/// / `deploy_index_for_tests` accessors — see further down this file.
+/// accessor — see further down this file.
 /// **Production code MUST NOT touch these fields directly.** All RMW on
 /// the equivocation tracker must route through
 /// `access_equivocations_tracker` (Bug #2 / T-9.2 contract). All
@@ -716,7 +732,6 @@ pub struct BlockDagKeyValueStorage {
     pub(crate) global_lock: Arc<PlRwLock<()>>,
     pub(crate) latest_messages_index: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde>,
     pub(crate) block_metadata_index: Arc<PlRwLock<BlockMetadataStore>>,
-    pub(crate) deploy_index: Arc<PlRwLock<KeyValueTypedStoreImpl<DeployId, BlockHashSerde>>>,
     pub(crate) invalid_blocks_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
     /// Memoized justification-derived floor per block (block hash -> floor hash).
     pub(crate) floor_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
@@ -754,16 +769,12 @@ impl BlockDagKeyValueStorage {
         let invalid_blocks_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
             KeyValueTypedStoreImpl::new(invalid_blocks_kv_store);
 
-        let deploy_index_kv_store = kvm.store("deploy-index".to_string()).await?;
         let floor_index_kv_store = kvm.store("floor-index".to_string()).await?;
         let floor_index_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde> =
             KeyValueTypedStoreImpl::new(floor_index_kv_store);
         let frontier_index_kv_store = kvm.store("frontier-index".to_string()).await?;
         let frontier_index_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde> =
             KeyValueTypedStoreImpl::new(frontier_index_kv_store);
-        let deploy_index_db: KeyValueTypedStoreImpl<DeployId, BlockHashSerde> =
-            KeyValueTypedStoreImpl::new(deploy_index_kv_store);
-
         let lifecycle_events_kv_store = kvm.store("deploy-lifecycle-events".to_string()).await?;
         let lifecycle_terminal_kv_store =
             kvm.store("deploy-lifecycle-terminal".to_string()).await?;
@@ -773,7 +784,6 @@ impl BlockDagKeyValueStorage {
         Ok(Self {
             global_lock: Arc::new(PlRwLock::new(())),
             block_metadata_index: Arc::new(PlRwLock::new(block_metadata_store)),
-            deploy_index: Arc::new(PlRwLock::new(deploy_index_db)),
             invalid_blocks_index: invalid_blocks_db,
             floor_index: floor_index_db,
             frontier_index: frontier_index_db,
@@ -833,7 +843,6 @@ impl BlockDagKeyValueStorage {
         global_lock: Arc<PlRwLock<()>>,
         latest_messages_index: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde>,
         block_metadata_index: Arc<PlRwLock<BlockMetadataStore>>,
-        deploy_index: Arc<PlRwLock<KeyValueTypedStoreImpl<DeployId, BlockHashSerde>>>,
         invalid_blocks_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
         floor_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
         frontier_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
@@ -844,7 +853,6 @@ impl BlockDagKeyValueStorage {
             global_lock,
             latest_messages_index,
             block_metadata_index,
-            deploy_index,
             invalid_blocks_index,
             floor_index,
             frontier_index,
@@ -854,22 +862,9 @@ impl BlockDagKeyValueStorage {
         }
     }
 
-    /// Test-only accessor for the deploy-index handle. The field itself
-    /// is `pub(crate)` so production callers route through
-    /// `lookup_by_deploy_id` / `insert`. Tests in other crates that need to
-    /// inject corrupt entries (e.g. resolver / deploy-finalization-status
-    /// regression tests) enable the `test-internals` feature to reach this
-    /// accessor.
-    #[cfg(any(test, feature = "test-internals"))]
-    #[doc(hidden)]
-    pub fn deploy_index_for_tests(
-        &self,
-    ) -> Arc<PlRwLock<KeyValueTypedStoreImpl<DeployId, BlockHashSerde>>> {
-        self.deploy_index.clone()
-    }
-
-    /// Test-only accessor for the block-metadata-index handle. Same
-    /// rationale as `deploy_index_for_tests`.
+    /// Test-only accessor for the block-metadata-index handle: tests in
+    /// other crates that need to inject entries enable the
+    /// `test-internals` feature to reach this accessor.
     #[cfg(any(test, feature = "test-internals"))]
     #[doc(hidden)]
     pub fn metadata_index_for_tests(&self) -> Arc<PlRwLock<BlockMetadataStore>> {
@@ -877,7 +872,7 @@ impl BlockDagKeyValueStorage {
     }
 
     /// Test-only accessor for the floor-index handle. Same rationale as
-    /// `deploy_index_for_tests`. `floor_index` is a plain memoization store
+    /// `metadata_index_for_tests`. `floor_index` is a plain memoization store
     /// (block hash -> floor hash) with interior mutability, so a shared
     /// reference suffices for the round-trip test.
     #[cfg(any(test, feature = "test-internals"))]
@@ -957,7 +952,6 @@ impl BlockDagKeyValueStorage {
             last_finalized_block_hash: last_finalized_block,
             finalized_blocks_set: finalized_blocks,
             block_metadata_index: self.block_metadata_index.clone(),
-            deploy_index: self.deploy_index.clone(),
             floor_index: self.floor_index.clone(),
             frontier_index: self.frontier_index.clone(),
             lifecycle: self.lifecycle.clone(),
@@ -1139,24 +1133,10 @@ impl BlockDagKeyValueStorage {
             drop(block_metadata_guard);
             self.dag_generation.fetch_add(1, Ordering::Relaxed);
 
-            let deploy_hashes: Vec<DeployId> = block
-                .body
-                .deploys
-                .iter()
-                .map(|deploy| deploy.deploy.sig.clone().into())
-                .collect();
-            let deploy_entries: Vec<(DeployId, BlockHashSerde)> = deploy_hashes
-                .into_iter()
-                .map(|deploy_id| (deploy_id, BlockHashSerde(block.block_hash.clone())))
-                .collect();
-            let deploy_index_guard = self.deploy_index.write();
-            deploy_index_guard.put(deploy_entries)?;
-            drop(deploy_index_guard);
-
-            // Lifecycle event ingest: the same body pass that feeds the
-            // deploy index projects inclusion and rejection events into the
-            // per-sig lifecycle rows. Invalid blocks contribute nothing —
-            // their bodies are not canonical history. Every insert path
+            // Lifecycle event ingest: one body pass projects inclusion and
+            // rejection events into the per-sig lifecycle rows. Invalid
+            // blocks contribute nothing — their bodies are not canonical
+            // history. Every insert path
             // (validated, proposed, genesis, LFS, fixtures) flows through
             // here, so ingest coverage is total by construction.
             if !invalid {

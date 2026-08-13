@@ -246,9 +246,6 @@ mod tests {
             last_finalized_block_hash: hash(TOP),
             finalized_blocks_set,
             block_metadata_index: Arc::new(PlRwLock::new(bms)),
-            deploy_index: Arc::new(PlRwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
-                InMemoryKeyValueStore::new(),
-            )))),
             floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             lifecycle: Arc::new(parking_lot::RwLock::new(

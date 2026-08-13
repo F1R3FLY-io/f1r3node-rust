@@ -167,8 +167,7 @@ fn checked_block_membership(
     if !in_body {
         tracing::warn!(
             target: "f1r3fly.casper.deploy_finalization.validation",
-            "sig {} indexed at block {} but missing from that block's \
-             body — check deploy index vs block store consistency",
+            "sig {} claimed at block {} but missing from that block's body",
             hex::encode(&sig_bytes),
             PrettyPrinter::build_string_bytes(block_hash),
         );
@@ -190,10 +189,11 @@ fn checked_block_membership(
 /// 1. A terminal record answers directly with its frozen fields
 ///    (Finalized / Expired / Failed can never flip — write-once).
 /// 2. An open event row answers Pending with its display fields.
-/// 3. Neither: the sig is unknown to the register. The deploy index (or a
-///    caller-provided block hash) supplies a Pending answer for history
-///    the register predates, with the indexed-but-missing corruption
-///    sentinel preserved; otherwise `pending_unknown`.
+/// 3. Neither: the sig was never in any canonical body this node holds
+///    (the register ingests every insert path from genesis). A
+///    caller-provided block hash supplies a checked Pending answer, with
+///    the indexed-but-missing corruption sentinel preserved; otherwise
+///    `pending_unknown`.
 ///
 /// The resolver is an API/observability surface (deploy status reporting);
 /// consensus validation (`repeat_deploy`) deliberately does NOT read it.
@@ -226,11 +226,12 @@ pub fn resolve(
         return Ok(pending_from_row(&row));
     }
 
-    let indexed = dag
-        .lookup_by_deploy_id(&sig.to_vec())
-        .map_err(|e| eyre::eyre!("deploy index lookup failed: {}", e))?;
-    let fallback_block = indexed.as_ref().or(known_block_hash);
-    match fallback_block {
+    // The register ingests every insert path from genesis, so a sig with
+    // neither a terminal record nor an open row was never in any canonical
+    // body this node holds. A caller-provided block hash still gets a
+    // checked Pending answer (with the indexed-but-missing corruption
+    // sentinel preserved for the consistency case).
+    match known_block_hash {
         Some(block_hash) => match checked_block_membership(block_store, sig, block_hash)? {
             Some(status) => Ok(status),
             None => Ok(DeployFinalizationStatus::pending_unknown()),

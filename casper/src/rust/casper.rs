@@ -528,9 +528,6 @@ pub mod test_helpers {
                 block_metadata_index: Arc::new(RwLock::new(BlockMetadataStore::new(
                     block_metadata_store,
                 ))),
-                deploy_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
-                    InMemoryKeyValueStore::new(),
-                )))),
                 floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
                 frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
                 lifecycle: Arc::new(RwLock::new(

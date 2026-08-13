@@ -1257,7 +1257,10 @@ impl BlockAPI {
 
         if let Some(casper) = eng.with_casper() {
             let dag = casper.block_dag().await?;
-            let maybe_block_hash = dag.lookup_by_deploy_id(deploy_id)?;
+            // The sig's most recent canonical appearance, from the
+            // lifecycle rows — a pure function of the DAG's bodies, never
+            // of node-local insertion order.
+            let maybe_block_hash = dag.deploy_canonical_appearance(deploy_id)?;
 
             match maybe_block_hash {
                 Some(block_hash) => {

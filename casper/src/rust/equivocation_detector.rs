@@ -644,9 +644,6 @@ mod tests {
     fn dag_with(blocks: &[BlockMessage]) -> KeyValueDagRepresentation {
         let metadata_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
         let block_metadata_index = Arc::new(RwLock::new(BlockMetadataStore::new(metadata_store)));
-        let deploy_index = Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
-            InMemoryKeyValueStore::new(),
-        ))));
 
         let mut dag = KeyValueDagRepresentation {
             dag_set: imbl::HashSet::new(),
@@ -660,7 +657,6 @@ mod tests {
             last_finalized_block_hash: BlockHash::new(),
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index,
-            deploy_index,
             floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             lifecycle: Arc::new(parking_lot::RwLock::new(
