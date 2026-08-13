@@ -299,12 +299,11 @@ async fn resolve_returns_typed_err_for_claimed_but_missing_from_body() {
     );
 }
 
-/// A sig with no register row and no deploy-index entry resolves against
-/// a caller-provided block hash — the client-side fallback for a block
-/// the node holds but has not yet inserted (so neither the register nor
-/// the index has seen it).
+/// A sig with no register row resolves against a caller-provided block
+/// hash — the client-side fallback for a block the node holds but has
+/// not yet inserted (so the register has not seen it).
 #[tokio::test]
-async fn resolve_uses_known_block_fallback_when_register_and_index_miss() {
+async fn resolve_uses_known_block_fallback_when_the_register_misses() {
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::util::construct_deploy;
     use models::rust::block_implicits;
@@ -353,8 +352,7 @@ async fn resolve_uses_known_block_fallback_when_register_and_index_miss() {
         Some(genesis_block.shard_id.clone()),
         None,
     );
-    // Stored but NOT dag-inserted: the register never ingested it and the
-    // deploy index never saw it.
+    // Stored but NOT dag-inserted: the register never ingested it.
     block_store.put_block_message(&block_a).expect("store A");
 
     let dag = dag_storage

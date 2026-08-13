@@ -10,8 +10,8 @@ use prost::bytes::Bytes;
 /// Convenience alias matching `BlockAPI`'s error type.
 type ApiErr<T> = eyre::Result<T>;
 
-/// Sentinel error for the deploy-index inconsistency case (a sig is
-/// indexed at a block whose body does not list it). Typed so
+/// Sentinel error for the known-block inconsistency case (a caller
+/// claims a sig lives in a block whose body does not list it). Typed so
 /// `BlockAPI::deploy_finalization_status` can downcast at the HTTP/gRPC
 /// boundary and convert to `pending_unknown` — callers see a tractable
 /// response instead of a 500 — while genuine I/O failures keep

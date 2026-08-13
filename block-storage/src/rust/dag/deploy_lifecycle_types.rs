@@ -2,7 +2,7 @@
 // (`deploy-lifecycle-events`, `deploy-lifecycle-terminal`).
 //
 // The events table is a per-sig projection of block BODIES, maintained in
-// the same insert pass as the deploy index: inclusion events carry the
+// `insert`'s body pass: inclusion events carry the
 // execution outcome and the deploy's validity-window start; rejection
 // events carry the record's duplicate flag. The terminal table holds the
 // WRITE-ONCE verdicts — Finalized, Expired, Failed are monotone facts that

@@ -1605,11 +1605,10 @@ impl BlockAPI {
         ) {
             Ok(status) => Ok(status),
             Err(err) => {
-                // Convert deploy-index inconsistency to `pending_unknown`
-                // so HTTP/gRPC callers see a tractable response. The
-                // resolver returns `Err` so the consensus path
-                // (`repeat_deploy`) conservative-fails on the same
-                // inconsistency. Genuine I/O failures keep propagating.
+                // Convert the known-block inconsistency (a caller-claimed
+                // block whose body does not list the sig) to
+                // `pending_unknown` so HTTP/gRPC callers see a tractable
+                // response. Genuine I/O failures keep propagating.
                 if err
                     .downcast_ref::<crate::rust::api::deploy_finalization_status::DeployFinalizationCorruption>()
                     .is_some()

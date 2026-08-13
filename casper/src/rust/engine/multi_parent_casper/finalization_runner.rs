@@ -39,11 +39,10 @@
 //! If you are here because a static diff told you a fix went missing: it didn't.
 //! Re-run the test above before restoring anything.
 //!
-//! Deploy-STORAGE eviction (distinct from the buffer purge above) is a
-//! floor-keyed sweep in `compute_last_finalized_block`: a deploy leaves
-//! persistent storage only when its effect is provably settled in the floor
-//! state, or when the floor has closed its validity window. It is measured by
-//! the same test — re-run it before changing the sweep's shape.
+//! Deploy-STORAGE release does not happen in this module at all: the
+//! deploy-lifecycle register names the moment a deploy stops being
+//! re-proposable (its write-once terminal verdict), and block admission
+//! releases the pool copy against exactly that list.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -229,10 +228,10 @@ pub(crate) async fn compute_last_finalized_block(
 
                             // Deploy-storage removal deliberately does NOT
                             // happen here: node-local finalization of a
-                            // block is not evidence its deploys' effects are
-                            // canonical. The floor-keyed sweep in
-                            // `compute_last_finalized_block` evicts on floor
-                            // facts instead.
+                            // block is not evidence its deploys' effects
+                            // are canonical. The lifecycle register's
+                            // terminal verdicts drive the release, at
+                            // block admission.
 
                             // Remove block index from cache
                             runtime_manager.remove_block_index_cache(block_hash);

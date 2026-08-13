@@ -1,20 +1,20 @@
 //! The per-block-operation derivation context: facts derived from a block's
 //! frozen (parents, justifications) pair — the finalized floor, its block's
 //! committed post-state, the canonical-disposition walk, and the
-//! effect-in-floor-state probe — computed at most once per operation and
-//! read by every consumer.
+//! effect-in-floor-state membership check — computed at most once per
+//! operation and read by every consumer.
 //!
 //! One propose previously derived the floor separately for the merge base
 //! and for bonds packaging, and one validate derived it separately for the
 //! checkpoint and for the bonds cache; each redundant site was a standing
 //! risk of input drift between two derivations of the same fact inside one
-//! operation. The disposition walk and the effect probe are memoized here
+//! operation. The disposition walk and the membership check are memoized here
 //! so consumers asking the same question of the same frozen inputs share
 //! one answer.
 //!
 //! The floor (and its post-state) is derived eagerly — every operation
-//! needs it. The walk and the probes are lazy: single-parent operations and
-//! empty heartbeat blocks never pay for them.
+//! needs it. The walk and the membership checks are lazy: single-parent
+//! operations and empty heartbeat blocks never pay for them.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -50,9 +50,9 @@ pub struct FloorContext {
     /// bounds share one walk and distinct bounds pay their own — no walk's
     /// verdict is ever synthesized from a differently-bounded walk.
     dispositions: parking_lot::Mutex<HashMap<i64, CanonicalDispositions>>,
-    /// Effect-in-floor-state probe results, shared across every consumer of
-    /// this operation (the merge's settled-sig dedup and the buffer purge
-    /// ask about the same sigs against the same state).
+    /// Effect-in-floor-state membership answers, shared across every
+    /// consumer of this operation (the merge's settled-sig dedup and the
+    /// buffer purge ask about the same sigs against the same state).
     effect_memo: parking_lot::Mutex<HashMap<Bytes, bool>>,
 }
 
@@ -193,7 +193,7 @@ impl FloorContext {
     }
 
     /// True iff the sig's effect is present in the FLOOR block's committed
-    /// post-state, memoized across every probe of this operation.
+    /// post-state, memoized across every check of this operation.
     /// `min_height` bounds the membership walk below (callers with the
     /// deploy pass its `valid_after`; sig-only callers the validity-window
     /// bound — see `deploy_lifecycle::effect_in_state_of`). The memo stays

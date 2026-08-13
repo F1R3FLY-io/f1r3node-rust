@@ -496,13 +496,12 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
     );
 
     // Buffer custody after the replay wins: the purge keys on floor-state
-    // evidence of the deploy's effect, and this deploy (`Nil` — the
-    // conflict is the system-level precharge) creates no number cells, so
-    // the probe can never attest it. Its custody therefore ends at window
-    // close via the retain, never at a node-local finality marker — the
-    // entry STAYS buffered here, while the canonical-won selection filter
-    // keeps it from ever being re-proposed. (The probe-visible purge path
-    // is pinned in exactly_once_spec.)
+    // membership of the deploy's effect, and the FLOOR has not covered
+    // the replay here — the finality marker written below is not the
+    // floor. Custody therefore holds through the marker — the entry
+    // STAYS buffered, while the canonical-won selection filter keeps it
+    // from ever being re-proposed — and ends only when the floor either
+    // covers the replay or closes the window.
     nodes[0]
         .block_dag_storage
         .record_directly_finalized(recovery_block.block_hash.clone(), 1.0, |_| async { Ok(()) })
@@ -531,8 +530,8 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
             buffer_guard
                 .contains_sig(&conflict_sig)
                 .expect("buffer.contains_sig"),
-            "a probe-invisible deploy stays in buffer custody until window \
-             close; no node-local finality marker may evict it"
+            "an uncovered replay's deploy stays in buffer custody; no \
+             node-local finality marker may evict it"
         );
     }
 }

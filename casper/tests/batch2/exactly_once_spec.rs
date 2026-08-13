@@ -269,9 +269,9 @@ async fn stage_floor_covered_reinstatement() -> (
         .await
         .expect("neutral branch N1 on nodes[2]");
 
-    // Contenders: both consume the seed (genuine conflict), both write a
-    // witness cell, and both CREATE a number cell (`new c in { c!(0) }`) so
-    // the deploy's effect is visible to the created-cell state probe.
+    // Contenders: both consume the seed (genuine conflict) and both write
+    // a witness cell whose datum records which contender's execution is
+    // live in a given state.
     let contender_d = {
         tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         construct_deploy::source_deploy_now_full(
@@ -521,10 +521,10 @@ async fn reinstated_effect_must_not_be_executed_again() {
     };
 
     // Positive purge pin: the loser's effect is settled in nodes[2]'s floor
-    // state (the floor covers its carrier — staged above), and the loser
-    // creates a number cell, so the effect probe attests it. The prepare
-    // inside `create` must therefore evict the buffer entry: floor-settled
-    // work has left recovery custody.
+    // state (the floor covers its carrier — staged above), so the
+    // membership walk attests it. The prepare inside `create` must
+    // therefore evict the buffer entry: floor-settled work has left
+    // recovery custody.
     assert!(
         !nodes[2]
             .rejected_deploy_buffer

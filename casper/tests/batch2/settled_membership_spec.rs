@@ -1,12 +1,9 @@
-// State membership is decided by recorded construction facts, never by a
-// state-shape probe. The old probe read a deploy's created NUMBER cells
-// out of the history trie, so a deploy that creates none — a plain send
-// is enough — was invisible: its floor-settled effect read as
-// not-settled, and every floor-keyed consumer (the deploy-storage sweep,
-// the merge's settled-sig dedup, the floor-context memo) mis-answered
-// for it. The pointer walk (state(B) = state(mergeBase) +
-// appliedFromScope + deploys) sees every deploy a block executed,
-// whatever its effect's shape.
+// State membership is decided by recorded construction facts, never by
+// the shape of the effect. The pointer walk (state(B) = state(mergeBase)
+// + appliedFromScope + deploys) sees every deploy a block executed —
+// there is no effect shape (a plain send included) that can hide a
+// settled deploy from the membership consumers (the register's verdicts,
+// the merge's settled-sig dedup, the floor-context memo).
 
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::finality::floor::floor_of_block;
@@ -18,9 +15,8 @@ use serial_test::serial;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
-/// A plain send settles under the floor and the deploy-storage sweep
-/// releases it as floor-settled — membership must not depend on the
-/// effect's shape.
+/// A plain send settles under the floor and its pool copy is released —
+/// membership must not depend on the effect's shape.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn floor_settled_plain_send_is_released_from_deploy_storage() {
@@ -75,8 +71,8 @@ async fn floor_settled_plain_send_is_released_from_deploy_storage() {
     );
 
     // Settle: nodes[2] (majority stake) ladders the floor over the
-    // carrier, delivering every round to all — each accepted block runs
-    // the finalization sweep on every node.
+    // carrier, delivering every round to all — each accepted block
+    // advances the register on every node.
     let mut covered = false;
     for round in 0..30i32 {
         let marker = construct_deploy::basic_deploy_data(
@@ -116,8 +112,8 @@ async fn floor_settled_plain_send_is_released_from_deploy_storage() {
          within the settle rounds"
     );
 
-    // Two more delivered rounds so the eviction sweep observes the
-    // covering floor on validator 1.
+    // Two more delivered rounds so validator 1's register observes the
+    // covering floor.
     for round in 0..2i32 {
         let marker = construct_deploy::basic_deploy_data(
             200 + round,
@@ -146,9 +142,9 @@ async fn floor_settled_plain_send_is_released_from_deploy_storage() {
             .expect("storage read")
             .iter()
             .any(|d| d.sig == plain_sig),
-        "the deploy's effect is settled in the floor state: the sweep must \
-         release the pool copy as floor-settled, whatever the effect's \
-         shape — an invisible-to-the-probe deploy held here reads as \
-         unsettled forever and is only ever released by window close"
+        "the deploy's effect is settled in the floor state: the register's \
+         Finalized verdict must release the pool copy, whatever the \
+         effect's shape — a shape-gated membership answer would hold this \
+         deploy as unsettled until window close"
     );
 }
