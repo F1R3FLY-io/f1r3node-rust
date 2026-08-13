@@ -1676,8 +1676,13 @@ mod tests {
                 casper::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
             casper::rust::casper::test_helpers::TestCasperWithSnapshot::bond_validator_in_snapshot(
                 &mut snapshot,
-                validator_id.into(),
+                validator_id.clone().into(),
             );
+            snapshot.parents[0]
+                .body
+                .state
+                .bonds
+                .retain(|bond| bond.validator == validator_id);
             let last_finalized_block = snapshot.last_finalized_block.clone();
             let lfb = create_lfb_with_age(100);
             let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(
