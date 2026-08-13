@@ -5,4 +5,5 @@
 duplicate-signed-deploy-race
 finality-stall-recovery
 observer-exploratory-backpressure
+observer-missing-block-retry
 slow-peer-notification-quorum

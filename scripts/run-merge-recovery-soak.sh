@@ -195,6 +195,42 @@ if [ -n "$NODE_REPO_DIR" ] && [ -f "$NODE_REPO_DIR/node/Cargo.toml" ]; then
 	[ -n "$parsed_version" ] && VERSION="$parsed_version"
 fi
 
+persist_soak_state() {
+	local state_tmp="${STATE_FILE}.tmp"
+	local checkpoint_state="$OUTPUT_DIR/.soak-checkpoint-state.json"
+	local checkpoint_tmp="${checkpoint_state}.tmp"
+	mkdir -p "$OUTPUT_DIR"
+	{
+		printf 'STARTED_AT=%s\n' "$STARTED_AT"
+		printf 'ITERATIONS=%s\n' "$ITERATIONS"
+		printf 'FAILURES=%s\n' "$FAILURES"
+		printf 'BENCH_SEGMENTS=%s\n' "$BENCH_SEGMENTS"
+		printf 'BENCH_FAILURES=%s\n' "$BENCH_FAILURES"
+		printf 'SEGMENT=%s\n' "$SEGMENT"
+	} >"$state_tmp" && mv "$state_tmp" "$STATE_FILE"
+	jq -n \
+		--arg target_ref "$TARGET_REF" \
+		--arg target_sha "$TARGET_SHA" \
+		--arg trigger_source "$TRIGGER_SOURCE" \
+		--argjson slot_delay "$SLOT_DELAY_SECONDS" \
+		--arg version "$VERSION" \
+		--argjson started_at "$STARTED_AT" \
+		--argjson requested_seconds "$DURATION_SECONDS" \
+		--argjson iterations "$ITERATIONS" \
+		--argjson failures "$FAILURES" \
+		--argjson bench_segments "$BENCH_SEGMENTS" \
+		--argjson bench_failures "$BENCH_FAILURES" \
+		'{target_ref: $target_ref, target_sha: $target_sha,
+      trigger_source: $trigger_source, slot_delay_seconds: $slot_delay,
+      version: $version, started_at: $started_at,
+      requested_seconds: $requested_seconds, iterations: $iterations,
+      failures: $failures, bench_segments: $bench_segments,
+      bench_failures: $bench_failures}' >"$checkpoint_tmp" &&
+		mv "$checkpoint_tmp" "$checkpoint_state"
+}
+
+persist_soak_state
+
 # Peak total node RSS for this iteration, from the newest harness
 # resource-timeseries.csv written after the iteration's start marker
 # (columns: elapsed_s,node,memory_mb,cpu_percent,memory_limit_mb; the
@@ -443,6 +479,15 @@ iteration_too_far_ahead_errors() {
 		wc -l | tr -d ' '
 }
 
+iteration_lfb_spread() {
+	local iteration_dir="$1"
+	grep -oE 'All-node LFBs at drain:.*\(spread [0-9]+ blocks\)' \
+		"$iteration_dir/pytest.log" 2>/dev/null |
+		grep -oE 'spread [0-9]+ blocks' |
+		grep -oE '[0-9]+' |
+		tail -1 || true
+}
+
 # Parse the pytest terminal summary line ("== 1 failed, 64 passed, ... ==")
 # and emit a per-iteration metrics.json with resource + latency samples.
 # Metrics are additive: missing jq or an unparseable log must never fail
@@ -474,14 +519,25 @@ emit_iteration_metrics() {
 	# bespoke extractors above, adding a metric here needs no code change: the
 	# harness emits a SOAK_METRIC line and the registry declares it. Fail-soft
 	# by the same contract — the collector yields {} rather than erroring.
-	local registry_metrics
+	local registry_metrics metric_log_roots root
+	metric_log_roots="$iteration_dir"
+	for root in "${HARNESS_TELEMETRY_DIRS[@]-}"; do
+		[ -n "$root" ] || continue
+		metric_log_roots="${metric_log_roots}:$root"
+	done
 	registry_metrics="$("$SCRIPT_DIR/bench/collect-soak-metrics.sh" \
-		"$iteration_dir/.started" \
-		"$(
-			IFS=:
-			printf '%s' "${HARNESS_TELEMETRY_DIRS[*]}"
-		)" 2>/dev/null || printf '{}')"
+		"$iteration_dir/.started" "$metric_log_roots" \
+		2>/dev/null || printf '{}')"
 	jq -e . >/dev/null 2>&1 <<<"$registry_metrics" || registry_metrics='{}'
+	local lfb_spread
+	if ! jq -e '.lfb_spread.samples > 0' >/dev/null 2>&1 <<<"$registry_metrics"; then
+		lfb_spread="$(iteration_lfb_spread "$iteration_dir")"
+		if [[ "$lfb_spread" =~ ^[0-9]+$ ]]; then
+			registry_metrics="$(jq -c --argjson value "$lfb_spread" \
+				'. + {lfb_spread: {p50: $value, p95: $value, max: $value, min: $value, samples: 1}}' \
+				<<<"$registry_metrics")"
+		fi
+	fi
 	jq -n \
 		--argjson metrics "$registry_metrics" \
 		--argjson iteration "$iteration" \
@@ -580,6 +636,7 @@ mkdir -p "$OUTPUT_DIR"
 # for and skew the run's active-benchmark averages.
 if [ "$RUN_BENCHMARKS" = "true" ] && [ "$SEGMENT" -eq 1 ]; then
 	run_bench_segment
+	persist_soak_state
 fi
 
 # Operator signal, polled between iterations.
@@ -721,6 +778,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	fi
 	PROVIDER="${PROVIDERS[$((ITERATIONS % ${#PROVIDERS[@]}))]}"
 	ITERATIONS="$((ITERATIONS + 1))"
+	persist_soak_state
 	ITERATION_DIR="$OUTPUT_DIR/iteration-$(printf '%05d' "$ITERATIONS")-$PROVIDER"
 	mkdir -p "$ITERATION_DIR"
 	REMAINING="$((DEADLINE - $(date +%s)))"
@@ -794,6 +852,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	fi
 	if [ "$STATUS" -ne 0 ]; then
 		FAILURES="$((FAILURES + 1))"
+		persist_soak_state
 		printf '%s\n' "$STATUS" >"$ITERATION_DIR/exit-code.txt"
 		for evidence_root in "${HARNESS_TELEMETRY_DIRS[@]}"; do
 			[ -d "$evidence_root" ] || continue
@@ -862,6 +921,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 
 	if [ "$RUN_BENCHMARKS" = "true" ] && [ "$((ITERATIONS % BENCH_EVERY))" -eq 0 ]; then
 		run_bench_segment
+		persist_soak_state
 	fi
 
 done
@@ -882,14 +942,7 @@ FINISHED_AT="$(date +%s)"
 
 # Written before the rollup so a later segment resumes from accurate counters
 # even if the rollup below fails.
-{
-	printf 'STARTED_AT=%s\n' "$STARTED_AT"
-	printf 'ITERATIONS=%s\n' "$ITERATIONS"
-	printf 'FAILURES=%s\n' "$FAILURES"
-	printf 'BENCH_SEGMENTS=%s\n' "$BENCH_SEGMENTS"
-	printf 'BENCH_FAILURES=%s\n' "$BENCH_FAILURES"
-	printf 'SEGMENT=%s\n' "$SEGMENT"
-} >"$STATE_FILE"
+persist_soak_state
 
 {
 	printf 'started_at=%s\n' "$STARTED_AT"

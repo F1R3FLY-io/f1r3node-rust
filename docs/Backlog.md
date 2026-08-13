@@ -1,7 +1,7 @@
 ---
 doc_type: backlog
-version: "1.0"
-last_updated: 2026-08-11
+version: "1.1"
+last_updated: 2026-08-13
 ---
 
 # Backlog
@@ -24,7 +24,9 @@ Items are organized by category and rough priority within each category.
 
 ### Technical Debt
 
-<!-- Items that improve code quality, performance, or maintainability -->
+Items that improve code quality, performance, or maintainability but aren't blocking active development.
+
+---
 
 #### BACKLOG-TD-001: Deterministic test for the soak finalization-lag failure
 
@@ -35,8 +37,8 @@ title: "Encode the 'N deploy(s) not finalized within 45s' soak failure as a dete
 category: technical_debt
 priority: p2
 added_at: 2026-08-11
-blocked_by: root cause unknown (flake vs VM-shape behavior)
-repo_scope: node-side (casper finalization) and/or system-integration (test_load assertion)
+blocked_by: none (root-caused 2026-08-12)
+repo_scope: node-side (casper deploy throughput) and/or system-integration (test_load assertion)
 ---
 ```
 
@@ -48,23 +50,28 @@ the 1200-deploy sustained phase (4.0/sec). The shard was otherwise healthy:
 no guardian breach, RSS peak 16.6GB (vs the 31–37GB envelope observed on
 prior shapes), finalization p95 5928ms over 786 samples earlier in the run.
 
-**Why deferred:** per the causal-diagnosis-before-resources rule, no
-assertion-loosening or timeout-raising without per-component attribution.
-It is not yet known whether this is an intermittent finalization-lag flake,
-a real throughput/finality regression, or an E6.Flex behavior difference
-(first run on 32 cores). The 2026-08-12 02:30Z scheduled run is the next
-data point.
+**Root-caused (2026-08-12):** not a flake, shape effect, or recent
+regression — a sustained deploy-throughput ceiling (~3.4 deploys/s vs the
+test's 4/s) present on both `dev` and `master` and both VM shapes; the
+un-finalized cone never builds (tip−LFB stays 0). Full attribution with
+per-block cost breakdown in
+`docs/discoveries/2026-08-12-finalization-lag-root-cause.md`; node-side
+fixes tracked on `fix/sustained-deploy-throughput`.
 
 **Done means:** the failure mode is reproduced in a deterministic test —
-either a node-side unit/integration test pinning finalization progress under
-a burst-deploy schedule (precedent: the planned floor-divergence regression
-test), or a system-integration harness test with a fixed seed/schedule —
-so the soak stops being the only detector. The 45s assertion itself lives in
+now known to mean pinning sustained-rate deploy inclusion/finalization
+throughput (deploys/s absorbed with a bounded queue) rather than cone
+depth — either a node-side test under a fixed burst-deploy schedule
+(precedent: the planned floor-divergence regression test) or a
+system-integration harness test with a fixed seed/schedule — so the soak
+stops being the only detector. The 45s assertion itself lives in
 system-integration's `test_load.py`; node-side work belongs in `casper`.
 
 ### Feature Ideas
 
-<!-- Future features that have been identified but aren't yet prioritized -->
+Future features that have been identified but aren't yet prioritized.
+
+---
 
 #### BACKLOG-FI-003: Per-core CPU sampling in the soak harness monitor
 
@@ -159,7 +166,7 @@ related_epic: EPIC-009
 
 ### Research & Exploration
 
-<!-- Items that need investigation before they can become actionable -->
+Items that need investigation before they can become actionable tasks.
 
 ---
 
@@ -199,6 +206,10 @@ explicit sequencing: "when complete with tasks").
 ---
 
 ### Dependencies & Blockers
+
+Items waiting on external factors (upstream releases, third-party APIs, etc.)
+
+---
 
 #### BACKLOG-DB-001: system-integration Branch Reference
 

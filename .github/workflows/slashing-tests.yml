@@ -308,7 +308,7 @@ jobs:
   mutation-coverage:
     name: Mutation coverage (cargo-mutants, nightly only)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-8-cores
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@v5
@@ -330,12 +330,8 @@ jobs:
         # rely on the .mutants.toml include-list to scope to the
         # slashing modules only.
         env:
-          # The 7GB ubuntu-latest VM dies with a runner shutdown signal
-          # 30s-5min into the initial workspace build under cargo-mutants
-          # (nightlies 30992663244, 30895783563) — parallel rustc peak
-          # exceeds memory. Capping build concurrency keeps the peak
-          # inside the VM; the build is slower but the 240-minute job
-          # budget was never the binding constraint.
+          # The larger runner provides memory headroom for cargo-mutants;
+          # keep concurrency at 2 to bound peak memory during workspace builds.
           CARGO_BUILD_JOBS: 2
         run: cargo mutants --in-place --no-shuffle --timeout 120 --baseline=skip
 
