@@ -1,0 +1,56 @@
+// fileio_chown_consensus.rho — Phase 10 canonical example
+//
+// Demonstrates: on a File cap minted from a Consensus-mode static
+// bundle entry, `chown` returns `[false, "FSERR_UNSUPPORTED", _]`.
+//
+// Prerequisite (operator side): the node's genesis must publish a
+// static-config bundle containing an entry named "consensus-cap"
+// under `consensus-static-files` (BundleConsensusMode::Consensus,
+// BundleEntryKind::File, mode "r").  Bundles are provisioned by the
+// FsGenesis deploy at genesis-block execution — see the operator
+// HOCON's `consensus-static-files { "consensus-cap" = { ... } }`.
+//
+// Why chown fails on consensus caps: consensus-cmode File caps are
+// always provisioned read-only.  File.chown gates on write-capable
+// fmode BEFORE dispatching to the fsChown native (see File.rho line
+// 741), so the read-only bundle mode alone is sufficient to elicit
+// FSERR_UNSUPPORTED.  The consensus branch itself (fs_chown native
+// short-circuit, slice-26 review fix H-29-3) would fire only if the
+// cap were somehow provisioned write-capable — a path the bundle
+// mechanism doesn't expose to operators.  For a variant that
+// distinguishes the consensus branch by error message, see
+// fileio_chmod_consensus in the Phase 10 examples spec test suite.
+//
+// Companion regression: casper/tests/genesis/contracts/
+// fileio_examples_spec.rs :: fileio_chown_on_consensus_cap.
+
+new
+  rl(`rho:registry:lookup`),
+  stdout(`rho:io:stdout`),
+  fsCh
+in {
+  // Look up the Fs cap the FsGenesis deploy published under
+  // fs_genesis_uri(FS_GENERATOR_PUB_KEY).
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *fsCh) |
+  for(@(_, fs) <- fsCh) {
+    // Open the operator-configured consensus-cap File.  Empty options
+    // map means "use the bundle's provisioned mode" (here, "r").
+    for(@openReply <- @fs!?("openFile", "consensus-cap", {})) {
+      match openReply {
+        [true, fileCap] => {
+          // Attempt chown.  Owner "alice", group "users" — arbitrary
+          // strings, since the call short-circuits before reaching
+          // the host filesystem.
+          for(@chownReply <- @fileCap!?("chown", "alice", "users")) {
+            stdout!(("chown reply", chownReply))
+            // Expected shape:
+            //   [false, "FSERR_UNSUPPORTED", "chown requires a write-capable mode"]
+          }
+        }
+        _ => {
+          stdout!(("openFile failed", openReply))
+        }
+      }
+    }
+  }
+}
