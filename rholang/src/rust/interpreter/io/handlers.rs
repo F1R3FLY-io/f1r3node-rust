@@ -1824,18 +1824,23 @@ impl FsProcesses {
                 return Ok(out);
             }
         };
-        if cmode == ConsensusMode::Consensus {
-            let out = vec![err(
-                FSERR_UNSUPPORTED,
-                "removeFile unavailable in consensus mode",
-            )];
-            produce(&out, ack).await?;
-            return Ok(out);
-        }
+        // Phase 8 slice 8a step 6 (2026-08-13): mode-differentiated
+        // unlink gate.  The Consensus branch was previously an early
+        // FSERR_UNSUPPORTED here; step 6 moves the mode dispatch
+        // INTO spawn_blocking so the target's (dev, inode) can be
+        // fstat'd first for the LockRegistry query.  Consensus+locked
+        // returns FSERR_BUSY per plan §Mode-differentiated invariants
+        // ("fs_remove_file consults LockRegistry at handler entry and
+        // refuses if any lock is held on (dev, inode)").  Consensus+
+        // unlocked still returns FSERR_UNSUPPORTED — the H-29-3
+        // stopgap remains in place until WAL journaling for path-
+        // based mutations lands (separate slice).  Oracular+locked
+        // proceeds with the unlink but log-warns for observability.
         let reply = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
             (Some(root), Some(rel)) => {
                 let root_pb = PathBuf::from(root);
                 let expected_root_id = self.handles.root_registry.get(&root_pb);
+                let lock_registry = self.handles.lock_registry.clone();
                 spawn_blocking(move || -> Par {
                     let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
                         Ok(p) => p,
@@ -1844,12 +1849,76 @@ impl FsProcesses {
                             return err(c, m);
                         }
                     };
-                    let rc = unsafe { libc::unlinkat(parent.as_raw_fd(), parent.leaf_ptr(), 0) };
-                    if rc == 0 {
-                        ok_bare()
-                    } else {
-                        let e = std::io::Error::last_os_error();
-                        err(io_err_code(&e), io_msg_scrub(&e))
+                    // Step 6: fstatat the target for (dev, inode) so we
+                    // can query the LockRegistry.  `AT_SYMLINK_NOFOLLOW`
+                    // matches unlinkat's semantics (unlink removes the
+                    // link, not the target).  If fstat fails (target
+                    // doesn't exist, permission denied), fall through
+                    // with is_locked=false — the unlink itself will
+                    // surface the appropriate error.
+                    let target_dev_inode = target_dev_inode_at(&parent);
+                    let target_is_locked = target_dev_inode
+                        .map(|di| lock_registry.is_locked(di, (0, u64::MAX)))
+                        .unwrap_or(false);
+                    match cmode {
+                        ConsensusMode::Consensus => {
+                            if target_is_locked {
+                                // Plan §Mode-differentiated invariants:
+                                // Consensus refuses on any held lock.
+                                // Closes the "unlink-while-locked →
+                                // lock survives on now-orphan inode"
+                                // race.  Currently unreachable via the
+                                // H-29-3 stopgap below, but positioned
+                                // to activate when Consensus removeFile
+                                // is unblocked (needs WAL journaling
+                                // of path-based mutations, separate
+                                // slice).
+                                return err(
+                                    FSERR_BUSY,
+                                    "cannot remove: lock held on target (dev, inode)",
+                                );
+                            }
+                            // H-29-3 stopgap: consensus removeFile not
+                            // yet supported — WAL journaling for path-
+                            // based mutations not implemented.
+                            err(
+                                FSERR_UNSUPPORTED,
+                                "removeFile unavailable in consensus mode",
+                            )
+                        }
+                        ConsensusMode::Oracular => {
+                            if target_is_locked {
+                                // Plan §Mode-differentiated invariants:
+                                // Oracular does NOT gate on locks (host
+                                // FS semantics — `rm` works even while
+                                // another process has the file open).
+                                // Log-warn for observability so
+                                // operators can trace subsequent
+                                // path-based failures back to the
+                                // unlink.  fd-based calls on the
+                                // pre-unlink fd remain valid because
+                                // the kernel keeps the inode alive
+                                // until the last fd closes.
+                                if let Some((dev, ino)) = target_dev_inode {
+                                    tracing::warn!(
+                                        target: "f1r3fly.fs.oracular",
+                                        dev = dev,
+                                        ino = ino,
+                                        "oracular unlink of locked file — holders will observe \
+                                         subsequent errors on path-based calls; fd-based calls \
+                                         remain valid until close"
+                                    );
+                                }
+                            }
+                            let rc =
+                                unsafe { libc::unlinkat(parent.as_raw_fd(), parent.leaf_ptr(), 0) };
+                            if rc == 0 {
+                                ok_bare()
+                            } else {
+                                let e = std::io::Error::last_os_error();
+                                err(io_err_code(&e), io_msg_scrub(&e))
+                            }
+                        }
                     }
                 })
                 .await
@@ -1895,14 +1964,16 @@ impl FsProcesses {
                 return Ok(out);
             }
         };
-        if cmode == ConsensusMode::Consensus {
-            let out = vec![err(
-                FSERR_UNSUPPORTED,
-                "removeDir unavailable in consensus mode",
-            )];
-            produce(&out, ack).await?;
-            return Ok(out);
-        }
+        // Phase 8 slice 8a step 6 (2026-08-13): mode-differentiated
+        // unlink gate.  See fs_remove_file above for the design
+        // rationale.  For fs_remove_dir, `is_locked` queries the
+        // DIRECTORY inode's lock state.  This does NOT recursively
+        // check locks on directory contents — spec §Mode-
+        // differentiated invariants gates on "any lock held on
+        // (dev, inode)" of the target only.  A recursive removeDir
+        // that clears content-file locks along the way is a
+        // separate consideration; MVP treats content locks as the
+        // caller's responsibility.
         let reply = match (
             RhoString::unapply(root_par),
             RhoString::unapply(rel_par),
@@ -1911,6 +1982,7 @@ impl FsProcesses {
             (Some(root), Some(rel), Some(recursive)) => {
                 let root_pb = PathBuf::from(root);
                 let expected_root_id = self.handles.root_registry.get(&root_pb);
+                let lock_registry = self.handles.lock_registry.clone();
                 spawn_blocking(move || -> Par {
                     let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
                         Ok(p) => p,
@@ -1919,25 +1991,55 @@ impl FsProcesses {
                             return err(c, m);
                         }
                     };
-                    if recursive {
-                        if let Err(e) = remove_dir_recursive(parent.as_raw_fd(), parent.leaf_ptr())
-                        {
-                            return err(io_err_code(&e), io_msg_scrub(&e));
+                    let target_dev_inode = target_dev_inode_at(&parent);
+                    let target_is_locked = target_dev_inode
+                        .map(|di| lock_registry.is_locked(di, (0, u64::MAX)))
+                        .unwrap_or(false);
+                    match cmode {
+                        ConsensusMode::Consensus => {
+                            if target_is_locked {
+                                return err(
+                                    FSERR_BUSY,
+                                    "cannot remove: lock held on target (dev, inode)",
+                                );
+                            }
+                            err(FSERR_UNSUPPORTED, "removeDir unavailable in consensus mode")
                         }
-                        ok_bare()
-                    } else {
-                        let rc = unsafe {
-                            libc::unlinkat(
-                                parent.as_raw_fd(),
-                                parent.leaf_ptr(),
-                                libc::AT_REMOVEDIR,
-                            )
-                        };
-                        if rc == 0 {
-                            ok_bare()
-                        } else {
-                            let e = std::io::Error::last_os_error();
-                            err(io_err_code(&e), io_msg_scrub(&e))
+                        ConsensusMode::Oracular => {
+                            if target_is_locked {
+                                if let Some((dev, ino)) = target_dev_inode {
+                                    tracing::warn!(
+                                        target: "f1r3fly.fs.oracular",
+                                        dev = dev,
+                                        ino = ino,
+                                        "oracular removeDir of locked directory — holders will \
+                                         observe subsequent errors on path-based calls; fd-based \
+                                         calls remain valid until close"
+                                    );
+                                }
+                            }
+                            if recursive {
+                                if let Err(e) =
+                                    remove_dir_recursive(parent.as_raw_fd(), parent.leaf_ptr())
+                                {
+                                    return err(io_err_code(&e), io_msg_scrub(&e));
+                                }
+                                ok_bare()
+                            } else {
+                                let rc = unsafe {
+                                    libc::unlinkat(
+                                        parent.as_raw_fd(),
+                                        parent.leaf_ptr(),
+                                        libc::AT_REMOVEDIR,
+                                    )
+                                };
+                                if rc == 0 {
+                                    ok_bare()
+                                } else {
+                                    let e = std::io::Error::last_os_error();
+                                    err(io_err_code(&e), io_msg_scrub(&e))
+                                }
+                            }
                         }
                     }
                 })
@@ -2675,6 +2777,39 @@ fn fstatat_meta(parent: &SafeParent) -> std::io::Result<std::fs::Metadata> {
     }
 }
 
+/// Phase 8 slice 8a step 6 — fstatat the leaf under `parent`, returning
+/// `(dev, inode)` for the LockRegistry query in the remove handlers.
+///
+/// Uses `AT_SYMLINK_NOFOLLOW` so the returned identity matches the
+/// filesystem entity that `unlinkat` would remove (the link itself,
+/// not the target it points at).  A symlink leaf yields the link's
+/// own inode — consistent with unlinkat's "remove the directory
+/// entry" semantics.
+///
+/// Returns `None` on any stat error (target doesn't exist, permission
+/// denied, etc.).  Callers treat `None` as "not locked" — the
+/// subsequent unlink attempt will surface the appropriate error to
+/// the Rholang caller.  Doesn't allocate; unlike `fstatat_meta`
+/// (which opens the file to build a `Metadata`), this uses `libc::
+/// fstatat` directly for the two u64s we need.
+fn target_dev_inode_at(parent: &SafeParent) -> Option<(u64, u64)> {
+    unsafe {
+        let mut sb: libc::stat = std::mem::zeroed();
+        if libc::fstatat(
+            parent.as_raw_fd(),
+            parent.leaf_ptr(),
+            &mut sb,
+            libc::AT_SYMLINK_NOFOLLOW,
+        ) == 0
+        {
+            #[allow(clippy::unnecessary_cast)]
+            Some((sb.st_dev as u64, sb.st_ino as u64))
+        } else {
+            None
+        }
+    }
+}
+
 /// Build a stat/error record for one entry inside `dir_fd`.  Opens the
 /// entry via openat + O_NOFOLLOW; regular/directory entries produce a
 /// full `stat_record`, symlinks and unreadable entries produce an
@@ -3146,6 +3281,115 @@ mod cmode_tests {
             "step 5 regression: fs_lock_sequential must NOT fall back to \
              DeployScope::default() — see fs_lock_range test above for \
              rationale"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Step 6 (2026-08-13) — mode-differentiated unlink gate tests.
+    // ---------------------------------------------------------------
+
+    /// Verify `target_dev_inode_at` returns Some((dev, ino)) for a
+    /// real file, and None for a nonexistent one.  Small, direct
+    /// unit test of the new helper introduced in step 6.
+    #[test]
+    fn target_dev_inode_at_reads_existing_file() {
+        use std::io::Write;
+        let tmpdir = tempfile::tempdir().expect("mktemp");
+        let file_path = tmpdir.path().join("target.txt");
+        {
+            let mut f = std::fs::File::create(&file_path).expect("create");
+            f.write_all(b"hi").expect("write");
+        }
+        // Use safe_descend_verified to get a SafeParent for the leaf.
+        let parent =
+            safe_descend_verified(tmpdir.path(), "target.txt", None).expect("safe_descend");
+        let dev_inode = target_dev_inode_at(&parent);
+        assert!(
+            dev_inode.is_some(),
+            "target_dev_inode_at must return Some for an existing file"
+        );
+        let (dev, ino) = dev_inode.unwrap();
+        assert!(dev > 0, "dev must be non-zero on real fs");
+        assert!(ino > 0, "ino must be non-zero on real fs");
+    }
+
+    /// `target_dev_inode_at` returns None on a nonexistent leaf.
+    /// Callers treat None as "not locked" and let the subsequent
+    /// unlink surface the appropriate error.
+    #[test]
+    fn target_dev_inode_at_returns_none_for_missing_leaf() {
+        let tmpdir = tempfile::tempdir().expect("mktemp");
+        let parent =
+            safe_descend_verified(tmpdir.path(), "nonexistent.txt", None).expect("safe_descend");
+        assert_eq!(target_dev_inode_at(&parent), None);
+    }
+
+    /// Pin fs_remove_file's step-6 gate: verify the handler calls
+    /// `target_dev_inode_at` + `lock_registry.is_locked` AND
+    /// dispatches on `cmode` inside the spawn_blocking closure
+    /// (rather than the pre-step-6 early return).
+    #[test]
+    fn fs_remove_file_has_step6_gate() {
+        let src = include_str!("handlers.rs");
+        let fn_start = src
+            .find("pub async fn fs_remove_file")
+            .expect("handlers.rs missing fs_remove_file definition");
+        // 6KB window covers the extended step-6 body.
+        let window = &src[fn_start..std::cmp::min(fn_start + 6000, src.len())];
+        assert!(
+            window.contains("target_dev_inode_at(&parent)"),
+            "step 6 regression: fs_remove_file must call target_dev_inode_at \
+             to resolve the target's (dev, inode) for the LockRegistry query"
+        );
+        assert!(
+            window.contains("lock_registry.is_locked"),
+            "step 6 regression: fs_remove_file must query \
+             lock_registry.is_locked on the target to gate Consensus \
+             unlinks per spec §Mode-differentiated invariants"
+        );
+        assert!(
+            window.contains("ConsensusMode::Consensus")
+                && window.contains("ConsensusMode::Oracular"),
+            "step 6 regression: fs_remove_file must dispatch on cmode \
+             inside spawn_blocking (Consensus locked → FSERR_BUSY; \
+             Oracular locked → log-warn + proceed)"
+        );
+        assert!(
+            window.contains("target: \"f1r3fly.fs.oracular\""),
+            "step 6 regression: fs_remove_file's Oracular branch must \
+             log-warn on locked-file delete for operator observability"
+        );
+    }
+
+    /// Pin fs_remove_dir's step-6 gate — same structure as
+    /// fs_remove_file's pin.  See that test's docstring for
+    /// rationale.
+    #[test]
+    fn fs_remove_dir_has_step6_gate() {
+        let src = include_str!("handlers.rs");
+        let fn_start = src
+            .find("pub async fn fs_remove_dir")
+            .expect("handlers.rs missing fs_remove_dir definition");
+        let window = &src[fn_start..std::cmp::min(fn_start + 6000, src.len())];
+        assert!(
+            window.contains("target_dev_inode_at(&parent)"),
+            "step 6 regression: fs_remove_dir must call target_dev_inode_at"
+        );
+        assert!(
+            window.contains("lock_registry.is_locked"),
+            "step 6 regression: fs_remove_dir must query \
+             lock_registry.is_locked on the target"
+        );
+        assert!(
+            window.contains("ConsensusMode::Consensus")
+                && window.contains("ConsensusMode::Oracular"),
+            "step 6 regression: fs_remove_dir must dispatch on cmode \
+             inside spawn_blocking"
+        );
+        assert!(
+            window.contains("target: \"f1r3fly.fs.oracular\""),
+            "step 6 regression: fs_remove_dir's Oracular branch must \
+             log-warn on locked-directory delete"
         );
     }
 }
