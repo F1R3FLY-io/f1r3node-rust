@@ -1569,9 +1569,6 @@ impl BlockAPI {
     ///
     /// Thin wrapper around
     /// `deploy_finalization_status::resolve` that unwraps the engine cell.
-    /// The pure resolver is reused by the catchup gate in
-    /// `compute_parents_post_state` to avoid gating buffer population on
-    /// already-finalized sigs.
     pub async fn deploy_finalization_status(
         engine_cell: &EngineCell,
         sig: &[u8],
@@ -1593,10 +1590,13 @@ impl BlockAPI {
         };
 
         let dag = casper.block_dag().await?;
-        match crate::rust::api::deploy_finalization_status::resolve_with_known_block(
+        // A pure LOOKUP over the deploy-lifecycle register: terminal
+        // verdicts were determined at their threshold crossings by
+        // `finality::deploy_lifecycle` and persisted write-once — no
+        // per-query parameters.
+        match crate::rust::api::deploy_finalization_status::resolve(
             &dag,
             casper.block_store(),
-            casper.casper_shard_conf().deploy_lifespan,
             sig,
             known_block_hash,
         ) {

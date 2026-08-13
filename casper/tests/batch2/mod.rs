@@ -23,3 +23,4 @@ pub mod single_parent_casper_spec;
 pub mod slash_recovery_spec;
 pub mod state_facts_spec;
 pub mod validate_test;
+pub mod verdict_convergence_spec;

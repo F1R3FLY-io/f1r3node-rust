@@ -1,16 +1,66 @@
-//! State membership from recorded construction facts. Every block records
-//! how its state was built — `merge_base` (the block whose committed state
-//! its pre-state derives from), `applied_from_scope` (the user chains its
-//! merge re-applied onto that base), and `deploys` (fresh executions) — so
-//! whether a sig's effect is in a block's committed state is a walk over
-//! recorded pointers, never a re-derivation of lineage and never a probe
-//! of the state's shape.
+//! The deploy-lifecycle register: terminal deploy verdicts — Finalized,
+//! Expired, Failed — determined ONCE, at the moment their monotone inputs
+//! make them true, and written write-once into the DAG storage's lifecycle
+//! tables. The status API reads; it never computes.
+//!
+//! Every input to a verdict is frozen consensus data: the floor clock
+//! (monotone) and the state-construction facts blocks record (`deploys`,
+//! `applied_from_scope`, `merge_base`). Records feed the recovery plane
+//! and the display row; they do NOT decide verdicts — a verdict computed
+//! from a node's record row is a function of record ARRIVAL ORDER, which
+//! write-once semantics then freeze (verified divergence: hunt specimen
+//! 87a5d970).
+//!
+//! Verdict rules:
+//! - **Finalized** ⟺ the sig's effect is in the FLOOR's committed state
+//!   (membership by recorded construction pointers). Floor-covered effects
+//!   are in every future merge base — membership at the floor is monotone
+//!   — so Finalized is decided AT COVERAGE, re-checked per floor advance
+//!   with a per-sig checked-up-to memo bounding each walk to the new
+//!   lineage segment.
+//! - **Failed** ⟺ beyond the contestability bound, not in the state, and
+//!   a floor-covered `is_failed` execution exists (it ran and failed; the
+//!   charge landed).
+//! - **Expired** ⟺ beyond the bound, not in the state otherwise: the
+//!   window is closed and nothing can ever apply it.
+//!
+//! The CONTESTABILITY BOUND is `max(window_end, last inclusion) +
+//! citability horizon`, past which no admissible block can adjudicate,
+//! re-apply, or re-include the sig (the parent-depth spread rule refuses
+//! late citations). The horizon derives from `max_parent_depth` ALONE —
+//! shard config, never a node-local value or a constant; the unlimited
+//! sentinel disables only the Expired/Failed side (nothing is ever
+//! provably beyond contest), never Finalized.
+//!
+//! Event rows are fed by `BlockDagKeyValueStorage::insert` itself, so the
+//! register never walks bodies. This module owns only the VOLATILE
+//! schedule (thresholds, clocks) — rebuilt from the persisted open rows
+//! at startup — and the evaluation logic. The terminal write is
+//! `put_deploy_terminal_if_absent`: never-flip is enforced by the store,
+//! not argued per call site.
 
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use block_storage::rust::dag::deploy_lifecycle_types::{
+    LifecycleEventKind, LifecycleEvents, TerminalRecord, TerminalState,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
+use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
 
+use super::floor::{self, in_floor_closure, Floor};
 use crate::rust::errors::CasperError;
+use crate::rust::safety::clique_oracle::FtThreshold;
+
+/// The citability horizon: how far below the floor an admissible block can
+/// still cite. Derives from `max_parent_depth` ALONE (shard config — the
+/// parent-spread validity rule makes deeper citations InvalidParents);
+/// the unlimited sentinel means nothing is ever provably uncitable.
+pub(crate) fn citability_horizon(max_parent_depth: i32) -> Option<i64> {
+    (max_parent_depth != i32::MAX).then_some(i64::from(max_parent_depth))
+}
 
 /// True iff `block_hash`'s committed state contains `sig`'s effect: some
 /// block on its base lineage either executed it fresh (a non-failed
@@ -30,8 +80,25 @@ pub(crate) fn effect_in_state_of(
     sig: &Bytes,
     min_height: i64,
 ) -> Result<bool, CasperError> {
+    effect_in_state_of_above(block_store, block_hash, sig, min_height, None)
+}
+
+/// `effect_in_state_of` with an optional early stop: `checked_below` names
+/// a lineage block whose segment (itself and below) a previous evaluation
+/// already answered FALSE for — reaching it ends the walk without
+/// re-reading the old segment.
+fn effect_in_state_of_above(
+    block_store: &KeyValueBlockStore,
+    block_hash: &BlockHash,
+    sig: &Bytes,
+    min_height: i64,
+    checked_below: Option<&BlockHash>,
+) -> Result<bool, CasperError> {
     let mut cur = block_hash.clone();
     loop {
+        if checked_below == Some(&cur) {
+            return Ok(false);
+        }
         let Some(block) = block_store.get(&cur)? else {
             return Err(CasperError::Other(format!(
                 "effect_in_state_of: block {} on the base lineage is absent \
@@ -80,6 +147,283 @@ pub(crate) fn effect_in_state_of(
             }
         };
     }
+}
+
+#[derive(Default)]
+struct Schedule {
+    /// Sigs to re-evaluate once the max frozen lm-floor height reaches the
+    /// key (next floor advance for coverage re-checks; the contestability
+    /// bound for Expired/Failed).
+    floor_thresholds: BTreeMap<i64, HashSet<Bytes>>,
+    /// The monotone max frozen latest-message floor — the highest floor
+    /// any known canonical block carries. The register's ONE clock.
+    max_floor: Option<Floor>,
+    /// Per-sig coverage memo: the floor block whose lineage a previous
+    /// membership check already answered FALSE for. The next check walks
+    /// only the new segment above it.
+    checked: HashMap<Bytes, BlockHash>,
+    /// Set once `rebuild_schedule` has armed the persisted open rows.
+    rebuilt: bool,
+}
+
+/// The register's volatile half: schedule state plus the evaluation
+/// driver. One per casper instance; all persisted state lives in the DAG
+/// storage's lifecycle tables.
+#[derive(Default)]
+pub struct DeployLifecycle {
+    schedule: parking_lot::Mutex<Schedule>,
+}
+
+impl DeployLifecycle {
+    /// Arm every persisted open sig for evaluation at the next observed
+    /// block (threshold 0 crosses immediately). Verdicts only get MORE
+    /// settled by waiting, so a conservative cold start is sound; a crash
+    /// between an insert and its evaluation costs nothing but delay.
+    pub fn rebuild_schedule(&self, dag: &KeyValueDagRepresentation) -> Result<(), CasperError> {
+        let mut schedule = self.schedule.lock();
+        let open = dag
+            .open_lifecycle_sigs()
+            .map_err(CasperError::KvStoreError)?;
+        let armed = schedule.floor_thresholds.entry(0).or_default();
+        for sig in open {
+            armed.insert(Bytes::from(sig));
+        }
+        schedule.rebuilt = true;
+        Ok(())
+    }
+
+    /// The register's advance step, run for every accepted block (the
+    /// proposer and validator paths both flow through block admission):
+    /// bump the floor clock and evaluate the sigs whose thresholds
+    /// crossed, plus the sigs this block touched. Ingest already happened
+    /// inside the DAG insert.
+    ///
+    /// Returns the sigs that reached a TERMINAL verdict in this pass.
+    /// Every terminal state means no further proposal is possible or
+    /// needed, so the caller releases the proposer's pool copy against
+    /// exactly this list; verdicts are write-once, so a sig is released
+    /// at most once.
+    pub async fn observe_block(
+        &self,
+        dag: &KeyValueDagRepresentation,
+        block_store: &KeyValueBlockStore,
+        block: &BlockMessage,
+        deploy_lifespan: i64,
+        ftt: FtThreshold,
+        citability_horizon: Option<i64>,
+    ) -> Result<Vec<Bytes>, CasperError> {
+        // The async floor read happens OUTSIDE the schedule lock; it is
+        // memoized in the persisted floor index.
+        let block_floor = floor::floor_of_block(dag, &block.block_hash, ftt).await?;
+
+        let mut schedule = self.schedule.lock();
+        if !schedule.rebuilt {
+            drop(schedule);
+            self.rebuild_schedule(dag)?;
+            schedule = self.schedule.lock();
+        }
+
+        // The floor clock (monotone).
+        let floor_advanced = match &schedule.max_floor {
+            Some(current) => block_floor.block_number > current.block_number,
+            None => true,
+        };
+        if floor_advanced {
+            schedule.max_floor = Some(block_floor);
+        }
+
+        // Due: crossed thresholds plus the block's own touched sigs.
+        let mut due: HashSet<Bytes> = HashSet::new();
+        for pd in &block.body.deploys {
+            due.insert(pd.deploy.sig.clone());
+        }
+        for rd in &block.body.rejected_deploys {
+            due.insert(rd.sig.clone());
+        }
+        let floor_height = schedule
+            .max_floor
+            .as_ref()
+            .map(|f| f.block_number)
+            .unwrap_or(0);
+        let crossed_floor: Vec<i64> = schedule
+            .floor_thresholds
+            .range(..=floor_height)
+            .map(|(k, _)| *k)
+            .collect();
+        for key in crossed_floor {
+            if let Some(sigs) = schedule.floor_thresholds.remove(&key) {
+                due.extend(sigs);
+            }
+        }
+
+        let mut due: Vec<Bytes> = due.into_iter().collect();
+        due.sort();
+        let mut terminalized: Vec<Bytes> = Vec::new();
+        for sig in due {
+            evaluate(
+                &mut schedule,
+                dag,
+                block_store,
+                &sig,
+                deploy_lifespan,
+                citability_horizon,
+                &mut terminalized,
+            )?;
+        }
+        Ok(terminalized)
+    }
+}
+
+fn evaluate(
+    schedule: &mut Schedule,
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    sig: &Bytes,
+    deploy_lifespan: i64,
+    citability_horizon: Option<i64>,
+    terminalized: &mut Vec<Bytes>,
+) -> Result<(), CasperError> {
+    let Some(row) = dag
+        .deploy_lifecycle_events(sig)
+        .map_err(CasperError::KvStoreError)?
+    else {
+        return Ok(());
+    };
+    let Some(max_floor) = schedule.max_floor.clone() else {
+        return Ok(());
+    };
+    let floor_height = max_floor.block_number;
+
+    // A record-only row (carrier never observed) has no window basis yet;
+    // its inclusion event will arm it.
+    let Some(valid_after) = row.valid_after else {
+        return Ok(());
+    };
+
+    // FINALIZED AT COVERAGE. Membership at the floor is monotone (a
+    // floor-covered effect is in every future merge base), so the first
+    // true answer is the verdict. The memo bounds the walk to the lineage
+    // segment above the last floor already answered false.
+    let checked_below = schedule.checked.get(sig).cloned();
+    let member = effect_in_state_of_above(
+        block_store,
+        &max_floor.hash,
+        sig,
+        valid_after,
+        checked_below.as_ref(),
+    )?;
+    if member {
+        write_terminal(dag, sig, TerminalState::Finalized, &row, terminalized)?;
+        schedule.checked.remove(sig);
+        return Ok(());
+    }
+    schedule.checked.insert(sig.clone(), max_floor.hash.clone());
+
+    // EXPIRED / FAILED — only beyond the contestability bound, past which
+    // no admissible block can adjudicate, re-apply, or re-include the sig,
+    // so "not in the state" is stable. `None` (depth checking disabled)
+    // means nothing is ever provably beyond contest: the sig stays
+    // Pending by design.
+    let Some(bound) = citability_horizon else {
+        schedule
+            .floor_thresholds
+            .entry(floor_height + 1)
+            .or_default()
+            .insert(sig.clone());
+        return Ok(());
+    };
+    let window_end = valid_after + deploy_lifespan;
+    let last_inclusion = row
+        .events
+        .iter()
+        .filter(|e| matches!(e.kind, LifecycleEventKind::Included { .. }))
+        .map(|e| e.height)
+        .max()
+        .unwrap_or(window_end);
+    let decide_at = window_end.max(last_inclusion) + bound;
+    if floor_height <= decide_at {
+        // Not yet decidable: re-arm on the FLOOR clock — at the next
+        // advance for the coverage re-check (a threshold that always
+        // comes due, so a verdict is always eventually written).
+        schedule
+            .floor_thresholds
+            .entry(floor_height + 1)
+            .or_default()
+            .insert(sig.clone());
+        return Ok(());
+    }
+
+    let mut ran_and_failed = false;
+    for event in &row.events {
+        if matches!(event.kind, LifecycleEventKind::Included { is_failed: true }) {
+            let block = Bytes::from(event.block_hash.clone());
+            if in_floor_closure(dag, &block, &max_floor)? {
+                ran_and_failed = true;
+                break;
+            }
+        }
+    }
+    let state = if ran_and_failed {
+        TerminalState::Failed
+    } else {
+        TerminalState::Expired
+    };
+    write_terminal(dag, sig, state, &row, terminalized)?;
+    schedule.checked.remove(sig);
+    Ok(())
+}
+
+/// Display fields for a terminal record, frozen from the event row it
+/// prunes: every record event counts toward `rejection_count` (duplicates
+/// included — the count is observability, not the causal ordering), and
+/// the latest event names the sig's most recent canonical appearance.
+fn frozen_display(row: &LifecycleEvents) -> (u32, i64, Vec<u8>) {
+    let rejection_count = row
+        .events
+        .iter()
+        .filter(|e| matches!(e.kind, LifecycleEventKind::Rejected { .. }))
+        .count() as u32;
+    let latest = row
+        .events
+        .iter()
+        .max_by(|a, b| {
+            a.height
+                .cmp(&b.height)
+                .then_with(|| a.block_hash.cmp(&b.block_hash))
+        })
+        .map(|e| (e.height, e.block_hash.clone()));
+    let (latest_height, latest_block_hash) = latest.unwrap_or((0, Vec::new()));
+    (rejection_count, latest_height, latest_block_hash)
+}
+
+fn write_terminal(
+    dag: &KeyValueDagRepresentation,
+    sig: &Bytes,
+    state: TerminalState,
+    row: &LifecycleEvents,
+    terminalized: &mut Vec<Bytes>,
+) -> Result<(), CasperError> {
+    let (rejection_count, latest_height, latest_block_hash) = frozen_display(row);
+    let written = dag
+        .put_deploy_terminal_if_absent(sig, TerminalRecord {
+            state,
+            rejection_count,
+            latest_height,
+            latest_block_hash,
+        })
+        .map_err(CasperError::KvStoreError)?;
+    // The sig is now irreversibly settled on the floor clock, whatever
+    // the verdict: the caller releases the proposer's pool copy against
+    // exactly this list.
+    terminalized.push(sig.clone());
+    tracing::info!(
+        target: "f1r3fly.casper.lifecycle",
+        sig = %hex::encode(&sig[..8.min(sig.len())]),
+        state = ?written.state,
+        rejection_count = written.rejection_count,
+        "deploy lifecycle terminal verdict written"
+    );
+    Ok(())
 }
 
 #[cfg(test)]

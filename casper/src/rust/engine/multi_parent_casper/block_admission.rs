@@ -117,6 +117,30 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     )?;
     record_dag_cardinality_metrics(&updated_dag);
 
+    // Advance the deploy-lifecycle register: the insert above already
+    // ingested the block's body into the lifecycle event rows; this bumps
+    // the register's clocks and evaluates the sigs whose thresholds
+    // crossed. A crash between insert and this step only delays a verdict
+    // (the schedule re-arms from the persisted open rows). The returned
+    // terminal list is the moment those sigs stop being re-proposable —
+    // the pool release keys on it (the floor-keyed storage sweep in the
+    // finalization runner performs the release until then).
+    let _terminalized = this
+        .deploy_lifecycle
+        .observe_block(
+            &updated_dag,
+            &this.block_store,
+            block,
+            this.casper_shard_conf.deploy_lifespan,
+            crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                this.casper_shard_conf.fault_tolerance_threshold_ppm,
+            ),
+            crate::rust::finality::deploy_lifecycle::citability_horizon(
+                this.casper_shard_conf.max_parent_depth,
+            ),
+        )
+        .await?;
+
     // Publish BlockAdded event
     this.event_publisher
         .publish(super::events::added_event(block))?;

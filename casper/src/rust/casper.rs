@@ -254,6 +254,9 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         block_dag_storage,
         deploy_storage: Arc::new(parking_lot::Mutex::new(deploy_storage)),
         rejected_deploy_buffer,
+        deploy_lifecycle: Arc::new(
+            crate::rust::finality::deploy_lifecycle::DeployLifecycle::default(),
+        ),
         casper_buffer_storage,
         validator_id,
         casper_shard_conf,

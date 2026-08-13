@@ -1118,6 +1118,9 @@ impl TestNode {
             block_dag_storage: block_dag_storage.clone(),
             deploy_storage: deploy_storage.clone(),
             rejected_deploy_buffer: rejected_deploy_buffer.clone(),
+            deploy_lifecycle: Arc::new(
+                casper::rust::finality::deploy_lifecycle::DeployLifecycle::default(),
+            ),
             casper_buffer_storage: casper_buffer_storage.clone(),
             validator_id: validator_id_opt.clone(),
             casper_shard_conf: shard_conf,

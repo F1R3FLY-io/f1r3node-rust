@@ -29,6 +29,26 @@ pub struct Floor {
     pub block_number: i64,
 }
 
+/// True iff `hash` is the floor block or one of its DAG ancestors —
+/// i.e., its contents are represented in every future merge base.
+pub(crate) fn in_floor_closure(
+    dag: &KeyValueDagRepresentation,
+    hash: &BlockHash,
+    floor: &Floor,
+) -> Result<bool, CasperError> {
+    if *hash == floor.hash {
+        return Ok(true);
+    }
+    let Some(height) = dag.block_number(hash) else {
+        return Ok(false);
+    };
+    if height > floor.block_number {
+        return Ok(false);
+    }
+    dag.is_dag_ancestor(hash, &floor.hash)
+        .map_err(CasperError::KvStoreError)
+}
+
 /// The active committee derived from a finalized-floor block's post-state: the
 /// PoS bonds at that state, filtered to the currently-active validator set.
 ///
