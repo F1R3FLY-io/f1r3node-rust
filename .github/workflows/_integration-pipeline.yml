@@ -538,7 +538,6 @@ jobs:
             --deselect integration-tests/test/tests/custom/test_cold_start_readiness.py \
             --deselect integration-tests/test/tests/custom/test_concurrent_bridge_locks.py \
             --deselect integration-tests/test/tests/custom/test_finality_stall_recovery.py \
-            --deselect integration-tests/test/tests/custom/test_observer_overload.py \
             --deselect integration-tests/test/tests/custom/test_readonly_catchup_bounded.py \
             --deselect integration-tests/test/tests/custom/test_slow_peer_notification.py \
             --deselect integration-tests/test/tests/custom/test_transient_peer_liveness.py \
