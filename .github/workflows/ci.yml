@@ -171,6 +171,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-system-integration-node-capabilities.sh
 
+      - name: Verify system-integration repin helper
+        shell: bash -euo pipefail {0}
+        run: scripts/test-repin-system-integration.sh
+
       - name: Verify soak summary aggregation
         shell: bash -euo pipefail {0}
         run: scripts/bench/test-write-soak-summary.sh
