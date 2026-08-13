@@ -566,6 +566,134 @@ async fn eval_and_read_out(
 }
 
 // ---------------------------------------------------------------------
+// Stateful lock-mock helper (Phase 8 slice 8a step-4g follow-up)
+//
+// Shared between the stateful-lock integration tests below.  Encodes
+// a "one-active-lock" LockRegistry stand-in that's expressive enough
+// to model:
+//   - Sequential locks (strict same-holder — spec §1143)
+//   - Range locks with same-holder skip (Prep A rule)
+//   - Cross-cap coordination via holder-identity comparison
+//   - Close-sweep behavior (release_all_for_holder clears active state
+//     if the incoming holder matches)
+//   - Monotone LockId minting (per-acquire fresh Int; matches real
+//     `LockRegistry.mint_id` semantics for release-idempotence tests)
+//
+// State cells (must be in the caller's outer `new` clause):
+//   activeHolder — Nil or the current active-lock holder Par
+//   activeKind   — Nil, "range", or "seq"
+//   activeLockId — Int monotone counter (starts at 0; ++ per acquire)
+//
+// Simplification: only ONE "active" lock at a time.  Same-holder skip
+// mints a fresh LockId but doesn't ADD to state — the outer lock keeps
+// tracking as the one active entry.  Real LockRegistry tracks a set
+// of (holder, offset, length) tuples per (dev, inode); the tests
+// covered by this mock exercise cross-cap and close-sweep semantics
+// which don't require full multi-lock accounting.  Tests that need
+// multi-lock accounting must build a bespoke mock.
+// ---------------------------------------------------------------------
+
+/// Rholang source fragment defining the stateful lock-native mocks.
+/// Splice into a `new ... in { ... }` scope where `activeHolder`,
+/// `activeKind`, `activeLockId`, `fsLockRange`, `fsLockSequential`,
+/// `fsReleaseLock`, `fsReleaseAllForHolder` are all bound.
+const STATEFUL_LOCK_MOCKS: &str = r#"
+          activeHolder!(Nil) |
+          activeKind!(Nil) |
+          activeLockId!(0) |
+
+          contract fsLockRange(@_fd, @_o, @_l, @_m, @holder, @_cm, ret) = {
+            for (@ch <- activeHolder; @ck <- activeKind; @cid <- activeLockId) {
+              match ck {
+                Nil => {
+                  // No active lock — grant.
+                  activeHolder!(holder) | activeKind!("range") |
+                  activeLockId!(cid + 1) |
+                  ret!([true, cid + 1])
+                }
+                "seq" => {
+                  // Sequential active — range blocked (spec §1143).
+                  activeHolder!(ch) | activeKind!(ck) | activeLockId!(cid) |
+                  ret!([false, "FSERR_BUSY", "sequential active"])
+                }
+                _ => {
+                  // Range active — check holder for same-holder skip.
+                  match ch == holder {
+                    true => {
+                      // Same holder → allow (Prep A rule).
+                      activeHolder!(ch) | activeKind!(ck) |
+                      activeLockId!(cid + 1) |
+                      ret!([true, cid + 1])
+                    }
+                    false => {
+                      // Cross-holder overlap → BUSY.
+                      activeHolder!(ch) | activeKind!(ck) | activeLockId!(cid) |
+                      ret!([false, "FSERR_BUSY", "cross-holder range conflict"])
+                    }
+                  }
+                }
+              }
+            }
+          } |
+
+          contract fsLockSequential(@_fd, @holder, @_cm, ret) = {
+            for (@ch <- activeHolder; @ck <- activeKind; @cid <- activeLockId) {
+              match ck {
+                Nil => {
+                  // No active lock — grant.
+                  activeHolder!(holder) | activeKind!("seq") |
+                  activeLockId!(cid + 1) |
+                  ret!([true, cid + 1])
+                }
+                _ => {
+                  // ANY active lock blocks sequential (STRICT same-holder,
+                  // spec §1143 "one active sequential stream per File").
+                  activeHolder!(ch) | activeKind!(ck) | activeLockId!(cid) |
+                  ret!([false, "FSERR_BUSY", "sequential conflict"])
+                }
+              }
+            }
+          } |
+
+          contract fsReleaseLock(@_id, ret) = {
+            for (@_ch <- activeHolder; @_ck <- activeKind; @cid <- activeLockId) {
+              // Simplification: clear active state unconditionally.  Real
+              // LockRegistry tracks per-LockId; tests using this mock
+              // don't exercise multi-lock accounting so single-clear is
+              // sufficient.  LockId counter is NOT decremented — matches
+              // real semantics (LockIds are monotone).
+              activeHolder!(Nil) | activeKind!(Nil) | activeLockId!(cid) |
+              ret!([true])
+            }
+          } |
+
+          contract fsReleaseAllForHolder(@holder, ret) = {
+            for (@ch <- activeHolder; @ck <- activeKind; @cid <- activeLockId) {
+              match ch {
+                Nil => {
+                  activeHolder!(Nil) | activeKind!(Nil) | activeLockId!(cid) |
+                  ret!([true, 0])
+                }
+                _ => {
+                  match ch == holder {
+                    true => {
+                      // Matching holder — sweep active state.
+                      activeHolder!(Nil) | activeKind!(Nil) | activeLockId!(cid) |
+                      ret!([true, 1])
+                    }
+                    false => {
+                      // Non-matching holder — leave active state alone.
+                      activeHolder!(ch) | activeKind!(ck) | activeLockId!(cid) |
+                      ret!([true, 0])
+                    }
+                  }
+                }
+              }
+            }
+          }
+"#;
+
+// ---------------------------------------------------------------------
 // File runtime tests
 // ---------------------------------------------------------------------
 
@@ -15005,16 +15133,11 @@ async fn file_close_sweep_causes_subsequent_release_to_return_fserr_closed() {
 /// tries to take an overlapping range lock → FSERR_BUSY.  Verifies the
 /// LockRegistry's cross-cap coordination via distinct HolderIds.
 ///
-/// Mock design: `activeHolder` cell starts Nil.  fsLockRange checks the
-/// cell — if Nil, records holder and grants; if non-Nil and different
-/// from incoming holder, returns FSERR_BUSY; if same holder, grants
-/// (models same-holder-skip).  fsReleaseLock clears the cell back to Nil
-/// (over-simplified — real LockRegistry tracks per-LockId — but
-/// sufficient for two-lock cross-cap scenarios).
-///
-/// Under fresh-mint semantics, each File cap has its own `stateP`
-/// GPrivate, so Alice's holder != Bob's holder.  The mock detects the
-/// difference and returns BUSY on Bob's attempt.
+/// Uses the shared `STATEFUL_LOCK_MOCKS` (see helper docstring above).
+/// Under fresh-mint semantics, each File cap has its own `this`
+/// GPrivate, so Alice's holder != Bob's holder.  The mock's holder-
+/// equality check on the "range active" branch returns FSERR_BUSY for
+/// Bob because his holder differs from Alice's active-holder record.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_caps_overlapping_write_locks_conflict() {
     let (space, reducer) =
@@ -15032,51 +15155,10 @@ async fn two_caps_overlapping_write_locks_conflict() {
             fsTruncate, fsChmod, fsChown,
             fsLockRange, fsLockSequential, fsReleaseLock, fsReleaseAllForHolder,
             Stream,
-            activeHolder
+            activeHolder, activeKind, activeLockId
         in {{
-          // Stateful lock mock — tracks a single active holder.
-          activeHolder!(Nil) |
-          contract fsLockRange(@_fd, @_o, @_l, @_m, @holder, @_cm, ret) = {{
-            for (@current <- activeHolder) {{
-              match current {{
-                Nil => {{
-                  activeHolder!(holder) |
-                  ret!([true, 1])
-                }}
-                _ => {{
-                  match current == holder {{
-                    true => {{
-                      // Same holder → allow (models Prep A's rule).
-                      activeHolder!(current) |
-                      ret!([true, 2])
-                    }}
-                    false => {{
-                      // Different holder → conflict.
-                      activeHolder!(current) |
-                      ret!([false, "FSERR_BUSY",
-                        "another cap holds an overlapping lock"])
-                    }}
-                  }}
-                }}
-              }}
-            }}
-          }} |
-          contract fsLockSequential(@_fd, @_h, @_cm, ret) = {{
-            ret!([true, 3])
-          }} |
-          contract fsReleaseLock(@_id, ret) = {{
-            for (@_prev <- activeHolder) {{
-              activeHolder!(Nil) |
-              ret!([true])
-            }}
-          }} |
-          contract fsReleaseAllForHolder(@_h, ret) = {{
-            for (@_prev <- activeHolder) {{
-              activeHolder!(Nil) |
-              ret!([true, 0])
-            }}
-          }} |
-
+          {stateful_mocks}
+          |
           contract fsRead(@_fd, @_n, ret)      = {{ ret!([true, "".hexToBytes()]) }} |
           contract fsReadAt(@_fd, @_o, @_n, ret) = {{ ret!([true, "".hexToBytes()]) }} |
           contract fsWrite(@_fd, @_xs, ret)    = {{ ret!([true, 0]) }} |
@@ -15092,7 +15174,7 @@ async fn two_caps_overlapping_write_locks_conflict() {
           contract parseRwxToBits(@_s, ret)    = {{ ret!([true, 0]) }} |
           contract Stream(retCh, @_producer, @_builder) = {{ retCh!(Nil) }} |
 
-{}
+{file_body}
           |
           for (@alice <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
             for (@bob   <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
@@ -15105,7 +15187,8 @@ async fn two_caps_overlapping_write_locks_conflict() {
           }}
         }}
         "#,
-        lib_body(FILE_RHO),
+        stateful_mocks = STATEFUL_LOCK_MOCKS,
+        file_body = lib_body(FILE_RHO),
     );
     let reply = eval_and_read_out(&space, &reducer, &src).await;
     let outer = match single_expr(&reply).unwrap().expr_instance {
@@ -15158,41 +15241,10 @@ async fn same_cap_two_overlapping_locks_coexist() {
             fsTruncate, fsChmod, fsChown,
             fsLockRange, fsLockSequential, fsReleaseLock, fsReleaseAllForHolder,
             Stream,
-            activeHolder
+            activeHolder, activeKind, activeLockId
         in {{
-          activeHolder!(Nil) |
-          contract fsLockRange(@_fd, @_o, @_l, @_m, @holder, @_cm, ret) = {{
-            for (@current <- activeHolder) {{
-              match current {{
-                Nil => {{
-                  activeHolder!(holder) |
-                  ret!([true, 1])
-                }}
-                _ => {{
-                  match current == holder {{
-                    true => {{
-                      // Same-holder skip: allow.
-                      activeHolder!(current) |
-                      ret!([true, 2])
-                    }}
-                    false => {{
-                      activeHolder!(current) |
-                      ret!([false, "FSERR_BUSY", "conflict"])
-                    }}
-                  }}
-                }}
-              }}
-            }}
-          }} |
-          contract fsLockSequential(@_fd, @_h, @_cm, ret) = {{ ret!([true, 3]) }} |
-          contract fsReleaseLock(@_id, ret) = {{ ret!([true]) }} |
-          contract fsReleaseAllForHolder(@_h, ret) = {{
-            for (@_prev <- activeHolder) {{
-              activeHolder!(Nil) |
-              ret!([true, 0])
-            }}
-          }} |
-
+          {stateful_mocks}
+          |
           contract fsRead(@_fd, @_n, ret)      = {{ ret!([true, "".hexToBytes()]) }} |
           contract fsReadAt(@_fd, @_o, @_n, ret) = {{ ret!([true, "".hexToBytes()]) }} |
           contract fsWrite(@_fd, @_xs, ret)    = {{ ret!([true, 0]) }} |
@@ -15208,7 +15260,7 @@ async fn same_cap_two_overlapping_locks_coexist() {
           contract parseRwxToBits(@_s, ret)    = {{ ret!([true, 0]) }} |
           contract Stream(retCh, @_producer, @_builder) = {{ retCh!(Nil) }} |
 
-{}
+{file_body}
           |
           for (@alice <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
             for (@lock1 <- @alice!?("lockRange", 0, 1024, "w")) {{
@@ -15219,7 +15271,8 @@ async fn same_cap_two_overlapping_locks_coexist() {
           }}
         }}
         "#,
-        lib_body(FILE_RHO),
+        stateful_mocks = STATEFUL_LOCK_MOCKS,
+        file_body = lib_body(FILE_RHO),
     );
     let reply = eval_and_read_out(&space, &reducer, &src).await;
     let outer = match single_expr(&reply).unwrap().expr_instance {
@@ -15233,5 +15286,310 @@ async fn same_cap_two_overlapping_locks_coexist() {
         lock2_ok,
         "Alice's second overlapping lockRange on the same cap must succeed \
          (Prep A same-holder skip); got code={lock2_code:?}"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Phase 8 slice 8a step-4g follow-up — gap tests identified in the
+// step-4-whole review.  Each closes a coverage hole:
+//
+// - Stream-lifetime lock persists cross-cap (bytes() vs. writeByteArray)
+// - Error-path lock release (writeByteArray's fsWrite fails, next
+//   sequential acquire from a DIFFERENT cap must succeed)
+// - Sequential-blocks-sequential same-cap (writeByteArray twice on
+//   the same cap under a live bytes() stream must fail on the second)
+//
+// All use the shared `STATEFUL_LOCK_MOCKS` helper.  Bespoke setups
+// remain for tests with fundamentally different mock shapes (Test 1
+// close-sweep uses a releasedFlag mock; error-path Test also overrides
+// fsWrite with a counter-based error injector).
+// ---------------------------------------------------------------------
+
+/// **Stream-lifetime sequential lock persists cross-cap** — Alice opens
+/// `bytes()`, acquiring the sequential lock at stream mint.  Cap B
+/// tries `writeByteArray` while Alice's stream is live → FSERR_BUSY.
+///
+/// Covers a load-bearing case that no prior test exercised: the
+/// stream-lifetime lock (via bytes/chars/readLine/lines' release-once
+/// lockCell guard pattern) genuinely persists across Rholang time,
+/// blocking cross-cap sequential attempts.  A regression that released
+/// the lock at Stream mint (instead of at stream termination) would
+/// let Bob's writeByteArray succeed spuriously.
+///
+/// Note: the Stream stub returns `Nil` for the stream handle, so
+/// Alice's stream is never consumed to EOS — the outer sequential
+/// lock stays held throughout the test.  This models a caller
+/// abandoning the stream mid-flight, which is the "leak until
+/// File.close sweep or deploy-end" case; here it's leveraged to keep
+/// the lock held so Bob's attempt hits the still-active-holder path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bytes_stream_lock_blocks_cross_cap_sequential_write() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = format!(
+        r#"
+        new File, fdP, stateP, cmodeP, LockToken, lockStateP,
+            parseRwxToBits, parseRwxLoop,
+            writeBytesLoop, writeBytesAtLoop, writeCharsLoop, writeLinesLoop,
+            readLinesIntoLoop, drainToNextLF,
+            codepointLen, concatStringsLoop, scanLineForLF,
+            fsRead, fsReadAt, fsWrite, fsWriteAt,
+            fsSeek, fsTell, fsSize, fsFlush, fsClose,
+            fsTruncate, fsChmod, fsChown,
+            fsLockRange, fsLockSequential, fsReleaseLock, fsReleaseAllForHolder,
+            Stream,
+            activeHolder, activeKind, activeLockId
+        in {{
+          {stateful_mocks}
+          |
+          contract fsRead(@_fd, @_n, ret)      = {{ ret!([true, "".hexToBytes()]) }} |
+          contract fsReadAt(@_fd, @_o, @_n, ret) = {{ ret!([true, "".hexToBytes()]) }} |
+          contract fsWrite(@_fd, @_xs, ret)    = {{ ret!([true, 0]) }} |
+          contract fsWriteAt(@_fd, @_o, @_xs, ret) = {{ ret!([true, 0]) }} |
+          contract fsSeek(@_fd, @_o, @_w, ret) = {{ ret!([true, 0]) }} |
+          contract fsTell(@_fd, ret)           = {{ ret!([true, 0]) }} |
+          contract fsSize(@_fd, ret)           = {{ ret!([true, 0]) }} |
+          contract fsFlush(@_fd, ret)          = {{ ret!([true]) }} |
+          contract fsClose(@_fd, ret)          = {{ ret!([true]) }} |
+          contract fsTruncate(@_fd, @_n, ret)  = {{ ret!([true]) }} |
+          contract fsChmod(@_r, @_p, @_b, @_cm, ret) = {{ ret!([true]) }} |
+          contract fsChown(@_r, @_p, @_o, @_g, @_cm, ret) = {{ ret!([true]) }} |
+          contract parseRwxToBits(@_s, ret)    = {{ ret!([true, 0]) }} |
+          contract Stream(retCh, @_producer, @_builder) = {{ retCh!(Nil) }} |
+
+{file_body}
+          |
+          for (@alice <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
+            for (@bob   <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
+              // Alice opens bytes() — acquires sequential lock via wrap.
+              for (@aliceBytesReply <- @alice!?("bytes")) {{
+                match aliceBytesReply {{
+                  [true, _streamHandle] => {{
+                    // Alice's sequential lock is now held.  Bob's write
+                    // must fail on fsLockSequential.
+                    for (@bobWriteReply <- @bob!?("writeByteArray", "x".toUtf8Bytes())) {{
+                      @"out"!([aliceBytesReply, bobWriteReply])
+                    }}
+                  }}
+                  _ => @"out"!([aliceBytesReply, [false, "SKIPPED", "bytes() failed"]])
+                }}
+              }}
+            }}
+          }}
+        }}
+        "#,
+        stateful_mocks = STATEFUL_LOCK_MOCKS,
+        file_body = lib_body(FILE_RHO),
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected list reply"),
+    };
+    let (alice_ok, _, _, _) = extract_reply(&outer.ps[0]);
+    assert!(alice_ok, "Alice's bytes() stream must mint successfully");
+    let (bob_ok, bob_code, _, _) = extract_reply(&outer.ps[1]);
+    assert!(
+        !bob_ok,
+        "Bob's writeByteArray under Alice's live stream must fail"
+    );
+    assert_eq!(
+        bob_code, "FSERR_BUSY",
+        "expected FSERR_BUSY from stream-lifetime sequential conflict; got: {bob_code:?}"
+    );
+}
+
+/// **Error-path release** — Alice's writeByteArray fails at fsWrite
+/// (simulated I/O error via counter-based mock).  writeByteArray's
+/// wrap must release the sequential lock BEFORE returning the error;
+/// Bob's subsequent writeByteArray from a different cap should then
+/// succeed (proving the lock was released even on the error path).
+///
+/// Covers a coverage hole flagged in the whole-step-4 review: no
+/// existing test verified that wraps release on the error path.  A
+/// regression where the wrap "return early on error without release"
+/// would strand the lock and cause Bob's write to fail with BUSY.
+///
+/// Uses a counter-based fsWrite mock that errors on the FIRST call
+/// only.  The write-methods stub (Stream) is left as the default
+/// no-op since this test doesn't drain a stream.  All other stubs
+/// standard.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn write_byte_array_releases_lock_on_error_path() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = format!(
+        r#"
+        new File, fdP, stateP, cmodeP, LockToken, lockStateP,
+            parseRwxToBits, parseRwxLoop,
+            writeBytesLoop, writeBytesAtLoop, writeCharsLoop, writeLinesLoop,
+            readLinesIntoLoop, drainToNextLF,
+            codepointLen, concatStringsLoop, scanLineForLF,
+            fsRead, fsReadAt, fsWrite, fsWriteAt,
+            fsSeek, fsTell, fsSize, fsFlush, fsClose,
+            fsTruncate, fsChmod, fsChown,
+            fsLockRange, fsLockSequential, fsReleaseLock, fsReleaseAllForHolder,
+            Stream,
+            activeHolder, activeKind, activeLockId,
+            writeCounter
+        in {{
+          {stateful_mocks}
+          |
+          contract fsRead(@_fd, @_n, ret)      = {{ ret!([true, "".hexToBytes()]) }} |
+          contract fsReadAt(@_fd, @_o, @_n, ret) = {{ ret!([true, "".hexToBytes()]) }} |
+          // Counter-based fsWrite: first call errors, rest succeed.
+          writeCounter!(0) |
+          contract fsWrite(@_fd, @xs, ret) = {{
+            for (@c <- writeCounter) {{
+              writeCounter!(c + 1) |
+              match c {{
+                0 => ret!([false, "FSERR_IO", "simulated write failure"])
+                _ => ret!([true, xs.length()])
+              }}
+            }}
+          }} |
+          contract fsWriteAt(@_fd, @_o, @_xs, ret) = {{ ret!([true, 0]) }} |
+          contract fsSeek(@_fd, @_o, @_w, ret) = {{ ret!([true, 0]) }} |
+          contract fsTell(@_fd, ret)           = {{ ret!([true, 0]) }} |
+          contract fsSize(@_fd, ret)           = {{ ret!([true, 0]) }} |
+          contract fsFlush(@_fd, ret)          = {{ ret!([true]) }} |
+          contract fsClose(@_fd, ret)          = {{ ret!([true]) }} |
+          contract fsTruncate(@_fd, @_n, ret)  = {{ ret!([true]) }} |
+          contract fsChmod(@_r, @_p, @_b, @_cm, ret) = {{ ret!([true]) }} |
+          contract fsChown(@_r, @_p, @_o, @_g, @_cm, ret) = {{ ret!([true]) }} |
+          contract parseRwxToBits(@_s, ret)    = {{ ret!([true, 0]) }} |
+          contract Stream(retCh, @_producer, @_builder) = {{ retCh!(Nil) }} |
+
+{file_body}
+          |
+          for (@alice <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
+            for (@bob   <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
+              // Alice's write hits fsWrite → mock returns FSERR_IO on
+              // first call.  writeByteArray's wrap must release the
+              // sequential lock before returning the error.
+              for (@aliceWrite <- @alice!?("writeByteArray", "a".toUtf8Bytes())) {{
+                // Bob's subsequent write should succeed — Alice's
+                // lock was released even on the error path.
+                for (@bobWrite <- @bob!?("writeByteArray", "b".toUtf8Bytes())) {{
+                  @"out"!([aliceWrite, bobWrite])
+                }}
+              }}
+            }}
+          }}
+        }}
+        "#,
+        stateful_mocks = STATEFUL_LOCK_MOCKS,
+        file_body = lib_body(FILE_RHO),
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected list reply"),
+    };
+    let (alice_ok, alice_code, _, _) = extract_reply(&outer.ps[0]);
+    assert!(
+        !alice_ok,
+        "Alice's write must fail (simulated fsWrite error)"
+    );
+    assert_eq!(
+        alice_code, "FSERR_IO",
+        "expected FSERR_IO from mock fsWrite; got: {alice_code:?}"
+    );
+    let (bob_ok, bob_code, _, _) = extract_reply(&outer.ps[1]);
+    assert!(
+        bob_ok,
+        "Bob's write must succeed — Alice's lock must have been released \
+         on the error path.  Got FSERR code={bob_code:?}"
+    );
+}
+
+/// **Same-cap sequential-blocks-sequential** — Alice opens `bytes()`
+/// (sequential lock held).  Alice's OWN subsequent `writeByteArray`
+/// (which needs a sequential lock) must fail — sequential is strict
+/// same-holder per §Slice-1 commitments' scope of the same-holder-skip
+/// rule.
+///
+/// Covers a coverage hole flagged in the review: no prior test verified
+/// that same-holder sequential exclusion actually fires.  A regression
+/// where same-holder-skip extended to sequential would let Alice's
+/// second sequential attempt through, corrupting the "one active
+/// sequential stream per File" invariant (spec §1143).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn same_cap_sequential_blocks_own_sequential_attempt() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = format!(
+        r#"
+        new File, fdP, stateP, cmodeP, LockToken, lockStateP,
+            parseRwxToBits, parseRwxLoop,
+            writeBytesLoop, writeBytesAtLoop, writeCharsLoop, writeLinesLoop,
+            readLinesIntoLoop, drainToNextLF,
+            codepointLen, concatStringsLoop, scanLineForLF,
+            fsRead, fsReadAt, fsWrite, fsWriteAt,
+            fsSeek, fsTell, fsSize, fsFlush, fsClose,
+            fsTruncate, fsChmod, fsChown,
+            fsLockRange, fsLockSequential, fsReleaseLock, fsReleaseAllForHolder,
+            Stream,
+            activeHolder, activeKind, activeLockId
+        in {{
+          {stateful_mocks}
+          |
+          contract fsRead(@_fd, @_n, ret)      = {{ ret!([true, "".hexToBytes()]) }} |
+          contract fsReadAt(@_fd, @_o, @_n, ret) = {{ ret!([true, "".hexToBytes()]) }} |
+          contract fsWrite(@_fd, @_xs, ret)    = {{ ret!([true, 0]) }} |
+          contract fsWriteAt(@_fd, @_o, @_xs, ret) = {{ ret!([true, 0]) }} |
+          contract fsSeek(@_fd, @_o, @_w, ret) = {{ ret!([true, 0]) }} |
+          contract fsTell(@_fd, ret)           = {{ ret!([true, 0]) }} |
+          contract fsSize(@_fd, ret)           = {{ ret!([true, 0]) }} |
+          contract fsFlush(@_fd, ret)          = {{ ret!([true]) }} |
+          contract fsClose(@_fd, ret)          = {{ ret!([true]) }} |
+          contract fsTruncate(@_fd, @_n, ret)  = {{ ret!([true]) }} |
+          contract fsChmod(@_r, @_p, @_b, @_cm, ret) = {{ ret!([true]) }} |
+          contract fsChown(@_r, @_p, @_o, @_g, @_cm, ret) = {{ ret!([true]) }} |
+          contract parseRwxToBits(@_s, ret)    = {{ ret!([true, 0]) }} |
+          contract Stream(retCh, @_producer, @_builder) = {{ retCh!(Nil) }} |
+
+{file_body}
+          |
+          for (@alice <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
+            for (@bytesReply <- @alice!?("bytes")) {{
+              match bytesReply {{
+                [true, _stream] => {{
+                  // Alice's sequential lock is held (bytes stream is live,
+                  // Stream stub returned Nil so it's never consumed).
+                  // Alice's OWN writeByteArray tries to acquire another
+                  // sequential lock → must fail per strict same-holder.
+                  for (@writeReply <- @alice!?("writeByteArray", "x".toUtf8Bytes())) {{
+                    @"out"!([bytesReply, writeReply])
+                  }}
+                }}
+                _ => @"out"!([bytesReply, [false, "SKIPPED", "bytes failed"]])
+              }}
+            }}
+          }}
+        }}
+        "#,
+        stateful_mocks = STATEFUL_LOCK_MOCKS,
+        file_body = lib_body(FILE_RHO),
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected list reply"),
+    };
+    let (bytes_ok, _, _, _) = extract_reply(&outer.ps[0]);
+    assert!(bytes_ok, "Alice's bytes() stream must mint successfully");
+    let (write_ok, write_code, _, _) = extract_reply(&outer.ps[1]);
+    assert!(
+        !write_ok,
+        "Alice's own writeByteArray under her own live bytes stream must fail \
+         (sequential is strict same-holder per §1143)"
+    );
+    assert_eq!(
+        write_code, "FSERR_BUSY",
+        "expected FSERR_BUSY from same-cap sequential-vs-sequential; got: {write_code:?}"
     );
 }
