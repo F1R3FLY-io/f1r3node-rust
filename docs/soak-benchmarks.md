@@ -7,6 +7,128 @@ runs — see [Weekend vs daily](#weekend-vs-daily). Design history and decisions
 [work log](work-logs/task-EPIC-010-2026-07-15T20-57Z.md), story US-004 in
 [UserStories.md](UserStories.md).
 
+## Soak lifecycle and terminology
+
+A soak is a repeated lifecycle test, not continuous monitoring of one standing
+shard. The terms used by the workflow, artifacts, badges, and dashboard have
+distinct scopes:
+
+| Term | Meaning |
+|---|---|
+| **Run** | One scheduled or manually dispatched soak against one pinned node commit. Daily runs target `dev`. Weekend runs target `master`. The node image is built once and reused throughout the run. |
+| **Segment** | A wall-clock slice of the same run, used to publish checkpoints. Segments share state, output, counters, and iteration numbering. A new segment does not create a new run. |
+| **Iteration** | One invocation of the integration load test using a newly created six-node shard. It covers shard creation, health readiness, every load phase, finalization and convergence checks, telemetry collection, and teardown. |
+| **Phase** | One load level inside an iteration. All five phases run in order against the same shard. |
+
+### Iteration lifecycle
+
+```mermaid
+flowchart TD
+    A["Start or resume soak segment"] --> B{"Run budget remains?"}
+    B -- "No" --> Z["Roll up results<br/>publish checkpoint or final report"]
+    B -- "Yes" --> C["Increment iteration<br/>alternate Docker / subprocess provider"]
+    C --> D["Create iteration directory<br/>start pytest and resource monitors"]
+    D --> E["Create fresh six-node shard"]
+    E --> F["Wait for initial LFB advancement"]
+    F --> G["Next phase<br/>low → medium → high → burst → sustained"]
+    G --> H["Submit lightweight deploys<br/>across three validators"]
+    H --> I["Capture tip−LFB cone depth"]
+    I --> J["Wait for phase deploys to finalize"]
+    J --> K["Record latency, throughput,<br/>LFB and node-internal metrics"]
+    K --> L{"More phases?"}
+    L -- "Yes" --> G
+    L -- "No" --> M["Snapshot all-node LFBs<br/>emit lfb_spread metric"]
+    M --> N{"Hard gates pass?"}
+    N -- "Yes" --> O["Verify every node is still running"]
+    N -- "No" --> P["Destroy shard in finally block"]
+    O --> P
+    P --> Q["Write per-iteration metrics.json"]
+    Q --> R{"pytest exited successfully?"}
+    R -- "Yes" --> S["Count successful iteration<br/>add duration to shard_up_seconds"]
+    R -- "No" --> T["Count failure<br/>preserve logs and monitor evidence"]
+    S --> U["Check signal, deadline,<br/>target movement and host guard"]
+    T --> U
+    U --> V{"Weekend benchmark due?"}
+    V -- "No" --> B
+    V -- "Yes" --> W["Run controlled-rate benchmark<br/>on a separate fresh local shard"]
+    W --> B
+```
+
+Each iteration alternates providers, beginning with Docker and then subprocess.
+Both providers exercise the same test contract. This sequence detects
+provider-specific startup, networking, cleanup, and telemetry failures. The
+fresh shard contains:
+
+- one bootstrap node
+- four bonded genesis validators
+- one readonly node
+
+The first three validators receive deploy submissions. The fourth validator
+participates in consensus so concurrent proposals create realistic sibling
+blocks and multi-parent merges. Before load begins, the test requires an
+initial last-finalized-block (LFB) advancement to prove that the shard is
+making progress.
+
+The iteration then runs this fixed load sequence. Rated phases submit
+lightweight `@N!(N)` contracts. These contracts stress deploy admission,
+proposal, block processing, and finalization rather than Rholang execution.
+
+| Phase | Load | Duration | Workers | Planned deploys |
+|---|---:|---:|---:|---:|
+| low | 1 deploy/s | 30s | 1 | 30 |
+| medium | 5 deploys/s | 20s | 3 | 100 |
+| high | 10 deploys/s | 15s | 3 | 150 |
+| burst | immediate burst | — | 3 | 32 |
+| sustained | 4 deploys/s | 300s | 3 | 1,200 |
+| **Total** | | | | **1,512** |
+
+After every phase, the harness waits for tracked deploys to finalize. The
+harness records latency percentiles, submission rate, LFB advance, cone depth,
+and per-validator node metrics. After the sustained phase drains, the harness
+records each node's LFB and emits
+`SOAK_METRIC name=lfb_spread value=<max-LFB-minus-min-LFB> phase=drain`.
+
+An iteration passes only when the complete contract succeeds:
+
+1. The fresh shard starts and advances its LFB.
+2. No deploy submission fails.
+3. Every submitted deploy finalizes within the configured timeout.
+4. All six nodes reach an LFB spread of five blocks or less within the budget.
+5. Every node is still active after the load.
+
+The harness destroys the shard after a pass or a failure. The driver then
+writes `iteration-NNNNN-<provider>/metrics.json`. This file contains timestamps,
+the provider, pytest counts, the exit code, resource peaks, latency, proposal
+errors, and registry metrics.
+
+For a failed iteration, the driver keeps diagnostic logs and monitor files. The
+driver waits for 30 seconds and usually starts a new shard. A host protection
+breach ends the run instead.
+
+The driver reads checkpoint and finalize signals only between iterations. Thus,
+these signals do not interrupt an active lifecycle. A segment deadline can stop
+an active pytest process. The driver records `deadline.txt` and exit code 124
+instead of a normal test failure.
+
+On weekend runs only, every fourth iteration is followed by a separate active
+benchmark segment. This benchmark creates another fresh local shard and applies
+a fixed-rate workload. It records latency, throughput, finalization, and RSS
+measurements before it removes the shard. The benchmark is separate from the
+preceding iteration and `shard_up_seconds`. Its results populate the run's
+`active` metrics.
+
+`shard_up_seconds` includes only the duration of iterations that passed the
+complete lifecycle. A failed iteration can run all six nodes and produce much
+telemetry. However, it adds zero because the shard did not satisfy the complete
+health contract. Thus, the dashboard stability value is an iteration success
+rate. It is not the availability of a long-lived deployment.
+
+The node-side orchestrator is
+[`scripts/run-merge-recovery-soak.sh`](../scripts/run-merge-recovery-soak.sh).
+The test contract and phase definitions live in
+[`test_load.py`](https://github.com/F1R3FLY-io/system-integration/blob/dev/integration-tests/test/tests/custom/test_load.py)
+in the system-integration repository.
+
 ## Where to look
 
 - **Trend dashboard** (charts, per-provider split, run links):

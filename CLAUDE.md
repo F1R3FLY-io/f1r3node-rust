@@ -1,3 +1,5 @@
+# F1R3node Rust — Pure Rust Blockchain Node
+
 ## Project Context
 - Pure Rust implementation of the F1R3FLY.io blockchain platform
 - Extracted from the `rust/dev` branch of [f1r3fly](https://github.com/F1R3FLY-io/f1r3fly) as a standalone Rust workspace
@@ -14,7 +16,7 @@ phrasings. Mathematical notation and theorem naming remain in
 
 ## Architecture Overview
 
-# F1R3node Rust — Pure Rust Blockchain Node
+The workspace separates consensus, execution, storage, networking, and node services into focused Rust crates.
 
 ## Platform Requirements
 - **Rust nightly** — pinned in `rust-toolchain.toml` (currently nightly-2026-02-09)
@@ -307,7 +309,7 @@ This applies to all slash commands and scripts that create configuration files.
 
 [OPTIONAL_COMMANDS]
 
-### PII Guidelines for Contributors
+## PII Guidelines for Contributors
 
 **CRITICAL - Before submitting any contribution:**
 
@@ -341,6 +343,116 @@ Contributors MUST ensure their code, commits, and documentation do NOT contain P
 - Use test data generators that create realistic but fake data
 - Use well-known test fixtures (e.g., `test@example.com`)
 - Never use production or real user data in development/testing
+
+## AI Artifact Generation Guidelines
+
+**Core strategy:** Default to **Markdown + Mermaid** as the source of truth for all generated artifacts. Use **HTML** only when high engagement or advanced interactivity is required.
+
+**Preferred formats:**
+
+| Format | Use for | Notes |
+|--------|---------|-------|
+| **Markdown + Mermaid** | Primary. Diagrams (flowcharts, sequences, architecture, timelines, Gantt, ERDs), structured documents, plans, specs | Relative links (`./images/`, `./docs/`) and GitHub/GitLab raw URLs for local/cloud asset referencing |
+| **HTML (CSS/JS + embedded Mermaid)** | Secondary. Interactive dashboards, prototypes, dynamic reviews, stakeholder deliverables | When visual polish and engagement are critical (tabs, sliders, clickable elements) |
+
+**Hybrid rule:** Always produce Markdown as the canonical, Git-friendly version first. Generate a self-contained HTML export on request.
+
+**Key principles:**
+
+- Prioritize human readability, editability, and Git compatibility (clean diffs, relative paths, native rendering on GitHub/GitLab).
+- Maximize information density while avoiding text walls — convert complex information into Mermaid diagrams.
+- Support seamless referencing of local files and cloud artifacts (images, other docs, raw Git content).
+- Favor Markdown for internal/agent use and long-term storage (token efficiency).
+- Use HTML when delivering to stakeholders or for living documents (engagement).
+
+**Output guidance:** When creating artifacts, ask whether HTML interactivity is needed. Default to clean Markdown with embedded Mermaid unless specified.
+
+<!-- ste-policy: required -->
+
+## Simplified Technical English
+<!-- ste-policy: full -->
+
+Smart Assets uses ASD-STE100 Simplified Technical English, Issue 9, dated January 2025, for applicable English technical prose.
+
+This policy is a Smart Assets applicability profile. The ASD standard remains the authoritative source for its rules and controlled dictionary.
+
+Get the current standard from the [official ASD-STE100 website](https://www.asd-ste100.org/) or its [official downloads page](https://www.asd-ste100.org/STE_downloads.html).
+
+ASD owns the standard and the ASD-STE100 trademark. Do not copy its controlled dictionary, examples, or substantial rule text into this repository.
+
+## UI Test Assertions
+
+React UI tests should prove user-observable DOM structure and state, not incidental copy or formatted sample values. Treat exact text/value assertions as a last resort unless the behavior under test is specifically copy, formatting, or content transformation.
+
+- **Preferred:** Accessibility-first queries for DOM elements and states: `getByRole`, `getByLabelText`, `aria-label`, `aria-labelledby`, `aria-selected`, `aria-expanded`, `aria-disabled`, focus state, and ARIA relationships.
+- **Preferred:** Assert semantic regions/components are present and wired correctly (tabs, tabpanels, dialogs, forms, buttons, lists), then assert behavior through state changes or callback/data-source calls.
+- **Acceptable:** Use `data-testid` attributes when no accessible handle exists or the element is only presentational. Also use them to identify a stable component boundary.
+- **Acceptable:** HTML `id` attributes for form elements and ARIA relationships.
+- **Avoid:** `getByText`/`queryByText` for literal strings that are merely display copy, repeated metrics, formatted numbers, or mock-data values.
+- **Avoid:** Do not use `getAllByText(...).length` as a substitute for a meaningful DOM assertion. It couples tests to duplicated visual text instead of behavior.
+- **Avoid:** CSS class selectors that may change with styling updates.
+
+Examples:
+
+```tsx
+// GOOD: accessibility-first DOM element + state
+expect(screen.getByRole("button", { name: "Refresh agents" })).toBeEnabled();
+
+// ACCEPTABLE: fallback when no accessible role/name fits
+expect(screen.getByTestId("cost-optimization-panel")).toBeInTheDocument();
+
+// GOOD for data-flow behavior: verify source + rendered component boundary,
+// not a duplicated metric string like "7.5%".
+expect(fetchQualityPipeline).toHaveBeenCalledTimes(1);
+expect(screen.getByRole("tablist", { name: "Quality Pipeline tabs" })).toBeInTheDocument();
+expect(screen.getByRole("tab", { name: /overview/i })).toHaveAttribute("aria-selected", "true");
+
+// BAD: brittle copy assertion
+expect(screen.getByText("Priority set by BountyForge routing")).toBeInTheDocument();
+
+// BAD: brittle mock-value / duplicated visual text assertion
+expect(screen.getByText("7.5%")).toBeInTheDocument();
+expect(screen.getAllByText("7.5%").length).toBeGreaterThan(0);
+```
+
+**When exact text is appropriate:** Use exact text assertions only when the acceptance criteria is about user-facing copy, accessibility name computation, validation messages, formatting rules, or transformed content. Prefer scoping with `within(...)` to a semantic container so the assertion remains tied to the behavior under test.
+
+## Worktree Policy
+
+Git worktrees are an **agentic-mode-only** tool in this workspace. In safe /
+interactive mode:
+
+- **NEVER create a git worktree** unless the user explicitly asks for one in
+  their own words. This covers every creation path equally: `git worktree add`,
+  harness-native tools (e.g. an `EnterWorktree` tool, subagent
+  `isolation: "worktree"`, workflow worktree isolation), and any script that
+  wraps them.
+- All work happens in the single main checkout on the current branch.
+- `git worktree list` is read-only and permitted.
+- `git worktree remove` and `git worktree prune` require explicit user
+  confirmation.
+
+**Why:** worktrees fragment local state, are invisible to `/recursive-push`
+repository discovery, and were the root cause of an accidental push to a
+protected branch. A worktree created silently by an assistant is a worktree
+nobody pushes, cleans up, or audits.
+
+**Exception:** In agentic mode (`claude-agentic`), all restrictions are lifted.
+YOLO mode runs *inside* a worktree that the human created. Running in a worktree
+never authorizes the creation of more worktrees.
+
+Canonical policy: [Git Interaction Policy](https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/git-interaction-policy.md)
+(Worktrees section).
+
+## grepai - Semantic Code Search
+
+`grepai` is an optional, MIT-licensed semantic-search tool. If it is installed
+and indexed locally, use it for intent-based code exploration. If it is not
+available, use the native search and file-reading tools in your harness.
+Nothing here is harness-specific -
+substitute your tool's equivalents for the generic actions described below.
+Setup (with the privacy-first local Ollama embedder as default) lives in the
+CLI Setup guide's "Optional: Semantic Code Search (grepai)" section.
 
 # important-instruction-reminders
 Do what has been asked; nothing more, nothing less.

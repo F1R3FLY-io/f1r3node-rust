@@ -1,7 +1,7 @@
 ---
 doc_type: todos
-version: "1.0"
-last_updated: 2026-08-12
+version: "1.1"
+last_updated: 2026-08-13
 mr_status:
   ready: false
   target_branch: master
@@ -64,7 +64,7 @@ mr_status:
 
 ## Active Epics
 
-<!-- Epics ordered by priority. EPIC-011 and EPIC-012 are the current top priorities. EPIC-001/002 are system-integration alignment (US-001). EPIC-003-008 are migration (US-002). -->
+<!-- Epics are ordered by priority. Work on the highest priority epic first. -->
 
 ---
 
@@ -1360,7 +1360,7 @@ EPIC-002 (monitoring separation)               |
 ## Task States
 
 | Status | Meaning | Next Action |
-| -------- | --------- | ------------- |
+|--------|---------|-------------|
 | `pending` | Not started | Available to claim |
 | `in_progress` | Being worked on | Continue or handoff |
 | `blocked` | Waiting on dependency | Check `blocked_by` |
@@ -1372,11 +1372,10 @@ EPIC-002 (monitoring separation)               |
 ## Workflow
 
 1. **Find next task**: Use `/nextTask` to identify the highest priority unclaimed task
-2. **Claim task**: Set `claimed_by` and `status: in_progress`
+2. **Claim task**: Set `claimed_by` with the [Implementer Identification](https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/stigmergic-collaboration.md#implementer-identification) format and set `status: in_progress`
 3. **Implement**: Use `/implement` to execute with full context
 4. **Complete**: Mark `status: complete` when acceptance criteria met
-5. **Signal**: Update completion signals in `/tmp/migrationPlan.md`
-6. **Move epic**: When all tasks complete, move epic to `docs/CompletedTasks.md`
+5. **Move epic**: When all tasks complete, move epic to `docs/CompletedTasks.md`
 
 ---
 
