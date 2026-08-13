@@ -195,6 +195,42 @@ if [ -n "$NODE_REPO_DIR" ] && [ -f "$NODE_REPO_DIR/node/Cargo.toml" ]; then
 	[ -n "$parsed_version" ] && VERSION="$parsed_version"
 fi
 
+persist_soak_state() {
+	local state_tmp="${STATE_FILE}.tmp"
+	local checkpoint_state="$OUTPUT_DIR/.soak-checkpoint-state.json"
+	local checkpoint_tmp="${checkpoint_state}.tmp"
+	mkdir -p "$OUTPUT_DIR"
+	{
+		printf 'STARTED_AT=%s\n' "$STARTED_AT"
+		printf 'ITERATIONS=%s\n' "$ITERATIONS"
+		printf 'FAILURES=%s\n' "$FAILURES"
+		printf 'BENCH_SEGMENTS=%s\n' "$BENCH_SEGMENTS"
+		printf 'BENCH_FAILURES=%s\n' "$BENCH_FAILURES"
+		printf 'SEGMENT=%s\n' "$SEGMENT"
+	} >"$state_tmp" && mv "$state_tmp" "$STATE_FILE"
+	jq -n \
+		--arg target_ref "$TARGET_REF" \
+		--arg target_sha "$TARGET_SHA" \
+		--arg trigger_source "$TRIGGER_SOURCE" \
+		--argjson slot_delay "$SLOT_DELAY_SECONDS" \
+		--arg version "$VERSION" \
+		--argjson started_at "$STARTED_AT" \
+		--argjson requested_seconds "$DURATION_SECONDS" \
+		--argjson iterations "$ITERATIONS" \
+		--argjson failures "$FAILURES" \
+		--argjson bench_segments "$BENCH_SEGMENTS" \
+		--argjson bench_failures "$BENCH_FAILURES" \
+		'{target_ref: $target_ref, target_sha: $target_sha,
+      trigger_source: $trigger_source, slot_delay_seconds: $slot_delay,
+      version: $version, started_at: $started_at,
+      requested_seconds: $requested_seconds, iterations: $iterations,
+      failures: $failures, bench_segments: $bench_segments,
+      bench_failures: $bench_failures}' >"$checkpoint_tmp" &&
+		mv "$checkpoint_tmp" "$checkpoint_state"
+}
+
+persist_soak_state
+
 # Peak total node RSS for this iteration, from the newest harness
 # resource-timeseries.csv written after the iteration's start marker
 # (columns: elapsed_s,node,memory_mb,cpu_percent,memory_limit_mb; the
@@ -598,6 +634,7 @@ mkdir -p "$OUTPUT_DIR"
 # for and skew the run's active-benchmark averages.
 if [ "$RUN_BENCHMARKS" = "true" ] && [ "$SEGMENT" -eq 1 ]; then
 	run_bench_segment
+	persist_soak_state
 fi
 
 # Operator signal, polled between iterations.
@@ -739,6 +776,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	fi
 	PROVIDER="${PROVIDERS[$((ITERATIONS % ${#PROVIDERS[@]}))]}"
 	ITERATIONS="$((ITERATIONS + 1))"
+	persist_soak_state
 	ITERATION_DIR="$OUTPUT_DIR/iteration-$(printf '%05d' "$ITERATIONS")-$PROVIDER"
 	mkdir -p "$ITERATION_DIR"
 	REMAINING="$((DEADLINE - $(date +%s)))"
@@ -812,6 +850,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	fi
 	if [ "$STATUS" -ne 0 ]; then
 		FAILURES="$((FAILURES + 1))"
+		persist_soak_state
 		printf '%s\n' "$STATUS" >"$ITERATION_DIR/exit-code.txt"
 		for evidence_root in "${HARNESS_TELEMETRY_DIRS[@]}"; do
 			[ -d "$evidence_root" ] || continue
@@ -880,6 +919,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 
 	if [ "$RUN_BENCHMARKS" = "true" ] && [ "$((ITERATIONS % BENCH_EVERY))" -eq 0 ]; then
 		run_bench_segment
+		persist_soak_state
 	fi
 
 done
@@ -900,14 +940,7 @@ FINISHED_AT="$(date +%s)"
 
 # Written before the rollup so a later segment resumes from accurate counters
 # even if the rollup below fails.
-{
-	printf 'STARTED_AT=%s\n' "$STARTED_AT"
-	printf 'ITERATIONS=%s\n' "$ITERATIONS"
-	printf 'FAILURES=%s\n' "$FAILURES"
-	printf 'BENCH_SEGMENTS=%s\n' "$BENCH_SEGMENTS"
-	printf 'BENCH_FAILURES=%s\n' "$BENCH_FAILURES"
-	printf 'SEGMENT=%s\n' "$SEGMENT"
-} >"$STATE_FILE"
+persist_soak_state
 
 {
 	printf 'started_at=%s\n' "$STARTED_AT"

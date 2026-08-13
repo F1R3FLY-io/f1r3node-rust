@@ -85,6 +85,7 @@ METRICS
 SH
 chmod +x "$TMP/bin/poetry" "$TMP/bin/docker" "$TMP/bin/curl"
 
+test ! -e "$TMP/output"
 PATH="$TMP/bin:$PATH" \
 	FAKE_POETRY_PID_FILE="$TMP/fake-poetry.pid" \
 	FAKE_DATA_DIR="$TMP/system-integration/integration-tests/data" \
@@ -104,6 +105,14 @@ for _ in $(seq 1 20); do
 	sleep 0.25
 done
 test -e "$TMP/output/iteration-00001-docker/.started"
+jq -e '
+  .target_ref == "unknown"
+  and .target_sha == "unknown"
+  and (.started_at | type) == "number"
+  and .requested_seconds == 120
+  and .iterations == 1
+  and .failures == 0
+' "$TMP/output/.soak-checkpoint-state.json" >/dev/null
 for _ in $(seq 1 20); do
 	[ -s "$TMP/output/iteration-00001-docker/node-metrics-timeseries.csv" ] &&
 		grep -q 'test.validator1.*12.*1048576.*2.*2.*7' \

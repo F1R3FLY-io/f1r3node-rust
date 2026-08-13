@@ -22,6 +22,7 @@ use crate::rust::report_store::ReportStore;
 use crate::rust::reporting_casper::ReportingCasper;
 use crate::rust::reporting_proto_transformer::ReportingProtoTransformer;
 use crate::rust::safety_oracle::CliqueOracleImpl;
+use crate::rust::util::proto_util;
 
 /// Domain-specific errors for BlockReportAPI operations
 #[derive(Debug, thiserror::Error)]
@@ -34,6 +35,14 @@ pub enum BlockReportError {
     BlockNotFound(BlockHash),
     #[error("Failed to trace block: {0}")]
     ReplayFailed(String),
+    #[error(
+        "computed post-state {computed} does not match recorded post-state {recorded} for block {block}"
+    )]
+    PostStateMismatch {
+        block: String,
+        computed: String,
+        recorded: String,
+    },
     #[error("Block info error: {0}")]
     BlockInfoError(String),
     #[error("Report store error: {0}")]
@@ -96,6 +105,28 @@ impl BlockReportAPI {
             .trace(block)
             .await
             .map_err(|e| BlockReportError::ReplayFailed(e))?;
+
+        let expected_post_state = proto_util::post_state_hash(block);
+        if report_result.post_state_hash.as_slice() != expected_post_state.as_ref() {
+            // A replay that succeeded yet produced divergent state is a state-integrity signal, not
+            // routine reporting noise. Counted and logged here because callers of this API vary in
+            // what they do with the error — one discards it outright and another files it under an
+            // expected condition — so neither the metric nor the record can be left to them.
+            metrics::counter!("block_report.post_state_mismatch", "source" => "casper")
+                .increment(1);
+            tracing::error!(
+                target: "f1r3fly.casper.reporting",
+                block = %hex::encode(&block.block_hash),
+                computed = %hex::encode(&report_result.post_state_hash),
+                recorded = %hex::encode(&expected_post_state),
+                "Replay post-state does not match the block's recorded post-state; refusing to cache the report"
+            );
+            return Err(BlockReportError::PostStateMismatch {
+                block: hex::encode(&block.block_hash),
+                computed: hex::encode(&report_result.post_state_hash),
+                recorded: hex::encode(&expected_post_state),
+            });
+        }
 
         let light_block = BlockAPI::get_light_block_info(casper.as_ref(), block)
             .await
