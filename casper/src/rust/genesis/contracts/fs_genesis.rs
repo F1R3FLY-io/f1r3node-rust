@@ -621,6 +621,13 @@ new
   // gets its own top-level `new` stripped by `lib_body` at
   // composition time.
   LockToken, lockStateP,
+  // Phase 8 slice 8c — auto-acquire helpers for options-map-taking
+  // method variants (spec §1181).  Encapsulate the acquire →
+  // inner-action → release dance so per-method variants avoid
+  // duplicating ~50 lines of Rholang wraps each.  Defined at the
+  // end of File.rho; bound here for the same reason as LockToken
+  // (File.rho's top-level `new` is stripped by lib_body).
+  withSequentialLock, withRangeLock,
   fsOpen(`rho:io:fs:native:1.0.0/open`),
   fsClose(`rho:io:fs:native:1.0.0/close`),
   fsRead(`rho:io:fs:native:1.0.0/read`),
@@ -1082,7 +1089,25 @@ mod tests {
         // is the fix per the review; body-comments in the method
         // document the concurrent-close scenario.  Same hard-fork
         // discipline as previous rolls.
-        const EXPECTED: &str = "c5d5be358612c8cd6a8cdd7ac005010e1868fbaebaecc93d874f4698903e00e4";
+        //
+        // Anchor rolled forward again for Phase 8 slice 8c
+        // (2026-08-13): added `withSequentialLock` / `withRangeLock`
+        // helper contracts (declared at the outer scope alongside
+        // `LockToken`, defined at the end of File.rho) plus THREE
+        // options-map-taking method variants — arity-2
+        // `writeByteArray(@bytes, @options)`, arity-2
+        // `writeBytes(@byteStream, @options)`, and arity-4
+        // `writeBytesAt(@offset, @maxLength, @byteStream, @options)`
+        // — that route wait:true through the helpers per spec §1181.
+        // Coexistence pattern — the pre-existing arity-1/1/3 methods
+        // are unchanged and continue to work for all existing test
+        // callers.  The remaining 13 producer methods (writeString,
+        // writeChars, writeLine, writeLines, chars, bytes, lines,
+        // readLine, bytesAt, readInto, readAtInto, writeFrom,
+        // writeFromAt) still lack options-map plumbing; scoped as a
+        // follow-up slice 8d.  Same hard-fork discipline as previous
+        // rolls.
+        const EXPECTED: &str = "dcf1f4cbb852652986de6ed3df07405c75d121e55664d9ef07d82ac5f2abb783";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

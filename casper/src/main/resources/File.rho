@@ -44,6 +44,13 @@ new File, fdP, stateP, cmodeP,
     // Inline in File.rho per §X-1 §899 rather than a separate
     // LockToken.rho module — the release path needs the same
     // fs-native URN scope File.rho already has.
+    //
+    // NOTE: this top-level `new` is stripped by `lib_body` at
+    // composition time; the real bindings live in fs_genesis.rs's
+    // outer scope (see docstring in the LockToken comment there).
+    // Adding a name here does nothing on its own — it must ALSO be
+    // added to fs_genesis.rs.  Slice 8c helpers (withSequentialLock,
+    // withRangeLock) are bound in fs_genesis.rs.
     LockToken, lockStateP
 in {
 
@@ -149,6 +156,80 @@ in {
                 return!([false, "FSERR_CLOSED", "file state unrecognized"])
               }
             }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "bytes must be a ByteArray"])
+      }
+    } |
+
+    // -- writeByteArray (arity-2, options-map variant) — slice 8c
+    //
+    // Per spec §1181: sequential producers accept an optional trailing
+    // `{"wait": true}` options-map argument.  On active-sequential-
+    // stream conflict, wait:true blocks until acquisition instead of
+    // returning FSERR_BUSY.  Default: fail.
+    //
+    // Delegates the acquire/release dance to `withSequentialLock`
+    // helper — no per-method body duplication.  stateP is released
+    // early (after the state check) so a concurrent close() on this
+    // cap can proceed while the wait is parked (see slice 8b sub-6
+    // review-fix B3 for the concurrent-close rationale).
+    method writeByteArray(@bytes, @options) {
+      match bytes {
+        b /\ ByteArray => {
+          match options.get("wait") {
+            wOpt /\ (Nil \/ Bool) => {
+              // Normalize Nil → false; Bool → itself.
+              new waitCh in {
+                match wOpt {
+                  Nil            => waitCh!(false)
+                  bb /\ Bool     => waitCh!(bb)
+                } |
+                for (@w <- waitCh) {
+                  for (@state <- @[*private, *stateP]) {
+                    match state {
+                      "closed" => {
+                        @[*private, *stateP]!("closed") |
+                        return!([false, "FSERR_CLOSED", "file is closed"])
+                      }
+                      "open" => {
+                        // Early stateP release (slice 8b B3 pattern).
+                        @[*private, *stateP]!("open") |
+                        for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
+                          match params {
+                            (fd, _root, _rel, mode) => {
+                              match mode {
+                                "r" => return!([false, "FSERR_UNSUPPORTED", "read-only file"])
+                                _   => {
+                                  new innerCh, retCh in {
+                                    // Inner action: on receiving a
+                                    // callback, do fsWrite and reply.
+                                    for (@cb <- innerCh) {
+                                      new writeCh in {
+                                        fsWrite!(fd, b, *writeCh) |
+                                        for (@writeReply <- writeCh) { @cb!(writeReply) }
+                                      }
+                                    } |
+                                    withSequentialLock!(fd, *this, cmode, w, *innerCh, *retCh) |
+                                    for (@r <- retCh) { return!(r) }
+                                  }
+                                }
+                              }
+                            }
+                            _ => return!([false, "FSERR_IO", "fd params malformed"])
+                          }
+                        }
+                      }
+                      _ => {
+                        @[*private, *stateP]!("closed") |
+                        return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            _ => return!([false, "FSERR_BAD_ARG", "options.wait must be Bool"])
           }
         }
         _ => return!([false, "FSERR_BAD_ARG", "bytes must be a ByteArray"])
@@ -1608,6 +1689,65 @@ in {
       }
     } |
 
+    // -- writeBytes(byteStream, options) — slice 8c arity-2 variant
+    //
+    // Per spec §1181.  Wait extraction + withSequentialLock delegation.
+    // Inner action: writeBytesLoop over the byteStream.  stateP released
+    // early to allow concurrent close() to proceed during wait:true parking.
+    method writeBytes(@byteStream, @options) {
+      match options.get("wait") {
+        wOpt /\ (Nil \/ Bool) => {
+          new waitCh in {
+            match wOpt {
+              Nil        => waitCh!(false)
+              bb /\ Bool => waitCh!(bb)
+            } |
+            for (@w <- waitCh) {
+              for (@state <- @[*private, *stateP]) {
+                match state {
+                  "closed" => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file is closed"])
+                  }
+                  "open" => {
+                    @[*private, *stateP]!("open") |
+                    for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
+                      match params {
+                        (fd, _root, _rel, mode) => {
+                          match mode {
+                            "r" => return!([false, "FSERR_UNSUPPORTED",
+                              "writeBytes requires a write-capable mode"])
+                            _   => {
+                              new innerCh, retCh in {
+                                for (@cb <- innerCh) {
+                                  new loopRet in {
+                                    writeBytesLoop!(byteStream, fd, 0, *loopRet) |
+                                    for (@finalReply <- loopRet) { @cb!(finalReply) }
+                                  }
+                                } |
+                                withSequentialLock!(fd, *this, cmode, w, *innerCh, *retCh) |
+                                for (@r <- retCh) { return!(r) }
+                              }
+                            }
+                          }
+                        }
+                        _ => return!([false, "FSERR_IO", "fd params malformed"])
+                      }
+                    }
+                  }
+                  _ => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                  }
+                }
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "options.wait must be Bool"])
+      }
+    } |
+
     // -- writeBytesAt(offset, maxLength, byteStream) --------------
     //
     // Positional ByteStream consumer via fsWriteAt.  Writes up to
@@ -1728,6 +1868,93 @@ in {
                             return!([false, "FSERR_CLOSED", "file state unrecognized"])
                           }
                         }
+                      }
+                    }
+                  }
+                }
+                _ => return!([false, "FSERR_BAD_ARG", "maxLength must be an integer"])
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "offset must be an integer"])
+      }
+    } |
+
+    // -- writeBytesAt(offset, maxLength, byteStream, options) — slice 8c
+    //
+    // Arity-4 variant per spec §1181.  Positional consumer with wait
+    // extraction; delegates the acquire/release dance to withRangeLock.
+    // Inner action: writeBytesAtLoop.  stateP released early for
+    // concurrent-close-during-wait safety (slice 8b sub-6 B3 pattern).
+    method writeBytesAt(@offset, @maxLength, @byteStream, @options) {
+      match offset {
+        off /\ Int => {
+          match off < 0 {
+            true => return!([false, "FSERR_BAD_ARG",
+              "offset must be non-negative"])
+            false => {
+              match maxLength {
+                mx /\ Int => {
+                  match mx < 0 {
+                    true => return!([false, "FSERR_BAD_ARG",
+                      "maxLength must be non-negative"])
+                    false => {
+                      match options.get("wait") {
+                        wOpt /\ (Nil \/ Bool) => {
+                          new waitCh in {
+                            match wOpt {
+                              Nil        => waitCh!(false)
+                              bb /\ Bool => waitCh!(bb)
+                            } |
+                            for (@w <- waitCh) {
+                              for (@state <- @[*private, *stateP]) {
+                                match state {
+                                  "closed" => {
+                                    @[*private, *stateP]!("closed") |
+                                    return!([false, "FSERR_CLOSED", "file is closed"])
+                                  }
+                                  "open" => {
+                                    @[*private, *stateP]!("open") |
+                                    for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
+                                      match params {
+                                        (fd, _root, _rel, fmode) => {
+                                          match fmode {
+                                            "r" => return!([false, "FSERR_UNSUPPORTED",
+                                              "writeBytesAt requires a write-capable mode"])
+                                            _   => {
+                                              match mx <= 0 {
+                                                true => return!([true, 0])
+                                                false => {
+                                                  new innerCh, retCh in {
+                                                    for (@cb <- innerCh) {
+                                                      new loopRet in {
+                                                        writeBytesAtLoop!(byteStream, fd, off, mx, 0, *loopRet) |
+                                                        for (@finalReply <- loopRet) { @cb!(finalReply) }
+                                                      }
+                                                    } |
+                                                    withRangeLock!(fd, off, mx, "w", *this, cmode, w, *innerCh, *retCh) |
+                                                    for (@r <- retCh) { return!(r) }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                        _ => return!([false, "FSERR_IO", "fd params malformed"])
+                                      }
+                                    }
+                                  }
+                                  _ => {
+                                    @[*private, *stateP]!("closed") |
+                                    return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                        _ => return!([false, "FSERR_BAD_ARG", "options.wait must be Bool"])
                       }
                     }
                   }
@@ -5536,6 +5763,75 @@ in {
               }
             }
           }
+        }
+      }
+    }
+  } |
+
+  // ---------------------------------------------------------------
+  // Phase 8 slice 8c (2026-08-13) — auto-acquire helpers for
+  // options-map-taking method variants (spec §1181).
+  //
+  // Each helper encapsulates the acquire → inner-action → release
+  // dance.  Per-method options-map variants pass an `innerCh` that
+  // listens for a callback channel; on receipt, the inner action
+  // performs its native call and sends the reply on the callback.
+  // The helper then releases the lock and forwards the inner reply
+  // to `retCh`.
+  //
+  // On lock acquisition failure (FSERR_BUSY, FSERR_CANCELLED,
+  // FSERR_QUOTA_EXCEEDED, ...), the inner action is NOT invoked;
+  // the lock-error reply is forwarded to `retCh` unchanged.
+  //
+  // Both helpers accept `wait: Bool` and pass it to the arity-8/5
+  // native calls (fsLockRange arity-8, fsLockSequential arity-5).
+  // ---------------------------------------------------------------
+
+  contract withSequentialLock(@fd, holder, @cmode, @wait, innerCh, retCh) = {
+    new lockCh in {
+      // Native fsLockSequential arity-5 (fd, holder, cmode, wait, ack).
+      fsLockSequential!(fd, *holder, cmode, wait, *lockCh) |
+      for (@lockReply <- lockCh) {
+        match lockReply {
+          [true, lid] => {
+            // Invoke the inner action with a fresh callback channel.
+            // The inner action's for-listener matches on innerCh,
+            // binds the callback name, does its native call, and
+            // sends the reply on the callback.
+            new callback in {
+              innerCh!(*callback) |
+              for (@innerReply <- callback) {
+                new relCh in {
+                  fsReleaseLock!(lid, *relCh) |
+                  for (@_ <- relCh) { retCh!(innerReply) }
+                }
+              }
+            }
+          }
+          _ => retCh!(lockReply)
+        }
+      }
+    }
+  } |
+
+  contract withRangeLock(@fd, @offset, @length, @mode, holder, @cmode, @wait, innerCh, retCh) = {
+    new lockCh in {
+      // Native fsLockRange arity-8 (fd, off, len, mode, holder, cmode, wait, ack).
+      fsLockRange!(fd, offset, length, mode, *holder, cmode, wait, *lockCh) |
+      for (@lockReply <- lockCh) {
+        match lockReply {
+          [true, lid] => {
+            new callback in {
+              innerCh!(*callback) |
+              for (@innerReply <- callback) {
+                new relCh in {
+                  fsReleaseLock!(lid, *relCh) |
+                  for (@_ <- relCh) { retCh!(innerReply) }
+                }
+              }
+            }
+          }
+          _ => retCh!(lockReply)
         }
       }
     }
