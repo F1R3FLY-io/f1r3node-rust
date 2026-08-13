@@ -109,7 +109,10 @@ fn manifest_tracks_rendered_panels_and_omits_all_zero_alert_panels() {
               "iterations": 20,
               "failures": 1,
               "iterations_per_hour": 12.5,
-              "too_far_ahead_errors": 0
+              "too_far_ahead_errors": 0,
+              "tracked_metrics": {
+                "lfb_spread": { "p95": 2, "max": 4 }
+              }
             }
           }
         ]"#,
@@ -127,6 +130,8 @@ fn manifest_tracks_rendered_panels_and_omits_all_zero_alert_panels() {
     assert!(files.contains(&"failure-heatmap-daily-dark.svg".to_string()));
     assert!(files.contains(&"chart-throughput-daily-light.svg".to_string()));
     assert!(files.contains(&"chart-throughput-daily-dark.svg".to_string()));
+    assert!(files.contains(&"chart-lfb-spread-daily-light.svg".to_string()));
+    assert!(files.contains(&"chart-lfb-spread-daily-dark.svg".to_string()));
     let throughput = fs::read_to_string(
         test_dir
             .path()
