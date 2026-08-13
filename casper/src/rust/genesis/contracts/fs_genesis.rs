@@ -1153,7 +1153,16 @@ mod tests {
         // writeFromAt (withRangeLock + positional fsWriteAt).  All
         // reuse the slice-8c withRangeLock helper.  Same hard-fork
         // discipline.
-        const EXPECTED: &str = "025523442148925a3232f6fdf05a39bb466c3406f7828a6e41572d9fcf1bdf61";
+        //
+        // Anchor rolled forward again for Phase 8 slice 8d-3-stream
+        // (partial, 2026-08-13): added arity-1 `bytes(@options)`
+        // stream-lifetime variant using acquireSequentialForStream
+        // hand-off helper (slice 8d-1) — proves the sub-1 hand-off
+        // pattern works end-to-end.  Remaining 4 stream-lifetime
+        // methods (bytesAt, chars, lines, readLine) still lack
+        // options-map plumbing — scoped as slice 8d-3-stream-2
+        // follow-up.  Same hard-fork discipline.
+        const EXPECTED: &str = "ba1daa55d515efe5fc07728c1693289dcd076c76164eea82635e84dac3e24018";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

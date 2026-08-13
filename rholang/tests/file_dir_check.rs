@@ -1474,6 +1474,56 @@ async fn file_write_from_arity_2_wait_true_dispatches() {
     assert!(ok, "writeFrom arity-2 with wait:true must succeed");
 }
 
+// -- Phase 8 slice 8d-3-stream stream-lifetime method variants ---------
+//
+// Uses the sub-1 hand-off helpers (acquireSequentialForStream /
+// acquireRangeForStream) — per plan option A the caller's stream
+// constructor stores the LockId from lockOut in its existing
+// lockCell, and release fires from stream termination as today.
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_bytes_arity_1_wait_true_returns_stream_via_hand_off() {
+    // Writes bytes to file, seeks back, calls bytes({"wait": true})
+    // — arity-1 stream-lifetime variant using acquireSequentialForStream
+    // hand-off.  Verifies the caller receives a stream handle and can
+    // drain it (which releases the sequential lock via lockCell).
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@_ <- @f!?("writeByteArray", "ab".toUtf8Bytes())) {
+            for (@_ <- @f!?("seek", 0, "set")) {
+              for (@streamReply <- @f!?("bytes", {"wait": true})) {
+                match streamReply {
+                  [true, stream] => {
+                    // Drain to trigger EOS termination path (which
+                    // releases the sequential lock via lockCell).
+                    for (@_ <- @stream!?("next")) {
+                      for (@_ <- @stream!?("next")) {
+                        for (@_ <- @stream!?("next")) {
+                          @"out"!([true])
+                        }
+                      }
+                    }
+                  }
+                  _ => @"out"!(streamReply)
+                }
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(
+        ok,
+        "bytes arity-1 with wait:true must return a stream handle via hand-off helper"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn file_write_from_at_arity_3_wait_true_dispatches() {
     let (space, reducer) =

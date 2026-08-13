@@ -1305,6 +1305,155 @@ in {
       }
     } |
 
+    // -- bytes(options) — slice 8d-3-stream arity-1 variant
+    //
+    // Per spec §1181.  Stream-lifetime lock (release fires from
+    // byteProducer termination via lockCell guard) — uses
+    // acquireSequentialForStream hand-off helper to acquire the lock
+    // and hand back the LockId, then stream construction is
+    // identical to arity-0.
+    //
+    // Body deliberately duplicates the arity-0 method (identical
+    // stream construction after the acquire) — Rholang agent methods
+    // don't cross-invoke cleanly.  Any change to the byteProducer /
+    // lockCell / stream-termination guards MUST be mirrored across
+    // both methods.
+    method bytes(@options) {
+      match options.get("wait") {
+        wOpt /\ (Nil \/ Bool) => {
+          new waitCh in {
+            match wOpt {
+              Nil        => waitCh!(false)
+              bb /\ Bool => waitCh!(bb)
+            } |
+            for (@w <- waitCh) {
+              for (@state <- @[*private, *stateP]) {
+                match state {
+                  "closed" => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file is closed"])
+                  }
+                  "open" => {
+                    @[*private, *stateP]!("open") |
+                    for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
+                      match params {
+                        (fd, _root, _rel, _mode) => {
+                          new lockOut, acqRet in {
+                            acquireSequentialForStream!(fd, *this, cmode, w, *lockOut, *acqRet) |
+                            for (@acqReply <- acqRet) {
+                              match acqReply {
+                                [true] => {
+                                  for (@lid <- lockOut) {
+                                    new byteProducer, byteBuilder, pendingCell, lockCell in {
+                                      pendingCell!(("".hexToBytes(), 0)) |
+                                      lockCell!((lid, false)) |
+
+                                      contract byteProducer(retCh) = {
+                                        for (@(pending, idx) <- pendingCell) {
+                                          match idx < pending.length() {
+                                            true => {
+                                              pendingCell!((pending, idx + 1)) |
+                                              retCh!([true, pending.slice(idx, idx + 1)])
+                                            }
+                                            false => {
+                                              new readCh in {
+                                                fsRead!(fd, 4096, *readCh) |
+                                                for (@reply <- readCh) {
+                                                  match reply {
+                                                    [true, ba /\ ByteArray] => {
+                                                      match ba.length() {
+                                                        0 => {
+                                                          for (@lockState <- lockCell) {
+                                                            match lockState {
+                                                              (lockId, false) => {
+                                                                lockCell!((lockId, true)) |
+                                                                new relCh in {
+                                                                  fsReleaseLock!(lockId, *relCh) |
+                                                                  for (@_r <- relCh) {
+                                                                    pendingCell!((pending, idx)) |
+                                                                    retCh!([false, "EOS", "end of file"])
+                                                                  }
+                                                                }
+                                                              }
+                                                              already => {
+                                                                lockCell!(already) |
+                                                                pendingCell!((pending, idx)) |
+                                                                retCh!([false, "EOS", "end of file"])
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                        _ => {
+                                                          pendingCell!((ba, 1)) |
+                                                          retCh!([true, ba.slice(0, 1)])
+                                                        }
+                                                      }
+                                                    }
+                                                    _ => {
+                                                      for (@lockState <- lockCell) {
+                                                        match lockState {
+                                                          (lockId, false) => {
+                                                            lockCell!((lockId, true)) |
+                                                            new relCh in {
+                                                              fsReleaseLock!(lockId, *relCh) |
+                                                              for (@_r <- relCh) {
+                                                                pendingCell!((pending, idx)) |
+                                                                retCh!(reply)
+                                                              }
+                                                            }
+                                                          }
+                                                          already => {
+                                                            lockCell!(already) |
+                                                            pendingCell!((pending, idx)) |
+                                                            retCh!(reply)
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      } |
+
+                                      contract byteBuilder(@values, retCh) = {
+                                        match values {
+                                          v /\ List => retCh!([true, v.concatBytes()])
+                                          _ => retCh!([false, "FSERR_IO",
+                                            "chunk builder expected List"])
+                                        }
+                                      } |
+
+                                      for (@streamHandle <- Stream!?(*byteProducer, *byteBuilder)) {
+                                        return!([true, streamHandle])
+                                      }
+                                    }
+                                  }
+                                }
+                                _ => return!(acqReply)
+                              }
+                            }
+                          }
+                        }
+                        _ => return!([false, "FSERR_IO", "fd params malformed"])
+                      }
+                    }
+                  }
+                  _ => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                  }
+                }
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "options.wait must be Bool"])
+      }
+    } |
+
     // -- bytesAt(offset, length) -----------------------------------
     //
     // Positional ByteStream producer.  Reads `length` bytes starting
