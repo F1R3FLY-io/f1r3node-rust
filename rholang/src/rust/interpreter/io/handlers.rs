@@ -39,7 +39,7 @@ use super::handle_table::{FileHandle, FileHandleTable};
 // C-R1 review fix: `extract_ok_u64` is used from fs_open's is_replay
 // branch to reconstruct the leader's returned fd for shadow-handle
 // insertion.
-use super::lock::{HolderId, LockError, LockId, LockMode};
+use super::lock::{AcquireOutcome, HolderId, LockError, LockId, LockMode, WaitPolicy};
 use super::mode::{fopen_flags, parse_open_mode, AccessMode};
 use super::path::{
     canonicalize_lexical, io_msg_scrub, quarantine_err_reply, safe_descend_verified, safe_open,
@@ -2402,10 +2402,30 @@ impl FsProcesses {
         else {
             return Err(illegal_argument_error("fs_lock_range"));
         };
-        let [fd_par, off_par, len_par, mode_par, holder_par, cmode_par, ack] = args.as_slice()
-        else {
-            return Err(illegal_argument_error("fs_lock_range"));
-        };
+        // Slice-8b sub-2 (2026-08-12): accept arity 8 (fd, off, len,
+        // mode, holder, cmode, wait, ack) with `wait: Bool` at slot
+        // 7.  Legacy arity 7 (no `wait`) is also accepted and
+        // defaults `wait = false` — a transitional shim so this
+        // sub-commit is Rust-only.  Sub-4 tightens File.rho to always
+        // pass 8 args and REMOVES the 7-arg branch in the same commit
+        // as the composed-source arity-table bump + genesis hex roll.
+        let (fd_par, off_par, len_par, mode_par, holder_par, cmode_par, wait, ack) =
+            match args.as_slice() {
+                [fd, off, len, mode, holder, cmode, wait_par, ack] => {
+                    match RhoBoolean::unapply(wait_par) {
+                        Some(b) => (fd, off, len, mode, holder, cmode, b, ack),
+                        None => {
+                            let out = vec![err(FSERR_BAD_ARG, "fs_lock_range: wait must be Bool")];
+                            produce(&out, ack).await?;
+                            return Ok(out);
+                        }
+                    }
+                }
+                [fd, off, len, mode, holder, cmode, ack] => {
+                    (fd, off, len, mode, holder, cmode, false, ack)
+                }
+                _ => return Err(illegal_argument_error("fs_lock_range")),
+            };
         if is_replay {
             produce(&previous, ack).await?;
             return Ok(previous);
@@ -2424,6 +2444,11 @@ impl FsProcesses {
                 produce(&out, ack).await?;
                 return Ok(out);
             }
+        };
+        let policy = if wait {
+            WaitPolicy::Wait
+        } else {
+            WaitPolicy::Fail
         };
         let reply = match (
             RhoNumber::unapply(fd_par),
@@ -2449,10 +2474,36 @@ impl FsProcesses {
                             .current_deploy_scope
                             .read()
                             .expect("current_deploy_scope RwLock poisoned");
-                        match self.handles.lock_registry.try_acquire_range(
-                            dev_inode, off as u64, len as u64, lm, holder, deploy,
+                        match self.handles.lock_registry.try_acquire_range_wait(
+                            dev_inode, off as u64, len as u64, lm, holder, deploy, policy,
                         ) {
-                            Ok(id) => ok_u64(id.0),
+                            Ok(AcquireOutcome::Immediate(id)) => ok_u64(id.0),
+                            Ok(AcquireOutcome::Parked { admit, .. }) => {
+                                // Await admission (release-triggered
+                                // wake) or cancellation (deploy-end
+                                // sweep via WalDeployScope::drop —
+                                // sub-3, or explicit cancel_wait).
+                                //
+                                // Runtime concern (slice-8b sub-3):
+                                // this await lives inside the deploy's
+                                // eval future.  If nothing signals the
+                                // oneshot, the eval future hangs.
+                                // Sub-3's WalDeployScope::drop invokes
+                                // `cancel_all_waiters_for_deploy` at
+                                // deploy end to guarantee no waiter is
+                                // leaked past deploy boundary — see
+                                // that commit for the full lifecycle.
+                                match admit.await {
+                                    Ok(Ok(id)) => ok_u64(id.0),
+                                    Ok(Err(le)) => lock_err_reply(le),
+                                    // Sender dropped without a signal
+                                    // (registry drop or unusual state
+                                    // sequence) — surface as Cancelled
+                                    // per the AcquireOutcome::Parked
+                                    // docstring.
+                                    Err(_recv_error) => lock_err_reply(LockError::Cancelled),
+                                }
+                            }
                             Err(le) => lock_err_reply(le),
                         }
                     }
@@ -2461,7 +2512,7 @@ impl FsProcesses {
             }
             _ => err(
                 FSERR_BAD_ARG,
-                "expected (u64, u64, u64>0, String\"r|w\", Par, String)",
+                "expected (u64, u64, u64>0, String\"r|w\", Par, String, Bool)",
             ),
         };
         let out = vec![reply];
@@ -2492,8 +2543,20 @@ impl FsProcesses {
         else {
             return Err(illegal_argument_error("fs_lock_sequential"));
         };
-        let [fd_par, holder_par, cmode_par, ack] = args.as_slice() else {
-            return Err(illegal_argument_error("fs_lock_sequential"));
+        // Slice-8b sub-2: flexible arity — 5 (fd, holder, cmode, wait,
+        // ack) or 4 (legacy, wait defaults false).  Sub-4 tightens to
+        // 5-only + File.rho update + hex roll.
+        let (fd_par, holder_par, cmode_par, wait, ack) = match args.as_slice() {
+            [fd, holder, cmode, wait_par, ack] => match RhoBoolean::unapply(wait_par) {
+                Some(b) => (fd, holder, cmode, b, ack),
+                None => {
+                    let out = vec![err(FSERR_BAD_ARG, "fs_lock_sequential: wait must be Bool")];
+                    produce(&out, ack).await?;
+                    return Ok(out);
+                }
+            },
+            [fd, holder, cmode, ack] => (fd, holder, cmode, false, ack),
+            _ => return Err(illegal_argument_error("fs_lock_sequential")),
         };
         if is_replay {
             produce(&previous, ack).await?;
@@ -2510,6 +2573,11 @@ impl FsProcesses {
                 return Ok(out);
             }
         };
+        let policy = if wait {
+            WaitPolicy::Wait
+        } else {
+            WaitPolicy::Fail
+        };
         let reply = match RhoNumber::unapply(fd_par) {
             Some(fd) if fd >= 0 => match self.dev_inode_from_fd(fd as u64).await {
                 Ok(dev_inode) => {
@@ -2523,15 +2591,20 @@ impl FsProcesses {
                     match self
                         .handles
                         .lock_registry
-                        .try_acquire_sequential(dev_inode, holder, deploy)
+                        .try_acquire_sequential_wait(dev_inode, holder, deploy, policy)
                     {
-                        Ok(id) => ok_u64(id.0),
+                        Ok(AcquireOutcome::Immediate(id)) => ok_u64(id.0),
+                        Ok(AcquireOutcome::Parked { admit, .. }) => match admit.await {
+                            Ok(Ok(id)) => ok_u64(id.0),
+                            Ok(Err(le)) => lock_err_reply(le),
+                            Err(_recv_error) => lock_err_reply(LockError::Cancelled),
+                        },
                         Err(le) => lock_err_reply(le),
                     }
                 }
                 Err((code, msg)) => err(code, msg),
             },
-            _ => err(FSERR_BAD_ARG, "expected (u64, Par, String)"),
+            _ => err(FSERR_BAD_ARG, "expected (u64, Par, String, Bool)"),
         };
         let out = vec![reply];
         produce(&out, ack).await?;
@@ -3262,8 +3335,11 @@ mod cmode_tests {
         let fn_start = src
             .find("pub async fn fs_lock_range")
             .expect("handlers.rs missing fs_lock_range definition");
-        // 3KB window covers the function body comfortably.
-        let window = &src[fn_start..std::cmp::min(fn_start + 3000, src.len())];
+        // Window bumped 3KB → 6KB (slice 8b sub-2, 2026-08-12): the
+        // wait:true parking + await + admit dispatch added ~2KB to
+        // the fn body, pushing the current_deploy_scope read past
+        // the old 3KB horizon.
+        let window = &src[fn_start..std::cmp::min(fn_start + 6000, src.len())];
         assert!(
             window.contains("current_deploy_scope"),
             "step 5 regression: fs_lock_range must read scope from \
@@ -3289,7 +3365,9 @@ mod cmode_tests {
         let fn_start = src
             .find("pub async fn fs_lock_sequential")
             .expect("handlers.rs missing fs_lock_sequential definition");
-        let window = &src[fn_start..std::cmp::min(fn_start + 3000, src.len())];
+        // Window bumped 3KB → 5KB (slice 8b sub-2): wait:true
+        // dispatch added ~1KB to the fn body.
+        let window = &src[fn_start..std::cmp::min(fn_start + 5000, src.len())];
         assert!(
             window.contains("current_deploy_scope"),
             "step 5 regression: fs_lock_sequential must read scope from \
@@ -3533,6 +3611,120 @@ mod cmode_tests {
             window.contains("target: \"f1r3fly.fs.oracular\""),
             "step 6 regression: fs_remove_dir's Oracular branch must \
              log-warn on locked-directory delete"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Slice 8b sub-2 (2026-08-12) — `wait: true` native-handler
+    // parking + Rig-protocol synth-error dispatch.  Source-scan pins
+    // that the arity-flexible parse + WaitPolicy dispatch + admit-
+    // await + Cancelled fallback are all present in each native.
+    // Behavioral coverage is at the sub-5 integration-test layer
+    // (file_dir_check.rs).
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn fs_lock_range_accepts_arity_8_with_wait_bool() {
+        // Pins the sub-2 arity extension.  Regressions that revert to
+        // arity-7-only would trip file_dir_check under sub-4 once
+        // File.rho passes 8 args.  Window bumped to 8KB — the
+        // wait:true parking path adds ~2KB to the fn body over the
+        // pre-slice-8b baseline.
+        let src = include_str!("handlers.rs");
+        let fn_start = src
+            .find("pub async fn fs_lock_range")
+            .expect("handlers.rs missing fs_lock_range definition");
+        let window = &src[fn_start..std::cmp::min(fn_start + 8000, src.len())];
+        assert!(
+            window.contains("[fd, off, len, mode, holder, cmode, wait_par, ack]"),
+            "sub-2 regression: fs_lock_range must accept the 8-arg form \
+             with `wait_par` at slot 7"
+        );
+        // Note: `RhoBoolean::unapply(\n    wait_par,\n)` under
+        // rustfmt — search for the pieces separately.
+        assert!(
+            window.contains("RhoBoolean::unapply(") && window.contains("wait_par"),
+            "sub-2 regression: fs_lock_range must parse wait as RhoBoolean"
+        );
+        assert!(
+            window.contains("WaitPolicy::Wait") && window.contains("WaitPolicy::Fail"),
+            "sub-2 regression: fs_lock_range must dispatch to \
+             WaitPolicy based on wait: Bool"
+        );
+        assert!(
+            window.contains("try_acquire_range_wait"),
+            "sub-2 regression: fs_lock_range must use the wait-aware \
+             LockRegistry method"
+        );
+        assert!(
+            window.contains("AcquireOutcome::Parked") && window.contains("admit.await"),
+            "sub-2 regression: fs_lock_range must await the Parked \
+             admission oneshot"
+        );
+        assert!(
+            window.contains("LockError::Cancelled"),
+            "sub-2 regression: fs_lock_range must surface Cancelled \
+             on oneshot RecvError (registry drop / no signal)"
+        );
+    }
+
+    #[test]
+    fn fs_lock_sequential_accepts_arity_5_with_wait_bool() {
+        let src = include_str!("handlers.rs");
+        let fn_start = src
+            .find("pub async fn fs_lock_sequential")
+            .expect("handlers.rs missing fs_lock_sequential definition");
+        let window = &src[fn_start..std::cmp::min(fn_start + 5000, src.len())];
+        assert!(
+            window.contains("[fd, holder, cmode, wait_par, ack]"),
+            "sub-2 regression: fs_lock_sequential must accept the 5-arg \
+             form with `wait_par` at slot 4"
+        );
+        assert!(
+            window.contains("RhoBoolean::unapply(") && window.contains("wait_par"),
+            "sub-2 regression: fs_lock_sequential must parse wait as RhoBoolean"
+        );
+        assert!(
+            window.contains("try_acquire_sequential_wait"),
+            "sub-2 regression: fs_lock_sequential must use the wait-aware \
+             LockRegistry method"
+        );
+        assert!(
+            window.contains("AcquireOutcome::Parked") && window.contains("admit.await"),
+            "sub-2 regression: fs_lock_sequential must await the Parked \
+             admission oneshot"
+        );
+    }
+
+    #[test]
+    fn fs_lock_range_legacy_arity_7_defaults_wait_false() {
+        // Transitional shim: while File.rho hasn't been updated to
+        // pass wait yet (sub-4), the 7-arg call must still work and
+        // default wait: false.  Sub-4 removes this branch when
+        // File.rho + hex are rolled.
+        let src = include_str!("handlers.rs");
+        let fn_start = src
+            .find("pub async fn fs_lock_range")
+            .expect("handlers.rs missing fs_lock_range definition");
+        let window = &src[fn_start..std::cmp::min(fn_start + 4000, src.len())];
+        assert!(
+            window.contains("[fd, off, len, mode, holder, cmode, ack]"),
+            "sub-2 shim: fs_lock_range must accept the legacy 7-arg \
+             form (removed in sub-4 when File.rho passes 8 args)"
+        );
+    }
+
+    #[test]
+    fn fs_lock_sequential_legacy_arity_4_defaults_wait_false() {
+        let src = include_str!("handlers.rs");
+        let fn_start = src
+            .find("pub async fn fs_lock_sequential")
+            .expect("handlers.rs missing fs_lock_sequential definition");
+        let window = &src[fn_start..std::cmp::min(fn_start + 4000, src.len())];
+        assert!(
+            window.contains("[fd, holder, cmode, ack]"),
+            "sub-2 shim: fs_lock_sequential must accept the legacy \
+             4-arg form (removed in sub-4)"
         );
     }
 }
