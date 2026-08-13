@@ -1782,6 +1782,7 @@ mod merge_recovery_validation_tests {
                 directly_finalized: false,
                 finalized: false,
                 fault_tolerance_value: 0.0,
+                merge_base: Bytes::new(),
             })
             .expect("metadata inserted");
     }

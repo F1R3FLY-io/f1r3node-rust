@@ -645,6 +645,7 @@ mod fork_choice_b1_repro_tests {
             directly_finalized: false,
             finalized: false,
             fault_tolerance_value: 0.0,
+            merge_base: Bytes::new(),
         }
     }
 

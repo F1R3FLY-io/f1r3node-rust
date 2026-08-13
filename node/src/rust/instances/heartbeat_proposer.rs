@@ -1218,6 +1218,7 @@ mod tests {
                 directly_finalized: finalized,
                 finalized,
                 fault_tolerance_value: 1.0,
+                merge_base: Bytes::new(),
             };
 
             snapshot.dag.dag_set.insert(hash.clone());

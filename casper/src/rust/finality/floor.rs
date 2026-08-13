@@ -636,6 +636,7 @@ mod frontier_determinism_tests {
             directly_finalized: false,
             finalized: false,
             fault_tolerance_value: 0.0,
+            merge_base: Bytes::new(),
         }
     }
 
@@ -767,6 +768,7 @@ mod frontier_determinism_tests {
             directly_finalized: false,
             finalized: false,
             fault_tolerance_value: 0.0,
+            merge_base: Bytes::new(),
         }
     }
 

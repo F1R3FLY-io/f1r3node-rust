@@ -123,6 +123,7 @@ message BlockMetadataInternal {
   bool directlyFinalized                     = 9; // whether the block has been last finalized block (LFB)
   bool finalized                             = 10;// whether the block is finalized
   float faultToleranceValue                  = 11;// cached normalized FT at finalization time
+  bytes mergeBase                            = 12;// recorded state parent (BlockProto body mergeBase); empty = header-derivable
 }
 
 message HeaderProto {

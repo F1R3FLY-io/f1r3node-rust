@@ -26,6 +26,12 @@ pub struct BlockMetadata {
     pub directly_finalized: bool,
     pub finalized: bool,
     pub fault_tolerance_value: f32,
+    /// The block's recorded state parent (`BlockProto.body.mergeBase`),
+    /// copied verbatim at insert. Empty means the base is header-derivable:
+    /// a single-parent block's base is its sole parent; genesis has none.
+    /// Derivation from `parents` is the reader's job, never done here.
+    #[serde(with = "shared::rust::serde_bytes", default)]
+    pub merge_base: Bytes,
 }
 
 impl PartialEq for BlockMetadata {
@@ -40,6 +46,7 @@ impl PartialEq for BlockMetadata {
             && self.invalid == other.invalid
             && self.directly_finalized == other.directly_finalized
             && self.finalized == other.finalized
+            && self.merge_base == other.merge_base
     }
 }
 
@@ -60,6 +67,7 @@ impl std::hash::Hash for BlockMetadata {
         self.invalid.hash(state);
         self.directly_finalized.hash(state);
         self.finalized.hash(state);
+        self.merge_base.hash(state);
     }
 }
 
@@ -85,6 +93,7 @@ impl BlockMetadata {
             directly_finalized: proto.directly_finalized,
             finalized: proto.finalized,
             fault_tolerance_value: proto.fault_tolerance_value,
+            merge_base: proto.merge_base,
         }
     }
 
@@ -108,6 +117,7 @@ impl BlockMetadata {
             directly_finalized: self.directly_finalized,
             finalized: self.finalized,
             fault_tolerance_value: self.fault_tolerance_value,
+            merge_base: self.merge_base.clone(),
         }
     }
 
@@ -157,6 +167,7 @@ impl BlockMetadata {
             directly_finalized,
             finalized,
             fault_tolerance_value: 0.0,
+            merge_base: b.body.merge_base.clone(),
         }
     }
 }

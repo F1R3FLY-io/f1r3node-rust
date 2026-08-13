@@ -227,6 +227,7 @@ mod tests {
                 directly_finalized: true,
                 finalized: true,
                 fault_tolerance_value: 1.0,
+                merge_base: Bytes::new(),
             })
             .expect("add metadata");
         }
