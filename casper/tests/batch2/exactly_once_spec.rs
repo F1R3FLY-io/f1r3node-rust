@@ -696,3 +696,119 @@ async fn floor_covered_effect_survives_a_late_record() {
         short(&loser_sig),
     );
 }
+
+/// End-to-end floor-STATE monotonicity: from the moment the floor covers a
+/// settled effect, every floor the node subsequently designates must carry
+/// that effect in its OWN post-state — the truth pointer never lands on a
+/// state missing settled content, even while the record branch
+/// canonicalizes late (the ucc round-0 erasure surface, session 1f9bbf8f).
+///
+/// This is a pin, not a falsifier: in this staging the record's merge is
+/// absorbed AFTER settlement, so its rejection is a settled-in-base
+/// duplicate and no erasing spine block forms — the geometry cannot
+/// regress even on the pre-fix tree. The erasing SELECTION is pinned
+/// red-first at unit level (`derive_floor_skips_witnessed_candidate_that_
+/// rejected_the_floors_content`); this spec pins the invariant through the
+/// real pipeline — record formation, metadata caching at insert, live
+/// floor derivation — so a regression anywhere in that wiring trips it.
+#[tokio::test]
+async fn the_floor_never_designates_a_state_missing_the_settled_effect() {
+    let (mut nodes, shard_id, loser_sig, loser_cell, _loser_deploy, m_block) =
+        stage_floor_covered_reinstatement().await;
+
+    // Join the record branch into nodes[2]'s frontier (as in the falsifier
+    // above), so floors derived from here on see the record-bearing chain.
+    let j_block = {
+        let mut snapshot = nodes[2]
+            .casper
+            .get_snapshot()
+            .await
+            .expect("nodes[2] snapshot");
+        if !snapshot
+            .parents
+            .iter()
+            .any(|p| p.block_hash == m_block.block_hash)
+        {
+            snapshot.parents.push(m_block.clone());
+        }
+        let validator_identity = nodes[2]
+            .validator_id_opt
+            .clone()
+            .expect("nodes[2] validator identity");
+        let deploy_storage = nodes[2].deploy_storage.clone();
+        let rejected_buffer = nodes[2].rejected_deploy_buffer.clone();
+        let runtime_manager = nodes[2].runtime_manager.clone();
+        let created = block_creator::create(
+            &snapshot,
+            &validator_identity,
+            None,
+            deploy_storage,
+            rejected_buffer,
+            &runtime_manager,
+            &mut nodes[2].block_store,
+            true,
+        )
+        .await
+        .expect("create the joining merge");
+        let BlockCreatorResult::Created(j_block, _pre, _post) = created else {
+            panic!("create must mint the joining merge on the full frontier");
+        };
+        j_block
+    };
+    for node in nodes.iter_mut() {
+        if !node.contains(&j_block.block_hash) {
+            node.process_block(j_block.clone())
+                .await
+                .expect("admit the joining merge");
+        }
+    }
+
+    for round in 0..12i32 {
+        let marker = {
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+            construct_deploy::basic_deploy_data(
+                400 + round,
+                Some(construct_deploy::DEFAULT_SEC2.clone()),
+                Some(shard_id.clone()),
+            )
+            .expect("monotonicity marker")
+        };
+        let b = nodes[2]
+            .add_block_from_deploys(std::slice::from_ref(&marker))
+            .await
+            .expect("monotonicity round");
+        for (other, node) in nodes.iter_mut().enumerate() {
+            if other != 2 {
+                node.process_block(b.clone())
+                    .await
+                    .expect("monotonicity delivery");
+            }
+        }
+        let dag = nodes[2].casper.block_dag().await.expect("dag");
+        let floor = floor_of_block(&dag, &b.block_hash, FtThreshold::from_f32_lossy(0.0))
+            .await
+            .expect("floor of the round tip");
+        let floor_block = nodes[2]
+            .block_store
+            .get(&floor.hash)
+            .expect("floor block read")
+            .expect("floor block present");
+        let effect_in_floor_state = !string_datums(
+            &nodes[2],
+            &floor_block.body.state.post_state_hash,
+            loser_cell,
+        )
+        .await
+        .is_empty();
+        assert!(
+            effect_in_floor_state,
+            "floor-state regression at round {round}: floor {}#{} does not \
+             carry the settled effect (@\"{}\", sig {}) in its post-state — \
+             the truth pointer designated a state missing settled content",
+            short(&floor.hash),
+            floor.block_number,
+            loser_cell,
+            short(&loser_sig),
+        );
+    }
+}
