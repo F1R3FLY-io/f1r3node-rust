@@ -66,6 +66,7 @@ fn with_libs(test_snippet: &str) -> String {
             // because lib_body strips File.rho's own top-level `new`.
             withSequentialLock, withRangeLock,
             acquireRangeForStream, acquireSequentialForStream,
+            writeLinesLoopWithOptions,
             mockFdCell, chmodLog, chownLog, truncLog,
             rmFileLog, rmDirLog, renameLog, copyLog,
             writeAtLog, entriesCell
@@ -1147,6 +1148,237 @@ async fn acquire_sequential_for_stream_hands_off_lockid_on_success() {
 // Rust-side sub-1 tests already cover 19 error/cancel paths including
 // FSERR_BUSY and FSERR_CANCELLED delivery via oneshot.
 
+// -- Phase 8 slice 8d-2 bounded-scope sequential producer variants ------
+//
+// Smoke-checks for the 4 arity-N+1 methods added in slice 8d-2:
+// writeString arity-2, writeChars arity-2, writeLine arity-2,
+// writeLines arity-2.  Each uses withSequentialLock (from slice 8c)
+// via the same inner-action + callback pattern as writeBytes arity-2.
+// writeLines is special: it delegates per-iteration to writeLine
+// arity-2 via a new writeLinesLoopWithOptions helper contract.
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_write_string_arity_2_wait_true_delegates_via_write_byte_array() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@r <- @f!?("writeString", "hi", {"wait": true})) {
+            @"out"!(r)
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(
+        ok,
+        "writeString arity-2 must succeed by delegating to writeByteArray arity-2"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_write_string_arity_1_and_arity_2_coexist() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@r1 <- @f!?("writeString", "a")) {
+            for (@r2 <- @f!?("writeString", "b", {"wait": true})) {
+              @"out"!([r1, r2])
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected list"),
+    };
+    let (r1_ok, _, _, _) = extract_reply(&outer.ps[0]);
+    let (r2_ok, _, _, _) = extract_reply(&outer.ps[1]);
+    assert!(r1_ok);
+    assert!(r2_ok);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_write_chars_arity_2_wait_true_dispatches_helper() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        new emptyProducer, charBuilder in {
+          contract emptyProducer(retCh) = { retCh!([false, "EOS", ""]) } |
+          contract charBuilder(@vs, retCh) = { retCh!([true, ""]) } |
+          for (@stream <- Stream!?(*emptyProducer, *charBuilder)) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+              for (@r <- @f!?("writeChars", stream, {"wait": true})) {
+                @"out"!(r)
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(
+        ok,
+        "writeChars arity-2 with wait:true must succeed on empty stream"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_write_chars_arity_2_wait_non_bool_rejects() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        new emptyProducer, charBuilder in {
+          contract emptyProducer(retCh) = { retCh!([false, "EOS", ""]) } |
+          contract charBuilder(@vs, retCh) = { retCh!([true, ""]) } |
+          for (@stream <- Stream!?(*emptyProducer, *charBuilder)) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+              for (@r <- @f!?("writeChars", stream, {"wait": "yes"})) {
+                @"out"!(r)
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_BAD_ARG");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_write_chars_arity_1_and_arity_2_coexist() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        new emptyProducer, charBuilder in {
+          contract emptyProducer(retCh) = { retCh!([false, "EOS", ""]) } |
+          contract charBuilder(@vs, retCh) = { retCh!([true, ""]) } |
+          for (@s1 <- Stream!?(*emptyProducer, *charBuilder);
+               @s2 <- Stream!?(*emptyProducer, *charBuilder)) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+              for (@r1 <- @f!?("writeChars", s1)) {
+                for (@r2 <- @f!?("writeChars", s2, {"wait": true})) {
+                  @"out"!([r1, r2])
+                }
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected list"),
+    };
+    let (r1_ok, _, _, _) = extract_reply(&outer.ps[0]);
+    let (r2_ok, _, _, _) = extract_reply(&outer.ps[1]);
+    assert!(r1_ok);
+    assert!(r2_ok);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_write_line_arity_2_wait_true_dispatches_helper() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        new emptyProducer, charBuilder in {
+          contract emptyProducer(retCh) = { retCh!([false, "EOS", ""]) } |
+          contract charBuilder(@vs, retCh) = { retCh!([true, ""]) } |
+          for (@stream <- Stream!?(*emptyProducer, *charBuilder)) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+              for (@r <- @f!?("writeLine", stream, {"wait": true})) {
+                @"out"!(r)
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(
+        ok,
+        "writeLine arity-2 with wait:true must succeed on empty stream + LF terminator"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_write_lines_arity_2_wait_true_threads_options_per_line() {
+    // Empty outer LineStream → loop terminates immediately with [true].
+    // No inner writeLine calls actually happen, but the options-map
+    // extraction + writeLinesLoopWithOptions dispatch is exercised.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        new emptyProducer, listBuilder in {
+          contract emptyProducer(retCh) = { retCh!([false, "EOS", ""]) } |
+          contract listBuilder(@vs, retCh) = { retCh!([true, vs]) } |
+          for (@lineStream <- Stream!?(*emptyProducer, *listBuilder)) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+              for (@r <- @f!?("writeLines", lineStream, {"wait": true})) {
+                @"out"!(r)
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(
+        ok,
+        "writeLines arity-2 with wait:true must succeed on empty outer stream"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_write_lines_arity_2_wait_non_bool_rejects_at_outer_dispatch() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        new emptyProducer, listBuilder in {
+          contract emptyProducer(retCh) = { retCh!([false, "EOS", ""]) } |
+          contract listBuilder(@vs, retCh) = { retCh!([true, vs]) } |
+          for (@lineStream <- Stream!?(*emptyProducer, *listBuilder)) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+              for (@r <- @f!?("writeLines", lineStream, {"wait": "yes"})) {
+                @"out"!(r)
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_BAD_ARG");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn file_close_then_read_returns_fserr_closed() {
     let (space, reducer) =
@@ -1441,7 +1673,8 @@ async fn file_close_propagates_fs_close_error() {
             fsReleaseAllForHolder,
             LockToken, lockStateP,
             withSequentialLock, withRangeLock,
-            acquireRangeForStream, acquireSequentialForStream
+            acquireRangeForStream, acquireSequentialForStream,
+            writeLinesLoopWithOptions
         in {{
           contract fsRead(@_fd, @_n, ret)  = {{ ret!([true, "".hexToBytes()]) }} |
           contract fsReadAt(@_fd, @_o, @_n, ret) = {{ ret!([true, "".hexToBytes()]) }} |
@@ -5713,6 +5946,7 @@ async fn file_write_line_lf_write_failure_is_forwarded() {
             LockToken, lockStateP,
             withSequentialLock, withRangeLock,
             acquireRangeForStream, acquireSequentialForStream,
+            writeLinesLoopWithOptions,
             writeCallCount,
             listState, producer, charBuilder
         in {{
@@ -15685,6 +15919,7 @@ async fn file_close_sweep_causes_subsequent_release_to_return_fserr_closed() {
             fsLockRange, fsLockSequential, fsReleaseLock, fsReleaseAllForHolder,
             withSequentialLock, withRangeLock,
             acquireRangeForStream, acquireSequentialForStream,
+            writeLinesLoopWithOptions,
             Stream,
             releasedFlag
         in {{
@@ -15802,6 +16037,7 @@ async fn two_caps_overlapping_write_locks_conflict() {
             fsLockRange, fsLockSequential, fsReleaseLock, fsReleaseAllForHolder,
             withSequentialLock, withRangeLock,
             acquireRangeForStream, acquireSequentialForStream,
+            writeLinesLoopWithOptions,
             Stream,
             activeHolder, activeKind, activeLockId
         in {{
@@ -15890,6 +16126,7 @@ async fn same_cap_two_overlapping_locks_coexist() {
             fsLockRange, fsLockSequential, fsReleaseLock, fsReleaseAllForHolder,
             withSequentialLock, withRangeLock,
             acquireRangeForStream, acquireSequentialForStream,
+            writeLinesLoopWithOptions,
             Stream,
             activeHolder, activeKind, activeLockId
         in {{
@@ -15990,6 +16227,7 @@ async fn bytes_stream_lock_blocks_cross_cap_sequential_write() {
             fsLockRange, fsLockSequential, fsReleaseLock, fsReleaseAllForHolder,
             withSequentialLock, withRangeLock,
             acquireRangeForStream, acquireSequentialForStream,
+            writeLinesLoopWithOptions,
             Stream,
             activeHolder, activeKind, activeLockId
         in {{
@@ -16085,6 +16323,7 @@ async fn write_byte_array_releases_lock_on_error_path() {
             fsLockRange, fsLockSequential, fsReleaseLock, fsReleaseAllForHolder,
             withSequentialLock, withRangeLock,
             acquireRangeForStream, acquireSequentialForStream,
+            writeLinesLoopWithOptions,
             Stream,
             activeHolder, activeKind, activeLockId,
             writeCounter
@@ -16188,6 +16427,7 @@ async fn same_cap_sequential_blocks_own_sequential_attempt() {
             fsLockRange, fsLockSequential, fsReleaseLock, fsReleaseAllForHolder,
             withSequentialLock, withRangeLock,
             acquireRangeForStream, acquireSequentialForStream,
+            writeLinesLoopWithOptions,
             Stream,
             activeHolder, activeKind, activeLockId
         in {{

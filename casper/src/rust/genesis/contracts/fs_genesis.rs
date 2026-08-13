@@ -634,6 +634,10 @@ new
   // stream constructor stores it in the existing lockCell so release
   // fires from stream termination as today.
   acquireRangeForStream, acquireSequentialForStream,
+  // Phase 8 slice 8d-2 — companion loop for writeLines arity-2 that
+  // threads the options map (with wait:true) to each internal writeLine
+  // arity-2 call.  Same shape as writeLinesLoop but arity 5 not 4.
+  writeLinesLoopWithOptions,
   fsOpen(`rho:io:fs:native:1.0.0/open`),
   fsClose(`rho:io:fs:native:1.0.0/close`),
   fsRead(`rho:io:fs:native:1.0.0/read`),
@@ -1127,7 +1131,18 @@ mod tests {
         // scoped follow-ups add them in slice 8d-2 (stream-lifetime
         // methods) and slice 8d-3 (bounded-scope methods use the
         // slice-8c helpers).  Same hard-fork discipline.
-        const EXPECTED: &str = "5a5f6fd0a5714da3ad672416ddebf4079dd3bc59b788eccf8b75819ada2944b4";
+        //
+        // Anchor rolled forward again for Phase 8 slice 8d-2
+        // (2026-08-13): added FOUR bounded-scope sequential producer
+        // arity-N+1 variants per spec §1181 — arity-2 writeString
+        // (delegates to writeByteArray arity-2), arity-2 writeChars
+        // (withSequentialLock + writeCharsLoop), arity-2 writeLine
+        // (withSequentialLock + writeCharsLoop + LF fsWrite as inner
+        // action), and arity-2 writeLines (delegates per-iteration to
+        // writeLine arity-2 via new `writeLinesLoopWithOptions`
+        // helper contract).  Existing arity-1 methods unchanged for
+        // ~300+ test caller compatibility.  Same hard-fork discipline.
+        const EXPECTED: &str = "7eb81b021a46ac8517b0d0d5c9458ff8cd2e959a16572afebb9b5f62cbb3dc11";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

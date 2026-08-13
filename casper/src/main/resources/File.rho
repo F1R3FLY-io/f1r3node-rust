@@ -248,6 +248,25 @@ in {
       }
     } |
 
+    // -- writeString(s, options) — slice 8d-2 arity-2 variant
+    //
+    // Per spec §1181: sequential producers accept a trailing options
+    // map for wait:true.  writeString delegates to writeByteArray;
+    // the arity-2 variant simply forwards options to writeByteArray's
+    // slice-8c arity-2 form.  wait extraction + FSERR_BAD_ARG on
+    // non-Bool wait happens inside writeByteArray arity-2, so this
+    // wrapper is just a pass-through.
+    method writeString(@s, @options) {
+      match s {
+        str /\ String => {
+          for (@reply <- @(*this)!?("writeByteArray", str.toUtf8Bytes(), options)) {
+            return!(reply)
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "s must be a String"])
+      }
+    } |
+
     // -- readN(n) ---------------------------------------------------
     //
     // ## Non-normative extension
@@ -3639,6 +3658,65 @@ in {
       }
     } |
 
+    // -- writeChars(charStream, options) — slice 8d-2 arity-2 variant
+    //
+    // Per spec §1181.  Same pattern as writeBytes arity-2 (slice 8c):
+    // wait extraction + withSequentialLock delegation + early stateP
+    // release for concurrent-close safety.  Inner action: writeCharsLoop.
+    method writeChars(@charStream, @options) {
+      match options.get("wait") {
+        wOpt /\ (Nil \/ Bool) => {
+          new waitCh in {
+            match wOpt {
+              Nil        => waitCh!(false)
+              bb /\ Bool => waitCh!(bb)
+            } |
+            for (@w <- waitCh) {
+              for (@state <- @[*private, *stateP]) {
+                match state {
+                  "closed" => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file is closed"])
+                  }
+                  "open" => {
+                    @[*private, *stateP]!("open") |
+                    for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
+                      match params {
+                        (fd, _root, _rel, mode) => {
+                          match mode {
+                            "r" => return!([false, "FSERR_UNSUPPORTED",
+                              "writeChars requires a write-capable mode"])
+                            _   => {
+                              new innerCh, retCh in {
+                                for (@cb <- innerCh) {
+                                  new loopRet in {
+                                    writeCharsLoop!(charStream, fd, 0, *loopRet) |
+                                    for (@finalReply <- loopRet) { @cb!(finalReply) }
+                                  }
+                                } |
+                                withSequentialLock!(fd, *this, cmode, w, *innerCh, *retCh) |
+                                for (@r <- retCh) { return!(r) }
+                              }
+                            }
+                          }
+                        }
+                        _ => return!([false, "FSERR_IO", "fd params malformed"])
+                      }
+                    }
+                  }
+                  _ => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                  }
+                }
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "options.wait must be Bool"])
+      }
+    } |
+
     // -- writeLine(charStream) -------------------------------------
     //
     // Drains `charStream` via writeChars-style loop, then appends a
@@ -3762,6 +3840,86 @@ in {
       }
     } |
 
+    // -- writeLine(charStream, options) — slice 8d-2 arity-2 variant
+    //
+    // Per spec §1181.  Inner action: writeCharsLoop for the line body,
+    // then fsWrite(LF) if the loop succeeded.  On char-drain failure,
+    // the LF is NOT appended (partial line, no terminator).  Same
+    // atomicity guarantee as arity-1: the sequential lock spans BOTH
+    // the char-drain and the LF-terminator write, so concurrent
+    // sequential callers can't interleave between them.
+    method writeLine(@charStream, @options) {
+      match options.get("wait") {
+        wOpt /\ (Nil \/ Bool) => {
+          new waitCh in {
+            match wOpt {
+              Nil        => waitCh!(false)
+              bb /\ Bool => waitCh!(bb)
+            } |
+            for (@w <- waitCh) {
+              for (@state <- @[*private, *stateP]) {
+                match state {
+                  "closed" => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file is closed"])
+                  }
+                  "open" => {
+                    @[*private, *stateP]!("open") |
+                    for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
+                      match params {
+                        (fd, _root, _rel, mode) => {
+                          match mode {
+                            "r" => return!([false, "FSERR_UNSUPPORTED",
+                              "writeLine requires a write-capable mode"])
+                            _   => {
+                              new innerCh, retCh in {
+                                for (@cb <- innerCh) {
+                                  new loopRet in {
+                                    writeCharsLoop!(charStream, fd, 0, *loopRet) |
+                                    for (@charsReply <- loopRet) {
+                                      match charsReply {
+                                        [true] => {
+                                          // Append LF (0x0A).
+                                          new lfCh in {
+                                            fsWrite!(fd, "0a".hexToBytes(), *lfCh) |
+                                            for (@lfReply <- lfCh) {
+                                              match lfReply {
+                                                [true, _] => @cb!([true])
+                                                [false, code, msg] => @cb!([false, code, msg])
+                                                _ => @cb!([false, "FSERR_IO",
+                                                  "fsWrite for LF terminator returned malformed reply"])
+                                              }
+                                            }
+                                          }
+                                        }
+                                        _ => @cb!(charsReply)
+                                      }
+                                    }
+                                  }
+                                } |
+                                withSequentialLock!(fd, *this, cmode, w, *innerCh, *retCh) |
+                                for (@r <- retCh) { return!(r) }
+                              }
+                            }
+                          }
+                        }
+                        _ => return!([false, "FSERR_IO", "fd params malformed"])
+                      }
+                    }
+                  }
+                  _ => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                  }
+                }
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "options.wait must be Bool"])
+      }
+    } |
+
     // -- writeLines(lineStream) ------------------------------------
     //
     // Drains an outer `LineStream` (e.g., from `otherFile!lines()`
@@ -3859,6 +4017,79 @@ in {
             return!([false, "FSERR_CLOSED", "file state unrecognized"])
           }
         }
+      }
+    } |
+
+    // -- writeLines(lineStream, options) — slice 8d-2 arity-2 variant
+    //
+    // Per spec §1181.  writeLines has no OUTER lock; each internal
+    // writeLine call independently acquires + releases a whole-file
+    // sequential lock.  The arity-2 variant threads options through
+    // to each internal writeLine so wait:true is honored per-line.
+    // Uses writeLinesLoopWithOptions helper (module-level, defined
+    // near writeLinesLoop) that mirrors writeLinesLoop but calls
+    // writeLine arity-2 with the passed options map.
+    //
+    // Wait extraction validation happens here at the outer method;
+    // the loop-level dispatch passes the (already-validated) options
+    // through to writeLine arity-2, whose own wait extraction is a
+    // no-op re-check (idempotent).
+    method writeLines(@lineStream, @options) {
+      match options.get("wait") {
+        wOpt /\ (Nil \/ Bool) => {
+          new waitCh in {
+            match wOpt {
+              Nil        => waitCh!(false)
+              bb /\ Bool => waitCh!(bb)
+            } |
+            for (@_w <- waitCh) {
+              for (@state <- @[*private, *stateP]) {
+                match state {
+                  "closed" => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file is closed"])
+                  }
+                  "open" => {
+                    for (@params <<- @[*private, *fdP]) {
+                      match params {
+                        (_fd, _root, _rel, mode) => {
+                          match mode {
+                            "r" => {
+                              @[*private, *stateP]!("open") |
+                              return!([false, "FSERR_UNSUPPORTED",
+                                "writeLines requires a write-capable mode"])
+                            }
+                            _ => {
+                              // Release stateP before starting loop
+                              // (same rationale as arity-1: internal
+                              // writeLine calls re-acquire stateP).
+                              @[*private, *stateP]!("open") |
+                              new loopRet in {
+                                writeLinesLoopWithOptions!(*this, lineStream, options, 0, *loopRet) |
+                                for (@finalReply <- loopRet) {
+                                  return!(finalReply)
+                                }
+                              }
+                            }
+                          }
+                        }
+                        _ => {
+                          @[*private, *stateP]!("open") |
+                          return!([false, "FSERR_IO", "fd params malformed"])
+                        }
+                      }
+                    }
+                  }
+                  _ => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                  }
+                }
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "options.wait must be Bool"])
       }
     } |
 
@@ -5405,6 +5636,74 @@ in {
   //
   // The inner CharStream is drained by writeLine's own writeCharsLoop
   // (which closes the inner on exit); we do NOT re-close it here.
+  // Phase 8 slice 8d-2 companion: writeLinesLoopWithOptions —
+  // same as writeLinesLoop but calls writeLine arity-2 with an
+  // options map, so wait:true is threaded per-line for the arity-2
+  // writeLines caller.  Delegates line-by-line atomicity to
+  // writeLine arity-2 (each internal call re-extracts wait from
+  // the passed options map).
+  contract writeLinesLoopWithOptions(@fileHandle, @lineStream, @options, @linesWritten, ret) = {
+    for (@reply <- @lineStream!?("next")) {
+      match reply {
+        [true, innerStream] => {
+          for (@wReply <- @fileHandle!?("writeLine", innerStream, options)) {
+            match wReply {
+              [true] => writeLinesLoopWithOptions!(
+                fileHandle, lineStream, options, linesWritten + 1, *ret)
+              [false, code, msg] => {
+                new nm in {
+                  match msg {
+                    m /\ String => nm!(m)
+                    _           => nm!("[non-string msg suppressed]")
+                  } |
+                  for (@normalizedMsg <- nm) {
+                    for (@_ <- @lineStream!?("close")) {
+                      ret!([false, code,
+                        "wrote ${n} lines before failure: ${m}" %%
+                          {"n": linesWritten, "m": normalizedMsg}])
+                    }
+                  }
+                }
+              }
+              _ => {
+                for (@_ <- @lineStream!?("close")) {
+                  ret!([false, "FSERR_IO",
+                    "wrote ${n} lines before writeLine returned malformed reply" %%
+                      {"n": linesWritten}])
+                }
+              }
+            }
+          }
+        }
+        [false, "EOS", _] => {
+          for (@_ <- @lineStream!?("close")) { ret!([true]) }
+        }
+        [false, code, msg] => {
+          new nm in {
+            match msg {
+              m /\ String => nm!(m)
+              _           => nm!("[non-string msg suppressed]")
+            } |
+            for (@normalizedMsg <- nm) {
+              for (@_ <- @lineStream!?("close")) {
+                ret!([false, code,
+                  "wrote ${n} lines before producer failure: ${m}" %%
+                    {"n": linesWritten, "m": normalizedMsg}])
+              }
+            }
+          }
+        }
+        _ => {
+          for (@_ <- @lineStream!?("close")) {
+            ret!([false, "FSERR_IO",
+              "wrote ${n} lines before producer returned malformed reply" %%
+                {"n": linesWritten}])
+          }
+        }
+      }
+    }
+  } |
+
   contract writeLinesLoop(@fileHandle, @lineStream, @linesWritten, ret) = {
     for (@reply <- @lineStream!?("next")) {
       match reply {
