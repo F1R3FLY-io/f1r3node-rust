@@ -120,16 +120,14 @@ in this repo with Claude Code:
 }
 ```
 
-- `fileCheckpointingEnabled: false` — Claude Code's checkpointing/rewind
-  feature runs `git stash` + `git reset --hard` against the workspace repo
-  around tool events, taking real `.git/index.lock` locks that collide with
-  concurrent git commands ("Unable to create index.lock"; see
-  anthropics/claude-code#68315). Disabling it trades away `/rewind` file
-  restore in this repo.
-- Bash timeouts raised to 20/30 min — the pre-push hook runs the full
-  release test suite for all 11 crates (~9 min, longer on cold caches),
-  which exceeds the default 10-minute window and gets a `git push` killed
-  mid-gate when run through Claude Code.
+- `fileCheckpointingEnabled: false` — Claude Code checkpointing runs `git stash` and `git reset --hard` around tool events.
+  These commands can lock `.git/index.lock` and conflict with concurrent Git commands.
+  For example, the conflict can report "Unable to create index.lock". See anthropics/claude-code#68315.
+  Disable checkpointing to prevent this conflict. This setting also disables `/rewind` file restore in this repository.
+- The Bash settings set the default timeout to 20 minutes and the maximum timeout to 30 minutes.
+  The pre-push hook runs the full release test suite for all 11 crates. The test suite usually takes approximately 9 minutes.
+  A cold cache can increase this time beyond the default 10-minute limit.
+  Claude Code can stop `git push` during the gate when the timeout expires.
 
 Both settings take effect at the next session start.
 
@@ -154,31 +152,23 @@ Both settings take effect at the next session start.
 - Use `/quick-commit` for git add/commit operations
 - Use `/recursive-push` for git push operations
 - Do not run `git add`, `git commit`, or `git push` directly unless explicitly requested
-- **Commit consent is per-commit**: never create a commit — including merge
-  commits and plumbing equivalents (`git commit-tree`, `git update-ref`) —
-  without the user invoking `/quick-commit` or giving an unambiguous
-  per-commit "yes". Consent does not carry over from a plan, an earlier
-  commit, or a previous merge in the same session.
-- **Merge conflicts**: a request to "resolve the merge conflicts" authorizes
-  conflict resolution only — resolve the files, verify the build, report,
-  then STOP before the merge commit. The user running `git merge` in their
-  own terminal is not a request for the agent to act.
+- **Commit consent applies to one commit.** Create a commit only when the user invokes `/quick-commit` or gives clear consent for that commit.
+- This rule includes merge commits and plumbing equivalents such as `git commit-tree` and `git update-ref`.
+- Consent from a plan, an earlier commit, or a previous merge does not apply.
+- **Merge conflict requests authorize only conflict resolution.** Resolve the files, verify the build, report the result, and stop before the merge commit.
+- A user-run `git merge` command is not a request for the agent to act.
 - `git mv` is permitted but requires user confirmation
 - `git stash`:
   - `git stash list`, `git stash show` are permitted (read-only)
   - `git stash`, `git stash push|save|apply` require user confirmation
-  - `git stash pop|drop|clear|branch` are blocked (destructive; can silently lose uncommitted work)
-- `git worktree`: NEVER create a worktree (`git worktree add`) unless the
-  user explicitly asks for one. All work happens in this single checkout —
-  create new branches here, not in sibling directories. Worktrees fragment
-  local state (branches pinned to hidden checkouts, invisible to
-  `/recursive-push` discovery, and a past root cause of an accidental push
-  to a protected branch). `git worktree list` is permitted (read-only);
-  `git worktree remove|prune` requires user confirmation.
-- **Exception:** In agentic mode (`claude-agentic`), all restrictions are lifted
-- The workspace stigmergic guidance to "commit frequently" applies to humans
-  and fully-autonomous (YOLO/worktree) modes; in interactive sessions it is
-  overridden by the consent rules above.
+  - Do not use `git stash pop|drop|clear|branch`. These commands can silently lose uncommitted work.
+- Never create a worktree with `git worktree add` unless the user explicitly requests it.
+- Do all work in this checkout. Create new branches here instead of in sibling directories.
+- Worktrees fragment local state. They can hide branches from `/recursive-push` and can cause an accidental push to a protected branch.
+- You can use `git worktree list` for read-only inspection.
+- Get user confirmation before you use `git worktree remove` or `git worktree prune`.
+- **Exception:** In agentic mode (`claude-agentic`), all restrictions are lifted.
+- The instruction to "commit frequently" applies to humans and fully autonomous modes. Interactive consent rules override this instruction.
 
 **Full Documentation**: [Git Interaction Policy](https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/git-interaction-policy.md) (canonical; also available at `../../SA/top-level-gitlab-profile/docs/common/git-interaction-policy.md` in a multi-repo workspace checkout).
 
@@ -189,8 +179,8 @@ Both settings take effect at the next session start.
 - Keep commit messages clean and professional
 
 ### Branch Strategy
-- `master` — default branch and release line; maintainers promote `dev` → `master`
-- `dev` — integration branch; feature and fix PRs target this
+- `master` is the default branch and release line. Maintainers promote `dev` to `master`.
+- `dev` is the integration branch. Feature and fix pull requests target this branch.
 - Feature branches (`feature/`, `fix/`, `docs/`, `perf/`, `chore/`) branch from and target `dev`
 - `hotfix/` branches from and target `master`, then `master` is merged back into `dev`
 - There is no `main` branch, and `staging` is deprecated (fully contained in `dev`)
@@ -205,7 +195,7 @@ This repo was extracted from `F1R3FLY-io/f1r3fly` (`rust/dev` branch). Key diffe
 
 1. **Stigmergic Collaboration**: Coordinate with other agents through shared `.md` files
 2. **Document-First**: Create design docs and specifications BEFORE implementation
-3. **Signal vs. Slop**: Maximize code that solves problems; avoid over-engineering
+3. **Signal vs. Slop**: Maximize code that solves problems. Avoid over-engineering.
 4. **Acceptance Criteria**: Define measurable success criteria in task definitions
 
 ### Standard Document Structure
@@ -276,7 +266,7 @@ When creating or modifying configuration files, follow these conventions to resp
 
 **Examples:**
 
-| If exists... | Don't create... | Instead... |
+| If this exists... | Do not create this... | Use this action... |
 |--------------|-----------------|------------|
 | `biome.jsonc` | `biome.json` | Edit the existing `biome.jsonc` |
 | `tsconfig.json5` | `tsconfig.json` | Edit the existing `tsconfig.json5` |
@@ -545,8 +535,11 @@ Setup (with the privacy-first local Ollama embedder as default) lives in the
 CLI Setup guide's "Optional: Semantic Code Search (grepai)" section.
 
 # important-instruction-reminders
-Do what has been asked; nothing more, nothing less.
-NEVER create files unless they're absolutely necessary for achieving your goal.
-ALWAYS prefer editing an existing file to creating a new one.
-NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
-Before making any code changes, first state: (1) which files you plan to modify, (2) what approach you'll take, (3) any assumptions you're making. Wait for my confirmation before proceeding. For simple single-file edits, a one-line summary is sufficient.
+
+- Do only the requested work.
+- Do not create a file unless it is necessary to complete the request.
+- Prefer an edit to an existing file instead of a new file.
+- Create a documentation file only when the user explicitly requests it.
+- Before code changes, state the files, the method, and the assumptions.
+- Wait for user confirmation before you make a code change.
+- For a simple single-file edit, a one-line summary is sufficient.
