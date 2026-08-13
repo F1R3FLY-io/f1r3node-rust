@@ -304,6 +304,36 @@ impl Drop for WalDeployScope {
                 "deploy-end auto-release: swept locks the caller did not release"
             );
         }
+        // Phase 8 slice 8b sub-3 (2026-08-12): sweep any `wait: true`
+        // acquires that are still parked at deploy-end.  Cancellation
+        // signals `Err(LockError::Cancelled)` on each parked waiter's
+        // admit oneshot; the parked native's `admit.await` resumes
+        // and produces an `FSERR_CANCELLED` reply on the caller's ack
+        // channel, so the Rholang caller observes deterministic
+        // closure of the acquire attempt rather than a silent leak.
+        //
+        // Ordering: cancel_all_waiters_for_deploy runs AFTER
+        // release_all_for_deploy.  Rationale: releases may admit
+        // waiters (waking them into held state), so cancelling first
+        // would prematurely fail waiters that would otherwise admit
+        // during the same drop.  In practice the two operations touch
+        // disjoint sets (this deploy's held locks vs. this deploy's
+        // parked waiters), but the ordering is defensively correct
+        // for future scenarios where a waiter's deploy matches the
+        // releasing deploy.
+        //
+        // Sentinel guard is symmetrical with release_all_for_deploy —
+        // panics on `[0; 32]` scope.
+        let n_cancelled = self
+            .lock_registry
+            .cancel_all_waiters_for_deploy(&self.deploy_scope);
+        if n_cancelled > 0 {
+            tracing::debug!(
+                target: "f1r3fly.casper.fs_locks",
+                n_waiters = n_cancelled,
+                "deploy-end auto-cancel: signalled Cancelled to parked wait:true acquires"
+            );
+        }
         // Clear the per-runtime "current scope" cell back to sentinel
         // so between-deploy handler calls (test-path only under
         // normal operation) see the sentinel value.
@@ -2173,7 +2203,9 @@ mod tests {
     // the shared LockRegistry) are unaffected.
     // ---------------------------------------------------------------
 
-    use rholang::rust::interpreter::io::lock::{HolderId, LockMode, LockRegistry};
+    use rholang::rust::interpreter::io::lock::{
+        AcquireOutcome, HolderId, LockError, LockMode, LockRegistry, WaitPolicy,
+    };
 
     fn holder(byte: u8) -> HolderId { HolderId::from_bytes([byte; 32]) }
 
@@ -2416,6 +2448,185 @@ mod tests {
         // catch the regression.
         let _scope =
             WalDeployScope::new_with_lock_sweep(wal, lock_registry, [0u8; 32], current_scope_cell);
+    }
+
+    // ---------------------------------------------------------------
+    // Slice 8b sub-3 (2026-08-12): WalDeployScope::drop MUST also
+    // sweep parked `wait: true` waiters via
+    // `cancel_all_waiters_for_deploy` so no waiter is leaked past
+    // deploy end.  Symmetrical with the step-5
+    // release_all_for_deploy sweep; the two invocations touch
+    // disjoint sets (held locks vs. parked waiters) but share the
+    // same "deploy end = clean up this deploy's registry footprint"
+    // invariant.
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn wal_deploy_scope_drop_cancels_parked_waiters_for_this_deploy() {
+        let wal = Wal::new();
+        let lock_registry = LockRegistry::new();
+        let current_scope_cell = std::sync::Arc::new(std::sync::RwLock::new([0u8; 32]));
+        let deploy_scope: DeployScope = [0xC3u8; 32];
+
+        // A different deploy pre-acquires the conflicting lock so
+        // our `wait: true` acquire will actually park (rather than
+        // immediately admit).
+        let pre_deploy: DeployScope = [0xEEu8; 32];
+        lock_registry
+            .try_acquire_range((1, 42), 0, 100, LockMode::Write, holder(9), pre_deploy)
+            .expect("pre-deploy conflict-holder acquire must succeed");
+
+        // Park a waiter under `deploy_scope` inside the WalDeployScope
+        // guard's lifetime.  Save the admit receiver so we can
+        // assert what it signals on drop.
+        let admit_rx = {
+            let _scope = WalDeployScope::new_with_lock_sweep(
+                wal.clone(),
+                lock_registry.clone(),
+                deploy_scope,
+                current_scope_cell.clone(),
+            );
+            let outcome = lock_registry
+                .try_acquire_range_wait(
+                    (1, 42),
+                    0,
+                    100,
+                    LockMode::Write,
+                    holder(1),
+                    deploy_scope,
+                    WaitPolicy::Wait,
+                )
+                .expect("wait:true acquire on conflict must return Parked, not error");
+            let admit_rx = match outcome {
+                AcquireOutcome::Parked { admit, .. } => admit,
+                AcquireOutcome::Immediate(_) => panic!("expected Parked, got Immediate"),
+            };
+            assert_eq!(
+                lock_registry.parked_waiters(),
+                1,
+                "waiter must be parked before scope drops"
+            );
+            admit_rx
+            // _scope drops here — Drop MUST call
+            // cancel_all_waiters_for_deploy(&deploy_scope), which
+            // signals Err(Cancelled) on our admit oneshot.
+        };
+        assert_eq!(
+            lock_registry.parked_waiters(),
+            0,
+            "sub-3 regression: WalDeployScope::drop MUST cancel this \
+             deploy's parked waiters — a leak would leave the parked \
+             entry in the registry indefinitely (and the caller's \
+             await would hang forever if the pre_deploy holder \
+             never releases)"
+        );
+        // The admit oneshot must have received Cancelled.
+        let outcome = admit_rx
+            .await
+            .expect("admit sender must not drop before send");
+        assert_eq!(
+            outcome,
+            Err(LockError::Cancelled),
+            "sub-3 regression: the parked native's admit await MUST \
+             see Err(Cancelled) so it can produce an FSERR_CANCELLED \
+             reply to the caller"
+        );
+    }
+
+    #[tokio::test]
+    async fn wal_deploy_scope_drop_leaves_other_deploys_waiters_intact() {
+        // Sweep is scope-scoped: waiters parked under a DIFFERENT
+        // deploy scope survive this deploy's drop.
+        let wal = Wal::new();
+        let lock_registry = LockRegistry::new();
+        let current_scope_cell = std::sync::Arc::new(std::sync::RwLock::new([0u8; 32]));
+        let deploy_a: DeployScope = [0xA1u8; 32];
+        let deploy_b: DeployScope = [0xB2u8; 32];
+
+        // Pre-holder to force parking.
+        let pre_deploy: DeployScope = [0xEEu8; 32];
+        lock_registry
+            .try_acquire_range((1, 42), 0, 100, LockMode::Write, holder(9), pre_deploy)
+            .expect("pre acquire");
+
+        // Deploy B parks a waiter (out-of-scope-guard OK — waiter
+        // just carries the deploy_b tag).
+        let _b_rx = {
+            let outcome = lock_registry
+                .try_acquire_range_wait(
+                    (1, 42),
+                    0,
+                    100,
+                    LockMode::Write,
+                    holder(2),
+                    deploy_b,
+                    WaitPolicy::Wait,
+                )
+                .expect("deploy B park");
+            match outcome {
+                AcquireOutcome::Parked { admit, .. } => admit,
+                _ => panic!("expected Parked"),
+            }
+        };
+        assert_eq!(lock_registry.parked_waiters(), 1);
+
+        // Deploy A enters its scope guard, parks a waiter, then
+        // drops.  Only A's waiter should be cancelled.
+        {
+            let _scope = WalDeployScope::new_with_lock_sweep(
+                wal.clone(),
+                lock_registry.clone(),
+                deploy_a,
+                current_scope_cell.clone(),
+            );
+            let _a_outcome = lock_registry
+                .try_acquire_range_wait(
+                    (1, 42),
+                    0,
+                    100,
+                    LockMode::Write,
+                    holder(1),
+                    deploy_a,
+                    WaitPolicy::Wait,
+                )
+                .expect("deploy A park");
+            assert_eq!(lock_registry.parked_waiters(), 2);
+        }
+        assert_eq!(
+            lock_registry.parked_waiters(),
+            1,
+            "sub-3 regression: sweep MUST be scope-scoped — only \
+             deploy A's parked waiter cancelled, deploy B's survives"
+        );
+    }
+
+    /// Source-scan pin: `WalDeployScope::drop` MUST invoke
+    /// `cancel_all_waiters_for_deploy` alongside
+    /// `release_all_for_deploy`.  A regression that removed the
+    /// waiter-sweep call would leave `wait: true` acquires stranded
+    /// at deploy end — the parked native's await would hang forever
+    /// unless something else signalled the oneshot (nothing else in
+    /// the current architecture does).
+    #[test]
+    fn wal_deploy_scope_drop_calls_cancel_all_waiters_for_deploy() {
+        let src = include_str!("runtime.rs");
+        let impl_start = src
+            .find("impl Drop for WalDeployScope")
+            .expect("runtime.rs missing impl Drop for WalDeployScope");
+        // 3KB window covers the drop body comfortably.
+        let window = &src[impl_start..std::cmp::min(impl_start + 3000, src.len())];
+        assert!(
+            window.contains("cancel_all_waiters_for_deploy"),
+            "sub-3 regression: WalDeployScope::drop MUST invoke \
+             cancel_all_waiters_for_deploy — removing this call would \
+             leak wait:true acquires past deploy end"
+        );
+        assert!(
+            window.contains("release_all_for_deploy")
+                && window.contains("cancel_all_waiters_for_deploy"),
+            "sub-3 regression: both release AND cancel sweeps must \
+             fire on drop"
+        );
     }
 
     /// **Gap 3a: user-deploy path pin.**  Verify
