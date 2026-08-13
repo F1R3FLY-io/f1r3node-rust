@@ -519,13 +519,15 @@ emit_iteration_metrics() {
 	# bespoke extractors above, adding a metric here needs no code change: the
 	# harness emits a SOAK_METRIC line and the registry declares it. Fail-soft
 	# by the same contract — the collector yields {} rather than erroring.
-	local registry_metrics
+	local registry_metrics metric_log_roots root
+	metric_log_roots="$iteration_dir"
+	for root in "${HARNESS_TELEMETRY_DIRS[@]-}"; do
+		[ -n "$root" ] || continue
+		metric_log_roots="${metric_log_roots}:$root"
+	done
 	registry_metrics="$("$SCRIPT_DIR/bench/collect-soak-metrics.sh" \
-		"$iteration_dir/.started" \
-		"$(
-			IFS=:
-			printf '%s:%s' "${HARNESS_TELEMETRY_DIRS[*]}" "$iteration_dir"
-		)" 2>/dev/null || printf '{}')"
+		"$iteration_dir/.started" "$metric_log_roots" \
+		2>/dev/null || printf '{}')"
 	jq -e . >/dev/null 2>&1 <<<"$registry_metrics" || registry_metrics='{}'
 	local lfb_spread
 	if ! jq -e '.lfb_spread.samples > 0' >/dev/null 2>&1 <<<"$registry_metrics"; then
