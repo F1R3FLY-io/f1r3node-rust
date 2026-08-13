@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::{ByteBuffer, ByteVector};
 
@@ -28,6 +29,16 @@ impl KeyValueStore for InMemoryKeyValueStore {
         }
 
         Ok(())
+    }
+
+    fn put_one_if_absent(&self, key: ByteBuffer, value: ByteBuffer) -> Result<bool, KvStoreError> {
+        match self.state.entry(key) {
+            Entry::Occupied(_) => Ok(false),
+            Entry::Vacant(entry) => {
+                entry.insert(value);
+                Ok(true)
+            }
+        }
     }
 
     fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> {
