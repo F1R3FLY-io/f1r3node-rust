@@ -65,6 +65,7 @@ fn with_libs(test_snippet: &str) -> String {
             // the end of File.rho; bound here at the outer scope
             // because lib_body strips File.rho's own top-level `new`.
             withSequentialLock, withRangeLock,
+            acquireRangeForStream, acquireSequentialForStream,
             mockFdCell, chmodLog, chownLog, truncLog,
             rmFileLog, rmDirLog, renameLog, copyLog,
             writeAtLog, entriesCell
@@ -1017,6 +1018,97 @@ async fn file_write_bytes_at_arity_3_and_arity_4_coexist() {
     assert!(r4_ok, "arity-4 writeBytesAt must succeed on same cap");
 }
 
+// -- Phase 8 slice 8d hand-off helpers — direct unit tests -------------
+//
+// The hand-off helpers (acquireRangeForStream, acquireSequentialForStream)
+// enable options-map plumbing for stream-lifetime-locked producer
+// methods (chars, bytes, lines, bytesAt).  These direct tests verify
+// the two-channel handshake works before method variants use it.
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn acquire_range_for_stream_hands_off_lockid_on_success() {
+    // Success path: helper acquires the lock (arity-8 native mock
+    // returns [true, 1]), sends the LockId (1) on lockOut, sends
+    // [true] on retCh.  Caller reads retCh first, then lockOut.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        new dummyHolder, lockOut, acqRet in {
+          acquireRangeForStream!(1, 0, 100, "r", *dummyHolder,
+                                 "oracular", true, *lockOut, *acqRet) |
+          for (@acqReply <- acqRet) {
+            match acqReply {
+              [true] => {
+                for (@lid <- lockOut) {
+                  @"out"!([true, lid])
+                }
+              }
+              _ => @"out"!(acqReply)
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, k, _) = extract_reply(&reply);
+    assert!(
+        ok,
+        "helper must return [true] on retCh when acquire succeeds"
+    );
+    assert_eq!(
+        k,
+        Some(1),
+        "helper must hand off the LockId from the arity-8 mock"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn acquire_sequential_for_stream_hands_off_lockid_on_success() {
+    // Same shape, sequential variant.  Arity-5 fsLockSequential mock
+    // returns [true, 2].
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        new dummyHolder, lockOut, acqRet in {
+          acquireSequentialForStream!(1, *dummyHolder, "oracular", true,
+                                      *lockOut, *acqRet) |
+          for (@acqReply <- acqRet) {
+            match acqReply {
+              [true] => {
+                for (@lid <- lockOut) {
+                  @"out"!([true, lid])
+                }
+              }
+              _ => @"out"!(acqReply)
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, k, _) = extract_reply(&reply);
+    assert!(
+        ok,
+        "helper must return [true] on retCh when acquire succeeds"
+    );
+    assert_eq!(k, Some(2), "helper must hand off the arity-5 mock's LockId");
+}
+
+// Failure-path tests for the hand-off helpers (mock override to force
+// FSERR_BUSY from the native) are deferred to slice 8d-2 when the
+// first stream-lifetime method (bytesAt arity-3) exercises the failure
+// path end-to-end.  A bespoke `new File, ... in { }` preamble here
+// can't easily invoke the helpers because they're only defined by
+// File.rho's lib_body (included via `with_libs`), and `with_libs`
+// already binds fsLockRange as a specific mock — overriding it in the
+// test body creates a double-listener race.  The LockRegistry's
+// Rust-side sub-1 tests already cover 19 error/cancel paths including
+// FSERR_BUSY and FSERR_CANCELLED delivery via oneshot.
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn file_close_then_read_returns_fserr_closed() {
     let (space, reducer) =
@@ -1310,7 +1402,8 @@ async fn file_close_propagates_fs_close_error() {
             fsLockRange, fsLockSequential, fsReleaseLock,
             fsReleaseAllForHolder,
             LockToken, lockStateP,
-            withSequentialLock, withRangeLock
+            withSequentialLock, withRangeLock,
+            acquireRangeForStream, acquireSequentialForStream
         in {{
           contract fsRead(@_fd, @_n, ret)  = {{ ret!([true, "".hexToBytes()]) }} |
           contract fsReadAt(@_fd, @_o, @_n, ret) = {{ ret!([true, "".hexToBytes()]) }} |
@@ -5581,6 +5674,7 @@ async fn file_write_line_lf_write_failure_is_forwarded() {
             fsReleaseAllForHolder,
             LockToken, lockStateP,
             withSequentialLock, withRangeLock,
+            acquireRangeForStream, acquireSequentialForStream,
             writeCallCount,
             listState, producer, charBuilder
         in {{
@@ -15552,6 +15646,7 @@ async fn file_close_sweep_causes_subsequent_release_to_return_fserr_closed() {
             fsTruncate, fsChmod, fsChown,
             fsLockRange, fsLockSequential, fsReleaseLock, fsReleaseAllForHolder,
             withSequentialLock, withRangeLock,
+            acquireRangeForStream, acquireSequentialForStream,
             Stream,
             releasedFlag
         in {{
@@ -15668,6 +15763,7 @@ async fn two_caps_overlapping_write_locks_conflict() {
             fsTruncate, fsChmod, fsChown,
             fsLockRange, fsLockSequential, fsReleaseLock, fsReleaseAllForHolder,
             withSequentialLock, withRangeLock,
+            acquireRangeForStream, acquireSequentialForStream,
             Stream,
             activeHolder, activeKind, activeLockId
         in {{
@@ -15755,6 +15851,7 @@ async fn same_cap_two_overlapping_locks_coexist() {
             fsTruncate, fsChmod, fsChown,
             fsLockRange, fsLockSequential, fsReleaseLock, fsReleaseAllForHolder,
             withSequentialLock, withRangeLock,
+            acquireRangeForStream, acquireSequentialForStream,
             Stream,
             activeHolder, activeKind, activeLockId
         in {{
@@ -15854,6 +15951,7 @@ async fn bytes_stream_lock_blocks_cross_cap_sequential_write() {
             fsTruncate, fsChmod, fsChown,
             fsLockRange, fsLockSequential, fsReleaseLock, fsReleaseAllForHolder,
             withSequentialLock, withRangeLock,
+            acquireRangeForStream, acquireSequentialForStream,
             Stream,
             activeHolder, activeKind, activeLockId
         in {{
@@ -15948,6 +16046,7 @@ async fn write_byte_array_releases_lock_on_error_path() {
             fsTruncate, fsChmod, fsChown,
             fsLockRange, fsLockSequential, fsReleaseLock, fsReleaseAllForHolder,
             withSequentialLock, withRangeLock,
+            acquireRangeForStream, acquireSequentialForStream,
             Stream,
             activeHolder, activeKind, activeLockId,
             writeCounter
@@ -16050,6 +16149,7 @@ async fn same_cap_sequential_blocks_own_sequential_attempt() {
             fsTruncate, fsChmod, fsChown,
             fsLockRange, fsLockSequential, fsReleaseLock, fsReleaseAllForHolder,
             withSequentialLock, withRangeLock,
+            acquireRangeForStream, acquireSequentialForStream,
             Stream,
             activeHolder, activeKind, activeLockId
         in {{

@@ -628,6 +628,12 @@ new
   // end of File.rho; bound here for the same reason as LockToken
   // (File.rho's top-level `new` is stripped by lib_body).
   withSequentialLock, withRangeLock,
+  // Phase 8 slice 8d — hand-off helpers for stream-lifetime-locked
+  // method variants (chars, bytes, lines, bytesAt).  Acquire the
+  // lock and hand the LockId to the caller via lockOut; the caller's
+  // stream constructor stores it in the existing lockCell so release
+  // fires from stream termination as today.
+  acquireRangeForStream, acquireSequentialForStream,
   fsOpen(`rho:io:fs:native:1.0.0/open`),
   fsClose(`rho:io:fs:native:1.0.0/close`),
   fsRead(`rho:io:fs:native:1.0.0/read`),
@@ -1107,7 +1113,21 @@ mod tests {
         // writeFromAt) still lack options-map plumbing; scoped as a
         // follow-up slice 8d.  Same hard-fork discipline as previous
         // rolls.
-        const EXPECTED: &str = "dcf1f4cbb852652986de6ed3df07405c75d121e55664d9ef07d82ac5f2abb783";
+        //
+        // Anchor rolled forward again for Phase 8 slice 8d-1
+        // (2026-08-13): added `acquireRangeForStream` /
+        // `acquireSequentialForStream` hand-off helpers per plan
+        // §Design decision option A (chosen over B/C/D on 2026-08-13).
+        // These helpers materialize the design decision for how
+        // stream-lifetime-locked methods (chars, bytes, lines,
+        // bytesAt) will thread wait:true — the caller's stream
+        // constructor stores the LockId from `lockOut` in its
+        // existing lockCell so release fires from stream termination
+        // as today.  No method variants use these helpers yet;
+        // scoped follow-ups add them in slice 8d-2 (stream-lifetime
+        // methods) and slice 8d-3 (bounded-scope methods use the
+        // slice-8c helpers).  Same hard-fork discipline.
+        const EXPECTED: &str = "5a5f6fd0a5714da3ad672416ddebf4079dd3bc59b788eccf8b75819ada2944b4";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

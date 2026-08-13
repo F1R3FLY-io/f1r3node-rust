@@ -5835,5 +5835,66 @@ in {
         }
       }
     }
+  } |
+
+  // ---------------------------------------------------------------
+  // Phase 8 slice 8d (2026-08-13) — hand-off helpers for stream-
+  // lifetime-locked methods (chars, bytes, lines, bytesAt).
+  //
+  // These methods differ from bounded-scope methods (writeByteArray,
+  // writeBytes, writeBytesAt) in that their lock spans the STREAM'S
+  // LIFETIME.  Release fires from the stream's producer function on
+  // termination (EOS / EOF / error), NOT from a bounded inner-action
+  // returning.  The withSequentialLock / withRangeLock helpers from
+  // slice 8c drive both acquire and release; they don't fit here.
+  //
+  // The hand-off pattern: the helper acquires the lock and hands the
+  // LockId to the caller via `lockOut`, then signals success via
+  // `retCh`.  The caller's stream constructor stores the LockId in
+  // its existing `lockCell` (or equivalent) and returns the stream
+  // handle to the outer caller as usual.  Release remains a per-
+  // stream-termination-path concern of the stream's producer function.
+  //
+  // On lock acquisition failure, the helper forwards the lock-error
+  // reply on retCh (no lockOut send); the caller matches the [false,
+  // ...] arm and returns the error without constructing a stream.
+  //
+  // Both helpers accept `wait: Bool` and pass it to the arity-8/5
+  // native calls.  Wait:true cancellation surfaces via the ordinary
+  // sub-2 native path (RecvError → Cancelled → FSERR_CANCELLED reply
+  // on retCh).
+  //
+  // Ordering note: `lockOut!(lid)` and `retCh!([true])` are parallel
+  // sends.  Rholang message queuing means the lockOut send is safe
+  // to fire before the caller's `for (@lid <- lockOut)` listens —
+  // the message sits in the channel until consumed.  Callers MUST
+  // wait for retCh's `[true]` before reading lockOut (retCh being
+  // false-shaped means acquire failed and no lockOut message will
+  // arrive; reading lockOut in that case would hang forever).
+  // ---------------------------------------------------------------
+
+  contract acquireRangeForStream(@fd, @offset, @length, @mode, holder,
+                                 @cmode, @wait, lockOut, retCh) = {
+    new lockCh in {
+      fsLockRange!(fd, offset, length, mode, *holder, cmode, wait, *lockCh) |
+      for (@lockReply <- lockCh) {
+        match lockReply {
+          [true, lid] => { lockOut!(lid) | retCh!([true]) }
+          _           => retCh!(lockReply)
+        }
+      }
+    }
+  } |
+
+  contract acquireSequentialForStream(@fd, holder, @cmode, @wait, lockOut, retCh) = {
+    new lockCh in {
+      fsLockSequential!(fd, *holder, cmode, wait, *lockCh) |
+      for (@lockReply <- lockCh) {
+        match lockReply {
+          [true, lid] => { lockOut!(lid) | retCh!([true]) }
+          _           => retCh!(lockReply)
+        }
+      }
+    }
   }
 }
