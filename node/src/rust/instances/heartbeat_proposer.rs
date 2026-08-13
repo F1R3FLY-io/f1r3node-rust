@@ -484,7 +484,11 @@ async fn check_lfb_and_propose(
             last_finalized_block_number
         );
     }
-    let stale_recovery_interval_elapsed = frontier_age_ms >= stale_recovery_min_interval_ms;
+    let stale_recovery_interval_elapsed = stale_recovery_window_is_open(
+        time_since_lfb,
+        self_latest_block_timestamp_ms.map(|timestamp_ms| now.saturating_sub(timestamp_ms)),
+        stale_recovery_min_interval_ms,
+    );
     let stale_recovery_window_open = stale_recovery_interval_elapsed || deploy_recovery_hint;
 
     // Proposal logic:
@@ -802,7 +806,17 @@ async fn check_lfb_and_propose(
         } else {
             "unknown".to_string()
         };
-        tracing::debug!("Heartbeat: No action needed - reason: {}", reason);
+        // A STALE shard declining to act is the signal operators need at
+        // INFO — a pacified shard must not be silent in the logs. Healthy
+        // declines stay at DEBUG (once-per-tick noise).
+        if lfb_is_stale {
+            tracing::info!(
+                "Heartbeat: No action despite stale LFB - reason: {}",
+                reason
+            );
+        } else {
+            tracing::debug!("Heartbeat: No action needed - reason: {}", reason);
+        }
         Ok(HeartbeatCheckResult {
             bug_failure: false,
             refresh_deploy_grace_window: has_pending_deploys || has_new_parent_with_user_deploys,
@@ -902,6 +916,29 @@ fn inspect_parent_updates(
     update
 }
 
+/// The stale-LFB recovery pacing window: whether enough time has passed
+/// for this validator to attempt a recovery proposal.
+///
+/// Keyed on FINALIZATION age and this validator's OWN proposal cadence —
+/// never on frontier freshness: any block source arriving faster than the
+/// interval refreshes the frontier and would hold every validator's
+/// recovery window closed while finalization stays stale (one
+/// non-finalizing chain pacified a whole shard for 107s). Finalization
+/// progress closes the window through `time_since_lfb`; the own-proposal
+/// age keeps a stale shard from re-firing every heartbeat tick (at most
+/// one attempt per interval per validator — the same cadence pacing the
+/// pending-deploy backstop uses).
+fn stale_recovery_window_is_open(
+    time_since_lfb_ms: u128,
+    self_latest_block_age_ms: Option<u128>,
+    stale_recovery_min_interval_ms: u128,
+) -> bool {
+    time_since_lfb_ms >= stale_recovery_min_interval_ms
+        && self_latest_block_age_ms
+            .map(|age_ms| age_ms >= stale_recovery_min_interval_ms)
+            .unwrap_or(true)
+}
+
 fn is_lag_recovery_leader(
     snapshot: &CasperSnapshot,
     validator_identity: &ValidatorIdentity,
@@ -958,6 +995,48 @@ mod tests {
         Arc::new(|_casper, _is_async| {
             Box::pin(async { Ok(casper::rust::blocks::proposer::proposer::ProposerResult::Empty) })
         })
+    }
+
+    // ==================== Stale-recovery window pacing ====================
+
+    /// The pacification class (gate session 43d9f798): a busy block source
+    /// keeps the frontier fresh, but finalization is long stale. Frontier
+    /// freshness is not finalization progress — the window must open.
+    #[test]
+    fn pacified_shard_opens_the_stale_recovery_window() {
+        assert!(
+            stale_recovery_window_is_open(100_000, Some(10_000), 3_000),
+            "finalization stale for 100s with our own last proposal 10s old: \
+             a 1s-fresh frontier must not hold the recovery window closed"
+        );
+    }
+
+    /// A healthy shard (finalization tracking the tip) keeps the window
+    /// closed even when block production goes quiet — quiet is not
+    /// staleness.
+    #[test]
+    fn healthy_shard_keeps_the_window_closed_even_when_quiet() {
+        assert!(
+            !stale_recovery_window_is_open(1_000, Some(60_000), 3_000),
+            "finalization 1s old: a quiet frontier alone must not open the \
+             recovery window"
+        );
+    }
+
+    /// The window paces on this validator's OWN proposal cadence: a stale
+    /// shard re-fires at most once per interval per validator, never every
+    /// heartbeat tick. A validator with no block yet is not paced.
+    #[test]
+    fn own_recent_proposal_paces_the_window() {
+        assert!(
+            !stale_recovery_window_is_open(100_000, Some(1_000), 3_000),
+            "our own recovery proposal 1s ago must close the window until \
+             the interval elapses"
+        );
+        assert!(
+            stale_recovery_window_is_open(100_000, None, 3_000),
+            "a validator with no block of its own yet is not paced"
+        );
     }
 
     // ==================== Configuration validation tests ====================
