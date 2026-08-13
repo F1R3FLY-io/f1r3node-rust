@@ -44,7 +44,7 @@ env:
   # the old..new range in system-integration; never replace with a tag/branch.
   # MUST be kept identical to .github/oci-validation.env (the Full OCI
   # Validation workflow sources that file) — bump both in the same commit.
-  SYSTEM_INTEGRATION_REF: fe91755ed16774a5f56f33da9712f7df1f52ca9d
+  SYSTEM_INTEGRATION_REF: f8e43643b915fdfd814285c8225b1a4b129a8547
   # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
   # install.sh checksum fails closed if the tag is ever moved; OCI_CLI_VERSION
   # pins what the installer pulls from PyPI (without it the installer floats to
@@ -537,7 +537,6 @@ jobs:
             --deselect integration-tests/test/tests/custom/test_cold_start_readiness.py \
             --deselect integration-tests/test/tests/custom/test_concurrent_bridge_locks.py \
             --deselect integration-tests/test/tests/custom/test_finality_stall_recovery.py \
-            --deselect integration-tests/test/tests/custom/test_observer_missing_block_retry.py \
             --deselect integration-tests/test/tests/custom/test_observer_overload.py \
             --deselect integration-tests/test/tests/custom/test_readonly_catchup_bounded.py \
             --deselect integration-tests/test/tests/custom/test_slow_peer_notification.py \
