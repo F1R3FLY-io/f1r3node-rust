@@ -43,8 +43,9 @@ env:
   # repo takeover cannot move it. Bump ONLY via a reviewed PR after diffing
   # the old..new range in system-integration; never replace with a tag/branch.
   # MUST be kept identical to .github/oci-validation.env (the Full OCI
-  # Validation workflow sources that file) — bump both in the same commit.
-  SYSTEM_INTEGRATION_REF: f8e43643b915fdfd814285c8225b1a4b129a8547
+  # Validation workflow sources that file) — bump both in the same commit,
+  # via `just repin-system-integration <sha>`.
+  SYSTEM_INTEGRATION_REF: d781f5fed9ad84ff503aa9c2a3c6da5014f3501a
   # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
   # install.sh checksum fails closed if the tag is ever moved; OCI_CLI_VERSION
   # pins what the installer pulls from PyPI (without it the installer floats to
