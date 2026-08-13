@@ -1170,22 +1170,24 @@ pub async fn compute_parents_post_state(
             // merged state is MONOTONE, where the LCA base let it churn
             // (path-dependent FS).
             let floor_derive_started = std::time::Instant::now();
-            let (floor_hash, floor_state, floor_block_number) = match floor_ctx {
+            let (floor_hash, floor_state, floor_block_number, settled_floors) = match floor_ctx {
                 Some(ctx) => (
                     ctx.floor.hash.clone(),
                     ctx.floor_state_hash(),
                     ctx.floor.block_number,
+                    ctx.settled_floors.clone(),
                 ),
                 None => {
-                    let floor = crate::rust::finality::floor::finalized_floor(
-                        &s.dag,
-                        &parent_hashes,
-                        latest_messages,
-                        crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-                            s.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
-                        ),
-                    )
-                    .await?;
+                    let (floor, settled_floors) =
+                        crate::rust::finality::floor::finalized_floor_with_candidates(
+                            &s.dag,
+                            &parent_hashes,
+                            latest_messages,
+                            crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                                s.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
+                            ),
+                        )
+                        .await?;
                     let floor_hash = floor.hash.clone();
 
                     // The floor block's committed post-state is FS(floor) — the merge base.
@@ -1200,7 +1202,12 @@ pub async fn compute_parents_post_state(
                     })?;
                     let floor_state =
                         Blake2b256Hash::from_bytes_prost(&floor_block.body.state.post_state_hash);
-                    (floor_hash, floor_state, floor_block.body.state.block_number)
+                    (
+                        floor_hash,
+                        floor_state,
+                        floor_block.body.state.block_number,
+                        settled_floors,
+                    )
                 }
             };
             let floor_derive_ms = floor_derive_started.elapsed().as_millis();
@@ -1635,6 +1642,12 @@ pub async fn compute_parents_post_state(
                 };
 
             let computed_state = prost::bytes::Bytes::copy_from_slice(&state.bytes());
+            assert_no_settled_rejection(
+                block_store,
+                &settled_floors,
+                &rejected_user_records,
+                s.on_chain_state.shard_conf.deploy_lifespan,
+            )?;
             let merged = MergedPreState {
                 state: computed_state.clone(),
                 rejected_user: rejected_user_records,
@@ -1681,6 +1694,43 @@ pub async fn compute_parents_post_state(
             Ok(merged)
         }
     }
+}
+
+/// The merge-time settled-rejection tripwire: no merge may reject a chain
+/// whose effect is settled in any of the derivation's settled floors. The
+/// capture predicate (`floor::state_captures`) trusts rejection records as
+/// the complete testimony of what a merge kept out; this is its converse
+/// guard — a merge that DROPS settled content, recorded or not, is a
+/// finalized-floor safety violation surfaced here, never a silent erasure.
+/// Duplicate records discarded a redundant copy of an effect that is still
+/// present and are exempt.
+fn assert_no_settled_rejection(
+    block_store: &KeyValueBlockStore,
+    settled_floors: &[crate::rust::finality::floor::Floor],
+    rejected: &[RejectedDeploy],
+    deploy_lifespan: i64,
+) -> Result<(), CasperError> {
+    for record in rejected.iter().filter(|r| !r.duplicate) {
+        for floor in settled_floors {
+            let min_height = floor.block_number.saturating_sub(deploy_lifespan);
+            if crate::rust::finality::deploy_lifecycle::effect_in_state_of(
+                block_store,
+                &floor.hash,
+                &record.sig,
+                min_height,
+            )? {
+                return Err(CasperError::Other(format!(
+                    "finalized-floor safety violation: merge rejected sig {} whose \
+                     effect is settled in floor {}#{} — a settled chain must be \
+                     re-applied, never kept out",
+                    hex::encode(&record.sig[..8.min(record.sig.len())]),
+                    PrettyPrinter::build_string_bytes(&floor.hash),
+                    floor.block_number,
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1881,6 +1931,78 @@ mod backstop_tests {
             Some((1, carrier.block_hash.clone())),
             "the height-1 inclusion is the first carrier",
         );
+    }
+
+    /// The tripwire errors exactly when a NON-duplicate record rejects a
+    /// sig whose effect is settled in a settled floor's state: duplicate
+    /// records (redundant-copy discards) and unsettled sigs pass.
+    #[tokio::test]
+    async fn settled_rejection_tripwire_fires_on_settled_content_only() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let settled_deploy = construct_deploy::source_deploy_now_full(
+            "@8!(8)".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("settled deploy");
+        let stranger = construct_deploy::source_deploy_now_full(
+            "@9!(9)".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("stranger deploy");
+        let secp = Secp256k1;
+        let (_, s_e) = secp.new_key_pair();
+        let floor_block = disposition_test_block(1, s_e.bytes.clone(), Vec::new(), vec![
+            ProcessedDeploy::empty(settled_deploy.clone()),
+        ]);
+        block_store
+            .put_block_message(&floor_block)
+            .expect("store floor block");
+        let settled = vec![crate::rust::finality::floor::Floor {
+            hash: floor_block.block_hash.clone(),
+            block_number: 1,
+        }];
+        let record = |sig: &Bytes, duplicate: bool| RejectedDeploy {
+            sig: sig.clone(),
+            duplicate,
+            carrier: floor_block.block_hash.clone(),
+        };
+
+        let err = super::assert_no_settled_rejection(
+            &block_store,
+            &settled,
+            &[record(&settled_deploy.sig, false)],
+            50,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("finalized-floor safety violation"),
+            "a non-duplicate rejection of settled content must be a hard error: {err}"
+        );
+        super::assert_no_settled_rejection(
+            &block_store,
+            &settled,
+            &[record(&settled_deploy.sig, true)],
+            50,
+        )
+        .expect("a duplicate record discards a redundant copy — exempt");
+        super::assert_no_settled_rejection(
+            &block_store,
+            &settled,
+            &[record(&stranger.sig, false)],
+            50,
+        )
+        .expect("rejecting an unsettled sig is ordinary adjudication");
     }
 
     fn disposition_test_block(

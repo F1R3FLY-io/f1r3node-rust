@@ -44,6 +44,11 @@ pub struct FloorContext {
     /// bonds-committee source (`floor::floor_committee`) for both packaging
     /// and validation.
     pub floor_state: StateHash,
+    /// The settled candidate set: the chosen floor plus every inherited
+    /// parent floor. The positions state monotonicity protects — the
+    /// merge-time settled-rejection tripwire checks rejected chains
+    /// against exactly this set.
+    pub settled_floors: Vec<Floor>,
     parents: Vec<BlockHash>,
     /// Disposition walks memoized per scan bound. Bounds are data-dependent
     /// (each consumer derives its own from the deploys it holds), so equal
@@ -68,7 +73,8 @@ impl FloorContext {
         latest_messages: &BTreeMap<Validator, BlockHash>,
         ftt: FtThreshold,
     ) -> Result<Self, CasperError> {
-        let floor = floor::finalized_floor(dag, parents, latest_messages, ftt).await?;
+        let (floor, settled_floors) =
+            floor::finalized_floor_with_candidates(dag, parents, latest_messages, ftt).await?;
         let floor_block = block_store.get(&floor.hash)?.ok_or_else(|| {
             CasperError::RuntimeError(format!(
                 "finalized-floor block {} not in block store",
@@ -79,6 +85,7 @@ impl FloorContext {
         Ok(Self {
             floor,
             floor_state,
+            settled_floors,
             parents: parents.to_vec(),
             dispositions: parking_lot::Mutex::new(HashMap::new()),
             effect_memo: parking_lot::Mutex::new(HashMap::new()),

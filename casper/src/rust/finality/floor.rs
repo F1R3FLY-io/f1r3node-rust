@@ -176,13 +176,34 @@ pub async fn finalized_floor(
     latest_messages: &BTreeMap<Validator, BlockHash>,
     ftt: FtThreshold,
 ) -> Result<Floor, CasperError> {
+    let (floor, _settled) =
+        finalized_floor_with_candidates(dag, parents, latest_messages, ftt).await?;
+    Ok(floor)
+}
+
+/// `finalized_floor`, also returning the SETTLED candidate set: the chosen
+/// floor plus every inherited parent floor (deduped). These are the
+/// positions state monotonicity protects — the merge-time settled-rejection
+/// tripwire checks rejected chains against exactly this set.
+pub async fn finalized_floor_with_candidates(
+    dag: &KeyValueDagRepresentation,
+    parents: &[BlockHash],
+    latest_messages: &BTreeMap<Validator, BlockHash>,
+    ftt: FtThreshold,
+) -> Result<(Floor, Vec<Floor>), CasperError> {
     let mut inherited: Vec<Floor> = Vec::with_capacity(parents.len());
     for parent in parents {
         inherited.push(floor_of_block(dag, parent, ftt).await?);
     }
     let (floor, _main_parent_frontier) =
-        derive_floor(dag, parents, latest_messages, ftt, inherited).await?;
-    Ok(floor)
+        derive_floor(dag, parents, latest_messages, ftt, inherited.clone()).await?;
+    let mut settled: Vec<Floor> = Vec::with_capacity(inherited.len() + 1);
+    for f in inherited.into_iter().chain(std::iter::once(floor.clone())) {
+        if !settled.iter().any(|s| s.hash == f.hash) {
+            settled.push(f);
+        }
+    }
+    Ok((floor, settled))
 }
 
 /// Core derivation: max over (inherited parent floors ∪ oracle frontiers),
