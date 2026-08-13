@@ -121,11 +121,8 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     // ingested the block's body into the lifecycle event rows; this bumps
     // the register's clocks and evaluates the sigs whose thresholds
     // crossed. A crash between insert and this step only delays a verdict
-    // (the schedule re-arms from the persisted open rows). The returned
-    // terminal list is the moment those sigs stop being re-proposable —
-    // the pool release keys on it (the floor-keyed storage sweep in the
-    // finalization runner performs the release until then).
-    let _terminalized = this
+    // (the schedule re-arms from the persisted open rows).
+    let terminalized = this
         .deploy_lifecycle
         .observe_block(
             &updated_dag,
@@ -140,6 +137,22 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
             ),
         )
         .await?;
+
+    // Release the proposer's pool copy of every sig the register just
+    // settled. This is the ONLY deploy-pool eviction on the finality path:
+    // the register is what re-evaluates as the floor advances, so it is
+    // the only component that can name the moment a deploy stops being
+    // re-proposable. Keying this on the finality marker instead destroys
+    // work — a marked block can still be orphaned, and an orphaned carrier
+    // yields no rejection record, so the pool copy is its only route back
+    // into a live branch. Non-owners simply do not hold the sig (deploys
+    // never gossip) and the removal is a no-op.
+    if !terminalized.is_empty() {
+        let mut storage = this.deploy_storage.lock();
+        for sig in &terminalized {
+            storage.remove_by_sig(sig)?;
+        }
+    }
 
     // Publish BlockAdded event
     this.event_publisher

@@ -50,15 +50,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
-use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
-// Phase 9 (A-3): deploy_storage uses parking_lot::Mutex.
-use parking_lot::Mutex;
+use models::rust::casper::protocol::casper_message::BlockMessage;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use shared::rust::store::key_value_store::KvStoreError;
 
@@ -69,7 +65,6 @@ use super::events::finalised_event;
 use super::types::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
 use crate::rust::finality::finalizer::Finalizer;
-use crate::rust::finality::floor::floor_of_block;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 // Phase 13 (TC-1): the previous `FINALIZER_BLOCKING_TIMEOUT = 15s`
@@ -95,7 +90,6 @@ impl Drop for FinalizationGuard<'_> {
 pub(crate) struct FinalizationContext {
     pub(crate) block_dag_storage: BlockDagKeyValueStorage,
     pub(crate) block_store: KeyValueBlockStore,
-    pub(crate) deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
     pub(crate) runtime_manager: Arc<RuntimeManager>,
     pub(crate) event_publisher: F1r3flyEvents,
     pub(crate) finalization_in_progress: Arc<AtomicBool>,
@@ -103,7 +97,6 @@ pub(crate) struct FinalizationContext {
     pub(crate) ftt: crate::rust::safety::clique_oracle::FtThreshold,
     pub(crate) finalizer_conf: crate::rust::casper_conf::FinalizerConf,
     pub(crate) finalizer_blocking_timeout: std::time::Duration,
-    pub(crate) deploy_lifespan: i64,
 }
 
 /// Build a `FinalizationContext` from a `MultiParentCasperImpl`. Single
@@ -119,7 +112,6 @@ pub(crate) fn build_finalization_context<
     FinalizationContext {
         block_dag_storage: this.block_dag_storage.clone(),
         block_store: this.block_store.clone(),
-        deploy_storage: this.deploy_storage.clone(),
         runtime_manager: this.runtime_manager.clone(),
         event_publisher: this.event_publisher.clone(),
         finalization_in_progress: this.finalization_in_progress.clone(),
@@ -130,7 +122,6 @@ pub(crate) fn build_finalization_context<
         ),
         finalizer_conf: this.casper_shard_conf.finalizer_conf.clone(),
         finalizer_blocking_timeout: this.casper_shard_conf.finalizer_blocking_timeout,
-        deploy_lifespan: this.casper_shard_conf.deploy_lifespan,
     }
 }
 
@@ -179,7 +170,6 @@ pub(crate) async fn compute_last_finalized_block(
     let FinalizationContext {
         block_dag_storage,
         block_store,
-        deploy_storage,
         runtime_manager,
         event_publisher,
         finalization_in_progress,
@@ -187,7 +177,6 @@ pub(crate) async fn compute_last_finalized_block(
         ftt,
         finalizer_conf,
         finalizer_blocking_timeout: _,
-        deploy_lifespan,
     } = ctx;
     let finalizer_conf = &finalizer_conf;
     let lfb_lookup_started = std::time::Instant::now();
@@ -307,63 +296,14 @@ pub(crate) async fn compute_last_finalized_block(
         .map(|(hash, _ft)| hash)
         .unwrap_or(last_finalized_block_hash);
 
-    // Floor-keyed deploy-storage eviction (MEASURED — see the module doc):
-    // a deploy leaves persistent storage only on floor-state evidence that
-    // its effect is settled, or once the floor closes its validity window
-    // (the merge window rule and the buffer retain read the same bound, so
-    // a window-closed deploy can never be included or recovered again).
-    // The previous rule removed each newly finalized block's deploys at
-    // that block's node-local finalization — a marker the canonical merge
-    // can still contradict — and visited each block exactly once, so any
-    // deploy a gate skipped would have been stranded in storage forever.
-    // The sweep re-examines every stored deploy at each floor advance, so
-    // eviction deferred by floor lag converges and a restart backlog
-    // self-heals. Probe-blind deploys (no created number cells) are
-    // bounded by the window-close arm.
-    if new_lfb_found {
-        let floor = floor_of_block(&dag, &final_lfb_hash, ftt).await?;
-        let stored = deploy_storage
-            .lock()
-            .read_all()
-            .map_err(CasperError::KvStoreError)?;
-        let mut evicted: Vec<Signed<DeployData>> = Vec::new();
-        let mut settled_count = 0usize;
-        let mut window_closed_count = 0usize;
-        for deploy in stored {
-            let window_closed = deploy
-                .data
-                .valid_after_block_number
-                .saturating_add(deploy_lifespan)
-                <= floor.block_number;
-            if window_closed {
-                window_closed_count += 1;
-                evicted.push(deploy);
-                continue;
-            }
-            if crate::rust::finality::deploy_lifecycle::effect_in_state_of(
-                &block_store,
-                &floor.hash,
-                &deploy.sig,
-                deploy.data.valid_after_block_number,
-            )? {
-                settled_count += 1;
-                evicted.push(deploy);
-            }
-        }
-        if !evicted.is_empty() {
-            tracing::info!(
-                "Deploy-storage sweep at floor #{}: evicting {} deploy(s) ({} floor-settled, {} window-closed)",
-                floor.block_number,
-                evicted.len(),
-                settled_count,
-                window_closed_count
-            );
-            deploy_storage
-                .lock()
-                .remove(evicted)
-                .map_err(CasperError::KvStoreError)?;
-        }
-    }
+    // Deploy-pool release is NOT done here. The register
+    // (`finality::deploy_lifecycle`) is the one component that re-evaluates
+    // as the floor advances, so it is the only component that can name the
+    // moment a deploy stops being re-proposable; block admission releases
+    // the pool copy against exactly its write-once terminal list. The
+    // finality marker is never a release edge: a marked block can still be
+    // excluded from every future cone, and an orphaned carrier's pool copy
+    // is its only route back into a live branch.
 
     // Return the finalized block
     let read_started = std::time::Instant::now();
