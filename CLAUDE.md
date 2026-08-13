@@ -380,13 +380,103 @@ Get the current standard from the [official ASD-STE100 website](https://www.asd-
 
 ASD owns the standard and the ASD-STE100 trademark. Do not copy its controlled dictionary, examples, or substantial rule text into this repository.
 
+### Applicability
+
+Use this policy for English technical prose that an assistant creates or substantially rewrites, including:
+
+- Assistant responses
+- Technical documentation
+- Plans and specifications
+- Procedures and instructions
+- Warnings and cautions
+- Review findings
+- User-facing explanations and status messages.
+
+Preserve unaffected legacy prose. Apply this policy to the text that the assistant adds or substantially changes.
+
+If the user explicitly requests another language, use that language. If you report STE status, mark STE as not applicable to that output.
+
+This policy does not apply to:
+
+- Code, identifiers, commands, flags, paths, URLs, and schema keys
+- Data formats, exact test fixtures, and machine-generated text
+- Verbatim quotations and user-supplied text
+- Third-party names, standard titles, and legal or license text.
+
+Do not change technical meaning, safety controls, legal meaning, or exact user requirements only to satisfy a language rule.
+
+### Words and terminology
+
+Use the official Issue 9 dictionary as the source for general approved words. Do not copy the dictionary into project files.
+
+Use a word only with its approved part of speech, meaning, and form. Use American English spelling unless another directive controls the text.
+
+Use approved technical nouns and technical verbs for the applicable subject field. Record recurring Smart Assets terms in `docs/Glossary.md`.
+
+Use one technical noun for one concept. Do not replace a canonical term with a synonym only for stylistic variation.
+
+Keep a new technical noun short and easy to understand. Use no more than three words unless an approved term requires more words.
+
+Do not use regional words, slang, or unexplained jargon. Define an unavoidable abbreviation at its first use.
+
+Use technical nouns as nouns. Use technical verbs as verbs and only in their approved software-development meaning.
+
+### Grammar and sentences
+
+Use active voice. In descriptive text, use passive voice only when the agent is unknown or technically unimportant.
+
+Use simple verb forms and tenses. Avoid progressive and other complex constructions unless an exempt technical term requires them.
+
+Use a direct verb to describe an action. Do not hide an action in an abstract noun phrase.
+
+Write complete sentences. Do not omit articles, subjects, verbs, or necessary nouns to make a sentence shorter.
+
+Do not use contractions. Do not use semicolons.
+
+Keep each sentence focused on one subject. Use a vertical list when one sentence would contain complex items or actions.
+
+Make each pronoun refer to one clear noun. Repeat the technical noun when a pronoun can have more than one meaning.
+
+### Procedures
+
+Use a maximum of 20 words in each procedural sentence. Use one instruction in each sentence unless actions occur at the same time.
+
+Start each instruction with an imperative verb. Put a necessary condition before the instruction and separate it with a comma.
+
+Use numbered steps when sequence is important. Keep information-only notes separate from instructions, requirements, limits, and safety information.
+
+### Descriptions
+
+Use a maximum of 25 words in each descriptive sentence. Give information gradually and keep one topic in each paragraph.
+
+Start each paragraph with its topic. Use no more than six sentences in one paragraph.
+
+Use consistent key words to connect related sentences. Start a new paragraph when the topic changes.
+
+### Safety information
+
+Use the project-approved risk word or symbol. Start with a clear command or condition, and then state the risk or possible result.
+
+Do not hide safety information in a note. Keep safety controls and their consequences explicit.
+
+### Verification
+
+An **STE Check** is deterministic. It can check policy coverage, sentence limits, paragraph limits, contractions, semicolons, and selected exemptions.
+
+An **STE Review** is semantic. A human reviewer must check vocabulary, meaning, active voice, referents, terminology, and technical accuracy.
+
+For committed prompt and policy files, run the repository STE Check. Review all applicable new or substantially rewritten prose before completion.
+
+A checker cannot establish full ASD-STE100 conformance. Do not claim that text is ASD-STE100 compliant only because an automated check passes.
+
 ## UI Test Assertions
 
-React UI tests should prove user-observable DOM structure and state, not incidental copy or formatted sample values. Treat exact text/value assertions as a last resort unless the behavior under test is specifically copy, formatting, or content transformation.
+React UI tests must prove user-observable DOM structure and state. Do not test incidental copy or formatted sample values.
+Use exact text or value assertions only when the test covers copy, formatting, or content transformation.
 
-- **Preferred:** Accessibility-first queries for DOM elements and states: `getByRole`, `getByLabelText`, `aria-label`, `aria-labelledby`, `aria-selected`, `aria-expanded`, `aria-disabled`, focus state, and ARIA relationships.
+- **Preferred:** Use accessibility-first queries for DOM elements and states. Examples include roles, labels, focus state, and ARIA relationships.
 - **Preferred:** Assert semantic regions/components are present and wired correctly (tabs, tabpanels, dialogs, forms, buttons, lists), then assert behavior through state changes or callback/data-source calls.
-- **Acceptable:** Use `data-testid` attributes when no accessible handle exists or the element is only presentational. Also use them to identify a stable component boundary.
+- **Acceptable:** Use `data-testid` when no accessible handle exists. You can also use it for presentational elements or stable component boundaries.
 - **Acceptable:** HTML `id` attributes for form elements and ARIA relationships.
 - **Avoid:** `getByText`/`queryByText` for literal strings that are merely display copy, repeated metrics, formatted numbers, or mock-data values.
 - **Avoid:** Do not use `getAllByText(...).length` as a substitute for a meaningful DOM assertion. It couples tests to duplicated visual text instead of behavior.
@@ -447,9 +537,9 @@ Canonical policy: [Git Interaction Policy](https://gitlab.com/smart-assets.io/gi
 ## grepai - Semantic Code Search
 
 `grepai` is an optional, MIT-licensed semantic-search tool. If it is installed
-and indexed locally, use it for intent-based code exploration. If it is not
-available, use the native search and file-reading tools in your harness.
-Nothing here is harness-specific -
+and indexed locally for this repo, prefer it for intent-based code exploration.
+If it is unavailable, use your harness's native search and file-reading tools.
+The tool is recommended but never required. Nothing here is harness-specific -
 substitute your tool's equivalents for the generic actions described below.
 Setup (with the privacy-first local Ollama embedder as default) lives in the
 CLI Setup guide's "Optional: Semantic Code Search (grepai)" section.
