@@ -7,7 +7,7 @@
 
 Pure Rust implementation of the F1R3FLY blockchain node.
 
-This repository tracks the Rust node implementation that lives on `rust/dev` in the upstream `f1r3node` repository and documents it as a standalone Cargo workspace. Local development uses standard Rust tooling and native system packages only.
+This pure Rust repository supersedes and deprecates the previous hybrid Scala/Rust `f1r3node` implementation. It is a standalone Cargo workspace. Local development uses standard Rust tooling and native system packages only.
 
 ## Soak Dashboard
 
