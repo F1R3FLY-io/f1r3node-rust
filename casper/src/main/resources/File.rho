@@ -107,9 +107,9 @@ in {
                         }
                         _ => {
                           new lockCh in {
-                            // holder MUST be *stateP — cross-cap
+                            // holder MUST be *this — cross-cap
                             // coordination depends on it.
-                            fsLockSequential!(fd, *stateP, cmode, *lockCh) |
+                            fsLockSequential!(fd, *this, cmode, *lockCh) |
                             for (@lockReply <- lockCh) {
                               match lockReply {
                                 [true, lid] => {
@@ -400,10 +400,14 @@ in {
                   // was issued by this cap); any subsequent
                   // lockToken!release() on those tokens returns
                   // [false, FSERR_CLOSED, ...]."  The sweep is scoped
-                  // by HolderId (Blake2b256(*stateP)) so locks held on
-                  // the same (dev, inode) via other File caps survive.
+                  // by HolderId (Blake2b256(*this)) so locks held on
+                  // the same (dev, inode) via other File caps survive
+                  // — each fresh-mint cap has its own per-instance
+                  // `this` name (from `new this, private in { ... }`
+                  // in the agent-block desugaring), so distinct caps
+                  // produce distinct HolderIds.
                   //
-                  // holder MUST be *stateP — cross-cap coordination
+                  // holder MUST be *this — cross-cap coordination
                   // depends on it; same invariant as the auto-acquire
                   // wraps in every positional / sequential method.
                   //
@@ -419,7 +423,7 @@ in {
                   // blocked until deploy-end auto-release (§Explicit
                   // locks MUST) sweeps.  Sweeping here closes the gap.
                   new sweepCh in {
-                    fsReleaseAllForHolder!(*stateP, *sweepCh) |
+                    fsReleaseAllForHolder!(*this, *sweepCh) |
                     for (@_sweepReply <- sweepCh) {  // reply is [true, N] — count discarded (see LockToken §Release-reply discards)
                       new retCh in {
                         fsClose!(fd, *retCh) |
@@ -740,13 +744,16 @@ in {
                                             }
                                             _ => {
                                               new lockCh in {
-                                                // holder MUST be *stateP — cross-cap coordination
-                                                // depends on it.  Each fresh-mint File cap derives
-                                                // a distinct HolderId (Blake2b256 of *stateP's
-                                                // GPrivate name); passing any other Par would
-                                                // collapse cross-cap holders and break §Range
-                                                // locks' different-holder rule.
-                                                fsLockRange!(fd, off, len, m, *stateP, cmode, *lockCh) |
+                                                // holder MUST be *this — cross-cap coordination
+                                                // depends on it.  Each fresh-mint File cap has a
+                                                // unique per-instance `this` (from `new this,
+                                                // private in { ... }` in the agent-block
+                                                // desugaring), hashed by fs_lock_range to a
+                                                // stable HolderId via Blake2b256.  Passing
+                                                // `*stateP` (or any other MODULE-level binding)
+                                                // would collapse every cap to a single holder
+                                                // and break §Range locks' different-holder rule.
+                                                fsLockRange!(fd, off, len, m, *this, cmode, *lockCh) |
                                                 for (@reply <- lockCh) {
                                                   @[*private, *stateP]!("open") |
                                                   match reply {
@@ -866,9 +873,9 @@ in {
                   // until File.close sweep (step 4f) or deploy-end auto-
                   // release (step 5).
                   new lockCh in {
-                    // holder MUST be *stateP — cross-cap coordination
+                    // holder MUST be *this — cross-cap coordination
                     // depends on it.
-                    fsLockSequential!(fd, *stateP, cmode, *lockCh) |
+                    fsLockSequential!(fd, *this, cmode, *lockCh) |
                     for (@lockReply <- lockCh) {
                       match lockReply {
                         [true, lid] => {
@@ -1093,9 +1100,9 @@ in {
                                         }
                                         _ => {
                                           new lockCh in {
-                                            // holder MUST be *stateP — cross-cap
+                                            // holder MUST be *this — cross-cap
                                             // coordination depends on it.
-                                            fsLockRange!(fd, off, lockLen, "r", *stateP, cmode, *lockCh) |
+                                            fsLockRange!(fd, off, lockLen, "r", *this, cmode, *lockCh) |
                                             for (@lockReply <- lockCh) {
                                               match lockReply {
                                                 [true, lid] => {
@@ -1344,9 +1351,9 @@ in {
                       // sequential ByteStream consumer at the file's
                       // cursor.  Lock released after the loop's finalReply.
                       new lockCh in {
-                        // holder MUST be *stateP — cross-cap coordination
+                        // holder MUST be *this — cross-cap coordination
                         // depends on it.
-                        fsLockSequential!(fd, *stateP, cmode, *lockCh) |
+                        fsLockSequential!(fd, *this, cmode, *lockCh) |
                         for (@lockReply <- lockCh) {
                           match lockReply {
                             [true, lid] => {
@@ -1456,9 +1463,9 @@ in {
                                         }
                                         false => {
                                           new lockCh in {
-                                            // holder MUST be *stateP — cross-cap
+                                            // holder MUST be *this — cross-cap
                                             // coordination depends on it.
-                                            fsLockRange!(fd, off, mx, "w", *stateP, cmode, *lockCh) |
+                                            fsLockRange!(fd, off, mx, "w", *this, cmode, *lockCh) |
                                             for (@lockReply <- lockCh) {
                                               match lockReply {
                                                 [true, lid] => {
@@ -1570,9 +1577,9 @@ in {
                   // any of the 7 termination paths (5 error variants +
                   // 2 EOS variants).  Same pattern as bytes()/bytesAt.
                   new lockCh in {
-                    // holder MUST be *stateP — cross-cap coordination
+                    // holder MUST be *this — cross-cap coordination
                     // depends on it.
-                    fsLockSequential!(fd, *stateP, cmode, *lockCh) |
+                    fsLockSequential!(fd, *this, cmode, *lockCh) |
                     for (@lockReply <- lockCh) {
                       match lockReply {
                         [true, lid] => {
@@ -1923,9 +1930,9 @@ in {
                   // + 5 error variants (initial fsRead error, invalid
                   // UTF-8 start, truncated-at-EOF ×2, tail-refill error).
                   new lockCh in {
-                    // holder MUST be *stateP — cross-cap coordination
+                    // holder MUST be *this — cross-cap coordination
                     // depends on it.
-                    fsLockSequential!(fd, *stateP, cmode, *lockCh) |
+                    fsLockSequential!(fd, *this, cmode, *lockCh) |
                     for (@lockReply <- lockCh) {
                       match lockReply {
                         [true, lid] => {
@@ -2400,9 +2407,9 @@ in {
                   // termination paths (EOF-via-empty-source, EOF-via-
                   // zero-read, fsRead-error).
                   new lockCh in {
-                    // holder MUST be *stateP — cross-cap coordination
+                    // holder MUST be *this — cross-cap coordination
                     // depends on it.
-                    fsLockSequential!(fd, *stateP, cmode, *lockCh) |
+                    fsLockSequential!(fd, *this, cmode, *lockCh) |
                     for (@lockReply <- lockCh) {
                       match lockReply {
                         [true, lid] => {
@@ -3148,9 +3155,9 @@ in {
                       // the entire writeCharsLoop drain — writeChars is a
                       // sequential CharStream consumer at the cursor.
                       new lockCh in {
-                        // holder MUST be *stateP — cross-cap coordination
+                        // holder MUST be *this — cross-cap coordination
                         // depends on it.
-                        fsLockSequential!(fd, *stateP, cmode, *lockCh) |
+                        fsLockSequential!(fd, *this, cmode, *lockCh) |
                         for (@lockReply <- lockCh) {
                           match lockReply {
                             [true, lid] => {
@@ -3232,9 +3239,9 @@ in {
                       // consumers that rely on LF delimiting exactly one
                       // line's worth of chars.
                       new lockCh in {
-                        // holder MUST be *stateP — cross-cap coordination
+                        // holder MUST be *this — cross-cap coordination
                         // depends on it.
-                        fsLockSequential!(fd, *stateP, cmode, *lockCh) |
+                        fsLockSequential!(fd, *this, cmode, *lockCh) |
                         for (@lockReply <- lockCh) {
                           match lockReply {
                             [true, lid] => {
@@ -3508,9 +3515,9 @@ in {
                                             match tellReply {
                                               [true, tellPos /\ Int] => {
                                                 new lockCh in {
-                                                  // holder MUST be *stateP — cross-cap
+                                                  // holder MUST be *this — cross-cap
                                                   // coordination depends on it.
-                                                  fsLockRange!(fd, tellPos, remBytes, "r", *stateP, cmode, *lockCh) |
+                                                  fsLockRange!(fd, tellPos, remBytes, "r", *this, cmode, *lockCh) |
                                                   for (@lockReply <- lockCh) {
                                                     match lockReply {
                                                       [true, lid] => {
@@ -3732,9 +3739,9 @@ in {
                                     match tellReply {
                                       [true, tellPos /\ Int] => {
                                         new lockCh in {
-                                          // holder MUST be *stateP — cross-cap
+                                          // holder MUST be *this — cross-cap
                                           // coordination depends on it.
-                                          fsLockRange!(fd, tellPos, bytes.length(), "w", *stateP, cmode, *lockCh) |
+                                          fsLockRange!(fd, tellPos, bytes.length(), "w", *this, cmode, *lockCh) |
                                           for (@lockReply <- lockCh) {
                                             match lockReply {
                                               [true, lid] => {
@@ -3856,7 +3863,7 @@ in {
                                             // Phase 8 slice 8a step 4d-1 — acquire
                                             // a positional read lock over
                                             // [off, off+remBytes) around fsReadAt.
-                                            // holder MUST be *stateP — cross-cap
+                                            // holder MUST be *this — cross-cap
                                             // coordination depends on it.  Zero-
                                             // length reads (remBytes == 0) hit the
                                             // native's BadArg branch and short-
@@ -3874,7 +3881,7 @@ in {
                                               }
                                               false => {
                                                 new lockCh in {
-                                                  fsLockRange!(fd, off, remBytes, "r", *stateP, cmode, *lockCh) |
+                                                  fsLockRange!(fd, off, remBytes, "r", *this, cmode, *lockCh) |
                                                   for (@lockReply <- lockCh) {
                                                     match lockReply {
                                                       [true, lid] => {
@@ -4036,7 +4043,7 @@ in {
                                     // Phase 8 slice 8a step 4d-1 — acquire a
                                     // positional write lock over
                                     // [off, off+bytes.length()) around fsWriteAt.
-                                    // holder MUST be *stateP — cross-cap
+                                    // holder MUST be *this — cross-cap
                                     // coordination depends on it.  Zero-length
                                     // writes short-circuit before both lock
                                     // acquire and fsWriteAt (the native rejects
@@ -4049,7 +4056,7 @@ in {
                                       }
                                       false => {
                                         new lockCh in {
-                                          fsLockRange!(fd, off, bytes.length(), "w", *stateP, cmode, *lockCh) |
+                                          fsLockRange!(fd, off, bytes.length(), "w", *this, cmode, *lockCh) |
                                           for (@lockReply <- lockCh) {
                                             match lockReply {
                                               [true, lid] => {
@@ -4578,7 +4585,7 @@ in {
   //   `fs_release_lock(lockId)` if active, marks "released", and
   //   forwards the native's reply.
   // - **Release (implicit, via File.close)**: `File.close` invokes
-  //   `fs_release_all_for_holder(*stateP)` (step 4f) which sweeps
+  //   `fs_release_all_for_holder(*this)` (step 4f) which sweeps
   //   every lock owned by this cap's holder.  Subsequent
   //   `token!release()` returns FSERR_CLOSED via the unknown-LockId
   //   branch of `fs_release_lock` — spec §File > close.

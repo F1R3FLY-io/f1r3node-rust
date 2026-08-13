@@ -91,8 +91,19 @@ pub type DeployScope = [u8; 32];
 pub struct LockId(pub u64);
 
 /// Cap-scoped identity for `release_all_for_holder` cleanup on
-/// `File.close`.  Derived from the File-agent's `stateP` GPrivate
-/// name at cap-mint time — unique per fresh-mint open.
+/// `File.close`.  Derived from the File agent's per-instance `this`
+/// GPrivate name at cap-mint time — unique per fresh-mint open.
+///
+/// **Not** derived from `stateP`: `stateP` is module-level bound in
+/// File.rho's outer `new` clause and therefore shared across every
+/// File-cap instance minted through the composed source.  Using
+/// `*stateP` as the holder input would collapse every cap on a
+/// given runtime into a single HolderId → cross-cap coordination
+/// would silently degrade to a same-holder no-op.  `*this` is the
+/// bundled dispatch channel from `agent File { ... }`'s desugaring
+/// (`new this, private in { ... }` inside each per-instance
+/// constructor invocation), so each fresh-mint cap has a distinct
+/// `this` name and therefore a distinct HolderId.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HolderId {
     pub bytes: [u8; 32],

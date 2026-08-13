@@ -1044,7 +1044,23 @@ mod tests {
         // rejected-alternatives (hoisted lock deferred as YAGNI).
         // Docs-only; no behavior change.  Rolled because File.rho is
         // hashed as raw source including comments.
-        const EXPECTED: &str = "eb916bb28118077b819e0fc6e0e8b27327a9010c280ada3ed4af784a71dc3a67";
+        //
+        // Anchor rolled forward again for slice-8a step-4g holder-
+        // identity fix (2026-08-12): File.rho's 16 lock-native call
+        // sites now pass `*this` (per-instance dispatch channel,
+        // unique per fresh-mint cap) as the `holder` argument,
+        // replacing the earlier `*stateP` (module-level, shared
+        // across ALL File caps).  Previous holder derivation
+        // collapsed every cap to a single HolderId — cross-cap
+        // coordination silently degraded to a same-holder no-op,
+        // breaking spec §Range locks' different-holder rule.  Bug
+        // surfaced via step 4g's two-cap integration test.  All
+        // inline "holder MUST be *stateP" invariant comments +
+        // Rust-side docstrings in lock.rs (`HolderId`) and
+        // handlers.rs (`fs_lock_range` / `fs_release_all_for_holder`
+        // / `holder_id_of`) updated with the same *stateP → *this
+        // correction + rationale.  Same hard-fork discipline.
+        const EXPECTED: &str = "30535c12572389271ec04d9e1c037941de02d844013f9094d8505e83265f9b66";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

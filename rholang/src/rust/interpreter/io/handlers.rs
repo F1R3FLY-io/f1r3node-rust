@@ -2261,9 +2261,13 @@ impl FsProcesses {
     /// path is stable so either keying would be correct — but fd is
     /// uniformly right.
     ///
-    /// - `holder` is opaque Par (typically the caller-cap's `stateP`
-    ///   GPrivate name) hashed to a stable 32-byte `HolderId` — used
-    ///   by `File.close`'s `release_all_for_holder` sweep.
+    /// - `holder` is opaque Par (per convention: the caller-cap's
+    ///   per-instance `this` GPrivate name, NOT the module-level
+    ///   `stateP`) hashed to a stable 32-byte `HolderId` — used by
+    ///   `File.close`'s `release_all_for_holder` sweep.  See `HolderId`
+    ///   docstring in `lock.rs` for the "why per-instance" rationale
+    ///   — passing a shared module-level name here collapses every
+    ///   cap into one holder and breaks cross-cap coordination.
     /// - `cmode` is validated but not currently branched on at acquire
     ///   time; step 4 (WAL) and step 7 (unlink gate) will.
     ///
@@ -2501,9 +2505,11 @@ impl FsProcesses {
     /// `fs_close`, so a File cap that still holds locks at close time
     /// doesn't strand them until deploy-end auto-release fires.
     ///
-    /// Args: `(holder: Par, ack)` — holder is opaque Par (typically the
-    /// caller-cap's `stateP` GPrivate name) hashed to a stable 32-byte
-    /// `HolderId`, matching the derivation used at acquire time.
+    /// Args: `(holder: Par, ack)` — holder is opaque Par (per
+    /// convention: the caller-cap's per-instance `this` GPrivate name,
+    /// NOT `stateP`) hashed to a stable 32-byte `HolderId`, matching
+    /// the derivation used at acquire time.  See `HolderId` docstring
+    /// in `lock.rs` for why per-instance and not per-module.
     ///
     /// Reply: `[true, released_count: Int]`.  Zero released is not an
     /// error — a cap that never acquired anything sweeps zero.  This
@@ -2588,7 +2594,8 @@ fn resolve_lock_mode(par: &Par) -> Option<LockMode> {
 }
 
 /// Phase 8 slice 8a — derive a stable 32-byte `HolderId` from an
-/// opaque Rholang Par (typically the caller-cap's `stateP` GPrivate
+/// opaque Rholang Par (per convention: the caller-cap's per-instance
+/// `this` GPrivate
 /// name).  Uses the same Blake2b256 stable-hash provider that rspace
 /// uses for channel identity, so equal-Par callers hash to the same
 /// bytes across runtimes deterministically.
