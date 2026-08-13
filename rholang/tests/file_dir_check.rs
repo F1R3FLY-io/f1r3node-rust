@@ -440,7 +440,24 @@ fn with_libs(test_snippet: &str) -> String {
             ret!([true, 1])
           }} |
 
+          // Slice-8b sub-2 arity-8 mock (wait: Bool at slot 7).  Same
+          // always-succeed behavior as the arity-7 mock — most tests
+          // exercise the syntactic wraps, not the parking logic.  The
+          // sub-5 wait:true smoke tests below assert this mock IS the
+          // one invoked (rather than the arity-7 mock) when File.rho's
+          // arity-4 lockRange method threads wait through.
+          contract fsLockRange(@_fd, @_off, @_len, @_mode, @_holder, @_cmode, @_wait, ret) = {{
+            ret!([true, 1])
+          }} |
+
           contract fsLockSequential(@_fd, @_holder, @_cmode, ret) = {{
+            ret!([true, 2])
+          }} |
+
+          // Slice-8b sub-2 arity-5 mock for fsLockSequential (wait: Bool
+          // at slot 3).  No caller in sub-5 exercises this yet — added
+          // for symmetry with fsLockRange and future sub-4b work.
+          contract fsLockSequential(@_fd, @_holder, @_cmode, @_wait, ret) = {{
             ret!([true, 2])
           }} |
 
@@ -14981,6 +14998,233 @@ async fn file_lock_range_on_closed_file_rejects() {
     let (ok, code, _, _) = extract_reply(&reply);
     assert!(!ok);
     assert_eq!(code, "FSERR_CLOSED");
+}
+
+// ---------------------------------------------------------------------
+// Phase 8 slice 8b sub-5 (2026-08-12) — arity-4 lockRange method
+// (options-map form) smoke-checks.
+//
+// These tests exercise the sub-4 wiring end-to-end:
+//   Rholang caller → File.lockRange(off, len, mode, options)
+//     → File.rho arity-4 method extracts wait from options
+//     → fsLockRange arity-8 native call
+//     → mock returns [true, 1]
+//     → LockToken minted, forwarded to caller
+//
+// Behavioral coverage of the LockRegistry parking + admission +
+// cancellation is at the Rust-side test layer:
+//   - Sub-1 (rholang/src/rust/interpreter/io/lock.rs): 19 tokio
+//     async tests covering park, FIFO admit, cancel, cascade, edge
+//     cases (dropped receiver rollback, sentinel guard, etc.).
+//   - Sub-3 (casper/src/rust/rholang/runtime.rs): 3 tests covering
+//     WalDeployScope::drop cancels this deploy's parked waiters
+//     (Err(Cancelled) delivered via oneshot).
+//
+// A full-runtime integration test that runs the REAL native under a
+// real Casper deploy would be substantial scaffolding for redundant
+// coverage given the layered Rust-side tests.  These smoke-checks
+// focus on the Rholang-side plumbing: options-map extraction, arity
+// dispatch, arity-4 vs. arity-3 co-existence.
+// ---------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_lock_range_options_empty_map_defaults_wait_false() {
+    // Empty options map — arity-4 method's `options.get("wait")`
+    // returns Nil, which the method normalizes to wait:false.
+    // Regression pin: caller must observe success (not FSERR_BAD_ARG
+    // for a missing key).
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@r <- @f!?("lockRange", 0, 100, "w", {})) {
+            match r {
+              [true, _token] => @"out"!([true])
+              [false, code, msg] => @"out"!([false, code, msg])
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(
+        ok,
+        "arity-4 lockRange with empty options must default wait:false \
+         and succeed under the always-succeed mock"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_lock_range_options_wait_false_explicit() {
+    // Explicit wait:false — arity-4 method's Bool-branch extracts
+    // false and passes to arity-8 native mock.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@r <- @f!?("lockRange", 0, 100, "w", {"wait": false})) {
+            match r {
+              [true, _token] => @"out"!([true])
+              [false, code, msg] => @"out"!([false, code, msg])
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(ok, "explicit wait:false must succeed like empty options");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_lock_range_options_wait_true_dispatches_arity_8_native() {
+    // wait:true — arity-4 method's Bool-branch extracts true and
+    // passes to arity-8 fsLockRange.  With the always-succeed mock
+    // this returns [true, 1] immediately; the point of this test is
+    // to pin that the arity-4 dispatch path is reachable and
+    // returns success.  Real parking behavior is Rust-side (sub-1).
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@r <- @f!?("lockRange", 0, 100, "w", {"wait": true})) {
+            match r {
+              [true, _token] => @"out"!([true])
+              [false, code, msg] => @"out"!([false, code, msg])
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(
+        ok,
+        "wait:true must route through arity-8 native mock and succeed"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_lock_range_options_wait_non_bool_rejects_bad_arg() {
+    // wait must be Bool.  arity-4 method's third match arm rejects
+    // non-Bool wait values with FSERR_BAD_ARG.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@r <- @f!?("lockRange", 0, 100, "w", {"wait": "yes"})) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "non-Bool wait must be rejected");
+    assert_eq!(
+        code, "FSERR_BAD_ARG",
+        "non-Bool wait must map to FSERR_BAD_ARG per the arity-4 method's third match arm"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_lock_range_arity_3_and_arity_4_coexist() {
+    // Sub-4 added arity-4 lockRange as a NEW method alongside the
+    // pre-existing arity-3 method — Rholang agent dispatch on
+    // message arity means both coexist.  This test invokes both in
+    // sequence to pin that both dispatch correctly on the same File
+    // cap.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@r3 <- @f!?("lockRange", 0, 100, "w")) {
+            match r3 {
+              [true, t3] => {
+                for (@rel3 <- @t3!?("release")) {
+                  for (@r4 <- @f!?("lockRange", 200, 100, "w", {"wait": true})) {
+                    match r4 {
+                      [true, t4] => {
+                        for (@rel4 <- @t4!?("release")) {
+                          @"out"!([r3, rel3, r4, rel4])
+                        }
+                      }
+                      _ => @"out"!([r3, rel3, r4, [false, "SKIPPED", ""]])
+                    }
+                  }
+                }
+              }
+              _ => @"out"!([r3, [false, "SKIPPED", ""], [false, "SKIPPED", ""], [false, "SKIPPED", ""]])
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected 4-element list reply"),
+    };
+    assert_eq!(outer.ps.len(), 4, "expected [r3, rel3, r4, rel4]");
+    let (r3_ok, _, _, _) = extract_reply(&outer.ps[0]);
+    assert!(r3_ok, "arity-3 lockRange must succeed");
+    let (rel3_ok, _, _, _) = extract_reply(&outer.ps[1]);
+    assert!(rel3_ok, "arity-3 release must succeed");
+    let (r4_ok, _, _, _) = extract_reply(&outer.ps[2]);
+    assert!(r4_ok, "arity-4 lockRange must succeed on the same File cap");
+    let (rel4_ok, _, _, _) = extract_reply(&outer.ps[3]);
+    assert!(rel4_ok, "arity-4 release must succeed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_lock_range_arity_4_negative_offset_rejects() {
+    // Argument validation (offset >= 0) applies to arity-4 same as
+    // arity-3.  Regression pin: arity-4 body-duplication must
+    // preserve the offset validation.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@r <- @f!?("lockRange", -1, 100, "w", {"wait": true})) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_BAD_ARG");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_lock_range_arity_4_write_on_readonly_rejects() {
+    // Mode attenuation applies to arity-4 same as arity-3.
+    // Regression pin: arity-4 body-duplication must preserve the
+    // ["w", "r"] mode-attenuation match arm.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "r", "oracular")) {
+          for (@r <- @f!?("lockRange", 0, 100, "w", {"wait": true})) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_UNSUPPORTED");
 }
 
 // ---------------------------------------------------------------------
