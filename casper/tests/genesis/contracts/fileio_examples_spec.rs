@@ -113,3 +113,160 @@ in {{
         .await
         .expect("fileio_chown_consensus spec failed");
 }
+
+/// Slice 10a-2: canonical example `fileio_lockrange.rho`.
+///
+/// Composes Phase 7 slice-27 fresh-mint (two `openFile("target")`
+/// calls yield distinct caps) with Phase 8's cross-cap range-lock
+/// coordination (RuntimeManager-shared LockRegistry keyed on
+/// canonical path).  Sequence:
+///
+///   1. cap1, cap2 = two fresh mints of the same bundle entry.
+///   2. cap1.lockRange(0, 100, "w") → [true, token1].
+///   3. cap2.lockRange(0, 100, "w") → [false, "FSERR_BUSY", _].
+///   4. token1.release() → [true].
+///   5. cap2.lockRange(0, 100, "w") → [true, token2].
+///   6. token2.release() → [true].
+///
+/// Verifies the full cross-cap coordination path against real
+/// native handlers (not the file_dir_check mocks) — a regression
+/// in either the fresh-mint LockRegistry keying or the range-lock
+/// conflict-detection algorithm would fail this test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fileio_lockrange_cross_cap_busy_then_release() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir.path().join("lockrange.dat");
+    // Seed with 512 bytes so [0, 100) is well within EOF and reads/
+    // writes under the lock have room to operate (though this test
+    // doesn't actually do I/O — the lock semantics are what's tested).
+    std::fs::write(&file_path, vec![0u8; 512]).expect("seed file");
+    let canon = std::fs::canonicalize(&file_path).expect("canonicalize");
+
+    let entry = BundleEntry::try_new(
+        "target".to_string(),
+        canon.clone(),
+        BundleEntryKind::File,
+        "rw".to_string(),
+        BundleConsensusMode::Oracular,
+    )
+    .expect("bundle entry construction");
+
+    let mut params = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    params.2.fs_bundle = vec![entry];
+
+    let fs_uri = fs_genesis::fs_genesis_uri(&standard_deploys::FS_GENERATOR_PUB_KEY);
+
+    let test_source = format!(
+        r#"
+new
+  rl(`rho:registry:lookup`),
+  RhoSpecCh,
+  fsCh,
+  test_cross_cap_busy_then_release
+in {{
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for(@(_, RhoSpec) <- RhoSpecCh) {{
+    @RhoSpec!("testSuite",
+      [
+        ("cross-cap range-lock: busy then release then retry",
+         *test_cross_cap_busy_then_release)
+      ])
+  }} |
+
+  rl!(`{fs_uri}`, *fsCh) |
+  for(@(_, fs) <- fsCh) {{
+    contract test_cross_cap_busy_then_release(rhoSpec, _, ackCh) = {{
+      for(@[true, cap1] <- @fs!?("openFile", "target", {{"mode": "rw"}});
+          @[true, cap2] <- @fs!?("openFile", "target", {{"mode": "rw"}})) {{
+        for(@lock1 <- @cap1!?("lockRange", 0, 100, "w")) {{
+          match lock1 {{
+            [true, token1] => {{
+              for(@busy <- @cap2!?("lockRange", 0, 100, "w")) {{
+                match busy {{
+                  [false, "FSERR_BUSY", _msg] => {{
+                    for(@rel1 <- @token1!?("release")) {{
+                      // Reply may be [true] or [true, _]; both count as success.
+                      match rel1 {{
+                        [true] => {{
+                          for(@retry <- @cap2!?("lockRange", 0, 100, "w")) {{
+                            match retry {{
+                              [true, token2] => {{
+                                for(@rel2 <- @token2!?("release")) {{
+                                  match rel2 {{
+                                    [true] => {{
+                                      rhoSpec!("assert", (true, "==", true),
+                                        "cross-cap lock lifecycle round-trip", *ackCh)
+                                    }}
+                                    [true, _] => {{
+                                      rhoSpec!("assert", (true, "==", true),
+                                        "cross-cap lock lifecycle round-trip", *ackCh)
+                                    }}
+                                    _ => {{
+                                      rhoSpec!("assert", (rel2, "==", "[true, ...]"),
+                                        "token2 release must succeed", *ackCh)
+                                    }}
+                                  }}
+                                }}
+                              }}
+                              _ => {{
+                                rhoSpec!("assert", (retry, "==", "[true, token2]"),
+                                  "cap2 retry after cap1 release must succeed", *ackCh)
+                              }}
+                            }}
+                          }}
+                        }}
+                        [true, _] => {{
+                          for(@retry <- @cap2!?("lockRange", 0, 100, "w")) {{
+                            match retry {{
+                              [true, token2] => {{
+                                for(@rel2 <- @token2!?("release")) {{
+                                  rhoSpec!("assert", (true, "==", true),
+                                    "cross-cap lock lifecycle round-trip", *ackCh)
+                                }}
+                              }}
+                              _ => {{
+                                rhoSpec!("assert", (retry, "==", "[true, token2]"),
+                                  "cap2 retry after cap1 release must succeed", *ackCh)
+                              }}
+                            }}
+                          }}
+                        }}
+                        _ => {{
+                          rhoSpec!("assert", (rel1, "==", "[true, ...]"),
+                            "token1 release must succeed", *ackCh)
+                        }}
+                      }}
+                    }}
+                  }}
+                  _ => {{
+                    rhoSpec!("assert", (busy, "==", "[false, FSERR_BUSY, _]"),
+                      "cap2 lock while cap1 holds must be FSERR_BUSY", *ackCh)
+                  }}
+                }}
+              }}
+            }}
+            _ => {{
+              rhoSpec!("assert", (lock1, "==", "[true, token1]"),
+                "cap1 initial lock acquire must succeed", *ackCh)
+            }}
+          }}
+        }}
+      }}
+    }}
+  }}
+}}
+"#
+    );
+
+    let compiled = CompiledRholangSource::new(
+        test_source,
+        HashMap::new(),
+        "FileioLockrangeSpec".to_string(),
+    )
+    .expect("compile fileio_lockrange test source");
+
+    let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
+    spec.run_tests()
+        .await
+        .expect("fileio_lockrange spec failed");
+}

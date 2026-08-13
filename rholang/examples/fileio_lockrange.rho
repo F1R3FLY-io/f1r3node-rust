@@ -1,0 +1,67 @@
+// fileio_lockrange.rho — Phase 10 canonical example
+//
+// Demonstrates Phase 8's explicit range-lock protocol composed with
+// Phase 7 slice-27's fresh-mint semantics:
+//
+//   1. Two `fs.openFile("target", ...)` calls yield DISTINCT File caps
+//      over the same underlying path (per slice 27 — each openFile mints
+//      a fresh agent with its own cursor and its own holder identity).
+//   2. cap1 acquires an exclusive lock over bytes [0, 100).
+//   3. cap2 attempts the same range → FSERR_BUSY.  Cross-cap
+//      coordination is enforced by the RuntimeManager-shared
+//      LockRegistry keyed on canonical path (per Phase 8 §Range-lock
+//      architecture).
+//   4. cap1 releases its lock via `token!("release")`.
+//   5. cap2 retries → success.
+//
+// Prerequisite: node must publish a bundled File named "target" in a
+// write-capable mode (e.g. "rw").
+//
+// Companion regression: casper/tests/genesis/contracts/
+// fileio_examples_spec.rs :: fileio_lockrange_cross_cap_busy_then_release.
+
+new
+  rl(`rho:registry:lookup`),
+  stdout(`rho:io:stdout`),
+  fsCh
+in {
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *fsCh) |
+  for(@(_, fs) <- fsCh) {
+    // Two fresh caps over the same logical name.
+    for(@[true, cap1] <- @fs!?("openFile", "target", {"mode": "rw"});
+        @[true, cap2] <- @fs!?("openFile", "target", {"mode": "rw"})) {
+
+      // cap1 takes the lock.
+      for(@[true, token1] <- @cap1!?("lockRange", 0, 100, "w")) {
+
+        // cap2's attempt on the overlapping range must fail with
+        // FSERR_BUSY — the point of the demonstration.
+        for(@busyReply <- @cap2!?("lockRange", 0, 100, "w")) {
+          stdout!(("cap2 attempt while cap1 holds", busyReply)) |
+          // Expected: [false, "FSERR_BUSY", _]
+
+          // Release cap1's lock; the byte range becomes available.
+          for(@relReply <- @token1!?("release")) {
+            stdout!(("cap1 release", relReply)) |
+            // Expected: [true] or [true, _]
+
+            // cap2 now succeeds.
+            for(@retryReply <- @cap2!?("lockRange", 0, 100, "w")) {
+              stdout!(("cap2 retry after cap1 release", retryReply)) |
+              // Expected: [true, token2]
+
+              match retryReply {
+                [true, token2] => {
+                  for(@rel2 <- @token2!?("release")) {
+                    stdout!(("cap2 release", rel2))
+                  }
+                }
+                _ => Nil
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
