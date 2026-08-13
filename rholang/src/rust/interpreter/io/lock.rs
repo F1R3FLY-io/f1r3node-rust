@@ -479,6 +479,26 @@ impl LockRegistry {
             .any(|e| ranges_overlap((e.offset, e.length), range))
     }
 
+    /// Count locks held on `dev_inode` (positional ranges +
+    /// sequential-holder flag).  Returns 0 for a non-tracked inode.
+    ///
+    /// Used by the step-6 Oracular unlink log-warn to include the
+    /// spec-mandated `{N} holder(s)` count (spec §Mode-differentiated
+    /// invariants).  The count is holder-agnostic — a single holder
+    /// with 3 same-holder-skip range acquires (per Prep A) reports
+    /// 3 here, not 1.  Sequential holder counts as +1 if present.
+    ///
+    /// Read-lock scoped, cheap: single HashMap lookup + one
+    /// arithmetic combination.  Suitable for hot-path use in the
+    /// unlink handlers.
+    pub fn count_locks(&self, dev_inode: DevInode) -> usize {
+        let guard = self.inner.read().expect("lock registry poisoned");
+        let Some(state) = guard.get(&dev_inode) else {
+            return 0;
+        };
+        state.ranges.len() + state.sequential_holder.iter().count()
+    }
+
     /// Diagnostic count of currently-tracked `(dev, inode)` entries.
     pub fn tracked_files(&self) -> usize {
         let guard = self.inner.read().expect("lock registry poisoned");
@@ -963,6 +983,53 @@ mod tests {
             .unwrap();
         // Simulates fs_remove_file's whole-file check.
         assert!(reg.is_locked((1, 42), (0, u64::MAX)));
+    }
+
+    // -- count_locks (step 6 spec-message follow-up) -----------------------
+
+    /// Step 6 review Gap 3: LockRegistry::count_locks(dev_inode) returns
+    /// the exact holder-count that fs_remove_file / fs_remove_dir splice
+    /// into the Oracular "{N} holder(s)" log-warn.
+    #[test]
+    fn count_locks_returns_zero_for_untracked_inode() {
+        let reg = LockRegistry::new();
+        assert_eq!(reg.count_locks((1, 42)), 0);
+    }
+
+    #[test]
+    fn count_locks_sums_ranges_and_sequential() {
+        let reg = LockRegistry::new();
+        // 3 range acquires (some same-holder overlapping under Prep A).
+        reg.try_acquire_range((1, 42), 0, 100, LockMode::Write, holder(1), deploy(1))
+            .unwrap();
+        reg.try_acquire_range((1, 42), 50, 20, LockMode::Write, holder(1), deploy(1))
+            .unwrap();
+        reg.try_acquire_range((1, 42), 200, 50, LockMode::Read, holder(2), deploy(1))
+            .unwrap();
+        assert_eq!(reg.count_locks((1, 42)), 3);
+        // Different inode: independent.
+        assert_eq!(reg.count_locks((1, 43)), 0);
+        // Sequential on OTHER inode.
+        reg.try_acquire_sequential((1, 43), holder(3), deploy(1))
+            .unwrap();
+        assert_eq!(reg.count_locks((1, 43)), 1);
+    }
+
+    #[test]
+    fn count_locks_decreases_after_release() {
+        let reg = LockRegistry::new();
+        let a = reg
+            .try_acquire_range((1, 42), 0, 100, LockMode::Read, holder(1), deploy(1))
+            .unwrap();
+        let b = reg
+            .try_acquire_range((1, 42), 200, 100, LockMode::Read, holder(2), deploy(1))
+            .unwrap();
+        assert_eq!(reg.count_locks((1, 42)), 2);
+        reg.release(a).unwrap();
+        assert_eq!(reg.count_locks((1, 42)), 1);
+        reg.release(b).unwrap();
+        // Entry evicted when last lock released → count is 0.
+        assert_eq!(reg.count_locks((1, 42)), 0);
     }
 
     // -- LockId monotonicity ---------------------------------------------

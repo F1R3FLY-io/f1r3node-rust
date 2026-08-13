@@ -1898,15 +1898,23 @@ impl FsProcesses {
                                 // unlink.  fd-based calls on the
                                 // pre-unlink fd remain valid because
                                 // the kernel keeps the inode alive
-                                // until the last fd closes.
+                                // until the last fd closes.  Includes
+                                // holder count per spec-mandated
+                                // `{N} holder(s)` message body (step-6
+                                // review Gap 3 follow-up, 2026-08-13).
                                 if let Some((dev, ino)) = target_dev_inode {
+                                    let n_holders = lock_registry.count_locks((dev, ino));
                                     tracing::warn!(
                                         target: "f1r3fly.fs.oracular",
                                         dev = dev,
                                         ino = ino,
-                                        "oracular unlink of locked file — holders will observe \
-                                         subsequent errors on path-based calls; fd-based calls \
-                                         remain valid until close"
+                                        n_holders = n_holders,
+                                        "oracular unlink of locked file (dev={}, ino={}) — {} \
+                                         holder(s) will observe subsequent errors on path-based \
+                                         calls; fd-based calls remain valid until close",
+                                        dev,
+                                        ino,
+                                        n_holders
                                     );
                                 }
                             }
@@ -2008,13 +2016,18 @@ impl FsProcesses {
                         ConsensusMode::Oracular => {
                             if target_is_locked {
                                 if let Some((dev, ino)) = target_dev_inode {
+                                    let n_holders = lock_registry.count_locks((dev, ino));
                                     tracing::warn!(
                                         target: "f1r3fly.fs.oracular",
                                         dev = dev,
                                         ino = ino,
-                                        "oracular removeDir of locked directory — holders will \
-                                         observe subsequent errors on path-based calls; fd-based \
-                                         calls remain valid until close"
+                                        n_holders = n_holders,
+                                        "oracular removeDir of locked directory (dev={}, ino={}) \
+                                         — {} holder(s) will observe subsequent errors on \
+                                         path-based calls; fd-based calls remain valid until close",
+                                        dev,
+                                        ino,
+                                        n_holders
                                     );
                                 }
                             }
@@ -3324,6 +3337,127 @@ mod cmode_tests {
         assert_eq!(target_dev_inode_at(&parent), None);
     }
 
+    /// Step 6 review Gap 2: `target_dev_inode_at` uses
+    /// `AT_SYMLINK_NOFOLLOW`, so a symlink leaf reports the LINK's
+    /// own inode — NOT the target's.  Matches unlinkat's "remove the
+    /// directory entry" semantics: unlinkat on a symlink removes the
+    /// link, not what it points at.  Pin ensures a regression that
+    /// drops the flag (or switches to `AT_EMPTY_PATH` / follows the
+    /// link) would silently target the wrong entity — locks on the
+    /// TARGET file would spuriously gate an unlink of the SYMLINK,
+    /// and vice versa.
+    #[test]
+    fn target_dev_inode_at_reports_link_inode_not_target_inode() {
+        use std::io::Write;
+        let tmpdir = tempfile::tempdir().expect("mktemp");
+        // Create the target file.
+        let target_path = tmpdir.path().join("target.txt");
+        {
+            let mut f = std::fs::File::create(&target_path).expect("create target");
+            f.write_all(b"hello").expect("write");
+        }
+        // Create a symlink to it in the same directory.
+        let link_path = tmpdir.path().join("link.txt");
+        std::os::unix::fs::symlink(&target_path, &link_path).expect("symlink");
+
+        // Independently discover the target's inode via metadata (follows link).
+        let target_meta = std::fs::metadata(&target_path).expect("stat target");
+        use std::os::unix::fs::MetadataExt;
+        let target_ino = target_meta.ino();
+
+        // And the link's own inode via symlink_metadata (does NOT follow).
+        let link_meta = std::fs::symlink_metadata(&link_path).expect("symlink_metadata");
+        let link_ino = link_meta.ino();
+
+        // Sanity: they must differ on a real filesystem.
+        assert_ne!(
+            target_ino, link_ino,
+            "test precondition: target file and its symlink must have distinct inodes"
+        );
+
+        // Now via target_dev_inode_at:
+        let parent = safe_descend_verified(tmpdir.path(), "link.txt", None).expect("safe_descend");
+        let observed = target_dev_inode_at(&parent).expect("stat");
+        assert_eq!(
+            observed.1, link_ino,
+            "target_dev_inode_at MUST report the LINK's inode (AT_SYMLINK_NOFOLLOW), \
+             not the target's — a regression would let unlinkat operate on the \
+             symlink while the LockRegistry query targets the wrong entity"
+        );
+        assert_ne!(
+            observed.1, target_ino,
+            "regression guard: if this equals target_ino, the flag has been dropped \
+             or replaced by an option that follows the symlink"
+        );
+    }
+
+    /// Step 6 review Gap 1: end-to-end composition test.  Verifies
+    /// the building blocks used by the fs_remove_file / fs_remove_dir
+    /// gate (target_dev_inode_at + LockRegistry::is_locked +
+    /// LockRegistry::count_locks) compose correctly against a REAL
+    /// filesystem, not just against unit-test fixtures.  Catches
+    /// regressions where (a) target_dev_inode_at returns a different
+    /// (dev, ino) than what LockRegistry entries key on, or (b)
+    /// is_locked/count_locks look up under a different key shape.
+    ///
+    /// Doesn't invoke the handler itself — the source-scan pins
+    /// (fs_remove_{file,dir}_has_step6_gate) verify the handler wires
+    /// these building blocks; this test verifies the wiring
+    /// terminates in the right filesystem entity.
+    #[test]
+    fn step6_gate_composition_against_real_filesystem() {
+        use std::io::Write;
+        // `HolderId` + `LockMode` are already imported via `use super::*`
+        // in this module.  `LockRegistry` isn't in that import set, so
+        // reach for it via its parent path.
+        type LockRegistry = crate::rust::interpreter::io::lock::LockRegistry;
+        let tmpdir = tempfile::tempdir().expect("mktemp");
+        let file_path = tmpdir.path().join("target.txt");
+        {
+            let mut f = std::fs::File::create(&file_path).expect("create target");
+            f.write_all(b"payload").expect("write");
+        }
+        // Handler flow step 1: safe_descend to the leaf.
+        let parent = safe_descend_verified(tmpdir.path(), "target.txt", None)
+            .expect("safe_descend on the real leaf");
+        // Handler flow step 2: fstatat for (dev, ino).
+        let dev_inode = target_dev_inode_at(&parent).expect("stat existing leaf");
+        // Handler flow step 3: seed the LockRegistry with a lock on
+        // that inode (simulates a live File cap holding a lock).
+        let lock_registry = LockRegistry::new();
+        let holder = HolderId::from_bytes([0x11u8; 32]);
+        let deploy: [u8; 32] = [0x22u8; 32];
+        lock_registry
+            .try_acquire_range(dev_inode, 0, 100, LockMode::Write, holder.clone(), deploy)
+            .expect("acquire");
+        // Handler flow step 4: is_locked whole-file query — MUST report true.
+        assert!(
+            lock_registry.is_locked(dev_inode, (0, u64::MAX)),
+            "is_locked composition: real-fs (dev, ino) key + acquire on \
+             same key MUST report locked — otherwise the fs_remove_* gate \
+             would spuriously admit unlinks of locked files"
+        );
+        // Handler flow step 5: count_locks — MUST report exact 1 (spec
+        // §Mode-differentiated `{N} holder(s)` message).
+        assert_eq!(
+            lock_registry.count_locks(dev_inode),
+            1,
+            "count_locks composition: real-fs (dev, ino) key must yield \
+             correct holder count for the Oracular log-warn message"
+        );
+        // Handler flow step 6: after release, gate MUST return false so
+        // the unlink proceeds under Consensus (theoretical, H-29-3
+        // blocks) or without a warn under Oracular.
+        let n_released = lock_registry.release_all_for_holder(&holder);
+        assert_eq!(n_released, 1);
+        assert!(
+            !lock_registry.is_locked(dev_inode, (0, u64::MAX)),
+            "post-release: is_locked must report unlocked so the gate lets \
+             the unlink proceed"
+        );
+        assert_eq!(lock_registry.count_locks(dev_inode), 0);
+    }
+
     /// Pin fs_remove_file's step-6 gate: verify the handler calls
     /// `target_dev_inode_at` + `lock_registry.is_locked` AND
     /// dispatches on `cmode` inside the spawn_blocking closure
@@ -3334,8 +3468,10 @@ mod cmode_tests {
         let fn_start = src
             .find("pub async fn fs_remove_file")
             .expect("handlers.rs missing fs_remove_file definition");
-        // 6KB window covers the extended step-6 body.
-        let window = &src[fn_start..std::cmp::min(fn_start + 6000, src.len())];
+        // 10KB window covers the extended step-6 body (grew slightly
+        // after Gap 3 follow-up added count_locks wiring + updated
+        // message).
+        let window = &src[fn_start..std::cmp::min(fn_start + 10000, src.len())];
         assert!(
             window.contains("target_dev_inode_at(&parent)"),
             "step 6 regression: fs_remove_file must call target_dev_inode_at \
@@ -3370,7 +3506,8 @@ mod cmode_tests {
         let fn_start = src
             .find("pub async fn fs_remove_dir")
             .expect("handlers.rs missing fs_remove_dir definition");
-        let window = &src[fn_start..std::cmp::min(fn_start + 6000, src.len())];
+        // 10KB window (see fs_remove_file test for rationale).
+        let window = &src[fn_start..std::cmp::min(fn_start + 10000, src.len())];
         assert!(
             window.contains("target_dev_inode_at(&parent)"),
             "step 6 regression: fs_remove_dir must call target_dev_inode_at"
