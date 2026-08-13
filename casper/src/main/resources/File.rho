@@ -4344,6 +4344,173 @@ in {
       }
     } |
 
+    // -- readInto(buf, options) — slice 8d-3-bounded arity-2 variant
+    //
+    // Per spec §1181.  Same shape as readInto arity-1 but with wait
+    // extraction + withRangeLock delegation.  Inner action: fsRead
+    // (release fires after the syscall; UTF-8 truncation + buffer
+    // writeBytes + seek-back happen post-lock).
+    method readInto(@buf, @options) {
+      match options.get("wait") {
+        wOpt /\ (Nil \/ Bool) => {
+          new waitCh in {
+            match wOpt {
+              Nil        => waitCh!(false)
+              bb /\ Bool => waitCh!(bb)
+            } |
+            for (@w <- waitCh) {
+              for (@state <- @[*private, *stateP]) {
+                match state {
+                  "closed" => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file is closed"])
+                  }
+                  "open" => {
+                    @[*private, *stateP]!("open") |
+                    for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
+                      match params {
+                        (fd, _root, _rel, _mode) => {
+                          for (@leaseReply <- @buf!?("beginFill")) {
+                            match leaseReply {
+                              [true, token] => {
+                                for (@remReply <- @buf!?("remaining")) {
+                                  match remReply {
+                                    [true, remBytes /\ Int] => {
+                                      for (@unitReply <- @buf!?("unit")) {
+                                        match unitReply {
+                                          [true, unit] => {
+                                            match remBytes <= 0 {
+                                              true => {
+                                                for (@_endReply <- @buf!?("endFill", token)) {
+                                                  return!([true, [0, false]])
+                                                }
+                                              }
+                                              false => {
+                                                new tellCh in {
+                                                  fsTell!(fd, *tellCh) |
+                                                  for (@tellReply <- tellCh) {
+                                                    match tellReply {
+                                                      [true, tellPos /\ Int] => {
+                                                        new innerCh, retCh in {
+                                                          for (@cb <- innerCh) {
+                                                            new readCh in {
+                                                              fsRead!(fd, remBytes, *readCh) |
+                                                              for (@r <- readCh) { @cb!(r) }
+                                                            }
+                                                          } |
+                                                          withRangeLock!(fd, tellPos, remBytes, "r",
+                                                                         *this, cmode, w, *innerCh, *retCh) |
+                                                          for (@readReply <- retCh) {
+                                                            match readReply {
+                                                              [true, chunk /\ ByteArray] => {
+                                                                new toWrite in {
+                                                                  match unit == "utf8" {
+                                                                    true => {
+                                                                      match chunk.length() {
+                                                                        0 => toWrite!(chunk)
+                                                                        _ => toWrite!(chunk.slice(0, chunk.validUtf8PrefixLen()))
+                                                                      }
+                                                                    }
+                                                                    false => toWrite!(chunk)
+                                                                  } |
+                                                                  for (@writeChunk <- toWrite) {
+                                                                    new wCh in {
+                                                                      @buf!(*wCh, "writeBytes", writeChunk) |
+                                                                      for (@wReply <- wCh) {
+                                                                        match wReply {
+                                                                          [true, actualN] => {
+                                                                            new overshotCh in {
+                                                                              overshotCh!(chunk.length() - actualN) |
+                                                                              for (@overshot <- overshotCh) {
+                                                                                match overshot > 0 {
+                                                                                  true => {
+                                                                                    new seekCh in {
+                                                                                      fsSeek!(fd, 0 - overshot, "cur", *seekCh) |
+                                                                                      for (@_seekReply <- seekCh) {
+                                                                                        for (@_endReply <- @buf!?("endFill", token)) {
+                                                                                          return!([true, [actualN, chunk.length() == 0]])
+                                                                                        }
+                                                                                      }
+                                                                                    }
+                                                                                  }
+                                                                                  false => {
+                                                                                    for (@_endReply <- @buf!?("endFill", token)) {
+                                                                                      return!([true, [actualN, chunk.length() == 0]])
+                                                                                    }
+                                                                                  }
+                                                                                }
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                          _ => {
+                                                                            for (@_endReply <- @buf!?("endFill", token)) {
+                                                                              return!(wReply)
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                              _ => {
+                                                                for (@_endReply <- @buf!?("endFill", token)) {
+                                                                  return!(readReply)
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                      _ => {
+                                                        for (@_endReply <- @buf!?("endFill", token)) {
+                                                          return!(tellReply)
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                          _ => {
+                                            for (@_endReply <- @buf!?("endFill", token)) {
+                                              return!(unitReply)
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                    _ => {
+                                      for (@_endReply <- @buf!?("endFill", token)) {
+                                        return!([false, "FSERR_IO",
+                                          "buffer.remaining() returned malformed reply"])
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                              _ => return!(leaseReply)
+                            }
+                          }
+                        }
+                        _ => return!([false, "FSERR_IO", "fd params malformed"])
+                      }
+                    }
+                  }
+                  _ => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                  }
+                }
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "options.wait must be Bool"])
+      }
+    } |
+
     // -- writeFrom(buf) --------------------------------------------
     //
     // Drain the filled region `[0, buf!length())` of `buf` to the
@@ -4478,6 +4645,88 @@ in {
             return!([false, "FSERR_CLOSED", "file state unrecognized"])
           }
         }
+      }
+    } |
+
+    // -- writeFrom(buf, options) — slice 8d-3-bounded arity-2 variant
+    //
+    // Per spec §1181.  Same shape as writeFrom arity-1 but with wait
+    // extraction and withRangeLock delegation.  Inner action: fsWrite
+    // at the current cursor (via fsTell to compute the lock range).
+    method writeFrom(@buf, @options) {
+      match options.get("wait") {
+        wOpt /\ (Nil \/ Bool) => {
+          new waitCh in {
+            match wOpt {
+              Nil        => waitCh!(false)
+              bb /\ Bool => waitCh!(bb)
+            } |
+            for (@w <- waitCh) {
+              for (@state <- @[*private, *stateP]) {
+                match state {
+                  "closed" => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file is closed"])
+                  }
+                  "open" => {
+                    @[*private, *stateP]!("open") |
+                    for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
+                      match params {
+                        (fd, _root, _rel, mode) => {
+                          match mode {
+                            "r" => return!([false, "FSERR_UNSUPPORTED",
+                              "writeFrom requires a write-capable mode"])
+                            _   => {
+                              for (@baReply <- @buf!?("toByteArray")) {
+                                match baReply {
+                                  [true, bytes /\ ByteArray] => {
+                                    match bytes.length() <= 0 {
+                                      true => return!([true, 0])
+                                      false => {
+                                        new tellCh in {
+                                          fsTell!(fd, *tellCh) |
+                                          for (@tellReply <- tellCh) {
+                                            match tellReply {
+                                              [true, tellPos /\ Int] => {
+                                                new innerCh, retCh in {
+                                                  for (@cb <- innerCh) {
+                                                    new writeCh in {
+                                                      fsWrite!(fd, bytes, *writeCh) |
+                                                      for (@wReply <- writeCh) { @cb!(wReply) }
+                                                    }
+                                                  } |
+                                                  withRangeLock!(fd, tellPos, bytes.length(), "w",
+                                                                 *this, cmode, w, *innerCh, *retCh) |
+                                                  for (@r <- retCh) { return!(r) }
+                                                }
+                                              }
+                                              _ => return!(tellReply)
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                  _ => return!(baReply)
+                                }
+                              }
+                            }
+                          }
+                        }
+                        _ => return!([false, "FSERR_IO", "fd params malformed"])
+                      }
+                    }
+                  }
+                  _ => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                  }
+                }
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "options.wait must be Bool"])
       }
     } |
 
@@ -4684,6 +4933,150 @@ in {
     // filled region to absolute offset `offset` via `fsWriteAt`.
     // Does NOT touch the sequential cursor.  Does NOT take the fill
     // lease (spec §978).  Write-mode gated.
+    // -- readAtInto(offset, buf, options) — slice 8d-3-bounded arity-3
+    //
+    // Per spec §1181.  Positional variant of readInto with wait
+    // extraction + withRangeLock delegation.  Inner action: fsReadAt.
+    // No seek-back (cursor unchanged by fsReadAt).
+    method readAtInto(@offset, @buf, @options) {
+      match offset {
+        off /\ Int => {
+          match off < 0 {
+            true => return!([false, "FSERR_BAD_ARG",
+              "offset must be non-negative"])
+            false => {
+              match options.get("wait") {
+                wOpt /\ (Nil \/ Bool) => {
+                  new waitCh in {
+                    match wOpt {
+                      Nil        => waitCh!(false)
+                      bb /\ Bool => waitCh!(bb)
+                    } |
+                    for (@w <- waitCh) {
+                      for (@state <- @[*private, *stateP]) {
+                        match state {
+                          "closed" => {
+                            @[*private, *stateP]!("closed") |
+                            return!([false, "FSERR_CLOSED", "file is closed"])
+                          }
+                          "open" => {
+                            @[*private, *stateP]!("open") |
+                            for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
+                              match params {
+                                (fd, _root, _rel, _mode) => {
+                                  for (@leaseReply <- @buf!?("beginFill")) {
+                                    match leaseReply {
+                                      [true, token] => {
+                                        for (@remReply <- @buf!?("remaining")) {
+                                          match remReply {
+                                            [true, remBytes /\ Int] => {
+                                              for (@unitReply <- @buf!?("unit")) {
+                                                match unitReply {
+                                                  [true, unit] => {
+                                                    match remBytes <= 0 {
+                                                      true => {
+                                                        for (@_endReply <- @buf!?("endFill", token)) {
+                                                          return!([true, [0, false]])
+                                                        }
+                                                      }
+                                                      false => {
+                                                        new innerCh, retCh in {
+                                                          for (@cb <- innerCh) {
+                                                            new readCh in {
+                                                              fsReadAt!(fd, off, remBytes, *readCh) |
+                                                              for (@r <- readCh) { @cb!(r) }
+                                                            }
+                                                          } |
+                                                          withRangeLock!(fd, off, remBytes, "r",
+                                                                         *this, cmode, w, *innerCh, *retCh) |
+                                                          for (@readReply <- retCh) {
+                                                            match readReply {
+                                                              [true, chunk /\ ByteArray] => {
+                                                                new toWrite in {
+                                                                  match unit == "utf8" {
+                                                                    true => {
+                                                                      match chunk.length() {
+                                                                        0 => toWrite!(chunk)
+                                                                        _ => toWrite!(chunk.slice(0, chunk.validUtf8PrefixLen()))
+                                                                      }
+                                                                    }
+                                                                    false => toWrite!(chunk)
+                                                                  } |
+                                                                  for (@writeChunk <- toWrite) {
+                                                                    new wCh in {
+                                                                      @buf!(*wCh, "writeBytes", writeChunk) |
+                                                                      for (@wReply <- wCh) {
+                                                                        match wReply {
+                                                                          [true, actualN] => {
+                                                                            for (@_endReply <- @buf!?("endFill", token)) {
+                                                                              return!([true, [actualN, chunk.length() == 0]])
+                                                                            }
+                                                                          }
+                                                                          _ => {
+                                                                            for (@_endReply <- @buf!?("endFill", token)) {
+                                                                              return!(wReply)
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                              _ => {
+                                                                for (@_endReply <- @buf!?("endFill", token)) {
+                                                                  return!(readReply)
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                  _ => {
+                                                    for (@_endReply <- @buf!?("endFill", token)) {
+                                                      return!(unitReply)
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                            _ => {
+                                              for (@_endReply <- @buf!?("endFill", token)) {
+                                                return!([false, "FSERR_IO",
+                                                  "buffer.remaining() returned malformed reply"])
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                      _ => return!(leaseReply)
+                                    }
+                                  }
+                                }
+                                _ => return!([false, "FSERR_IO", "fd params malformed"])
+                              }
+                            }
+                          }
+                          _ => {
+                            @[*private, *stateP]!("closed") |
+                            return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                _ => return!([false, "FSERR_BAD_ARG", "options.wait must be Bool"])
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "offset must be an integer"])
+      }
+    } |
+
     method writeFromAt(@offset, @buf) {
       match offset {
         off /\ Int => {
@@ -4784,6 +5177,89 @@ in {
                     return!([false, "FSERR_CLOSED", "file state unrecognized"])
                   }
                 }
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "offset must be an integer"])
+      }
+    } |
+
+    // -- writeFromAt(offset, buf, options) — slice 8d-3-bounded arity-3
+    //
+    // Per spec §1181.  Positional variant of writeFrom with wait
+    // extraction + withRangeLock delegation.  Inner action: fsWriteAt
+    // at the given offset.
+    method writeFromAt(@offset, @buf, @options) {
+      match offset {
+        off /\ Int => {
+          match off < 0 {
+            true => return!([false, "FSERR_BAD_ARG",
+              "offset must be non-negative"])
+            false => {
+              match options.get("wait") {
+                wOpt /\ (Nil \/ Bool) => {
+                  new waitCh in {
+                    match wOpt {
+                      Nil        => waitCh!(false)
+                      bb /\ Bool => waitCh!(bb)
+                    } |
+                    for (@w <- waitCh) {
+                      for (@state <- @[*private, *stateP]) {
+                        match state {
+                          "closed" => {
+                            @[*private, *stateP]!("closed") |
+                            return!([false, "FSERR_CLOSED", "file is closed"])
+                          }
+                          "open" => {
+                            @[*private, *stateP]!("open") |
+                            for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
+                              match params {
+                                (fd, _root, _rel, mode) => {
+                                  match mode {
+                                    "r" => return!([false, "FSERR_UNSUPPORTED",
+                                      "writeFromAt requires a write-capable mode"])
+                                    _   => {
+                                      for (@baReply <- @buf!?("toByteArray")) {
+                                        match baReply {
+                                          [true, bytes /\ ByteArray] => {
+                                            match bytes.length() <= 0 {
+                                              true => return!([true, 0])
+                                              false => {
+                                                new innerCh, retCh in {
+                                                  for (@cb <- innerCh) {
+                                                    new writeCh in {
+                                                      fsWriteAt!(fd, off, bytes, *writeCh) |
+                                                      for (@wReply <- writeCh) { @cb!(wReply) }
+                                                    }
+                                                  } |
+                                                  withRangeLock!(fd, off, bytes.length(), "w",
+                                                                 *this, cmode, w, *innerCh, *retCh) |
+                                                  for (@r <- retCh) { return!(r) }
+                                                }
+                                              }
+                                            }
+                                          }
+                                          _ => return!(baReply)
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                                _ => return!([false, "FSERR_IO", "fd params malformed"])
+                              }
+                            }
+                          }
+                          _ => {
+                            @[*private, *stateP]!("closed") |
+                            return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                _ => return!([false, "FSERR_BAD_ARG", "options.wait must be Bool"])
               }
             }
           }

@@ -1379,6 +1379,133 @@ async fn file_write_lines_arity_2_wait_non_bool_rejects_at_outer_dispatch() {
     assert_eq!(code, "FSERR_BAD_ARG");
 }
 
+// -- Phase 8 slice 8d-3-bounded buffer-based method variants -----------
+//
+// Smoke-checks for arity-N+1 variants of readInto, readAtInto,
+// writeFrom, writeFromAt.  Each uses withRangeLock (from slice 8c)
+// via the innerCh + callback pattern.  Behavioral correctness of
+// the buffer-lease + UTF-8 truncation + writeBytes + seek-back
+// machinery is already covered by the arity-N tests (which use the
+// same body); these smoke-checks just verify the arity-N+1 dispatch
+// + wait extraction wire up correctly.
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_read_into_arity_2_wait_true_dispatches() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@_ <- @f!?("writeByteArray", "abcd".toUtf8Bytes())) {
+            for (@_ <- @f!?("seek", 0, "set")) {
+              for (@alloc <- Allocator!?()) {
+                for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
+                  for (@r <- @f!?("readInto", buf, {"wait": true})) {
+                    @"out"!(r)
+                  }
+                }
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(ok, "readInto arity-2 with wait:true must succeed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_read_at_into_arity_3_wait_true_dispatches() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@_ <- @f!?("writeByteArray", "abcd".toUtf8Bytes())) {
+            for (@alloc <- Allocator!?()) {
+              for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
+                for (@r <- @f!?("readAtInto", 0, buf, {"wait": true})) {
+                  @"out"!(r)
+                }
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(ok, "readAtInto arity-3 with wait:true must succeed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_write_from_arity_2_wait_true_dispatches() {
+    // Filled buffer (via writeBytes) then drain via writeFrom arity-2.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@alloc <- Allocator!?()) {
+            for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
+              for (@[true, token] <- @buf!?("beginFill")) {
+                new wCh in {
+                  @buf!(*wCh, "writeBytes", "abcd".toUtf8Bytes()) |
+                  for (@_ <- wCh) {
+                    for (@_ <- @buf!?("endFill", token)) {
+                      for (@r <- @f!?("writeFrom", buf, {"wait": true})) {
+                        @"out"!(r)
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(ok, "writeFrom arity-2 with wait:true must succeed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_write_from_at_arity_3_wait_true_dispatches() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@alloc <- Allocator!?()) {
+            for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
+              for (@[true, token] <- @buf!?("beginFill")) {
+                new wCh in {
+                  @buf!(*wCh, "writeBytes", "abcd".toUtf8Bytes()) |
+                  for (@_ <- wCh) {
+                    for (@_ <- @buf!?("endFill", token)) {
+                      for (@r <- @f!?("writeFromAt", 0, buf, {"wait": true})) {
+                        @"out"!(r)
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(ok, "writeFromAt arity-3 with wait:true must succeed");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn file_close_then_read_returns_fserr_closed() {
     let (space, reducer) =

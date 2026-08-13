@@ -1142,7 +1142,18 @@ mod tests {
         // writeLine arity-2 via new `writeLinesLoopWithOptions`
         // helper contract).  Existing arity-1 methods unchanged for
         // ~300+ test caller compatibility.  Same hard-fork discipline.
-        const EXPECTED: &str = "7eb81b021a46ac8517b0d0d5c9458ff8cd2e959a16572afebb9b5f62cbb3dc11";
+        //
+        // Anchor rolled forward again for Phase 8 slice 8d-3-bounded
+        // (2026-08-13): added FOUR buffer-based method arity-N+1
+        // variants per spec §1181 — arity-2 readInto (withRangeLock
+        // + cursor-relative fsRead + UTF-8 truncate + buf.writeBytes
+        // + seek-back for overshoot), arity-3 readAtInto (withRangeLock
+        // + positional fsReadAt, no seek-back), arity-2 writeFrom
+        // (withRangeLock + cursor-relative fsWrite), arity-3
+        // writeFromAt (withRangeLock + positional fsWriteAt).  All
+        // reuse the slice-8c withRangeLock helper.  Same hard-fork
+        // discipline.
+        const EXPECTED: &str = "025523442148925a3232f6fdf05a39bb466c3406f7828a6e41572d9fcf1bdf61";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \
