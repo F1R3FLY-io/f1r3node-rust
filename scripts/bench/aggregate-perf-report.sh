@@ -92,6 +92,61 @@ command -v jq >/dev/null || {
 }
 mkdir -p "$OUT_DIR"
 
+valid_checkpoint_summary() {
+	jq -e '
+    type == "object"
+    and (.target_ref | type) == "string"
+    and (.target_sha | type) == "string"
+    and (.started_at | type) == "number"
+    and (.elapsed_seconds | type) == "number"
+    and .started_at > 0
+    and .elapsed_seconds >= 0
+  ' "$SOAK_DIR/summary.json" >/dev/null 2>&1
+}
+
+recover_checkpoint_summary() {
+	local state="$SOAK_DIR/.soak-checkpoint-state.json"
+	local finished_at
+	jq -e '
+    type == "object"
+    and (.target_ref | type) == "string"
+    and (.target_sha | type) == "string"
+    and (.trigger_source | type) == "string"
+    and (.slot_delay_seconds | type) == "number"
+    and (.version | type) == "string"
+    and (.started_at | type) == "number" and .started_at > 0
+    and (.requested_seconds | type) == "number" and .requested_seconds > 0
+    and (.iterations | type) == "number" and .iterations >= 0
+    and (.failures | type) == "number" and .failures >= 0
+    and (.bench_segments | type) == "number" and .bench_segments >= 0
+    and (.bench_failures | type) == "number" and .bench_failures >= 0
+  ' "$state" >/dev/null 2>&1 || return 1
+	finished_at="$(date +%s)"
+	SOAK_OUTPUT_DIR="$SOAK_DIR" \
+		SOAK_METRICS_REGISTRY="$SCRIPT_DIR/soak-metrics.json" \
+		SOAK_TARGET_REF="$(jq -r '.target_ref' "$state")" \
+		SOAK_TARGET_SHA="$(jq -r '.target_sha' "$state")" \
+		SOAK_TRIGGER_SOURCE="$(jq -r '.trigger_source' "$state")" \
+		SOAK_SLOT_DELAY_SECONDS="$(jq -r '.slot_delay_seconds' "$state")" \
+		SOAK_VERSION="$(jq -r '.version' "$state")" \
+		SOAK_STARTED_AT="$(jq -r '.started_at' "$state")" \
+		SOAK_FINISHED_AT="$finished_at" \
+		SOAK_DURATION_SECONDS="$(jq -r '.requested_seconds' "$state")" \
+		SOAK_ITERATIONS="$(jq -r '.iterations' "$state")" \
+		SOAK_FAILURES="$(jq -r '.failures' "$state")" \
+		SOAK_BENCH_SEGMENTS="$(jq -r '.bench_segments' "$state")" \
+		SOAK_BENCH_FAILURES="$(jq -r '.bench_failures' "$state")" \
+		"$SCRIPT_DIR/write-soak-summary.sh"
+	valid_checkpoint_summary
+}
+
+if [ "$SOAK_STATUS" = "in_progress" ] && ! valid_checkpoint_summary; then
+	recover_checkpoint_summary || {
+		echo "checkpoint has no valid summary or recoverable persisted state" >&2
+		exit 2
+	}
+fi
+
 SEGMENTS_JSON="$OUT_DIR/.segments.json"
 find "$SOAK_DIR" -mindepth 2 -maxdepth 2 -type f \
 	-path '*/bench-segment-*/metrics.json' -print0 |

@@ -4,4 +4,5 @@
 # malformed and duplicate entries before pytest starts.
 duplicate-signed-deploy-race
 finality-stall-recovery
+observer-missing-block-retry
 slow-peer-notification-quorum

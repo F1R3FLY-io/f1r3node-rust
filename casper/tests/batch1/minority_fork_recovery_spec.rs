@@ -2,12 +2,13 @@ use std::time::Duration;
 
 use casper::rust::engine::running::update_fork_choice_tips_if_stuck;
 use casper::rust::util::construct_deploy;
+use casper::rust::validator_identity::ValidatorIdentity;
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
 #[tokio::test]
-async fn validator_on_minority_fork_should_request_approved_block_for_rejoin() {
+async fn validator_on_minority_fork_should_request_tips_without_leaving_running() {
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(
             GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3)),
@@ -16,9 +17,17 @@ async fn validator_on_minority_fork_should_request_approved_block_for_rejoin() {
         .expect("Failed to build genesis");
 
     let shard_id = genesis.genesis_block.shard_id.clone();
-    let majority_bootstrap = 1;
-    let majority_peer = 2;
-    let minority_validator = 0;
+    let validator_sks = genesis.validator_sks();
+    let mut validator_indices: Vec<usize> = (0..3).collect();
+    validator_indices.sort_by_key(|index| {
+        ValidatorIdentity::new(&validator_sks[*index])
+            .public_key
+            .bytes
+            .clone()
+    });
+    let minority_validator = validator_indices[0];
+    let majority_bootstrap = validator_indices[1];
+    let majority_peer = validator_indices[2];
     let mut nodes =
         TestNode::create_network_with_bootstrap_index(genesis.clone(), 3, majority_bootstrap)
             .await
@@ -37,22 +46,15 @@ async fn validator_on_minority_fork_should_request_approved_block_for_rejoin() {
         .await
         .expect("Validator on minority fork should create a local block");
 
-    let majority_deploy = construct_deploy::source_deploy_now(
-        "@201!(\"majority\")".to_string(),
-        None,
-        None,
-        Some(shard_id.clone()),
+    nodes[majority_bootstrap].allow_empty_blocks = true;
+    let majority_block = TestNode::propagate_block_to_one(
+        &mut nodes,
+        majority_bootstrap,
+        majority_peer,
+        &[],
     )
-    .expect("Failed to create majority deploy");
-
-    let majority_block =
-        TestNode::propagate_block_to_one(&mut nodes, majority_bootstrap, majority_peer, &[
-            majority_deploy,
-        ])
-        .await
-        .expect(
-            "Majority bootstrap should propagate a majority block to another majority validator",
-        );
+    .await
+    .expect("Majority bootstrap should propagate a majority block to another majority validator");
 
     assert!(
         nodes[majority_bootstrap].contains(&majority_block.block_hash),
@@ -83,8 +85,8 @@ async fn validator_on_minority_fork_should_request_approved_block_for_rejoin() {
 
     let engine_after_detection = nodes[minority_validator].engine_cell.get().await;
     assert!(
-        engine_after_detection.with_casper().is_none(),
-        "Minority validator should move into Initializing after stale detection"
+        engine_after_detection.with_casper().is_some(),
+        "Minority validator should stay Running after stale detection"
     );
 
     let queue_to_bootstrap = nodes[majority_bootstrap]
@@ -104,39 +106,16 @@ async fn validator_on_minority_fork_should_request_approved_block_for_rejoin() {
     assert!(
         request_type_ids
             .iter()
-            .any(|type_id| type_id == "ApprovedBlockRequest"),
-        "Recovery should request ApprovedBlock from bootstrap, got queue types: {:?}",
+            .any(|type_id| type_id == "ForkChoiceTipRequest"),
+        "Recovery should request fork-choice tips from bootstrap, got queue types: {:?}",
         request_type_ids
     );
-
-    nodes[majority_bootstrap]
-        .handle_receive()
-        .await
-        .expect("Bootstrap should answer the approved-block request");
-
-    // Full Initializing restore needs reentrant LFS queue pumping; this harness
-    // asserts through the approved-block handoff.
-    let queue_to_minority = nodes[minority_validator]
-        .tle
-        .test_network()
-        .peer_queue(&nodes[minority_validator].local)
-        .expect("Minority validator queue should be readable");
-    let response_type_ids: Vec<String> = queue_to_minority
-        .iter()
-        .filter_map(|protocol| {
-            protocol.message.as_ref().and_then(|message| match message {
-                models::routing::protocol::Message::Packet(packet) => Some(packet.type_id.clone()),
-                _ => None,
-            })
-        })
-        .collect();
-
     assert!(
-        response_type_ids
+        !request_type_ids
             .iter()
-            .any(|type_id| type_id == "ApprovedBlock"),
-        "Bootstrap should send ApprovedBlock back to the minority validator, got queue types: {:?}",
-        response_type_ids
+            .any(|type_id| type_id == "ApprovedBlockRequest"),
+        "Recovery should not request an approved block, got queue types: {:?}",
+        request_type_ids
     );
 
     assert!(

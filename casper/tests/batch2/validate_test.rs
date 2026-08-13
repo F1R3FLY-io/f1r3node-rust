@@ -992,6 +992,119 @@ async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deplo
     .await
 }
 
+/// The deploy-index fast path, production order: the candidate is validated
+/// BEFORE insertion, so its own sigs are not yet indexed, and deploys never
+/// included in any inserted block clear validation without the parent-scope
+/// scan or the ancestor traversal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_accepts_fresh_deploys_in_block_not_yet_inserted() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let genesis_deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![genesis_deploy]),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let fresh_deploy = construct_deploy::basic_processed_deploy(1, None).unwrap();
+        let candidate = build_block(
+            vec![genesis.block_hash.clone()],
+            None,
+            1786500000000,
+            None,
+            None,
+            Some(vec![fresh_deploy]),
+            None,
+            None,
+            None,
+            Some(1),
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut casper_snapshot = mk_casper_snapshot(dag);
+
+        let result = Validate::repeat_deploy(&candidate, &mut casper_snapshot, &block_store, 50);
+        assert_eq!(result, Either::Right(ValidBlock::Valid));
+    })
+    .await
+}
+
+/// Pins the fast path's contract from both sides. Same repeat shape as
+/// `repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deploy`
+/// but in production order (candidate built, not inserted): while the sig is
+/// indexed, the fallback ancestor scan flags the repeat; deleting the index
+/// entry flips the verdict to Valid, proving the index probe is consulted
+/// and that the skip rests on the completeness invariant (every inserted
+/// block's sigs reach `deploy_index` — see `insert_internal`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_fast_path_short_circuits_on_deploy_index_absence() {
+    use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
+
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let candidate = build_block(
+            vec![genesis.block_hash.clone()],
+            None,
+            1786500000000,
+            None,
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            None,
+            None,
+            Some(1),
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut casper_snapshot = mk_casper_snapshot(dag);
+        let result = Validate::repeat_deploy(&candidate, &mut casper_snapshot, &block_store, 50);
+        assert_eq!(
+            result,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
+        );
+
+        {
+            let deploy_index_handle = block_dag_storage.deploy_index_for_tests();
+            let deploy_index_guard = deploy_index_handle.write();
+            deploy_index_guard
+                .delete(vec![deploy.deploy.sig.to_vec()])
+                .expect("delete deploy-index entry");
+        }
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut casper_snapshot = mk_casper_snapshot(dag);
+        let result = Validate::repeat_deploy(&candidate, &mut casper_snapshot, &block_store, 50);
+        assert_eq!(result, Either::Right(ValidBlock::Valid));
+    })
+    .await
+}
+
 /// Regression test for `repeat_deploy`'s `rejected_in_scope` exemption.
 ///
 /// Without the exemption, validation rejects any block that re-includes a
