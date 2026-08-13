@@ -1013,7 +1013,21 @@ mod tests {
         // variants).  LF-consumption is the primary termination for
         // well-behaved consumers; other paths cover EOF-before-LF and
         // UTF-8 boundary failures.
-        const EXPECTED: &str = "050c0a7268494d9691fa6f33c260144bd8e88af92ece993b6cb7cbe767581fde";
+        //
+        // Anchor rolled forward again for Phase 8 slice 8a step 4e-4
+        // (2026-08-12): lines() (nested LineStream-of-CharStreams)
+        // acquires a stream-lifetime sequential lock at outer mint.
+        // Inner CharStreams share the OUTER lock — no per-inner acquire.
+        // The single-active-inner rule (spec §349) guarantees at most
+        // one inner is live at a time, and outer.next() revokes the
+        // current inner before minting the next or terminating, so no
+        // inner is left doing I/O after outer's lock releases.  Release
+        // fires at the 3 outer termination paths (EOF via empty source,
+        // EOF via zero-read, fsRead error).  Step 4e is now COMPLETE:
+        // all 10 sequential-stream methods (4 read constructors + 4
+        // write methods) are auto-locked; writeString and writeLines
+        // deliberately delegate to writeByteArray / writeLine.
+        const EXPECTED: &str = "7f0a4834c81a8921477dcdf6e630671c3a9a6ad5c604e86a24aca391ef82a81b";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

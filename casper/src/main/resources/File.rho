@@ -2355,17 +2355,36 @@ in {
             return!([false, "FSERR_CLOSED", "file is closed"])
           }
           "open" => {
-            for (@params <<- @[*private, *fdP]) {
+            for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
               match params {
                 (fd, _root, _rel, _mode) => {
-                  new sourceCell, activeInnerCell,
-                      scanForLFRefilling, outerMint,
-                      outerProducer, outerBuilder in {
+                  // Phase 8 slice 8a step 4e-4: sequential lock spans
+                  // the OUTER LineStream's lifetime.  Inner CharStreams
+                  // (one per line) share the outer lock — no per-inner
+                  // acquire.  Under the single-active-inner rule
+                  // (spec §349), only one inner is live at a time and
+                  // outer.next() revokes it before minting the next,
+                  // so once outer terminates, no inner is left doing
+                  // I/O.  Release-once via lockCell at the 3 outer
+                  // termination paths (EOF-via-empty-source, EOF-via-
+                  // zero-read, fsRead-error).
+                  new lockCh in {
+                    // holder MUST be *stateP — cross-cap coordination
+                    // depends on it.
+                    fsLockSequential!(fd, *stateP, cmode, *lockCh) |
+                    for (@lockReply <- lockCh) {
+                      match lockReply {
+                        [true, lid] => {
+                          new sourceCell, activeInnerCell,
+                              scanForLFRefilling, outerMint,
+                              outerProducer, outerBuilder, lockCell in {
                     // Shared source state: bytes read ahead of the
                     // consumer, plus cursor and EOF flag.
                     sourceCell!(("".hexToBytes(), 0, false)) |
                     // Nil means no inner currently active.
                     activeInnerCell!(Nil) |
+                    // Release-once guard for outer termination.
+                    lockCell!((lid, false)) |
 
                     // scanForLFRefilling(pending, idx, eofSeen, ret)
                     // — starting at idx in pending, find the next LF
@@ -2706,11 +2725,32 @@ in {
                                   true => {
                                     match eof {
                                       true => {
-                                        activeInnerCell!(Nil) |
-                                        sourceCell!((p, i, true)) |
-                                        retCh!(
-                                          [false, "EOS",
-                                           "end of file"])
+                                        // TERMINATION: EOF via empty source.
+                                        for (@lockState <- lockCell) {
+                                          match lockState {
+                                            (lockId, false) => {
+                                              lockCell!((lockId, true)) |
+                                              new relCh in {
+                                                fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                for (@_r <- relCh) {
+                                                  activeInnerCell!(Nil) |
+                                                  sourceCell!((p, i, true)) |
+                                                  retCh!(
+                                                    [false, "EOS",
+                                                     "end of file"])
+                                                }
+                                              }
+                                            }
+                                            already => {
+                                              lockCell!(already) |
+                                              activeInnerCell!(Nil) |
+                                              sourceCell!((p, i, true)) |
+                                              retCh!(
+                                                [false, "EOS",
+                                                 "end of file"])
+                                            }
+                                          }
+                                        }
                                       }
                                       false => {
                                         new readCh in {
@@ -2720,11 +2760,32 @@ in {
                                               [true, ba /\ ByteArray] => {
                                                 match ba.length() {
                                                   0 => {
-                                                    activeInnerCell!(Nil) |
-                                                    sourceCell!((p, i, true)) |
-                                                    retCh!(
-                                                      [false, "EOS",
-                                                       "end of file"])
+                                                    // TERMINATION: EOF via zero-read.
+                                                    for (@lockState <- lockCell) {
+                                                      match lockState {
+                                                        (lockId, false) => {
+                                                          lockCell!((lockId, true)) |
+                                                          new relCh in {
+                                                            fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                            for (@_r <- relCh) {
+                                                              activeInnerCell!(Nil) |
+                                                              sourceCell!((p, i, true)) |
+                                                              retCh!(
+                                                                [false, "EOS",
+                                                                 "end of file"])
+                                                            }
+                                                          }
+                                                        }
+                                                        already => {
+                                                          lockCell!(already) |
+                                                          activeInnerCell!(Nil) |
+                                                          sourceCell!((p, i, true)) |
+                                                          retCh!(
+                                                            [false, "EOS",
+                                                             "end of file"])
+                                                        }
+                                                      }
+                                                    }
                                                   }
                                                   _ => {
                                                     outerMint!(
@@ -2733,9 +2794,28 @@ in {
                                                 }
                                               }
                                               _ => {
-                                                activeInnerCell!(Nil) |
-                                                sourceCell!((p, i, eof)) |
-                                                retCh!(rr)
+                                                // TERMINATION: fsRead error.
+                                                for (@lockState <- lockCell) {
+                                                  match lockState {
+                                                    (lockId, false) => {
+                                                      lockCell!((lockId, true)) |
+                                                      new relCh in {
+                                                        fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                        for (@_r <- relCh) {
+                                                          activeInnerCell!(Nil) |
+                                                          sourceCell!((p, i, eof)) |
+                                                          retCh!(rr)
+                                                        }
+                                                      }
+                                                    }
+                                                    already => {
+                                                      lockCell!(already) |
+                                                      activeInnerCell!(Nil) |
+                                                      sourceCell!((p, i, eof)) |
+                                                      retCh!(rr)
+                                                    }
+                                                  }
+                                                }
                                               }
                                             }
                                           }
@@ -2766,6 +2846,14 @@ in {
                       Stream!?(*outerProducer, *outerBuilder)) {
                       @[*private, *stateP]!("open") |
                       return!([true, outerHandle])
+                    }
+                          }
+                        }
+                        _ => {
+                          @[*private, *stateP]!("open") |
+                          return!(lockReply)
+                        }
+                      }
                     }
                   }
                 }
