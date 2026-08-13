@@ -876,6 +876,44 @@ mod tests {
         assert_eq!(reg.tracked_files(), 0);
     }
 
+    /// Fold-in edge test from Prep A step-4 review (2026-08-12,
+    /// finalized 2026-08-13): verify the sweep count is exact when
+    /// same-holder OVERLAPPING acquires are present.  Under Prep A's
+    /// same-holder-skip rule, a cap can acquire multiple overlapping
+    /// range locks with the same holder — each mints a fresh
+    /// RangeEntry.  Sweep must count them ALL, not just one.  A
+    /// regression that stopped scanning at the first same-holder
+    /// match would return an undercount + strand entries.  The
+    /// pre-existing `release_all_for_holder_sweeps_positional_and_
+    /// sequential` test at line 853 exercises non-overlapping
+    /// same-holder ranges; this adds the overlapping case.
+    #[test]
+    fn release_all_for_holder_sweeps_all_same_holder_overlapping_ranges() {
+        let reg = LockRegistry::new();
+        // 3 overlapping same-holder acquires (Prep A rule permits).
+        reg.try_acquire_range((1, 42), 0, 1024, LockMode::Write, holder(1), deploy(1))
+            .unwrap();
+        reg.try_acquire_range((1, 42), 100, 100, LockMode::Write, holder(1), deploy(1))
+            .unwrap();
+        reg.try_acquire_range((1, 42), 500, 200, LockMode::Read, holder(1), deploy(1))
+            .unwrap();
+        // Non-overlapping different-holder acquire — must survive sweep.
+        reg.try_acquire_range((1, 42), 2000, 100, LockMode::Read, holder(2), deploy(1))
+            .unwrap();
+        assert_eq!(reg.held_locks(), 4);
+        let released = reg.release_all_for_holder(&holder(1));
+        assert_eq!(
+            released, 3,
+            "sweep MUST return exact count of same-holder entries, \
+             including OVERLAPPING acquires from the same-holder-skip rule"
+        );
+        assert_eq!(
+            reg.held_locks(),
+            1,
+            "different-holder lock must survive the sweep"
+        );
+    }
+
     // -- release_all_for_deploy ------------------------------------------
 
     #[test]
