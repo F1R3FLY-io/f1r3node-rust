@@ -3084,4 +3084,68 @@ mod cmode_tests {
         let h = holder_id_of(&s("any-par"));
         assert_eq!(h.bytes.len(), 32);
     }
+
+    // ---------------------------------------------------------------
+    // Step-5 review Gap 2: pin fs_lock_range / fs_lock_sequential
+    // handlers read scope from `self.handles.current_deploy_scope`
+    // (the per-runtime cell set by WalDeployScope at deploy entry)
+    // and NOT from `DeployScope::default()` (the pre-step-5
+    // placeholder that was removed in step 5).  A regression that
+    // reverted to the placeholder would silently break the auto-
+    // release sweep: acquires would record the sentinel `[0; 32]`
+    // scope, and any release_all_for_deploy sweep from a
+    // WalDeployScope::drop would fail to clear them (scope
+    // mismatch); or worse, a manual release_all_for_deploy(&[0; 32])
+    // call would nuke every stray sentinel entry — now guarded by
+    // the assert! in commit 6f537099, so this scenario would panic
+    // loudly rather than silently corrupt state.
+    // ---------------------------------------------------------------
+
+    /// **Gap 2a**: pin fs_lock_range's scope-read.
+    #[test]
+    fn fs_lock_range_reads_current_deploy_scope() {
+        let src = include_str!("handlers.rs");
+        let fn_start = src
+            .find("pub async fn fs_lock_range")
+            .expect("handlers.rs missing fs_lock_range definition");
+        // 3KB window covers the function body comfortably.
+        let window = &src[fn_start..std::cmp::min(fn_start + 3000, src.len())];
+        assert!(
+            window.contains("current_deploy_scope"),
+            "step 5 regression: fs_lock_range must read scope from \
+             self.handles.current_deploy_scope — the per-runtime cell \
+             WalDeployScope publishes at deploy entry"
+        );
+        assert!(
+            !window.contains("DeployScope::default()"),
+            "step 5 regression: fs_lock_range must NOT fall back to \
+             DeployScope::default() — that pre-step-5 placeholder path \
+             was removed in step 5.  Under step-5 semantics, an acquire \
+             outside a live WalDeployScope reads the sentinel [0; 32] \
+             cell value; a release_all_for_deploy call using the default \
+             would trip the sentinel-guard assert! in release_all_for_\
+             deploy (commit 6f537099)."
+        );
+    }
+
+    /// **Gap 2b**: pin fs_lock_sequential's scope-read.
+    #[test]
+    fn fs_lock_sequential_reads_current_deploy_scope() {
+        let src = include_str!("handlers.rs");
+        let fn_start = src
+            .find("pub async fn fs_lock_sequential")
+            .expect("handlers.rs missing fs_lock_sequential definition");
+        let window = &src[fn_start..std::cmp::min(fn_start + 3000, src.len())];
+        assert!(
+            window.contains("current_deploy_scope"),
+            "step 5 regression: fs_lock_sequential must read scope from \
+             self.handles.current_deploy_scope"
+        );
+        assert!(
+            !window.contains("DeployScope::default()"),
+            "step 5 regression: fs_lock_sequential must NOT fall back to \
+             DeployScope::default() — see fs_lock_range test above for \
+             rationale"
+        );
+    }
 }

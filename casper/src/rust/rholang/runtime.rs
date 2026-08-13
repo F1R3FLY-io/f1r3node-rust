@@ -2332,6 +2332,172 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
+    // Step-5 review gap tests (2026-08-13, follow-up on the whole-
+    // step-5 review).  Address the four coverage gaps flagged in the
+    // review by pinning:
+    //   (1) Panic-path sweep — Drop runs on panic-unwind too.
+    //   (2) Sentinel-scope construction panic (matches the runtime
+    //       assert! promoted from debug_assert in commit 6f537099).
+    //   (3) Static-analysis pins on the 3 WalDeployScope call sites
+    //       (play_deploy_with_cost_accounting, play_system_deploy,
+    //       replay_deploy_e) using `new_with_lock_sweep`, not
+    //       legacy `new(wal)`.
+    // Gap #2 from the review (handler-level current_deploy_scope
+    // read pin) lives in rholang/src/rust/interpreter/io/handlers.rs
+    // — that's where the handlers being pinned live.
+    // ---------------------------------------------------------------
+
+    /// **Gap 1: panic-path sweep.**  Drop runs on panic-unwind too
+    /// per Rust semantics — but a regression that gated the sweep on
+    /// `!committed` (mirroring the WAL discard-drain's gating) would
+    /// silently skip sweep on error paths.  This test simulates a
+    /// deploy-body panic and asserts the sweep still fires.
+    ///
+    /// Spec §Explicit locks: "Implementations MUST auto-release at
+    /// deploy-end" — MUST covers ALL exit paths including panic-
+    /// unwind.  A leaked lock past deploy-end would poison the next
+    /// deploy's LockRegistry state cross-validator (each validator's
+    /// panic-timing could differ), which is exactly the divergence
+    /// the MAY→MUST promotion targeted.
+    #[test]
+    fn wal_deploy_scope_sweeps_on_panic_unwind() {
+        use std::panic;
+        let wal = Wal::new();
+        let lock_registry = LockRegistry::new();
+        let current_scope_cell = std::sync::Arc::new(std::sync::RwLock::new([0u8; 32]));
+        let deploy_scope: DeployScope = [0xE5u8; 32];
+
+        let registry_snapshot = lock_registry.clone();
+        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            let _scope = WalDeployScope::new_with_lock_sweep(
+                wal,
+                lock_registry,
+                deploy_scope,
+                current_scope_cell,
+            );
+            registry_snapshot
+                .try_acquire_range((1, 42), 0, 100, LockMode::Read, holder(1), deploy_scope)
+                .unwrap();
+            assert_eq!(registry_snapshot.held_locks(), 1);
+            // Simulate a deploy-body panic — Drop runs on unwind.
+            panic!("simulated deploy-body panic");
+        }));
+        assert!(
+            result.is_err(),
+            "catch_unwind must have captured the simulated panic"
+        );
+        assert_eq!(
+            registry_snapshot.held_locks(),
+            0,
+            "WalDeployScope::drop MUST sweep leaked locks even on panic-unwind \
+             path (spec §Explicit locks MUST auto-release runs on ALL exit \
+             paths; a regression gating sweep on !committed would be caught \
+             here)"
+        );
+    }
+
+    /// **Gap 4: sentinel-scope construction panic.**  Pin the
+    /// `assert!(deploy_scope != [0; 32])` guard promoted from
+    /// `debug_assert!` in commit 6f537099.  Panic message matches
+    /// the assert!'s message text so a future refactor changing the
+    /// message trips this test.
+    #[test]
+    #[should_panic(
+        expected = "WalDeployScope::new_with_lock_sweep called with sentinel scope [0; 32]"
+    )]
+    fn wal_deploy_scope_new_with_sentinel_scope_panics() {
+        let wal = Wal::new();
+        let lock_registry = LockRegistry::new();
+        let current_scope_cell = std::sync::Arc::new(std::sync::RwLock::new([0u8; 32]));
+        // Sentinel scope MUST panic in ALL build modes (assert!,
+        // not debug_assert!).  A future refactor that reverts to
+        // debug_assert! would still pass this test in debug mode
+        // but fail in release; both build modes' CI runs would
+        // catch the regression.
+        let _scope =
+            WalDeployScope::new_with_lock_sweep(wal, lock_registry, [0u8; 32], current_scope_cell);
+    }
+
+    /// **Gap 3a: user-deploy path pin.**  Verify
+    /// `play_deploy_with_cost_accounting` constructs its
+    /// `WalDeployScope` via `new_with_lock_sweep` (not legacy `new`)
+    /// AND threads `lock_registry` + `current_deploy_scope` from
+    /// `fs_handles`.  A regression that reverted to legacy `new(wal)`
+    /// would leave the sweep un-plumbed for the user-deploy path.
+    #[test]
+    fn play_deploy_with_cost_accounting_uses_new_with_lock_sweep() {
+        let src = include_str!("runtime.rs");
+        assert!(
+            src.contains("pub async fn play_deploy_with_cost_accounting"),
+            "runtime.rs missing play_deploy_with_cost_accounting definition"
+        );
+        assert!(
+            src.contains("WalDeployScope::new_with_lock_sweep("),
+            "step 5 regression: play_deploy_with_cost_accounting must construct \
+             WalDeployScope via new_with_lock_sweep — a revert to legacy `new` \
+             would leave the sweep un-plumbed"
+        );
+        assert!(
+            src.contains("fs_handles.lock_registry.clone()"),
+            "step 5 regression: user-deploy path must pass \
+             fs_handles.lock_registry to new_with_lock_sweep so the sweep \
+             targets the shared registry"
+        );
+        assert!(
+            src.contains("fs_handles.current_deploy_scope.clone()"),
+            "step 5 regression: user-deploy path must pass \
+             fs_handles.current_deploy_scope to new_with_lock_sweep so the \
+             handlers can read the deploy scope at acquire time"
+        );
+    }
+
+    /// **Gap 3b: system-deploy path pin.**  System deploys use a
+    /// state-hash-derived scope with the "phase8-system-deploy:"
+    /// prefix so system-deploy scope space doesn't collide with
+    /// user-deploy scope space.  This test pins both the construction
+    /// call AND the prefix.
+    #[test]
+    fn play_system_deploy_uses_new_with_lock_sweep() {
+        let src = include_str!("runtime.rs");
+        assert!(
+            src.contains("pub async fn play_system_deploy"),
+            "runtime.rs missing play_system_deploy definition"
+        );
+        assert!(
+            src.contains("phase8-system-deploy:"),
+            "step 5 regression: system-deploy scope derivation must include \
+             the \"phase8-system-deploy:\" prefix so system-deploy scope space \
+             is disjoint from user-deploy scope space (Blake2b256 domain \
+             separation)"
+        );
+    }
+
+    /// **Gap 3c: replay-path pin.**  Follower replay uses the SAME
+    /// Blake2b256(deploy.sig) scope derivation as the leader — a
+    /// divergence in this derivation would be silent under is_replay
+    /// (LockRegistry state stays empty on the follower) but would be
+    /// load-bearing if a future refactor removes the is_replay short-
+    /// circuit.  This test pins the identical derivation.
+    #[test]
+    fn replay_deploy_e_uses_new_with_lock_sweep() {
+        let src = include_str!("replay_runtime.rs");
+        assert!(
+            src.contains("WalDeployScope::new_with_lock_sweep("),
+            "step 5 regression: replay_deploy_e must construct WalDeployScope \
+             via new_with_lock_sweep — a revert to legacy `new` would leave \
+             the follower's sweep un-plumbed (invisible under is_replay but \
+             a load-bearing divergence trap if is_replay short-circuit \
+             changes)"
+        );
+        assert!(
+            src.contains("processed_deploy.deploy.sig.to_vec()"),
+            "step 5 regression: replay-path scope derivation must use \
+             processed_deploy.deploy.sig to match the leader's derivation \
+             byte-for-byte"
+        );
+    }
+
+    // ---------------------------------------------------------------
     // C-30b-1 round-2 review-fix test: the play_deploys_for_state
     // aggregation composition.  Pre-fix, the extend + compute_wal_root
     // + maybe_write loop had zero test coverage; a refactor that
