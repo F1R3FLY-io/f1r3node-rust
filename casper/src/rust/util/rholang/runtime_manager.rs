@@ -111,7 +111,7 @@ impl ExploratoryDeployConfig {
     pub fn for_tests() -> Self {
         Self {
             max_concurrent: 1,
-            phlo_limit: 100_000_000,
+            phlo_limit: 5_000_000,
             execution_timeout: Duration::from_secs(15),
         }
     }
