@@ -538,6 +538,41 @@ impl Validate {
             return Either::Right(ValidBlock::Valid);
         }
 
+        // Fast path on the persistent deploy index. `insert_internal` writes
+        // every deploy sig of every inserted block (valid, invalid and
+        // approved alike) into `deploy_index` before any child of that block
+        // can be validated, so a sig with no index entry has no prior
+        // inclusion anywhere — on any fork, inside or outside the expiration
+        // window — and cannot carry a canonical rejection either (rejected
+        // deploys were themselves carried by an inserted block). When none of
+        // this block's sigs are indexed, the parent-scope scan and the
+        // ancestor traversal below have nothing to find and are skipped —
+        // that traversal's cost grows with the in-window DAG (4ms -> 124ms
+        // per block within one soak iteration, run 31563121791), and fresh
+        // deploys are the overwhelmingly common case. Any hit falls through
+        // to the exact logic below, which stays the sole authority on
+        // whether a prior inclusion is canonical for THIS block's parent
+        // scope: the index is last-write-wins and single-valued, so it can
+        // never answer that question, only prove absence. An index read
+        // error also falls through — the fast path is an optimization,
+        // never a second opinion.
+        let any_sig_indexed = block.body.deploys.iter().any(|pd| {
+            match s.dag.lookup_by_deploy_id(&pd.deploy.sig.to_vec()) {
+                Ok(hit) => hit.is_some(),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "f1r3fly.casper",
+                        "repeat-deploy fast path: deploy index lookup failed ({}); falling back to ancestor scan",
+                        e
+                    );
+                    true
+                }
+            }
+        });
+        if !any_sig_indexed {
+            return Either::Right(ValidBlock::Valid);
+        }
+
         let block_metadata = BlockMetadata::from_block(block, false, None, None);
 
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-get-parents");
