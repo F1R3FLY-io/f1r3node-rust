@@ -1,6 +1,13 @@
 //! Finalization runner — background task, RAII guard,
 //! `compute_last_finalized_block`, `update_last_finalized_block`.
 //!
+//! The LFB DECISION does not live here: it is `floor::floor_of_view` — the
+//! one finality clock, shared with every block operation's floor
+//! derivation. This module hosts only the runner scaffolding around it:
+//! pacing (`finalization_rate`), the queued-run loop with its timeout
+//! backstop, and the finalization effects (`record_directly_finalized`,
+//! event publication) applied when the clock advances.
+//!
 //! Phase 3 (Commit 2): extracted from `engine::multi_parent_casper`.
 //! The functions here are reachable via:
 //!   * `MultiParentCasper::last_finalized_block` (mod.rs) →

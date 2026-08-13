@@ -1,12 +1,25 @@
-//! Justification-derived finalized floor — the per-block finalized cut.
+//! The finalized floor — the per-block finalized cut, and the one finality
+//! clock built on it.
 //!
-//! `floor(B)` is the highest ancestor of B's parents that the clique oracle
-//! certifies as finalized when evaluated over B's frozen justification
-//! snapshot ([`CliqueOracle::ft_witnessed`]). Every input is contained in the
-//! block itself (its signed justifications) or in immutable ancestor metadata,
-//! so every honest node derives the same floor for the same block — no
-//! node-local finality state participates. This is the linear-finality analog
-//! of RChain's per-message fringe: the cut the block's merge builds on.
+//! `floor(B)` is the highest STATE-SOUND finalized candidate over B's frozen
+//! (parents, justifications) pair: the clique oracle certifies candidates
+//! finalized over the block's own justification snapshot
+//! ([`CliqueOracle::ft_witnessed_exact`], exact `>= θ`), and candidacy is
+//! capture-gated — a candidate must contain every inherited floor's settled
+//! state ([`state_captures`]: DAG containment minus recorded erasure) or
+//! re-merge it as a direct-parent descend, so consecutive floors are
+//! state-monotone, never merely DAG parent/child. Every input is contained
+//! in the block itself (its signed justifications) or in immutable ancestor
+//! metadata, so every honest node derives the same floor for the same block
+//! — no node-local finality state participates. This is the linear-finality
+//! analog of RChain's per-message fringe: the cut the block's merge builds
+//! on.
+//!
+//! [`floor_of_view`] runs the same derivation over the live frontier and is
+//! the single LFB decision: the finalization runner and the API path both
+//! consume it, and it advances only onto a floor that captures the current
+//! LFB — the same soundness the per-block derivation runs. There is no
+//! second finality clock.
 
 use std::collections::BTreeMap;
 
