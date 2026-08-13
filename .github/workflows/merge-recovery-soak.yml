@@ -104,9 +104,9 @@ env:
   # of normal-operation clearance; both the pytest floor (subprocess
   # iterations) and the orchestrator host guardian (every iteration) use it.
   SOAK_HOST_FREE_FLOOR_MB: "8192"
-  # THIRD pin site. The other two — .github/oci-validation.env and
-  # _integration-pipeline.yml — are held identical by build_base's drift check;
-  # this one is outside that check and rotted unnoticed as a result. It sat at
+  # THIRD pin site. CI's pin-consistency check holds this identical to
+  # .github/oci-validation.env and _integration-pipeline.yml. Before that guard
+  # covered the soak pin, it rotted unnoticed and sat at
   # a50eeb19 while CI advanced to 06f2020c, and a50eeb19 predates
   # system-integration 81284fc, which added integration-tests/certs/validator4.
   # compose.py bind-mounts that path, so with no host file Docker created a
@@ -167,7 +167,7 @@ env:
   # by ancestry (a0c6fba6 is an ancestor, so the 48GB default and
   # RUNNER_LABELS override carry forward) and by content at the SHA
   # (state.env AMD64_MEM_GB=48; resource_monitor.py emits the per-core CSV).
-  SYSTEM_INTEGRATION_REF: 755301662e4f86ffb55f51077b88f32212a1f3ed
+  SYSTEM_INTEGRATION_REF: f8e43643b915fdfd814285c8225b1a4b129a8547
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
@@ -656,7 +656,7 @@ jobs:
       cancel-in-progress: true
     steps:
       - name: Clone trusted runner launcher
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: F1R3FLY-io/system-integration
           ref: ${{ env.SYSTEM_INTEGRATION_REF }}
@@ -698,7 +698,7 @@ jobs:
 
       - name: Create runner-management token
         id: app-token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         with:
           app-id: ${{ vars.CI_GITHUB_APP_ID }}
           private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
@@ -1058,7 +1058,7 @@ jobs:
       cancel-in-progress: true
     steps:
       - name: Checkout CI control files
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.workflow_sha }}
           path: ci-control
@@ -1167,7 +1167,7 @@ jobs:
           echo "tagged $iid — reapable after $(date -u -d "@${deadline}" +%FT%TZ)"
 
       - name: Checkout code under test
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ needs.schedule_gate.outputs.target_ref }}
           path: node-under-test
@@ -1181,7 +1181,7 @@ jobs:
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Clone trusted integration harness
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: F1R3FLY-io/system-integration
           ref: ${{ env.SYSTEM_INTEGRATION_REF }}
@@ -1534,7 +1534,7 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - name: Checkout CI control files
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.workflow_sha }}
           path: ci-control

@@ -267,6 +267,7 @@ mod heartbeat_conf_hocon_tests {
             max-lfb-age = 8 seconds
             self-propose-cooldown = 9 seconds
             stale-recovery-min-interval = 11 seconds
+            finality-progress-timeout = 30 seconds
             deploy-finalization-grace = 22 seconds
             advanced {
               frontier-chase-max-lag = 1
@@ -282,6 +283,7 @@ mod heartbeat_conf_hocon_tests {
         assert_eq!(cfg.max_lfb_age, Duration::from_secs(8));
         assert_eq!(cfg.self_propose_cooldown, Duration::from_secs(9));
         assert_eq!(cfg.stale_recovery_min_interval, Duration::from_secs(11));
+        assert_eq!(cfg.finality_progress_timeout, Duration::from_secs(30));
         assert_eq!(cfg.deploy_finalization_grace, Duration::from_secs(22));
         assert_eq!(cfg.advanced.frontier_chase_max_lag, 1);
         assert_eq!(cfg.advanced.pending_deploy_max_lag, 33);

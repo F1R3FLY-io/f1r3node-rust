@@ -50,6 +50,15 @@ impl KeyValueStore for MockKeyValueStore {
         Ok(())
     }
 
+    fn put_one_if_absent(&self, key: Vec<u8>, value: Vec<u8>) -> Result<bool, KvStoreError> {
+        let mut data = self.data.lock().unwrap();
+        if data.contains_key(&key) {
+            return Ok(false);
+        }
+        data.insert(key, value);
+        Ok(true)
+    }
+
     fn delete(&self, keys: Vec<Vec<u8>>) -> Result<usize, KvStoreError> {
         let mut data = self.data.lock().unwrap();
         let mut count = 0;
@@ -130,6 +139,10 @@ impl KeyValueStore for EmptyKeyValueStore {
 
     fn put(&self, _kv_pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Result<(), KvStoreError> {
         Ok(()) // No-op
+    }
+
+    fn put_one_if_absent(&self, _key: Vec<u8>, _value: Vec<u8>) -> Result<bool, KvStoreError> {
+        Ok(true)
     }
 
     fn delete(&self, _keys: Vec<Vec<u8>>) -> Result<usize, KvStoreError> {

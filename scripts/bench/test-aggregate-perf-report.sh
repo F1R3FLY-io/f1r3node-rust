@@ -50,6 +50,55 @@ SOAK_DIR="$TMP/failed" OUT_DIR="$TMP/checkpoint-report" RUN_ID=1 RUN_ATTEMPT=1 \
 jq -e '.verdict == "in_progress" and .failures == []' \
 	"$TMP/checkpoint-report/verdict.json" >/dev/null
 
+mkdir -p "$TMP/recovered" "$TMP/recovered-report"
+cat >"$TMP/recovered/.soak-checkpoint-state.json" <<'JSON'
+{
+  "target_ref": "dev",
+  "target_sha": "fedcba9876543210",
+  "trigger_source": "manual",
+  "slot_delay_seconds": 0,
+  "version": "0.4.43",
+  "started_at": 1000,
+  "requested_seconds": 1800,
+  "iterations": 1,
+  "failures": 1,
+  "bench_segments": 0,
+  "bench_failures": 0
+}
+JSON
+SOAK_DIR="$TMP/recovered" OUT_DIR="$TMP/recovered-report" RUN_ID=9 RUN_ATTEMPT=2 \
+	SOAK_KIND=daily DURATION_SECONDS=1800 WINDOW_SECONDS=79200 RETRY_ATTEMPT=0 \
+	SOAK_STATUS=in_progress \
+	"$ROOT/scripts/bench/aggregate-perf-report.sh"
+jq -e '
+  .target_ref == "dev"
+  and .target_sha == "fedcba9876543210"
+  and .started_at == 1000
+  and (.elapsed_seconds | type) == "number"
+  and .elapsed_seconds >= 0
+  and .iterations == 1
+  and .failures == 1
+' "$TMP/recovered/summary.json" >/dev/null
+jq -e '
+  .run.status == "in_progress"
+  and .run.run_id == "9"
+  and .run.run_attempt == 2
+  and .run.kind == "daily"
+  and .run.started_at == 1000
+  and (.run.elapsed_seconds | type) == "number"
+' "$TMP/recovered-report/weekly-summary.json" >/dev/null
+
+mkdir -p "$TMP/unrecoverable" "$TMP/unrecoverable-report"
+printf '%s\n' '{"started_at":null}' >"$TMP/unrecoverable/.soak-checkpoint-state.json"
+if SOAK_DIR="$TMP/unrecoverable" OUT_DIR="$TMP/unrecoverable-report" \
+	RUN_ID=10 RUN_ATTEMPT=1 SOAK_KIND=daily DURATION_SECONDS=1800 \
+	WINDOW_SECONDS=79200 RETRY_ATTEMPT=0 SOAK_STATUS=in_progress \
+	"$ROOT/scripts/bench/aggregate-perf-report.sh" >"$TMP/unrecoverable.log" 2>&1; then
+	echo "checkpoint aggregation must reject absent summary and state metadata" >&2
+	exit 1
+fi
+grep -q 'no valid summary or recoverable persisted state' "$TMP/unrecoverable.log"
+
 mkdir -p "$TMP/passing" "$TMP/passing-report"
 jq '.failures = 0 | .failure_rate = 0 | .providers.docker.failures = 0
 	| .shard_up_seconds = 90' \

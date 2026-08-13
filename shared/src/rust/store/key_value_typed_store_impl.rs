@@ -86,6 +86,11 @@ where
         self.put(vec![(key, value)])
     }
 
+    pub fn put_one_if_absent(&self, key: K, value: V) -> Result<bool, KvStoreError> {
+        self.store
+            .put_one_if_absent(self.encode_key(&key)?, self.encode_value(&value)?)
+    }
+
     pub fn put_if_absent(&self, kv_pairs: Vec<(K, V)>) -> Result<(), KvStoreError> {
         let keys: Vec<K> = kv_pairs.iter().map(|(k, _)| k.clone()).collect();
         let if_absent = self.contains(keys)?;

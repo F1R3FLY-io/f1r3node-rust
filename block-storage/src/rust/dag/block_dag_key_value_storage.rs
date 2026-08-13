@@ -297,10 +297,7 @@ impl KeyValueDagRepresentation {
         &self,
         deploy_id: &DeployId,
     ) -> Result<Option<BlockHash>, KvStoreError> {
-        let deploy_index_guard = self.deploy_index.read();
-        deploy_index_guard
-            .get_one(deploy_id)
-            .map(|result| result.map(|block_hash_serde| block_hash_serde.into()))
+        lookup_deploy_index(&self.deploy_index, deploy_id)
     }
 
     // See block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockDagRepresentationSyntax.scala
@@ -690,6 +687,16 @@ pub struct BlockDagKeyValueStorage {
     pub(crate) dag_generation: Arc<AtomicU64>,
 }
 
+fn lookup_deploy_index(
+    deploy_index: &PlRwLock<KeyValueTypedStoreImpl<DeployId, BlockHashSerde>>,
+    deploy_id: &DeployId,
+) -> Result<Option<BlockHash>, KvStoreError> {
+    deploy_index
+        .read()
+        .get_one(deploy_id)
+        .map(|result| result.map(Into::into))
+}
+
 impl BlockDagKeyValueStorage {
     pub async fn new(kvm: &mut impl KeyValueStoreManager) -> Result<Self, KvStoreError> {
         let block_metadata_kv_store = kvm.store("block-metadata".to_string()).await?;
@@ -849,6 +856,13 @@ impl BlockDagKeyValueStorage {
     /// Current DAG generation — incremented on every block insert.
     /// Can be used by caches to detect whether the DAG has changed since the last snapshot.
     pub fn current_generation(&self) -> u64 { self.dag_generation.load(Ordering::Relaxed) }
+
+    pub fn lookup_by_deploy_id(
+        &self,
+        deploy_id: &DeployId,
+    ) -> Result<Option<BlockHash>, KvStoreError> {
+        lookup_deploy_index(&self.deploy_index, deploy_id)
+    }
 
     /// Public method to get DAG representation with global lock protection.
     /// Matches Scala's lock.withPermit(representation).

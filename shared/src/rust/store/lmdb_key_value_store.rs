@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use heed::types::SerdeBincode;
-use heed::{Database, Env};
+use heed::{Database, Env, Error as HeedError, MdbError, PutFlags};
 
 use super::key_value_store::{KeyValueStore, KvStoreError};
 use crate::rust::ByteBuffer;
@@ -42,6 +42,21 @@ impl KeyValueStore for LmdbKeyValueStore {
         writer.commit()?;
 
         Ok(())
+    }
+
+    fn put_one_if_absent(&self, key: ByteBuffer, value: ByteBuffer) -> Result<bool, KvStoreError> {
+        let mut writer = self.env.write_txn()?;
+        match self
+            .db
+            .put_with_flags(&mut writer, PutFlags::NO_OVERWRITE, &key, &value)
+        {
+            Ok(()) => {
+                writer.commit()?;
+                Ok(true)
+            }
+            Err(HeedError::Mdb(MdbError::KeyExist)) => Ok(false),
+            Err(error) => Err(error.into()),
+        }
     }
 
     fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> {

@@ -2,8 +2,10 @@
 
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
-use casper::rust::casper::Casper;
+use casper::rust::blocks::proposer::proposer::ProposerResult;
+use casper::rust::casper::{Casper, DeployError};
 use casper::rust::util::construct_deploy;
+use casper::rust::ProposeFunction;
 use rspace_plus_plus::rspace::history::Either;
 
 use crate::helper::test_node::TestNode;
@@ -36,6 +38,152 @@ async fn multi_parent_casper_should_accept_a_deploy_and_return_its_id() {
     };
 
     assert_eq!(deploy_id, deploy.sig.to_vec());
+}
+
+#[tokio::test]
+async fn multi_parent_casper_should_reject_concurrent_identical_deploys() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("Failed to build genesis");
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let deploy =
+        construct_deploy::basic_deploy_data(0, None, Some(genesis.genesis_block.shard_id.clone()))
+            .unwrap();
+    let expected_id = deploy.sig.to_vec();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(32));
+
+    let handles = (0..32)
+        .map(|_| {
+            let casper = node.casper.clone();
+            let deploy = deploy.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                casper.deploy(deploy).unwrap()
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let results = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect::<Vec<_>>();
+    let accepted = results
+        .iter()
+        .filter(|result| matches!(result, Either::Right(id) if id == &expected_id))
+        .count();
+    let duplicates = results
+        .iter()
+        .filter(|result| {
+            matches!(result, Either::Left(DeployError::DuplicateDeploy(id)) if id == &expected_id)
+        })
+        .count();
+
+    assert_eq!(accepted, 1);
+    assert_eq!(duplicates, 31);
+    assert!(node
+        .deploy_storage
+        .lock()
+        .contains_sig(&expected_id)
+        .unwrap());
+}
+
+#[tokio::test]
+async fn block_api_should_not_trigger_propose_for_a_duplicate_deploy() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("Failed to build genesis");
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let deploy =
+        construct_deploy::basic_deploy_data(0, None, Some(genesis.genesis_block.shard_id.clone()))
+            .unwrap();
+    let first = node.casper.deploy(deploy.clone()).unwrap();
+    assert!(matches!(first, Either::Right(_)));
+
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let calls_for_trigger = calls.clone();
+    let trigger: std::sync::Arc<ProposeFunction> = std::sync::Arc::new(move |_, _| {
+        let calls = calls_for_trigger.clone();
+        Box::pin(async move {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(ProposerResult::Empty)
+        })
+    });
+
+    let expected_id = deploy.sig.to_vec();
+    let result = BlockAPI::deploy(
+        &node.engine_cell,
+        deploy,
+        &Some(trigger),
+        0,
+        false,
+        &genesis.genesis_block.shard_id,
+    )
+    .await;
+
+    let error = result.unwrap_err();
+    assert!(matches!(
+        error.downcast_ref::<DeployError>(),
+        Some(DeployError::DuplicateDeploy(id)) if id == &expected_id
+    ));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn multi_parent_casper_should_reject_a_deploy_already_in_the_dag() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("Failed to build genesis");
+    let mut node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let deploy =
+        construct_deploy::basic_deploy_data(0, None, Some(genesis.genesis_block.shard_id.clone()))
+            .unwrap();
+    let expected_id = deploy.sig.to_vec();
+
+    node.add_block_from_deploys(std::slice::from_ref(&deploy))
+        .await
+        .unwrap();
+    node.deploy_storage
+        .lock()
+        .remove(vec![deploy.clone()])
+        .unwrap();
+
+    assert!(node
+        .block_dag_storage
+        .lookup_by_deploy_id(&expected_id)
+        .unwrap()
+        .is_some());
+    assert!(matches!(
+        node.casper.deploy(deploy).unwrap(),
+        Either::Left(DeployError::DuplicateDeploy(id)) if id == expected_id
+    ));
+}
+
+#[tokio::test]
+async fn multi_parent_casper_should_reject_a_deploy_in_the_rejected_buffer() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("Failed to build genesis");
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let deploy =
+        construct_deploy::basic_deploy_data(0, None, Some(genesis.genesis_block.shard_id.clone()))
+            .unwrap();
+    let expected_id = deploy.sig.to_vec();
+
+    node.rejected_deploy_buffer
+        .lock()
+        .unwrap()
+        .add(vec![deploy.clone()])
+        .unwrap();
+
+    assert!(matches!(
+        node.casper.deploy(deploy).unwrap(),
+        Either::Left(DeployError::DuplicateDeploy(id)) if id == expected_id
+    ));
 }
 
 #[tokio::test]
