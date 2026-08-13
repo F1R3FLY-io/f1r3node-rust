@@ -997,7 +997,15 @@ mod tests {
         // therefore per-line, not per-writeLines — documented in the
         // method's block comment for callers who need cross-cap atomic
         // multi-line writes (they must hold an outer lockRange).
-        const EXPECTED: &str = "d432bf4957654113c9eab142277a7114bef41dcfe5ea56dd6e750006819b1567";
+        //
+        // Anchor rolled forward again for Phase 8 slice 8a step 4e-2
+        // (2026-08-12): bytes() and chars() read-stream constructors now
+        // acquire a stream-lifetime sequential lock, released via the
+        // separate lockCell guard pattern (same as bytesAt step 4d-2b)
+        // at every termination path.  bytes() has 2 termination paths
+        // (EOF, fsRead error); chars() has 5 (2 EOS variants + 3 error
+        // variants for UTF-8 boundary handling).
+        const EXPECTED: &str = "14491f47dfa2d61eb00b553a9de4a89915af1ea89a24560fb4c2ead9426224b4";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \
