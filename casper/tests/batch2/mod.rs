@@ -5,6 +5,7 @@ pub mod estimator_test;
 pub mod exactly_once_spec;
 pub mod finalized_eviction_spec;
 pub mod finalized_win_pending_rejection_spec;
+pub mod floor_erasure_reproduction_spec;
 pub mod floor_of_view_test;
 pub mod limited_parent_depth_spec;
 pub mod lmdb_key_value_store_spec;
