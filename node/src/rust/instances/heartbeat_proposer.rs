@@ -1219,7 +1219,6 @@ mod tests {
                 finalized,
                 fault_tolerance_value: 1.0,
                 merge_base: Bytes::new(),
-                rejected_carriers: vec![],
             };
 
             snapshot.dag.dag_set.insert(hash.clone());

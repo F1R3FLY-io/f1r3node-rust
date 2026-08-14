@@ -124,7 +124,6 @@ message BlockMetadataInternal {
   bool finalized                             = 10;// whether the block is finalized
   float faultToleranceValue                  = 11;// cached normalized FT at finalization time
   bytes mergeBase                            = 12;// recorded state parent (BlockProto body mergeBase); empty = header-derivable
-  repeated bytes rejectedCarriers            = 13;// carriers of the body's non-duplicate rejection records (deduped)
 }
 
 message HeaderProto {

@@ -962,7 +962,6 @@ mod frontier_determinism_tests {
             finalized: false,
             fault_tolerance_value: 0.0,
             merge_base: Bytes::new(),
-            rejected_carriers: vec![],
         }
     }
 
@@ -1099,7 +1098,6 @@ mod frontier_determinism_tests {
             finalized: false,
             fault_tolerance_value: 0.0,
             merge_base: Bytes::new(),
-            rejected_carriers: vec![],
         }
     }
 
@@ -1144,11 +1142,6 @@ mod frontier_determinism_tests {
 
     fn based(mut m: BlockMetadata, base: &Bytes) -> BlockMetadata {
         m.merge_base = base.clone();
-        m
-    }
-
-    fn rejecting(mut m: BlockMetadata, carrier: &Bytes) -> BlockMetadata {
-        m.rejected_carriers.push(carrier.clone());
         m
     }
 
@@ -1407,15 +1400,12 @@ mod frontier_determinism_tests {
             md_wm(e.clone(), vec![], 0, &v, vec![(v.clone(), 1)]),
             md_wm(c.clone(), vec![e.clone()], 1, &v, vec![(v.clone(), 1)]),
             md_wm(d.clone(), vec![e.clone()], 1, &v, vec![(v.clone(), 1)]),
-            rejecting(
-                based(
-                    md_wm(s.clone(), vec![c.clone(), d.clone()], 2, &v, vec![(
-                        v.clone(),
-                        1,
-                    )]),
-                    &e,
-                ),
-                &c,
+            based(
+                md_wm(s.clone(), vec![c.clone(), d.clone()], 2, &v, vec![(
+                    v.clone(),
+                    1,
+                )]),
+                &e,
             ),
         ]);
         let seed = Bytes::from_static(b"settled_sig_ucc");
@@ -1476,13 +1466,11 @@ mod frontier_determinism_tests {
             md_wm(m.clone(), vec![e.clone()], 1, &v, wm()),
             md_wm(c.clone(), vec![m.clone()], 2, &v, wm()),
             md_wm(d.clone(), vec![m.clone()], 2, &v, wm()),
-            // R: the recording merge — non-duplicate record, carrier C.
-            rejecting(
-                based(
-                    md_wm(r.clone(), vec![c.clone(), d.clone()], 3, &v, wm()),
-                    &m,
-                ),
-                &c,
+            // R: the recording merge (its record lives in its BODY on the
+            // live path; the predicate reads no records either way).
+            based(
+                md_wm(r.clone(), vec![c.clone(), d.clone()], 3, &v, wm()),
+                &m,
             ),
             // S: the suppressed-record merge — same stale base, C's chain
             // equally kept out of its state, but NO record of its own.
@@ -2031,7 +2019,7 @@ mod frontier_determinism_tests {
                     ),
                     &h(j as u8),
                 );
-                blocks.push(if erasure { rejecting(s_meta, &c) } else { s_meta });
+                blocks.push(s_meta);
                 bodies.push(body_block(
                     &s,
                     vec![c.clone(), h(n as u8)],

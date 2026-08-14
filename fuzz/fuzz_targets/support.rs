@@ -184,7 +184,6 @@ fn metadata(evidence: &Evidence) -> BlockMetadata {
         finalized: false,
         fault_tolerance_value: 0.0,
         merge_base: prost::bytes::Bytes::new(),
-        rejected_carriers: vec![],
     }
 }
 

@@ -32,12 +32,6 @@ pub struct BlockMetadata {
     /// Derivation from `parents` is the reader's job, never done here.
     #[serde(with = "shared::rust::serde_bytes", default)]
     pub merge_base: Bytes,
-    /// Carriers named by the body's NON-duplicate rejection records, deduped
-    /// at insert. A non-duplicate record is the block's testimony that it
-    /// dropped a chain sourced at that carrier; duplicate records discarded
-    /// a redundant copy without disputing the effect and are excluded.
-    #[serde(with = "shared::rust::serde_vec_bytes", default)]
-    pub rejected_carriers: Vec<Bytes>,
 }
 
 impl PartialEq for BlockMetadata {
@@ -53,7 +47,6 @@ impl PartialEq for BlockMetadata {
             && self.directly_finalized == other.directly_finalized
             && self.finalized == other.finalized
             && self.merge_base == other.merge_base
-            && self.rejected_carriers == other.rejected_carriers
     }
 }
 
@@ -75,7 +68,6 @@ impl std::hash::Hash for BlockMetadata {
         self.directly_finalized.hash(state);
         self.finalized.hash(state);
         self.merge_base.hash(state);
-        self.rejected_carriers.hash(state);
     }
 }
 
@@ -102,7 +94,6 @@ impl BlockMetadata {
             finalized: proto.finalized,
             fault_tolerance_value: proto.fault_tolerance_value,
             merge_base: proto.merge_base,
-            rejected_carriers: proto.rejected_carriers,
         }
     }
 
@@ -127,7 +118,6 @@ impl BlockMetadata {
             finalized: self.finalized,
             fault_tolerance_value: self.fault_tolerance_value,
             merge_base: self.merge_base.clone(),
-            rejected_carriers: self.rejected_carriers.clone(),
         }
     }
 
@@ -178,16 +168,6 @@ impl BlockMetadata {
             finalized,
             fault_tolerance_value: 0.0,
             merge_base: b.body.merge_base.clone(),
-            rejected_carriers: {
-                let mut seen = std::collections::HashSet::new();
-                b.body
-                    .rejected_deploys
-                    .iter()
-                    .filter(|r| !r.duplicate && !r.carrier.is_empty())
-                    .map(|r| r.carrier.clone())
-                    .filter(|c| seen.insert(c.clone()))
-                    .collect()
-            },
         }
     }
 }
