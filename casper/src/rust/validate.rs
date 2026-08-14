@@ -470,7 +470,9 @@ impl Validate {
             .await
             {
                 Ok(ctx) => *floor_ctx_slot = Some(ctx),
-                Err(ex) => return Either::Left(BlockError::BlockException(ex)),
+                Err(ex) => {
+                    return Either::Left(BlockError::from_floor_context_error(ex));
+                }
             }
         }
         match __step!(
