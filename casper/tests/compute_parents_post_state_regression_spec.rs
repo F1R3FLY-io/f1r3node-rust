@@ -580,7 +580,7 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         "side deploy must change state"
     );
 
-    let cover_raw = build_empty_block(
+    let mut cover_raw = build_empty_block(
         2,
         3,
         validator.clone(),
@@ -589,6 +589,9 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         main.body.state.bonds.clone(),
         shard_name.clone(),
     );
+    // A multi-parent block records its state parent (E1); the covering
+    // parent's post-state is this block's state, so main is its base.
+    cover_raw.body.merge_base = main.block_hash.clone();
     let cover = step_block(
         &mut block_store,
         &dag_storage,

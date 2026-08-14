@@ -926,6 +926,99 @@ pub(crate) fn merge_scope_backstop_exceeded(floor_distance: i64) -> bool {
     floor_distance > MAX_FLOOR_DISTANCE_BLOCKS
 }
 
+/// Resolve the floor for a merge derivation: from the caller's
+/// `FloorContext` when present, else derived from the frozen justification
+/// snapshot (same inputs, same result), plus the floor block's committed
+/// post-state — the merge base.
+async fn resolve_merge_floor(
+    block_store: &KeyValueBlockStore,
+    s: &CasperSnapshot,
+    parent_hashes: &[BlockHash],
+    latest_messages: &BTreeMap<Validator, BlockHash>,
+    floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
+) -> Result<
+    (
+        BlockHash,
+        Blake2b256Hash,
+        i64,
+        Vec<crate::rust::finality::floor::Floor>,
+    ),
+    CasperError,
+> {
+    match floor_ctx {
+        Some(ctx) => Ok((
+            ctx.floor.hash.clone(),
+            ctx.floor_state_hash(),
+            ctx.floor.block_number,
+            ctx.settled_floors.clone(),
+        )),
+        None => {
+            let (floor, settled_floors) =
+                crate::rust::finality::floor::finalized_floor_with_candidates(
+                    &s.dag,
+                    block_store,
+                    parent_hashes,
+                    latest_messages,
+                    crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                        s.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
+                    ),
+                )
+                .await?;
+            let floor_hash = floor.hash.clone();
+
+            // The floor block's committed post-state is FS(floor) — the merge base.
+            // The floor is an ancestor of the parents (which are stored), so this is
+            // present in normal operation; surface a clear error instead of panicking
+            // if the block store and DAG ever desynchronize.
+            let floor_block = block_store.get(&floor_hash)?.ok_or_else(|| {
+                CasperError::RuntimeError(format!(
+                    "finalized-floor block {} not in block store (DAG/store desync)",
+                    hex::encode(&floor_hash[..8.min(floor_hash.len())])
+                ))
+            })?;
+            let floor_state =
+                Blake2b256Hash::from_bytes_prost(&floor_block.body.state.post_state_hash);
+            Ok((
+                floor_hash,
+                floor_state,
+                floor_block.body.state.block_number,
+                settled_floors,
+            ))
+        }
+    }
+}
+
+/// True iff `parent`'s committed state carries everything settled in the
+/// floor's state — the precondition for taking a parent's post-state
+/// verbatim. "Base is the floor block's committed post-state, always": a
+/// fast path may skip the merge only when the parent's state lineage
+/// already holds the floor. Otherwise the block must re-base — a verbatim
+/// state inherited across a floor advance is missing settled content, it
+/// can collect no scope to recover it, and every witnessed descendant is
+/// then refused by containment while unfinalized width piles up (the
+/// 3cd723b6 finalization stall).
+fn parent_state_holds_floor(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    parent: &BlockMessage,
+    floor_hash: &BlockHash,
+    floor_block_number: i64,
+) -> Result<bool, CasperError> {
+    crate::rust::finality::floor::state_contains(
+        dag,
+        block_store,
+        &crate::rust::finality::floor::Floor {
+            hash: parent.block_hash.clone(),
+            block_number: parent.body.state.block_number,
+        },
+        &crate::rust::finality::floor::Floor {
+            hash: floor_hash.clone(),
+            block_number: floor_block_number,
+        },
+        &mut crate::rust::finality::floor::IntroducedSigsMemo::new(),
+    )
+}
+
 /// Compute the merged post-state from multiple parent blocks.
 ///
 /// For exploratory deploy, pass `disable_late_block_filtering_override = Some(true)` to
@@ -989,84 +1082,134 @@ pub async fn compute_parents_post_state(
             })
         }
 
-        // For single parent, get its post state hash
-        1 => {
-            let parent = &parents[0];
-            let state = proto_util::post_state_hash(parent);
-            tracing::debug!(
-                target: "f1r3fly.casper.compute_parents_post_state.timing",
-                "compute_parents_post_state timing: path=single_parent, parents=1, total_ms={}",
-                total_started.elapsed().as_millis()
-            );
-            tracing::debug!(
-                target: "f1r3fly.merge.step",
-                step = "compute_parents_post_state.EXIT",
-                path = "single_parent",
-                post_state = %hex::encode(&state[..8.min(state.len())]),
-                "merge.step: exit compute_parents_post_state"
-            );
-            Ok(MergedPreState {
-                state,
-                rejected_user: Vec::new(),
-                rejected_slashes: Vec::new(),
-                applied_from_scope: HashSet::new(),
-                merge_base: None,
-            })
-        }
-
-        // Multiple parents - we might want to take some data from the parent with the most stake,
-        // e.g. bonds map, slashing deploys, bonding deploys.
-        // such system deploys are not mergeable, so take them from one of the parents.
+        // One or more parents. The two fast paths (single parent; a parent
+        // that DAG-covers every other) may take a parent's post-state
+        // verbatim ONLY when that parent's state lineage holds the derived
+        // floor — otherwise the block re-bases through the full merge.
         _ => {
             let cache_lookup_started = std::time::Instant::now();
-            // A parent that DAG-covers every other parent already carries their
-            // effects in its post-state, deploys included — merging a block with
-            // its own ancestors is degenerate (the merger assumes siblings), so
-            // the covering parent short-circuits regardless of deploy content.
-            // (Port note: 6981b37a's empty-deploys guard is deliberately NOT
-            // taken — it re-exposed ancestor-merges on linear chains here.)
-            for candidate in &parents {
-                let covers_all = parents
-                    .iter()
-                    .filter(|p| p.block_hash != candidate.block_hash)
-                    .all(|p| {
-                        s.dag
-                            .is_dag_ancestor(&p.block_hash, &candidate.block_hash)
-                            .unwrap_or(false)
-                    });
-                if covers_all {
-                    tracing::debug!(
-                        target: "f1r3fly.casper.compute_parents_post_state.fast_path",
-                        "compute_parents_post_state fast path: descendant parent {} covers all {} parents",
-                        PrettyPrinter::build_string_bytes(&candidate.block_hash),
-                        parents.len()
-                    );
-                    let state = proto_util::post_state_hash(candidate);
+            let parent_hashes: Vec<BlockHash> =
+                parents.iter().map(|p| p.block_hash.clone()).collect();
+            let mut pre_resolved: Option<(
+                BlockHash,
+                Blake2b256Hash,
+                i64,
+                Vec<crate::rust::finality::floor::Floor>,
+            )> = None;
+
+            if parents.len() == 1 {
+                let parent = &parents[0];
+                let resolved =
+                    resolve_merge_floor(block_store, s, &parent_hashes, latest_messages, floor_ctx)
+                        .await?;
+                if parent_state_holds_floor(&s.dag, block_store, parent, &resolved.0, resolved.2)? {
+                    let state = proto_util::post_state_hash(parent);
                     tracing::debug!(
                         target: "f1r3fly.casper.compute_parents_post_state.timing",
-                        "compute_parents_post_state timing: path=descendant_fast_path, parents={}, cache_lookup_ms={}, total_ms={}",
-                        parents.len(),
-                        cache_lookup_started.elapsed().as_millis(),
+                        "compute_parents_post_state timing: path=single_parent, parents=1, total_ms={}",
                         total_started.elapsed().as_millis()
                     );
                     tracing::debug!(
                         target: "f1r3fly.merge.step",
                         step = "compute_parents_post_state.EXIT",
-                        path = "descendant_fast_path",
+                        path = "single_parent",
                         post_state = %hex::encode(&state[..8.min(state.len())]),
                         "merge.step: exit compute_parents_post_state"
                     );
-                    // The covering parent is the state parent. Multi-parent
-                    // headers cannot derive which parent carried the state,
-                    // so the fast path records it — the state-membership
-                    // walk continues there instead of guessing.
                     return Ok(MergedPreState {
                         state,
                         rejected_user: Vec::new(),
                         rejected_slashes: Vec::new(),
                         applied_from_scope: HashSet::new(),
-                        merge_base: Some(candidate.block_hash.clone()),
+                        merge_base: None,
                     });
+                }
+                tracing::debug!(
+                    target: "f1r3fly.merge.step",
+                    step = "compute_parents_post_state.REBASE",
+                    path = "single_parent_rebase",
+                    floor = %hex::encode(&resolved.0[..8.min(resolved.0.len())]),
+                    floor_block = resolved.2,
+                    "merge.step: parent lineage does not hold the floor; re-basing"
+                );
+                pre_resolved = Some(resolved);
+            } else {
+                // A parent that DAG-covers every other parent already carries their
+                // effects in its post-state, deploys included — merging a block with
+                // its own ancestors is degenerate (the merger assumes siblings), so
+                // the covering parent short-circuits regardless of deploy content —
+                // provided its state lineage holds the floor.
+                // (Port note: 6981b37a's empty-deploys guard is deliberately NOT
+                // taken — it re-exposed ancestor-merges on linear chains here.)
+                for candidate in &parents {
+                    let covers_all = parents
+                        .iter()
+                        .filter(|p| p.block_hash != candidate.block_hash)
+                        .all(|p| {
+                            s.dag
+                                .is_dag_ancestor(&p.block_hash, &candidate.block_hash)
+                                .unwrap_or(false)
+                        });
+                    if covers_all {
+                        let resolved = resolve_merge_floor(
+                            block_store,
+                            s,
+                            &parent_hashes,
+                            latest_messages,
+                            floor_ctx,
+                        )
+                        .await?;
+                        if parent_state_holds_floor(
+                            &s.dag,
+                            block_store,
+                            candidate,
+                            &resolved.0,
+                            resolved.2,
+                        )? {
+                            tracing::debug!(
+                                target: "f1r3fly.casper.compute_parents_post_state.fast_path",
+                                "compute_parents_post_state fast path: descendant parent {} covers all {} parents",
+                                PrettyPrinter::build_string_bytes(&candidate.block_hash),
+                                parents.len()
+                            );
+                            let state = proto_util::post_state_hash(candidate);
+                            tracing::debug!(
+                                target: "f1r3fly.casper.compute_parents_post_state.timing",
+                                "compute_parents_post_state timing: path=descendant_fast_path, parents={}, cache_lookup_ms={}, total_ms={}",
+                                parents.len(),
+                                cache_lookup_started.elapsed().as_millis(),
+                                total_started.elapsed().as_millis()
+                            );
+                            tracing::debug!(
+                                target: "f1r3fly.merge.step",
+                                step = "compute_parents_post_state.EXIT",
+                                path = "descendant_fast_path",
+                                post_state = %hex::encode(&state[..8.min(state.len())]),
+                                "merge.step: exit compute_parents_post_state"
+                            );
+                            // The covering parent is the state parent. Multi-parent
+                            // headers cannot derive which parent carried the state,
+                            // so the fast path records it — the state-membership
+                            // walk continues there instead of guessing.
+                            return Ok(MergedPreState {
+                                state,
+                                rejected_user: Vec::new(),
+                                rejected_slashes: Vec::new(),
+                                applied_from_scope: HashSet::new(),
+                                merge_base: Some(candidate.block_hash.clone()),
+                            });
+                        }
+                        tracing::debug!(
+                            target: "f1r3fly.merge.step",
+                            step = "compute_parents_post_state.REBASE",
+                            path = "descendant_rebase",
+                            floor = %hex::encode(&resolved.0[..8.min(resolved.0.len())]),
+                            floor_block = resolved.2,
+                            "merge.step: covering parent's lineage does not hold the floor; re-basing"
+                        );
+                        pre_resolved = Some(resolved);
+                        break;
+                    }
                 }
             }
 
@@ -1156,8 +1299,6 @@ pub async fn compute_parents_post_state(
             // ancestor walk can drop only blocks represented by the floor's
             // DAG past. A below-floor sibling can still be a direct parent, and
             // its effects are not in the floor's post-state.
-            let parent_hashes: Vec<BlockHash> =
-                parents.iter().map(|p| p.block_hash.clone()).collect();
             let max_parent_block_number = parents
                 .iter()
                 .map(|p| p.body.state.block_number)
@@ -1165,50 +1306,17 @@ pub async fn compute_parents_post_state(
                 .unwrap_or(0);
 
             // Node-deterministic finalized floor, derived from the block's frozen
-            // justification snapshot — the cut the merge builds on. Replaces the
-            // LCA base: the floor is finalization-aware and advance-only, so the
-            // merged state is MONOTONE, where the LCA base let it churn
+            // justification snapshot — the cut the merge builds on (already
+            // resolved when a fast-path guard refused). Replaces the LCA base:
+            // the floor is finalization-aware and advance-only, so the merged
+            // state is MONOTONE, where the LCA base let it churn
             // (path-dependent FS).
             let floor_derive_started = std::time::Instant::now();
-            let (floor_hash, floor_state, floor_block_number, settled_floors) = match floor_ctx {
-                Some(ctx) => (
-                    ctx.floor.hash.clone(),
-                    ctx.floor_state_hash(),
-                    ctx.floor.block_number,
-                    ctx.settled_floors.clone(),
-                ),
+            let (floor_hash, floor_state, floor_block_number, settled_floors) = match pre_resolved {
+                Some(resolved) => resolved,
                 None => {
-                    let (floor, settled_floors) =
-                        crate::rust::finality::floor::finalized_floor_with_candidates(
-                            &s.dag,
-                            block_store,
-                            &parent_hashes,
-                            latest_messages,
-                            crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-                                s.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
-                            ),
-                        )
-                        .await?;
-                    let floor_hash = floor.hash.clone();
-
-                    // The floor block's committed post-state is FS(floor) — the merge base.
-                    // The floor is an ancestor of the parents (which are stored), so this is
-                    // present in normal operation; surface a clear error instead of panicking
-                    // if the block store and DAG ever desynchronize.
-                    let floor_block = block_store.get(&floor_hash)?.ok_or_else(|| {
-                        CasperError::RuntimeError(format!(
-                            "finalized-floor block {} not in block store (DAG/store desync)",
-                            hex::encode(&floor_hash[..8.min(floor_hash.len())])
-                        ))
-                    })?;
-                    let floor_state =
-                        Blake2b256Hash::from_bytes_prost(&floor_block.body.state.post_state_hash);
-                    (
-                        floor_hash,
-                        floor_state,
-                        floor_block.body.state.block_number,
-                        settled_floors,
-                    )
+                    resolve_merge_floor(block_store, s, &parent_hashes, latest_messages, floor_ctx)
+                        .await?
                 }
             };
             let floor_derive_ms = floor_derive_started.elapsed().as_millis();
