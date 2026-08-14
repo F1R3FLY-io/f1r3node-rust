@@ -31,6 +31,7 @@ use tracing;
 use crate::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
+use crate::rust::finality::floor_context::FloorContext;
 use crate::rust::slashing_authorization::{authorized_slash_candidates, checked_next_seq};
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
 use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
@@ -331,6 +332,7 @@ pub async fn prepare_user_deploys(
     allow_recovered_deploys: bool,
     allow_ordinary_deploys: bool,
 ) -> Result<PreparedUserDeploys, CasperError> {
+    let floor_ctx = derive_floor_context(casper_snapshot, block_store).await?;
     prepare_user_deploys_with_policy(
         casper_snapshot,
         block_number,
@@ -338,6 +340,7 @@ pub async fn prepare_user_deploys(
         deploy_storage,
         rejected_deploy_buffer,
         block_store,
+        None,
         allow_recovered_deploys,
         DeployAdmissionPolicy {
             allow_ordinary: allow_ordinary_deploys,
@@ -348,8 +351,70 @@ pub async fn prepare_user_deploys(
             fallback: false,
             backpressure: false,
         },
+        floor_ctx.as_ref(),
     )
     .await
+}
+
+/// One [`FloorContext`] per block operation, from the snapshot's frozen
+/// (parents, justifications) pair. `create` derives it once and threads it;
+/// entry points callable outside `create` derive their own. `None` iff the
+/// snapshot has no parents (parentless fixtures and the pre-genesis shape) —
+/// there is no floor to derive, and every consumer's walk over zero parents
+/// is empty anyway.
+async fn derive_floor_context(
+    casper_snapshot: &CasperSnapshot,
+    block_store: &KeyValueBlockStore,
+) -> Result<Option<FloorContext>, CasperError> {
+    if casper_snapshot.parents.is_empty() {
+        return Ok(None);
+    }
+    let parent_hashes: Vec<BlockHash> = casper_snapshot
+        .parents
+        .iter()
+        .map(|p| p.block_hash.clone())
+        .collect();
+    let latest_messages: BTreeMap<Validator, BlockHash> = casper_snapshot
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
+    FloorContext::derive(
+        &casper_snapshot.dag,
+        block_store,
+        &parent_hashes,
+        &latest_messages,
+        crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+            casper_snapshot
+                .on_chain_state
+                .shard_conf
+                .fault_tolerance_threshold_ppm,
+        ),
+    )
+    .await
+    .map(Some)
+}
+
+/// The parents-rooted canonical-won walk, through the operation context's
+/// memo when one exists (context-less entry points walk directly — over an
+/// empty parent set the walk is empty either way).
+fn canonical_won_over_parents(
+    floor_ctx: Option<&FloorContext>,
+    casper_snapshot: &CasperSnapshot,
+    block_store: &KeyValueBlockStore,
+    earliest_block_number: i64,
+) -> Result<HashSet<Bytes>, CasperError> {
+    match floor_ctx {
+        Some(ctx) => ctx.won_sigs(block_store, earliest_block_number),
+        None => {
+            let parent_hashes: Vec<BlockHash> = casper_snapshot
+                .parents
+                .iter()
+                .map(|p| p.block_hash.clone())
+                .collect();
+            interpreter_util::canonical_won_sigs(block_store, &parent_hashes, earliest_block_number)
+        }
+    }
 }
 
 async fn prepare_user_deploys_with_policy(
@@ -361,8 +426,12 @@ async fn prepare_user_deploys_with_policy(
         Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>,
     >,
     block_store: &KeyValueBlockStore,
+    // The purge probe needs a runtime; fixtures pass None and the purge
+    // defers.
+    runtime_manager: Option<&RuntimeManager>,
     allow_recovered_deploys: bool,
     admission_policy: DeployAdmissionPolicy,
+    floor_ctx: Option<&FloorContext>,
 ) -> Result<PreparedUserDeploys, CasperError> {
     let max_user_deploys = normal_ordinary_deploy_cap(casper_snapshot);
     let ordinary_cap = admission_policy.ordinary_cap.min(max_user_deploys);
@@ -388,21 +457,25 @@ async fn prepare_user_deploys_with_policy(
         } else {
             HashSet::new()
         };
-    let parent_hashes: Vec<BlockHash> = casper_snapshot
-        .parents
-        .iter()
-        .map(|p| p.block_hash.clone())
-        .collect();
     let earliest_block_number =
         block_number - casper_snapshot.on_chain_state.shard_conf.deploy_lifespan;
-    // Both expiry kinds are terminal for buffered work: a block-expired deploy can
-    // never again pass Validate::transaction_expiration, so holding it "recoverable"
-    // only re-offers it to a proposer that must reject it (issue #197).
+    // The FLOOR-clock window bound for retry work. The floor is the only
+    // clock that closes a validity window irreversibly (the merge window
+    // rule and the buffer retain read the same bound); the tip clock runs
+    // ahead of it, so tip-expired floor-live retries must stay admissible
+    // and must never be deleted. `None` (no derivable floor) defers every
+    // irreversible removal of retry work — delay, never loss.
+    let floor_expiry_bound = floor_ctx.map(|ctx| {
+        ctx.floor.block_number - casper_snapshot.on_chain_state.shard_conf.deploy_lifespan
+    });
+    // Both expiry kinds are terminal for buffered work: a floor-window-closed
+    // deploy can never again pass the merge window rule, so holding it
+    // "recoverable" only re-offers it to a proposer that must reject it.
     let expired_buffered: Vec<Signed<DeployData>> = buffered_deploys
         .iter()
         .filter(|deploy| {
             deploy.data.is_expired_at(current_time_millis)
-                || !not_expired_deploy(earliest_block_number, &deploy.data)
+                || floor_expiry_bound.is_some_and(|bound| !not_expired_deploy(bound, &deploy.data))
         })
         .cloned()
         .collect();
@@ -449,51 +522,53 @@ async fn prepare_user_deploys_with_policy(
         .map(|h| h.min(earliest_block_number))
         .unwrap_or(earliest_block_number);
 
-    // Terminal purge: a rejected-buffer entry is dropped only once its sig is
-    // canonically WON inside the FINALIZED ancestry (latest finalized
-    // disposition is a win) AND that finalized win sits strictly above every
-    // rejection visible from the current parents. A win that is merely
-    // canonical-but-unfinalized can still be orphaned, so the entry must
-    // survive until finality; symmetrically, a finalized win with a visible
-    // rejection at or above its height is not terminal — block finalization
-    // does not finalize effects, and the pending rejection can finalize and
-    // drop the win from canonical state (finalized-win blindness,
-    // finalized_win_pending_rejection_spec). The buffer is the only
-    // re-proposable copy of merge-rejected work.
-    let finalized_won_buffered: Vec<Signed<DeployData>> = if buffered_deploys.is_empty() {
-        Vec::new()
-    } else {
-        let finalized_won = interpreter_util::finalized_won_terminal_sigs(
-            block_store,
-            &casper_snapshot.last_finalized_block,
-            &parent_hashes,
-            buffer_scan_floor,
-        )?;
-        buffered_deploys
-            .iter()
-            .filter(|d| finalized_won.contains(&d.sig))
-            .cloned()
-            .collect()
+    // Terminal purge: eviction is irreversible, so it keys on the one
+    // irreversible fact — the deploy's effect present in the FLOOR block's
+    // committed post-state. Floor coverage is monotone (floor-covered
+    // effects are in every future merge base), so a purged entry can never
+    // be needed again. No node-local finality marker may evict: a win the
+    // finalizer marked final can still sit above the justification-derived
+    // floor, where a later merge can reject it, and the buffer holds the
+    // only re-proposable copy. Without floor facts (parentless shapes) or
+    // a runtime (fixtures), the purge defers — delay, never loss. A deploy
+    // that creates no number cells is invisible to the probe and is never
+    // purged here; it leaves the buffer at window close via the retain.
+    let settled_buffered: Vec<Signed<DeployData>> = match (floor_ctx, runtime_manager) {
+        (Some(ctx), Some(rm)) if !buffered_deploys.is_empty() => {
+            let mut settled = Vec::new();
+            for deploy in &buffered_deploys {
+                if ctx.effect_settled_in_floor(
+                    &casper_snapshot.dag,
+                    block_store,
+                    rm,
+                    &deploy.sig,
+                )? {
+                    settled.push(deploy.clone());
+                }
+            }
+            settled
+        }
+        _ => Vec::new(),
     };
-    if !finalized_won_buffered.is_empty() {
+    if !settled_buffered.is_empty() {
         rejected_deploy_buffer
             .lock()
             .map_err(|e| CasperError::LockError(e.to_string()))?
-            .remove(finalized_won_buffered.clone())?;
+            .remove(settled_buffered.clone())?;
         tracing::info!(
             target: "f1r3fly.casper.recovery",
-            "Purged {} rejected-buffer entr(y/ies) with finalized canonical wins before block #{}",
-            finalized_won_buffered.len(),
+            "Purged {} rejected-buffer entr(y/ies) with floor-settled effects before block #{}",
+            settled_buffered.len(),
             block_number
         );
-        for deploy in &finalized_won_buffered {
+        for deploy in &settled_buffered {
             buffered_deploys.remove(deploy);
             buffered_sigs.remove(&deploy.sig);
         }
     }
 
     let canonical_won_buffer_sigs = if allow_recovered_deploys && !buffered_deploys.is_empty() {
-        interpreter_util::canonical_won_sigs(block_store, &parent_hashes, buffer_scan_floor)?
+        canonical_won_over_parents(floor_ctx, casper_snapshot, block_store, buffer_scan_floor)?
     } else {
         HashSet::new()
     };
@@ -596,6 +671,23 @@ async fn prepare_user_deploys_with_policy(
         .map(|h| h.min(earliest_block_number))
         .unwrap_or(earliest_block_number);
 
+    // Retry work (buffered or rejected-in-scope) reads the FLOOR-clock
+    // window for block expiry; ordinary deploys keep the tip clock, which
+    // is never looser than the floor's, so nothing leaks back. Absent a
+    // derivable floor, retry work also falls back to the tip clock for
+    // ADMISSION only (removal below defers instead — deletion is
+    // irreversible, admission is retried next round).
+    let is_retry_sig = |sig: &Bytes| {
+        buffered_sigs.contains(sig) || casper_snapshot.rejected_in_scope.contains(sig)
+    };
+    let block_expiry_bound = |deploy: &Signed<DeployData>| {
+        if is_retry_sig(&deploy.sig) {
+            floor_expiry_bound.unwrap_or(earliest_block_number)
+        } else {
+            earliest_block_number
+        }
+    };
+
     // Categorize deploys for logging
     let future_deploys: Vec<_> = unfinalized
         .iter()
@@ -603,26 +695,26 @@ async fn prepare_user_deploys_with_policy(
         .collect();
     let block_expired_deploys: Vec<_> = unfinalized
         .iter()
-        .filter(|d| !not_expired_deploy(earliest_block_number, &d.data))
+        .filter(|d| !not_expired_deploy(block_expiry_bound(d), &d.data))
         .collect();
     let time_expired_deploys: Vec<_> = unfinalized
         .iter()
         .filter(|d| d.data.is_expired_at(current_time_millis))
         .collect();
 
-    // Filter valid deploys (not expired by block, not expired by time, and not future).
-    // Block expiry applies to recovered and rejected-retry deploys too: validation
-    // (Validate::transaction_expiration) has no recovery carve-out, so a block-expired
-    // deploy admitted here can only yield a self-created block that fails its own
-    // validation with ContainsExpiredDeploy — and, because nothing purged the deploy,
-    // every subsequent propose rebuilt the same invalid block (the permanent
-    // finalization wedge of issue #197). Expiry is a chain-level invariant; recovery
-    // cannot outlive it.
+    // Filter valid deploys (not expired by block, not expired by time, and
+    // not future). Block expiry applies to recovered and rejected-retry
+    // deploys too — on the floor clock: the merge window rule and expiry
+    // validity read the same bound, so a floor-window-closed deploy
+    // admitted here could only yield a block that fails its own
+    // validation, rebuilt every propose (the permanent finalization
+    // wedge). Expiry is a chain-level invariant; recovery cannot outlive
+    // it — but the clock that closes it is the floor's, never the tip's.
     let valid: HashSet<Signed<DeployData>> = unfinalized
         .iter()
         .filter(|deploy| {
             not_future_deploy(block_number, &deploy.data)
-                && not_expired_deploy(earliest_block_number, &deploy.data)
+                && not_expired_deploy(block_expiry_bound(deploy), &deploy.data)
                 && !deploy.data.is_expired_at(current_time_millis)
         })
         .cloned()
@@ -630,8 +722,12 @@ async fn prepare_user_deploys_with_policy(
 
     let valid_count = valid.len();
 
-    let canonical_won =
-        interpreter_util::canonical_won_sigs(block_store, &parent_hashes, canonical_scan_floor)?;
+    let canonical_won = canonical_won_over_parents(
+        floor_ctx,
+        casper_snapshot,
+        block_store,
+        canonical_scan_floor,
+    )?;
 
     let recovered_canonical_wins: Vec<Signed<DeployData>> = valid
         .iter()
@@ -942,10 +1038,15 @@ async fn prepare_user_deploys_with_policy(
         );
     }
 
-    // Remove all expired deploys from storage to prevent them from triggering future proposals
-    // Combine block-expired and time-expired, avoiding duplicates
+    // Remove all expired deploys from storage to prevent them from triggering
+    // future proposals. Combine block-expired and time-expired, avoiding
+    // duplicates. Removal is irreversible, so block-expiry removal of RETRY
+    // work requires the floor bound — with no derivable floor, retry work is
+    // excluded here and re-judged next round (delay, never loss); its
+    // admission-side filter above already deferred on the same fact.
     let all_expired: HashSet<&Signed<DeployData>> = block_expired_deploys
         .iter()
+        .filter(|d| floor_expiry_bound.is_some() || !is_retry_sig(&d.sig))
         .chain(time_expired_deploys.iter())
         .cloned()
         .collect();
@@ -1645,16 +1746,6 @@ fn drain_selected_recovered_deploys_from_deploy_storage(
     Ok(removed_from_storage)
 }
 
-fn filter_unprocessed_rejected_deploys(
-    rejected_deploys: Vec<Bytes>,
-    processed_deploy_sigs: &HashSet<Bytes>,
-) -> Vec<Bytes> {
-    rejected_deploys
-        .into_iter()
-        .filter(|sig| !processed_deploy_sigs.contains(sig))
-        .collect()
-}
-
 /// Removes the ordinary deploy-storage copies of recovered deploys whose sig
 /// already shows a canonical win in the parent scope. The rejected-buffer
 /// entry is NOT touched here: a canonical-but-unfinalized win can still be
@@ -1836,6 +1927,7 @@ fn fresh_local_deploy_stats(
     deploy_storage: &Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     block_store: &KeyValueBlockStore,
+    floor_ctx: Option<&FloorContext>,
 ) -> Result<FreshLocalDeployStats, CasperError> {
     let stored_deploys = deploy_storage.lock().read_all()?;
     if stored_deploys.is_empty() {
@@ -1863,19 +1955,18 @@ fn fresh_local_deploy_stats(
     if candidates.is_empty() {
         return Ok(FreshLocalDeployStats::default());
     }
-    let parent_hashes: Vec<BlockHash> = casper_snapshot
-        .parents
-        .iter()
-        .map(|p| p.block_hash.clone())
-        .collect();
     let canonical_scan_floor = candidates
         .iter()
         .map(|d| d.data.valid_after_block_number)
         .min()
         .map(|h| h.min(earliest_block_number))
         .unwrap_or(earliest_block_number);
-    let canonical_won =
-        interpreter_util::canonical_won_sigs(block_store, &parent_hashes, canonical_scan_floor)?;
+    let canonical_won = canonical_won_over_parents(
+        floor_ctx,
+        casper_snapshot,
+        block_store,
+        canonical_scan_floor,
+    )?;
     let mut count = 0usize;
     let mut oldest_time = None;
     for deploy in candidates {
@@ -1904,6 +1995,7 @@ fn in_scope_local_deploy_stats(
     deploy_storage: &Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     block_store: &KeyValueBlockStore,
+    floor_ctx: Option<&FloorContext>,
 ) -> Result<InScopeLocalDeployStats, CasperError> {
     let stored_deploys = deploy_storage.lock().read_all()?;
     if stored_deploys.is_empty() {
@@ -1938,13 +2030,12 @@ fn in_scope_local_deploy_stats(
         .min()
         .map(|h| h.min(earliest_block_number))
         .unwrap_or(earliest_block_number);
-    let parent_hashes: Vec<BlockHash> = casper_snapshot
-        .parents
-        .iter()
-        .map(|p| p.block_hash.clone())
-        .collect();
-    let canonical_won =
-        interpreter_util::canonical_won_sigs(block_store, &parent_hashes, canonical_scan_floor)?;
+    let canonical_won = canonical_won_over_parents(
+        floor_ctx,
+        casper_snapshot,
+        block_store,
+        canonical_scan_floor,
+    )?;
     let finalized_won =
         finalized_ancestor_deploy_sigs(casper_snapshot, block_store, canonical_scan_floor)?;
     let mut count = 0usize;
@@ -1993,6 +2084,7 @@ fn rejected_buffer_has_recoverable_deploys(
     current_time_millis: i64,
     rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     block_store: &KeyValueBlockStore,
+    floor_ctx: Option<&FloorContext>,
 ) -> Result<bool, CasperError> {
     let buffered_deploys = {
         let buffer_guard = rejected_deploy_buffer
@@ -2006,13 +2098,16 @@ fn rejected_buffer_has_recoverable_deploys(
     if buffered_deploys.is_empty() {
         return Ok(false);
     }
-    let parent_hashes: Vec<BlockHash> = casper_snapshot
-        .parents
-        .iter()
-        .map(|p| p.block_hash.clone())
-        .collect();
     let earliest_block_number =
         block_number - casper_snapshot.on_chain_state.shard_conf.deploy_lifespan;
+    // Buffered work is retry work: its window reads the FLOOR clock, so a
+    // floor-window-closed entry no longer counts as a recovery backlog and
+    // cannot hold admission in recovery mode.
+    let window_bound = floor_ctx
+        .map(|ctx| {
+            ctx.floor.block_number - casper_snapshot.on_chain_state.shard_conf.deploy_lifespan
+        })
+        .unwrap_or(earliest_block_number);
     let candidates: Vec<_> = buffered_deploys
         .iter()
         .filter(|deploy| {
@@ -2022,7 +2117,7 @@ fn rejected_buffer_has_recoverable_deploys(
             !clean_in_scope
                 && not_future_deploy(block_number, &deploy.data)
                 && !deploy.data.is_expired_at(current_time_millis)
-                && (rejected_in_scope || not_expired_deploy(earliest_block_number, &deploy.data))
+                && not_expired_deploy(window_bound, &deploy.data)
         })
         .collect();
     if candidates.is_empty() {
@@ -2035,7 +2130,7 @@ fn rejected_buffer_has_recoverable_deploys(
         .map(|h| h.min(earliest_block_number))
         .unwrap_or(earliest_block_number);
     let canonical_won =
-        interpreter_util::canonical_won_sigs(block_store, &parent_hashes, scan_floor)?;
+        canonical_won_over_parents(floor_ctx, casper_snapshot, block_store, scan_floor)?;
 
     Ok(candidates
         .iter()
@@ -2493,6 +2588,12 @@ pub async fn create(
 
     let shard_id = casper_snapshot.on_chain_state.shard_conf.shard_name.clone();
 
+    // The one derivation of the floor (and its post-state) for this whole
+    // propose; every walk and probe below reads it. `None` only for
+    // parentless fixture shapes, where the floor requirement surfaces at
+    // bonds packaging exactly as before.
+    let floor_ctx = derive_floor_context(casper_snapshot, block_store).await?;
+
     // Prepare deploys
     let (
         user_deploys,
@@ -2565,6 +2666,7 @@ pub async fn create(
             &deploy_storage,
             &rejected_deploy_buffer,
             block_store,
+            floor_ctx.as_ref(),
         )?;
         let in_scope_local_stats = in_scope_local_deploy_stats(
             casper_snapshot,
@@ -2573,6 +2675,7 @@ pub async fn create(
             &deploy_storage,
             &rejected_deploy_buffer,
             block_store,
+            floor_ctx.as_ref(),
         )?;
         let fallback = fresh_admission_fallback(
             casper_snapshot,
@@ -2594,6 +2697,7 @@ pub async fn create(
             now_millis,
             &rejected_deploy_buffer,
             block_store,
+            floor_ctx.as_ref(),
         )?;
         let admission_policy = ordinary_admission_policy(
             casper_snapshot,
@@ -2675,8 +2779,10 @@ pub async fn create(
             deploy_storage.clone(),
             rejected_deploy_buffer.clone(),
             block_store,
+            Some(runtime_manager),
             allow_recovered_deploys,
             admission_policy,
+            floor_ctx.as_ref(),
         )
         .await?;
         record_deploy_admission_metrics(
@@ -2758,8 +2864,6 @@ pub async fn create(
         v
     };
 
-    let has_user_or_dummy_deploys = !user_deploys.is_empty() || !dummy_deploys.is_empty();
-
     // Merge the parents once up front. Two reasons to do this before the
     // empty-block skip check below:
     //   1. To discover slashes that were rejected by cost-optimal merge
@@ -2786,6 +2890,7 @@ pub async fn create(
         &latest_messages,
         None,
         Some(&rejected_deploy_buffer),
+        floor_ctx.as_ref(),
     )
     .await?;
     metrics::histogram!(
@@ -2793,7 +2898,71 @@ pub async fn create(
         "source" => CASPER_METRICS_SOURCE
     )
     .record(__merge_pre_t.elapsed().as_secs_f64());
-    let (_pre_state, _rejected_user_sigs, rejected_slashes) = merge_pre_info;
+    let rejected_slashes = merge_pre_info.rejected_slashes.clone();
+
+    // NEVER EXECUTE A DEPLOY WHOSE EFFECT IS ALREADY IN THE PRE-STATE.
+    //
+    // Selection ran BEFORE the parents were merged, so it cannot know what
+    // the block will actually be built on. Two independent mechanisms return
+    // a rejected deploy's work: recovery re-selects the deploy for fresh
+    // re-proposal, and a merge reinstates the original copy from scope.
+    // Neither can see the other, so both can deliver — and the second
+    // execution is not a harmless duplicate. The deploy's cells are keyed by
+    // a sig-derived rnd, so both executions write the SAME channel and
+    // neither consumes the other's datum: the cell ends up holding two
+    // values, the vault read trips the IntegerAdd single-value invariant,
+    // and the toxic-deploy quarantine then deletes the deploy from BOTH the
+    // pool and the buffer. A double-apply destroys the work rather than
+    // duplicating it.
+    //
+    // The test is the INVARIANT, not a route. Keying on how the effect
+    // arrived misses paths: `applied_from_scope` is empty on the
+    // short-circuit shapes (`single_parent`, `descendant_fast_path`, cache
+    // hit) where the effect arrives via a parent's post-state instead.
+    // Asking the pre-state directly is provenance-independent and therefore
+    // complete. `applied_from_scope` is still consulted first: it is exact
+    // and needs no I/O, so the state probe only runs for what it does not
+    // cover.
+    //
+    // Only the FRESH copy is dropped, never the merge's, so reinstatement
+    // stays intact. A false positive costs a round — the deploy stays in
+    // storage and in the buffer — so this is delay, never loss.
+    let user_deploys: HashSet<Signed<DeployData>> = {
+        let pre_state_hash =
+            rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash::from_bytes_prost(
+                &merge_pre_info.state,
+            );
+        let mut kept: HashSet<Signed<DeployData>> = HashSet::with_capacity(user_deploys.len());
+        let mut dropped: Vec<String> = Vec::new();
+        for deploy in user_deploys {
+            let already_applied = merge_pre_info.applied_from_scope.contains(&deploy.sig)
+                || interpreter_util::deploy_effect_in_state(
+                    &casper_snapshot.dag,
+                    block_store,
+                    runtime_manager,
+                    &pre_state_hash,
+                    &deploy.sig,
+                )?;
+            if already_applied {
+                dropped.push(hex::encode(&deploy.sig[..deploy.sig.len().min(8)]));
+            } else {
+                kept.insert(deploy);
+            }
+        }
+        if !dropped.is_empty() {
+            tracing::info!(
+                target: "f1r3fly.casper.recovery",
+                "Dropped {} selected deploy(s) from block #{}: their effects are already in the \
+                 pre-state this block executes against, so re-executing would double-apply; \
+                 sigs={:?}",
+                dropped.len(),
+                next_block_num,
+                dropped,
+            );
+        }
+        kept
+    };
+    let has_user_or_dummy_deploys = !user_deploys.is_empty() || !dummy_deploys.is_empty();
 
     // Union own slashes with merge-rejected slashes, dedup by
     // `invalid_block_hash`. Own detections take priority — any
@@ -2982,6 +3151,7 @@ pub async fn create(
             block_data.clone(),
             invalid_blocks.clone(),
             Some(&rejected_deploy_buffer),
+            floor_ctx.as_ref(),
         )
         .await
         {
@@ -3062,54 +3232,33 @@ pub async fn create(
     )
     .record(checkpoint_started.elapsed().as_secs_f64());
 
-    let (
+    let interpreter_util::DeploysCheckpoint {
         pre_state_hash,
         post_state_hash,
-        processed_deploys,
+        deploys: processed_deploys,
         rejected_deploys,
-        processed_system_deploys,
-        new_bonds,
-    ) = checkpoint_data;
-    let processed_deploy_sigs: HashSet<Bytes> = processed_deploys
-        .iter()
-        .map(|pd| pd.deploy.sig.clone())
-        .collect();
-    let rejected_deploys =
-        filter_unprocessed_rejected_deploys(rejected_deploys, &processed_deploy_sigs);
+        system_deploys: processed_system_deploys,
+        bonds: new_bonds,
+    } = checkpoint_data;
 
     let block_bonds = {
-        let parent_hashes: Vec<BlockHash> = parents.iter().map(|p| p.block_hash.clone()).collect();
-        let latest_messages: BTreeMap<Validator, BlockHash> = casper_snapshot
-            .justifications
-            .iter()
-            .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
-            .collect();
-        let floor = crate::rust::finality::floor::finalized_floor(
-            &casper_snapshot.dag,
-            &parent_hashes,
-            &latest_messages,
-            crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-                casper_snapshot
-                    .on_chain_state
-                    .shard_conf
-                    .fault_tolerance_threshold_ppm,
-            ),
-        )
-        .await?;
-        let floor_block = block_store.get(&floor.hash)?.ok_or_else(|| {
-            CasperError::RuntimeError(format!(
-                "finalized-floor block {} not in block store for block bonds",
-                pretty_printer::PrettyPrinter::build_string_bytes(&floor.hash)
-            ))
+        // The floor requirement is real here even for parentless fixture
+        // shapes: a block's bonds are the floor committee, so a snapshot
+        // with no derivable floor cannot package bonds.
+        let ctx = floor_ctx.as_ref().ok_or_else(|| {
+            CasperError::Other(
+                "finalized_floor requires a non-empty parent set; genesis pre-state comes from \
+                 config"
+                    .to_string(),
+            )
         })?;
-        let floor_state_hash = &floor_block.body.state.post_state_hash;
         let committee: Vec<Bond> =
-            crate::rust::finality::floor::floor_committee(runtime_manager, floor_state_hash)
+            crate::rust::finality::floor::floor_committee(runtime_manager, &ctx.floor_state)
                 .await?;
         if committee.len() != new_bonds.len() {
             tracing::info!(
                 target: "f1r3fly.casper.bonds_validation",
-                floor_number = floor.block_number,
+                floor_number = ctx.floor.block_number,
                 committee = committee.len(),
                 post_state_bonds = new_bonds.len(),
                 "block bonds field differs from post-state bonds"
@@ -3214,7 +3363,7 @@ fn package_block(
     pre_state_hash: Bytes,
     post_state_hash: Bytes,
     deploys: Vec<ProcessedDeploy>,
-    rejected_deploys: Vec<Bytes>,
+    rejected_deploys: Vec<RejectedDeploy>,
     system_deploys: Vec<ProcessedSystemDeploy>,
     bonds_map: Vec<Bond>,
     shard_id: String,
@@ -3227,15 +3376,10 @@ fn package_block(
         block_number: block_data.block_number,
     };
 
-    let rejected_deploys_wrapped: Vec<RejectedDeploy> = rejected_deploys
-        .into_iter()
-        .map(|r| RejectedDeploy { sig: r })
-        .collect();
-
     let body = Body {
         state,
         deploys,
-        rejected_deploys: rejected_deploys_wrapped,
+        rejected_deploys,
         system_deploys,
         extra_bytes: Bytes::new(),
     };
@@ -4476,21 +4620,6 @@ mod tests {
         assert!(!parent_frontier_extends_lfb(&snapshot, &block_store).expect("lfb parent"));
     }
 
-    #[test]
-    fn processed_deploys_are_not_packaged_as_rejected_deploys() {
-        let processed_sig = Bytes::from_static(b"processed");
-        let other_sig = Bytes::from_static(b"other");
-        let fresh_sig = Bytes::from_static(b"fresh");
-        let processed_deploy_sigs: HashSet<Bytes> = [processed_sig.clone()].into_iter().collect();
-
-        let filtered = filter_unprocessed_rejected_deploys(
-            vec![processed_sig, other_sig.clone(), fresh_sig.clone()],
-            &processed_deploy_sigs,
-        );
-
-        assert_eq!(filtered, vec![other_sig, fresh_sig]);
-    }
-
     /// A bonded validator that PoS still considers active is slashable
     /// when their latest message is invalid. Baseline behavior.
     #[test]
@@ -4907,7 +5036,8 @@ mod tests {
             20,
             now,
             &rejected_deploy_buffer,
-            &block_store
+            &block_store,
+            None
         )
         .expect("check unselectable buffer"));
 
@@ -4929,7 +5059,8 @@ mod tests {
             20,
             now,
             &rejected_deploy_buffer,
-            &block_store
+            &block_store,
+            None
         )
         .expect("check selectable buffer"));
     }
@@ -5116,6 +5247,7 @@ mod tests {
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
+            None,
             false,
             DeployAdmissionPolicy {
                 allow_ordinary: true,
@@ -5126,6 +5258,7 @@ mod tests {
                 fallback: false,
                 backpressure: false,
             },
+            None,
         )
         .await
         .expect("prepare deploys");
@@ -5188,6 +5321,7 @@ mod tests {
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
+            None,
             false,
             DeployAdmissionPolicy {
                 allow_ordinary: true,
@@ -5198,6 +5332,7 @@ mod tests {
                 fallback: true,
                 backpressure: false,
             },
+            None,
         )
         .await
         .expect("prepare deploys");
@@ -5287,6 +5422,7 @@ mod tests {
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
+            None,
             false,
             DeployAdmissionPolicy {
                 allow_ordinary: true,
@@ -5297,6 +5433,7 @@ mod tests {
                 fallback: true,
                 backpressure: false,
             },
+            None,
         )
         .await
         .expect("prepare deploys");
@@ -5382,6 +5519,7 @@ mod tests {
             &deploy_storage,
             &rejected_deploy_buffer,
             &block_store,
+            None,
         )
         .expect("in-scope stats");
         let finalized =
@@ -5397,6 +5535,7 @@ mod tests {
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
+            None,
             false,
             DeployAdmissionPolicy {
                 allow_ordinary: false,
@@ -5407,6 +5546,7 @@ mod tests {
                 fallback: true,
                 backpressure: true,
             },
+            None,
         )
         .await
         .expect("prepare deploys");
@@ -5488,6 +5628,7 @@ mod tests {
             &deploy_storage,
             &rejected_deploy_buffer,
             &block_store,
+            None,
         )
         .expect("in-scope stats");
         assert_eq!(stats.count, 0);
@@ -5499,6 +5640,7 @@ mod tests {
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
+            None,
             false,
             DeployAdmissionPolicy {
                 allow_ordinary: false,
@@ -5509,6 +5651,7 @@ mod tests {
                 fallback: true,
                 backpressure: true,
             },
+            None,
         )
         .await
         .expect("prepare deploys");
@@ -5600,6 +5743,7 @@ mod tests {
             &deploy_storage,
             &rejected_deploy_buffer,
             &block_store,
+            None,
         )
         .expect("in-scope stats");
         assert_eq!(stats.count, 1);
@@ -5612,6 +5756,7 @@ mod tests {
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
+            None,
             false,
             DeployAdmissionPolicy {
                 allow_ordinary: false,
@@ -5622,6 +5767,7 @@ mod tests {
                 fallback: true,
                 backpressure: false,
             },
+            None,
         )
         .await
         .expect("prepare deploys");
@@ -5685,6 +5831,7 @@ mod tests {
             &deploy_storage,
             &rejected_deploy_buffer,
             &block_store,
+            None,
         )
         .expect("in-scope stats");
         let finalized =
@@ -5700,6 +5847,7 @@ mod tests {
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
+            None,
             false,
             DeployAdmissionPolicy {
                 allow_ordinary: false,
@@ -5710,6 +5858,7 @@ mod tests {
                 fallback: true,
                 backpressure: true,
             },
+            None,
         )
         .await
         .expect("prepare deploys");
@@ -6144,5 +6293,202 @@ mod tests {
             .expect("rejected buffer lock")
             .contains_sig(&deploy.sig)
             .expect("contains sig"));
+    }
+
+    /// The terminal purge is irreversible, so it may key only on the one
+    /// irreversible fact — the deploy's effect present in the FLOOR block's
+    /// committed post-state. A win merely marked finalized by this node's
+    /// finalizer can still sit above the justification-derived floor, where
+    /// a later merge can reject it; evicting on that marker loses the only
+    /// re-proposable copy. Absent floor-state evidence, the entry stays.
+    #[tokio::test]
+    async fn buffer_entry_is_kept_without_floor_state_evidence_of_its_effect() {
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+            KeyValueDeployStorage::new(&mut kvm)
+                .await
+                .expect("deploy storage"),
+        ));
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 10;
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+        let buffered = construct_deploy::basic_deploy_data(95, None, Some("test".to_string()))
+            .expect("buffered deploy");
+
+        // The node-local finalizer marks the winning block finalized; the
+        // floor derivable from this snapshot never covers its effect.
+        let won_block = test_block(invalid_block_hash(0x99), validator(1), Vec::new(), 1, vec![
+            models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(
+                buffered.clone(),
+            ),
+        ]);
+        block_store
+            .put_block_message(&won_block)
+            .expect("store won block");
+        snapshot.last_finalized_block = won_block.block_hash.clone();
+
+        deploy_storage
+            .lock()
+            .add(vec![buffered.clone()])
+            .expect("seed deploy storage");
+        rejected_deploy_buffer
+            .lock()
+            .expect("rejected buffer lock")
+            .add(vec![buffered.clone()])
+            .expect("seed rejected buffer");
+
+        let _prepared = prepare_user_deploys(
+            &snapshot,
+            20,
+            buffered.data.time_stamp,
+            deploy_storage,
+            rejected_deploy_buffer.clone(),
+            &block_store,
+            true,
+            true,
+        )
+        .await
+        .expect("prepare deploys");
+
+        assert!(
+            rejected_deploy_buffer
+                .lock()
+                .expect("rejected buffer lock")
+                .contains_sig(&buffered.sig)
+                .expect("contains sig"),
+            "a buffer entry may be evicted only on floor-state evidence of \
+             its effect; a node-local finality marker is not that evidence"
+        );
+    }
+
+    /// Retry admission and removal read the FLOOR-clock validity window,
+    /// not the tip clock. A rejected deploy whose window is closed at the
+    /// tip but open at the floor can still land — the merge window and
+    /// expiry validity both key on the floor — so selection must keep
+    /// offering it and removal (irreversible) must not delete the only
+    /// re-proposable copy on the faster clock.
+    #[tokio::test]
+    async fn tip_expired_floor_live_rejected_deploy_stays_retryable() {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+            KeyValueDeployStorage::new(&mut kvm)
+                .await
+                .expect("deploy storage"),
+        ));
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 10;
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+
+        // Floor pinned at genesis (#0): the parent chain is unwitnessed, so
+        // the cold frontier walk lands on the parentless root. The tip sits
+        // at #60, so the tip-clock window (bound #10) is closed for a
+        // valid_after-5 deploy while the floor-clock window is wide open.
+        let genesis_block = test_block(
+            invalid_block_hash(0xA0),
+            validator(1),
+            Vec::new(),
+            0,
+            Vec::new(),
+        );
+        let parent_block = test_block(
+            invalid_block_hash(0xA1),
+            validator(1),
+            vec![genesis_block.block_hash.clone()],
+            60,
+            Vec::new(),
+        );
+        block_store
+            .put_block_message(&genesis_block)
+            .expect("store genesis");
+        block_store
+            .put_block_message(&parent_block)
+            .expect("store parent");
+        dag_storage
+            .insert(&genesis_block, InsertMode::Approved)
+            .expect("insert genesis");
+        dag_storage
+            .insert(&parent_block, InsertMode::Normal)
+            .expect("insert parent");
+        snapshot.dag = dag_storage.get_representation().expect("dag");
+        snapshot.parents = vec![parent_block];
+
+        let retry = construct_deploy::source_deploy(
+            "@71!(71)".to_string(),
+            1_000,
+            None,
+            None,
+            None,
+            Some(5),
+            Some("test".to_string()),
+        )
+        .expect("retry deploy");
+        deploy_storage
+            .lock()
+            .add(vec![retry.clone()])
+            .expect("seed deploy storage");
+        rejected_deploy_buffer
+            .lock()
+            .expect("rejected buffer lock")
+            .add(vec![retry.clone()])
+            .expect("seed rejected buffer");
+
+        let prepared = prepare_user_deploys(
+            &snapshot,
+            61,
+            10_000,
+            deploy_storage,
+            rejected_deploy_buffer.clone(),
+            &block_store,
+            true,
+            true,
+        )
+        .await
+        .expect("prepare deploys");
+
+        assert!(
+            rejected_deploy_buffer
+                .lock()
+                .expect("rejected buffer lock")
+                .contains_sig(&retry.sig)
+                .expect("contains sig"),
+            "removal is floor-clock: a floor-live entry must not be deleted \
+             on the tip clock"
+        );
+        assert!(
+            prepared.deploys.iter().any(|d| d.sig == retry.sig),
+            "retry admission is floor-clock: a tip-expired floor-live \
+             rejected deploy stays selectable"
+        );
     }
 }
