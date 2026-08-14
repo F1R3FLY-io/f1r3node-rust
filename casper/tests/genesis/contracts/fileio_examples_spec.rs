@@ -387,3 +387,124 @@ in {{
         "dest file content after writeLines must match source"
     );
 }
+
+/// Slice 10a-4: canonical example `fileio_membrane.rho`.
+///
+/// Wraps a File cap in a forwarder that consults a mutable `revoked`
+/// flag.  A holder of the forwarder (via `bundle+{*tellMembrane}`)
+/// can invoke methods through it; the revocation switch is retained
+/// by the wrapping deploy.  Pre-revoke `tell()` returns a real reply
+/// from the underlying File.  Post-revoke `tell()` returns
+/// `[false, "FSERR_REVOKED", _]` without touching the underlying.
+///
+/// Simplification vs. the FIP §Ocap patterns pseudocode: the example
+/// wraps a nullary method (`tell`), not a variadic one, because
+/// Rholang's grammar disallows `...` splats in send positions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fileio_membrane_revokes_forwarder() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir.path().join("membrane.dat");
+    std::fs::write(&file_path, b"membrane test payload").expect("seed file");
+    let canon = std::fs::canonicalize(&file_path).expect("canonicalize");
+
+    let entry = BundleEntry::try_new(
+        "target".to_string(),
+        canon,
+        BundleEntryKind::File,
+        "r".to_string(),
+        BundleConsensusMode::Oracular,
+    )
+    .expect("bundle entry construction");
+
+    let mut params = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    params.2.fs_bundle = vec![entry];
+
+    let fs_uri = fs_genesis::fs_genesis_uri(&standard_deploys::FS_GENERATOR_PUB_KEY);
+
+    let test_source = format!(
+        r#"
+new
+  rl(`rho:registry:lookup`),
+  RhoSpecCh,
+  fsCh,
+  test_membrane_revocation_switch
+in {{
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for(@(_, RhoSpec) <- RhoSpecCh) {{
+    @RhoSpec!("testSuite",
+      [
+        ("membrane forwards pre-revoke, returns FSERR_REVOKED post-revoke",
+         *test_membrane_revocation_switch)
+      ])
+  }} |
+
+  rl!(`{fs_uri}`, *fsCh) |
+  for(@(_, fs) <- fsCh) {{
+    contract test_membrane_revocation_switch(rhoSpec, _, ackCh) = {{
+      for(@[true, underlyingFile] <- @fs!?("openFile", "target", {{"mode": "r"}})) {{
+        new revoked, tellMembrane in {{
+          revoked!(false) |
+          contract tellMembrane(returnCh) = {{
+            for (@r <<- revoked) {{
+              match r {{
+                true => returnCh!([false, "FSERR_REVOKED", "capability revoked"])
+                false => {{
+                  for (@reply <- @underlyingFile!?("tell")) {{
+                    returnCh!(reply)
+                  }}
+                }}
+              }}
+            }}
+          }} |
+          new r1Ch in {{
+            tellMembrane!(*r1Ch) |
+            for(@r1 <- r1Ch) {{
+              match r1 {{
+                [true, _pos] => {{
+                  // Pre-revoke path worked; now revoke and retry.
+                  for(@_ <- revoked) {{
+                    revoked!(true) |
+                    new r2Ch in {{
+                      tellMembrane!(*r2Ch) |
+                      for(@r2 <- r2Ch) {{
+                        match r2 {{
+                          [false, "FSERR_REVOKED", _] => {{
+                            rhoSpec!("assert", (true, "==", true),
+                              "membrane returns FSERR_REVOKED after revoke", *ackCh)
+                          }}
+                          _ => {{
+                            rhoSpec!("assert", (r2, "==", "[false, FSERR_REVOKED, _]"),
+                              "membrane returns FSERR_REVOKED after revoke", *ackCh)
+                          }}
+                        }}
+                      }}
+                    }}
+                  }}
+                }}
+                _ => {{
+                  rhoSpec!("assert", (r1, "==", "[true, _pos]"),
+                    "pre-revoke tell must succeed", *ackCh)
+                }}
+              }}
+            }}
+          }}
+        }}
+      }}
+    }}
+  }}
+}}
+"#
+    );
+
+    let compiled = CompiledRholangSource::new(
+        test_source,
+        HashMap::new(),
+        "FileioMembraneSpec".to_string(),
+    )
+    .expect("compile fileio_membrane test source");
+
+    let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
+    spec.run_tests()
+        .await
+        .expect("fileio_membrane spec failed");
+}
