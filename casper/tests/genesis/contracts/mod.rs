@@ -9,6 +9,7 @@ pub mod deep_recursion_spec;
 pub mod either_spec;
 pub mod failing_result_collector_spec;
 pub mod fileio_consensus_replay_spec;
+pub mod fileio_dir_spec;
 pub mod fileio_examples_spec;
 pub mod fileio_file_spec;
 pub mod fileio_stream_spec;
