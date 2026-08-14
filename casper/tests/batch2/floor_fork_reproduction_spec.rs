@@ -26,9 +26,7 @@
 
 use std::collections::HashMap;
 
-use casper::rust::blocks::proposer::block_creator;
-use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
-use casper::rust::casper::{Casper, MultiParentCasper};
+use casper::rust::casper::MultiParentCasper;
 use casper::rust::finality::floor::{floor_of_block, floor_of_view, Floor};
 use casper::rust::safety::clique_oracle::FtThreshold;
 use casper::rust::util::construct_deploy;
@@ -96,59 +94,7 @@ async fn string_datums(node: &TestNode, state_hash: &Bytes, name: &str) -> Vec<S
         .collect()
 }
 
-/// Mint a block on `node` from explicitly ORDERED parents (parents[0] is
-/// the main parent — the spine the frontier walk follows), process it on
-/// the same node, and return it.
-async fn mint_on_parents(
-    node: &mut TestNode,
-    parents: Vec<BlockMessage>,
-    label: &str,
-) -> BlockMessage {
-    for p in &parents {
-        assert!(
-            node.casper.dag_contains(&p.block_hash),
-            "staging[{label}]: parent {} must be IN THE DAG of the minting \
-             node (buffered: {})",
-            hex::encode(&p.block_hash[..6]),
-            node.casper.buffer_contains(&p.block_hash),
-        );
-    }
-    let mut snapshot = node.casper.get_snapshot().await.expect("snapshot");
-    snapshot.max_block_num = parents
-        .iter()
-        .map(|p| p.body.state.block_number)
-        .max()
-        .expect("non-empty parent set");
-    snapshot.parents = parents;
-    let validator_identity = node.validator_id_opt.clone().expect("validator identity");
-    let deploy_storage = node.deploy_storage.clone();
-    let rejected_buffer = node.rejected_deploy_buffer.clone();
-    let runtime_manager = node.runtime_manager.clone();
-    let created = block_creator::create(
-        &snapshot,
-        &validator_identity,
-        None,
-        deploy_storage,
-        rejected_buffer,
-        &runtime_manager,
-        &mut node.block_store,
-        true,
-    )
-    .await
-    .unwrap_or_else(|e| {
-        panic!(
-            "create[{label}] must adjudicate its finalized view, never halt: {:?}",
-            e
-        )
-    });
-    let BlockCreatorResult::Created(block, _pre, _post) = created else {
-        panic!("create[{label}] must mint on the ordered parent set");
-    };
-    node.process_block(block.clone())
-        .await
-        .expect("self-process minted block");
-    block
-}
+use super::staging::mint_on_parents;
 
 #[tokio::test]
 async fn a_co_witnessed_sibling_fork_must_adjudicate_and_advance() {
