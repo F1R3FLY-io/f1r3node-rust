@@ -2457,9 +2457,14 @@ impl FsProcesses {
             RhoString::unapply(mode_par),
             resolve_lock_mode(mode_par),
         ) {
-            (Some(fd), Some(off), Some(len), Some(_), Some(lm))
-                if fd >= 0 && off >= 0 && len > 0 =>
-            {
+            // Slice 28 CRIT-2 pattern: fds are hash-derived u64 bit
+            // patterns; the sign bit carries information, so `fd as
+            // u64` is the reinterpret and we do NOT gate on `fd >= 0`.
+            // (Same fix as `fs_close` line 600.  Pre-fix: ~50% of
+            // seeded fds had the high bit set, so lock acquires
+            // failed intermittently with FSERR_BAD_ARG.  Repro via
+            // `fileio_examples_spec::fileio_lockrange_cross_cap_busy_then_release`.)
+            (Some(fd), Some(off), Some(len), Some(_), Some(lm)) if off >= 0 && len > 0 => {
                 match self.dev_inode_from_fd(fd as u64).await {
                     Ok(dev_inode) => {
                         let holder = holder_id_of(holder_par);
@@ -2579,7 +2584,15 @@ impl FsProcesses {
             WaitPolicy::Fail
         };
         let reply = match RhoNumber::unapply(fd_par) {
-            Some(fd) if fd >= 0 => match self.dev_inode_from_fd(fd as u64).await {
+            // Slice 28 CRIT-2 pattern: fds are hash-derived u64 bit
+            // patterns; sign bit carries information, so we reinterpret
+            // via `fd as u64` without gating on `fd >= 0`.  Same fix
+            // as `fs_close` / `fs_lock_range`.  Pre-fix: ~50% of seeded
+            // fds had the high bit set → sequential-lock acquires (all
+            // stream producers, writeByteArray, etc.) failed
+            // intermittently with FSERR_BAD_ARG under real bundle
+            // openFile.
+            Some(fd) => match self.dev_inode_from_fd(fd as u64).await {
                 Ok(dev_inode) => {
                     let holder = holder_id_of(holder_par);
                     // Step 5: read per-runtime "current deploy scope" cell.
