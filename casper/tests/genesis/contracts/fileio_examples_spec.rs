@@ -714,19 +714,11 @@ in {{
         .expect("fileio_stdio caps spec failed");
 }
 
-/// Slice 10a-9: canonical example `fileio_parallel.rho`.
-///
-/// The plan example targets `foldConcurrent` which is deferred (see
-/// Stream.rho line 23 — "Deferred to follow-up commits").  This
-/// companion regression uses the already-implemented sequential
-/// `fold` over the same byte stream and asserts the result is the
-/// byte-sum of the source file — the mathematical convergent that
-/// the eventual `foldConcurrent` version must also produce.
-///
-/// When `foldConcurrent` lands, add a second test that runs the
-/// same reduction with `workers=8` and asserts the same total (the
-/// convergence property the plan requires "verify convergence" to
-/// cover).
+/// Slice 10a-9: canonical example `fileio_parallel.rho`, sequential
+/// variant.  Uses `fold(0, plus)` over a byte stream to assert the
+/// result is the byte-sum of the source file — the mathematical
+/// convergent that the companion `foldConcurrent` and `mapReduce`
+/// variants below must also produce.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fileio_parallel_byte_sum_sequential_variant() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -812,16 +804,185 @@ in {{
         .expect("fileio_parallel sequential spec failed");
 }
 
-/// Slice 10a-9 (deferred): `foldConcurrent` variant.  Blocked on
-/// the foldConcurrent implementation (Stream.rho line 23).  When
-/// the follow-up lands, this test should re-run the same reduction
-/// as `fileio_parallel_byte_sum_sequential_variant` but with
-/// `foldConcurrent(0, plus, 8)` and assert the same total —
-/// verifying the convergence property.
+/// Slice 10a-9: `foldConcurrent` variant.  Same reduction as the
+/// sequential test above but via `byteStream.foldConcurrent(0, plus, 8)`
+/// (8 worker fan-out).  Asserts the same total (55 for bytes 1..=10)
+/// — this is the convergence property required by the FIP: for a
+/// commutative+associative combine, the parallel result equals the
+/// sequential result regardless of scheduling.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "blocked on foldConcurrent (Stream.rho line 23 — deferred to follow-up)"]
 async fn fileio_parallel_byte_sum_foldconcurrent() {
-    unimplemented!("blocked on foldConcurrent implementation in Stream.rho")
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir.path().join("parallel_fc.dat");
+    let content: Vec<u8> = (1u8..=10).collect();
+    std::fs::write(&file_path, &content).expect("seed file");
+    let expected_sum: i64 = content.iter().map(|&b| b as i64).sum();
+    let canon = std::fs::canonicalize(&file_path).expect("canonicalize");
+
+    let entry = BundleEntry::try_new(
+        "target".to_string(),
+        canon,
+        BundleEntryKind::File,
+        "r".to_string(),
+        BundleConsensusMode::Oracular,
+    )
+    .expect("bundle entry construction");
+
+    let mut params = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    params.2.fs_bundle = vec![entry];
+
+    let fs_uri = fs_genesis::fs_genesis_uri(&standard_deploys::FS_GENERATOR_PUB_KEY);
+
+    let test_source = format!(
+        r#"
+new
+  rl(`rho:registry:lookup`),
+  RhoSpecCh,
+  fsCh,
+  test_byte_sum_via_foldconcurrent
+in {{
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for(@(_, RhoSpec) <- RhoSpecCh) {{
+    @RhoSpec!("testSuite",
+      [
+        ("foldConcurrent(0, plus, 8) sums every byte in the file",
+         *test_byte_sum_via_foldconcurrent)
+      ])
+  }} |
+
+  rl!(`{fs_uri}`, *fsCh) |
+  for(@(_, fs) <- fsCh) {{
+    contract test_byte_sum_via_foldconcurrent(rhoSpec, _, ackCh) = {{
+      for(@[true, file] <- @fs!?("openFile", "target", {{"mode": "r"}})) {{
+        for(@[true, byteStream] <- @file!?("bytes")) {{
+          new plus in {{
+            contract plus(returnCh, @acc, @byte) = {{
+              returnCh!(acc + byte.nth(0))
+            }} |
+            for(@r <- @byteStream!?("foldConcurrent", 0, *plus, 8)) {{
+              match r {{
+                [true, total] => {{
+                  rhoSpec!("assert", (total, "==", {expected_sum}),
+                    "byteStream.foldConcurrent(0, plus, 8) sums to expected total", *ackCh)
+                }}
+                _ => {{
+                  rhoSpec!("assert", (r, "==", "[true, sum]"),
+                    "byteStream.foldConcurrent(0, plus, 8) sums to expected total", *ackCh)
+                }}
+              }}
+            }}
+          }}
+        }}
+      }}
+    }}
+  }}
+}}
+"#
+    );
+
+    let compiled = CompiledRholangSource::new(
+        test_source,
+        HashMap::new(),
+        "FileioParallelFoldConcurrentSpec".to_string(),
+    )
+    .expect("compile fileio_parallel foldConcurrent test source");
+
+    let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
+    spec.run_tests()
+        .await
+        .expect("fileio_parallel foldConcurrent spec failed");
+}
+
+/// Slice 10a-9: `mapReduce` variant.  Sum-of-squares over the same
+/// byte stream via `mapReduce(mapSquare, plus, 0, 8)`.  Asserts the
+/// exact expected sum of squares (385 for bytes 1..=10:
+/// 1+4+9+16+25+36+49+64+81+100 = 385) — verifying both the mapFn
+/// invocation and the parallel reduce convergence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fileio_parallel_byte_sum_of_squares_via_mapreduce() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir.path().join("parallel_mr.dat");
+    let content: Vec<u8> = (1u8..=10).collect();
+    std::fs::write(&file_path, &content).expect("seed file");
+    let expected_sum_sq: i64 = content.iter().map(|&b| (b as i64) * (b as i64)).sum();
+    let canon = std::fs::canonicalize(&file_path).expect("canonicalize");
+
+    let entry = BundleEntry::try_new(
+        "target".to_string(),
+        canon,
+        BundleEntryKind::File,
+        "r".to_string(),
+        BundleConsensusMode::Oracular,
+    )
+    .expect("bundle entry construction");
+
+    let mut params = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    params.2.fs_bundle = vec![entry];
+
+    let fs_uri = fs_genesis::fs_genesis_uri(&standard_deploys::FS_GENERATOR_PUB_KEY);
+
+    let test_source = format!(
+        r#"
+new
+  rl(`rho:registry:lookup`),
+  RhoSpecCh,
+  fsCh,
+  test_sum_of_squares_via_mapreduce
+in {{
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for(@(_, RhoSpec) <- RhoSpecCh) {{
+    @RhoSpec!("testSuite",
+      [
+        ("mapReduce(mapSquare, plus, 0, 8) computes sum of byte squares",
+         *test_sum_of_squares_via_mapreduce)
+      ])
+  }} |
+
+  rl!(`{fs_uri}`, *fsCh) |
+  for(@(_, fs) <- fsCh) {{
+    contract test_sum_of_squares_via_mapreduce(rhoSpec, _, ackCh) = {{
+      for(@[true, file] <- @fs!?("openFile", "target", {{"mode": "r"}})) {{
+        for(@[true, byteStream] <- @file!?("bytes")) {{
+          new mapSquare, plus in {{
+            contract mapSquare(returnCh, @byte) = {{
+              returnCh!(byte.nth(0) * byte.nth(0))
+            }} |
+            contract plus(returnCh, @acc, @sq) = {{
+              returnCh!(acc + sq)
+            }} |
+            for(@r <- @byteStream!?("mapReduce", *mapSquare, *plus, 0, 8)) {{
+              match r {{
+                [true, total] => {{
+                  rhoSpec!("assert", (total, "==", {expected_sum_sq}),
+                    "byteStream.mapReduce(mapSquare, plus, 0, 8) yields sum of squares",
+                    *ackCh)
+                }}
+                _ => {{
+                  rhoSpec!("assert", (r, "==", "[true, sumOfSquares]"),
+                    "byteStream.mapReduce yields sum of squares", *ackCh)
+                }}
+              }}
+            }}
+          }}
+        }}
+      }}
+    }}
+  }}
+}}
+"#
+    );
+
+    let compiled = CompiledRholangSource::new(
+        test_source,
+        HashMap::new(),
+        "FileioParallelMapReduceSpec".to_string(),
+    )
+    .expect("compile fileio_parallel mapReduce test source");
+
+    let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
+    spec.run_tests()
+        .await
+        .expect("fileio_parallel mapReduce spec failed");
 }
 
 /// Slice 10a-7: canonical example `fileio_rows.rho`.

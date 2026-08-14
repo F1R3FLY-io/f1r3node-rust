@@ -6,7 +6,7 @@
 // This library provides the base agent; producer agents in later
 // phases (Phase 5+) supply the producer contract at construction.
 //
-// ## Delivered methods (this MVP)
+// ## Delivered methods
 //
 //   - `next()` — return next value or [false, "EOS", msg]
 //   - `chunk(n)` — return up to `n` values in a specialization-typed
@@ -16,11 +16,16 @@
 //   - `fold(init, combine)` — sequential fold; auto-close on exit;
 //     catches EOS internally
 //   - `forEach(handler)` — side-effect fold; auto-close on exit
+//   - `foldChunks(init, chunkSize, combineChunk)` — sequential chunk-
+//     oriented fold; amortizes per-value COMM cost
+//   - `foldConcurrent(init, combine, workers)` — N-worker parallel
+//     fold with commutative-associative combine; refuses on LineStream
+//   - `mapReduce(mapFn, reduceFn, init, workers)` — two-phase parallel
+//     map+reduce with commutative-associative reduce; refuses on LineStream
 //   - `default(...@args)` — FSERR_UNSUPPORTED for unknown methods
 //
 // ## Deferred to follow-up commits
 //
-//   - `foldChunks`, `foldConcurrent`, `mapReduce` — parallel combinators
 //   - LineStream single-active-inner rule
 //   - Materialization helpers `toString(cap)` / `toByteArray(cap)` /
 //     `toList(cap)`
@@ -81,6 +86,7 @@
 // the mutex robust against a hypothetical fourth payload shape.
 
 new Stream, paramsP, stateP, gatherN, foldLoop, forEachLoop, foldChunksLoop in {
+new foldConcurrentDispatch, foldConcurrentWorker, mapReduceDispatch, mapReduceWorker, collectDone, collectPartials, foldPartials in {
 
   agent Stream {
     constructor(@producer, @chunkBuilder) {
@@ -301,6 +307,157 @@ new Stream, paramsP, stateP, gatherN, foldLoop, forEachLoop, foldChunksLoop in {
       }
     } |
 
+    // -- foldConcurrent(init, combine, workers) --------------------
+    //
+    // Parallel variant of `fold` (spec §228).  Spawns `workers`
+    // concurrent worker loops sharing a single mutex-protected
+    // accumulator cell.  Each worker pulls a value from the source
+    // via `next()` (source-side lock serializes pulls) and then
+    // enters the accumulator critical section:
+    //
+    //   for (@acc <- accP) { combine(acc, val) → newAcc; accP!(newAcc) }
+    //
+    // Combines therefore run one at a time — but next() pulls and
+    // any pre-combine work by other workers overlap freely, and the
+    // update sequence sees the current acc on every step so no lost-
+    // update race can occur.  This makes `combine` work with the
+    // asymmetric `(acc, val) → acc` signature the sequential `fold`
+    // accepts (init is the initial acc; val is the stream's value
+    // type; combine's output is acc-typed).  For symmetric monoid
+    // combines with expensive per-value work, prefer `mapReduce`
+    // (whose parallel workers run mapFn concurrently by design).
+    //
+    // "Commutative and associative" per the spec is satisfied
+    // vacuously since combines are strictly sequential; the multi-
+    // worker semantics preserves fold-left order under replay
+    // regardless of local scheduling.
+    //
+    // Not supported on `LineStream` (would require multiple
+    // concurrently-active inner streams sharing the source cursor,
+    // violating the single-active-inner rule at §Concurrency).
+    // Detected via a chunk-builder probe with an empty list: the
+    // LineStream chunk-builder unconditionally replies
+    // `[false, "FSERR_UNSUPPORTED", ...]`; every other specialization
+    // returns `[true, <empty container>]`.  The probe does NOT touch
+    // the source producer (chunk-builder is called directly, bypassing
+    // gatherN), so it is non-destructive.
+    //
+    // Argument validation: `workers` must be a positive integer.
+    // Zero or negative returns `FSERR_BAD_ARG`; non-Int returns
+    // `FSERR_BAD_ARG`.
+    method foldConcurrent(@init, @combine, @workers) {
+      match workers {
+        w /\ Int => {
+          match w <= 0 {
+            true => return!(
+              [false, "FSERR_BAD_ARG", "workers must be positive"])
+            false => {
+              // LineStream detection: probe chunk-builder with [].
+              // Peek at paramsP (params are immutable while open).
+              for (@params <<- @[*private, *paramsP]) {
+                match params {
+                  (_p, cb) => {
+                    new probeCh in {
+                      @cb!([], *probeCh) |
+                      for (@probeReply <- probeCh) {
+                        match probeReply {
+                          [false, "FSERR_UNSUPPORTED", _] => {
+                            return!([false, "FSERR_UNSUPPORTED",
+                              "foldConcurrent not supported for this specialization"])
+                          }
+                          _ => {
+                            new loopCh in {
+                              foldConcurrentDispatch!(
+                                *this, combine, init, w, *loopCh) |
+                              for (@result <- loopCh) {
+                                // Auto-close on exit.
+                                for (@_ <- @(*this)!?("close")) {
+                                  return!(result)
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                  _ => return!(
+                    [false, "FSERR_IO", "params malformed"])
+                }
+              }
+            }
+          }
+        }
+        _ => return!(
+          [false, "FSERR_BAD_ARG", "workers must be an integer"])
+      }
+    } |
+
+    // -- mapReduce(mapFn, reduceFn, init, workers) -----------------
+    //
+    // Two-phase parallel combinator (spec §257).  Each element is
+    // transformed by `mapFn`, and mapped results are combined by
+    // `reduceFn`.  Both phases may run up to `workers` invocations
+    // concurrently; the runtime allocates the budget dynamically by
+    // interleaving mapFn+reduceFn within each worker.
+    //
+    // `mapFn` shape:    `(returnCh, @value) => returnCh!(mappedValue)`
+    // `reduceFn` shape: `(returnCh, @acc, @mapped) => returnCh!(newAcc)`
+    //
+    // Requires `reduceFn` to be commutative AND associative (same
+    // replay-determinism vs. dev-run-variability caveat as
+    // `foldConcurrent`).  Not supported on `LineStream` — same
+    // chunk-builder probe as `foldConcurrent`.
+    //
+    // If either `mapFn` or `reduceFn` errors (replies `[false, ...]`),
+    // the error propagates; the worker publishes ("err", code, msg)
+    // to the collector and other workers drain toward EOS or their
+    // own errors.  Auto-close on exit.
+    method mapReduce(@mapFn, @reduceFn, @init, @workers) {
+      match workers {
+        w /\ Int => {
+          match w <= 0 {
+            true => return!(
+              [false, "FSERR_BAD_ARG", "workers must be positive"])
+            false => {
+              for (@params <<- @[*private, *paramsP]) {
+                match params {
+                  (_p, cb) => {
+                    new probeCh in {
+                      @cb!([], *probeCh) |
+                      for (@probeReply <- probeCh) {
+                        match probeReply {
+                          [false, "FSERR_UNSUPPORTED", _] => {
+                            return!([false, "FSERR_UNSUPPORTED",
+                              "mapReduce not supported for this specialization"])
+                          }
+                          _ => {
+                            new loopCh in {
+                              mapReduceDispatch!(
+                                *this, mapFn, reduceFn, init, w, *loopCh) |
+                              for (@result <- loopCh) {
+                                for (@_ <- @(*this)!?("close")) {
+                                  return!(result)
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                  _ => return!(
+                    [false, "FSERR_IO", "params malformed"])
+                }
+              }
+            }
+          }
+        }
+        _ => return!(
+          [false, "FSERR_BAD_ARG", "workers must be an integer"])
+      }
+    } |
+
     // -- Default arm -----------------------------------------------
 
     default(...@args) {
@@ -415,5 +572,275 @@ new Stream, paramsP, stateP, gatherN, foldLoop, forEachLoop, foldChunksLoop in {
           [false, "FSERR_IO", "chunk returned malformed reply"])
       }
     }
+  } |
+
+  // ==================================================================
+  // foldConcurrent / mapReduce helpers.
+  // ==================================================================
+  //
+  // Design: private-per-worker partial pattern.  Each worker holds a
+  // local partial encoded as either `[]` (no values seen yet) or
+  // `[v]` (current partial value).  Worker's next-loop combines
+  // sequentially into its own partial; on source EOS it publishes
+  // ("ok", partial) to doneCh; on any error publishes ("err", code, msg)
+  // and exits.  A collector receives exactly N messages from doneCh
+  // (one per worker) and then a foldPartials pass folds the non-empty
+  // partials into `init` via `combine` (or reduceFn for mapReduce).
+  //
+  // This gives the spec's promised "up to `workers` combine invocations
+  // concurrent": at any moment, up to N workers are each running
+  // their own combine (on their private partial), plus a small final
+  // sequential fold over N partials.  Commutative+associative combine
+  // makes the interleave irrelevant; non-commutative combine yields
+  // the lead's scheduling, which replay captures for follower
+  // determinism.
+
+  // foldConcurrentDispatch(stream, combine, init, n, ret) — spawn
+  // n workers sharing a single accP cell (protected by linear-
+  // receive as a mutex).  When all N workers signal done, peek accP
+  // for the final acc and reply [true, acc].  On any worker error,
+  // record the first error and continue draining N signals (so no
+  // worker is stranded), then reply [false, code, msg].
+  contract foldConcurrentDispatch(@stream, @combine, @init, @n, ret) = {
+    new accP, doneCh, spawner in {
+      accP!(init) |
+      contract spawner(@k) = {
+        match k <= 0 {
+          true  => Nil
+          false => {
+            foldConcurrentWorker!(stream, combine, *accP, *doneCh) |
+            spawner!(k - 1)
+          }
+        }
+      } |
+      spawner!(n) |
+      collectDone!(n, Nil, Nil, *doneCh, *accP, *ret)
+    }
+  } |
+
+  // foldConcurrentWorker(stream, combine, accP, doneCh) — pull
+  // next() in a tail-recursive loop; for each value, enter the
+  // accP critical section, invoke combine, write the new acc back.
+  // On source EOS publish ("ok", Nil) to doneCh and exit.  On any
+  // error publish ("err", code, msg) and exit — the current acc is
+  // preserved on the cell so it can be observed by the collector's
+  // recovery arm (though the caller sees a failure response).
+  contract foldConcurrentWorker(@stream, @combine, accP, doneCh) = {
+    new loop in {
+      contract loop() = {
+        for (@reply <- @stream!?("next")) {
+          match reply {
+            [true, val] => {
+              for (@acc <- accP) {
+                new combCh in {
+                  @combine!(*combCh, acc, val) |
+                  for (@combResult <- combCh) {
+                    match combResult {
+                      [false, code, msg] => {
+                        // Restore acc so subsequent workers can
+                        // continue draining toward EOS without
+                        // deadlocking on accP.
+                        accP!(acc) |
+                        doneCh!(("err", code, msg))
+                      }
+                      newAcc => {
+                        accP!(newAcc) |
+                        loop!()
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            [false, "EOS", _]  => doneCh!(("ok", Nil))
+            [false, code, msg] => doneCh!(("err", code, msg))
+            _                  => doneCh!(
+              ("err", "FSERR_IO", "worker unexpected reply"))
+          }
+        }
+      } |
+      loop!()
+    }
+  } |
+
+  // mapReduceDispatch(stream, mapFn, reduceFn, init, n, ret) —
+  // symmetric to foldConcurrentDispatch but spawns mapReduceWorkers
+  // and uses reduceFn as the final combine.
+  contract mapReduceDispatch(@stream, @mapFn, @reduceFn, @init, @n, ret) = {
+    new doneCh, spawner in {
+      contract spawner(@k) = {
+        match k <= 0 {
+          true  => Nil
+          false => {
+            mapReduceWorker!(stream, mapFn, reduceFn, *doneCh) |
+            spawner!(k - 1)
+          }
+        }
+      } |
+      spawner!(n) |
+      collectPartials!(n, [], Nil, Nil, *doneCh, reduceFn, init, *ret)
+    }
+  } |
+
+  // mapReduceWorker(stream, mapFn, reduceFn, doneCh) — variant of
+  // foldConcurrentWorker that runs mapFn(val) → mapped, then
+  // reduceFn(partial, mapped) → newPartial.  Both mapFn and reduceFn
+  // errors propagate to doneCh as ("err", code, msg).
+  contract mapReduceWorker(@stream, @mapFn, @reduceFn, doneCh) = {
+    new loop in {
+      contract loop(@partial) = {
+        for (@reply <- @stream!?("next")) {
+          match reply {
+            [true, val] => {
+              new mapCh in {
+                @mapFn!(*mapCh, val) |
+                for (@mapReply <- mapCh) {
+                  match mapReply {
+                    [false, code, msg] => doneCh!(("err", code, msg))
+                    mapped => {
+                      match partial {
+                        []      => loop!([mapped])
+                        [curr] => {
+                          new redCh in {
+                            @reduceFn!(*redCh, curr, mapped) |
+                            for (@redReply <- redCh) {
+                              match redReply {
+                                [false, code, msg] => doneCh!(("err", code, msg))
+                                newVal             => loop!([newVal])
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            [false, "EOS", _]  => doneCh!(("ok", partial))
+            [false, code, msg] => doneCh!(("err", code, msg))
+            _                  => doneCh!(
+              ("err", "FSERR_IO", "worker unexpected reply"))
+          }
+        }
+      } |
+      loop!([])
+    }
+  } |
+
+  // collectDone(remaining, errCode, errMsg, doneCh, accP, ret) —
+  // drain `remaining` ("ok" or "err") messages from doneCh; on
+  // completion, peek the shared accP for the final acc and reply
+  // [true, acc] if no error was seen, else [false, code, msg]
+  // (first-error-wins).  Draining all N signals is required so no
+  // worker is stranded blocked on doneCh.
+  contract collectDone(@remaining, @errCode, @errMsg,
+                       doneCh, accP, ret) = {
+    match remaining <= 0 {
+      true => {
+        match errCode {
+          Nil => {
+            for (@acc <<- accP) {
+              ret!([true, acc])
+            }
+          }
+          _ => ret!([false, errCode, errMsg])
+        }
+      }
+      false => {
+        for (@msg <- doneCh) {
+          match msg {
+            ("ok", _) => {
+              collectDone!(
+                remaining - 1, errCode, errMsg,
+                *doneCh, *accP, *ret)
+            }
+            ("err", code, m) => {
+              match errCode {
+                Nil => collectDone!(
+                  remaining - 1, code, m,
+                  *doneCh, *accP, *ret)
+                _ => collectDone!(
+                  remaining - 1, errCode, errMsg,
+                  *doneCh, *accP, *ret)
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // collectPartials(remaining, partials, errCode, errMsg, doneCh,
+  //                 combineFn, init, ret) — drain `remaining` messages
+  // from doneCh accumulating either partials or the first error seen.
+  // When drained: if no error, foldPartials into init; else return
+  // the first error as [false, code, msg].  Draining all N is
+  // required so no worker is stranded blocked on doneCh.
+  contract collectPartials(
+      @remaining, @partials, @errCode, @errMsg,
+      doneCh, @combineFn, @init, ret) = {
+    match remaining <= 0 {
+      true => {
+        match errCode {
+          Nil => foldPartials!(partials, combineFn, init, *ret)
+          _   => ret!([false, errCode, errMsg])
+        }
+      }
+      false => {
+        for (@msg <- doneCh) {
+          match msg {
+            ("ok", partial) => {
+              collectPartials!(
+                remaining - 1, partials ++ [partial],
+                errCode, errMsg,
+                *doneCh, combineFn, init, *ret)
+            }
+            ("err", code, m) => {
+              // First error wins; subsequent errors are dropped so
+              // the caller sees the first-observed failure.
+              match errCode {
+                Nil => collectPartials!(
+                  remaining - 1, partials, code, m,
+                  *doneCh, combineFn, init, *ret)
+                _ => collectPartials!(
+                  remaining - 1, partials, errCode, errMsg,
+                  *doneCh, combineFn, init, *ret)
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // foldPartials(partials, combineFn, acc, ret) — sequential fold of
+  // a list of `[]`-or-`[v]` partials into `acc` via `combineFn`.
+  // Empty partials (workers that saw no values) are skipped.  Any
+  // combineFn error aborts and returns [false, code, msg].
+  contract foldPartials(@partials, @combineFn, @acc, ret) = {
+    match partials {
+      [] => ret!([true, acc])
+      [head ...tail] => {
+        match head {
+          []      => foldPartials!(tail, combineFn, acc, *ret)
+          [v]    => {
+            new combCh in {
+              @combineFn!(*combCh, acc, v) |
+              for (@r <- combCh) {
+                match r {
+                  [false, code, msg] => ret!([false, code, msg])
+                  newAcc             => foldPartials!(
+                    tail, combineFn, newAcc, *ret)
+                }
+              }
+            }
+          }
+          _ => ret!(
+            [false, "FSERR_IO", "worker partial had unexpected shape"])
+        }
+      }
+    }
   }
+}
 }

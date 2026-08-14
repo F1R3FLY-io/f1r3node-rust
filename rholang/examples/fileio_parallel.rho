@@ -22,24 +22,22 @@
 // re-derive the same accumulator; across local dev runs, the
 // scheduling may vary but the mathematical result is stable.
 //
-// ## Prerequisite: foldConcurrent implementation
+// Impl note: `foldConcurrent`'s workers share a single mutex-
+// protected accumulator cell.  Each worker pulls values from the
+// source in parallel (the source's own state-lock serializes the
+// pulls) but combines are strictly sequential within the shared
+// cell.  This preserves fold-left order under replay and lets the
+// user's `combine` retain the asymmetric `(acc, val) → acc`
+// signature that `fold` also accepts (init is the initial acc; val
+// is the stream's value type).  For CPU-heavy per-value work that
+// benefits from concurrent invocation, prefer `mapReduce` (whose
+// mapFn phase runs concurrently by design).
 //
-// `foldConcurrent` is listed in Stream.rho line 23 as "Deferred to
-// follow-up commits" alongside `foldChunks`, `mapReduce`.  This
-// example ships as a documentation artifact for the future user
-// surface; until the follow-up lands, the byteStream method
-// dispatch's default arm answers `[false, "FSERR_UNSUPPORTED",
-// "unknown method"]`.  A sequential equivalent using the already-
-// implemented `fold` is:
-//
-//   for (@r <- @byteStream!?("fold", 0, *plus)) { ... }
-//
-// which produces the same byte-sum (single-worker), suitable as an
-// interim regression pin.
-//
-// Companion regression: casper/tests/genesis/contracts/
-// fileio_examples_spec.rs :: fileio_parallel_byte_sum
-// (currently `#[ignore]`; unblocks when foldConcurrent lands).
+// Companion regressions: casper/tests/genesis/contracts/
+// fileio_examples_spec.rs ::
+//   fileio_parallel_byte_sum_sequential_variant     (via fold)
+//   fileio_parallel_byte_sum_foldconcurrent          (this example)
+//   fileio_parallel_byte_sum_of_squares_via_mapreduce (via mapReduce)
 
 new
   rl(`rho:registry:lookup`),
