@@ -179,6 +179,7 @@ pub struct MergedPreState {
     /// Empty on the non-merging shapes (genesis, single parent, covering
     /// parent), where effects arrive via a parent's post-state instead.
     pub applied_from_scope: std::collections::HashSet<prost::bytes::Bytes>,
+    pub settled_user_sigs: std::collections::HashSet<prost::bytes::Bytes>,
     /// The block whose committed state `state` derives from: the floor for
     /// the merged path; `None` where the header already determines it
     /// (genesis, single parent, covering parent).
