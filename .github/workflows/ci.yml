@@ -18,27 +18,8 @@ on:
       - trying
       - "feature/**"
 
-# Concurrency: PRs run in parallel (one group per ref) for fast feedback; pushes
-# (dev/master/staging/trying/tags) share a single group so merge and release runs
-# serialize rather than piling up independent 4-VM OCI matrices.
-#
-# Pushes never cancel: a re-push queues behind its own in-flight run, so release
-# jobs and long integration runs always reach completion.
-#
-# PRs DO cancel their own older runs, and must. GitHub keeps only one *pending*
-# run per group, so queueing instead of superseding means a third event evicts
-# the queued one — and an evicted run reports nothing, leaving every required
-# check on the current head permanently "Expected — waiting for status to be
-# reported". PR #158 hit exactly that on 2026-07-29: the run for head 1d3d79b1
-# was cancelled while queued behind a 14-hour predecessor, all 12 required
-# checks never reported, and the PR sat BLOCKED with no failure to point at.
-#
-# Superseding is also what you actually want per PR: once a newer head exists,
-# the older head's results cannot satisfy branch protection anyway, because
-# required checks are commit-scoped. Cancelling them deliberately frees the lane
-# for the head that matters instead of starving it.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || 'push' }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -375,6 +356,9 @@ jobs:
   pipeline:
     name: Heavy Pipeline
     needs: lint
+    concurrency:
+      group: ci-heavy-pipeline
+      cancel-in-progress: false
     if: >-
       (github.event_name == 'push'
       && (github.ref == 'refs/heads/dev'
@@ -485,6 +469,9 @@ jobs:
   release_docker_image:
     name: Release Docker Image
     timeout-minutes: 15
+    concurrency:
+      group: ci-image-publish
+      cancel-in-progress: false
     needs:
       - build_base
       - lint
@@ -499,7 +486,7 @@ jobs:
         github.ref == 'refs/heads/dev'
       )
     runs-on: ubuntu-latest
-    environment: ephemeral-launch
+    environment: ephemeral-launch-internal
     steps:
       - name: Checkout (for version)
         uses: actions/checkout@v5
@@ -659,6 +646,9 @@ jobs:
   # GitHub release with multi-arch binaries attached (tag pushes only).
   release_packages:
     name: Release Packages
+    concurrency:
+      group: ci-package-publish
+      cancel-in-progress: false
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write

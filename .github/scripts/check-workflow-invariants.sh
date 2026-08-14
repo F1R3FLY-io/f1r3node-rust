@@ -124,6 +124,45 @@ EOF
 done
 ok "both pipeline callers pass secrets down"
 
+ci_concurrency_errors="$(ruby -ryaml - .github/workflows/ci.yml <<'RUBY'
+doc = YAML.load_file(ARGV[0])
+jobs = doc.fetch("jobs")
+expected_group = "${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}"
+expected_cancel = "${{ github.event_name == 'pull_request' }}"
+concurrency = doc.fetch("concurrency", {})
+puts "workflow concurrency must give every push SHA an independent group" unless concurrency["group"].to_s == expected_group
+puts "workflow concurrency must cancel only superseded PR runs" unless concurrency["cancel-in-progress"].to_s == expected_cancel
+
+pipeline = jobs.fetch("pipeline", {})
+pipeline_concurrency = pipeline.fetch("concurrency", {})
+puts "heavy pipeline must use the ci-heavy-pipeline queue" unless pipeline_concurrency["group"] == "ci-heavy-pipeline"
+puts "heavy pipeline queue must not cancel in-progress work" unless pipeline_concurrency["cancel-in-progress"] == false
+
+publisher = jobs.fetch("release_docker_image", {})
+publisher_concurrency = publisher.fetch("concurrency", {})
+puts "image publication must use the ci-image-publish queue" unless publisher_concurrency["group"] == "ci-image-publish"
+puts "image publication queue must not cancel in-progress work" unless publisher_concurrency["cancel-in-progress"] == false
+puts "internal image publication must not use the reviewer-gated environment" unless publisher["environment"] == "ephemeral-launch-internal"
+puts "image publication must remain gated on the unit-test matrix" unless Array(publisher["needs"]).include?("test")
+
+packages = jobs.fetch("release_packages", {})
+packages_concurrency = packages.fetch("concurrency", {})
+puts "package publication must use the ci-package-publish queue" unless packages_concurrency["group"] == "ci-package-publish"
+puts "package publication queue must not cancel in-progress work" unless packages_concurrency["cancel-in-progress"] == false
+puts "package publication must remain gated on the unit-test matrix" unless Array(packages["needs"]).include?("test")
+
+reviewer_gated_jobs = jobs.each_with_object([]) do |(job_id, job), found|
+  found << job_id if job.is_a?(Hash) && job["environment"] == "ephemeral-launch"
+end
+puts "CI jobs use reviewer-gated ephemeral-launch: #{reviewer_gated_jobs.join(', ')}" unless reviewer_gated_jobs.empty?
+RUBY
+)"
+if [ -n "$ci_concurrency_errors" ]; then
+	err "CI concurrency invariants failed: $(printf '%s' "$ci_concurrency_errors" | tr '\n' ';')"
+else
+	ok "each push SHA runs independently while heavy work and publication remain serialized"
+fi
+
 # 5. The CI runner compartment OCID is pinned identically wherever it appears.
 #    It is hardcoded rather than held in an Actions variable on purpose: the
 #    reaper's own comment claims it "can never touch other compartments", and a
