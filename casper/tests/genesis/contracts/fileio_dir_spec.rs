@@ -106,17 +106,12 @@ in {{
 "#
     );
 
-    let compiled = CompiledRholangSource::new(
-        test_source,
-        HashMap::new(),
-        "DirExistsSpec".to_string(),
-    )
-    .expect("compile dir_exists spec");
+    let compiled =
+        CompiledRholangSource::new(test_source, HashMap::new(), "DirExistsSpec".to_string())
+            .expect("compile dir_exists spec");
 
     let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
-    spec.run_tests()
-        .await
-        .expect("dir_exists spec failed");
+    spec.run_tests().await.expect("dir_exists spec failed");
 }
 
 /// Dir.openFile mode attenuation: an "r"-mode Dir refuses to yield

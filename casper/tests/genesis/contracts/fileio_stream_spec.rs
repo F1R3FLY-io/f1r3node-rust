@@ -106,9 +106,12 @@ in {{
 "#
     );
 
-    let compiled =
-        CompiledRholangSource::new(test_source, HashMap::new(), "LineStreamChunkSpec".to_string())
-            .expect("compile line_stream_chunk spec");
+    let compiled = CompiledRholangSource::new(
+        test_source,
+        HashMap::new(),
+        "LineStreamChunkSpec".to_string(),
+    )
+    .expect("compile line_stream_chunk spec");
 
     let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
     spec.run_tests()
@@ -308,9 +311,12 @@ in {{
 "#
     );
 
-    let compiled =
-        CompiledRholangSource::new(test_source, HashMap::new(), "StreamFoldClosedSpec".to_string())
-            .expect("compile stream_fold_closed spec");
+    let compiled = CompiledRholangSource::new(
+        test_source,
+        HashMap::new(),
+        "StreamFoldClosedSpec".to_string(),
+    )
+    .expect("compile stream_fold_closed spec");
 
     let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
     spec.run_tests()

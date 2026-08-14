@@ -207,17 +207,12 @@ in {{
 "#
     );
 
-    let compiled = CompiledRholangSource::new(
-        test_source,
-        HashMap::new(),
-        "FileTruncateSpec".to_string(),
-    )
-    .expect("compile file_truncate spec");
+    let compiled =
+        CompiledRholangSource::new(test_source, HashMap::new(), "FileTruncateSpec".to_string())
+            .expect("compile file_truncate spec");
 
     let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
-    spec.run_tests()
-        .await
-        .expect("file_truncate spec failed");
+    spec.run_tests().await.expect("file_truncate spec failed");
 
     // On-disk verification: file was actually truncated to 0.
     let on_disk = std::fs::metadata(&file_path).expect("stat dest").len();
