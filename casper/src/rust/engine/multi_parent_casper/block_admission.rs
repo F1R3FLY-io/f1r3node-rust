@@ -129,9 +129,6 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
             &this.block_store,
             block,
             this.casper_shard_conf.deploy_lifespan,
-            crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-                this.casper_shard_conf.fault_tolerance_threshold_ppm,
-            ),
             crate::rust::finality::deploy_lifecycle::citability_horizon(
                 this.casper_shard_conf.max_parent_depth,
             ),

@@ -50,9 +50,8 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
 
-use super::floor::{self, in_floor_closure, Floor};
+use super::floor::{in_floor_closure, Floor};
 use crate::rust::errors::CasperError;
-use crate::rust::safety::clique_oracle::FtThreshold;
 
 /// The citability horizon: how far below the floor an admissible block can
 /// still cite. Derives from `max_parent_depth` ALONE (shard config — the
@@ -209,12 +208,21 @@ impl DeployLifecycle {
         block_store: &KeyValueBlockStore,
         block: &BlockMessage,
         deploy_lifespan: i64,
-        ftt: FtThreshold,
         citability_horizon: Option<i64>,
     ) -> Result<Vec<Bytes>, CasperError> {
-        // The async floor read happens OUTSIDE the schedule lock; it is
-        // memoized in the persisted floor index.
-        let block_floor = floor::floor_of_block(dag, block_store, &block.block_hash, ftt).await?;
+        // The register's clock is the node's ADOPTED LFB — the output of
+        // `floor_of_view`, which is containment-guarded — never an admitted
+        // block's frozen floor. A frozen floor is another validator's claim
+        // about ITS chain: under a sibling-fork race it can sit on a branch
+        // this node never adopted, and a write-once verdict keyed on it is
+        // permanently incoherent with this node's read surface (the ucc
+        // ca7197d8 fork wrote Finalized network-wide off one side's frozen
+        // floor while two nodes served the other side).
+        let adopted_hash = dag.last_finalized_block();
+        let adopted_number = dag
+            .lookup_unsafe(&adopted_hash)
+            .map_err(CasperError::KvStoreError)?
+            .block_number;
 
         let mut schedule = self.schedule.lock();
         if !schedule.rebuilt {
@@ -223,13 +231,16 @@ impl DeployLifecycle {
             schedule = self.schedule.lock();
         }
 
-        // The floor clock (monotone).
+        // The floor clock (monotone; adoption itself is monotone per node).
         let floor_advanced = match &schedule.max_floor {
-            Some(current) => block_floor.block_number > current.block_number,
+            Some(current) => adopted_number > current.block_number,
             None => true,
         };
         if floor_advanced {
-            schedule.max_floor = Some(block_floor);
+            schedule.max_floor = Some(Floor {
+                hash: adopted_hash,
+                block_number: adopted_number,
+            });
         }
 
         // Due: crossed thresholds plus the block's own touched sigs.
@@ -479,6 +490,117 @@ mod tests {
         KeyValueBlockStore::create_from_kvm(&mut kvm)
             .await
             .expect("block store")
+    }
+
+    /// The register's clock is the node's ADOPTED LFB, never an admitted
+    /// block's frozen floor: a frozen floor on a branch this node has not
+    /// adopted must not advance the clock or write a verdict (the ucc
+    /// ca7197d8 fork wrote Finalized off one side's frozen floor while two
+    /// nodes served the other side). The verdict lands exactly when the
+    /// node itself adopts a covering LFB.
+    #[tokio::test]
+    async fn verdicts_key_on_the_adopted_lfb_never_a_frozen_floor() {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+        use models::rust::block_implicits::get_random_block;
+
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+
+        let mk = |number: i64,
+                  seq: i32,
+                  parents: Vec<BlockHash>,
+                  deploys: Vec<models::rust::casper::protocol::casper_message::ProcessedDeploy>| {
+            get_random_block(
+                Some(number),
+                Some(seq),
+                None,
+                None,
+                None,
+                None,
+                Some(number),
+                Some(parents),
+                Some(Vec::new()),
+                Some(deploys),
+                Some(Vec::new()),
+                None,
+                Some("test".to_string()),
+                None,
+            )
+        };
+
+        let (sig, pd) = {
+            let deploy = crate::rust::util::construct_deploy::basic_deploy_data(
+                1,
+                None,
+                Some("test".to_string()),
+            )
+            .expect("deploy data");
+            let sig = deploy.sig.clone();
+            (
+                sig,
+                models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(deploy),
+            )
+        };
+
+        let genesis = mk(0, 0, Vec::new(), Vec::new());
+        let a = mk(1, 1, vec![genesis.block_hash.clone()], vec![pd]);
+        let b = mk(2, 2, vec![a.block_hash.clone()], Vec::new());
+        let c = mk(3, 3, vec![b.block_hash.clone()], Vec::new());
+
+        for block in [&genesis, &a, &b, &c] {
+            block_store.put_block_message(block).expect("store block");
+        }
+        dag_storage
+            .insert(&genesis, InsertMode::Approved)
+            .expect("insert genesis");
+        for block in [&a, &b, &c] {
+            dag_storage
+                .insert(block, InsertMode::Normal)
+                .expect("insert block");
+        }
+
+        // Another validator's claim: block b's FROZEN floor is b itself —
+        // covering the deploy's carrier — while THIS node has adopted
+        // nothing past genesis.
+        let dag = dag_storage.get_representation().expect("dag");
+        dag.put_cached_floor(b.block_hash.clone(), b.block_hash.clone())
+            .expect("seed frozen floor");
+
+        let register = DeployLifecycle::default();
+        let terminalized = register
+            .observe_block(&dag, &block_store, &b, 10, Some(10))
+            .await
+            .expect("observe b");
+        assert!(
+            terminalized.is_empty(),
+            "no verdict may be written off an admitted block's frozen floor \
+             while the adopted LFB is still genesis; got {:?}",
+            terminalized
+        );
+
+        // The node itself adopts b; the very next observation writes the
+        // verdict against the adopted chain.
+        dag_storage
+            .record_directly_finalized(b.block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .await
+            .expect("adopt b");
+        let dag = dag_storage.get_representation().expect("dag");
+        let terminalized = register
+            .observe_block(&dag, &block_store, &c, 10, Some(10))
+            .await
+            .expect("observe c");
+        assert_eq!(
+            terminalized,
+            vec![sig],
+            "adoption of a covering LFB must land the Finalized verdict"
+        );
     }
 
     /// The terminal record's frozen appearance names a block that CARRIES
