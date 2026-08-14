@@ -63,7 +63,7 @@ async fn compute_block_checkpoint(
         .map(|d| d.deploy)
         .collect();
 
-    let (_, post_state_hash, processed_deploys, _, _, _) = compute_deploys_checkpoint(
+    let checkpoint = compute_deploys_checkpoint(
         block_store,
         parents,
         deploys,
@@ -73,10 +73,11 @@ async fn compute_block_checkpoint(
         BlockData::from_block(block),
         HashMap::new(),
         None,
+        None,
     )
     .await?;
 
-    Ok((post_state_hash, processed_deploys))
+    Ok((checkpoint.post_state_hash, checkpoint.deploys))
 }
 
 fn inject_post_state_hash(

@@ -180,6 +180,13 @@ pub fn new(
         },
     );
 
+    // Validity windows per user deploy sig, for the merge-time window rule.
+    // System deploys carry no window and are absent by construction.
+    let deploy_windows: std::collections::HashMap<prost::bytes::Bytes, i64> = usr_processed_deploys
+        .iter()
+        .map(|d| (d.deploy.sig.clone(), d.deploy.data.valid_after_block_number))
+        .collect();
+
     // Convert deploy chains to DeployChainIndex
     let mut deploy_chain_indices = Vec::new();
     for deploy_chain in deploy_chains.0.iter() {
@@ -190,6 +197,7 @@ pub fn new(
             history_repository.clone(),
             block_hash.clone(),
             block_number,
+            deploy_windows.clone(),
         )
         .map_err(|e| CasperError::HistoryError(e))?;
         deploy_chain_indices.push(chain_index);
