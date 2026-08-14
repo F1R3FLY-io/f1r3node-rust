@@ -168,10 +168,15 @@ async fn probe_floor_state(
     label: &str,
 ) -> Floor {
     let dag = node.casper.block_dag().await.expect("dag");
-    let derived = floor_of_view(&dag, current, FtThreshold::from_f32_lossy(0.1))
-        .await
-        .expect("floor_of_view")
-        .unwrap_or_else(|| current.clone());
+    let derived = floor_of_view(
+        &dag,
+        &node.block_store,
+        current,
+        FtThreshold::from_f32_lossy(0.1),
+    )
+    .await
+    .expect("floor_of_view")
+    .unwrap_or_else(|| current.clone());
     tracing::info!(
         target: "repro",
         label,

@@ -377,9 +377,14 @@ async fn settled_rejection_opens_the_gate_and_the_owner_retries() {
             }
         }
         let dag = nodes[loser_owner].casper.block_dag().await.expect("dag");
-        let floor = floor_of_block(&dag, &b.block_hash, FtThreshold::from_f32_lossy(0.0))
-            .await
-            .expect("floor_of_block");
+        let floor = floor_of_block(
+            &dag,
+            &nodes[loser_owner].block_store,
+            &b.block_hash,
+            FtThreshold::from_f32_lossy(0.0),
+        )
+        .await
+        .expect("floor_of_block");
         let covered = floor.hash == m_block.block_hash
             || (floor.block_number >= m_height
                 && dag

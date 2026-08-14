@@ -33,6 +33,7 @@ pub async fn collect_garbage(
     // whose base is the floor — see `is_safe_to_delete`.
     let floor = floor_of_block(
         dag,
+        block_store,
         &dag.last_finalized_block(),
         FtThreshold::from_ppm(casper_shard_conf.fault_tolerance_threshold_ppm),
     )

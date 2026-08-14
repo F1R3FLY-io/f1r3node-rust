@@ -383,6 +383,7 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
         let dag = nodes[0].casper.block_dag().await.expect("dag");
         let floor = casper::rust::finality::floor::floor_of_block(
             &dag,
+            &nodes[0].block_store,
             &b.block_hash,
             casper::rust::safety::clique_oracle::FtThreshold::from_f32_lossy(0.0),
         )

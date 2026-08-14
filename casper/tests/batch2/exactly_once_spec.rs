@@ -94,9 +94,14 @@ async fn string_datums(node: &TestNode, state_hash: &Bytes, name: &str) -> Vec<S
 /// ancestors, per this node's DAG.
 async fn floor_covers(node: &TestNode, tip: &Bytes, hash: &Bytes, height: i64) -> bool {
     let dag = node.casper.block_dag().await.expect("dag representation");
-    let floor = floor_of_block(&dag, tip, FtThreshold::from_f32_lossy(0.0))
-        .await
-        .expect("floor_of_block");
+    let floor = floor_of_block(
+        &dag,
+        &node.block_store,
+        tip,
+        FtThreshold::from_f32_lossy(0.0),
+    )
+    .await
+    .expect("floor_of_block");
     if floor.hash == *hash {
         return true;
     }
@@ -785,9 +790,14 @@ async fn the_floor_never_designates_a_state_missing_the_settled_effect() {
             }
         }
         let dag = nodes[2].casper.block_dag().await.expect("dag");
-        let floor = floor_of_block(&dag, &b.block_hash, FtThreshold::from_f32_lossy(0.0))
-            .await
-            .expect("floor of the round tip");
+        let floor = floor_of_block(
+            &dag,
+            &nodes[2].block_store,
+            &b.block_hash,
+            FtThreshold::from_f32_lossy(0.0),
+        )
+        .await
+        .expect("floor of the round tip");
         let floor_block = nodes[2]
             .block_store
             .get(&floor.hash)

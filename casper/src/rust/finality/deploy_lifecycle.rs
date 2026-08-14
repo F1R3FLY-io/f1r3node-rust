@@ -214,7 +214,7 @@ impl DeployLifecycle {
     ) -> Result<Vec<Bytes>, CasperError> {
         // The async floor read happens OUTSIDE the schedule lock; it is
         // memoized in the persisted floor index.
-        let block_floor = floor::floor_of_block(dag, &block.block_hash, ftt).await?;
+        let block_floor = floor::floor_of_block(dag, block_store, &block.block_hash, ftt).await?;
 
         let mut schedule = self.schedule.lock();
         if !schedule.rebuilt {

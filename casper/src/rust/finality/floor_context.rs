@@ -74,7 +74,8 @@ impl FloorContext {
         ftt: FtThreshold,
     ) -> Result<Self, CasperError> {
         let (floor, settled_floors) =
-            floor::finalized_floor_with_candidates(dag, parents, latest_messages, ftt).await?;
+            floor::finalized_floor_with_candidates(dag, block_store, parents, latest_messages, ftt)
+                .await?;
         let floor_block = block_store.get(&floor.hash)?.ok_or_else(|| {
             CasperError::RuntimeError(format!(
                 "finalized-floor block {} not in block store",

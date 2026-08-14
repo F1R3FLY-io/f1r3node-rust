@@ -212,6 +212,7 @@ async fn merged_block_records_the_floor_base_and_the_applied_set() {
         let dag = nodes[0].casper.block_dag().await.expect("dag");
         floor_of_block(
             &dag,
+            &nodes[0].block_store,
             &merge_block.block_hash,
             FtThreshold::from_f32_lossy(0.0),
         )

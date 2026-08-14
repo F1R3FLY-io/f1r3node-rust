@@ -141,7 +141,7 @@ async fn a_finalized_carrier_above_the_floor_keeps_its_deploy_in_the_pool() {
                 .expect("dag representation");
             if dag.is_finalized(&carrier_hash) {
                 let lfb = dag.last_finalized_block();
-                let floor = floor_of_block(&dag, &lfb, test_ftt())
+                let floor = floor_of_block(&dag, &nodes[0].block_store, &lfb, test_ftt())
                     .await
                     .expect("floor of the LFB");
                 let floor_covers_carrier = carrier_hash == floor.hash

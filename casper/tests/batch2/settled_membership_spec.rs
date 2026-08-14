@@ -93,9 +93,14 @@ async fn floor_settled_plain_send_is_released_from_deploy_storage() {
             }
         }
         let dag = nodes[0].casper.block_dag().await.expect("dag");
-        let floor = floor_of_block(&dag, &b.block_hash, FtThreshold::from_f32_lossy(0.0))
-            .await
-            .expect("floor_of_block");
+        let floor = floor_of_block(
+            &dag,
+            &nodes[0].block_store,
+            &b.block_hash,
+            FtThreshold::from_f32_lossy(0.0),
+        )
+        .await
+        .expect("floor_of_block");
         if floor.hash == carrier.block_hash
             || (floor.block_number >= carrier.body.state.block_number
                 && dag

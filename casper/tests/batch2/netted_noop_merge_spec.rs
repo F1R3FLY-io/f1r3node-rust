@@ -196,9 +196,14 @@ async fn netted_install_fire_pair_merges_as_a_noop() {
                 .casper_shard_conf()
                 .fault_tolerance_threshold_ppm,
         );
-        let floor = casper::rust::finality::floor::floor_of_block(&dag, &block_m.block_hash, ftt)
-            .await
-            .expect("floor_of_block(M)");
+        let floor = casper::rust::finality::floor::floor_of_block(
+            &dag,
+            &nodes[0].block_store,
+            &block_m.block_hash,
+            ftt,
+        )
+        .await
+        .expect("floor_of_block(M)");
         assert_eq!(
             floor.block_number, 0,
             "fixture precondition: M's floor must still be genesis so the \

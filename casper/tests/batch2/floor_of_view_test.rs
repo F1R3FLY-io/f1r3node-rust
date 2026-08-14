@@ -157,7 +157,7 @@ async fn floor_of_view_holds_until_witnessed_then_advances() {
 
         let thr = FtThreshold::from_f32_lossy(0.1);
         let dag = dag_store.get_representation().expect("dag representation");
-        let advanced = floor_of_view(&dag, &at(&genesis), thr)
+        let advanced = floor_of_view(&dag, &store, &at(&genesis), thr)
             .await
             .expect("floor of view");
         assert_eq!(
@@ -199,7 +199,7 @@ async fn floor_of_view_holds_until_witnessed_then_advances() {
         let c5 = creator5(&mut store, &mut dag_store, vec![&b7], &above_b7);
 
         let dag = dag_store.get_representation().expect("dag representation");
-        let held = floor_of_view(&dag, &at(&b1), thr)
+        let held = floor_of_view(&dag, &store, &at(&b1), thr)
             .await
             .expect("floor of view");
         assert_eq!(
@@ -225,7 +225,7 @@ async fn floor_of_view_holds_until_witnessed_then_advances() {
         creator5(&mut store, &mut dag_store, vec![&c5], &mutual);
 
         let dag = dag_store.get_representation().expect("dag representation");
-        let advanced = floor_of_view(&dag, &at(&b1), thr)
+        let advanced = floor_of_view(&dag, &store, &at(&b1), thr)
             .await
             .expect("floor of view")
             .expect("mutual visibility witnesses b7's chain — the LFB advances");
@@ -310,9 +310,14 @@ async fn floor_of_view_advances_onto_the_already_finalized_candidate() {
             .await
             .expect("record candidate finalized");
         let dag = dag_store.get_representation().expect("dag representation");
-        let advanced = floor_of_view(&dag, &at(&genesis), FtThreshold::from_f32_lossy(0.1))
-            .await
-            .expect("floor of view");
+        let advanced = floor_of_view(
+            &dag,
+            &store,
+            &at(&genesis),
+            FtThreshold::from_f32_lossy(0.1),
+        )
+        .await
+        .expect("floor of view");
         assert_eq!(
             advanced.as_ref().map(|f| &f.hash),
             Some(&candidate.block_hash)
@@ -394,9 +399,14 @@ async fn floor_of_view_growth_feedback_loop_stale_justification_chain() {
             if checkpoints.contains(&height) {
                 let dag = dag_store.get_representation().expect("dag representation");
                 let started = Instant::now();
-                let _ = floor_of_view(&dag, &at(&genesis), FtThreshold::from_f32_lossy(0.1))
-                    .await
-                    .expect("floor of view");
+                let _ = floor_of_view(
+                    &dag,
+                    &store,
+                    &at(&genesis),
+                    FtThreshold::from_f32_lossy(0.1),
+                )
+                .await
+                .expect("floor of view");
                 timing_samples.push((height, started.elapsed().as_millis()));
             }
         }

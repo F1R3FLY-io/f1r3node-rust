@@ -1625,6 +1625,7 @@ impl Validate {
                     .collect();
                 let floor = match crate::rust::finality::floor::finalized_floor(
                     &snapshot.dag,
+                    block_store,
                     &parent_hashes,
                     &latest_messages,
                     crate::rust::safety::clique_oracle::FtThreshold::from_ppm(

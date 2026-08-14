@@ -286,7 +286,8 @@ pub(crate) async fn compute_last_finalized_block(
         hash: last_finalized_block_hash.clone(),
         block_number: last_finalized_block_height,
     };
-    let new_lfb_opt = crate::rust::finality::floor::floor_of_view(&dag, &current, ftt).await?;
+    let new_lfb_opt =
+        crate::rust::finality::floor::floor_of_view(&dag, &block_store, &current, ftt).await?;
 
     let new_lfb_found = new_lfb_opt.is_some();
     let final_lfb_hash = if let Some(new_lfb) = new_lfb_opt {

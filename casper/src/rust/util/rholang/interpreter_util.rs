@@ -1181,6 +1181,7 @@ pub async fn compute_parents_post_state(
                     let (floor, settled_floors) =
                         crate::rust::finality::floor::finalized_floor_with_candidates(
                             &s.dag,
+                            block_store,
                             &parent_hashes,
                             latest_messages,
                             crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
@@ -1432,6 +1433,17 @@ pub async fn compute_parents_post_state(
 
             let (state, mut rejected_user_records, rejected_slash_pairs, applied_user_sigs) =
                 merger_result;
+            // The tripwire runs on the PRE-suppression records: suppression
+            // drops a record whose identical copy is visible elsewhere in
+            // scope, but the drop it testifies to still happened in THIS
+            // merge — a settled chain kept out must trip regardless of
+            // whether its record is re-emitted.
+            assert_no_settled_rejection(
+                block_store,
+                &settled_floors,
+                &rejected_user_records,
+                s.on_chain_state.shard_conf.deploy_lifespan,
+            )?;
             let suppressed = suppress_already_recorded_rejections(
                 block_store,
                 &visible_blocks,
@@ -1642,12 +1654,6 @@ pub async fn compute_parents_post_state(
                 };
 
             let computed_state = prost::bytes::Bytes::copy_from_slice(&state.bytes());
-            assert_no_settled_rejection(
-                block_store,
-                &settled_floors,
-                &rejected_user_records,
-                s.on_chain_state.shard_conf.deploy_lifespan,
-            )?;
             let merged = MergedPreState {
                 state: computed_state.clone(),
                 rejected_user: rejected_user_records,
@@ -1697,13 +1703,14 @@ pub async fn compute_parents_post_state(
 }
 
 /// The merge-time settled-rejection tripwire: no merge may reject a chain
-/// whose effect is settled in any of the derivation's settled floors. The
-/// capture predicate (`floor::state_captures`) trusts rejection records as
-/// the complete testimony of what a merge kept out; this is its converse
-/// guard — a merge that DROPS settled content, recorded or not, is a
-/// finalized-floor safety violation surfaced here, never a silent erasure.
-/// Duplicate records discarded a redundant copy of an effect that is still
-/// present and are exempt.
+/// whose effect is settled in any of the derivation's settled floors. It
+/// runs on the merge's PRE-suppression records — the complete drop set for
+/// in-scope chains — and is the guard for the floor derivation's re-merge
+/// arm: a non-ancestor floor's chains provably re-enter the merge's scope,
+/// and a settled chain among them must land, never be kept out. A drop of
+/// settled content is a finalized-floor safety violation surfaced here,
+/// never a silent erasure. Duplicate records discarded a redundant copy of
+/// an effect that is still present and are exempt.
 fn assert_no_settled_rejection(
     block_store: &KeyValueBlockStore,
     settled_floors: &[crate::rust::finality::floor::Floor],
