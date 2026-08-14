@@ -1,0 +1,86 @@
+// fileio_buffer_loop.rho — Phase 10 canonical example
+//
+// Bounded-memory read of a large file: allocate a small buffer once,
+// then loop `readLineInto(buf)` until the file's EOF flag is set.
+// Each iteration reuses the same buffer — total memory footprint is
+// bounded by the buffer's capacity irrespective of file size.
+//
+// Sequence:
+//   1. Look up the Allocator (`rho:lang:buffer:1.0.0`).
+//   2. Open a bundled File in "r" mode.
+//   3. Allocate a buffer sized for one line (e.g., 4 KiB).
+//   4. Tail-recursive loop: `file!readLineInto(buf)` →
+//        - reply is `[true, [nBytesWritten, {"eof": Bool,
+//          "truncated": Bool}]]`; if eof=true, done.
+//        - Otherwise `buf!toByteArray()` yields the just-written
+//          line bytes, then `buf!clear()` resets for the next iter.
+//   5. Print each line via stdout.
+//
+// Buffer semantics guarantee: `beginFill`/`endFill` inside
+// `readLineInto` prevent concurrent read/write on the buffer while
+// the fill is in progress; `clear()` between iterations restores
+// the empty state so the buffer's byte range is always [0, ell).
+//
+// ## Prerequisite: Allocator publication
+//
+// The Allocator agent is compiled into the FsGenesis composed source
+// but NOT currently published to user deploys — only Fs is exported
+// via `insertSigned`.  This example assumes the future Powerbox slice
+// PB-B-5 lands a publication at `rho:lang:buffer:1.0.0`; until then,
+// the registry lookup below returns nothing and the deploy stalls.
+// (See fs_genesis.rs MVP note §6 and the Powerbox-requirements doc.)
+//
+// Companion regression: casper/tests/genesis/contracts/
+// fileio_examples_spec.rs :: fileio_buffer_loop_bounded_read
+// (currently `#[ignore]`; unblocks when PB-B-5 lands).
+
+new
+  rl(`rho:registry:lookup`),
+  stdout(`rho:io:stdout`),
+  fsCh,
+  allocCh,
+  loopReader
+in {
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *fsCh) |
+  rl!(`rho:lang:buffer:1.0.0`, *allocCh) |
+  for(@(_, fs) <- fsCh; @(_, alloc) <- allocCh) {
+    for(@[true, file] <- @fs!?("openFile", "target", {"mode": "r"});
+        @[true, buf]  <- @alloc!?("allocBytes", 4096)) {
+      contract loopReader(done) = {
+        for(@r <- @file!?("readLineInto", buf)) {
+          match r {
+            [true, [_nBytes, m /\ Map]] => {
+              for(@bytesReply <- @buf!?("toByteArray")) {
+                match bytesReply {
+                  [true, lineBytes] => {
+                    stdout!(("line", lineBytes.toUtf8String())) |
+                    for(@_ <- @buf!?("clear")) {
+                      match m.get("eof") {
+                        true => done!(true)
+                        _    => loopReader!(*done)
+                      }
+                    }
+                  }
+                  _ => {
+                    stdout!(("buf.toByteArray failed", bytesReply)) |
+                    done!(false)
+                  }
+                }
+              }
+            }
+            _ => {
+              stdout!(("readLineInto failed", r)) |
+              done!(false)
+            }
+          }
+        }
+      } |
+      new done in {
+        loopReader!(*done) |
+        for(@ok <- done) {
+          stdout!(("loop finished, ok=", ok))
+        }
+      }
+    }
+  }
+}

@@ -614,3 +614,31 @@ in {{
         .await
         .expect("fileio_readonly_forwarder spec failed");
 }
+
+/// Slice 10a-6: canonical example `fileio_buffer_loop.rho`.
+///
+/// Bounded-memory line-by-line read via `readLineInto(buf)` in a
+/// tail-recursive loop.  E2E test-side verification is
+/// **deferred**: the Allocator agent is compiled into the FsGenesis
+/// composed source but not published to user deploys — only Fs is
+/// exported via `insertSigned` (see `fs_genesis.rs` MVP note §6).
+/// User deploys cannot obtain a Buffer until the future Powerbox
+/// slice PB-B-5 publishes an Allocator delegation at
+/// `rho:lang:buffer:1.0.0`.
+///
+/// The `.rho` example is a documentation artifact that describes
+/// the expected user surface; this test's body is a placeholder
+/// that will be filled in once the publication lands.  Until then
+/// it is `#[ignore]`-d so `cargo test` remains green.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "blocked on PB-B-5: Allocator not yet published to user deploys"]
+async fn fileio_buffer_loop_bounded_read() {
+    // See rholang/examples/fileio_buffer_loop.rho for the intended
+    // user code.  Once PB-B-5 publishes the Allocator, this test
+    // should:
+    //   - Bundle a "target" file pre-populated with N lines.
+    //   - Compose a RhoSpec source that runs the buffer-loop.
+    //   - Assert every line is echoed via stdout in order.
+    //   - Assert the loop terminates on eof=true.
+    unimplemented!("blocked on PB-B-5: Allocator publication at rho:lang:buffer:1.0.0")
+}
