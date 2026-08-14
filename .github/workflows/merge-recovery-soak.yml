@@ -686,14 +686,68 @@ jobs:
     permissions:
       contents: read
       statuses: write
+    concurrency:
+      group: soak-preflight-status-${{ needs.schedule_gate.outputs.target_sha }}
+      cancel-in-progress: false
     steps:
       - name: Report pending status
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_SHA: ${{ needs.schedule_gate.outputs.target_sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
         shell: bash -euo pipefail {0}
         run: |
+          current=""
+          read_ok=false
+          for attempt in 1 2 3; do
+            if current="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}/status" \
+              --jq '[.statuses[] | select(.context == "Soak Integration Preflight")][0] // {} | [(.state // ""), (.target_url // "")] | @tsv')"; then
+              read_ok=true
+              break
+            fi
+            [ "$attempt" -eq 3 ] || sleep 5
+          done
+          if [ "$read_ok" != "true" ]; then
+            echo "::error::could not read the current integration preflight status"
+            exit 1
+          fi
+          IFS=$'\t' read -r current_state current_url <<<"$current"
+          prefix="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/"
+          own_tail="${RUN_URL#"$prefix"}"
+          if [ "$own_tail" = "$RUN_URL" ] || ! [[ "$own_tail" =~ ^([0-9]+)(/attempts/([0-9]+))?$ ]]; then
+            echo "::error::the current run URL is invalid"
+            exit 1
+          fi
+          own_run_id="${BASH_REMATCH[1]}"
+          own_attempt="${BASH_REMATCH[3]:-0}"
+          if [ -n "$current_url" ]; then
+            current_tail="${current_url#"$prefix"}"
+            if [ "$current_tail" = "$current_url" ] || ! [[ "$current_tail" =~ ^([0-9]+)(/attempts/([0-9]+))?$ ]]; then
+              echo "::error::the current preflight status has an invalid owner"
+              exit 1
+            fi
+            current_run_id="${BASH_REMATCH[1]}"
+            current_attempt="${BASH_REMATCH[3]:-0}"
+            current_is_newer=false
+            if [ "${#current_run_id}" -gt "${#own_run_id}" ] || \
+              { [ "${#current_run_id}" -eq "${#own_run_id}" ] && [[ "$current_run_id" > "$own_run_id" ]]; }; then
+              current_is_newer=true
+            elif [ "$current_run_id" = "$own_run_id" ] && \
+              { [ "${#current_attempt}" -gt "${#own_attempt}" ] || \
+                { [ "${#current_attempt}" -eq "${#own_attempt}" ] && [[ "$current_attempt" > "$own_attempt" ]]; }; }; then
+              current_is_newer=true
+            fi
+            if [ "$current_is_newer" = "true" ]; then
+              echo "a newer workflow run owns the integration preflight status"
+              exit 0
+            fi
+            if [ "$current_run_id" = "$own_run_id" ] && [ "$current_attempt" = "$own_attempt" ]; then
+              case "$current_state" in
+                pending|success|failure|error) exit 0 ;;
+                *) echo "::error::the current preflight status is invalid"; exit 1 ;;
+              esac
+            fi
+          fi
           for attempt in 1 2 3; do
             if gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${TARGET_SHA}" \
               -f state=pending \
@@ -1367,7 +1421,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_SHA: ${{ needs.schedule_gate.outputs.target_sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
           WORKFLOW_REF: ${{ github.ref_name }}
         shell: bash -euo pipefail {0}
         run: |
@@ -1694,34 +1748,78 @@ jobs:
           LAUNCH_RESULT: ${{ needs.launch_runner.result }}
           SOAK_RESULT: ${{ needs.soak.result }}
           PREFLIGHT_RESULT: ${{ needs.soak.outputs.preflight }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
         shell: bash -euo pipefail {0}
         run: |
+          current=""
+          read_ok=false
+          for attempt in 1 2 3; do
+            if current="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}/status" \
+              --jq '[.statuses[] | select(.context == "Soak Integration Preflight")][0] // {} | [(.state // ""), (.target_url // "")] | @tsv')"; then
+              read_ok=true
+              break
+            fi
+            [ "$attempt" -eq 3 ] || sleep 5
+          done
+          if [ "$read_ok" != "true" ]; then
+            echo "::error::could not read the current integration preflight status"
+            exit 1
+          fi
+          IFS=$'\t' read -r current_state current_url <<<"$current"
+          prefix="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/"
+          own_tail="${RUN_URL#"$prefix"}"
+          if [ "$own_tail" = "$RUN_URL" ] || ! [[ "$own_tail" =~ ^([0-9]+)(/attempts/([0-9]+))?$ ]]; then
+            echo "::error::the current run URL is invalid"
+            exit 1
+          fi
+          own_run_id="${BASH_REMATCH[1]}"
+          own_attempt="${BASH_REMATCH[3]:-0}"
+          current_tail="${current_url#"$prefix"}"
+          if [ "$current_tail" = "$current_url" ] || ! [[ "$current_tail" =~ ^([0-9]+)(/attempts/([0-9]+))?$ ]]; then
+            echo "::error::the current preflight status has no valid owner"
+            exit 1
+          fi
+          current_run_id="${BASH_REMATCH[1]}"
+          current_attempt="${BASH_REMATCH[3]:-0}"
+          current_is_newer=false
+          if [ "${#current_run_id}" -gt "${#own_run_id}" ] || \
+            { [ "${#current_run_id}" -eq "${#own_run_id}" ] && [[ "$current_run_id" > "$own_run_id" ]]; }; then
+            current_is_newer=true
+          elif [ "$current_run_id" = "$own_run_id" ] && \
+            { [ "${#current_attempt}" -gt "${#own_attempt}" ] || \
+              { [ "${#current_attempt}" -eq "${#own_attempt}" ] && [[ "$current_attempt" > "$own_attempt" ]]; }; }; then
+            current_is_newer=true
+          fi
+          if [ "$current_is_newer" = "true" ]; then
+            echo "a newer workflow run owns the integration preflight status"
+            exit 0
+          fi
+          if [ "$current_run_id" != "$own_run_id" ] || [ "$current_attempt" != "$own_attempt" ]; then
+            echo "::error::the current preflight status belongs to a different workflow run"
+            exit 1
+          fi
+          case "$current_state" in
+            success)
+              exit 0
+              ;;
+            failure|error)
+              echo "the source workflow already finalized the preflight as $current_state"
+              exit 0
+              ;;
+            pending) ;;
+            *) echo "::error::the current preflight status is invalid"; exit 1 ;;
+          esac
           state=failure
           description="Full integration preflight did not complete"
           if [ "$PREFLIGHT_RESULT" = "passed" ]; then
             state=success
             description="Full integration preflight passed"
-          else
-            current=""
-            for attempt in 1 2 3; do
-              if current="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}/status" \
-                --jq '[.statuses[] | select(.context == "Soak Integration Preflight")][0] // {} | [(.state // ""), (.target_url // "")] | @tsv')"; then
-                break
-              fi
-              [ "$attempt" -eq 3 ] || sleep 5
-            done
-            IFS=$'\t' read -r current_state current_url <<<"$current"
-            if [ "$current_state" = "success" ] && [ "$current_url" = "$RUN_URL" ]; then
-              state=success
-              description="Full integration preflight passed"
-            elif [ "$PENDING_RESULT" != "success" ]; then
-              description="Preflight status initialization failed"
-            elif [ "$LAUNCH_RESULT" != "success" ]; then
-              description="Runner launch failed before integration preflight"
-            elif [ "$SOAK_RESULT" = "cancelled" ]; then
-              description="Integration preflight was cancelled"
-            fi
+          elif [ "$PENDING_RESULT" != "success" ]; then
+            description="Preflight status initialization failed"
+          elif [ "$LAUNCH_RESULT" != "success" ]; then
+            description="Runner launch failed before integration preflight"
+          elif [ "$SOAK_RESULT" = "cancelled" ]; then
+            description="Integration preflight was cancelled"
           fi
           for attempt in 1 2 3; do
             if gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${TARGET_SHA}" \

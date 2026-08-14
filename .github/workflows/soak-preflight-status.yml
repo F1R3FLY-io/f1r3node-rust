@@ -44,15 +44,37 @@ jobs:
             exit 1
           fi
           prefix="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/"
-          source_run_id="${SOURCE_RUN_URL#"$prefix"}"
-          if [ "$source_run_id" = "$SOURCE_RUN_URL" ] || ! [[ "$source_run_id" =~ ^[0-9]+$ ]]; then
-            echo "::error::source_run_url must identify a run in this repository"
+          source_tail="${SOURCE_RUN_URL#"$prefix"}"
+          if [ "$source_tail" = "$SOURCE_RUN_URL" ] || ! [[ "$source_tail" =~ ^([0-9]+)/attempts/([0-9]+)$ ]]; then
+            echo "::error::source_run_url must identify one run attempt in this repository"
             exit 1
           fi
+          source_run_id="${BASH_REMATCH[1]}"
+          source_attempt="${BASH_REMATCH[2]}"
           current="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}/status" \
-            --jq '[.statuses[] | select(.context == "Soak Integration Preflight")][0] | [.state, .target_url] | @tsv')"
+            --jq '[.statuses[] | select(.context == "Soak Integration Preflight")][0] // {} | [(.state // ""), (.target_url // "")] | @tsv')"
           IFS=$'\t' read -r current_state current_url <<<"$current"
           if [ "$current_url" != "$SOURCE_RUN_URL" ]; then
+            current_tail="${current_url#"$prefix"}"
+            if [ "$current_tail" = "$current_url" ] || ! [[ "$current_tail" =~ ^([0-9]+)(/attempts/([0-9]+))?$ ]]; then
+              echo "::error::the current preflight status has no valid owner"
+              exit 1
+            fi
+            current_run_id="${BASH_REMATCH[1]}"
+            current_attempt="${BASH_REMATCH[3]:-0}"
+            current_is_newer=false
+            if [ "${#current_run_id}" -gt "${#source_run_id}" ] || \
+              { [ "${#current_run_id}" -eq "${#source_run_id}" ] && [[ "$current_run_id" > "$source_run_id" ]]; }; then
+              current_is_newer=true
+            elif [ "$current_run_id" = "$source_run_id" ] && \
+              { [ "${#current_attempt}" -gt "${#source_attempt}" ] || \
+                { [ "${#current_attempt}" -eq "${#source_attempt}" ] && [[ "$current_attempt" > "$source_attempt" ]]; }; }; then
+              current_is_newer=true
+            fi
+            if [ "$current_is_newer" = "true" ]; then
+              echo "a newer workflow run owns the integration preflight status"
+              exit 0
+            fi
             echo "::error::the current preflight status belongs to a different workflow run"
             exit 1
           fi

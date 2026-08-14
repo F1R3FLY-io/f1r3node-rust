@@ -9,8 +9,17 @@ ruby -ryaml -e '
   doc = YAML.load_file(ARGV[0])
   step = doc.dig("jobs", "schedule_gate", "steps").find { |item| item["id"] == "resolve" }
   abort "schedule gate not found" unless step && step["run"].is_a?(String)
+  pending = doc.dig("jobs", "preflight_pending", "steps", 0, "run")
+  finalizer = doc.dig("jobs", "preflight_finalize", "steps", 0, "run")
+  status = YAML.load_file(ARGV[4]).dig("jobs", "report", "steps", 0, "run")
+  abort "status script not found" unless pending && finalizer && status
   File.write(ARGV[1], step["run"])
-' "$ROOT/.github/workflows/merge-recovery-soak.yml" "$TMP/gate.sh"
+  File.write(ARGV[2], pending)
+  File.write(ARGV[3], finalizer)
+  File.write(ARGV[5], status)
+' "$ROOT/.github/workflows/merge-recovery-soak.yml" "$TMP/gate.sh" \
+  "$TMP/pending.sh" "$TMP/finalizer.sh" \
+  "$ROOT/.github/workflows/soak-preflight-status.yml" "$TMP/status.sh"
 
 mkdir -p "$TMP/bin"
 cat >"$TMP/bin/date" <<'SH'
@@ -35,6 +44,8 @@ SH
 cat >"$TMP/bin/gh" <<'SH'
 #!/usr/bin/env bash
 case "$*" in
+  *"/commits/"*"/status"*) printf '%b\n' "${FAKE_STATUS_CURRENT:-}" ;;
+  *"statuses/"*) printf '%s\n' "$*" >>"${FAKE_STATUS_POSTS:?}" ;;
   *"/commits?"*) printf '1\n' ;;
   *"/commits/"*) printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' ;;
   *"runs?event=workflow_dispatch"*)
@@ -202,4 +213,64 @@ if PATH="$TMP/bin:$PATH" \
 	exit 1
 fi
 
-printf 'soak schedule routing tests passed\n'
+run_status_script() {
+  local script="$1" current="$2" run_id="$3" run_attempt="$4"
+  : >"$TMP/status-posts"
+  PATH="$TMP/bin:$PATH" \
+    FAKE_STATUS_CURRENT="$current" \
+    FAKE_STATUS_POSTS="$TMP/status-posts" \
+    GH_TOKEN=test \
+    GITHUB_ACTOR='github-actions[bot]' \
+    GITHUB_REPOSITORY=F1R3FLY-io/f1r3node-rust \
+    GITHUB_SERVER_URL=https://github.com \
+    TARGET_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    RUN_URL="https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/${run_id}/attempts/${run_attempt}" \
+    SOURCE_RUN_URL="https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/${run_id}/attempts/${run_attempt}" \
+    PENDING_RESULT=success \
+    LAUNCH_RESULT=success \
+    SOAK_RESULT=success \
+    PREFLIGHT_RESULT=passed \
+    bash -euo pipefail "$script" >/dev/null
+}
+
+run_status_script "$TMP/pending.sh" \
+  $'failure\thttps://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/100' 200 1
+grep -q -- '-f state=pending' "$TMP/status-posts"
+run_status_script "$TMP/pending.sh" \
+  $'pending\thttps://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/300/attempts/1' 200 1
+test ! -s "$TMP/status-posts"
+run_status_script "$TMP/pending.sh" \
+  $'success\thttps://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/200/attempts/1' 200 1
+test ! -s "$TMP/status-posts"
+run_status_script "$TMP/pending.sh" \
+  $'pending\thttps://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/200/attempts/2' 200 1
+test ! -s "$TMP/status-posts"
+run_status_script "$TMP/pending.sh" \
+  $'failure\thttps://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/200/attempts/1' 200 2
+grep -q -- '-f state=pending' "$TMP/status-posts"
+run_status_script "$TMP/finalizer.sh" \
+  $'failure\thttps://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/300/attempts/1' 200 1
+test ! -s "$TMP/status-posts"
+run_status_script "$TMP/finalizer.sh" \
+  $'pending\thttps://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/200/attempts/1' 200 1
+grep -q -- '-f state=success' "$TMP/status-posts"
+run_status_script "$TMP/finalizer.sh" \
+  $'pending\thttps://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/200/attempts/2' 200 1
+test ! -s "$TMP/status-posts"
+if run_status_script "$TMP/finalizer.sh" \
+  $'pending\thttps://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/100/attempts/1' 200 1; then
+  echo 'finalizer replaced a status that belongs to another run' >&2
+  exit 1
+fi
+test ! -s "$TMP/status-posts"
+run_status_script "$TMP/status.sh" \
+  $'pending\thttps://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/300/attempts/1' 200 1
+test ! -s "$TMP/status-posts"
+run_status_script "$TMP/status.sh" \
+  $'pending\thttps://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/200/attempts/1' 200 1
+grep -q -- '-f state=success' "$TMP/status-posts"
+run_status_script "$TMP/status.sh" \
+  $'failure\thttps://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/200/attempts/1' 200 1
+test ! -s "$TMP/status-posts"
+
+printf 'soak schedule routing and status ownership tests passed\n'

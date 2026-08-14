@@ -449,7 +449,9 @@ steps = Array(soak["steps"])
 preflight = steps.find { |step| step["id"] == "integration_preflight" }
 dispatch = steps.find { |step| step["name"] == "Dispatch integration preflight success status" }
 pending = jobs.fetch("preflight_pending")
+pending_body = pending.dig("steps", 0, "run").to_s
 finalizer = jobs.fetch("preflight_finalize")
+finalizer_body = finalizer.dig("steps", 0, "run").to_s
 puts "full integration preflight is missing" unless preflight
 puts "full integration preflight must skip canaries" unless preflight&.dig("if").to_s.include?("canary != 'true'")
 puts "full integration preflight must use the bounded driver" unless preflight&.dig("run").to_s.include?("run-integration-preflight.sh")
@@ -463,12 +465,18 @@ puts "target SHA is not resolved before runner launch" unless jobs.dig("schedule
 puts "code checkout is not pinned to the resolved target SHA" unless steps.find { |step| step["name"] == "Checkout code under test" }&.dig("with", "ref").to_s.include?("outputs.target_sha")
 puts "long-running soak job retains status write permission" if soak.dig("permissions", "statuses")
 puts "pending status job lacks status write permission" unless pending.dig("permissions", "statuses") == "write"
-puts "pending status job does not retry status publication" unless pending.dig("steps", 0, "run").to_s.include?("for attempt in 1 2 3")
+puts "pending status job does not retry status publication" unless pending_body.include?("for attempt in 1 2 3")
+puts "pending status job does not serialize status ownership" unless pending.dig("concurrency", "group").to_s.include?("soak-preflight-status-")
+puts "pending status job does not reject older run attempts" unless pending_body.include?("current_is_newer") && pending_body.include?("current_attempt")
+puts "pending status target does not identify one run attempt" unless pending.dig("steps", 0, "env", "RUN_URL").to_s.include?("github.run_attempt")
 puts "soak does not wait for pending status publication" unless Array(soak["needs"]).include?("preflight_pending")
 puts "successful preflight does not dispatch the isolated status workflow" unless dispatch&.dig("run").to_s.include?("soak-preflight-status.yml")
+puts "success status target does not identify one run attempt" unless dispatch&.dig("env", "RUN_URL").to_s.include?("github.run_attempt")
 puts "final status job lacks status write permission" unless finalizer.dig("permissions", "statuses") == "write"
 puts "final status job does not cover all soak outcomes" unless finalizer["if"].to_s.start_with?("always()")
 puts "final status job does not serialize with early success publication" unless finalizer.dig("concurrency", "group").to_s.include?("soak-preflight-status-")
+puts "final status job does not enforce run ownership" unless finalizer_body.include?('current_run_id" != "$own_run_id') && finalizer_body.include?("current_is_newer")
+puts "final status target does not identify one run attempt" unless finalizer.dig("steps", 0, "env", "RUN_URL").to_s.include?("github.run_attempt")
 puts "soak job does not expose its preflight result" unless soak.dig("outputs", "preflight").to_s.include?("integration_preflight.outputs.result")
 puts "soak job does not expose telemetry reset status" unless soak.dig("outputs", "telemetry_reset").to_s.include?("reset_telemetry.outcome")
 segment_steps = steps.select { |step| step["name"].to_s.match?(/^Soak (segment [1-5]|final segment)$/) }
@@ -500,6 +508,8 @@ puts "isolated status workflow lacks status write permission" unless status_doc.
 puts "isolated status workflow accepts direct operator dispatches" unless status_body.include?('GITHUB_ACTOR" != "github-actions[bot]')
 puts "isolated status workflow can overwrite a terminal failure" unless status_body.include?("failure|error")
 puts "isolated status workflow does not require a current pending status" unless status_body.include?("pending)")
+puts "isolated status workflow does not identify source run attempts" unless status_body.include?("source_attempt")
+puts "isolated status workflow does not reject older source runs" unless status_body.include?("current_is_newer")
 RUBY
 soak_errors="$(ruby "$scratch/check-canary.rb" \
 	.github/workflows/merge-recovery-soak.yml \
