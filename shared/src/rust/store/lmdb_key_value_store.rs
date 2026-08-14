@@ -169,7 +169,11 @@ pub fn batched_put(writes: Vec<StoreWrite<'_>>) -> Result<(), KvStoreError> {
         .collect();
 
     let batchable_stores = match &lmdb_stores {
-        Some(stores) if stores.windows(2).all(|w| Arc::ptr_eq(&w[0].0.env, &w[1].0.env)) => {
+        Some(stores)
+            if stores
+                .windows(2)
+                .all(|w| Arc::ptr_eq(&w[0].0.env, &w[1].0.env)) =>
+        {
             Some(stores)
         }
         _ => None,
@@ -328,11 +332,7 @@ mod batched_put_tests {
         let a = open_store(&env, "a");
         let b = open_store(&env, "b");
 
-        batched_put(vec![
-            (&a, kv(&[("k1", "v1")])),
-            (&b, kv(&[("k2", "v2")])),
-        ])
-        .unwrap();
+        batched_put(vec![(&a, kv(&[("k1", "v1")])), (&b, kv(&[("k2", "v2")]))]).unwrap();
 
         assert_eq!(a.get_one(&b"k1".to_vec()).unwrap(), Some(b"v1".to_vec()));
         assert_eq!(b.get_one(&b"k2".to_vec()).unwrap(), Some(b"v2".to_vec()));
@@ -345,11 +345,7 @@ mod batched_put_tests {
         let a = open_store(&env_a, "a");
         let b = open_store(&env_b, "b");
 
-        batched_put(vec![
-            (&a, kv(&[("k1", "v1")])),
-            (&b, kv(&[("k2", "v2")])),
-        ])
-        .unwrap();
+        batched_put(vec![(&a, kv(&[("k1", "v1")])), (&b, kv(&[("k2", "v2")]))]).unwrap();
 
         assert_eq!(a.get_one(&b"k1".to_vec()).unwrap(), Some(b"v1".to_vec()));
         assert_eq!(b.get_one(&b"k2".to_vec()).unwrap(), Some(b"v2".to_vec()));
@@ -361,20 +357,14 @@ mod batched_put_tests {
         let a = open_store(&env, "a");
         let mem = InMemStore::new();
 
-        batched_put(vec![
-            (&a, kv(&[("k1", "v1")])),
-            (&mem, kv(&[("k2", "v2")])),
-        ])
-        .unwrap();
+        batched_put(vec![(&a, kv(&[("k1", "v1")])), (&mem, kv(&[("k2", "v2")]))]).unwrap();
 
         assert_eq!(a.get_one(&b"k1".to_vec()).unwrap(), Some(b"v1".to_vec()));
         assert_eq!(mem.get_one(&b"k2".to_vec()).unwrap(), Some(b"v2".to_vec()));
     }
 
     #[test]
-    fn empty_input_is_a_noop() {
-        batched_put(vec![]).unwrap();
-    }
+    fn empty_input_is_a_noop() { batched_put(vec![]).unwrap(); }
 
     #[test]
     fn single_store_batches_trivially() {

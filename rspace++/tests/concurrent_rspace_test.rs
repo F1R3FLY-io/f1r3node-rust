@@ -310,8 +310,8 @@ fn small_workload_does_not_slow_down_with_more_worker_threads() {
     assert!(
         slowdown < 3.0,
         "small fixed workload ({DEPLOYS} deploys) got {slowdown:.2}x slower going from \
-         {baseline_threads} to {max_threads} tokio worker_threads (expected <3x). If this reproduces \
-         on a CI/production-like host, node/src/main.rs's \
+         {baseline_threads} to {max_threads} tokio worker_threads (expected <3x). If this \
+         reproduces on a CI/production-like host, node/src/main.rs's \
          Builder::new_multi_thread().enable_all() (no explicit worker_threads(), so it defaults \
          to available_parallelism()/cgroup CPU quota) is a live suspect for the issue-43 \
          CPU-inversion residual -- more worker threads contending over the same small set of \
