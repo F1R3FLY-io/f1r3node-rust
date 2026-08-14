@@ -138,10 +138,11 @@ new
         // 7. Run exploratory deploy to obtain the trie map handle
         let check2_root_bytes = check2.root.to_bytes_prost();
         let (trie_map_handle_r, _cost) = runtime_ops
-            .play_exploratory_deploy(
+            .play_exploratory_deploy_with_phlo_limit(
                 get_trie_map_handle_rho.to_string(),
                 &check2_root_bytes,
                 None,
+                5_000_000,
             )
             .await
             .expect("Failed to play exploratory deploy");
