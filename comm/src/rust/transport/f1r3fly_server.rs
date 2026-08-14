@@ -20,6 +20,19 @@ use crate::rust::transport::f1r3fly_tls_transport::{
     F1r3flyServerTlsTransport, F1r3flyTlsTransportError,
 };
 
+/// Timeout for the server-side TLS handshake after accepting a TCP connection.
+/// Without this, a peer that stalls or goes silent mid-handshake leaks the
+/// accepted socket (and its task) for the lifetime of the process. Mirrors
+/// `DEFAULT_CONNECT_TIMEOUT` in `f1r3fly_connector.rs` on the client side.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Timeout for handing a completed handshake off to the connection channel.
+/// The channel is bounded (`mpsc::channel(10)`); if the receiver (tonic's
+/// accept loop) falls behind draining it, `send().await` blocks forever,
+/// holding the already-established connection's socket open indefinitely.
+/// Dropping the connection after this timeout bounds that hold time instead.
+const CHANNEL_SEND_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// F1r3fly Server Builder for creating tonic servers with custom TLS
 ///
 /// This builder allows creating tonic gRPC servers that use F1r3fly's custom
@@ -158,15 +171,20 @@ impl F1r3flyServer {
                         let tx_clone = tx.clone();
 
                         tokio::spawn(async move {
-                            let result = match acceptor_clone.accept(tcp_stream).await {
-                                Ok(f1r3fly_transport) => {
+                            let result = match tokio::time::timeout(
+                                HANDSHAKE_TIMEOUT,
+                                acceptor_clone.accept(tcp_stream),
+                            )
+                            .await
+                            {
+                                Ok(Ok(f1r3fly_transport)) => {
                                     tracing::debug!(
                                         "F1r3fly TLS handshake successful for {}",
                                         peer_addr
                                     );
                                     Ok(F1r3flyServerConnection::new(f1r3fly_transport, peer_addr))
                                 }
-                                Err(e) => {
+                                Ok(Err(e)) => {
                                     tracing::warn!(
                                         "F1r3fly TLS handshake failed for {}: {}",
                                         peer_addr,
@@ -174,13 +192,42 @@ impl F1r3flyServer {
                                     );
                                     Err(F1r3flyServerError::TlsTransport(e))
                                 }
+                                Err(_elapsed) => {
+                                    tracing::warn!(
+                                        "F1r3fly TLS handshake timed out for {} after {:?}",
+                                        peer_addr,
+                                        HANDSHAKE_TIMEOUT
+                                    );
+                                    Err(F1r3flyServerError::Io(io::Error::new(
+                                        io::ErrorKind::TimedOut,
+                                        format!(
+                                            "TLS handshake timed out after {:?}",
+                                            HANDSHAKE_TIMEOUT
+                                        ),
+                                    )))
+                                }
                             };
 
-                            // Send result through channel
-                            if let Err(_) = tx_clone.send(result).await {
-                                tracing::debug!(
-                                    "Connection channel closed, stopping TLS handshake task"
-                                );
+                            // Send result through channel. If the receiver can't drain it in
+                            // time, drop the connection instead of blocking this task (and
+                            // holding its socket) indefinitely.
+                            match tokio::time::timeout(CHANNEL_SEND_TIMEOUT, tx_clone.send(result))
+                                .await
+                            {
+                                Ok(Ok(())) => {}
+                                Ok(Err(_)) => {
+                                    tracing::debug!(
+                                        "Connection channel closed, stopping TLS handshake task"
+                                    );
+                                }
+                                Err(_elapsed) => {
+                                    tracing::warn!(
+                                        "Dropping accepted connection for {}: receiver did not \
+                                         drain connection channel within {:?}",
+                                        peer_addr,
+                                        CHANNEL_SEND_TIMEOUT
+                                    );
+                                }
                             }
                         });
                     }
