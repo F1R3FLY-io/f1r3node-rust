@@ -1,7 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/api/BlockReportAPI.scala
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::casper::{
@@ -14,7 +13,7 @@ use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::reporting_transformer::ReportingTransformer;
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
-use shared::rust::{env, ByteString};
+use shared::rust::ByteString;
 use tokio::sync::Semaphore;
 
 use crate::rust::api::block_api::BlockAPI;
@@ -26,8 +25,21 @@ use crate::rust::safety_oracle::CliqueOracleImpl;
 use crate::rust::util::proto_util;
 
 const REPORT_CACHE_VERSION: &[u8] = b"v2:";
-const BLOCK_REPORT_QUEUE_TIMEOUT_MS_DEFAULT: u64 = 2_000;
-const BLOCK_REPORT_QUEUE_TIMEOUT_MS_ENV: &str = "F1R3_BLOCK_REPORT_QUEUE_TIMEOUT_MS";
+
+/// How a caller wants the single report permit acquired.
+///
+/// The two callers differ in kind rather than degree, which is why there is no
+/// shared timeout to tune: a client is either waiting on the response or nothing
+/// is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReportPermit {
+    /// A request is blocked on this. Refuse immediately rather than hold the
+    /// client while another replay runs.
+    RejectIfHeld,
+    /// Background pre-caching with no client attached. Queue until the permit
+    /// frees; giving up would drop the block with nothing to retry it.
+    Wait,
+}
 
 fn report_cache_key(block_hash: &BlockHash) -> ByteString {
     let mut key = Vec::with_capacity(REPORT_CACHE_VERSION.len() + block_hash.len());
@@ -79,8 +91,9 @@ pub struct BlockReportAPI {
     block_store: KeyValueBlockStore,
     #[allow(dead_code)] // Part of constructor signature matching Scala, not directly used
     oracle: CliqueOracleImpl,
+    /// One permit for the whole node: report generation replays a block, so
+    /// concurrent replays are what this API exists to bound.
     block_report_semaphore: Arc<Semaphore>,
-    block_report_queue_timeout: Duration,
     /// Transformer for converting reporting events to protobuf format
     report_transformer: Arc<ReportingProtoTransformer>,
     /// When true, allows block reports on validator nodes (bypasses read-only check)
@@ -104,13 +117,6 @@ impl BlockReportAPI {
             block_store,
             oracle,
             block_report_semaphore: Arc::new(Semaphore::new(1)),
-            block_report_queue_timeout: Duration::from_millis(
-                env::var_or(
-                    BLOCK_REPORT_QUEUE_TIMEOUT_MS_ENV,
-                    BLOCK_REPORT_QUEUE_TIMEOUT_MS_DEFAULT,
-                )
-                .max(1),
-            ),
             report_transformer: Arc::new(ReportingProtoTransformer::new()),
             dev_mode,
         }
@@ -168,33 +174,40 @@ impl BlockReportAPI {
         })
     }
 
-    /// Get block report with locking to prevent concurrent replays of the same block
+    /// Serialize report generation node-wide, acquiring the permit as the caller
+    /// asked for it.
     async fn block_report_within_lock(
         &self,
         force_replay: bool,
         block: &BlockMessage,
         casper: &Arc<dyn crate::rust::casper::MultiParentCasper + Send + Sync>,
+        permit_policy: ReportPermit,
     ) -> ApiErr<BlockEventInfo> {
-        metrics::gauge!("block_report.lock.queue_size", "source" => "casper").increment(1.0);
-        let permit = tokio::time::timeout(
-            self.block_report_queue_timeout,
-            self.block_report_semaphore.acquire(),
-        )
-        .await;
-        metrics::gauge!("block_report.lock.queue_size", "source" => "casper").decrement(1.0);
-        let _permit = match permit {
-            Ok(Ok(permit)) => permit,
-            Ok(Err(error)) => return Err(BlockReportError::SemaphoreError(error.to_string())),
-            Err(_) => {
-                metrics::counter!("block_report.busy", "source" => "casper").increment(1);
-                return Err(BlockReportError::Busy);
+        let _permit = match permit_policy {
+            ReportPermit::RejectIfHeld => match self.block_report_semaphore.try_acquire() {
+                Ok(permit) => permit,
+                Err(tokio::sync::TryAcquireError::NoPermits) => {
+                    metrics::counter!("block_report.busy", "source" => "casper").increment(1);
+                    return Err(BlockReportError::Busy);
+                }
+                Err(error) => {
+                    return Err(BlockReportError::SemaphoreError(error.to_string()));
+                }
+            },
+            ReportPermit::Wait => {
+                metrics::gauge!("block_report.lock.queue_size", "source" => "casper")
+                    .increment(1.0);
+                let permit = self.block_report_semaphore.acquire().await;
+                metrics::gauge!("block_report.lock.queue_size", "source" => "casper")
+                    .decrement(1.0);
+                permit.map_err(|error| BlockReportError::SemaphoreError(error.to_string()))?
             }
         };
 
         self.block_report_inner(force_replay, block, casper).await
     }
 
-    /// Inner block report logic (separated to ensure lock map cleanup on all paths)
+    /// Inner block report logic, run while holding the permit.
     async fn block_report_inner(
         &self,
         force_replay: bool,
@@ -232,11 +245,30 @@ impl BlockReportAPI {
         Ok(report)
     }
 
-    /// Get block report for a given block hash
+    /// Get block report for a given block hash, refusing rather than queueing
+    /// when another replay holds the permit.
     pub async fn block_report(
         &self,
         hash: BlockHash,
         force_replay: bool,
+    ) -> ApiErr<BlockEventInfo> {
+        self.block_report_with_permit(hash, force_replay, ReportPermit::RejectIfHeld)
+            .await
+    }
+
+    /// Generate and cache a report for background pre-caching. Queues for the
+    /// permit instead of refusing, because no client is waiting and a refusal
+    /// here drops the block with nothing to retry it.
+    pub async fn prewarm_block_report(&self, hash: BlockHash) -> ApiErr<BlockEventInfo> {
+        self.block_report_with_permit(hash, false, ReportPermit::Wait)
+            .await
+    }
+
+    async fn block_report_with_permit(
+        &self,
+        hash: BlockHash,
+        force_replay: bool,
+        permit_policy: ReportPermit,
     ) -> ApiErr<BlockEventInfo> {
         let eng = self.engine_cell.get().await;
         let casper = eng
@@ -255,7 +287,7 @@ impl BlockReportAPI {
 
         let block = block_opt.ok_or_else(|| BlockReportError::BlockNotFound(hash))?;
 
-        self.block_report_within_lock(force_replay, &block, &casper)
+        self.block_report_within_lock(force_replay, &block, &casper, permit_policy)
             .await
     }
 
