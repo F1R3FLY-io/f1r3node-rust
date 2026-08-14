@@ -19,12 +19,36 @@ printf '%s\n' "$$" >"$FAKE_POETRY_PID_FILE"
 # monitor CSV goes to the archive root and the metrics CSV to the data root
 # so a driver that searches only one of them fails this test.
 mkdir -p "$FAKE_ARCHIVE_DIR/session" "$FAKE_DATA_DIR/session"
-cat >"$FAKE_ARCHIVE_DIR/session/resource-timeseries.csv" <<'CSV'
+# Every harness CSV below is written CRLF (sed 's/$/\r/'): the real harness
+# writes them with Python csv.writer, whose default line terminator is \r\n,
+# so a fixture with bare \n would pass extractors that break in production.
+cat <<'CSV' | sed 's/$/\r/' >"$FAKE_ARCHIVE_DIR/session/resource-timeseries.csv"
 elapsed_s,node,memory_mb,cpu_percent,memory_limit_mb
 1.0,rnode.test.validator1,256.0,10.0,0
 1.0,rnode.test.validator2,512.0,20.0,0
 CSV
-cat >"$FAKE_DATA_DIR/session/node-metrics-timeseries.csv" <<'CSV'
+# Per-core telemetry for validator1 only: validator2 must keep its "all"
+# fallback row in the summary grid (mixed real/fallback rendering). The
+# __system__ row is host state and must not become a grid node, and the
+# non-numeric core id is a malformed row that must be rejected — the grid
+# assertion below proves both filters.
+# validator1 appears under BOTH container namings — the legacy
+# "rnode.<network>." prefix and the bare per-iteration shard hash
+# ("f6f7eb46.") that once leaked 42 columns into the published grid. The
+# node id is the name's final dot-segment, so both rows must fold into one
+# "validator1" key with the per-cell max (7.5 beats 3.0).
+# CRLF matters most here: cpu_percent is the LAST column, so without
+# CR-stripping every row fails the numeric check (smoke run 31547587950
+# published an all-fallback grid exactly this way).
+cat <<'CSV' | sed 's/$/\r/' >"$FAKE_ARCHIVE_DIR/session/resource-percore-timeseries.csv"
+elapsed_s,node,core,cpu_percent
+1.0,f6f7eb46.validator1,0,3.0
+2.0,rnode.test.validator1,0,7.5
+1.0,rnode.test.validator1,1,42.0
+1.0,__system__,0,93.0
+1.0,rnode.test.validator1,not-a-core,88.0
+CSV
+cat <<'CSV' | sed 's/$/\r/' >"$FAKE_DATA_DIR/session/node-metrics-timeseries.csv"
 elapsed_s,node,metric,value
 1.0,rnode.test.validator1,replay_cache_entries,12
 1.0,rnode.test.validator1,replay_cache_retained_bytes,1048576
@@ -36,6 +60,10 @@ proposal rejected: too far ahead of the last finalized block
 LOG
 cp "$FAKE_DATA_DIR/session/validator1.log" "$FAKE_ARCHIVE_DIR/session/validator1.log"
 printf 'fake pytest started\n'
+printf 'All-node LFBs at drain: {validator1: 12, validator2: 9} (spread 3 blocks)\n'
+if [ "${FAKE_EMIT_SOAK_METRIC:-false}" = "true" ]; then
+	printf 'SOAK_METRIC name=lfb_spread value=4 phase=drain\n'
+fi
 while :; do sleep 1; done
 SH
 cat >"$TMP/bin/docker" <<'SH'
@@ -63,6 +91,7 @@ METRICS
 SH
 chmod +x "$TMP/bin/poetry" "$TMP/bin/docker" "$TMP/bin/curl"
 
+test ! -e "$TMP/output"
 PATH="$TMP/bin:$PATH" \
 	FAKE_POETRY_PID_FILE="$TMP/fake-poetry.pid" \
 	FAKE_DATA_DIR="$TMP/system-integration/integration-tests/data" \
@@ -82,13 +111,26 @@ for _ in $(seq 1 20); do
 	sleep 0.25
 done
 test -e "$TMP/output/iteration-00001-docker/.started"
+jq -e '
+  .target_ref == "unknown"
+  and .target_sha == "unknown"
+  and (.started_at | type) == "number"
+  and .requested_seconds == 120
+  and .iterations == 1
+  and .failures == 0
+' "$TMP/output/.soak-checkpoint-state.json" >/dev/null
 for _ in $(seq 1 20); do
 	[ -s "$TMP/output/iteration-00001-docker/node-metrics-timeseries.csv" ] &&
 		grep -q 'test.validator1.*12.*1048576.*2.*2.*7' \
 			"$TMP/output/iteration-00001-docker/node-memory-timeseries.tsv" 2>/dev/null && break
 	sleep 0.25
 done
+for _ in $(seq 1 20); do
+	[ -s "$TMP/output/iteration-00001-docker/resource-percore-timeseries.csv" ] && break
+	sleep 0.25
+done
 test -s "$TMP/output/iteration-00001-docker/resource-timeseries.csv"
+test -s "$TMP/output/iteration-00001-docker/resource-percore-timeseries.csv"
 test -s "$TMP/output/iteration-00001-docker/node-metrics-timeseries.csv"
 grep -q 'test.validator1.*12.*1048576.*2.*2.*7' \
 	"$TMP/output/iteration-00001-docker/node-memory-timeseries.tsv"
@@ -118,9 +160,15 @@ jq -e '
   .iterations == 1
   and .failures == 1
   and .rss_peak_mb == 768
+  and .cpu_peak_pct == 30
+  and .cpu_peak_core_grid_pct == {"validator1": {"0": 7.5, "1": 42}, "validator2": {"all": 20}}
   and .iteration_metrics[0].exit_code == 1
   and .iteration_metrics[0].rss_peak_mb == 768
+  and .iteration_metrics[0].cpu_peak_per_node_pct == {"validator1": 10, "validator2": 20}
+  and .iteration_metrics[0].cpu_peak_per_node_core_pct == {"validator1": {"0": 7.5, "1": 42}}
   and .iteration_metrics[0].too_far_ahead_errors == 1
+  and .iteration_metrics[0].metrics.lfb_spread == {p50: 3, p95: 3, max: 3, min: 3, samples: 1}
+  and .tracked_metrics.lfb_spread == {p50: 3, p95: 3, max: 3, samples: 1}
 ' "$TMP/output/summary.json" >/dev/null
 grep -q 'replay_cache_retained_bytes,1048576' \
 	"$TMP/output/iteration-00001-docker/node-metrics-timeseries.csv"
@@ -128,4 +176,69 @@ test ! -e "$TMP/output/iteration-00001-docker/.pytest-output.fifo"
 test -s "$TMP/fake-poetry.pid"
 ! kill -0 "$(cat "$TMP/fake-poetry.pid")" 2>/dev/null
 
-printf 'soak fail-closed driver tests passed\n'
+# Scenario 2: the soak window ends mid-iteration. timeout(1) kills pytest and
+# reports 124; the driver must write the deadline marker, NOT count the
+# iteration as a failure (exit 0, no exit-code.txt, no early-exit), and still
+# publish the telemetry the snapshot loop harvested before the kill — the
+# emit call runs BEFORE the deadline break, and nothing else pins that
+# ordering. Canary 31554271086 iteration 2 (all-null metrics, exit 124) is
+# what the summary degrades to when the harness wrote no CSVs; here the fake
+# harness writes them immediately, so nulls would mean the driver dropped
+# metrics it had.
+mkdir -p "$TMP/si2"
+PATH="$TMP/bin:$PATH" \
+	FAKE_POETRY_PID_FILE="$TMP/fake-poetry-2.pid" \
+	FAKE_DATA_DIR="$TMP/si2/integration-tests/data" \
+	FAKE_ARCHIVE_DIR="$TMP/si2/integration-tests/log-archive" \
+	FAKE_EMIT_SOAK_METRIC=true \
+	SOAK_DURATION_SECONDS=6 \
+	SYSTEM_INTEGRATION_DIR="$TMP/si2" \
+	SOAK_OUTPUT_DIR="$TMP/output2" \
+	SOAK_RSS_CEILING_MB=0 \
+	SOAK_HOST_FREE_FLOOR_MB=0 \
+	SOAK_GUARDIAN_POLL_SECONDS=1 \
+	SOAK_MONITOR_SNAPSHOT_SECONDS=0.1 \
+	"$ROOT/scripts/run-merge-recovery-soak.sh" >"$TMP/driver2.log" 2>&1 &
+DRIVER_PID=$!
+
+for _ in $(seq 1 60); do
+	kill -0 "$DRIVER_PID" 2>/dev/null || break
+	sleep 0.5
+done
+if kill -0 "$DRIVER_PID" 2>/dev/null; then
+	cat "$TMP/driver2.log" >&2
+	echo 'soak driver did not stop at its deadline' >&2
+	exit 1
+fi
+set +e
+wait "$DRIVER_PID"
+status=$?
+set -e
+DRIVER_PID=""
+if [ "$status" -ne 0 ]; then
+	cat "$TMP/driver2.log" >&2
+	echo "deadline-killed iteration must not fail the soak (driver exited $status)" >&2
+	exit 1
+fi
+
+test -e "$TMP/output2/iteration-00001-docker/deadline.txt"
+test ! -e "$TMP/output2/iteration-00001-docker/exit-code.txt"
+test ! -e "$TMP/output2/early-exit.txt"
+grep -q '^early_exit_reason=none$' "$TMP/output2/summary.txt"
+jq -e '
+  .iterations == 1
+  and .failures == 0
+  and .rss_peak_mb == 768
+  and .cpu_peak_pct == 30
+  and .cpu_peak_core_grid_pct == {"validator1": {"0": 7.5, "1": 42}, "validator2": {"all": 20}}
+  and .iteration_metrics[0].exit_code == 124
+  and .iteration_metrics[0].rss_peak_mb == 768
+  and .iteration_metrics[0].cpu_peak_per_node_pct == {"validator1": 10, "validator2": 20}
+  and .iteration_metrics[0].cpu_peak_per_node_core_pct == {"validator1": {"0": 7.5, "1": 42}}
+  and .iteration_metrics[0].metrics.lfb_spread == {p50: 4, p95: 4, max: 4, min: 4, samples: 1}
+  and .tracked_metrics.lfb_spread == {p50: 4, p95: 4, max: 4, samples: 1}
+' "$TMP/output2/summary.json" >/dev/null
+test -s "$TMP/fake-poetry-2.pid"
+! kill -0 "$(cat "$TMP/fake-poetry-2.pid")" 2>/dev/null
+
+printf 'soak driver tests passed (fail-closed + deadline paths)\n'

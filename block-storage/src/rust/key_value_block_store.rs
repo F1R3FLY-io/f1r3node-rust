@@ -467,6 +467,8 @@ mod tests {
     }
 
     impl KeyValueStore for MockKeyValueStore {
+        fn as_any(&self) -> &dyn std::any::Any { self }
+
         fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
             self.update_input_keys(keys.to_vec());
             Ok(vec![self.get_result.clone()])
@@ -485,6 +487,18 @@ mod tests {
                 .unwrap()
                 .extend(kv_pairs.iter().map(|(_, v)| v.clone()));
             Ok(())
+        }
+
+        fn put_one_if_absent(
+            &self,
+            key: shared::rust::ByteBuffer,
+            value: shared::rust::ByteBuffer,
+        ) -> Result<bool, KvStoreError> {
+            if self.get_result.is_some() {
+                return Ok(false);
+            }
+            self.put(vec![(key, value)])?;
+            Ok(true)
         }
 
         fn delete(&self, _keys: Vec<shared::rust::ByteBuffer>) -> Result<usize, KvStoreError> {
@@ -529,11 +543,21 @@ mod tests {
     pub struct NotImplementedKV;
 
     impl KeyValueStore for NotImplementedKV {
+        fn as_any(&self) -> &dyn std::any::Any { self }
+
         fn get(&self, _keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
             todo!()
         }
 
         fn put(&self, _kv_pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError> {
+            todo!()
+        }
+
+        fn put_one_if_absent(
+            &self,
+            _key: ByteBuffer,
+            _value: ByteBuffer,
+        ) -> Result<bool, KvStoreError> {
             todo!()
         }
 

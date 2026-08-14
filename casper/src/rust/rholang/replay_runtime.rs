@@ -11,11 +11,13 @@ use models::rust::casper::protocol::casper_message::{
     Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
+use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::system_processes::{
     BlockData, DeployData as SystemProcessDeployData,
 };
+use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::merger::merging_logic::{MergeType, NumberChannelsEndVal};
@@ -634,28 +636,29 @@ impl ReplayRuntimeOps {
 
     pub async fn check_replay_data_with_fix(
         &self,
-        // https://f1r3fly.atlassian.net/browse/RCHAIN-3505
         eval_successful: bool,
     ) -> Result<(), ReplayFailure> {
         let check_start = Instant::now();
         let result = match self.runtime_ops.runtime.check_replay_data().await {
             Ok(()) => Ok(()),
-            Err(err) => {
-                let err_msg = err.to_string();
-                if err_msg.contains("unused") && err_msg.contains("COMM") {
-                    if !eval_successful {
-                        // Suppress UnusedCOMMEvent when eval was not successful
-                        Ok(())
-                    } else {
-                        Err(ReplayFailure::unused_comm_event(err_msg))
-                    }
-                } else {
-                    Err(ReplayFailure::internal_error(format!(
-                        "Replay check failed: {}",
-                        err
-                    )))
-                }
+            // A deploy whose evaluation failed is allowed to leave recorded COMM events
+            // unconsumed: the rollback restores the hot store, event log and produce counter, but
+            // not the replay-data multimap, so leftover entries are expected rather than a
+            // divergence. Matched on the variant — an earlier form compared rendered text and
+            // never fired, because the message renders "Unused COMM event" while the guard tested
+            // for a lowercase "unused".
+            Err(InterpreterError::RSpaceError(RSpaceError::UnusedCommEvent { .. }))
+                if !eval_successful =>
+            {
+                Ok(())
             }
+            Err(err @ InterpreterError::RSpaceError(RSpaceError::UnusedCommEvent { .. })) => {
+                Err(ReplayFailure::unused_comm_event(err.to_string()))
+            }
+            Err(err) => Err(ReplayFailure::internal_error(format!(
+                "Replay check failed: {}",
+                err
+            ))),
         };
         metrics::histogram!(BLOCK_REPLAY_SYSDEPLOY_CHECK_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(check_start.elapsed().as_secs_f64());
