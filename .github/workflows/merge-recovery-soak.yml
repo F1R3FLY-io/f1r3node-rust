@@ -114,7 +114,8 @@ env:
   # certificate: IO error: Is a directory (os error 21)" — the soak failed at
   # bring-up nightly from ~2026-07-27, and since checkpoint publishes come from
   # completed segments, the dashboard never published. Bump this whenever the
-  # other two move.
+  # other two move — `just repin-system-integration <sha>` rewrites all pin
+  # sites together and runs the invariants checker.
   # 2026-07-30: bumped to the system-integration PR #68 merge (main tip) —
   # adds the test_load.py drain-snapshot convergence fix and registry pull
   # retries on top of the validator4 certs.
@@ -167,7 +168,17 @@ env:
   # by ancestry (a0c6fba6 is an ancestor, so the 48GB default and
   # RUNNER_LABELS override carry forward) and by content at the SHA
   # (state.env AMD64_MEM_GB=48; resource_monitor.py emits the per-core CSV).
-  SYSTEM_INTEGRATION_REF: f8e43643b915fdfd814285c8225b1a4b129a8547
+  #
+  # 2026-08-13: re-pointed to the SI PR #109 main merge. The previous SHA
+  # (f8e43643) was a commit on the temporary test/node-stability-pr-support
+  # branch, pinned by #210 while its CI was validated and landed without an
+  # entry here — so the block above misdescribed the pin as the #103 merge.
+  # Zero tree diff old..new (compare reports files:0; main is ahead only by
+  # the #107/#108/#109 merge commits and behind by nothing), so this changes
+  # provenance, not content: the main merge SHA stays reachable after the
+  # test branch is deleted, where the branch commit could be garbage
+  # collected out from under the secret-bearing launch job's checkout.
+  SYSTEM_INTEGRATION_REF: d781f5fed9ad84ff503aa9c2a3c6da5014f3501a
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
