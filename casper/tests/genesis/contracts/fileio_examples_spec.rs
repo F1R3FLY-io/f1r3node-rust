@@ -84,12 +84,14 @@ in {{
       for(@[true, fileCap] <- @fs!?("openFile", "consensus-cap", {{}})) {{
         for(@r <- @fileCap!?("chown", "alice", "users")) {{
           match r {{
-            [false, "FSERR_UNSUPPORTED", _msg] => {{
+            [false, "FSERR_UNSUPPORTED",
+             "chown requires a write-capable mode"] => {{
               rhoSpec!("assert", (true, "==", true),
                 "chown on consensus-cap returns FSERR_UNSUPPORTED", *ackCh)
             }}
             _ => {{
-              rhoSpec!("assert", (r, "==", "[false, FSERR_UNSUPPORTED, _]"),
+              rhoSpec!("assert", (r, "==",
+                "[false, FSERR_UNSUPPORTED, \"chown requires a write-capable mode\"]"),
                 "chown on consensus-cap returns FSERR_UNSUPPORTED", *ackCh)
             }}
           }}
@@ -581,14 +583,16 @@ in {{
             readOnlyForwarder!(*chmodCh, "chmod", "rw-r--r--") |
             for(@rTell <- tellCh; @rSize <- sizeCh; @rChmod <- chmodCh) {{
               match [rTell, rSize, rChmod] {{
-                [[true, _], [true, _], [false, "FSERR_UNSUPPORTED", _]] => {{
+                [[true, _], [true, _],
+                 [false, "FSERR_UNSUPPORTED",
+                  "method not on read-only wrapper"]] => {{
                   rhoSpec!("assert", (true, "==", true),
                     "forwarder allows tell + size, blocks chmod", *ackCh)
                 }}
                 _ => {{
                   rhoSpec!("assert",
                     ([rTell, rSize, rChmod], "==",
-                     "[[true,_], [true,_], [false, FSERR_UNSUPPORTED, _]]"),
+                     "[[true,_], [true,_], [false, FSERR_UNSUPPORTED, \"method not on read-only wrapper\"]]"),
                     "forwarder allows tell + size, blocks chmod", *ackCh)
                 }}
               }}
@@ -819,6 +823,8 @@ in {{
 async fn fileio_parallel_byte_sum_foldconcurrent() {
     unimplemented!("blocked on foldConcurrent implementation in Stream.rho")
 }
+
+/// Slice 10a-7: canonical example `fileio_rows.rho`.
 ///
 /// Buffer-of-buffers via `alloc.allocRows(128, 8192, "utf8")` +
 /// `file.readLinesInto(rows)`.  Same PB-B-5 block as slice 10a-6 —
