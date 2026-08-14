@@ -825,17 +825,21 @@ impl RuntimeOps {
     }
 
     /**
-     * Evaluates exploratory (read-only) deploy
+     * Evaluates exploratory (read-only) deploy.
+     *
+     * `phlo_limit` is always supplied by the caller: `RuntimeManager` passes the
+     * operator-configured ceiling, and test callers state their own. There is no
+     * compiled-in default, so no call site can diverge from the operator's
+     * configuration without saying so.
      */
-    pub async fn play_exploratory_deploy(
+    pub async fn play_exploratory_deploy_with_phlo_limit(
         &mut self,
         term: String,
         hash: &StateHash,
         deployer: Option<PublicKey>,
+        phlo_limit: i64,
     ) -> Result<(Vec<Par>, u64), CasperError> {
         let deploy_result = async {
-            // Hardcoded phlogiston limit / 1 REV if phloPrice=1
-            let phlo_limit = 100 * 1000 * 1000;
             let data = DeployData {
                 term,
                 time_stamp: 0,

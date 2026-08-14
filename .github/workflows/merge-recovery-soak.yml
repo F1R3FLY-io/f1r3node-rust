@@ -114,7 +114,8 @@ env:
   # certificate: IO error: Is a directory (os error 21)" — the soak failed at
   # bring-up nightly from ~2026-07-27, and since checkpoint publishes come from
   # completed segments, the dashboard never published. Bump this whenever the
-  # other two move.
+  # other two move — `just repin-system-integration <sha>` rewrites all pin
+  # sites together and runs the invariants checker.
   # 2026-07-30: bumped to the system-integration PR #68 merge (main tip) —
   # adds the test_load.py drain-snapshot convergence fix and registry pull
   # retries on top of the validator4 certs.
@@ -167,7 +168,17 @@ env:
   # by ancestry (a0c6fba6 is an ancestor, so the 48GB default and
   # RUNNER_LABELS override carry forward) and by content at the SHA
   # (state.env AMD64_MEM_GB=48; resource_monitor.py emits the per-core CSV).
-  SYSTEM_INTEGRATION_REF: fe91755ed16774a5f56f33da9712f7df1f52ca9d
+  #
+  # 2026-08-13: re-pointed to the SI PR #109 main merge. The previous SHA
+  # (f8e43643) was a commit on the temporary test/node-stability-pr-support
+  # branch, pinned by #210 while its CI was validated and landed without an
+  # entry here — so the block above misdescribed the pin as the #103 merge.
+  # Zero tree diff old..new (compare reports files:0; main is ahead only by
+  # the #107/#108/#109 merge commits and behind by nothing), so this changes
+  # provenance, not content: the main merge SHA stays reachable after the
+  # test branch is deleted, where the branch commit could be garbage
+  # collected out from under the secret-bearing launch job's checkout.
+  SYSTEM_INTEGRATION_REF: cc11035e7364dd1876c4db8d87a8ade0022ae1d6
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
@@ -656,7 +667,7 @@ jobs:
       cancel-in-progress: true
     steps:
       - name: Clone trusted runner launcher
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: F1R3FLY-io/system-integration
           ref: ${{ env.SYSTEM_INTEGRATION_REF }}
@@ -698,7 +709,7 @@ jobs:
 
       - name: Create runner-management token
         id: app-token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         with:
           app-id: ${{ vars.CI_GITHUB_APP_ID }}
           private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
@@ -1058,7 +1069,7 @@ jobs:
       cancel-in-progress: true
     steps:
       - name: Checkout CI control files
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.workflow_sha }}
           path: ci-control
@@ -1167,7 +1178,7 @@ jobs:
           echo "tagged $iid — reapable after $(date -u -d "@${deadline}" +%FT%TZ)"
 
       - name: Checkout code under test
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ needs.schedule_gate.outputs.target_ref }}
           path: node-under-test
@@ -1181,7 +1192,7 @@ jobs:
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Clone trusted integration harness
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: F1R3FLY-io/system-integration
           ref: ${{ env.SYSTEM_INTEGRATION_REF }}
@@ -1534,7 +1545,7 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - name: Checkout CI control files
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.workflow_sha }}
           path: ci-control

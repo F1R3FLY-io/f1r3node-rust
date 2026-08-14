@@ -3,5 +3,8 @@
 # only when its behavior is present on the target branch; the reader rejects
 # malformed and duplicate entries before pytest starts.
 duplicate-signed-deploy-race
+expired-deploy-admission
 finality-stall-recovery
+observer-exploratory-backpressure
+observer-missing-block-retry
 slow-peer-notification-quorum

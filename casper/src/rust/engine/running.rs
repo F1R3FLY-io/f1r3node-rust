@@ -116,7 +116,6 @@ pub async fn update_fork_choice_tips_if_stuck<T: TransportLayer + Send + Sync>(
             transport
                 .send_fork_choice_tip_request(connections_cell, conf)
                 .await?;
-            let _ = engine.recover_stuck_validator(delay_threshold).await?;
         }
     }
 

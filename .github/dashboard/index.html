@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Weekend and daily F1R3FLY merge-recovery soak trends, verdicts, and run history.">
 <title>F1R3FLY soak benchmarks</title>
 <style>
   :root { color-scheme: light dark; }
@@ -17,6 +18,7 @@
        darker step that passes all six palette checks (validated: CVD worst
        adjacent ΔE 14.8, contrast ≥ 3:1 on #f1f0ee). */
     --grid: #e4e2dd; --series-1: #2a78d6; --series-2: #008300; --series-3: #d5588e;
+    --link: #005ea8;
     /* Neutral fill for 0% heatmap cells — must match zero_neutral in
        scripts/soak-charts (the SVGs bake it in; this var only paints the
        legend swatch beside them). */
@@ -29,23 +31,32 @@
   @media (prefers-color-scheme: dark) {
     :root:where(:not([data-theme="light"])) body {
       --surface-1: #1a1a19; --surface-2: #242423;
-      --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #8a887f;
-      --grid: #33322f; --series-1: #3987e5; --series-2: #008300; --series-3: #d55181;
-      --heat-zero: #33322f;
-      --good: #33a133; --serious: #f05252; --serious-bg: #3a1f1f;
+      --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #96948b;
+      --grid: #33322f; --series-1: #5799eb; --series-2: #008300; --series-3: #d55181;
+      --link: #72b0ff; --heat-zero: #33322f;
+      --good: #33a133; --serious: #ff6666; --serious-bg: #3a1f1f;
       --tint: 14%;
     }
   }
   :root[data-theme="dark"] body {
     --surface-1: #1a1a19; --surface-2: #242423;
-    --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #8a887f;
-    --grid: #33322f; --series-1: #3987e5; --series-2: #008300; --series-3: #d55181;
-    --heat-zero: #33322f;
-    --good: #33a133; --serious: #f05252; --serious-bg: #3a1f1f;
+    --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #96948b;
+    --grid: #33322f; --series-1: #5799eb; --series-2: #008300; --series-3: #d55181;
+    --link: #72b0ff; --heat-zero: #33322f;
+    --good: #33a133; --serious: #ff6666; --serious-bg: #3a1f1f;
     --tint: 14%;
   }
   h1 { font-size: 1.25rem; margin: 0 0 .25rem; }
   .sub { color: var(--text-secondary); margin: 0 0 1.25rem; }
+  /* Upper-left repo link: the dashboard is published detached from the repo
+     (GitHub Pages), so the page itself carries the way back to the source. */
+  .page-head { display: flex; align-items: center; gap: .55rem; }
+  .repo-link {
+    display: inline-flex; align-items: center; color: var(--link);
+    padding: .2rem; margin-left: -.2rem; border-radius: 6px;
+  }
+  .repo-link:hover, .repo-link:focus-visible { color: var(--text-primary); }
+  .repo-link svg { display: block; fill: currentColor; }
 
   /* Tabs are a radio group, so switching needs no JS and the bar keeps working
      even when a data fetch fails. The inputs live at body level rather than
@@ -56,9 +67,12 @@
      top-rounded, sitting on the panel's top border, with the active tab's
      bottom edge cut away so button and panel read as one surface. That seam is
      the visual statement that the panel's data belongs to the selected tab. */
-  .tabbar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: flex-end; margin: 0; }
+  .tabbar {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 12rem));
+    gap: .5rem; align-items: stretch; margin: 0;
+  }
   .tabbar label {
-    display: flex; flex-direction: column; gap: .15rem; min-width: 11rem;
+    display: flex; flex-direction: column; gap: .15rem; min-width: 0;
     position: relative; z-index: 1; margin-bottom: -1px;
     padding: .8rem 1.1rem; cursor: pointer; user-select: none;
     background: var(--surface-2); color: var(--text-secondary);
@@ -144,7 +158,8 @@
      stack single-column via the grid breakpoints. */
   @media (max-width: 640px) {
     body { padding: .75rem; }
-    .tabbar label { flex: 1 1 0; min-width: 0; padding: .6rem .7rem; }
+    .tabbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .tabbar label { padding: .6rem .7rem; }
     .tab-hint, .tab-provenance { font-size: .74rem; }
     #tab-weekend:checked ~ #panel-weekend,
     #tab-daily:checked ~ #panel-daily { padding: .85rem; }
@@ -201,14 +216,16 @@
   /* Every chart is a pre-rendered SVG pair from scripts/soak-charts with theme
      colors baked in; show the variant matching the active theme with the same
      three-state logic as the CSS vars above. */
+  .chart-image-link { display: block; border-radius: 4px; }
+  .chart-image-link:focus-visible { outline: 3px solid var(--link); outline-offset: 3px; }
   .chart-svg { display: block; width: 100%; height: auto; }
-  .chart-dark { display: none; }
+  .chart-dark-link { display: none; }
   @media (prefers-color-scheme: dark) {
-    :root:where(:not([data-theme="light"])) .chart-light { display: none; }
-    :root:where(:not([data-theme="light"])) .chart-dark { display: block; }
+    :root:where(:not([data-theme="light"])) .chart-light-link { display: none; }
+    :root:where(:not([data-theme="light"])) .chart-dark-link { display: block; }
   }
-  :root[data-theme="dark"] .chart-light { display: none; }
-  :root[data-theme="dark"] .chart-dark { display: block; }
+  :root[data-theme="dark"] .chart-light-link { display: none; }
+  :root[data-theme="dark"] .chart-dark-link { display: block; }
   /* The all-zero counter panel: the metric holds at its target, so it earns a
      number, not an empty chart. */
   .kpi-zero { margin: 1rem 0 0; font-size: 2.4rem; font-weight: 650;
@@ -216,20 +233,32 @@
   .kpi-zero .unit { font-size: .85rem; font-weight: 400; }
   .latest { color: var(--text-secondary); font-weight: 400; font-size: .85em;
             font-variant-numeric: tabular-nums; }
+  .chart-permalink { color: inherit; text-decoration: none; }
+  .chart-permalink:hover, .chart-permalink:focus-visible { text-decoration: underline; }
+  .chart-empty { color: var(--text-muted); min-height: 8rem; display: grid; place-items: center; }
   .table-wrap { overflow-x: auto; }
   table { border-collapse: collapse; width: 100%; margin-top: 1.5rem; }
   th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid var(--grid); white-space: nowrap; }
   th { color: var(--text-secondary); font-weight: 600; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  a { color: var(--series-1); }
+  a { color: var(--link); }
   .empty { color: var(--text-muted); padding: 2rem 0; }
 </style>
 </head>
 <body>
-<input class="tabs" type="radio" name="soak-tab" id="tab-weekend" checked>
-<input class="tabs" type="radio" name="soak-tab" id="tab-daily">
+<main>
+<input class="tabs" type="radio" name="soak-tab" id="tab-weekend" value="weekend" checked>
+<input class="tabs" type="radio" name="soak-tab" id="tab-daily" value="daily">
 
-<h1>Merge-recovery soak benchmarks</h1>
+<div class="page-head">
+  <a class="repo-link" href="https://github.com/F1R3FLY-io/f1r3node-rust"
+     aria-label="f1r3node-rust repository on GitHub" title="f1r3node-rust on GitHub">
+    <svg width="20" height="20" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M2 2.5A2.5 2.5 0 0 1 4.5 0h8.75a.75.75 0 0 1 .75.75v12.5a.75.75 0 0 1-.75.75h-2.5a.75.75 0 0 1 0-1.5h1.75v-2h-8a1 1 0 0 0-.714 1.7.75.75 0 1 1-1.072 1.05A2.495 2.495 0 0 1 2 11.5Zm10.5-1h-8a1 1 0 0 0-1 1v6.708A2.486 2.486 0 0 1 4.5 9h8ZM5 12.25a.25.25 0 0 1 .25-.25h3.5a.25.25 0 0 1 .25.25v3.25a.25.25 0 0 1-.4.2l-1.45-1.087a.249.249 0 0 0-.3 0L5.4 15.7a.25.25 0 0 1-.4-.2Z"/>
+    </svg>
+  </a>
+  <h1>Merge-recovery soak benchmarks</h1>
+</div>
 <p class="sub">Continuous soak of the merge-recovery suite against a live shard.</p>
 
 <div class="tabbar" role="group" aria-label="Soak series">
@@ -273,11 +302,13 @@
   <div class="table-wrap" id="table-daily"></div>
   <p class="sub" id="links-daily"></p>
 </div>
+</main>
 
 <script>
 (async function () {
   const RUNS_URL = "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/";
   const COMMIT_URL = "https://github.com/F1R3FLY-io/f1r3node-rust/commit/";
+  const GLOSSARY_URL = "https://github.com/F1R3FLY-io/f1r3node-rust/blob/master/docs/Glossary.md";
 
   const SERIES = [
     { key: "weekend", history: "data/history.json", verdict: "data/latest-verdict.json",
@@ -303,20 +334,20 @@
       series: [
         { name: "total", path: ["passive", "iterations_per_hour"], c: 0 },
       ] },
-    { slug: "peak-rss", title: "Peak node RSS",
+    { slug: "peak-rss", title: "Peak node RSS", glossary: "peak-node-rss",
       unit: "MB · Resident Set Size (footprint)",
       fmt: v => Math.round(v).toLocaleString(),
       series: [
         { name: "soak load", path: ["passive", "rss_peak_mb"], c: 0 },
         { name: "bench segments", path: ["active", "rss_peak_mb"], c: 2 },
       ] },
-    { slug: "peak-cpu", title: "Peak node CPU",
+    { slug: "peak-cpu", title: "Peak node CPU", glossary: "peak-node-cpu",
       unit: "% of one core · readings above 100% mean several cores were busy",
       fmt: v => v.toFixed(1),
       series: [
         { name: "soak load", path: ["passive", "cpu_peak_pct"], c: 0 },
       ] },
-    { slug: "finality-p95", title: "Finalization latency p95", unit: "ms",
+    { slug: "finality-p95", title: "Finalization latency p95", glossary: "finalization-latency-p95", unit: "ms",
       fmt: v => Math.round(v).toLocaleString(),
       series: [
         { name: "soak load", path: ["passive", "finalization_p95_ms"], c: 0 },
@@ -329,12 +360,13 @@
         { name: "p95", path: ["passive", "finalization_p95_ms"], c: 1 },
         { name: "p99", path: ["passive", "finalization_p99_ms"], c: 2 },
       ] },
-    { slug: "too-far-ahead", title: "Too-far-ahead errors", unit: "rejections / run",
+    { slug: "too-far-ahead", title: "Too-far-ahead errors", glossary: "too-far-ahead-errors", unit: "rejections / run",
       fmt: v => Math.round(v).toLocaleString(), zeroBadge: true,
       series: [
         { name: "total", path: ["passive", "too_far_ahead_errors"], c: 0 },
       ] },
-    { slug: "lfb-spread", title: "LFB convergence spread", unit: "blocks",
+    { slug: "lfb-spread", title: "LFB convergence spread", glossary: "lfb-convergence-spread", unit: "blocks",
+      empty: "Awaiting the first emitted LFB convergence sample.",
       fmt: v => Math.round(v).toLocaleString(),
       series: [
         { name: "p95", path: ["passive", "tracked_metrics", "lfb_spread", "p95"], c: 1 },
@@ -343,14 +375,46 @@
   ];
 
   const g = (h, path) => path.reduce((o, k) => (o == null ? null : o[k]), h);
+  const element = (tag, className, text) => {
+    const el = document.createElement(tag);
+    if (className) el.className = className;
+    if (text != null) el.textContent = text;
+    return el;
+  };
+  const addLink = (parent, href, text) => {
+    const link = element("a", "", text);
+    link.href = href;
+    parent.appendChild(link);
+    return link;
+  };
+  const fragmentFor = (seriesKey, slug) => `chart-${seriesKey}-${slug}`;
+  const seriesURL = (seriesKey, fragment = "") => {
+    const params = new URLSearchParams(location.search);
+    params.set("series", seriesKey);
+    return location.pathname + "?" + params.toString() + fragment;
+  };
 
-  // Every value that comes out of the fetched JSON goes through this before it
-  // reaches innerHTML, including SVG text. The data is CI-written today, so
-  // this is defence in depth — but the page is served from the repo's Pages
-  // origin, so anything that could rewrite the published JSON would otherwise
-  // get script execution there.
-  const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
-  const esc = v => String(v == null ? "" : v).replace(/[&<>"']/g, c => ESCAPES[c]);
+  function selectedSeriesFromLocation() {
+    const requested = new URLSearchParams(location.search).get("series");
+    if (SERIES.some(series => series.key === requested)) return requested;
+    const match = location.hash.match(/^#chart-(weekend|daily)-/);
+    return match ? match[1] : "weekend";
+  }
+
+  function applySeriesFromLocation() {
+    document.getElementById("tab-" + selectedSeriesFromLocation()).checked = true;
+  }
+
+  applySeriesFromLocation();
+  for (const tab of document.querySelectorAll('input[name="soak-tab"]')) {
+    tab.addEventListener("change", () => {
+      if (!tab.checked) return;
+      const params = new URLSearchParams(location.search);
+      params.set("series", tab.value);
+      history.replaceState(null, "", location.pathname + "?" + params.toString());
+    });
+  }
+  window.addEventListener("popstate", applySeriesFromLocation);
 
   async function loadJSON(url) {
     try {
@@ -367,13 +431,19 @@
     const v = verdict && typeof verdict.verdict === "string" ? verdict.verdict : null;
     // in_progress is a mid-run checkpoint, not a result. It has to be matched
     // before the pass/regress split, or "not pass" would read as a regression
-    // and show a red tab for a soak that is running perfectly well.
+    // and show a red tab for a soak that is running perfectly well. A
+    // checkpoint verdict does carry provisional failures, though — completed
+    // facts like failed iterations — and a run in that state must not wear
+    // the healthy blue: run 31563121791 sat behind a neutral "running" tab
+    // for 14 hours while every iteration failed.
     if (v === "in_progress") {
-      cls = "running";
+      const failing = Array.isArray(verdict.failures) && verdict.failures.length > 0;
+      cls = failing ? "regress" : "running";
       const r = verdict.run || {};
       const h = s => (typeof s === "number" && s > 0) ? Math.floor(s / 3600) : null;
       const done = h(r.elapsed_seconds), total = h(r.duration_seconds);
-      text = "running" + (done !== null && total !== null ? ` · ${done}h of ${total}h` : "");
+      text = "running" + (done !== null && total !== null ? ` · ${done}h of ${total}h` : "")
+        + (failing ? " — failing" : "");
     } else if (runs === 0) {
       text = "no runs yet";
     } else if (v === null) {
@@ -394,10 +464,11 @@
   // completed run, so a partial one would double-count the night once the run
   // finishes and publishes for real.
   function renderProgress(el, verdict) {
-    if (!verdict || verdict.verdict !== "in_progress") { el.innerHTML = ""; return; }
-    el.innerHTML = '<div class="running-note">A soak is in progress. The report below is a ' +
-      'mid-run checkpoint; the charts and table show completed runs only, and this one ' +
-      'joins them when it finishes.</div>';
+    el.replaceChildren();
+    if (!verdict || verdict.verdict !== "in_progress") return;
+    el.appendChild(element("div", "running-note",
+      "A soak is in progress. The report below is a mid-run checkpoint; the charts and table " +
+      "show completed runs only, and this one joins them when it finishes."));
   }
 
   // Only something shaped like a git object may become a commit URL — the same
@@ -405,10 +476,12 @@
   // otherwise steer the href off this repository.
   function shaCell(sha) {
     const s = String(sha == null ? "" : sha);
-    const short = esc(s.slice(0, 8)) || "-";
-    return /^[0-9a-f]{7,40}$/.test(s)
-      ? `<a href="${COMMIT_URL}${s}"><code>${short}</code></a>`
-      : `<code>${short}</code>`;
+    const code = element("code", "", s.slice(0, 8) || "-");
+    if (!/^[0-9a-f]{7,40}$/.test(s)) return code;
+    const link = element("a");
+    link.href = COMMIT_URL + s;
+    link.appendChild(code);
+    return link;
   }
 
   // What was soaked, rendered onto the tab button so it is legible before
@@ -463,7 +536,7 @@
   // run. Runs recorded before the soak emitted shard_up_seconds render
   // nothing — the element collapses rather than showing a bar with no data.
   function renderUptime(el, verdict) {
-    el.innerHTML = "";
+    el.replaceChildren();
     const r = (verdict && verdict.run) || null;
     if (!r) return;
     const up = r.shard_up_seconds;
@@ -472,18 +545,55 @@
     const ratio = Math.min(Math.max(up / span, 0), 1);
     const pct = (ratio * 100).toFixed(ratio >= 0.995 && ratio < 1 ? 1 : 0);
     const hrs = s => (s / 3600).toFixed(s >= 36000 ? 0 : 1);
-    el.innerHTML =
-      `<span class="uptime-bar" role="img" aria-label="shard uptime ${pct}%">` +
-      `<i style="width:${(ratio * 100).toFixed(2)}%"></i></span>` +
-      `<span class="uptime-text">uptime ${pct}% · ${hrs(up)}h of ${hrs(span)}h</span>`;
+    const bar = element("span", "uptime-bar");
+    bar.setAttribute("role", "img");
+    bar.setAttribute("aria-label", `shard uptime ${pct}%`);
+    const fill = document.createElement("i");
+    fill.style.width = `${(ratio * 100).toFixed(2)}%`;
+    bar.appendChild(fill);
+    el.append(bar, element("span", "uptime-text", `uptime ${pct}% · ${hrs(up)}h of ${hrs(span)}h`));
   }
 
   // Rendered only when non-empty, so the strip's presence is itself the signal.
   function renderFailures(el, verdict) {
-    const f = (verdict && Array.isArray(verdict.failures)) ? verdict.failures : [];
-    if (f.length === 0) { el.innerHTML = ""; return; }
-    el.innerHTML = '<div class="failures"><strong>Latest run regressed</strong><ul>' +
-      f.map(s => "<li>" + esc(s) + "</li>").join("") + "</ul></div>";
+    el.replaceChildren();
+    const failures = (verdict && Array.isArray(verdict.failures)) ? verdict.failures : [];
+    if (failures.length === 0) return;
+    const box = element("div", "failures");
+    // A mid-run checkpoint with failures is a run going wrong, not a
+    // finished regression — say which one it is.
+    box.appendChild(element("strong", "",
+      verdict.verdict === "in_progress" ? "Run in progress is failing" : "Latest run regressed"));
+    const list = document.createElement("ul");
+    for (const failure of failures) list.appendChild(element("li", "", failure));
+    box.appendChild(list);
+    el.appendChild(box);
+  }
+
+  function renderCaption(fig, seriesKey, slug, title, unit, latest = "", glossary = "") {
+    const id = fragmentFor(seriesKey, slug);
+    fig.id = id;
+    const permalink = element("a", "chart-permalink", title);
+    permalink.href = glossary ? `${GLOSSARY_URL}#${glossary}` : seriesURL(seriesKey, "#" + id);
+    permalink.title = glossary ? `Read the ${title} definition` : `Link to ${title}`;
+    const caption = document.createElement("figcaption");
+    caption.append(permalink, " ", element("span", "unit", unit));
+    if (latest) caption.append(" ", element("span", "latest", `· latest ${latest}`));
+    fig.appendChild(caption);
+  }
+
+  function appendChartImage(fig, src, theme, alt) {
+    const link = element("a", `chart-image-link chart-${theme}-link`);
+    link.href = src;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.setAttribute("aria-label", `Open ${alt} at full size`);
+    const image = element("img", "chart-svg");
+    image.alt = alt;
+    image.src = src;
+    image.addEventListener("error", () => { fig.style.display = "none"; });
+    link.appendChild(image);
+    fig.appendChild(link);
   }
 
   // The failure map replaces the failure-rate line chart: for sparse failure
@@ -508,19 +618,20 @@
     const range = rates.length
       ? `${pct(Math.min(...rates))} – ${pct(Math.max(...rates))}`
       : "no failures recorded";
-    const fig = document.createElement("figure");
-    fig.className = "heatmap-figure";
-    fig.innerHTML =
-      `<figcaption>Failure map <span class="unit">failures / iteration</span></figcaption>` +
-      `<div class="legend"><span><i class="swatch swatch-cell" style="background:var(--heat-zero)"></i>0%</span>` +
-      `<span><i class="swatch swatch-cell heat-ramp"></i>${esc(range)}</span>` +
-      `<span class="unit">blank = did not run</span></div>` +
-      `<img class="chart-svg chart-light" alt="Failure heatmap: rate by category and date" ` +
-      `src="data/failure-heatmap-${esc(seriesKey)}-light.svg" ` +
-      `onerror="this.closest('figure').style.display='none'">` +
-      `<img class="chart-svg chart-dark" alt="Failure heatmap: rate by category and date" ` +
-      `src="data/failure-heatmap-${esc(seriesKey)}-dark.svg" ` +
-      `onerror="this.closest('figure').style.display='none'">`;
+    const fig = element("figure", "heatmap-figure");
+    renderCaption(fig, seriesKey, "failure-map", "Failure map", "failures / iteration");
+    const legend = element("div", "legend");
+    const zero = element("span");
+    const zeroSwatch = element("i", "swatch swatch-cell");
+    zeroSwatch.style.background = "var(--heat-zero)";
+    zero.append(zeroSwatch, "0%");
+    const ramp = element("span");
+    ramp.append(element("i", "swatch swatch-cell heat-ramp"), range);
+    legend.append(zero, ramp, element("span", "unit", "blank = did not run"));
+    fig.appendChild(legend);
+    const alt = "Failure heatmap: rate by category and date";
+    appendChartImage(fig, `data/failure-heatmap-${seriesKey}-light.svg`, "light", alt);
+    appendChartImage(fig, `data/failure-heatmap-${seriesKey}-dark.svg`, "dark", alt);
     container.appendChild(fig);
   }
 
@@ -530,21 +641,28 @@
         name: s.name, c: s.c,
         values: history.map(h => {
           const v = g(h, s.path);
-          return typeof v === "number" && isFinite(v) ? v : null;
+          return typeof v === "number" && Number.isFinite(v) ? v : null;
         }),
       })).filter(s => s.values.some(v => v !== null));
       const all = seriesData.flatMap(s => s.values).filter(v => v !== null);
-      // No data → no panel, mirroring the renderer, which emits no SVG then.
-      if (all.length === 0) continue;
-
       const fig = document.createElement("figure");
+      if (all.length === 0) {
+        if (!def.empty) continue;
+        renderCaption(fig, seriesKey, def.slug, def.title, def.unit, "", def.glossary);
+        fig.appendChild(element("p", "chart-empty", def.empty));
+        container.appendChild(fig);
+        continue;
+      }
+
       // All-zero counters are suppressed at the renderer, so a flat zero line
       // never poses as information; the number still deserves a surface,
       // because "no rejections, and we are watching" is the good news.
       if (def.zeroBadge && all.every(v => v === 0)) {
-        fig.innerHTML =
-          `<figcaption>${def.title} <span class="unit">${def.unit}</span></figcaption>` +
-          `<p class="kpi-zero">0<span class="unit">across ${all.length} run${all.length > 1 ? "s" : ""} · target 0</span></p>`;
+        renderCaption(fig, seriesKey, def.slug, def.title, def.unit, "", def.glossary);
+        const kpi = element("p", "kpi-zero", "0");
+        kpi.appendChild(element("span", "unit",
+          `across ${all.length} run${all.length > 1 ? "s" : ""} · target 0`));
+        fig.appendChild(kpi);
         container.appendChild(fig);
         continue;
       }
@@ -559,13 +677,21 @@
             return grid && typeof grid === "object" && Object.keys(grid).length > 0;
           })
         : false;
-      const legend = gridRun
-        ? '<div class="legend"><span><i class="swatch swatch-cell jet-ramp"></i>0% → hot</span>' +
-          '<span class="unit">cell = one core · labelled ≥ 100% (a full core)</span></div>'
-        : seriesData.length > 1
-        ? '<div class="legend">' + seriesData.map(s =>
-            `<span><i class="swatch" style="background:${S[s.c]}"></i>${s.name}</span>`).join("") + "</div>"
-        : "";
+      const legend = element("div", "legend");
+      if (gridRun) {
+        const scale = element("span");
+        scale.append(element("i", "swatch swatch-cell jet-ramp"), "0% → hot");
+        legend.append(scale,
+          element("span", "unit", "cell = one core · labelled ≥ 100% (a full core)"));
+      } else if (seriesData.length > 1) {
+        for (const series of seriesData) {
+          const item = element("span");
+          const swatch = element("i", "swatch");
+          swatch.style.background = S[series.c];
+          item.append(swatch, series.name);
+          legend.appendChild(item);
+        }
+      }
       // Selective direct label: single-series charts get the latest value in
       // the caption, so the current state reads at a glance. Multi-series
       // charts leave it to the legend and the table — one number per caption
@@ -573,48 +699,68 @@
       const latest = seriesData.length === 1
         ? seriesData[0].values.reduce((acc, v) => v !== null ? v : acc, null)
         : null;
-      const latestHtml = latest !== null
-        ? ` <span class="latest">· latest ${def.fmt(latest)}</span>` : "";
-      fig.innerHTML =
-        `<figcaption>${def.title} <span class="unit">${def.unit}</span>${latestHtml}</figcaption>` +
-        legend +
-        `<img class="chart-svg chart-light" alt="${def.title} chart" ` +
-        `src="data/chart-${def.slug}-${esc(seriesKey)}-light.svg" ` +
-        `onerror="this.closest('figure').style.display='none'">` +
-        `<img class="chart-svg chart-dark" alt="${def.title} chart" ` +
-        `src="data/chart-${def.slug}-${esc(seriesKey)}-dark.svg" ` +
-        `onerror="this.closest('figure').style.display='none'">`;
+      renderCaption(fig, seriesKey, def.slug, def.title, def.unit,
+        latest !== null ? def.fmt(latest) : "", def.glossary);
+      if (legend.childElementCount > 0) fig.appendChild(legend);
+      const alt = `${def.title} chart`;
+      appendChartImage(fig, `data/chart-${def.slug}-${seriesKey}-light.svg`, "light", alt);
+      appendChartImage(fig, `data/chart-${def.slug}-${seriesKey}-dark.svg`, "dark", alt);
       container.appendChild(fig);
     }
   }
 
   function renderTable(el, history) {
-    const rows = history.slice().reverse().map(h => {
+    el.replaceChildren();
+    const table = document.createElement("table");
+    const head = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    const columns = [
+      ["date", false], ["version", false], ["sha", false], ["trigger", false],
+      ["iters", true], ["fail rate", true], ["iters/h", true], ["RSS MB", true],
+      ["CPU %", true], ["final p50 ms", true], ["final p95 ms", true], ["final p99 ms", true],
+      ["bench p95 ms", true], ["too-far", true], ["LFB p95", true], ["LFB max", true], ["run", false],
+    ];
+    for (const [label, numeric] of columns) {
+      const th = element("th", numeric ? "num" : "", label);
+      headRow.appendChild(th);
+    }
+    head.appendChild(headRow);
+    table.appendChild(head);
+    const body = document.createElement("tbody");
+    const number = value => {
+      if (value == null) return "-";
+      if (typeof value === "number") return String(+value.toFixed(3));
+      return String(value);
+    };
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const h = history[index];
       const p = h.passive || {}, a = h.active || {}, r = h.run || {};
-      // Only a bare run of digits can become a URL. Anything else is not a
-      // GitHub run id, and concatenating it would let a crafted value steer
-      // the href somewhere other than this repo's Actions.
-      const runLink = /^[0-9]+$/.test(String(r.run_id || ""))
-        ? `<a href="${RUNS_URL}${r.run_id}">log</a>` : "-";
-      const n = v => v == null ? "-" : (typeof v === "number" ? +v.toFixed(3) : esc(v));
-      // "unknown" is what pre-version runs carry; show a dash so the column
-      // reads as "not recorded" rather than as a version by that name.
-      const ver = r.version && r.version !== "unknown" ? `<code>${esc(r.version)}</code>` : "-";
-      // Same optional-by-construction stance as version: rows predating
-      // trigger emission show a dash, not a value pretending to be recorded.
-      const trig = triggerLabel(r);
-      return `<tr><td>${esc((r.date || "").slice(0, 10))}</td><td>${ver}</td><td>${shaCell(r.target_sha)}</td>` +
-        `<td>${trig ? esc(trig) : "-"}</td>` +
-        `<td class="num">${n(p.iterations)}</td><td class="num">${n(p.failure_rate)}</td>` +
-        `<td class="num">${n(p.iterations_per_hour)}</td><td class="num">${n(p.rss_peak_mb)}</td>` +
-        `<td class="num">${n(p.finalization_p95_ms)}</td><td class="num">${n(a && a.p95_ms)}</td>` +
-        `<td>${runLink}</td></tr>`;
-    }).join("");
-    el.innerHTML =
-      `<table><thead><tr><th>date</th><th>version</th><th>sha</th><th>trigger</th><th class="num">iters</th>` +
-      `<th class="num">fail rate</th><th class="num">iters/h</th><th class="num">RSS MB</th>` +
-      `<th class="num">final p95 ms</th><th class="num">bench p95 ms</th><th>run</th></tr></thead>` +
-      `<tbody>${rows}</tbody></table>`;
+      const lfb = g(h, ["passive", "tracked_metrics", "lfb_spread"]) || {};
+      const row = document.createElement("tr");
+      const cells = [
+        [(r.date || "").slice(0, 10), false],
+        [r.version && r.version !== "unknown" ? r.version : "-", false, "code"],
+        [shaCell(r.target_sha), false, "node"], [triggerLabel(r) || "-", false],
+        [p.iterations, true], [p.failure_rate, true], [p.iterations_per_hour, true],
+        [p.rss_peak_mb, true], [p.cpu_peak_pct, true], [p.finalization_p50_ms, true],
+        [p.finalization_p95_ms, true], [p.finalization_p99_ms, true], [a.p95_ms, true],
+        [p.too_far_ahead_errors, true], [lfb.p95, true], [lfb.max, true],
+      ];
+      for (const [value, numeric, kind] of cells) {
+        const td = element("td", numeric ? "num" : "");
+        if (kind === "node") td.appendChild(value);
+        else if (kind === "code") td.appendChild(element("code", "", value));
+        else td.textContent = number(value);
+        row.appendChild(td);
+      }
+      const runCell = document.createElement("td");
+      if (/^[0-9]+$/.test(String(r.run_id || ""))) addLink(runCell, RUNS_URL + r.run_id, "log");
+      else runCell.textContent = "-";
+      row.appendChild(runCell);
+      body.appendChild(row);
+    }
+    table.appendChild(body);
+    el.appendChild(table);
   }
 
   for (const def of SERIES) {
@@ -631,20 +777,26 @@
     // The tab button carries the commit as text; this is where it becomes
     // clickable, since a link inside the label would fight the radio toggle.
     const soakedSha = (verdict && verdict.run && verdict.run.target_sha) || "";
-    const commitLink = /^[0-9a-f]{7,40}$/.test(String(soakedSha))
-      ? ` · <a href="${COMMIT_URL}${soakedSha}">commit ${esc(soakedSha.slice(0, 8))}</a>` : "";
-    document.getElementById("links-" + def.key).innerHTML =
-      `<a href="${def.report}">latest report</a> · <a href="${def.history}">raw data</a>${commitLink}`;
+    const links = document.getElementById("links-" + def.key);
+    links.replaceChildren();
+    addLink(links, def.report, "latest report");
+    links.append(" · ");
+    addLink(links, def.history, "raw data");
+    if (/^[0-9a-f]{7,40}$/.test(String(soakedSha))) {
+      links.append(" · ");
+      addLink(links, COMMIT_URL + soakedSha, `commit ${soakedSha.slice(0, 8)}`);
+    }
 
     if (history.length === 0) {
-      document.getElementById("charts-" + def.key).innerHTML =
-        `<p class="empty">${def.empty}</p>`;
+      document.getElementById("charts-" + def.key).appendChild(element("p", "empty", def.empty));
       continue;
     }
     renderHeatmap(document.getElementById("charts-" + def.key), def.key, history);
     renderPanels(document.getElementById("charts-" + def.key), def.key, history);
     renderTable(document.getElementById("table-" + def.key), history);
   }
+  applySeriesFromLocation();
+  if (location.hash) document.getElementById(location.hash.slice(1))?.scrollIntoView();
 })();
 </script>
 </body>

@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::hash::Hash;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::public_key::PublicKey;
@@ -35,6 +36,7 @@ use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteVector;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::rust::errors::CasperError;
 use crate::rust::merging::block_index::BlockIndex;
@@ -60,6 +62,61 @@ struct MergeableKey {
     seq_num: i32,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ExploratoryDeployConfig {
+    pub max_concurrent: usize,
+    pub phlo_limit: i64,
+    pub execution_timeout: Duration,
+}
+
+impl ExploratoryDeployConfig {
+    /// Rejects a non-positive value rather than clamping it. A clamped `0`
+    /// yields a node that answers nothing on this endpoint — one phlogiston
+    /// fails every query on cost, a one-millisecond deadline times out every
+    /// query — with no diagnostic distinguishing that from a working node.
+    pub fn new(
+        max_concurrent: usize,
+        phlo_limit: i64,
+        execution_timeout: Duration,
+    ) -> Result<Self, CasperError> {
+        if max_concurrent == 0 {
+            return Err(CasperError::Other(
+                "exploratory-deploy-max-concurrent must be at least 1".to_string(),
+            ));
+        }
+        if phlo_limit <= 0 {
+            return Err(CasperError::Other(format!(
+                "exploratory-deploy-phlo-limit must be positive, got {}",
+                phlo_limit
+            )));
+        }
+        if execution_timeout.is_zero() {
+            return Err(CasperError::Other(
+                "exploratory-deploy-execution-timeout must be greater than zero".to_string(),
+            ));
+        }
+        Ok(Self {
+            max_concurrent,
+            phlo_limit,
+            execution_timeout,
+        })
+    }
+
+    /// Fixture for the test-only constructors. Deliberately not a `Default`
+    /// impl: the operator-facing default lives in `defaults.conf` and reaches
+    /// the runtime through `create_with_history_config`, so a second
+    /// authoritative-looking declaration in Rust could drift from it silently.
+    /// These values are not that default — they are only what the test
+    /// constructors have always used.
+    pub fn for_tests() -> Self {
+        Self {
+            max_concurrent: 1,
+            phlo_limit: 5_000_000,
+            execution_timeout: Duration::from_secs(15),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct RuntimeManager {
     pub space: RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
@@ -83,6 +140,9 @@ pub struct RuntimeManager {
     pub replay_cache: Option<Arc<InMemoryReplayCache>>,
     /// Optional state hash cache for skipping known replays
     pub state_hash_cache: Option<Arc<StateHashCache>>,
+    exploratory_deploy_semaphore: Arc<Semaphore>,
+    exploratory_deploy_phlo_limit: i64,
+    exploratory_deploy_execution_timeout: Duration,
     pub external_services: ExternalServices,
 }
 
@@ -239,6 +299,20 @@ impl RuntimeManager {
     }
 
     fn max_state_hash_cache_entries() -> usize { Self::MAX_STATE_HASH_CACHE_ENTRIES }
+
+    fn try_acquire_exploratory_deploy_permit_with(
+        semaphore: Arc<Semaphore>,
+    ) -> Option<OwnedSemaphorePermit> {
+        semaphore.try_acquire_owned().ok()
+    }
+
+    pub fn try_acquire_exploratory_deploy_permit(&self) -> Option<OwnedSemaphorePermit> {
+        Self::try_acquire_exploratory_deploy_permit_with(self.exploratory_deploy_semaphore.clone())
+    }
+
+    pub fn exploratory_deploy_execution_timeout_value(&self) -> Duration {
+        self.exploratory_deploy_execution_timeout
+    }
 
     pub fn trim_allocator() {
         #[cfg(target_os = "linux")]
@@ -785,7 +859,12 @@ impl RuntimeManager {
         let runtime = self.spawn_runtime().await;
         let mut runtime_ops = RuntimeOps::new(runtime);
         runtime_ops
-            .play_exploratory_deploy(term, hash, deployer)
+            .play_exploratory_deploy_with_phlo_limit(
+                term,
+                hash,
+                deployer,
+                self.exploratory_deploy_phlo_limit,
+            )
             .await
     }
 
@@ -1232,7 +1311,7 @@ impl RuntimeManager {
             .into()
     }
 
-    pub fn create_with_space(
+    pub fn create_with_space_config(
         rspace: RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
         replay_rspace: ReplayRSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
         history_repo: RhoHistoryRepository,
@@ -1244,6 +1323,7 @@ impl RuntimeManager {
             >,
         >,
         external_services: ExternalServices,
+        exploratory_deploy_config: ExploratoryDeployConfig,
     ) -> RuntimeManager {
         let replay_cache_size = Self::max_replay_cache_entries();
         let state_hash_cache_size = Self::max_state_hash_cache_entries();
@@ -1270,6 +1350,11 @@ impl RuntimeManager {
             }),
             state_hash_cache: (state_hash_cache_size > 0)
                 .then(|| Arc::new(StateHashCache::new(state_hash_cache_size))),
+            exploratory_deploy_semaphore: Arc::new(Semaphore::new(
+                exploratory_deploy_config.max_concurrent,
+            )),
+            exploratory_deploy_phlo_limit: exploratory_deploy_config.phlo_limit,
+            exploratory_deploy_execution_timeout: exploratory_deploy_config.execution_timeout,
             external_services,
         }
     }
@@ -1290,6 +1375,9 @@ impl RuntimeManager {
         rt_manager
     }
 
+    /// Test-only entry point: supplies `ExploratoryDeployConfig::for_tests()`.
+    /// Production construction goes through `create_with_history_config` with
+    /// the operator's configuration.
     pub fn create_with_history(
         store: RSpaceStore,
         mergeable_store: MergeableStore,
@@ -1301,19 +1389,41 @@ impl RuntimeManager {
         >,
         external_services: ExternalServices,
     ) -> (RuntimeManager, RhoHistoryRepository) {
+        Self::create_with_history_config(
+            store,
+            mergeable_store,
+            mergeable_tags,
+            external_services,
+            ExploratoryDeployConfig::for_tests(),
+        )
+    }
+
+    pub fn create_with_history_config(
+        store: RSpaceStore,
+        mergeable_store: MergeableStore,
+        mergeable_tags: std::sync::Arc<
+            std::collections::HashMap<
+                Par,
+                rspace_plus_plus::rspace::merger::merging_logic::MergeType,
+            >,
+        >,
+        external_services: ExternalServices,
+        exploratory_deploy_config: ExploratoryDeployConfig,
+    ) -> (RuntimeManager, RhoHistoryRepository) {
         let (rspace, replay_rspace) =
             RSpace::create_with_replay(store, Arc::new(Box::new(Matcher)))
                 .expect("Failed to create RSpaceWithReplay");
 
         let history_repo = rspace.get_history_repository();
 
-        let runtime_manager = RuntimeManager::create_with_space(
+        let runtime_manager = RuntimeManager::create_with_space_config(
             rspace,
             replay_rspace,
             history_repo.clone(),
             mergeable_store,
             mergeable_tags,
             external_services,
+            exploratory_deploy_config,
         );
 
         (runtime_manager, history_repo)
@@ -1331,5 +1441,44 @@ impl RuntimeManager {
         let store = kvm.store("mergeable-channel-cache".to_string()).await?;
 
         Ok(KeyValueTypedStoreImpl::new(store))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use tokio::sync::Semaphore;
+
+    use super::{ExploratoryDeployConfig, RuntimeManager};
+
+    #[test]
+    fn exploratory_deploy_config_rejects_non_positive_values() {
+        assert!(ExploratoryDeployConfig::new(0, 5_000_000, Duration::from_secs(15)).is_err());
+        assert!(ExploratoryDeployConfig::new(1, 0, Duration::from_secs(15)).is_err());
+        assert!(ExploratoryDeployConfig::new(1, -1, Duration::from_secs(15)).is_err());
+        assert!(ExploratoryDeployConfig::new(1, 5_000_000, Duration::ZERO).is_err());
+
+        let valid =
+            ExploratoryDeployConfig::new(2, 42, Duration::from_millis(500)).expect("valid config");
+        assert_eq!(valid.max_concurrent, 2);
+        assert_eq!(valid.phlo_limit, 42);
+        assert_eq!(valid.execution_timeout, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn exploratory_deploy_permit_is_bounded_and_released() {
+        let semaphore = Arc::new(Semaphore::new(1));
+        let first = RuntimeManager::try_acquire_exploratory_deploy_permit_with(semaphore.clone());
+        assert!(first.is_some());
+
+        let second = RuntimeManager::try_acquire_exploratory_deploy_permit_with(semaphore.clone());
+        assert!(second.is_none());
+
+        drop(first);
+
+        let third = RuntimeManager::try_acquire_exploratory_deploy_permit_with(semaphore);
+        assert!(third.is_some());
     }
 }
