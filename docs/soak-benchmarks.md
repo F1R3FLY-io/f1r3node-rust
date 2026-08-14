@@ -7,12 +7,134 @@ runs — see [Weekend vs daily](#weekend-vs-daily). Design history and decisions
 [work log](work-logs/task-EPIC-010-2026-07-15T20-57Z.md), story US-004 in
 [UserStories.md](UserStories.md).
 
+## Soak lifecycle and terminology
+
+A soak is a repeated lifecycle test, not continuous monitoring of one standing
+shard. The terms used by the workflow, artifacts, badges, and dashboard have
+distinct scopes:
+
+| Term | Meaning |
+|---|---|
+| **Run** | One scheduled or manually dispatched soak against one pinned node commit. Daily runs target `dev`. Weekend runs target `master`. The node image is built once and reused throughout the run. |
+| **Segment** | A wall-clock slice of the same run, used to publish checkpoints. Segments share state, output, counters, and iteration numbering. A new segment does not create a new run. |
+| **Iteration** | One invocation of the integration load test using a newly created six-node shard. It covers shard creation, health readiness, every load phase, finalization and convergence checks, telemetry collection, and teardown. |
+| **Phase** | One load level inside an iteration. All five phases run in order against the same shard. |
+
+### Iteration lifecycle
+
+```mermaid
+flowchart TD
+    A["Start or resume soak segment"] --> B{"Run budget remains?"}
+    B -- "No" --> Z["Roll up results<br/>publish checkpoint or final report"]
+    B -- "Yes" --> C["Increment iteration<br/>alternate Docker / subprocess provider"]
+    C --> D["Create iteration directory<br/>start pytest and resource monitors"]
+    D --> E["Create fresh six-node shard"]
+    E --> F["Wait for initial LFB advancement"]
+    F --> G["Next phase<br/>low → medium → high → burst → sustained"]
+    G --> H["Submit lightweight deploys<br/>across three validators"]
+    H --> I["Capture tip−LFB cone depth"]
+    I --> J["Wait for phase deploys to finalize"]
+    J --> K["Record latency, throughput,<br/>LFB and node-internal metrics"]
+    K --> L{"More phases?"}
+    L -- "Yes" --> G
+    L -- "No" --> M["Snapshot all-node LFBs<br/>emit lfb_spread metric"]
+    M --> N{"Hard gates pass?"}
+    N -- "Yes" --> O["Verify every node is still running"]
+    N -- "No" --> P["Destroy shard in finally block"]
+    O --> P
+    P --> Q["Write per-iteration metrics.json"]
+    Q --> R{"pytest exited successfully?"}
+    R -- "Yes" --> S["Count successful iteration<br/>add duration to shard_up_seconds"]
+    R -- "No" --> T["Count failure<br/>preserve logs and monitor evidence"]
+    S --> U["Check signal, deadline,<br/>target movement and host guard"]
+    T --> U
+    U --> V{"Weekend benchmark due?"}
+    V -- "No" --> B
+    V -- "Yes" --> W["Run controlled-rate benchmark<br/>on a separate fresh local shard"]
+    W --> B
+```
+
+Each iteration alternates providers, beginning with Docker and then subprocess.
+Both providers exercise the same test contract. This sequence detects
+provider-specific startup, networking, cleanup, and telemetry failures. The
+fresh shard contains:
+
+- one bootstrap node
+- four bonded genesis validators
+- one readonly node
+
+The first three validators receive deploy submissions. The fourth validator
+participates in consensus so concurrent proposals create realistic sibling
+blocks and multi-parent merges. Before load begins, the test requires an
+initial last-finalized-block (LFB) advancement to prove that the shard is
+making progress.
+
+The iteration then runs this fixed load sequence. Rated phases submit
+lightweight `@N!(N)` contracts. These contracts stress deploy admission,
+proposal, block processing, and finalization rather than Rholang execution.
+
+| Phase | Load | Duration | Workers | Planned deploys |
+|---|---:|---:|---:|---:|
+| low | 1 deploy/s | 30s | 1 | 30 |
+| medium | 5 deploys/s | 20s | 3 | 100 |
+| high | 10 deploys/s | 15s | 3 | 150 |
+| burst | immediate burst | — | 3 | 32 |
+| sustained | 4 deploys/s | 300s | 3 | 1,200 |
+| **Total** | | | | **1,512** |
+
+After every phase, the harness waits for tracked deploys to finalize. The
+harness records latency percentiles, submission rate, LFB advance, cone depth,
+and per-validator node metrics. After the sustained phase drains, the harness
+records each node's LFB and emits
+`SOAK_METRIC name=lfb_spread value=<max-LFB-minus-min-LFB> phase=drain`.
+
+An iteration passes only when the complete contract succeeds:
+
+1. The fresh shard starts and advances its LFB.
+2. No deploy submission fails.
+3. Every submitted deploy finalizes within the configured timeout.
+4. All six nodes reach an LFB spread of five blocks or less within the budget.
+5. Every node is still active after the load.
+
+The harness destroys the shard after a pass or a failure. The driver then
+writes `iteration-NNNNN-<provider>/metrics.json`. This file contains timestamps,
+the provider, pytest counts, the exit code, resource peaks, latency, proposal
+errors, and registry metrics.
+
+For a failed iteration, the driver keeps diagnostic logs and monitor files. The
+driver waits for 30 seconds and usually starts a new shard. A host protection
+breach ends the run instead.
+
+The driver reads checkpoint and finalize signals only between iterations. Thus,
+these signals do not interrupt an active lifecycle. A segment deadline can stop
+an active pytest process. The driver records `deadline.txt` and exit code 124
+instead of a normal test failure.
+
+On weekend runs only, every fourth iteration is followed by a separate active
+benchmark segment. This benchmark creates another fresh local shard and applies
+a fixed-rate workload. It records latency, throughput, finalization, and RSS
+measurements before it removes the shard. The benchmark is separate from the
+preceding iteration and `shard_up_seconds`. Its results populate the run's
+`active` metrics.
+
+`shard_up_seconds` includes only the duration of iterations that passed the
+complete lifecycle. A failed iteration can run all six nodes and produce much
+telemetry. However, it adds zero because the shard did not satisfy the complete
+health contract. Thus, the dashboard stability value is an iteration success
+rate. It is not the availability of a long-lived deployment.
+
+The node-side orchestrator is
+[`scripts/run-merge-recovery-soak.sh`](../scripts/run-merge-recovery-soak.sh).
+The test contract and phase definitions live in
+[`test_load.py`](https://github.com/F1R3FLY-io/system-integration/blob/dev/integration-tests/test/tests/custom/test_load.py)
+in the system-integration repository.
+
 ## Where to look
 
 - **Trend dashboard** (charts, per-provider split, run links):
-  <https://f1r3fly-io.github.io/f1r3node-rust/> — two tabs, Weekend and Daily,
-  each showing its own verdict on the tab button so both series are readable
-  without clicking through.
+  [Weekend](https://f1r3fly-io.github.io/f1r3node-rust/?series=weekend) and
+  [Daily](https://f1r3fly-io.github.io/f1r3node-rust/?series=daily) — each tab
+  shows its own verdict, and every chart title and image is directly linkable.
 - **Weekly email alert**: plain-text summary with the verdict and dashboard
   links, sent via OCI Notifications when the soak concludes.
 - **Per-run detail**: the `merge-recovery-soak-*` artifact on the workflow run
@@ -54,7 +176,66 @@ Three workflows publish the site — `merge-recovery-soak.yml` (final),
 `soak-checkpoint-publish.yml` (mid-run) and `soak-dashboard-pages.yml`
 (dashboard edits) — and each carries the published data forward from its own
 file list. **A new data file must be added to all three**, or the next publisher
-to run deletes it.
+to run deletes it. Chart SVGs are the one exception: they ride
+`charts-manifest-<series>.json`, written by the renderer to name exactly the
+SVGs it produced, and the publishers iterate that manifest — so adding a chart
+is a renderer change only.
+
+Every chart on the dashboard is a pre-rendered SVG pair
+(`…-<series>-{light,dark}.svg`) from the standalone `scripts/soak-charts` crate
+(charton; deliberately not a workspace member — CI runs a dedicated cargo-deny
+pass for it, and its committed `Cargo.lock` pins the publisher builds via
+`--locked`). Colors are baked at render time, so each chart ships a light and a
+dark variant and the page swaps them with its theme logic.
+
+The failure map is a heatmap: rows are failure categories (total, per
+provider), columns are run dates, cell color is the failure rate on a
+sequential red ramp with a neutral non-red for 0%, and cell text carries the
+failures/iterations volume. The metric panels (throughput, peak RSS/CPU,
+finalization latency, too-far-ahead, LFB spread) pick their mark from data
+density at render time: with enough distinct dates they are layered line+point
+charts on a temporal axis (throughput adds a low-opacity trend area); with only
+a few they render as value-labelled bars or points, because a two-point line
+chart is mostly empty axis. A panel with no recorded data emits nothing, and
+the too-far-ahead counter is suppressed while it is all-zero — the page shows a
+"0 · target 0" badge instead of a flat line. LFB spread is the exception to
+no-data suppression: its stable eighth slot remains visible with an awaiting-data
+message until the harness emits its first sample, preventing a missing upstream
+contract from masquerading as a seven-chart layout.
+
+Dashboard deep links use `?series=weekend` or `?series=daily`; chart permalinks
+add a stable fragment such as `#chart-weekend-lfb-spread`. The README badges use
+those series links, and clicking a chart image opens the corresponding SVG at
+full resolution.
+
+Peak CPU steps up through three representations as richer data appears, each
+the honest chart for what exists: an aggregate line chart with a dashed
+status-red line at 100% (one full core); small-multiples facets per core when
+`passive.cpu_peak_per_core_pct` (core id → peak %) exists; and, preferred over
+both, the cluster grid `passive.cpu_peak_core_grid_pct` (node id → core id →
+peak %), rendered as the latest run's node × core utilization heatmap — cells
+on a cool-to-hot (Jet) ramp whose domain is pinned so red always means "at or
+beyond one full core", saturated cells (≥ 100%) carrying their printed value,
+and the ramp legend drawn by the page (charton's own continuous colorbar
+renders degenerate, so it stays suppressed).
+
+The grid carries real core rows when the harness provides them: the
+system-integration monitor samples per-CPU cgroup counters per node container
+and emits `resource-percore-timeseries.csv` (a separate file from
+`resource-timeseries.csv` so the aggregate extractors cannot double-count),
+which the soak driver reduces to per-(node, core) peaks
+(`cpu_peak_per_node_core_pct` per iteration) alongside the aggregate per-node
+peaks (`cpu_peak_per_node_pct`). `write-soak-summary.sh` rolls both up
+cell-wise: a node with per-core data in any iteration gets real core ids, and
+a node with none anywhere — pre-emission history, or a provider without the
+per-core hook — keeps a single `"all"` fallback row, so the same chart simply
+grows taller as real core data appears.
+
+The two publishers whose output can change history re-render both series; the
+checkpoint publisher only carries the SVGs forward, since a checkpoint never
+appends to history. Rendering is `continue-on-error` in the same spirit as the
+badges: a chart bug must never block the publish that makes history durable —
+the carried-forward SVGs from the previous publish stand instead.
 
 Each run also records what it soaked: the target ref, the commit sha (linked to
 GitHub) and the node version declared at that commit — the same value carried by
@@ -215,6 +396,12 @@ deliberately include a regressed run, so the failure styling is exercised
 without hand-editing anything. Everything generated lands in the gitignored
 `site/`, rebuilt on start and removed on exit.
 
+The chart SVGs are rendered from the seeded (or fetched) history when `cargo`
+is available, by building `scripts/soak-charts` — the one part of the preview
+outside the std-only guarantee, so it is best-effort: without cargo the chart
+figures simply hide themselves, and `--live` falls back to the published SVGs
+it fetched via the charts manifest.
+
 ## What is measured
 
 Passive (the soak's own load, per iteration, rolled up per run):
@@ -254,10 +441,11 @@ per-run → dashboard pipeline:
   Charted as "Too-far-ahead errors".
 - **LFB convergence spread (p95 / max)** — the `lfb_spread` metric already
   declared in `scripts/bench/soak-metrics.json` (max−min last-finalized-block
-  across shard nodes) was captured per iteration but never reached the
-  dashboard: `summary.json` only rolled up the fixed passive fields, not the
-  registry's `SOAK_METRIC` output. `run-merge-recovery-soak.sh` now folds
-  every registry-declared metric into `summary.json.tracked_metrics`
+  across shard nodes) is read from the harness's structured `SOAK_METRIC`
+  output. During the transition, the driver also extracts the existing
+  `All-node LFBs at drain … (spread N blocks)` pytest line, so the dashboard
+  does not depend on synchronized deployment of both repositories.
+  `run-merge-recovery-soak.sh` now folds every registry-declared metric into `summary.json.tracked_metrics`
   generically (max/min aggregates fold with cross-iteration max/min, any other
   declared aggregate — p50, p95, ... — folds with the cross-iteration
   median), so declaring a new metric in `soak-metrics.json` is enough for it

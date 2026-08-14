@@ -58,7 +58,7 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - name: Checkout dashboard source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.workflow_sha }}
           path: ci-control
@@ -169,6 +169,65 @@ jobs:
                 exit 1
                 ;;
             esac
+          done
+          # A checkpoint never appends to history, so the charts cannot change
+          # here — carried forward only, driven by the renderer's manifest
+          # (charts-manifest-<series>.json names exactly what the last render
+          # produced). Manifest entries are remote content — only bare
+          # <name>.svg tokens are accepted, and every fetched body must look
+          # like an SVG so a cached error page is never published as a chart.
+          for m in charts-manifest-weekend.json charts-manifest-daily.json; do
+            code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
+              -o "site/data/${m}" "${DASHBOARD_URL}data/${m}?cb=${cb}")" || code=000
+            case "$code" in
+              200) ;;
+              404) rm -f "site/data/${m}"; continue ;;
+              *)
+                echo "::error::could not read published ${m} (HTTP ${code}); aborting so no published series is lost"
+                exit 1
+                ;;
+            esac
+            jq -e 'type == "array" and all(.[]; type == "string")' "site/data/${m}" >/dev/null 2>&1 || {
+              echo "::warning::published ${m} is not an array of strings; dropping the chart manifest rather than blocking the publish"
+              rm -f "site/data/${m}"
+              continue
+            }
+            while IFS= read -r f; do
+              case "$f" in
+                ''|.*|*[!A-Za-z0-9._-]*)
+                  echo "::error::${m} lists a suspicious filename; refusing to republish it"
+                  exit 1
+                  ;;
+                *.svg) ;;
+                *)
+                  echo "::error::${m} lists non-SVG ${f}; refusing to republish it"
+                  exit 1
+                  ;;
+              esac
+              code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
+                -o "site/data/${f}" "${DASHBOARD_URL}data/${f}?cb=${cb}")" || code=000
+              # Charts are cosmetic: a per-SVG fetch or content failure drops
+              # that one chart with a warning instead of blocking the publish
+              # that makes soak history durable. The page hides a missing
+              # figure and the next successful render restores it; the
+              # manifest is re-filtered below so it never advertises a file
+              # this deploy does not carry. A hostile FILENAME above stays
+              # fatal — that is a poisoned manifest, not a cosmetic blip.
+              if [ "$code" = "200" ] && head -c 1024 "site/data/${f}" | grep -q '<svg'; then
+                :
+              else
+                echo "::warning::dropping chart ${f} (HTTP ${code}) rather than blocking the publish"
+                rm -f "site/data/${f}"
+              fi
+            done < <(jq -r '.[]' "site/data/${m}")
+            # The carried manifest must describe what this deploy actually
+            # ships: re-filter it to the SVGs that survived, so a consumer
+            # never fetches a name the manifest promised but the drop above
+            # removed.
+            jq -r '.[]' "site/data/${m}" | while IFS= read -r f; do
+              { [ -s "site/data/${f}" ] && printf '%s\n' "$f"; } || true
+            done | jq -R . | jq -s . > "site/data/${m}.filtered"
+            mv -f "site/data/${m}.filtered" "site/data/${m}"
           done
           for f in history.json history-daily.json; do
             [ -e "site/data/${f}" ] || continue

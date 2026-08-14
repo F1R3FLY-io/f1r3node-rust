@@ -43,8 +43,9 @@ env:
   # repo takeover cannot move it. Bump ONLY via a reviewed PR after diffing
   # the old..new range in system-integration; never replace with a tag/branch.
   # MUST be kept identical to .github/oci-validation.env (the Full OCI
-  # Validation workflow sources that file) — bump both in the same commit.
-  SYSTEM_INTEGRATION_REF: a0c6fba626e4db8310180d0a90a213314424dd92
+  # Validation workflow sources that file) — bump both in the same commit,
+  # via `just repin-system-integration <sha>`.
+  SYSTEM_INTEGRATION_REF: 218fcbe13d97067cd83c975e56d90a69d3e518d7
   # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
   # install.sh checksum fails closed if the tag is ever moved; OCI_CLI_VERSION
   # pins what the installer pulls from PyPI (without it the installer floats to
@@ -99,7 +100,7 @@ jobs:
           rm -rf ../artifacts /tmp/rust-node-docker.tar.gz
 
       - name: Clone Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
@@ -244,7 +245,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Clone system-integration
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: F1R3FLY-io/system-integration
           ref: ${{ env.SYSTEM_INTEGRATION_REF }}
@@ -325,7 +326,7 @@ jobs:
 
       - name: Create runner-management token
         id: app-token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         with:
           app-id: ${{ vars.CI_GITHUB_APP_ID }}
           private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
@@ -439,7 +440,7 @@ jobs:
             }
     steps:
       - name: Clone Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
@@ -461,7 +462,7 @@ jobs:
           allow-unsafe-pr-checkout: true
 
       - name: Clone system-integration
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: F1R3FLY-io/system-integration
           ref: ${{ env.SYSTEM_INTEGRATION_REF }}
@@ -509,9 +510,18 @@ jobs:
         run: |
           cd system-integration
           SCALE_FLAG=""
+          PYTEST_WORKERS=16
           if [ "${{ matrix.arch }}" = "arm64" ]; then
             SCALE_FLAG="--timeout-scale=1.5"
           fi
+          if [ "${{ matrix.arch }}-${{ matrix.provider }}" = "arm64-docker" ]; then
+            PYTEST_WORKERS=8
+          fi
+          NODE_CAPABILITIES=$(bash "$GITHUB_WORKSPACE/.github/scripts/read-system-integration-node-capabilities.sh" "$GITHUB_WORKSPACE/.github/system-integration-node-capabilities.txt")
+          NODE_CAPABILITY_ARGS=()
+          while IFS= read -r capability; do
+            [ -z "$capability" ] || NODE_CAPABILITY_ARGS+=("--node-capability=$capability")
+          done <<< "$NODE_CAPABILITIES"
           poetry run pytest \
             integration-tests/test/tests/shared/ \
             integration-tests/test/tests/custom/ \
@@ -529,9 +539,16 @@ jobs:
             --deselect integration-tests/test/tests/custom/test_validator_lifecycle.py \
             --deselect integration-tests/test/tests/custom/test_user_contract_concurrency.py \
             --deselect integration-tests/test/tests/custom/test_active_validator_cap.py \
+            --deselect integration-tests/test/tests/custom/test_cold_start_readiness.py \
+            --deselect integration-tests/test/tests/custom/test_concurrent_bridge_locks.py \
+            --deselect integration-tests/test/tests/custom/test_finality_stall_recovery.py \
+            --deselect integration-tests/test/tests/custom/test_readonly_catchup_bounded.py \
+            --deselect integration-tests/test/tests/custom/test_slow_peer_notification.py \
+            --deselect integration-tests/test/tests/custom/test_transient_peer_liveness.py \
             --provider=${{ matrix.provider }} \
+            "${NODE_CAPABILITY_ARGS[@]}" \
             -v --tb=short --instafail --maxfail=10 \
-            -n 16 --dist=loadgroup --timeout=1200 $SCALE_FLAG
+            -n "$PYTEST_WORKERS" --dist=loadgroup --timeout=1200 $SCALE_FLAG
 
       - name: Upload Integration Test Logs
         if: always()
@@ -551,7 +568,7 @@ jobs:
       contents: read
     steps:
       - name: Clone Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
@@ -659,7 +676,7 @@ jobs:
       contents: read
     steps:
       - name: Clone Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
@@ -763,7 +780,7 @@ jobs:
       contents: read
     steps:
       - name: Clone Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}

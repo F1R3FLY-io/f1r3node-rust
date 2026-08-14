@@ -635,8 +635,14 @@ async fn block_expired_deploy_in_unresolved_scope_is_removed_from_storage() {
         .contains(&deploy));
 }
 
+// Inverts the former block_expired_rejected_deploy_retries_after_source_leaves_scope
+// contract. The retry carve-out could never succeed: Validate::transaction_expiration
+// has no recovery exemption, so a block-expired retry only produced a self-created
+// block that failed its own validation, and — with the deploy never purged — the
+// proposer rebuilt the same invalid block on every heartbeat (issue #197's permanent
+// finalization wedge). Expiry is terminal for rejected-buffer work.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn block_expired_rejected_deploy_retries_after_source_leaves_scope() {
+async fn block_expired_rejected_deploy_is_purged_not_retried() {
     crate::init_logger();
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
@@ -677,8 +683,12 @@ async fn block_expired_rejected_deploy_retries_after_source_leaves_scope() {
     .await
     .expect("prepare deploys");
 
-    assert_eq!(prepared.deploys.len(), 1);
-    assert!(prepared.deploys.contains(&deploy));
+    assert!(prepared.deploys.is_empty());
+    assert!(!deploy_storage
+        .lock()
+        .read_all()
+        .expect("read deploy storage")
+        .contains(&deploy));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1064,10 +1074,13 @@ async fn should_remove_expired_deploys_from_rejected_deploy_buffer() {
 
     {
         let buf = rejected_deploy_buffer.lock().unwrap();
+        // Inverted from "must remain" (issue #197): a block-expired buffered deploy can
+        // never pass Validate::transaction_expiration again, so retaining it only
+        // re-offers unproposable work — the fuel of the permanent propose wedge.
         assert!(
-            buf.contains_sig(&block_expired_deploy.sig)
+            !buf.contains_sig(&block_expired_deploy.sig)
                 .expect("Failed to query buffer for block-expired sig"),
-            "Block-expired recovered sig must remain in the rejected-deploy buffer"
+            "Block-expired sig must NOT remain in the rejected-deploy buffer after create"
         );
         assert!(
             !buf.contains_sig(&time_expired_deploy.sig)

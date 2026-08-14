@@ -49,7 +49,8 @@ use rspace_plus_plus::rspace::merger::merging_logic::{MergeType, NumberChannelsE
 
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
-    BLOCK_REPLAY_SYSDEPLOY_EVAL_CONSUME_RESULT_TIME_METRIC,
+    BLOCK_PLAY_DEPLOY_EVALUATE_TIME_METRIC, BLOCK_PLAY_DEPLOY_PRECHARGE_TIME_METRIC,
+    BLOCK_PLAY_DEPLOY_REFUND_TIME_METRIC, BLOCK_REPLAY_SYSDEPLOY_EVAL_CONSUME_RESULT_TIME_METRIC,
     BLOCK_REPLAY_SYSDEPLOY_EVAL_EVALUATE_SOURCE_TIME_METRIC, CASPER_METRICS_SOURCE,
     EVALUATE_SOURCE_WRAPPER_CALLS_METRIC, EVALUATE_SOURCE_WRAPPER_TIME_NS_METRIC,
     EVAL_SYSTEM_DEPLOY_WRAPPER_CALLS_METRIC, EVAL_SYSTEM_DEPLOY_WRAPPER_TIME_NS_METRIC,
@@ -387,6 +388,7 @@ impl RuntimeOps {
             if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
                 tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "before_precharge_internal", rss_kb);
             }
+            let precharge_start = Instant::now();
             let (event_log, result, mergeable_channels) = self
                 .play_system_deploy_internal(&mut PreChargeDeploy {
                     charge_amount: deploy.data.total_phlo_charge(),
@@ -394,6 +396,8 @@ impl RuntimeOps {
                     rand: pre_charge_rand,
                 })
                 .await?;
+            metrics::histogram!(BLOCK_PLAY_DEPLOY_PRECHARGE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                .record(precharge_start.elapsed().as_secs_f64());
             if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
                 tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_precharge_internal", rss_kb);
             }
@@ -416,7 +420,10 @@ impl RuntimeOps {
                     tracing::debug!("Processing user deploy {}", deploy_pk_hex.as_str());
                     // Evaluates user deploy and append event log to local state
                     {
+                        let evaluate_start = Instant::now();
                         let (mut pd, mc) = self.process_deploy(deploy).await?;
+                        metrics::histogram!(BLOCK_PLAY_DEPLOY_EVALUATE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                            .record(evaluate_start.elapsed().as_secs_f64());
                         let deploy_log = mem::take(&mut pd.deploy_log);
                         eval_collector_state.add(deploy_log, mc);
                         pd
@@ -435,12 +442,15 @@ impl RuntimeOps {
                         deploy_pk_hex.as_str(),
                         pd.refund_amount()
                     );
+                    let refund_start = Instant::now();
                     let (event_log, result, mergeable_channels) = self
                         .play_system_deploy_internal(&mut RefundDeploy {
                             refund_amount: pd.refund_amount(),
                             rand: refund_rand,
                         })
                         .await?;
+                    metrics::histogram!(BLOCK_PLAY_DEPLOY_REFUND_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                        .record(refund_start.elapsed().as_secs_f64());
                     eval_collector_state.add(event_log, mergeable_channels);
                     result
                 };
@@ -825,18 +835,13 @@ impl RuntimeOps {
     }
 
     /**
-     * Evaluates exploratory (read-only) deploy
+     * Evaluates exploratory (read-only) deploy.
+     *
+     * `phlo_limit` is always supplied by the caller: `RuntimeManager` passes the
+     * operator-configured ceiling, and test callers state their own. There is no
+     * compiled-in default, so no call site can diverge from the operator's
+     * configuration without saying so.
      */
-    pub async fn play_exploratory_deploy(
-        &mut self,
-        term: String,
-        hash: &StateHash,
-        deployer: Option<PublicKey>,
-    ) -> Result<(Vec<Par>, u64), CasperError> {
-        self.play_exploratory_deploy_with_phlo_limit(term, hash, deployer, 100 * 1000 * 1000)
-            .await
-    }
-
     pub async fn play_exploratory_deploy_with_phlo_limit(
         &mut self,
         term: String,

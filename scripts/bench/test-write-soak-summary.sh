@@ -5,11 +5,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 write_summary() {
-	local output_dir="$1" iterations="$2" failures="$3"
+	local output_dir="$1" iterations="$2" failures="$3" slot_delay="${4:-0}"
 	SOAK_OUTPUT_DIR="$output_dir" \
 		SOAK_METRICS_REGISTRY="$ROOT/scripts/bench/soak-metrics.json" \
 		SOAK_TARGET_REF=dev \
 		SOAK_TARGET_SHA=1086923fb257407baa2e15ce57841987503dbbb5 \
+		SOAK_SLOT_DELAY_SECONDS="$slot_delay" \
 		SOAK_VERSION=0.4.42 \
 		SOAK_STARTED_AT=1000 \
 		SOAK_FINISHED_AT=1180 \
@@ -23,8 +24,8 @@ write_summary() {
 
 BASE="$TMP/base"
 mkdir -p "$BASE/iteration-00001-docker" "$BASE/iteration-00002-subprocess"
-printf '%s\n' '{"iteration":1,"provider":"docker","duration_s":60,"ok":false,"rss_peak_mb":15580,"cpu_peak_pct":42.5,"finalization_latency":{"p50_ms":100,"p95_ms":200,"p99_ms":300},"too_far_ahead_errors":2,"metrics":{"lfb_spread":{"p50":3,"samples":4}}}' >"$BASE/iteration-00001-docker/metrics.json"
-printf '%s\n' '{"iteration":2,"provider":"subprocess","duration_s":120,"ok":false,"rss_peak_mb":null,"finalization_latency":{},"metrics":{}}' >"$BASE/iteration-00002-subprocess/metrics.json"
+printf '%s\n' '{"iteration":1,"provider":"docker","duration_s":60,"ok":false,"rss_peak_mb":15580,"cpu_peak_pct":42.5,"cpu_peak_per_node_pct":{"validator1":42.5,"bootstrap":12},"finalization_latency":{"p50_ms":100,"p95_ms":200,"p99_ms":300},"too_far_ahead_errors":2,"metrics":{"lfb_spread":{"p50":3,"samples":4}}}' >"$BASE/iteration-00001-docker/metrics.json"
+printf '%s\n' '{"iteration":2,"provider":"subprocess","duration_s":120,"ok":false,"rss_peak_mb":null,"cpu_peak_per_node_pct":{"validator1":55,"weird":"not-a-number"},"finalization_latency":{},"metrics":{}}' >"$BASE/iteration-00002-subprocess/metrics.json"
 write_summary "$BASE" 2 2
 
 jq -e '
@@ -35,6 +36,7 @@ jq -e '
   and .failures == 2
   and .shard_up_seconds == 0
   and .rss_peak_mb == 15580
+  and .cpu_peak_core_grid_pct == {"validator1": {"all": 55}, "bootstrap": {"all": 12}}
   and .providers.docker.failures == 1
   and .providers.subprocess.failures == 1
   and .tracked_metrics.lfb_spread.p50 == 3
@@ -43,12 +45,26 @@ jq -e '
   and .tracked_metrics.lfb_spread.samples == 4
 ' "$BASE/summary.json" >/dev/null
 
+# Real core rows: a node with per-core data in ANY iteration gets real core
+# ids (cell-wise max across iterations, non-numbers skipped); a node with
+# none anywhere (bootstrap) keeps its aggregate "all" fallback row.
+PERCORE="$TMP/percore"
+mkdir -p "$PERCORE/iteration-00001-docker" "$PERCORE/iteration-00002-docker"
+printf '%s\n' '{"iteration":1,"provider":"docker","duration_s":60,"ok":true,"cpu_peak_per_node_pct":{"validator1":42.5,"bootstrap":12},"cpu_peak_per_node_core_pct":{"validator1":{"0":30,"1":70}},"metrics":{}}' >"$PERCORE/iteration-00001-docker/metrics.json"
+printf '%s\n' '{"iteration":2,"provider":"docker","duration_s":60,"ok":true,"cpu_peak_per_node_pct":{"validator1":55,"bootstrap":10},"cpu_peak_per_node_core_pct":{"validator1":{"0":80,"1":61.5,"bad":"not-a-number"}},"metrics":{}}' >"$PERCORE/iteration-00002-docker/metrics.json"
+write_summary "$PERCORE" 2 0
+jq -e '
+  .cpu_peak_core_grid_pct == {"validator1": {"0": 80, "1": 70}, "bootstrap": {"all": 12}}
+' "$PERCORE/summary.json" >/dev/null
+
 EMPTY="$TMP/empty"
 mkdir -p "$EMPTY"
-write_summary "$EMPTY" 0 0
+write_summary "$EMPTY" 0 0 invalid
 jq -e '
-  .rss_peak_mb == null
+  .slot_delay_seconds == 0
+  and .rss_peak_mb == null
   and .cpu_peak_pct == null
+  and .cpu_peak_core_grid_pct == null
   and .shard_up_seconds == 0
   and .tracked_metrics == {}
   and .iteration_metrics == []
@@ -70,6 +86,7 @@ write_summary "$SPARSE" 1 0
 jq -e '
   .rss_peak_mb == null
   and .cpu_peak_pct == null
+  and .cpu_peak_core_grid_pct == null
   and .shard_up_seconds == 0
   and .tracked_metrics.lfb_spread.p50 == null
   and .tracked_metrics.lfb_spread.p95 == null

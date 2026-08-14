@@ -80,3 +80,81 @@ async fn reporting_casper_should_behave_the_same_way_as_multi_parent_casper() {
         "reporting should trace the one user deploy in the block"
     );
 }
+
+/// A block carrying a deploy that failed during execution must still produce a report.
+///
+/// Reporting propagates replay and report-collection failures instead of degrading them to empty
+/// events, so any replay-check condition reachable for a failed deploy would make that block's
+/// report permanently unavailable. `check_replay_data_with_fix`
+/// (casper/src/rust/rholang/replay_runtime.rs) tolerates leftover replay data when the deploy
+/// failed, and the rollback on failure restores the hot store, event log and produce counter but
+/// NOT the replay-data multimap — so the tolerance path is load-bearing rather than decorative.
+#[tokio::test]
+async fn reporting_a_block_with_a_failed_deploy_still_produces_a_report() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("Failed to build genesis");
+
+    let mut node = TestNode::standalone(genesis.clone())
+        .await
+        .expect("Failed to create standalone node");
+
+    // A COMM completes (send + receive on `ch`) and the continuation THEN fails: negation of a
+    // string is an OperatorNotDefined at reduce time (rholang/src/rust/interpreter/reduce.rs).
+    // Failing after a COMM is what can leave replay data consumed while the rollback discards the
+    // events. A term that fails while evaluating a send's argument never COMMs and would not
+    // exercise that path.
+    let failing_rholang = r#" new ch in { ch!(1) | for(@x <- ch){ @"out"!(-"boom") } } "#;
+
+    let deploy = construct_deploy::source_deploy_now(
+        failing_rholang.to_string(),
+        None,
+        None,
+        Some(genesis.genesis_block.shard_id.clone()),
+    )
+    .expect("Failed to construct deploy");
+
+    let signed_block = node
+        .add_block_from_deploys(&[deploy])
+        .await
+        .expect("Failed to add block");
+
+    // Guard the premise: if the term stopped failing this test would pass vacuously.
+    assert_eq!(
+        signed_block.body.deploys.len(),
+        1,
+        "block should carry the one user deploy"
+    );
+    assert!(
+        signed_block.body.deploys[0].is_failed,
+        "premise: the deploy must be recorded as failed for this test to mean anything"
+    );
+
+    let mut rspace_kvm = mk_test_rnode_store_manager_shared(genesis.rspace_scope_id.clone());
+    let rspace_store = rspace_kvm
+        .r_space_stores()
+        .await
+        .expect("Failed to open shared RSpace stores");
+
+    let reporter = reporting_casper::rho_reporter(
+        &rspace_store,
+        &node.block_dag_storage,
+        ExternalServices::noop(),
+    );
+
+    let replay = reporter.trace(&signed_block).await;
+
+    assert!(
+        replay.is_ok(),
+        "a block with a failed deploy must still report: {:?}",
+        replay.err()
+    );
+
+    let replay = replay.expect("trace succeeded");
+    assert_eq!(
+        replay.post_state_hash,
+        signed_block.body.state.post_state_hash.to_vec(),
+        "reporting replay post-state must equal the block's recorded post-state"
+    );
+}

@@ -97,6 +97,7 @@ pub async fn trace_handler(
                 BlockReportError::Busy => StatusCode::SERVICE_UNAVAILABLE,
                 BlockReportError::CasperNotInitialized => StatusCode::INTERNAL_SERVER_ERROR,
                 BlockReportError::ReplayFailed(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                BlockReportError::PostStateMismatch { .. } => StatusCode::INTERNAL_SERVER_ERROR,
                 BlockReportError::BlockInfoError(_) => StatusCode::INTERNAL_SERVER_ERROR,
                 BlockReportError::StoreError(_) => StatusCode::INTERNAL_SERVER_ERROR,
                 BlockReportError::SemaphoreError(_) => StatusCode::INTERNAL_SERVER_ERROR,

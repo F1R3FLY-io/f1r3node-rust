@@ -231,7 +231,9 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     // Runtime manager (play and replay runtimes)
     let (runtime_manager, history_repo) = {
         use casper::rust::genesis::genesis::Genesis;
-        use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+        use casper::rust::util::rholang::runtime_manager::{
+            ExploratoryDeployConfig, RuntimeManager,
+        };
         use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
         let rspace_stores = rnode_store_manager
@@ -241,11 +243,16 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
 
         let mergeable_store = RuntimeManager::mergeable_store(&mut rnode_store_manager).await?;
         tracing::debug!("[Setup] Creating RuntimeManager with history...");
-        let result = RuntimeManager::create_with_history(
+        let result = RuntimeManager::create_with_history_config(
             rspace_stores,
             mergeable_store,
             Arc::new(Genesis::default_mergeable_tags()),
             external_services.clone(),
+            ExploratoryDeployConfig::new(
+                conf.api_server.exploratory_deploy_max_concurrent,
+                conf.api_server.exploratory_deploy_phlo_limit,
+                conf.api_server.exploratory_deploy_execution_timeout,
+            )?,
         );
         tracing::debug!("[Setup] RuntimeManager created successfully");
         result

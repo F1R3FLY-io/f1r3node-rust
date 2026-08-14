@@ -149,7 +149,7 @@ async fn exploratory_deploy_should_get_data_from_read_only_node() {
     let result = BlockAPI::exploratory_deploy(
         engine_cell,
         exploratory_term.to_string(),
-        None,  // block_hash: None means use current DAG tips
+        None,  // block_hash: None reads the last finalized block post-state
         false, // use_pre_state_hash
         false, // dev_mode
         None,  // deployer
@@ -207,6 +207,97 @@ async fn exploratory_deploy_should_get_data_from_read_only_node() {
             panic!("Exploratory deploy failed: {:?}", e);
         }
     }
+}
+
+/// An unpinned exploratory read serves the last finalized block post-state, so
+/// state that exists only in an unfinalized block is not visible through it.
+///
+/// The contract is stated in the OpenAPI description, `api-reference.md` and
+/// `exploratory-deploy.md`; this asserts it. With 3 validators at 10 stake each
+/// (total 30, finalization needs > 15), a single block carries only its
+/// proposer's 10 and cannot finalize, so the LFB stays genesis.
+///
+/// The pinned read is the control: it proves the effect is genuinely in b1 and
+/// therefore that the unpinned read's empty result is the read basis at work and
+/// not a failed deploy.
+#[tokio::test]
+async fn unpinned_exploratory_read_does_not_see_unfinalized_state() {
+    let parameters =
+        GenesisBuilder::build_genesis_parameters_with_defaults(Some(bonds_function), None);
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("Failed to build genesis");
+
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, Some(1))
+        .await
+        .expect("Failed to create network");
+
+    let shard_id = genesis.genesis_block.shard_id.clone();
+    let stored_data = "unfinalized";
+
+    let put_data_deploy = construct_deploy::source_deploy(
+        format!(r#"@"store"!("{}")"#, stored_data),
+        1,
+        None,
+        None,
+        None,
+        None,
+        Some(shard_id),
+    )
+    .expect("Failed to create put data deploy");
+
+    // One block from n1: 10 of 30 stake, below the > 15 finalization threshold.
+    let b1 = TestNode::propagate_block_at_index(&mut nodes, 0, &[put_data_deploy])
+        .await
+        .expect("n1 should create and propagate b1");
+    assert!(
+        !b1.body.deploys[0].is_failed,
+        "the deploy must succeed for this test to be about visibility"
+    );
+
+    let engine_cell = &nodes[3].engine_cell;
+    let exploratory_term = r#"new return in { for (@data <- @"store") { return!(data) } }"#;
+
+    let (unpinned_pars, unpinned_block, _cost) = BlockAPI::exploratory_deploy(
+        engine_cell,
+        exploratory_term.to_string(),
+        None,
+        false,
+        false,
+        None,
+    )
+    .await
+    .expect("unpinned exploratory deploy should succeed");
+
+    assert_eq!(
+        unpinned_block.block_hash,
+        hex::encode(&genesis.genesis_block.block_hash),
+        "an unpinned read must report the finalized block it read, which is still genesis"
+    );
+    assert!(
+        unpinned_pars.is_empty(),
+        "unfinalized state must not be visible through an unpinned read, got: {:?}",
+        unpinned_pars
+    );
+
+    let (pinned_pars, pinned_block, _cost) = BlockAPI::exploratory_deploy(
+        engine_cell,
+        exploratory_term.to_string(),
+        Some(hex::encode(&b1.block_hash)),
+        false,
+        false,
+        None,
+    )
+    .await
+    .expect("pinned exploratory deploy should succeed");
+
+    assert_eq!(pinned_block.block_hash, hex::encode(&b1.block_hash));
+    assert!(
+        format!("{:?}", pinned_pars).contains(stored_data),
+        "a read pinned to b1 must see b1's effect, got: {:?}",
+        pinned_pars
+    );
 }
 
 /// Exploratory deploy should return error on bonded validator.
