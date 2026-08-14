@@ -14,7 +14,7 @@ use node::rust::configuration::commandline::options::{
     OptionsSubCommand, GRPC_EXTERNAL_PORT, GRPC_INTERNAL_PORT,
 };
 use node::rust::configuration::config_check::{
-    check_host, check_ports, load_private_key_from_file,
+    check_api_server, check_host, check_ports, load_private_key_from_file,
 };
 use node::rust::configuration::{NodeConf, Options, Profile};
 use node::rust::effects::console_io::{console_io, decrypt_key_from_file};
@@ -96,6 +96,7 @@ async fn start_node(options: Options) -> Result<()> {
 
     // Start the node with configuration validation and setup
     check_host(&node_conf).await?;
+    check_api_server(&node_conf)?;
     let conf_with_ports = check_ports(&node_conf).await?;
     let conf_with_decrypt = load_private_key_from_file(conf_with_ports).await?;
     info!("{}", get_version_info_str());
