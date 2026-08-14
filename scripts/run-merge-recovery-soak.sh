@@ -277,8 +277,12 @@ iteration_cpu_peak_percent() {
 # grid's AGGREGATE fallback — one "all cores combined" value per node — used
 # by the summary rollup for nodes the per-core extractor below has no data
 # for (pre-emission harness, provider without the per-core hook). The harness
-# prefixes container names with "rnode.<network>." — stripped here so grid
-# columns read "validator1", not a Docker network id. Node names are then
+# prefixes container names — historically "rnode.<network>.", today a bare
+# per-iteration shard hash ("f6f7eb46.validator1") — so the node id is the
+# name's final dot-segment. Stripping ONLY the historical form let the hash
+# prefixes through, and because every iteration mints a fresh hash the run
+# rollup unioned them into one grid column per (iteration × node): 42
+# columns of unreadable axis soup on the published chart. Node names are then
 # sanitized to a safe character class ([-A-Za-z0-9._], anything else becomes
 # "_") so a hostile or malformed name can neither break the hand-built JSON
 # nor silently collide with another name the way character DELETION could.
@@ -292,7 +296,7 @@ iteration_cpu_peak_per_node_percent() {
 	}
 	LC_ALL=C awk -F, 'NR > 1 { sub(/\r$/, "") }
 	         NR > 1 && $2 != "__system__" && $4 ~ /^[0-9]+([.][0-9]+)?$/ {
-	           n = $2; sub(/^rnode\.[^.]*\./, "", n)
+	           n = $2; sub(/^.*\./, "", n); if (n == "") n = $2
 	           if (!(n in peak) || $4 + 0 > peak[n]) peak[n] = $4 + 0 }
 	         END { printf "{"; sep = ""
 	               for (n in peak) {
@@ -332,7 +336,7 @@ iteration_cpu_peak_per_node_core_percent() {
 	LC_ALL=C awk -F, 'NR > 1 { sub(/\r$/, "") }
 	         NR > 1 && $2 != "__system__" && $3 ~ /^[0-9]+$/ &&
 	           $4 ~ /^[0-9]+([.][0-9]+)?$/ {
-	           n = $2; sub(/^rnode\.[^.]*\./, "", n)
+	           n = $2; sub(/^.*\./, "", n); if (n == "") n = $2
 	           cell = n SUBSEP $3
 	           if (!(cell in peak) || $4 + 0 > peak[cell]) peak[cell] = $4 + 0 }
 	         END { printf "{"; nsep = ""

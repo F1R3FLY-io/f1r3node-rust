@@ -340,3 +340,50 @@ fn cluster_grid_history_renders_a_node_core_heatmap_over_facets() {
     assert!(!light.contains("translate(0,400)"));
     assert!(light.contains(">122</text>"));
 }
+
+#[test]
+fn cluster_grid_folds_shard_hash_prefixes_into_one_node_column() {
+    // Published history carries node keys prefixed per iteration
+    // ("f6f7eb46.validator1"): every iteration mints a fresh shard hash, so
+    // one run once exploded into 42 columns of unreadable axis labels. The
+    // renderer folds keys to their final dot-segment and colliding cells
+    // keep the max — the run's true peak — so old entries render readably
+    // without republishing.
+    let test_dir = TestDir::new("cpu-grid-prefixes");
+    let output = run_renderer(
+        &test_dir,
+        r#"[
+          {
+            "run": { "date": "2026-08-13T00:00:00Z" },
+            "passive": {
+              "cpu_peak_core_grid_pct": {
+                "f6f7eb46.validator1": { "0": 85.0 },
+                "d8b74132.validator1": { "0": 122.0 },
+                "d8b74132.boot": { "0": 12.0 }
+              }
+            }
+          }
+        ]"#,
+        "daily",
+    );
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let light = fs::read_to_string(
+        test_dir
+            .path()
+            .join("output")
+            .join("chart-peak-cpu-daily-light.svg"),
+    )
+    .expect("light CPU chart should exist");
+
+    assert!(light.contains(">validator1</text>"));
+    assert!(light.contains(">boot</text>"));
+    assert!(!light.contains("f6f7eb46"));
+    assert!(!light.contains("d8b74132"));
+    assert!(light.contains(">122</text>"));
+}

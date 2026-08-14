@@ -209,10 +209,12 @@
      zero cells use --heat-zero, matching the SVG's baked-in neutral. */
   .swatch-cell { height: 12px; border-radius: 3px; }
   .heat-ramp { background: linear-gradient(90deg, #fff5f0, #fb6a4a, #67000d); }
-  /* The CPU cluster grid's cool-to-hot scale — mirrors charton's Jet map
-     (idle blue through to saturated red), which the SVGs bake in. */
-  .jet-ramp { background: linear-gradient(90deg, #00007f, #0000ff, #00ffff,
-              #7fff00, #ffff00, #ff7f00, #ff0000, #7f0000); }
+  /* The CPU cluster grid's idle-to-hot scale — mirrors charton's Oranges
+     map (single-hue sequential: pale = idle, deep = a saturated core),
+     which the SVGs bake in. Keep in step with render_cpu_grid in
+     scripts/soak-charts. */
+  .heat-cpu-ramp { background: linear-gradient(90deg, #fff5eb, #fdae6b,
+                   #f16913, #a63603, #7f2704); }
   /* Every chart is a pre-rendered SVG pair from scripts/soak-charts with theme
      colors baked in; show the variant matching the active theme with the same
      three-state logic as the CSS vars above. */
@@ -680,7 +682,7 @@
       const legend = element("div", "legend");
       if (gridRun) {
         const scale = element("span");
-        scale.append(element("i", "swatch swatch-cell jet-ramp"), "0% → hot");
+        scale.append(element("i", "swatch swatch-cell heat-cpu-ramp"), "0% → hot");
         legend.append(scale,
           element("span", "unit", "cell = one core · labelled ≥ 100% (a full core)"));
       } else if (seriesData.length > 1) {
