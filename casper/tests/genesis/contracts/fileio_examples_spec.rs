@@ -504,7 +504,113 @@ in {{
     .expect("compile fileio_membrane test source");
 
     let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
+    spec.run_tests().await.expect("fileio_membrane spec failed");
+}
+
+/// Slice 10a-5: canonical example `fileio_readonly_forwarder.rho`.
+///
+/// A File cap is wrapped in a forwarder that whitelists specific
+/// read-side method names (`tell`, `size`) and returns FSERR_UNSUPPORTED
+/// for everything else.  Verifies:
+///
+///   - Allowed method (`tell`) — reply routed from underlying File.
+///   - Allowed method (`size`) — reply routed from underlying File.
+///   - Blocked method (`chmod`) — forwarder returns FSERR_UNSUPPORTED
+///     without touching underlyingFile (defense: even if chmod would
+///     succeed on the underlying, the forwarder blocks it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fileio_readonly_forwarder_filters_mutations() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir.path().join("forwarder.dat");
+    std::fs::write(&file_path, b"readonly forwarder payload").expect("seed file");
+    let canon = std::fs::canonicalize(&file_path).expect("canonicalize");
+
+    let entry = BundleEntry::try_new(
+        "target".to_string(),
+        canon,
+        BundleEntryKind::File,
+        "r".to_string(),
+        BundleConsensusMode::Oracular,
+    )
+    .expect("bundle entry construction");
+
+    let mut params = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    params.2.fs_bundle = vec![entry];
+
+    let fs_uri = fs_genesis::fs_genesis_uri(&standard_deploys::FS_GENERATOR_PUB_KEY);
+
+    let test_source = format!(
+        r#"
+new
+  rl(`rho:registry:lookup`),
+  RhoSpecCh,
+  fsCh,
+  test_readonly_forwarder_allows_reads_blocks_mutations
+in {{
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for(@(_, RhoSpec) <- RhoSpecCh) {{
+    @RhoSpec!("testSuite",
+      [
+        ("read-only forwarder passes reads, blocks mutations",
+         *test_readonly_forwarder_allows_reads_blocks_mutations)
+      ])
+  }} |
+
+  rl!(`{fs_uri}`, *fsCh) |
+  for(@(_, fs) <- fsCh) {{
+    contract test_readonly_forwarder_allows_reads_blocks_mutations(rhoSpec, _, ackCh) = {{
+      for(@[true, underlyingFile] <- @fs!?("openFile", "target", {{"mode": "r"}})) {{
+        new readOnlyForwarder in {{
+          contract readOnlyForwarder(returnCh, @method, ...@_args) = {{
+            match method {{
+              "tell" => {{
+                for (@r <- @underlyingFile!?("tell")) {{ returnCh!(r) }}
+              }}
+              "size" => {{
+                for (@r <- @underlyingFile!?("size")) {{ returnCh!(r) }}
+              }}
+              _ => {{
+                returnCh!([false, "FSERR_UNSUPPORTED",
+                  "method not on read-only wrapper"])
+              }}
+            }}
+          }} |
+          new tellCh, sizeCh, chmodCh in {{
+            readOnlyForwarder!(*tellCh, "tell") |
+            readOnlyForwarder!(*sizeCh, "size") |
+            readOnlyForwarder!(*chmodCh, "chmod", "rw-r--r--") |
+            for(@rTell <- tellCh; @rSize <- sizeCh; @rChmod <- chmodCh) {{
+              match [rTell, rSize, rChmod] {{
+                [[true, _], [true, _], [false, "FSERR_UNSUPPORTED", _]] => {{
+                  rhoSpec!("assert", (true, "==", true),
+                    "forwarder allows tell + size, blocks chmod", *ackCh)
+                }}
+                _ => {{
+                  rhoSpec!("assert",
+                    ([rTell, rSize, rChmod], "==",
+                     "[[true,_], [true,_], [false, FSERR_UNSUPPORTED, _]]"),
+                    "forwarder allows tell + size, blocks chmod", *ackCh)
+                }}
+              }}
+            }}
+          }}
+        }}
+      }}
+    }}
+  }}
+}}
+"#
+    );
+
+    let compiled = CompiledRholangSource::new(
+        test_source,
+        HashMap::new(),
+        "FileioReadonlyForwarderSpec".to_string(),
+    )
+    .expect("compile fileio_readonly_forwarder test source");
+
+    let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
     spec.run_tests()
         .await
-        .expect("fileio_membrane spec failed");
+        .expect("fileio_readonly_forwarder spec failed");
 }

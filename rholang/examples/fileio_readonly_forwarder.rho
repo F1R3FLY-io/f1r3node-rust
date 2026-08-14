@@ -1,0 +1,79 @@
+// fileio_readonly_forwarder.rho — Phase 10 canonical example
+//
+// Demonstrates the FIP §Ocap patterns > Attenuation via forwarder
+// idiom.  A File cap is wrapped in a forwarder that filters on
+// method name; only read-side methods pass through, mutating methods
+// return FSERR_UNSUPPORTED.  Handing `bundle+{*readOnlyForwarder}`
+// to a subordinate gives them a strictly-attenuated capability.
+//
+// Sequence:
+//   1. Open a bundled File.
+//   2. Wrap it with a forwarder that allows `tell` and `size`
+//      (nullary read-side methods) and blocks everything else.
+//   3. Call `tell()` through the forwarder — succeeds.
+//   4. Call `size()` through the forwarder — succeeds.
+//   5. Call `chmod(_)` through the forwarder — FSERR_UNSUPPORTED.
+//
+// Simplification vs. FIP §Ocap patterns pseudocode:  the FIP shows a
+// generic method-name whitelist with `underlyingFile!(returnCh,
+// method, ...args)` forwarding.  Rholang's grammar
+// (rholang_mercury.cf) disallows `...` splats in send positions, so
+// each forwarded method is dispatched with its concrete arity.  The
+// example whitelists two nullary reads (`tell`, `size`); a real
+// read-only wrapper for the full spec surface would add per-arity
+// branches for `chars`, `bytes`, `lines`, `readLine`, `bytesAt`,
+// `seek`, `flush`, `close`.
+//
+// Prerequisite: node must publish a bundled File named "target".
+//
+// Companion regression: casper/tests/genesis/contracts/
+// fileio_examples_spec.rs :: fileio_readonly_forwarder_filters_mutations.
+
+new
+  rl(`rho:registry:lookup`),
+  stdout(`rho:io:stdout`),
+  fsCh,
+  readOnlyForwarder
+in {
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *fsCh) |
+  for(@(_, fs) <- fsCh) {
+    for(@[true, underlyingFile] <- @fs!?("openFile", "target", {"mode": "r"})) {
+      contract readOnlyForwarder(returnCh, @method, ...@_args) = {
+        match method {
+          "tell" => {
+            for (@r <- @underlyingFile!?("tell")) { returnCh!(r) }
+          }
+          "size" => {
+            for (@r <- @underlyingFile!?("size")) { returnCh!(r) }
+          }
+          _ => {
+            returnCh!([false, "FSERR_UNSUPPORTED",
+              "method not on read-only wrapper"])
+          }
+        }
+      } |
+      // Allowed method: tell().
+      new tellCh in {
+        readOnlyForwarder!(*tellCh, "tell") |
+        for(@r1 <- tellCh) {
+          stdout!(("tell (allowed)", r1))
+        }
+      } |
+      // Allowed method: size().
+      new sizeCh in {
+        readOnlyForwarder!(*sizeCh, "size") |
+        for(@r2 <- sizeCh) {
+          stdout!(("size (allowed)", r2))
+        }
+      } |
+      // Blocked method: chmod().
+      new chmodCh in {
+        readOnlyForwarder!(*chmodCh, "chmod", "rw-r--r--") |
+        for(@r3 <- chmodCh) {
+          stdout!(("chmod (blocked)", r3))
+          // Expected: [false, "FSERR_UNSUPPORTED", "method not on read-only wrapper"]
+        }
+      }
+    }
+  }
+}
