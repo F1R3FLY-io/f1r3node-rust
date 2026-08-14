@@ -36,6 +36,7 @@ cat >"$TMP/bin/gh" <<'SH'
 #!/usr/bin/env bash
 case "$*" in
   *"/commits?"*) printf '1\n' ;;
+  *"/commits/"*) printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' ;;
   *"runs?event=workflow_dispatch"*)
     if [ -n "${FAKE_CLAIM_QUERY_FAIL:-}" ]; then
       exit 1
@@ -93,6 +94,7 @@ for mode in oci cron; do
 	grep -qx 'duration_seconds=216000' "$friday"
 	grep -qx 'kind=weekend' "$friday"
 	grep -qx 'run_benchmarks=true' "$friday"
+	grep -qx 'target_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$friday"
 
 	monday="$(run_gate "$mode" 1 1785810600)"
 	grep -qx 'target_ref=dev' "$monday"
@@ -173,5 +175,31 @@ grep -qx 'duration_seconds=14400' "$preflight_output"
 grep -qx 'preflight_only=true' "$preflight_output"
 grep -qx 'run_benchmarks=false' "$preflight_output"
 grep -qx 'checkpoint_1=' "$preflight_output"
+grep -qx 'target_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$preflight_output"
+
+if PATH="$TMP/bin:$PATH" \
+	FAKE_NOW_EPOCH=1785810660 \
+	FAKE_SLOT_EPOCH=1785810600 \
+	FAKE_PACIFIC_WEEKDAY=1 \
+	EVENT_NAME=workflow_dispatch \
+	EVENT_SCHEDULE="" \
+	INPUT_SCHEDULED_SLOT="" \
+	INPUT_DURATION=daily-24h \
+	INPUT_TARGET_REF=dev \
+	INPUT_WINDOW_END="" \
+	INPUT_SERIES="" \
+	INPUT_RETRY_ATTEMPT=0 \
+	INPUT_CANARY=false \
+	INPUT_PREFLIGHT_ONLY=invalid \
+	INPUT_INJECT_PROTECTION_BREACH=false \
+	GH_TOKEN=test \
+	GITHUB_REPOSITORY=F1R3FLY-io/f1r3node-rust \
+	GITHUB_RUN_ID=999 \
+	GITHUB_OUTPUT="$TMP/invalid-preflight-output" \
+	GITHUB_STEP_SUMMARY="$TMP/summary" \
+	bash -euo pipefail "$TMP/gate.sh" >/dev/null 2>&1; then
+	echo 'schedule gate accepted invalid preflight_only input' >&2
+	exit 1
+fi
 
 printf 'soak schedule routing tests passed\n'

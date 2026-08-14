@@ -421,7 +421,7 @@ puts "canary checkpoint slots are not cleared" unless body&.include?("checkpoint
 puts "canary retry attempts are not rejected" unless body&.include?("INPUT_RETRY_ATTEMPT")
 puts "protection injection is not restricted to canaries" unless body&.include?("inject_protection_breach requires canary")
 puts "preflight-only runs are not bounded to four hours" unless body&.include?("duration_seconds=14400")
-puts "preflight-only runs do not clear checkpoint slots" unless body&.include?('INPUT_PREFLIGHT_ONLY:-false}" = "true" ] || [ "${INPUT_CANARY') || body&.include?('INPUT_CANARY:-false}" = "true" ] || [ "${INPUT_PREFLIGHT_ONLY')
+puts "preflight-only runs do not clear checkpoint slots" unless body&.include?('if [ "${INPUT_CANARY:-false}" = "true" ] || [ "${INPUT_PREFLIGHT_ONLY:-false}" = "true" ]; then')
 puts "preflight-only output is missing" unless body&.include?('echo "preflight_only=${INPUT_PREFLIGHT_ONLY:-false}"')
 puts "preflight-only controls can combine with incompatible modes" unless body&.include?("preflight_only cannot be combined")
 retry_condition = jobs.dig("retry_within_window", "if").to_s
@@ -447,15 +447,28 @@ puts "scheduled run names are not slot-stable" unless raw.include?("Merge Recove
 soak = jobs.fetch("soak")
 steps = Array(soak["steps"])
 preflight = steps.find { |step| step["id"] == "integration_preflight" }
-pending = steps.find { |step| step["name"] == "Report integration preflight pending" }
-result = steps.find { |step| step["name"] == "Report integration preflight status" }
+dispatch = steps.find { |step| step["name"] == "Dispatch integration preflight success status" }
+pending = jobs.fetch("preflight_pending")
+finalizer = jobs.fetch("preflight_finalize")
 puts "full integration preflight is missing" unless preflight
-puts "exact-SHA preflight status is not set to pending before execution" unless pending && preflight && steps.index(pending) < steps.index(preflight) && pending.dig("run").to_s.include?("state=pending")
-puts "exact-SHA preflight result is not published" unless result&.dig("run").to_s.include?("Soak Integration Preflight")
 puts "full integration preflight must skip canaries" unless preflight&.dig("if").to_s.include?("canary != 'true'")
 puts "full integration preflight must use the bounded driver" unless preflight&.dig("run").to_s.include?("run-integration-preflight.sh")
 puts "full integration preflight must subtract its elapsed time from the soak" unless preflight&.dig("run").to_s.include?("DURATION_SECONDS - elapsed")
-puts "soak job cannot publish exact-SHA preflight statuses" unless soak.dig("permissions", "statuses") == "write"
+puts "preflight-only runs still enforce a soak reserve" unless preflight&.dig("run").to_s.include?('[ "$PREFLIGHT_ONLY" != "true" ] && [ "$remaining" -lt 3600 ]')
+puts "preflight-only pytest does not use the absolute window" unless preflight&.dig("run").to_s.include?("PREFLIGHT_END_EPOCH - started - 600")
+puts "preflight-only pytest does not use the job window" unless preflight&.dig("run").to_s.include?("190 * 60")
+puts "preflight-only launch timeout is not bounded" unless jobs.dig("launch_runner", "timeout-minutes").to_s.include?("preflight_only == 'true' && 30")
+puts "preflight-only soak timeout is not bounded" unless soak["timeout-minutes"].to_s.include?("preflight_only == 'true' && 190")
+puts "target SHA is not resolved before runner launch" unless jobs.dig("schedule_gate", "outputs", "target_sha").to_s.include?("resolve.outputs.target_sha") && body&.include?('target_sha="$(gh api')
+puts "code checkout is not pinned to the resolved target SHA" unless steps.find { |step| step["name"] == "Checkout code under test" }&.dig("with", "ref").to_s.include?("outputs.target_sha")
+puts "long-running soak job retains status write permission" if soak.dig("permissions", "statuses")
+puts "pending status job lacks status write permission" unless pending.dig("permissions", "statuses") == "write"
+puts "pending status job does not retry status publication" unless pending.dig("steps", 0, "run").to_s.include?("for attempt in 1 2 3")
+puts "soak does not wait for pending status publication" unless Array(soak["needs"]).include?("preflight_pending")
+puts "successful preflight does not dispatch the isolated status workflow" unless dispatch&.dig("run").to_s.include?("soak-preflight-status.yml")
+puts "final status job lacks status write permission" unless finalizer.dig("permissions", "statuses") == "write"
+puts "final status job does not cover all soak outcomes" unless finalizer["if"].to_s.start_with?("always()")
+puts "final status job does not serialize with early success publication" unless finalizer.dig("concurrency", "group").to_s.include?("soak-preflight-status-")
 puts "soak job does not expose its preflight result" unless soak.dig("outputs", "preflight").to_s.include?("integration_preflight.outputs.result")
 puts "soak job does not expose telemetry reset status" unless soak.dig("outputs", "telemetry_reset").to_s.include?("reset_telemetry.outcome")
 segment_steps = steps.select { |step| step["name"].to_s.match?(/^Soak (segment [1-5]|final segment)$/) }
@@ -480,12 +493,20 @@ runner = File.read(ARGV[3])
 puts "preflight is not resource-limited to one worker" unless runner.include?("-n 1 --dist=loadgroup")
 puts "preflight does not reject skipped tests" unless runner.include?("skipped == 0")
 puts "preflight does not require one collected test per selector" unless runner.include?("tests >= minimum_tests")
+status_doc = YAML.load_file(ARGV[4])
+status_job = status_doc.dig("jobs", "report")
+status_body = status_job&.dig("steps", 0, "run").to_s
+puts "isolated status workflow lacks status write permission" unless status_doc.dig("permissions", "statuses") == "write"
+puts "isolated status workflow accepts direct operator dispatches" unless status_body.include?('GITHUB_ACTOR" != "github-actions[bot]')
+puts "isolated status workflow can overwrite a terminal failure" unless status_body.include?("failure|error")
+puts "isolated status workflow does not require a current pending status" unless status_body.include?("pending)")
 RUBY
 soak_errors="$(ruby "$scratch/check-canary.rb" \
 	.github/workflows/merge-recovery-soak.yml \
 	.github/system-integration-soak-preflight.txt \
 	.github/workflows/_integration-pipeline.yml \
-	scripts/run-integration-preflight.sh)"
+	scripts/run-integration-preflight.sh \
+	.github/workflows/soak-preflight-status.yml)"
 if [ -n "$soak_errors" ]; then
 	err "soak workflow invariants failed: $(printf '%s' "$soak_errors" | tr '\n' ';')"
 else

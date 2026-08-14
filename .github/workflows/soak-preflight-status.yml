@@ -1,0 +1,79 @@
+name: Soak Integration Preflight Status
+
+run-name: Soak Integration Preflight Status [${{ inputs.target_sha }}]
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: Commit SHA that completed the integration preflight
+        required: true
+        type: string
+      source_run_url:
+        description: Merge Recovery Soak run that completed the preflight
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  statuses: write
+
+concurrency:
+  group: soak-preflight-status-${{ inputs.target_sha }}
+  cancel-in-progress: false
+
+jobs:
+  report:
+    name: Report Integration Preflight Success
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Publish success status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          SOURCE_RUN_URL: ${{ inputs.source_run_url }}
+        shell: bash -euo pipefail {0}
+        run: |
+          if [ "$GITHUB_ACTOR" != "github-actions[bot]" ]; then
+            echo "::error::only a repository workflow can publish this status"
+            exit 1
+          fi
+          if ! [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::target_sha must be a full commit SHA"
+            exit 1
+          fi
+          prefix="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/"
+          source_run_id="${SOURCE_RUN_URL#"$prefix"}"
+          if [ "$source_run_id" = "$SOURCE_RUN_URL" ] || ! [[ "$source_run_id" =~ ^[0-9]+$ ]]; then
+            echo "::error::source_run_url must identify a run in this repository"
+            exit 1
+          fi
+          current="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}/status" \
+            --jq '[.statuses[] | select(.context == "Soak Integration Preflight")][0] | [.state, .target_url] | @tsv')"
+          IFS=$'\t' read -r current_state current_url <<<"$current"
+          if [ "$current_url" != "$SOURCE_RUN_URL" ]; then
+            echo "::error::the current preflight status belongs to a different workflow run"
+            exit 1
+          fi
+          case "$current_state" in
+            success) exit 0 ;;
+            failure|error)
+              echo "the source workflow already finalized the preflight as $current_state"
+              exit 0
+              ;;
+            pending) ;;
+            *) echo "::error::the current preflight status is not pending"; exit 1 ;;
+          esac
+          for attempt in 1 2 3; do
+            if gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${TARGET_SHA}" \
+              -f state=success \
+              -f context="Soak Integration Preflight" \
+              -f description="Full integration preflight passed" \
+              -f target_url="$SOURCE_RUN_URL" >/dev/null; then
+              exit 0
+            fi
+            [ "$attempt" -eq 3 ] || sleep 5
+          done
+          echo "::error::could not publish the integration preflight success status"
+          exit 1

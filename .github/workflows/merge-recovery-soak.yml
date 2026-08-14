@@ -210,6 +210,7 @@ jobs:
       should_run: ${{ steps.resolve.outputs.should_run }}
       duration_seconds: ${{ steps.resolve.outputs.duration_seconds }}
       target_ref: ${{ steps.resolve.outputs.target_ref }}
+      target_sha: ${{ steps.resolve.outputs.target_sha }}
       run_benchmarks: ${{ steps.resolve.outputs.run_benchmarks }}
       # How this run was triggered (oci-resource-scheduler | cron-fallback |
       # manual) and how late it started relative to its intended slot. Carried
@@ -646,10 +647,20 @@ jobs:
           if [ -n "${INPUT_WINDOW_END:-}" ] && [ "$retry_attempt" -eq 0 ]; then
             retry_attempt=1
           fi
+          target_sha=""
+          if [ "$should_run" = "true" ]; then
+            encoded_ref="$(jq -rn --arg ref "$target_ref" '$ref | @uri')"
+            target_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${encoded_ref}" --jq '.sha')"
+            if ! [[ "$target_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::could not resolve target_ref to a commit SHA"
+              exit 1
+            fi
+          fi
           {
             echo "should_run=$should_run"
             echo "duration_seconds=$duration_seconds"
             echo "target_ref=$target_ref"
+            echo "target_sha=$target_sha"
             echo "trigger_source=${trigger_source:-manual}"
             echo "slot_delay_seconds=${slot_delay_seconds:-0}"
             echo "run_benchmarks=$run_benchmarks"
@@ -666,6 +677,36 @@ jobs:
             echo "checkpoint_5=$cp5"
           } >> "$GITHUB_OUTPUT"
 
+  preflight_pending:
+    name: Mark Integration Preflight Pending
+    needs: schedule_gate
+    if: needs.schedule_gate.outputs.should_run == 'true' && needs.schedule_gate.outputs.canary != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - name: Report pending status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ needs.schedule_gate.outputs.target_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: bash -euo pipefail {0}
+        run: |
+          for attempt in 1 2 3; do
+            if gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${TARGET_SHA}" \
+              -f state=pending \
+              -f context="Soak Integration Preflight" \
+              -f description="Full integration preflight is running" \
+              -f target_url="$RUN_URL" >/dev/null; then
+              exit 0
+            fi
+            [ "$attempt" -eq 3 ] || sleep 5
+          done
+          echo "::error::could not publish the pending integration preflight status"
+          exit 1
+
   launch_runner:
     name: Launch Oracle Cloud Soak Runner
     needs: schedule_gate
@@ -677,7 +718,7 @@ jobs:
     # abandons the poached VM and launches another, up to three times. Worst
     # case is three full 15-minute waits plus boots. The soak window absorbs
     # this; a hung launch job would not.
-    timeout-minutes: 60
+    timeout-minutes: ${{ needs.schedule_gate.outputs.preflight_only == 'true' && 30 || 60 }}
     concurrency:
       # Grouped by series (not raw duration — a restart's remainder is
       # arbitrary) so the next night's launch still cancels a lingering
@@ -1049,8 +1090,8 @@ jobs:
 
   soak:
     name: Merge Recovery Soak
-    needs: [schedule_gate, launch_runner]
-    if: needs.schedule_gate.outputs.should_run == 'true'
+    needs: [schedule_gate, launch_runner, preflight_pending]
+    if: always() && needs.schedule_gate.outputs.should_run == 'true' && needs.launch_runner.result == 'success' && (needs.schedule_gate.outputs.canary == 'true' || needs.preflight_pending.result == 'success')
     # f1r3fly-rust-soak, not the shared f1r3fly-rust-ci-ephemeral: only the
     # runner launched by launch_runner above carries it, so this job cannot
     # land on a CI-launched VM. See "Bind the soak runner to a dedicated
@@ -1076,7 +1117,6 @@ jobs:
     permissions:
       contents: read
       actions: write
-      statuses: write
     # Backstop only — the soak script stops itself at SOAK_DURATION_SECONDS.
     # Scaled to the kind of run so a stuck daily cannot burn a 64h runner:
     # daily 79200s (22h) + 2h, weekend 216000s (60h) + 4h. The margin is not
@@ -1086,11 +1126,15 @@ jobs:
     # daily soak at 22h the ceiling is a true 24h. Keyed on kind, not the raw
     # duration: an in-window restart's remainder is arbitrary, and a
     # restarted weekend with >24h left must still get the weekend ceiling.
-    timeout-minutes: ${{ needs.schedule_gate.outputs.kind == 'weekend' && 3840 || 1440 }}
+    timeout-minutes: ${{ needs.schedule_gate.outputs.preflight_only == 'true' && 190 || (needs.schedule_gate.outputs.kind == 'weekend' && 3840 || 1440) }}
     concurrency:
       group: merge-recovery-soak-${{ needs.schedule_gate.outputs.kind }}
       cancel-in-progress: true
     steps:
+      - name: Record soak job start
+        shell: bash -euo pipefail {0}
+        run: echo "SOAK_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: Checkout CI control files
         uses: actions/checkout@v5
         with:
@@ -1203,7 +1247,7 @@ jobs:
       - name: Checkout code under test
         uses: actions/checkout@v5
         with:
-          ref: ${{ needs.schedule_gate.outputs.target_ref }}
+          ref: ${{ needs.schedule_gate.outputs.target_sha }}
           path: node-under-test
           fetch-depth: 0
           persist-credentials: false
@@ -1211,8 +1255,13 @@ jobs:
       - name: Resolve target revision
         id: target
         working-directory: node-under-test
+        env:
+          EXPECTED_SHA: ${{ needs.schedule_gate.outputs.target_sha }}
         shell: bash -euo pipefail {0}
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        run: |
+          actual_sha="$(git rev-parse HEAD)"
+          test "$actual_sha" = "$EXPECTED_SHA"
+          echo "sha=$actual_sha" >> "$GITHUB_OUTPUT"
 
       - name: Clone trusted integration harness
         uses: actions/checkout@v5
@@ -1259,20 +1308,6 @@ jobs:
           test "$total_mb" -gt 0
           echo "SOAK_HOST_FREE_FLOOR_MB=$((total_mb + 1024))" >> "$GITHUB_ENV"
 
-      - name: Report integration preflight pending
-        if: needs.schedule_gate.outputs.canary != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TARGET_SHA: ${{ steps.target.outputs.sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        shell: bash -euo pipefail {0}
-        run: |
-          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${TARGET_SHA}" \
-            -f state=pending \
-            -f context="Soak Integration Preflight" \
-            -f description="Full integration preflight is running" \
-            -f target_url="$RUN_URL" >/dev/null
-
       - name: Run full integration preflight
         id: integration_preflight
         if: needs.schedule_gate.outputs.canary != 'true'
@@ -1288,17 +1323,32 @@ jobs:
           PREFLIGHT_TIMEOUT_SECONDS: "10800"
           PREFLIGHT_RSS_CEILING_MB: ${{ env.SOAK_RSS_CEILING_MB }}
           PREFLIGHT_HOST_FREE_FLOOR_MB: ${{ env.SOAK_HOST_FREE_FLOOR_MB }}
+          PREFLIGHT_ONLY: ${{ needs.schedule_gate.outputs.preflight_only }}
+          PREFLIGHT_END_EPOCH: ${{ needs.schedule_gate.outputs.end_epoch }}
           DURATION_SECONDS: ${{ needs.schedule_gate.outputs.duration_seconds }}
         shell: bash -euo pipefail {0}
         run: |
           started="$(date +%s)"
-          set +e
-          ci-control/scripts/run-integration-preflight.sh
-          status=$?
-          set -e
+          timeout_seconds="$PREFLIGHT_TIMEOUT_SECONDS"
+          if [ "$PREFLIGHT_ONLY" = "true" ]; then
+            window_budget="$(( PREFLIGHT_END_EPOCH - started - 600 ))"
+            job_budget="$(( 190 * 60 - (started - SOAK_JOB_STARTED_AT) - 600 ))"
+            [ "$window_budget" -lt "$timeout_seconds" ] && timeout_seconds="$window_budget"
+            [ "$job_budget" -lt "$timeout_seconds" ] && timeout_seconds="$job_budget"
+          fi
+          status=1
+          if [ "$timeout_seconds" -ge 60 ]; then
+            export PREFLIGHT_TIMEOUT_SECONDS="$timeout_seconds"
+            set +e
+            ci-control/scripts/run-integration-preflight.sh
+            status=$?
+            set -e
+          else
+            echo "::error::the preflight execution window expired before pytest started"
+          fi
           elapsed="$(( $(date +%s) - started ))"
           remaining="$(( DURATION_SECONDS - elapsed ))"
-          if [ "$remaining" -lt 3600 ]; then
+          if [ "$PREFLIGHT_ONLY" != "true" ] && [ "$remaining" -lt 3600 ]; then
             echo "::error::integration preflight left less than one hour for the soak"
             status=1
           fi
@@ -1307,31 +1357,24 @@ jobs:
           echo "result=$result" >> "$GITHUB_OUTPUT"
           echo "elapsed_seconds=$elapsed" >> "$GITHUB_OUTPUT"
           echo "remaining_seconds=$remaining" >> "$GITHUB_OUTPUT"
-          if [ -f /tmp/merge-recovery-soak/preflight/summary.md ]; then
-            cat /tmp/merge-recovery-soak/preflight/summary.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$PREFLIGHT_OUTPUT_DIR/summary.md" ]; then
+            cat "$PREFLIGHT_OUTPUT_DIR/summary.md" >> "$GITHUB_STEP_SUMMARY"
           fi
           exit "$status"
 
-      - name: Report integration preflight status
-        if: always() && needs.schedule_gate.outputs.canary != 'true' && steps.integration_preflight.outputs.result != ''
+      - name: Dispatch integration preflight success status
+        if: always() && needs.schedule_gate.outputs.canary != 'true' && steps.integration_preflight.outputs.result == 'passed'
         env:
           GH_TOKEN: ${{ github.token }}
-          TARGET_SHA: ${{ steps.target.outputs.sha }}
-          RESULT: ${{ steps.integration_preflight.outputs.result }}
+          TARGET_SHA: ${{ needs.schedule_gate.outputs.target_sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          WORKFLOW_REF: ${{ github.ref_name }}
         shell: bash -euo pipefail {0}
         run: |
-          state=failure
-          description="Full integration preflight failed"
-          if [ "$RESULT" = passed ]; then
-            state=success
-            description="Full integration preflight passed"
-          fi
-          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${TARGET_SHA}" \
-            -f state="$state" \
-            -f context="Soak Integration Preflight" \
-            -f description="$description" \
-            -f target_url="$RUN_URL" >/dev/null
+          gh workflow run soak-preflight-status.yml \
+            --ref "$WORKFLOW_REF" \
+            -f target_sha="$TARGET_SHA" \
+            -f source_run_url="$RUN_URL"
 
       - name: Reset integration telemetry after preflight
         id: reset_telemetry
@@ -1629,6 +1672,69 @@ jobs:
         # real result, even a red one, and a restart would only spend a
         # second VM reproducing it.
         run: echo "completed=true" >> "$GITHUB_OUTPUT"
+
+  preflight_finalize:
+    name: Finalize Integration Preflight Status
+    needs: [schedule_gate, preflight_pending, launch_runner, soak]
+    if: always() && needs.schedule_gate.outputs.should_run == 'true' && needs.schedule_gate.outputs.canary != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      statuses: write
+    concurrency:
+      group: soak-preflight-status-${{ needs.schedule_gate.outputs.target_sha }}
+      cancel-in-progress: false
+    steps:
+      - name: Report final status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ needs.schedule_gate.outputs.target_sha }}
+          PENDING_RESULT: ${{ needs.preflight_pending.result }}
+          LAUNCH_RESULT: ${{ needs.launch_runner.result }}
+          SOAK_RESULT: ${{ needs.soak.result }}
+          PREFLIGHT_RESULT: ${{ needs.soak.outputs.preflight }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: bash -euo pipefail {0}
+        run: |
+          state=failure
+          description="Full integration preflight did not complete"
+          if [ "$PREFLIGHT_RESULT" = "passed" ]; then
+            state=success
+            description="Full integration preflight passed"
+          else
+            current=""
+            for attempt in 1 2 3; do
+              if current="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}/status" \
+                --jq '[.statuses[] | select(.context == "Soak Integration Preflight")][0] // {} | [(.state // ""), (.target_url // "")] | @tsv')"; then
+                break
+              fi
+              [ "$attempt" -eq 3 ] || sleep 5
+            done
+            IFS=$'\t' read -r current_state current_url <<<"$current"
+            if [ "$current_state" = "success" ] && [ "$current_url" = "$RUN_URL" ]; then
+              state=success
+              description="Full integration preflight passed"
+            elif [ "$PENDING_RESULT" != "success" ]; then
+              description="Preflight status initialization failed"
+            elif [ "$LAUNCH_RESULT" != "success" ]; then
+              description="Runner launch failed before integration preflight"
+            elif [ "$SOAK_RESULT" = "cancelled" ]; then
+              description="Integration preflight was cancelled"
+            fi
+          fi
+          for attempt in 1 2 3; do
+            if gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${TARGET_SHA}" \
+              -f state="$state" \
+              -f context="Soak Integration Preflight" \
+              -f description="$description" \
+              -f target_url="$RUN_URL" >/dev/null; then
+              exit 0
+            fi
+            [ "$attempt" -eq 3 ] || sleep 5
+          done
+          echo "::error::could not finalize the integration preflight status"
+          exit 1
 
   perf_report:
     name: Publish Soak Dashboard
@@ -2286,7 +2392,7 @@ jobs:
 
   notify_failure:
     name: Email Soak Failure Alert
-    needs: [schedule_gate, launch_runner, soak, perf_report]
+    needs: [schedule_gate, launch_runner, soak, preflight_finalize, perf_report]
     # Runs on a GitHub-hosted runner with user-principal OCI auth so the
     # alert still goes out when the OCI runner itself failed to launch —
     # the in-soak ONS step (instance-principal) cannot cover that case.
@@ -2342,6 +2448,7 @@ jobs:
           LAUNCH_RESULT: ${{ needs.launch_runner.result }}
           SOAK_RESULT: ${{ needs.soak.result }}
           PREFLIGHT_RESULT: ${{ needs.soak.outputs.preflight }}
+          PREFLIGHT_STATUS_RESULT: ${{ needs.preflight_finalize.result }}
           DASHBOARD_RESULT: ${{ needs.perf_report.result }}
           TARGET_REF: ${{ needs.schedule_gate.outputs.target_ref }}
           DURATION_SECONDS: ${{ needs.schedule_gate.outputs.duration_seconds }}
@@ -2389,6 +2496,7 @@ jobs:
             launch runner:  $LAUNCH_RESULT
             soak:           $SOAK_RESULT
             preflight:      ${PREFLIGHT_RESULT:-not-run}
+            status report:  $PREFLIGHT_STATUS_RESULT
             dashboard:      $DASHBOARD_RESULT
 
           Run: $RUN_URL
