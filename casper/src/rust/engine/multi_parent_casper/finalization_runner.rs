@@ -38,6 +38,12 @@
 //!
 //! If you are here because a static diff told you a fix went missing: it didn't.
 //! Re-run the test above before restoring anything.
+//!
+//! Deploy-STORAGE eviction (distinct from the buffer purge above) is a
+//! floor-keyed sweep in `compute_last_finalized_block`: a deploy leaves
+//! persistent storage only when its effect is provably settled in the floor
+//! state, or when the floor has closed its validity window. It is measured by
+//! the same test — re-run it before changing the sweep's shape.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -47,11 +53,13 @@ use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStora
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
+use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
 // Phase 9 (A-3): deploy_storage uses parking_lot::Mutex.
 use parking_lot::Mutex;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use shared::rust::store::key_value_store::KvStoreError;
 
@@ -62,6 +70,8 @@ use super::events::finalised_event;
 use super::types::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
 use crate::rust::finality::finalizer::Finalizer;
+use crate::rust::finality::floor::floor_of_block;
+use crate::rust::util::rholang::interpreter_util::deploy_effect_in_state;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 // Phase 13 (TC-1): the previous `FINALIZER_BLOCKING_TIMEOUT = 15s`
@@ -95,10 +105,11 @@ pub(crate) struct FinalizationContext {
     pub(crate) ftt: crate::rust::safety::clique_oracle::FtThreshold,
     pub(crate) finalizer_conf: crate::rust::casper_conf::FinalizerConf,
     pub(crate) finalizer_blocking_timeout: std::time::Duration,
+    pub(crate) deploy_lifespan: i64,
 }
 
 /// Build a `FinalizationContext` from a `MultiParentCasperImpl`. Single
-/// source of truth for the 10-field clone — previously duplicated at
+/// source of truth for the field-by-field clone — previously duplicated at
 /// `traits::last_finalized_block` and the trigger site in
 /// `finalization_runner::run_finalization`. Replaces both literal
 /// constructions so adding/renaming a context field is one edit.
@@ -121,6 +132,7 @@ pub(crate) fn build_finalization_context<
         ),
         finalizer_conf: this.casper_shard_conf.finalizer_conf.clone(),
         finalizer_blocking_timeout: this.casper_shard_conf.finalizer_blocking_timeout,
+        deploy_lifespan: this.casper_shard_conf.deploy_lifespan,
     }
 }
 
@@ -177,6 +189,7 @@ pub(crate) async fn compute_last_finalized_block(
         ftt,
         finalizer_conf,
         finalizer_blocking_timeout: _,
+        deploy_lifespan,
     } = ctx;
     let finalizer_conf = &finalizer_conf;
     let lfb_lookup_started = std::time::Instant::now();
@@ -188,7 +201,6 @@ pub(crate) async fn compute_last_finalized_block(
     // Keep effect closure FnMut-compatible by cloning captured state on each invocation.
     let block_dag_storage_for_effect = block_dag_storage.clone();
     let block_store_for_effect = block_store.clone();
-    let deploy_storage_for_effect = deploy_storage.clone();
     let runtime_manager_for_effect = runtime_manager.clone();
     let event_publisher_for_effect = event_publisher.clone();
     let finalization_in_progress_for_effect = finalization_in_progress.clone();
@@ -197,7 +209,6 @@ pub(crate) async fn compute_last_finalized_block(
     let new_lfb_found_effect = move |(new_lfb, ft_value): (BlockHash, f32)| {
         let block_dag_storage = block_dag_storage_for_effect.clone();
         let block_store = block_store_for_effect.clone();
-        let deploy_storage = deploy_storage_for_effect.clone();
         let runtime_manager = runtime_manager_for_effect.clone();
         let event_publisher = event_publisher_for_effect.clone();
         let finalization_in_progress = finalization_in_progress_for_effect.clone();
@@ -207,7 +218,6 @@ pub(crate) async fn compute_last_finalized_block(
                 .record_directly_finalized(new_lfb.clone(), ft_value, |finalized_set: &HashSet<BlockHash>| {
                     let finalized_set = finalized_set.clone();
                     let block_store = block_store.clone();
-                    let deploy_storage = deploy_storage.clone();
                     let runtime_manager = runtime_manager.clone();
                     let event_publisher = event_publisher.clone();
                     let finalization_in_progress = finalization_in_progress.clone();
@@ -229,25 +239,13 @@ pub(crate) async fn compute_last_finalized_block(
                                     PrettyPrinter::build_string_bytes(block_hash)
                                 ))
                             })?;
-                            let deploys: Vec<_> = block
-                                .body
-                                .deploys
-                                .iter()
-                                .map(|pd| pd.deploy.clone())
-                                .collect();
 
-                            // Remove block deploys from persistent store.
-                            // Phase 9 (A-3): parking_lot::Mutex — no poison.
-                            let deploys_count = deploys.len();
-                            deploy_storage.lock().remove(deploys)?;
-                            let finalized_set_str = PrettyPrinter::build_string_hashes(
-                                &finalized_set.iter().map(|h| h.to_vec()).collect::<Vec<_>>(),
-                            );
-                            let removed_deploy_msg = format!(
-                                "Removed {} deploys from deploy history as we finalized block {}.",
-                                deploys_count, finalized_set_str
-                            );
-                            tracing::info!("{}", removed_deploy_msg);
+                            // Deploy-storage removal deliberately does NOT
+                            // happen here: node-local finalization of a
+                            // block is not evidence its deploys' effects are
+                            // canonical. The floor-keyed sweep in
+                            // `compute_last_finalized_block` evicts on floor
+                            // facts instead.
 
                             // Remove block index from cache
                             runtime_manager.remove_block_index_cache(block_hash);
@@ -310,6 +308,72 @@ pub(crate) async fn compute_last_finalized_block(
     let final_lfb_hash = new_finalized_hash_opt
         .map(|(hash, _ft)| hash)
         .unwrap_or(last_finalized_block_hash);
+
+    // Floor-keyed deploy-storage eviction (MEASURED — see the module doc):
+    // a deploy leaves persistent storage only on floor-state evidence that
+    // its effect is settled, or once the floor closes its validity window
+    // (the merge window rule and the buffer retain read the same bound, so
+    // a window-closed deploy can never be included or recovered again).
+    // The previous rule removed each newly finalized block's deploys at
+    // that block's node-local finalization — a marker the canonical merge
+    // can still contradict — and visited each block exactly once, so any
+    // deploy a gate skipped would have been stranded in storage forever.
+    // The sweep re-examines every stored deploy at each floor advance, so
+    // eviction deferred by floor lag converges and a restart backlog
+    // self-heals. Probe-blind deploys (no created number cells) are
+    // bounded by the window-close arm.
+    if new_lfb_found {
+        let floor = floor_of_block(&dag, &final_lfb_hash, ftt).await?;
+        let floor_block = block_store.get(&floor.hash)?.ok_or_else(|| {
+            CasperError::RuntimeError(format!(
+                "floor block {} not present in store",
+                PrettyPrinter::build_string_bytes(&floor.hash)
+            ))
+        })?;
+        let floor_state = Blake2b256Hash::from_bytes_prost(&floor_block.body.state.post_state_hash);
+        let stored = deploy_storage
+            .lock()
+            .read_all()
+            .map_err(CasperError::KvStoreError)?;
+        let mut evicted: Vec<Signed<DeployData>> = Vec::new();
+        let mut settled_count = 0usize;
+        let mut window_closed_count = 0usize;
+        for deploy in stored {
+            let window_closed = deploy
+                .data
+                .valid_after_block_number
+                .saturating_add(deploy_lifespan)
+                <= floor.block_number;
+            if window_closed {
+                window_closed_count += 1;
+                evicted.push(deploy);
+                continue;
+            }
+            if deploy_effect_in_state(
+                &dag,
+                &block_store,
+                &runtime_manager,
+                &floor_state,
+                &deploy.sig,
+            )? {
+                settled_count += 1;
+                evicted.push(deploy);
+            }
+        }
+        if !evicted.is_empty() {
+            tracing::info!(
+                "Deploy-storage sweep at floor #{}: evicting {} deploy(s) ({} floor-settled, {} window-closed)",
+                floor.block_number,
+                evicted.len(),
+                settled_count,
+                window_closed_count
+            );
+            deploy_storage
+                .lock()
+                .remove(evicted)
+                .map_err(CasperError::KvStoreError)?;
+        }
+    }
 
     // Return the finalized block
     let read_started = std::time::Instant::now();
