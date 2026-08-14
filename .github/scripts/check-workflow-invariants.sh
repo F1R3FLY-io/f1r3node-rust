@@ -124,7 +124,97 @@ EOF
 done
 ok "both pipeline callers pass secrets down"
 
-# 5. The CI runner compartment OCID is pinned identically wherever it appears.
+# 5. Fast checks use ref-and-SHA push groups. Heavy branch work keeps only the
+#    current head, while each version tag has an independent release group.
+#    A branch publisher must also reject a stale SHA after it gets its lock.
+ci_concurrency_errors=""
+if ! ci_concurrency_errors="$(ruby -ryaml - .github/workflows/ci.yml 2>&1 <<'RUBY'
+def environment_name(job)
+  value = job["environment"]
+  value.is_a?(Hash) ? value["name"] : value
+end
+
+def normalized(value)
+  value.to_s.gsub(/\s+/, " ").strip
+end
+
+doc = YAML.load_file(ARGV[0])
+jobs = doc.fetch("jobs")
+expected_group = "${{ github.workflow }}-${{ github.event_name == 'push' && format('{0}-{1}', github.ref, github.sha) || github.ref }}"
+expected_cancel = "${{ github.event_name == 'pull_request' }}"
+concurrency = doc.fetch("concurrency", {})
+puts "workflow concurrency must separate branch and tag pushes at the same SHA" unless normalized(concurrency["group"]) == normalized(expected_group)
+puts "workflow concurrency must cancel only superseded PR runs" unless normalized(concurrency["cancel-in-progress"]) == normalized(expected_cancel)
+
+pipeline = jobs.fetch("pipeline", {})
+pipeline_concurrency = pipeline.fetch("concurrency", {})
+expected_pipeline_group = "ci-heavy-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}"
+expected_pipeline_cancel = "${{ !startsWith(github.ref, 'refs/tags/') }}"
+puts "heavy pipeline must use a PR-or-ref queue" unless normalized(pipeline_concurrency["group"]) == normalized(expected_pipeline_group)
+puts "heavy branch and PR work must replace obsolete heads without cancelling version tags" unless normalized(pipeline_concurrency["cancel-in-progress"]) == normalized(expected_pipeline_cancel)
+
+publisher = jobs.fetch("release_docker_image", {})
+publisher_concurrency = publisher.fetch("concurrency", {})
+puts "image publication must use a ref-specific queue" unless normalized(publisher_concurrency["group"]) == normalized("ci-image-publish-${{ github.ref }}")
+puts "image publication queue must not cancel in-progress work" unless publisher_concurrency["cancel-in-progress"] == false
+expected_environment = "${{ (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') && 'protected-branch-image-publish' || 'ephemeral-launch' }}"
+puts "only dev and master can bypass reviewer approval for image publication" unless normalized(environment_name(publisher)) == normalized(expected_environment)
+puts "image publication must remain gated on the unit-test matrix" unless Array(publisher["needs"]).include?("test")
+
+steps = Array(publisher["steps"])
+gate_index = steps.index { |step| step.is_a?(Hash) && step["id"] == "publish_gate" }
+if gate_index.nil?
+  puts "image publication must check the current branch tip"
+else
+  puts "branch-tip gate must run before checkout" unless gate_index == 0
+  gate_body = steps[gate_index]["run"].to_s
+  gate_patterns = [
+    /^\s*branch_tip_status\(\)/,
+    /^\s*publish_mutable\(\)/,
+    /^\s*for attempt in 1 2 3;/,
+    /^\s*publish=false\s*$/,
+    /repos\/\$\{GITHUB_REPOSITORY\}\/git\/ref\/heads/,
+    /GITHUB_OUTPUT/
+  ]
+  puts "branch-tip publication gate is incomplete" unless gate_patterns.all? { |pattern| gate_body.match?(pattern) }
+
+  publish_condition = "steps.publish_gate.outputs.publish == 'true'"
+  guarded_steps = steps[(gate_index + 1)..-1].to_a.reject { |step| step["name"] == "Report image publication result" }
+  puts "all image publication steps must use the branch-tip gate" unless guarded_steps.all? { |step| normalized(step["if"]) == normalized(publish_condition) }
+
+  report = steps.find { |step| step["name"] == "Report image publication result" }
+  puts "image publication must report published or stale status" unless report.is_a?(Hash) && normalized(report["if"]) == "always()"
+
+  %w[Publish\ Docker\ Image Publish\ to\ OCIR].each do |name|
+    step = steps.find { |candidate| candidate["name"] == name }
+    body = step && step["run"].to_s
+    puts "#{name} must source the branch-tip guard" unless body&.match?(/^\s*source "\$RUNNER_TEMP\/branch-tip-guard\.sh"/)
+    puts "#{name} must recheck every mutable remote update" unless body&.scan(/^\s*publish_mutable /)&.length.to_i >= 3
+    puts "#{name} must authenticate branch-tip checks" unless step&.dig("env", "GH_TOKEN")
+  end
+end
+
+packages = jobs.fetch("release_packages", {})
+packages_concurrency = packages.fetch("concurrency", {})
+puts "package publication must use a ref-specific queue" unless normalized(packages_concurrency["group"]) == normalized("ci-package-publish-${{ github.ref }}")
+puts "package publication queue must not cancel in-progress work" unless packages_concurrency["cancel-in-progress"] == false
+puts "package publication must remain gated on the unit-test matrix" unless Array(packages["needs"]).include?("test")
+
+reviewer_gated_jobs = jobs.each_with_object([]) do |(job_id, job), found|
+  found << job_id if job.is_a?(Hash) && environment_name(job) == "ephemeral-launch"
+end
+puts "CI jobs use an unconditional reviewer-gated environment: #{reviewer_gated_jobs.join(', ')}" unless reviewer_gated_jobs.empty?
+RUBY
+)"; then
+	err "CI concurrency invariant checker failed: $(printf '%s' "$ci_concurrency_errors" | tr '\n' ';')"
+	ci_concurrency_errors=""
+elif [ -n "$ci_concurrency_errors" ]; then
+	err "CI concurrency invariants failed: $(printf '%s' "$ci_concurrency_errors" | tr '\n' ';')"
+else
+	ok "each push SHA runs tests independently and release side effects use ref-scoped controls"
+fi
+
+# 6. The CI runner compartment OCID is pinned identically wherever it appears.
 #    It is hardcoded rather than held in an Actions variable on purpose: the
 #    reaper's own comment claims it "can never touch other compartments", and a
 #    variable is mutable by anyone with repo admin, so moving it there would
@@ -186,7 +276,7 @@ if [ "$fail" -eq 0 ]; then
 	fi
 fi
 
-# 6. Fork-checkout hygiene. Every checkout of the code under test must set
+# 7. Fork-checkout hygiene. Every checkout of the code under test must set
 #    BOTH `persist-credentials: false` and `allow-unsafe-pr-checkout: true`.
 #
 #    The second is what makes the fork lane work at all: actions/checkout
