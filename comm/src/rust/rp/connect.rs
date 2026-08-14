@@ -280,14 +280,14 @@ where
     }))
     .await;
 
-    let mut successful_peers = Vec::new();
+    let mut retained_peers = Vec::new();
     let mut failed_peers = Vec::new();
 
     for (peer, result) in results {
         match result {
             Ok(()) => {
                 liveness.record_success(&peer.id.key);
-                successful_peers.push(peer);
+                retained_peers.push(peer);
             }
             Err(error) => match liveness.record_failure(&peer.id.key) {
                 HeartbeatFailure::Evicted => failed_peers.push(peer),
@@ -296,7 +296,7 @@ where
                         "Heartbeat to {} failed ({}/{}); retaining connection: {}",
                         peer, streak, threshold, error
                     );
-                    successful_peers.push(peer);
+                    retained_peers.push(peer);
                 }
             },
         }
@@ -340,7 +340,7 @@ where
     let failed_count = failed_peers.len();
     connections_cell.flat_modify(|conns| {
         let updated = conns.remove_conns(to_ping.into_vec())?;
-        updated.add_conns(successful_peers)
+        updated.add_conns(retained_peers)
     })?;
 
     // Report connections if any were cleared
