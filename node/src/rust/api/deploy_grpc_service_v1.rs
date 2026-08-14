@@ -151,8 +151,15 @@ impl DeployGrpcServiceV1Impl {
             Err(_) => return,
         };
 
-        match self.block_report_api.cached_block_report(&block_hash_bytes) {
-            Ok(Some(report)) => {
+        // Cached when available, replayed only when the reporter is idle:
+        // block_report refuses rather than queues, so this never adds to the
+        // load it would be competing with.
+        match self
+            .block_report_api
+            .block_report(block_hash_bytes, false)
+            .await
+        {
+            Ok(report) => {
                 let transfers_by_deploy =
                     crate::rust::web::block_info_enricher::extract_transfers_from_report(
                         &report,
@@ -165,10 +172,11 @@ impl DeployGrpcServiceV1Impl {
                     }
                 }
             }
-            Ok(None) | Err(_) => {
-                // Validators: transfers_available stays false (proto default),
-                // transfers stays empty Vec. Clients check transfers_available
-                // to distinguish "no transfers" from "unavailable."
+            Err(_) => {
+                // Validators, and a reporter busy with another replay:
+                // transfers_available stays false (proto default), transfers
+                // stays empty Vec. Clients check transfers_available to
+                // distinguish "no transfers" from "unavailable."
             }
         }
     }

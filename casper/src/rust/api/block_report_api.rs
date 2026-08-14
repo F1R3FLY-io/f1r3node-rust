@@ -24,8 +24,6 @@ use crate::rust::reporting_proto_transformer::ReportingProtoTransformer;
 use crate::rust::safety_oracle::CliqueOracleImpl;
 use crate::rust::util::proto_util;
 
-const REPORT_CACHE_VERSION: &[u8] = b"v2:";
-
 /// How a caller wants the single report permit acquired.
 ///
 /// The two callers differ in kind rather than degree, which is why there is no
@@ -41,12 +39,7 @@ enum ReportPermit {
     Wait,
 }
 
-fn report_cache_key(block_hash: &BlockHash) -> ByteString {
-    let mut key = Vec::with_capacity(REPORT_CACHE_VERSION.len() + block_hash.len());
-    key.extend_from_slice(REPORT_CACHE_VERSION);
-    key.extend_from_slice(block_hash);
-    key
-}
+fn report_cache_key(block_hash: &BlockHash) -> ByteString { block_hash.to_vec() }
 
 /// Domain-specific errors for BlockReportAPI operations
 #[derive(Debug, thiserror::Error)]
@@ -214,15 +207,11 @@ impl BlockReportAPI {
         block: &BlockMessage,
         casper: &Arc<dyn crate::rust::casper::MultiParentCasper + Send + Sync>,
     ) -> ApiErr<BlockEventInfo> {
-        let block_hash_bytes = report_cache_key(&block.block_hash);
-        let cached = self
-            .report_store
-            .get(&vec![block_hash_bytes.clone()])
-            .map_err(|e| BlockReportError::StoreError(e.to_string()))?;
-
-        if let Some(Some(cached_report)) = cached.first() {
-            if !force_replay {
-                return Ok(cached_report.clone());
+        // Re-checked under the permit: a replay that finished while this caller
+        // was queueing has already cached the answer.
+        if !force_replay {
+            if let Some(cached_report) = self.cached_report(&block.block_hash)? {
+                return Ok(cached_report);
             }
         }
 
@@ -239,7 +228,7 @@ impl BlockReportAPI {
         let report = self.replay_block(block, casper).await?;
 
         self.report_store
-            .put(vec![(block_hash_bytes, report.clone())])
+            .put(vec![(report_cache_key(&block.block_hash), report.clone())])
             .map_err(|e| BlockReportError::StoreError(e.to_string()))?;
 
         Ok(report)
@@ -287,15 +276,23 @@ impl BlockReportAPI {
 
         let block = block_opt.ok_or_else(|| BlockReportError::BlockNotFound(hash))?;
 
+        // Answered before the permit is involved: serving a report that already
+        // exists costs a store read, so a cached block stays readable while a
+        // replay holds the permit. Only generating one has to queue.
+        if !force_replay {
+            if let Some(cached) = self.cached_report(&block.block_hash)? {
+                return Ok(cached);
+            }
+        }
+
         self.block_report_within_lock(force_replay, &block, &casper, permit_policy)
             .await
     }
 
-    pub fn cached_block_report(&self, hash: &BlockHash) -> ApiErr<Option<BlockEventInfo>> {
-        let key = report_cache_key(hash);
+    fn cached_report(&self, hash: &BlockHash) -> ApiErr<Option<BlockEventInfo>> {
         let cached = self
             .report_store
-            .get(&vec![key])
+            .get(&vec![report_cache_key(hash)])
             .map_err(|e| BlockReportError::StoreError(e.to_string()))?;
 
         Ok(cached.into_iter().next().flatten())

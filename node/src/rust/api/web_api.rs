@@ -256,12 +256,12 @@ impl WebApiImpl {
         }
     }
 
-    /// Enrich a BlockInfoSerde with transfer data from the report cache.
+    /// Enrich a BlockInfoSerde with transfer data from the block report.
     ///
-    /// A cached report gives each deploy `Some(transfers)`, where an empty vector
-    /// means the deploy moved nothing. Anything else — a validator node, a block
-    /// whose report was never pre-cached, or a store failure — gives `None`, which
-    /// omits the field rather than claiming the deploy had no transfers.
+    /// A report gives each deploy `Some(transfers)`, where an empty vector means
+    /// the deploy moved nothing. Anything else — a validator node, a reporter busy
+    /// with another replay, pruned pre-state, or a store failure — gives `None`,
+    /// which omits the field rather than claiming the deploy had no transfers.
     async fn enrich_transfers(&self, serde: &mut BlockInfoSerde, block_hash_hex: String) {
         let deploys = match serde.deploys.as_mut() {
             Some(deploys) => deploys,
@@ -277,8 +277,17 @@ impl WebApiImpl {
                 return;
             }
         };
-        match self.block_report_api.cached_block_report(&block_hash_bytes) {
-            Ok(Some(report)) => {
+        // Serves the cached report when there is one and replays only when the
+        // reporter is idle: block_report refuses rather than queues, so a read
+        // arriving during catch-up returns without waiting instead of adding to
+        // the load. A replay that does happen also caches, so ordinary reads
+        // repopulate what pre-caching missed.
+        match self
+            .block_report_api
+            .block_report(block_hash_bytes, false)
+            .await
+        {
+            Ok(report) => {
                 let transfers_by_deploy =
                     extract_transfers_from_report(&report, &self.transfer_unforgeable);
                 for deploy in deploys {
@@ -293,7 +302,7 @@ impl WebApiImpl {
                     );
                 }
             }
-            Ok(None) | Err(_) => {
+            Err(_) => {
                 for deploy in deploys {
                     deploy.transfers = None;
                 }
