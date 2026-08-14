@@ -178,7 +178,7 @@ env:
   # provenance, not content: the main merge SHA stays reachable after the
   # test branch is deleted, where the branch commit could be garbage
   # collected out from under the secret-bearing launch job's checkout.
-  SYSTEM_INTEGRATION_REF: cc11035e7364dd1876c4db8d87a8ade0022ae1d6
+  SYSTEM_INTEGRATION_REF: 218fcbe13d97067cd83c975e56d90a69d3e518d7
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
