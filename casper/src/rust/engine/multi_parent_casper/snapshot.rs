@@ -120,11 +120,21 @@ fn branch_unfinalized_user_deploy_score(
     }))
 }
 
+/// Promote a deploy-carrying branch to the main-parent slot, but ONLY
+/// among tips whose LMD-GHOST score TIES the current head's. The spine is
+/// what witnessing certifies (a validator agrees with a block iff its
+/// chain passes through it), so fork choice must converge for finality to
+/// be live: a decisive GHOST winner keeps the spine, and deploy support
+/// decides only what GHOST left undecided. An unrestricted override
+/// ping-pongs the spine under contention — both branches keep gaining
+/// deploys, the deploy-score argmax alternates, no sibling ever
+/// accumulates a stable witnessing clique, and finalization stalls.
 fn prefer_deploy_support_main_parent(
     dag: &KeyValueDagRepresentation,
     block_store: &KeyValueBlockStore,
     parents: Vec<BlockMessage>,
     last_finalized_block: &BlockHash,
+    ghost_scores: &HashMap<BlockHash, i64>,
 ) -> Result<Vec<BlockMessage>, CasperError> {
     if parents.len() <= 1 {
         return Ok(parents);
@@ -140,8 +150,19 @@ fn prefer_deploy_support_main_parent(
         )?);
     }
 
+    let head_ghost_score = ghost_scores
+        .get(&parents[0].block_hash)
+        .copied()
+        .unwrap_or(0);
     let mut best: Option<(usize, &DeployBranchScore)> = None;
     for (idx, score) in scored.iter().enumerate() {
+        let ghost_score = ghost_scores
+            .get(&parents[idx].block_hash)
+            .copied()
+            .unwrap_or(0);
+        if ghost_score != head_ghost_score {
+            continue;
+        }
         let Some(score) = score.as_ref() else {
             continue;
         };
@@ -326,13 +347,12 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     // anchored. A proposer-side parent filter cannot be a consensus-safety
     // mechanism (validators replay declared parents, not fork-choice), so it
     // was redundant. See docs/sealed-floor-merge-v2-status.md.
-    let ghost_main_parent = this
+    let fork_choice = this
         .estimator
         .tips_with_latest_messages(&mut dag, &this.approved_block, valid_latest_msgs.clone())
-        .await?
-        .tips
-        .into_iter()
-        .next();
+        .await?;
+    let ghost_scores = fork_choice.scores;
+    let ghost_main_parent = fork_choice.tips.into_iter().next();
     let mut sorted_parents_list = parent_blocks_list;
     sorted_parents_list.sort_by(|a, b| {
         let a_main = ghost_main_parent.as_ref() == Some(&a.block_hash);
@@ -346,6 +366,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         &this.block_store,
         sorted_parents_list,
         &dag.last_finalized_block(),
+        &ghost_scores,
     )?;
 
     // The candidate set IS the latest-message frontier, and merging it is
@@ -1042,11 +1063,29 @@ mod tests {
             &block_store,
             vec![empty.clone(), deploy_support.clone()],
             &genesis.block_hash,
+            &std::collections::HashMap::new(),
         )
         .expect("prefer deploy support");
 
         assert_eq!(reordered[0].block_hash, deploy_support.block_hash);
         assert_eq!(reordered[1].block_hash, empty.block_hash);
+
+        // A decisive GHOST winner keeps the spine: the same deploy-carrying
+        // candidate is NOT promoted over a head with a strictly higher
+        // fork-choice score — deploy support decides only ties.
+        let mut ghost_scores = std::collections::HashMap::new();
+        ghost_scores.insert(empty.block_hash.clone(), 200i64);
+        ghost_scores.insert(deploy_support.block_hash.clone(), 100i64);
+        let kept = prefer_deploy_support_main_parent(
+            &dag,
+            &block_store,
+            vec![empty.clone(), deploy_support.clone()],
+            &genesis.block_hash,
+            &ghost_scores,
+        )
+        .expect("prefer deploy support");
+        assert_eq!(kept[0].block_hash, empty.block_hash);
+        assert_eq!(kept[1].block_hash, deploy_support.block_hash);
     }
 
     #[tokio::test]
@@ -1146,6 +1185,7 @@ mod tests {
             &block_store,
             vec![light_parent.clone(), heavy_parent.clone()],
             &genesis.block_hash,
+            &std::collections::HashMap::new(),
         )
         .expect("prefer deploy support");
 
@@ -1235,6 +1275,7 @@ mod tests {
             &block_store,
             vec![deploy_parent.clone(), empty.clone()],
             &genesis.block_hash,
+            &std::collections::HashMap::new(),
         )
         .expect("prefer deploy support");
 
@@ -1246,18 +1287,25 @@ mod tests {
     // Fork-choice FV — T-MP STAGE 2 (formal/rocq/fork_choice/theories/GuardBridge.v
     // seam (3)). LOCAL-ONLY verification; not consensus code.
     //
-    // The proposer picks its main parent in TWO stages (:317-337):
-    //   stage 1 — the GHOST head (:317-323) + the (is_main DESC, hash ASC) sort
-    //             (:325-331);
-    //   stage 2 — `prefer_deploy_support_main_parent` (:332 -> :124-185), which can
-    //             PROMOTE a deploy-carrying branch to index 0, OVERRIDING the ghost
-    //             head. So "main parent == GHOST argmax" is FALSE for the proposer
-    //             (GuardBridge.v refutes it by computation in
-    //             `pipeline_head_may_differ_from_ghost`).
+    // The proposer picks its main parent in TWO stages:
+    //   stage 1 — the GHOST head + the (is_main DESC, hash ASC) sort;
+    //   stage 2 — `prefer_deploy_support_main_parent`, which can PROMOTE a
+    //             deploy-carrying branch to index 0 — but only among tips
+    //             whose GHOST score TIES the head's, so a decisive
+    //             fork-choice winner keeps the spine (witnessing certifies
+    //             spine membership; an unrestricted override ping-ponged
+    //             the spine under contention and stalled finalization).
+    //             "main parent == GHOST argmax" therefore holds up to
+    //             score-tied reordering. (GuardBridge.v still models the
+    //             unrestricted stage 2 and refutes head==argmax outright in
+    //             `pipeline_head_may_differ_from_ghost`; its re-derivation
+    //             for the tie-gated pipeline is pending.)
     //
-    // These proptests discharge GuardBridge.v's WEAKER, TRUE claim — the main parent
-    // is a deterministic pure function of (dag, parents, last_finalized_block) —
-    // against the REAL (private) `prefer_deploy_support_main_parent` and
+    // These proptests run stage 2 with an EMPTY ghost-score map — every tip
+    // ties at 0, the promotion arm fully exercised — and discharge the
+    // determinism claim: the main parent is a deterministic pure function of
+    // (dag, parents, last_finalized_block, ghost_scores), against the REAL
+    // (private) `prefer_deploy_support_main_parent` and
     // `better_deploy_branch_score` rather than against a re-implementation:
     //
     //   (a) `deploy_support_promotion_is_permutation_and_order_invariant` (part 1)
@@ -1464,6 +1512,7 @@ mod tests {
                 &block_store,
                 perm.clone(),
                 &genesis.block_hash,
+                &std::collections::HashMap::new(),
             )
             .expect("prefer deploy support");
             let want: Vec<BlockHash> = perm.iter().map(|b| b.block_hash.clone()).collect();
@@ -1588,6 +1637,7 @@ mod tests {
                     &block_store,
                     perm.clone(),
                     &genesis.block_hash,
+                        &std::collections::HashMap::new(),
                 )
                 .expect("prefer deploy support");
 
@@ -1620,6 +1670,7 @@ mod tests {
                             &block_store,
                             perm.clone(),
                             &genesis.block_hash,
+                                &std::collections::HashMap::new(),
                         )
                         .expect("prefer deploy support")[0]
                             .block_hash
@@ -1639,6 +1690,7 @@ mod tests {
                         &block_store,
                         perm.clone(),
                         &genesis.block_hash,
+                            &std::collections::HashMap::new(),
                     )
                     .expect("prefer deploy support");
                     let want: Vec<BlockHash> = perm.iter().map(|b| b.block_hash.clone()).collect();
@@ -1663,6 +1715,7 @@ mod tests {
                             &block_store,
                             staged,
                             &genesis.block_hash,
+                                &std::collections::HashMap::new(),
                         )
                         .expect("prefer deploy support")
                         .iter()

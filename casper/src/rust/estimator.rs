@@ -35,11 +35,15 @@ use shared::rust::store::key_value_store::KvStoreError;
 use crate::rust::util::dag_operations::DagOperations;
 use crate::rust::util::proto_util;
 
-/// Tips of the DAG, ranked against LCA
+/// Tips of the DAG, ranked against LCA. `scores` carries the LMD-GHOST
+/// cumulative-weight score per block so callers can distinguish a decisive
+/// fork-choice winner from a tie (parent ordering may reorder only within
+/// equal scores).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ForkChoice {
     pub tips: Vec<BlockHash>,
     pub lca: BlockHash,
+    pub scores: HashMap<BlockHash, i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -127,7 +131,11 @@ impl Estimator {
                 .take(self.max_number_of_parents as usize)
                 .collect()
         };
-        Ok(ForkChoice { tips, lca })
+        Ok(ForkChoice {
+            tips,
+            lca,
+            scores: scores_map,
+        })
     }
 
     async fn filter_deep_parents(
