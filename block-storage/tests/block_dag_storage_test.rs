@@ -952,6 +952,91 @@ fn deploy_appearance_is_insertion_order_independent() {
     });
 }
 
+/// An appearance is a block that CARRIES the deploy. A rejection record
+/// event at a greater height than the inclusion must not become the
+/// canonical appearance: the record's block does not hold the deploy, and
+/// naming it sends every consumer that fetches the block looking for a
+/// deploy that is not in its deploy list.
+#[test]
+fn canonical_appearance_is_the_latest_inclusion_never_a_record_carrier() {
+    use models::rust::block_implicits::processed_deploy_gen;
+    use models::rust::casper::protocol::casper_message::RejectedDeploy;
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut runner = TestRunner::default();
+        let deploy = processed_deploy_gen()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
+
+        let genesis = genesis_block();
+        let dag_storage = create_dag_storage(&genesis).await;
+
+        let inclusion = get_random_block(
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![genesis.block_hash.clone()]),
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            Some(vec![]),
+            None,
+            None,
+        );
+        let mut rejecting_merge = get_random_block(
+            Some(2),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![inclusion.block_hash.clone()]),
+            None,
+            Some(vec![]),
+            None,
+            Some(vec![]),
+            None,
+            None,
+        );
+        rejecting_merge.body.rejected_deploys = vec![RejectedDeploy {
+            sig: deploy.deploy.sig.clone(),
+            duplicate: false,
+            carrier: inclusion.block_hash.clone(),
+        }];
+
+        for b in [&inclusion, &rejecting_merge] {
+            dag_storage
+                .insert(
+                    b,
+                    block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+                )
+                .expect("insert block");
+        }
+
+        let dag = dag_storage
+            .get_representation()
+            .expect("dag representation");
+        assert_eq!(
+            dag.deploy_canonical_appearance(&deploy.deploy.sig)
+                .expect("appearance lookup"),
+            Some(inclusion.block_hash.clone()),
+            "the record event at height 2 outranks the inclusion by height, \
+             but its block does not carry the deploy — the appearance must \
+             stay on the inclusion carrier"
+        );
+    });
+}
+
 /// The lifecycle event ingest rides `insert`'s body pass: a valid block's
 /// executions and records project into per-sig rows; an invalid block's
 /// body contributes nothing (it is not canonical history).

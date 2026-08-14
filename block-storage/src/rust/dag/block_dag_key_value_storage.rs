@@ -241,9 +241,14 @@ impl KeyValueDagRepresentation {
         let Some(row) = self.deploy_lifecycle_events(sig)? else {
             return Ok(None);
         };
+        // An appearance is a block that CARRIES the deploy — inclusion
+        // events only. A rejection record's block holds the record, not the
+        // deploy; naming it here sends the caller to a block whose deploy
+        // list cannot contain the sig. A record-only row has no appearance.
         Ok(row
             .events
             .iter()
+            .filter(|e| matches!(e.kind, LifecycleEventKind::Included { .. }))
             .max_by(|a, b| {
                 a.height
                     .cmp(&b.height)

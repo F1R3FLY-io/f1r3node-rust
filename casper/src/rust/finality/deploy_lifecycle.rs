@@ -376,7 +376,10 @@ fn evaluate(
 /// Display fields for a terminal record, frozen from the event row it
 /// prunes: every record event counts toward `rejection_count` (duplicates
 /// included — the count is observability, not the causal ordering), and
-/// the latest event names the sig's most recent canonical appearance.
+/// the latest INCLUSION event names the sig's most recent canonical
+/// appearance. A rejection record's block does not carry the deploy — a
+/// record-carrier here sends every consumer that fetches the named block
+/// looking for a deploy that is not in it.
 fn frozen_display(row: &LifecycleEvents) -> (u32, i64, Vec<u8>) {
     let rejection_count = row
         .events
@@ -386,6 +389,7 @@ fn frozen_display(row: &LifecycleEvents) -> (u32, i64, Vec<u8>) {
     let latest = row
         .events
         .iter()
+        .filter(|e| matches!(e.kind, LifecycleEventKind::Included { .. }))
         .max_by(|a, b| {
             a.height
                 .cmp(&b.height)
@@ -475,6 +479,47 @@ mod tests {
         KeyValueBlockStore::create_from_kvm(&mut kvm)
             .await
             .expect("block store")
+    }
+
+    /// The terminal record's frozen appearance names a block that CARRIES
+    /// the deploy: a rejection record at a greater height than the latest
+    /// inclusion counts toward `rejection_count` but never becomes the
+    /// display carrier — the record's block has no such deploy in its body.
+    #[test]
+    fn frozen_display_names_the_latest_inclusion_never_a_record_carrier() {
+        use block_storage::rust::dag::deploy_lifecycle_types::{
+            LifecycleEvent, LifecycleEventKind, LifecycleEvents,
+        };
+
+        let inclusion_block = vec![0x11u8; 32];
+        let record_block = vec![0x22u8; 32];
+        let row = LifecycleEvents {
+            valid_after: Some(1),
+            events: vec![
+                LifecycleEvent {
+                    height: 10,
+                    block_hash: inclusion_block.clone(),
+                    kind: LifecycleEventKind::Included { is_failed: false },
+                },
+                LifecycleEvent {
+                    height: 20,
+                    block_hash: record_block,
+                    kind: LifecycleEventKind::Rejected {
+                        duplicate: false,
+                        carrier: inclusion_block.clone(),
+                    },
+                },
+            ],
+        };
+
+        let (rejection_count, latest_height, latest_block_hash) = frozen_display(&row);
+        assert_eq!(rejection_count, 1);
+        assert_eq!(
+            (latest_height, latest_block_hash),
+            (10, inclusion_block),
+            "the height-20 record event must not displace the inclusion \
+             carrier from the frozen display"
+        );
     }
 
     /// genesis(0) <- a(1, fresh sig_a) <- m(2, base=a, applied sig_b):
