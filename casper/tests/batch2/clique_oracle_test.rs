@@ -902,3 +902,217 @@ async fn orphaned_finalized_block_should_still_get_ft_updated() {
     })
     .await
 }
+
+/// Certification must be EXCLUSIVE per height: two same-height sibling blocks
+/// can never both be witnessed-finalized over one snapshot with less than the
+/// fault-tolerance weight equivocating. A validator's chain passes through
+/// exactly one block per height, so agreement — the estimator-relevant
+/// relation the clique locks — can back at most one sibling.
+///
+/// DAG (three equal-stake validators; S1/S2 are siblings over genesis, every
+/// later block MERGES both, and the visibility layer L* gives every pair
+/// mutual justification sight):
+///
+/// ```text
+///           genesis
+///           /     \
+///        S1(v1)  S2(v2)
+///          | \   / |
+///          |  \ /  |
+///        M1(v1) M2(v2) M3(v3)     parents [S1,S2] each; M2 spine=S2, M1/M3 spine=S1
+///          |      |      |
+///        L1(v1) L2(v2) L3(v3)     parents [M*..]; justs {v1:M1, v2:M2, v3:M3}
+/// ```
+///
+/// Over J = {v1:L1, v2:L2, v3:L3} every validator has MERGED both siblings
+/// (both are DAG-ancestors of every latest message — asserted below), so an
+/// agreement relation that reads DAG ancestry counts full weight for BOTH
+/// siblings and certifies both. That plural certificate is exactly what froze
+/// the finalized floor in ucc session 00e6a2e3 (two inherited floors at one
+/// height, neither containing the other's state). Chain-choice agreement is
+/// exclusive: the spines back S1 (v1, v3) over S2 (v2 only), and at most one
+/// sibling clears the oracle.
+#[tokio::test]
+async fn conflicting_same_height_siblings_cannot_both_certify() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        use casper::rust::safety::clique_oracle::FtThreshold;
+
+        let v1 = generate_validator(Some("Sibling V1"));
+        let v2 = generate_validator(Some("Sibling V2"));
+        let v3 = generate_validator(Some("Sibling V3"));
+        let bonds: Vec<Bond> = [&v1, &v2, &v3]
+            .iter()
+            .map(|v| Bond {
+                validator: (*v).clone(),
+                stake: 100,
+            })
+            .collect();
+
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let mk = |creator: &Validator,
+                  parents: Vec<BlockHash>,
+                  justs: HashMap<Validator, BlockHash>,
+                  block_store: &mut KeyValueBlockStore,
+                  block_dag_storage: &mut IndexedBlockDagStorage| {
+            crate::helper::block_generator::create_block(
+                block_store,
+                block_dag_storage,
+                parents,
+                &genesis,
+                Some(creator.clone()),
+                Some(bonds.clone()),
+                Some(justs),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+        };
+
+        let g = genesis.block_hash.clone();
+        let gj: HashMap<Validator, BlockHash> = [&v1, &v2, &v3]
+            .iter()
+            .map(|v| ((*v).clone(), g.clone()))
+            .collect();
+
+        // The same-height siblings.
+        let s1 = mk(
+            &v1,
+            vec![g.clone()],
+            gj.clone(),
+            &mut block_store,
+            &mut block_dag_storage,
+        );
+        let s2 = mk(
+            &v2,
+            vec![g.clone()],
+            gj.clone(),
+            &mut block_store,
+            &mut block_dag_storage,
+        );
+
+        // Merge layer: every validator merges BOTH siblings; v2's spine runs
+        // through its own sibling, v1's and v3's through S1.
+        let mj: HashMap<Validator, BlockHash> = HashMap::from([
+            (v1.clone(), s1.block_hash.clone()),
+            (v2.clone(), s2.block_hash.clone()),
+            (v3.clone(), g.clone()),
+        ]);
+        let m1 = mk(
+            &v1,
+            vec![s1.block_hash.clone(), s2.block_hash.clone()],
+            mj.clone(),
+            &mut block_store,
+            &mut block_dag_storage,
+        );
+        let m2 = mk(
+            &v2,
+            vec![s2.block_hash.clone(), s1.block_hash.clone()],
+            mj.clone(),
+            &mut block_store,
+            &mut block_dag_storage,
+        );
+        let m3 = mk(
+            &v3,
+            vec![s1.block_hash.clone(), s2.block_hash.clone()],
+            mj.clone(),
+            &mut block_store,
+            &mut block_dag_storage,
+        );
+
+        // Visibility layer: every pair sees every other's merge-layer block.
+        let lj: HashMap<Validator, BlockHash> = HashMap::from([
+            (v1.clone(), m1.block_hash.clone()),
+            (v2.clone(), m2.block_hash.clone()),
+            (v3.clone(), m3.block_hash.clone()),
+        ]);
+        let l1 = mk(
+            &v1,
+            vec![
+                m1.block_hash.clone(),
+                m2.block_hash.clone(),
+                m3.block_hash.clone(),
+            ],
+            lj.clone(),
+            &mut block_store,
+            &mut block_dag_storage,
+        );
+        let l2 = mk(
+            &v2,
+            vec![
+                m2.block_hash.clone(),
+                m1.block_hash.clone(),
+                m3.block_hash.clone(),
+            ],
+            lj.clone(),
+            &mut block_store,
+            &mut block_dag_storage,
+        );
+        let l3 = mk(
+            &v3,
+            vec![
+                m3.block_hash.clone(),
+                m1.block_hash.clone(),
+                m2.block_hash.clone(),
+            ],
+            lj.clone(),
+            &mut block_store,
+            &mut block_dag_storage,
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+
+        // Precondition: every latest message has MERGED both siblings, so a
+        // DAG-ancestry agreement relation counts full weight for both.
+        let snapshot: std::collections::BTreeMap<Validator, BlockHash> = [
+            (v1.clone(), l1.block_hash.clone()),
+            (v2.clone(), l2.block_hash.clone()),
+            (v3.clone(), l3.block_hash.clone()),
+        ]
+        .into_iter()
+        .collect();
+        for lm in snapshot.values() {
+            for sib in [&s1.block_hash, &s2.block_hash] {
+                assert!(
+                    dag.is_dag_ancestor(sib, lm).unwrap(),
+                    "staging: every latest message must have merged both siblings"
+                );
+            }
+        }
+
+        let thr = FtThreshold::from_f32_lossy(0.1);
+        let s1_certified =
+            CliqueOracle::ft_witnessed_exact(&s1.block_hash, &dag, &snapshot, thr, false)
+                .await
+                .expect("ft_witnessed_exact(S1)");
+        let s2_certified =
+            CliqueOracle::ft_witnessed_exact(&s2.block_hash, &dag, &snapshot, thr, false)
+                .await
+                .expect("ft_witnessed_exact(S2)");
+
+        assert!(
+            !(s1_certified && s2_certified),
+            "two same-height siblings certified over ONE snapshot with zero \
+             equivocation — certification is not exclusive, so two finalized \
+             floors can freeze at one height (the ucc 00e6a2e3 consensus halt). \
+             s1_certified={s1_certified} s2_certified={s2_certified}"
+        );
+    })
+    .await
+}
