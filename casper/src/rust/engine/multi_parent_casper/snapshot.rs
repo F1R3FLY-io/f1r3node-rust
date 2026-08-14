@@ -10,7 +10,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
@@ -37,155 +36,66 @@ use crate::rust::util::proto_util;
 /// per-deploy actual-byte sum) is intentional.
 const DEPLOY_SIG_BYTES_ESTIMATE: f64 = 65.0;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct DeployBranchScore {
-    deploy_sig_count: usize,
-    latest_deploy_block_number: i64,
-    root_block_number: i64,
-}
-
-fn better_deploy_branch_score(
-    candidate: (&DeployBranchScore, &BlockHash),
-    current: (&DeployBranchScore, &BlockHash),
-) -> bool {
-    candidate
-        .0
-        .deploy_sig_count
-        .cmp(&current.0.deploy_sig_count)
-        .then_with(|| {
-            candidate
-                .0
-                .latest_deploy_block_number
-                .cmp(&current.0.latest_deploy_block_number)
-        })
-        .then_with(|| {
-            candidate
-                .0
-                .root_block_number
-                .cmp(&current.0.root_block_number)
-        })
-        .then_with(|| current.1.cmp(candidate.1))
-        .is_gt()
-}
-
-fn branch_unfinalized_user_deploy_score(
+/// Among tips whose LMD-GHOST score TIES the head's, the spine FOLLOWS
+/// CERTIFICATION: prefer the tip whose spine carries the highest
+/// witnessed frontier. Once every latest message has merged a sibling
+/// race, GHOST scores saturate equal on both branches permanently
+/// (scoring counts DAG descent), and any input-sensitive tie-break is
+/// free to flip the spine BETWEEN two sound certificates — each side
+/// certifies at a different instant with full mutual knowledge and zero
+/// faults, and the finalized read surface forks (the ucc ca7197d8
+/// freeze). A certificate is exactly what makes a branch's frontier
+/// rise; frontiers are monotone per branch and a pure function of the
+/// view, so following the highest frontier is convergent across nodes
+/// and stable across time: any two certifying cliques intersect, and the
+/// shared member's spine is already bound. Frontier ties (the common
+/// case — both branches carry the same floor) keep stage 1's
+/// deterministic (ghost head, hash-ascending) order.
+async fn prefer_certified_main_parent(
     dag: &KeyValueDagRepresentation,
-    block_store: &KeyValueBlockStore,
-    root_hash: &BlockHash,
-    last_finalized_block: &BlockHash,
-) -> Result<Option<DeployBranchScore>, CasperError> {
-    let last_finalized_number = dag
-        .lookup(last_finalized_block)?
-        .map(|meta| meta.block_number)
-        .unwrap_or(-1);
-    let root_meta = dag.lookup_unsafe(root_hash)?;
-    let mut stack = vec![root_hash.clone()];
-    let mut seen: HashSet<BlockHash> = HashSet::new();
-    let mut deploy_sigs: HashSet<Bytes> = HashSet::new();
-    let mut latest_deploy_block_number: Option<i64> = None;
-
-    while let Some(block_hash) = stack.pop() {
-        if !seen.insert(block_hash.clone())
-            || block_hash == last_finalized_block
-            || dag.is_finalized(&block_hash)
-        {
-            continue;
-        }
-
-        let block_meta = dag.lookup_unsafe(&block_hash)?;
-        if block_meta.block_number <= last_finalized_number {
-            continue;
-        }
-
-        if let Some(sigs) = block_store.deploy_sigs(&block_hash)? {
-            if !sigs.is_empty() {
-                latest_deploy_block_number = Some(
-                    latest_deploy_block_number
-                        .map(|current| current.max(block_meta.block_number))
-                        .unwrap_or(block_meta.block_number),
-                );
-                for sig in sigs {
-                    deploy_sigs.insert(sig.into());
-                }
-            }
-        }
-
-        stack.extend(block_meta.parents.iter().cloned());
-    }
-
-    Ok(latest_deploy_block_number.map(|latest| DeployBranchScore {
-        deploy_sig_count: deploy_sigs.len(),
-        latest_deploy_block_number: latest,
-        root_block_number: root_meta.block_number,
-    }))
-}
-
-/// Promote a deploy-carrying branch to the main-parent slot, but ONLY
-/// among tips whose LMD-GHOST score TIES the current head's. The spine is
-/// what witnessing certifies (a validator agrees with a block iff its
-/// chain passes through it), so fork choice must converge for finality to
-/// be live: a decisive GHOST winner keeps the spine, and deploy support
-/// decides only what GHOST left undecided. An unrestricted override
-/// ping-pongs the spine under contention — both branches keep gaining
-/// deploys, the deploy-score argmax alternates, no sibling ever
-/// accumulates a stable witnessing clique, and finalization stalls.
-fn prefer_deploy_support_main_parent(
-    dag: &KeyValueDagRepresentation,
-    block_store: &KeyValueBlockStore,
     parents: Vec<BlockMessage>,
-    last_finalized_block: &BlockHash,
     ghost_scores: &HashMap<BlockHash, i64>,
+    latest_messages: &std::collections::BTreeMap<Validator, BlockHash>,
+    ftt: crate::rust::safety::clique_oracle::FtThreshold,
 ) -> Result<Vec<BlockMessage>, CasperError> {
     if parents.len() <= 1 {
         return Ok(parents);
-    }
-
-    let mut scored: Vec<Option<DeployBranchScore>> = Vec::with_capacity(parents.len());
-    for parent in &parents {
-        scored.push(branch_unfinalized_user_deploy_score(
-            dag,
-            block_store,
-            &parent.block_hash,
-            last_finalized_block,
-        )?);
     }
 
     let head_ghost_score = ghost_scores
         .get(&parents[0].block_hash)
         .copied()
         .unwrap_or(0);
-    let mut best: Option<(usize, &DeployBranchScore)> = None;
-    for (idx, score) in scored.iter().enumerate() {
-        let ghost_score = ghost_scores
-            .get(&parents[idx].block_hash)
-            .copied()
-            .unwrap_or(0);
+    let head_frontier = crate::rust::finality::floor::parent_frontier(
+        dag,
+        &parents[0].block_hash,
+        latest_messages,
+        ftt,
+    )
+    .await?;
+
+    let mut best: Option<(usize, i64)> = None;
+    for (idx, parent) in parents.iter().enumerate().skip(1) {
+        let ghost_score = ghost_scores.get(&parent.block_hash).copied().unwrap_or(0);
         if ghost_score != head_ghost_score {
             continue;
         }
-        let Some(score) = score.as_ref() else {
-            continue;
-        };
-        let replace = best
-            .as_ref()
-            .map(|(best_idx, best_score)| {
-                better_deploy_branch_score(
-                    (score, &parents[idx].block_hash),
-                    (best_score, &parents[*best_idx].block_hash),
-                )
-            })
-            .unwrap_or(true);
-        if replace {
-            best = Some((idx, score));
+        let frontier = crate::rust::finality::floor::parent_frontier(
+            dag,
+            &parent.block_hash,
+            latest_messages,
+            ftt,
+        )
+        .await?;
+        let bar = best.map(|(_, n)| n).unwrap_or(head_frontier.block_number);
+        if frontier.block_number > bar {
+            best = Some((idx, frontier.block_number));
         }
     }
 
-    let Some((best_idx, best_score)) = best else {
+    let Some((best_idx, best_frontier_number)) = best else {
         return Ok(parents);
     };
-    if best_idx == 0 {
-        return Ok(parents);
-    }
 
     let original_main = parents[0].block_hash.clone();
     let promoted = parents[best_idx].block_hash.clone();
@@ -193,13 +103,12 @@ fn prefer_deploy_support_main_parent(
     let promoted_parent = reordered.remove(best_idx);
     reordered.insert(0, promoted_parent);
     tracing::info!(
-        target: "f1r3fly.casper.deploy_support",
-        "Parent selection promoted deploy-carrying branch for canonical support: original_main={}, promoted_main={}, deploy_sigs={}, latest_deploy_block={}, promoted_root_block={}",
+        target: "f1r3fly.casper.parent_selection",
+        "Spine follows certification at a GHOST tie: original_main={}, promoted_main={}, promoted_frontier=#{}, head_frontier=#{}",
         PrettyPrinter::build_string_bytes(&original_main),
         PrettyPrinter::build_string_bytes(&promoted),
-        best_score.deploy_sig_count,
-        best_score.latest_deploy_block_number,
-        best_score.root_block_number
+        best_frontier_number,
+        head_frontier.block_number
     );
     Ok(reordered)
 }
@@ -361,13 +270,20 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             .cmp(&a_main)
             .then_with(|| a.block_hash.cmp(&b.block_hash))
     });
-    let sorted_parents_list = prefer_deploy_support_main_parent(
+    let tie_break_snapshot: std::collections::BTreeMap<Validator, BlockHash> = valid_latest_msgs
+        .iter()
+        .map(|(v, h)| (v.clone(), h.clone()))
+        .collect();
+    let sorted_parents_list = prefer_certified_main_parent(
         &dag,
-        &this.block_store,
         sorted_parents_list,
-        &dag.last_finalized_block(),
         &ghost_scores,
-    )?;
+        &tie_break_snapshot,
+        crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+            this.casper_shard_conf.fault_tolerance_threshold_ppm,
+        ),
+    )
+    .await?;
 
     // The candidate set IS the latest-message frontier, and merging it is
     // what makes a branch unorphanable: a block that merges every tip keeps
@@ -790,10 +706,7 @@ mod tests {
     use models::rust::casper::protocol::casper_message::ProcessedDeploy;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
-    use super::{
-        deploy_scope_cache_key_matches, prefer_deploy_support_main_parent,
-        prune_dag_covered_parents,
-    };
+    use super::{deploy_scope_cache_key_matches, prune_dag_covered_parents};
 
     #[test]
     fn deploy_scope_cache_key_includes_selected_parents() {
@@ -965,361 +878,33 @@ mod tests {
         assert_eq!(diverged_from_seal[1].block_hash, right_child.block_hash);
     }
 
-    #[tokio::test]
-    async fn deploy_support_promotes_nonfinal_deploy_branch_over_empty_main_parent() {
-        let mut kvm = InMemoryStoreManager::new();
-        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
-            .await
-            .expect("block store");
-        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
-            .await
-            .expect("dag storage");
-        let genesis = block_implicits::get_random_block(
-            Some(0),
-            Some(0),
-            None,
-            None,
-            None,
-            None,
-            Some(0),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            None,
-            Some("test".to_string()),
-            None,
-        );
-        let deploy = crate::rust::util::construct_deploy::basic_deploy_data(
-            0,
-            None,
-            Some("test".to_string()),
-        )
-        .expect("deploy");
-        let deploy_block = block_implicits::get_random_block(
-            Some(1),
-            Some(1),
-            None,
-            None,
-            None,
-            None,
-            Some(1),
-            Some(vec![genesis.block_hash.clone()]),
-            Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty(deploy)]),
-            Some(Vec::new()),
-            None,
-            Some("test".to_string()),
-            None,
-        );
-        let deploy_support = block_implicits::get_random_block(
-            Some(2),
-            Some(2),
-            None,
-            None,
-            None,
-            None,
-            Some(2),
-            Some(vec![deploy_block.block_hash.clone()]),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            None,
-            Some("test".to_string()),
-            None,
-        );
-        let empty = block_implicits::get_random_block(
-            Some(2),
-            Some(3),
-            None,
-            None,
-            None,
-            None,
-            Some(2),
-            Some(vec![genesis.block_hash.clone()]),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            None,
-            Some("test".to_string()),
-            None,
-        );
-
-        for block in [&genesis, &deploy_block, &deploy_support, &empty] {
-            block_store.put_block_message(block).expect("store block");
-        }
-        dag_storage
-            .insert(&genesis, InsertMode::Approved)
-            .expect("insert genesis");
-        for block in [&deploy_block, &deploy_support, &empty] {
-            dag_storage
-                .insert(block, InsertMode::Normal)
-                .expect("insert block");
-        }
-
-        let dag = dag_storage.get_representation().expect("dag");
-        let reordered = prefer_deploy_support_main_parent(
-            &dag,
-            &block_store,
-            vec![empty.clone(), deploy_support.clone()],
-            &genesis.block_hash,
-            &std::collections::HashMap::new(),
-        )
-        .expect("prefer deploy support");
-
-        assert_eq!(reordered[0].block_hash, deploy_support.block_hash);
-        assert_eq!(reordered[1].block_hash, empty.block_hash);
-
-        // A decisive GHOST winner keeps the spine: the same deploy-carrying
-        // candidate is NOT promoted over a head with a strictly higher
-        // fork-choice score — deploy support decides only ties.
-        let mut ghost_scores = std::collections::HashMap::new();
-        ghost_scores.insert(empty.block_hash.clone(), 200i64);
-        ghost_scores.insert(deploy_support.block_hash.clone(), 100i64);
-        let kept = prefer_deploy_support_main_parent(
-            &dag,
-            &block_store,
-            vec![empty.clone(), deploy_support.clone()],
-            &genesis.block_hash,
-            &ghost_scores,
-        )
-        .expect("prefer deploy support");
-        assert_eq!(kept[0].block_hash, empty.block_hash);
-        assert_eq!(kept[1].block_hash, deploy_support.block_hash);
-    }
-
-    #[tokio::test]
-    async fn deploy_support_prefers_larger_unfinalized_deploy_branch() {
-        let mut kvm = InMemoryStoreManager::new();
-        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
-            .await
-            .expect("block store");
-        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
-            .await
-            .expect("dag storage");
-        let genesis = block_implicits::get_random_block(
-            Some(0),
-            Some(0),
-            None,
-            None,
-            None,
-            None,
-            Some(0),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            None,
-            Some("test".to_string()),
-            None,
-        );
-        let heavy_a = crate::rust::util::construct_deploy::basic_deploy_data(
-            1,
-            None,
-            Some("test".to_string()),
-        )
-        .expect("deploy a");
-        let heavy_b = crate::rust::util::construct_deploy::basic_deploy_data(
-            2,
-            None,
-            Some("test".to_string()),
-        )
-        .expect("deploy b");
-        let light = crate::rust::util::construct_deploy::basic_deploy_data(
-            3,
-            None,
-            Some("test".to_string()),
-        )
-        .expect("deploy c");
-        let heavy_parent = block_implicits::get_random_block(
-            Some(1),
-            Some(1),
-            None,
-            None,
-            None,
-            None,
-            Some(1),
-            Some(vec![genesis.block_hash.clone()]),
-            Some(Vec::new()),
-            Some(vec![
-                ProcessedDeploy::empty(heavy_a),
-                ProcessedDeploy::empty(heavy_b),
-            ]),
-            Some(Vec::new()),
-            None,
-            Some("test".to_string()),
-            None,
-        );
-        let light_parent = block_implicits::get_random_block(
-            Some(3),
-            Some(2),
-            None,
-            None,
-            None,
-            None,
-            Some(3),
-            Some(vec![genesis.block_hash.clone()]),
-            Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty(light)]),
-            Some(Vec::new()),
-            None,
-            Some("test".to_string()),
-            None,
-        );
-
-        for block in [&genesis, &heavy_parent, &light_parent] {
-            block_store.put_block_message(block).expect("store block");
-        }
-        dag_storage
-            .insert(&genesis, InsertMode::Approved)
-            .expect("insert genesis");
-        for block in [&heavy_parent, &light_parent] {
-            dag_storage
-                .insert(block, InsertMode::Normal)
-                .expect("insert block");
-        }
-
-        let dag = dag_storage.get_representation().expect("dag");
-        let reordered = prefer_deploy_support_main_parent(
-            &dag,
-            &block_store,
-            vec![light_parent.clone(), heavy_parent.clone()],
-            &genesis.block_hash,
-            &std::collections::HashMap::new(),
-        )
-        .expect("prefer deploy support");
-
-        assert_eq!(reordered[0].block_hash, heavy_parent.block_hash);
-        assert_eq!(reordered[1].block_hash, light_parent.block_hash);
-    }
-
-    #[tokio::test]
-    async fn deploy_support_keeps_existing_deploy_main_parent() {
-        let mut kvm = InMemoryStoreManager::new();
-        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
-            .await
-            .expect("block store");
-        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
-            .await
-            .expect("dag storage");
-        let genesis = block_implicits::get_random_block(
-            Some(0),
-            Some(0),
-            None,
-            None,
-            None,
-            None,
-            Some(0),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            None,
-            Some("test".to_string()),
-            None,
-        );
-        let deploy = crate::rust::util::construct_deploy::basic_deploy_data(
-            0,
-            None,
-            Some("test".to_string()),
-        )
-        .expect("deploy");
-        let deploy_parent = block_implicits::get_random_block(
-            Some(1),
-            Some(1),
-            None,
-            None,
-            None,
-            None,
-            Some(1),
-            Some(vec![genesis.block_hash.clone()]),
-            Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty(deploy)]),
-            Some(Vec::new()),
-            None,
-            Some("test".to_string()),
-            None,
-        );
-        let empty = block_implicits::get_random_block(
-            Some(1),
-            Some(2),
-            None,
-            None,
-            None,
-            None,
-            Some(1),
-            Some(vec![genesis.block_hash.clone()]),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            None,
-            Some("test".to_string()),
-            None,
-        );
-
-        for block in [&genesis, &deploy_parent, &empty] {
-            block_store.put_block_message(block).expect("store block");
-        }
-        dag_storage
-            .insert(&genesis, InsertMode::Approved)
-            .expect("insert genesis");
-        for block in [&deploy_parent, &empty] {
-            dag_storage
-                .insert(block, InsertMode::Normal)
-                .expect("insert block");
-        }
-
-        let dag = dag_storage.get_representation().expect("dag");
-        let reordered = prefer_deploy_support_main_parent(
-            &dag,
-            &block_store,
-            vec![deploy_parent.clone(), empty.clone()],
-            &genesis.block_hash,
-            &std::collections::HashMap::new(),
-        )
-        .expect("prefer deploy support");
-
-        assert_eq!(reordered[0].block_hash, deploy_parent.block_hash);
-        assert_eq!(reordered[1].block_hash, empty.block_hash);
-    }
-
     // ═══════════════════════════════════════════════════════════════════════════
     // Fork-choice FV — T-MP STAGE 2 (formal/rocq/fork_choice/theories/GuardBridge.v
     // seam (3)). LOCAL-ONLY verification; not consensus code.
     //
     // The proposer picks its main parent in TWO stages:
     //   stage 1 — the GHOST head + the (is_main DESC, hash ASC) sort;
-    //   stage 2 — `prefer_deploy_support_main_parent`, which can PROMOTE a
-    //             deploy-carrying branch to index 0 — but only among tips
-    //             whose GHOST score TIES the head's, so a decisive
-    //             fork-choice winner keeps the spine (witnessing certifies
-    //             spine membership; an unrestricted override ping-ponged
-    //             the spine under contention and stalled finalization).
-    //             "main parent == GHOST argmax" therefore holds up to
-    //             score-tied reordering. (GuardBridge.v still models the
-    //             unrestricted stage 2 and refutes head==argmax outright in
-    //             `pipeline_head_may_differ_from_ghost`; its re-derivation
-    //             for the tie-gated pipeline is pending.)
+    //   stage 2 — `prefer_certified_main_parent`: among tips whose GHOST
+    //             score TIES the head's, the spine follows certification
+    //             (highest witnessed frontier), and frontier ties are the
+    //             exact identity. The former deploy-support promotion is
+    //             deleted: its input evolved over time, so a spine could
+    //             legally flip BETWEEN two sound certificates and fork the
+    //             finalized read surface (the ucc ca7197d8 freeze); deploys
+    //             need no spine position to finalize (see
+    //             verdict_convergence_spec::
+    //             a_deploy_finalizes_from_a_carrier_the_spine_never_holds).
+    //             (GuardBridge.v still models the retired deploy-support
+    //             stage 2; its re-derivation for the certification-guided
+    //             pipeline is pending.)
     //
-    // These proptests run stage 2 with an EMPTY ghost-score map — every tip
-    // ties at 0, the promotion arm fully exercised — and discharge the
-    // determinism claim: the main parent is a deterministic pure function of
-    // (dag, parents, last_finalized_block, ghost_scores), against the REAL
-    // (private) `prefer_deploy_support_main_parent` and
-    // `better_deploy_branch_score` rather than against a re-implementation:
-    //
-    //   (a) `deploy_support_promotion_is_permutation_and_order_invariant` (part 1)
-    //         <- GuardBridge.main_parent_pipeline_permutation / promote_permutation
-    //   (b) `better_deploy_branch_score_is_strict_total_order`
-    //         <- GuardBridge.dbetter_strict_total_order
-    //   (c) `deploy_support_promotion_is_permutation_and_order_invariant` (parts 2,4)
-    //         <- GuardBridge.dbest_hash_perm_invariant /
-    //            GuardBridge.main_parent_pipeline_deterministic
-    //
-    // and pin the COMPOSITION fact that makes (c) hold at all (part 3): stage 2 ALONE
-    // is NOT order-invariant — it returns `parents` UNTOUCHED when no branch scores
-    // (:163-165) — so determinism genuinely REQUIRES stage 1's canonical sort to run
-    // first. See docs/theory/fork-choice/fork-choice-verification.md §6.2.
+    // The proptest runs stage 2 with an EMPTY ghost-score map (every tip
+    // ties at 0) and an EMPTY latest-message snapshot (nothing witnessed,
+    // every frontier equal), and discharges the determinism claim: the
+    // composed pipeline is a deterministic pure function whose stage 2 is
+    // the identity at frontier ties, so the main parent is stage 1's
+    // canonical sort head. The certification arm is pinned
+    // deterministically by `main_parent_follows_certification_at_ghost_ties`.
     // ═══════════════════════════════════════════════════════════════════════════
 
     use std::collections::HashSet as StdHashSet;
@@ -1329,10 +914,8 @@ mod tests {
     use models::rust::casper::protocol::casper_message::BlockMessage;
     use proptest::prelude::*;
 
-    use super::{
-        better_deploy_branch_score, branch_unfinalized_user_deploy_score, DeployBranchScore,
-        KeyValueDagRepresentation,
-    };
+    use super::{prefer_certified_main_parent, KeyValueDagRepresentation};
+    use crate::rust::safety::clique_oracle::FtThreshold;
 
     /// Shared Tokio runtime: `proptest!` emits plain `#[test]` fns, which cannot be
     /// `#[tokio::test]`. Mirrors casper/tests/fork_choice/prop_ghost_argmax.rs.
@@ -1473,153 +1056,22 @@ mod tests {
         (block_store, dag, genesis, parents)
     }
 
-    /// (*) The COMPOSITION fact, pinned DETERMINISTICALLY (the proptest above reaches
-    /// this branch only when it happens to draw an all-empty parent set — ~1 case in 16
-    /// — which is too thin to rely on for a property this load-bearing).
-    ///
-    /// When NO parent branch carries an unfinalized user deploy, `prefer_deploy_support_
-    /// main_parent` returns `parents` EXACTLY as given (:163-165) — it is the identity,
-    /// order included. So stage 2 ALONE is *not* input-order invariant: its head is
-    /// simply whichever parent came first. Determinism of the block's main parent is
-    /// therefore inherited from stage 1's canonical `(is_main DESC, hash ASC)` sort
-    /// (:325-331), which is precisely why GuardBridge.v models the COMPOSED pipeline
-    /// (`main_parent_pipeline = prefer_deploy_support . ghost_sort`) rather than
-    /// claiming stage 2 is order-invariant on its own.
-    #[tokio::test]
-    async fn deploy_support_is_identity_when_no_branch_scores() {
-        // two deploy-free branches off genesis => every branch score is `None`
-        let (block_store, dag, genesis, parents) =
-            build_deploy_branch_fixture(&[(0, 1), (0, 2)]).await;
-
-        for parent in &parents {
-            assert!(
-                branch_unfinalized_user_deploy_score(
-                    &dag,
-                    &block_store,
-                    &parent.block_hash,
-                    &genesis.block_hash,
-                )
-                .expect("branch score")
-                .is_none(),
-                "fixture bug: a deploy-free branch must not score"
-            );
-        }
-
-        // BOTH orderings come back untouched — stage 2 preserves whatever order it got.
-        for perm in all_permutations(&parents) {
-            let out = prefer_deploy_support_main_parent(
-                &dag,
-                &block_store,
-                perm.clone(),
-                &genesis.block_hash,
-                &std::collections::HashMap::new(),
-            )
-            .expect("prefer deploy support");
-            let want: Vec<BlockHash> = perm.iter().map(|b| b.block_hash.clone()).collect();
-            let got: Vec<BlockHash> = out.iter().map(|b| b.block_hash.clone()).collect();
-            assert_eq!(
-                got, want,
-                "stage 2 must be the exact identity when no branch scores"
-            );
-        }
-    }
-
-    /// A `(DeployBranchScore, BlockHash)` over DELIBERATELY tiny domains, so ties at
-    /// every lexicographic level — and hence the reversed hash tie-break at :68 — are
-    /// hit constantly rather than vanishingly rarely.
-    fn arb_scored_branch() -> impl Strategy<Value = (DeployBranchScore, BlockHash)> {
-        (0usize..3, 0i64..3, 0i64..3, 0u8..4).prop_map(
-            |(deploy_sig_count, latest_deploy_block_number, root_block_number, hash_byte)| {
-                (
-                    DeployBranchScore {
-                        deploy_sig_count,
-                        latest_deploy_block_number,
-                        root_block_number,
-                    },
-                    prost::bytes::Bytes::from(vec![hash_byte]),
-                )
-            },
-        )
-    }
-
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(2048))]
-
-        /// (b) GuardBridge.v `dbetter_strict_total_order`: the REAL
-        /// `better_deploy_branch_score` (:48-70) is a STRICT TOTAL order — irreflexive,
-        /// asymmetric and transitive UNCONDITIONALLY, and total on DISTINCT hashes
-        /// (distinct blocks always have distinct cryptographic-digest hashes).
-        ///
-        /// This is the load-bearing premise: it is what makes the promoted branch the
-        /// UNIQUE argmax, hence the promotion scan-order independent. Had it NOT been a
-        /// total order, two honest proposers enumerating the same parents in different
-        /// `HashSet` orders could promote DIFFERENT branches — a real consensus
-        /// non-determinism bug.
-        #[test]
-        fn better_deploy_branch_score_is_strict_total_order(
-            a in arb_scored_branch(),
-            b in arb_scored_branch(),
-            c in arb_scored_branch(),
-        ) {
-            let better = |x: &(DeployBranchScore, BlockHash), y: &(DeployBranchScore, BlockHash)| {
-                better_deploy_branch_score((&x.0, &x.1), (&y.0, &y.1))
-            };
-
-            prop_assert!(!better(&a, &a), "irreflexivity violated at {:?}", a);
-
-            if better(&a, &b) {
-                prop_assert!(!better(&b, &a), "asymmetry violated: {:?} vs {:?}", a, b);
-            }
-
-            if better(&a, &b) && better(&b, &c) {
-                prop_assert!(
-                    better(&a, &c),
-                    "transitivity violated: {:?} > {:?} > {:?}",
-                    a, b, c
-                );
-            }
-
-            if a.1 != b.1 {
-                prop_assert!(
-                    better(&a, &b) || better(&b, &a),
-                    "totality violated on distinct hashes: {:?} vs {:?}",
-                    a, b
-                );
-            }
-        }
-    }
-
-    proptest! {
-        // Each case builds a fresh in-memory DAG and signs up to 8 deploys, then runs
-        // the real fn over EVERY permutation (<= 24) x EVERY ghost head (<= 5).
         #![proptest_config(ProptestConfig::with_cases(16))]
 
-        /// T-MP stage 2, against the REAL `prefer_deploy_support_main_parent`:
-        ///
-        ///   1. (a) GuardBridge.main_parent_pipeline_permutation — the output is always
-        ///      a PERMUTATION of the input (no parent lost or duplicated), so the parent
-        ///      MULTISET is preserved. This is what keeps `Selection.T_PS`'s
-        ///      unconstrained-parent-oracle floor soundness applicable.
-        ///   2. (c) GuardBridge.dbest_hash_perm_invariant — WHEN a branch scores, the
-        ///      promoted parent is the UNIQUE argmax, hence identical for every input
-        ///      ordering.
-        ///   3. (*) the composition fact — when NO branch scores, stage 2 is the exact
-        ///      IDENTITY (:163-165), so its head is merely whatever came first. Stage 2
-        ///      alone is therefore NOT order-invariant; determinism is inherited from
-        ///      stage 1's canonical sort.
-        ///   4. (c) GuardBridge.main_parent_pipeline_deterministic — the COMPOSED
-        ///      pipeline (stage-1 mirror then the real stage 2) yields a byte-identical
-        ///      parent list for EVERY input ordering and EVERY possible ghost head.
+        /// The composed pipeline (stage-1 mirror, then the real stage 2)
+        /// with nothing witnessed anywhere: every frontier ties, so stage 2
+        /// must be the EXACT identity (multiset and order preserved), and
+        /// the composed output must be byte-identical for every input
+        /// ordering and every possible ghost head — the main parent is
+        /// stage 1's canonical sort head, nothing else.
         #[test]
-        fn deploy_support_promotion_is_permutation_and_order_invariant(
+        fn certified_tie_break_is_identity_and_deterministic_at_frontier_ties(
             specs in prop::collection::vec((0usize..=2usize, 1i64..=2i64), 2..=4),
         ) {
-            let (block_store, dag, genesis, parents) =
+            let (_block_store, dag, _genesis, parents) =
                 runtime().block_on(build_deploy_branch_fixture(&specs));
 
-            // Distinct parent hashes are the premise `dbetter_total` needs (and what a
-            // cryptographic digest gives the real code). A collision here would be a
-            // FIXTURE bug, so assert it rather than silently weakening the property.
             let distinct: StdHashSet<BlockHash> =
                 parents.iter().map(|p| p.block_hash.clone()).collect();
             prop_assert_eq!(
@@ -1629,98 +1081,47 @@ mod tests {
             );
 
             let perms = all_permutations(&parents);
+            let empty_scores = std::collections::HashMap::new();
+            let empty_snapshot = std::collections::BTreeMap::new();
+            let ftt = FtThreshold::from_f32_lossy(0.1);
 
-            // 1. PERMUTATION-PRESERVATION (holds unconditionally).
             for perm in &perms {
-                let out = prefer_deploy_support_main_parent(
-                    &dag,
-                    &block_store,
-                    perm.clone(),
-                    &genesis.block_hash,
-                        &std::collections::HashMap::new(),
-                )
-                .expect("prefer deploy support");
-
-                let mut want: Vec<BlockHash> = perm.iter().map(|b| b.block_hash.clone()).collect();
-                let mut got: Vec<BlockHash> = out.iter().map(|b| b.block_hash.clone()).collect();
-                prop_assert_eq!(got.len(), want.len(), "stage 2 changed the parent count");
-                want.sort();
-                got.sort();
-                prop_assert_eq!(got, want, "stage 2 did not preserve the parent multiset");
-            }
-
-            let any_scored = parents.iter().any(|p| {
-                branch_unfinalized_user_deploy_score(
-                    &dag,
-                    &block_store,
-                    &p.block_hash,
-                    &genesis.block_hash,
-                )
-                .expect("branch score")
-                .is_some()
-            });
-
-            if any_scored {
-                // 2. ARGMAX INVARIANCE.
-                let heads: StdHashSet<BlockHash> = perms
-                    .iter()
-                    .map(|perm| {
-                        prefer_deploy_support_main_parent(
-                            &dag,
-                            &block_store,
-                            perm.clone(),
-                            &genesis.block_hash,
-                                &std::collections::HashMap::new(),
-                        )
-                        .expect("prefer deploy support")[0]
-                            .block_hash
-                            .clone()
-                    })
-                    .collect();
-                prop_assert_eq!(
-                    heads.len(),
-                    1,
-                    "the promoted parent depends on the input order (argmax not unique)"
-                );
-            } else {
-                // 3. IDENTITY when nothing scores — the reason stage 1 is load-bearing.
-                for perm in &perms {
-                    let out = prefer_deploy_support_main_parent(
+                let out = runtime()
+                    .block_on(prefer_certified_main_parent(
                         &dag,
-                        &block_store,
                         perm.clone(),
-                        &genesis.block_hash,
-                            &std::collections::HashMap::new(),
-                    )
-                    .expect("prefer deploy support");
-                    let want: Vec<BlockHash> = perm.iter().map(|b| b.block_hash.clone()).collect();
-                    let got: Vec<BlockHash> = out.iter().map(|b| b.block_hash.clone()).collect();
-                    prop_assert_eq!(
-                        got,
-                        want,
-                        "stage 2 must be the exact identity when no branch scores"
-                    );
-                }
+                        &empty_scores,
+                        &empty_snapshot,
+                        ftt,
+                    ))
+                    .expect("prefer certified");
+                let want: Vec<BlockHash> = perm.iter().map(|b| b.block_hash.clone()).collect();
+                let got: Vec<BlockHash> = out.iter().map(|b| b.block_hash.clone()).collect();
+                prop_assert_eq!(
+                    got,
+                    want,
+                    "stage 2 must be the exact identity at frontier ties"
+                );
             }
 
-            // 4. WHOLE-PIPELINE INVARIANCE (stage 1 then the real stage 2).
             for ghost in ghost_candidates(&parents) {
                 let outputs: StdHashSet<Vec<BlockHash>> = perms
                     .iter()
                     .map(|perm| {
                         let mut staged = perm.clone();
                         ghost_sort_mirror(ghost.as_ref(), &mut staged);
-                        prefer_deploy_support_main_parent(
-                            &dag,
-                            &block_store,
-                            staged,
-                            &genesis.block_hash,
-                                &std::collections::HashMap::new(),
-                        )
-                        .expect("prefer deploy support")
-                        .iter()
-                        .map(|b| b.block_hash.clone())
-                        .collect()
+                        runtime()
+                            .block_on(prefer_certified_main_parent(
+                                &dag,
+                                staged,
+                                &empty_scores,
+                                &empty_snapshot,
+                                ftt,
+                            ))
+                            .expect("prefer certified")
+                            .iter()
+                            .map(|b| b.block_hash.clone())
+                            .collect()
                     })
                     .collect();
                 prop_assert_eq!(
@@ -1729,6 +1130,159 @@ mod tests {
                     "the composed pipeline output depends on the input parent order"
                 );
             }
+        }
+    }
+
+    /// Among score-tied tips the spine FOLLOWS CERTIFICATION: branch X
+    /// carries a mutually-witnessed block (its tip's frontier rises to it);
+    /// branch Y carries a user deploy but no certification (its frontier
+    /// stays at genesis). Whatever the input order, X's tip must take the
+    /// main-parent slot — a certificate binds fork choice, so the spine can
+    /// never flip onto the uncertified side of a tie and mint the second
+    /// half of a temporal double-certification (the ucc ca7197d8 fork).
+    #[tokio::test]
+    async fn main_parent_follows_certification_at_ghost_ties() {
+        use models::rust::casper::protocol::casper_message::{Bond, Justification};
+
+        let v1 = prost::bytes::Bytes::from(vec![0x11u8; 65]);
+        let v2 = prost::bytes::Bytes::from(vec![0x22u8; 65]);
+        let v3 = prost::bytes::Bytes::from(vec![0x33u8; 65]);
+        let bonds = vec![
+            Bond {
+                validator: v1.clone(),
+                stake: 100,
+            },
+            Bond {
+                validator: v2.clone(),
+                stake: 100,
+            },
+            Bond {
+                validator: v3.clone(),
+                stake: 100,
+            },
+        ];
+        let justif = |entries: Vec<(&prost::bytes::Bytes, &BlockMessage)>| {
+            entries
+                .into_iter()
+                .map(|(v, b)| Justification {
+                    validator: v.clone(),
+                    latest_block_hash: b.block_hash.clone(),
+                })
+                .collect::<Vec<_>>()
+        };
+        let mk = |number: i64,
+                  seq: i32,
+                  creator: &prost::bytes::Bytes,
+                  parents: Vec<BlockHash>,
+                  justifications: Vec<Justification>,
+                  deploys: Vec<ProcessedDeploy>| {
+            block_implicits::get_random_block(
+                Some(number),
+                Some(seq),
+                None,
+                None,
+                Some(creator.clone()),
+                None,
+                Some(number),
+                Some(parents),
+                Some(justifications),
+                Some(deploys),
+                Some(Vec::new()),
+                Some(bonds.clone()),
+                Some("test".to_string()),
+                None,
+            )
+        };
+
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+
+        let genesis = mk(0, 0, &v1, Vec::new(), Vec::new(), Vec::new());
+        let gj = justif(vec![(&v1, &genesis), (&v2, &genesis), (&v3, &genesis)]);
+
+        // Branch X: s_x mutually witnessed by v1 and v2.
+        let s_x = mk(
+            1,
+            1,
+            &v1,
+            vec![genesis.block_hash.clone()],
+            gj.clone(),
+            Vec::new(),
+        );
+        let x1 = mk(
+            2,
+            1,
+            &v2,
+            vec![s_x.block_hash.clone()],
+            justif(vec![(&v1, &s_x), (&v2, &genesis), (&v3, &genesis)]),
+            Vec::new(),
+        );
+        let x2 = mk(
+            3,
+            2,
+            &v1,
+            vec![x1.block_hash.clone()],
+            justif(vec![(&v1, &s_x), (&v2, &x1), (&v3, &genesis)]),
+            Vec::new(),
+        );
+
+        // Branch Y: a deploy-carrying sibling with no certification.
+        let deploy = crate::rust::util::construct_deploy::basic_deploy_data(
+            7,
+            None,
+            Some("test".to_string()),
+        )
+        .expect("deploy");
+        let y1 = mk(
+            1,
+            1,
+            &v3,
+            vec![genesis.block_hash.clone()],
+            gj.clone(),
+            vec![ProcessedDeploy::empty(deploy)],
+        );
+
+        for block in [&genesis, &s_x, &x1, &x2, &y1] {
+            block_store.put_block_message(block).expect("store block");
+        }
+        dag_storage
+            .insert(&genesis, InsertMode::Approved)
+            .expect("insert genesis");
+        for block in [&s_x, &x1, &x2, &y1] {
+            dag_storage
+                .insert(block, InsertMode::Normal)
+                .expect("insert block");
+        }
+        let dag = dag_storage.get_representation().expect("dag");
+
+        let snapshot: std::collections::BTreeMap<_, _> = [
+            (v1.clone(), x2.block_hash.clone()),
+            (v2.clone(), x1.block_hash.clone()),
+            (v3.clone(), y1.block_hash.clone()),
+        ]
+        .into_iter()
+        .collect();
+        let scores: std::collections::HashMap<BlockHash, i64> =
+            [(x2.block_hash.clone(), 300), (y1.block_hash.clone(), 300)]
+                .into_iter()
+                .collect();
+        let ftt = FtThreshold::from_f32_lossy(0.1);
+
+        for parents in [vec![y1.clone(), x2.clone()], vec![x2.clone(), y1.clone()]] {
+            let out = prefer_certified_main_parent(&dag, parents, &scores, &snapshot, ftt)
+                .await
+                .expect("prefer certified");
+            assert_eq!(
+                out[0].block_hash, x2.block_hash,
+                "the certified branch's tip must take the main-parent slot \
+                 regardless of input order"
+            );
+            assert_eq!(out.len(), 2, "no parent may be dropped");
         }
     }
 }

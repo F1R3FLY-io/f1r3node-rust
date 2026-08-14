@@ -693,7 +693,7 @@ pub async fn floor_of_block(
 ///   fails), or the pivot no longer finalizes over the larger snapshot (L-SNAP's
 ///   premise fails): the original top-down walk from `parent`, one oracle call
 ///   per step down to the first finalized block (or genesis).
-async fn parent_frontier(
+pub(crate) async fn parent_frontier(
     dag: &KeyValueDagRepresentation,
     parent: &BlockHash,
     latest_messages: &BTreeMap<Validator, BlockHash>,

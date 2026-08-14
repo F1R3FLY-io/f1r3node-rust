@@ -300,6 +300,156 @@ async fn in_flight_rejection_must_not_split_terminal_verdicts() {
     finish_race_assert(&nodes, &loser_sig, 0);
 }
 
+/// A deploy's verdict comes from state membership, not from its carrier's
+/// spine position: a carrier merged only ever as a SECONDARY parent — no
+/// spine passes through it — still lands Finalized on every node once the
+/// floor covers the merge that applied its chain. This is the fact that
+/// makes main-parent choice a pure fork-choice concern: no deploy needs
+/// its carrier promoted onto the spine to finalize.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn a_deploy_finalizes_from_a_carrier_the_spine_never_holds() {
+    let (mut nodes, shard_id) = three_node_network().await;
+
+    // A settled common base.
+    let base_marker = construct_deploy::basic_deploy_data(
+        150,
+        Some(construct_deploy::DEFAULT_SEC2.clone()),
+        Some(shard_id.clone()),
+    )
+    .expect("base marker");
+    let base = nodes[1]
+        .add_block_from_deploys(std::slice::from_ref(&base_marker))
+        .await
+        .expect("base block");
+    for i in [0usize, 2usize] {
+        nodes[i]
+            .process_block(base.clone())
+            .await
+            .expect("process base");
+    }
+
+    // The carrier B on nodes[0] — a child of the base. nodes[1] has NOT
+    // seen it when it mints the sibling S, so B and S race at one height.
+    let deploy = {
+        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        construct_deploy::source_deploy_now_full(
+            r#"@"offspine"!("x")"#.to_string(),
+            None,
+            None,
+            Some(construct_deploy::DEFAULT_SEC.clone()),
+            Some(0),
+            Some(shard_id.clone()),
+        )
+        .expect("build off-spine deploy")
+    };
+    let sig: Bytes = deploy.sig.clone();
+    let b_block = nodes[0]
+        .add_block_from_deploys(std::slice::from_ref(&deploy))
+        .await
+        .expect("carrier B");
+    let sibling_marker = {
+        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        construct_deploy::basic_deploy_data(
+            151,
+            Some(construct_deploy::DEFAULT_SEC2.clone()),
+            Some(shard_id.clone()),
+        )
+        .expect("sibling marker")
+    };
+    let s_block = nodes[1]
+        .add_block_from_deploys(std::slice::from_ref(&sibling_marker))
+        .await
+        .expect("sibling S");
+
+    // Everyone learns both branches; the merge M is FORCED to spine
+    // through S (parents[0]) with B on the secondary edge.
+    nodes[1]
+        .process_block(b_block.clone())
+        .await
+        .expect("nodes[1] processes B");
+    for i in [0usize, 2usize] {
+        nodes[i]
+            .process_block(s_block.clone())
+            .await
+            .expect("process S");
+    }
+    nodes[2]
+        .process_block(b_block.clone())
+        .await
+        .expect("nodes[2] processes B");
+    let m_block =
+        super::staging::mint_on_parents(&mut nodes[1], vec![s_block.clone(), b_block.clone()], "M")
+            .await;
+    for i in [0usize, 2usize] {
+        nodes[i]
+            .process_block(m_block.clone())
+            .await
+            .expect("process M");
+    }
+
+    // Settle rounds on M's spine until every node's verdict lands.
+    let mut all_finalized = false;
+    let mut last_tip = m_block.block_hash.clone();
+    for round in 0..60i32 {
+        let marker = {
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+            construct_deploy::basic_deploy_data(
+                160 + round,
+                Some(construct_deploy::DEFAULT_SEC2.clone()),
+                Some(shard_id.clone()),
+            )
+            .expect("settle marker")
+        };
+        let b = nodes[2]
+            .add_block_from_deploys(std::slice::from_ref(&marker))
+            .await
+            .expect("settle proposal");
+        last_tip = b.block_hash.clone();
+        for (other, node) in nodes.iter_mut().enumerate() {
+            if other != 2 {
+                node.process_block(b.clone())
+                    .await
+                    .expect("settle delivery");
+            }
+        }
+
+        let sample: Vec<String> = nodes.iter().map(|n| verdict(n, &sig)).collect();
+        assert!(
+            sample.iter().all(|v| v == "Pending" || v == "Finalized"),
+            "round {}: the off-spine carrier's deploy must never earn a \
+             non-Finalized terminal — its chain was merge-applied; got {:?}",
+            round,
+            sample,
+        );
+        all_finalized = sample.iter().all(|v| v == "Finalized");
+        if all_finalized {
+            break;
+        }
+    }
+
+    // The staging held: the spine never passed through B.
+    let dag = nodes[1]
+        .block_dag_storage
+        .get_representation()
+        .expect("dag representation");
+    assert!(
+        dag.is_in_main_chain(&s_block.block_hash, &last_tip)
+            .expect("spine check S"),
+        "staging: the settled spine must pass through the sibling S"
+    );
+    assert!(
+        !dag.is_in_main_chain(&b_block.block_hash, &last_tip)
+            .expect("spine check B"),
+        "staging: no spine may pass through the carrier B"
+    );
+    assert!(
+        all_finalized,
+        "the off-spine carrier's deploy must finalize on every node; got {:?}",
+        nodes.iter().map(|n| verdict(n, &sig)).collect::<Vec<_>>(),
+    );
+}
+
 /// RED 2 class (85f52810 shape): a sig whose only evidence can never
 /// become canonical must still reach SOME terminal verdict once every
 /// horizon has passed — it must not strand Pending forever.

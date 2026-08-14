@@ -1116,3 +1116,312 @@ async fn conflicting_same_height_siblings_cannot_both_certify() {
     })
     .await
 }
+
+/// The ucc ca7197d8 finalized fork, reduced to its oracle-level essence:
+/// per-instant-sound certificates form on BOTH sides of a sibling fork at
+/// DIFFERENT times, with full mutual knowledge and zero equivocation,
+/// because honest spine choice between score-tied branches can flip
+/// between certificates. Staged from the live shard's message genealogy:
+/// A never leaves its sibling's spine; B flips onto A's branch, then onto
+/// C's, then back (the live 8566/50a90f4a/812baf sequence); C builds its
+/// own branch. Snapshot 1 (B and C on C's branch, mutually seen)
+/// certifies C's block; snapshot 2 (A and B on A's branch, mutually
+/// seen — B's C-era agreement hidden below the justification stopper)
+/// certifies A's sibling. Each certificate alone is exclusive at its
+/// instant; the SEQUENCE certifies two blocks whose states are
+/// incompatible — the read-surface fork the floor guards then correctly
+/// freeze on. This pin documents the oracle-level fact; the cure is that
+/// honest fork choice must never mint the flip messages once a
+/// certificate is visible (spine follows certification at GHOST ties).
+#[tokio::test]
+async fn sound_certificates_form_on_both_fork_sides_across_time() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        use casper::rust::safety::clique_oracle::FtThreshold;
+
+        let va = generate_validator(Some("Temporal A"));
+        let vb = generate_validator(Some("Temporal B"));
+        let vc = generate_validator(Some("Temporal C"));
+        let bonds = vec![
+            Bond {
+                validator: va.clone(),
+                stake: 100,
+            },
+            Bond {
+                validator: vb.clone(),
+                stake: 100,
+            },
+            Bond {
+                validator: vc.clone(),
+                stake: 100,
+            },
+        ];
+
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let creator_a = create_block(&bonds, &genesis, &va);
+        let creator_b = create_block(&bonds, &genesis, &vb);
+        let creator_c = create_block(&bonds, &genesis, &vc);
+        let gj = HashMap::from([(&va, &genesis), (&vb, &genesis), (&vc, &genesis)]);
+
+        // Three same-height siblings over the common base (79b00b / f5ba /
+        // d89a in the specimen).
+        let s_a = creator_a(&mut block_store, &mut block_dag_storage, &genesis, &gj);
+        let s_b = creator_b(&mut block_store, &mut block_dag_storage, &genesis, &gj);
+        let s_c = creator_c(&mut block_store, &mut block_dag_storage, &genesis, &gj);
+
+        // A extends its own sibling forever (18a9…281e).
+        let a1 = creator_a(
+            &mut block_store,
+            &mut block_dag_storage,
+            &s_a,
+            &HashMap::from([(&va, &s_a), (&vb, &s_b), (&vc, &s_c)]),
+        );
+        // C builds its own branch (9acc → 3560a642).
+        let c1 = creator_c(
+            &mut block_store,
+            &mut block_dag_storage,
+            &s_c,
+            &HashMap::from([(&va, &s_a), (&vb, &s_b), (&vc, &s_c)]),
+        );
+        // B's first flip: onto A's sibling, knowing A's agreement (8566).
+        let b1 = creator_b(
+            &mut block_store,
+            &mut block_dag_storage,
+            &s_a,
+            &HashMap::from([(&va, &s_a), (&vb, &s_b), (&vc, &s_c)]),
+        );
+        // C's join-era block on its own branch (3560a642's analog).
+        let c2 = creator_c(
+            &mut block_store,
+            &mut block_dag_storage,
+            &c1,
+            &HashMap::from([(&va, &s_a), (&vb, &s_b), (&vc, &c1)]),
+        );
+        // B's second flip: onto C's branch, knowing C's chain (50a90f4a).
+        let b2 = creator_b(
+            &mut block_store,
+            &mut block_dag_storage,
+            &c2,
+            &HashMap::from([(&va, &a1), (&vb, &b1), (&vc, &c2)]),
+        );
+        // C sees B agreeing on its branch (de0997/9b2a): mutual knowledge.
+        let c3 = creator_c(
+            &mut block_store,
+            &mut block_dag_storage,
+            &c2,
+            &HashMap::from([(&va, &a1), (&vb, &b2), (&vc, &c2)]),
+        );
+
+        let thr = FtThreshold::from_f32_lossy(0.1);
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+
+        // Snapshot 1 — the :53.5–:55.0 window: B and C spine through C's
+        // branch, mutually seen; A holds its own sibling.
+        let snap1: std::collections::BTreeMap<Validator, BlockHash> = [
+            (va.clone(), a1.block_hash.clone()),
+            (vb.clone(), b2.block_hash.clone()),
+            (vc.clone(), c3.block_hash.clone()),
+        ]
+        .into_iter()
+        .collect();
+        let c2_certified_snap1 =
+            CliqueOracle::ft_witnessed_exact(&c2.block_hash, &dag, &snap1, thr, false)
+                .await
+                .expect("ft(c2) at snapshot 1");
+        let sa_certified_snap1 =
+            CliqueOracle::ft_witnessed_exact(&s_a.block_hash, &dag, &snap1, thr, false)
+                .await
+                .expect("ft(s_a) at snapshot 1");
+
+        // B's third flip: back onto A's branch (812baf); A mints having
+        // seen it (mutual knowledge on the other side).
+        let b3 = creator_b(
+            &mut block_store,
+            &mut block_dag_storage,
+            &a1,
+            &HashMap::from([(&va, &a1), (&vb, &b2), (&vc, &c3)]),
+        );
+        let a2 = creator_a(
+            &mut block_store,
+            &mut block_dag_storage,
+            &a1,
+            &HashMap::from([(&va, &a1), (&vb, &b3), (&vc, &c3)]),
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        // Snapshot 2 — the :55.3–:55.8 window: A and B spine through A's
+        // sibling, mutually seen; C still on its own branch.
+        let snap2: std::collections::BTreeMap<Validator, BlockHash> = [
+            (va.clone(), a2.block_hash.clone()),
+            (vb.clone(), b3.block_hash.clone()),
+            (vc.clone(), c3.block_hash.clone()),
+        ]
+        .into_iter()
+        .collect();
+        let sa_certified_snap2 =
+            CliqueOracle::ft_witnessed_exact(&s_a.block_hash, &dag, &snap2, thr, false)
+                .await
+                .expect("ft(s_a) at snapshot 2");
+        let c2_certified_snap2 =
+            CliqueOracle::ft_witnessed_exact(&c2.block_hash, &dag, &snap2, thr, false)
+                .await
+                .expect("ft(c2) at snapshot 2");
+
+        // Per-snapshot exclusivity holds — the fork is TEMPORAL.
+        assert!(
+            !sa_certified_snap1 && !c2_certified_snap2,
+            "certificates must stay exclusive within one snapshot \
+             (sa@1={sa_certified_snap1}, c2@2={c2_certified_snap2})"
+        );
+        // The class: both sides certify across time, soundly, fault-free.
+        assert!(
+            c2_certified_snap1 && sa_certified_snap2,
+            "the ca7197d8 genealogy must certify C's branch at snapshot 1 \
+             and A's sibling at snapshot 2 (c2@1={c2_certified_snap1}, \
+             sa@2={sa_certified_snap2}) — if either fails, the staged \
+             genealogy no longer mirrors the specimen"
+        );
+    })
+    .await
+}
+
+/// A clique certificate must be MUTUALLY KNOWN agreement, not an
+/// instantaneous coincidence (the ucc ca7197d8 finalized fork): here v1's
+/// latest message T and v2's latest message m2 both spine through T, but
+/// v1's knowledge of v2 (its justification, ov2) predates T entirely — v1
+/// has never seen v2 agree. Before the agreement propagates, honest fork
+/// choice is still free to move off T without any fault, so certifying at
+/// this instant certifies nothing binding. Once v1 mints on m2 (its
+/// justification for v2 now spines through T, and v2's for v1 already
+/// does), the agreement is mutually known and the certificate is earned.
+#[tokio::test]
+async fn a_coincidence_never_mutually_seen_must_not_certify() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        use casper::rust::safety::clique_oracle::FtThreshold;
+
+        let v1 = generate_validator(Some("Mutual V1"));
+        let v2 = generate_validator(Some("Mutual V2"));
+        let v3 = generate_validator(Some("Mutual V3"));
+        let bonds = vec![
+            Bond {
+                validator: v1.clone(),
+                stake: 100,
+            },
+            Bond {
+                validator: v2.clone(),
+                stake: 100,
+            },
+            Bond {
+                validator: v3.clone(),
+                stake: 100,
+            },
+        ];
+
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let creator1 = create_block(&bonds, &genesis, &v1);
+        let creator2 = create_block(&bonds, &genesis, &v2);
+
+        let gj = HashMap::from([(&v1, &genesis), (&v2, &genesis), (&v3, &genesis)]);
+
+        // v2's pre-target message: everything v1 will ever have seen of v2.
+        let ov2 = creator2(&mut block_store, &mut block_dag_storage, &genesis, &gj);
+
+        // The target T: v1 has seen ov2, which cannot spine through T.
+        let t = creator1(
+            &mut block_store,
+            &mut block_dag_storage,
+            &genesis,
+            &HashMap::from([(&v1, &genesis), (&v2, &ov2), (&v3, &genesis)]),
+        );
+
+        // v2 agrees on T and has seen v1's T — but v1 has never seen this.
+        let m2 = creator2(
+            &mut block_store,
+            &mut block_dag_storage,
+            &t,
+            &HashMap::from([(&v1, &t), (&v2, &ov2), (&v3, &genesis)]),
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let thr = FtThreshold::from_f32_lossy(0.1);
+
+        // The coincidence instant: both latest messages spine through T,
+        // mutual knowledge absent (v1's view of v2 is still ov2).
+        let coincidence: std::collections::BTreeMap<Validator, BlockHash> = [
+            (v1.clone(), t.block_hash.clone()),
+            (v2.clone(), m2.block_hash.clone()),
+            (v3.clone(), genesis.block_hash.clone()),
+        ]
+        .into_iter()
+        .collect();
+        let certified_at_coincidence =
+            CliqueOracle::ft_witnessed_exact(&t.block_hash, &dag, &coincidence, thr, false)
+                .await
+                .expect("ft_witnessed_exact(T) at the coincidence");
+        assert!(
+            !certified_at_coincidence,
+            "T certified while v1 has never seen v2 agree on it — a \
+             transient spine coincidence is not a commitment, and \
+             certifying it lets two sides of a sibling race finalize \
+             incompatibly (the ucc ca7197d8 fork)"
+        );
+
+        // v1 mints on m2: its justification for v2 now spines through T —
+        // the agreement is mutually known and must certify.
+        let t2 = creator1(
+            &mut block_store,
+            &mut block_dag_storage,
+            &m2,
+            &HashMap::from([(&v1, &t), (&v2, &m2), (&v3, &genesis)]),
+        );
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mutual: std::collections::BTreeMap<Validator, BlockHash> = [
+            (v1.clone(), t2.block_hash.clone()),
+            (v2.clone(), m2.block_hash.clone()),
+            (v3.clone(), genesis.block_hash.clone()),
+        ]
+        .into_iter()
+        .collect();
+        let certified_at_mutual =
+            CliqueOracle::ft_witnessed_exact(&t.block_hash, &dag, &mutual, thr, false)
+                .await
+                .expect("ft_witnessed_exact(T) at mutual knowledge");
+        assert!(
+            certified_at_mutual,
+            "mutually-known agreement must certify — the mutual-knowledge \
+             requirement must not over-restrict a settled clique"
+        );
+    })
+    .await
+}
