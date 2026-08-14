@@ -1,0 +1,74 @@
+// fileio_parallel.rho — Phase 10 canonical example
+//
+// Parallel byte-sum reduction over a File's byte stream using
+// `foldConcurrent(init, combine, workers)`.  Illustrates the FIP
+// §Stream parallel-combinator pattern: `combine` is invoked up to
+// `workers` times concurrently; because addition is commutative and
+// associative, the accumulator converges to the same value
+// regardless of scheduling.
+//
+// Sequence:
+//   1. Open a bundled File in "r" mode.
+//   2. `file!bytes()` → `[true, byteStream]`.
+//   3. Define `plus(returnCh, @acc, @byte) = returnCh!(acc + byte)`.
+//   4. `byteStream!foldConcurrent(0, *plus, 8)` — sum every byte
+//      value using up to 8 concurrent combine workers.
+//   5. On `[true, total]`, print total.  On `[false, ...]`, print
+//      the error.
+//
+// Convergence: for any commutative-associative `combine`, the result
+// is well-defined independently of scheduling.  Under replay, the
+// lead node's scheduling is captured in the produce log so followers
+// re-derive the same accumulator; across local dev runs, the
+// scheduling may vary but the mathematical result is stable.
+//
+// ## Prerequisite: foldConcurrent implementation
+//
+// `foldConcurrent` is listed in Stream.rho line 23 as "Deferred to
+// follow-up commits" alongside `foldChunks`, `mapReduce`.  This
+// example ships as a documentation artifact for the future user
+// surface; until the follow-up lands, the byteStream method
+// dispatch's default arm answers `[false, "FSERR_UNSUPPORTED",
+// "unknown method"]`.  A sequential equivalent using the already-
+// implemented `fold` is:
+//
+//   for (@r <- @byteStream!?("fold", 0, *plus)) { ... }
+//
+// which produces the same byte-sum (single-worker), suitable as an
+// interim regression pin.
+//
+// Companion regression: casper/tests/genesis/contracts/
+// fileio_examples_spec.rs :: fileio_parallel_byte_sum
+// (currently `#[ignore]`; unblocks when foldConcurrent lands).
+
+new
+  rl(`rho:registry:lookup`),
+  stdout(`rho:io:stdout`),
+  fsCh,
+  plus
+in {
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *fsCh) |
+  for(@(_, fs) <- fsCh) {
+    for(@[true, file] <- @fs!?("openFile", "target", {"mode": "r"})) {
+      for(@bytesReply <- @file!?("bytes")) {
+        match bytesReply {
+          [true, byteStream] => {
+            contract plus(returnCh, @acc, @byte) = {
+              // byteStream emits 1-byte ByteArrays (spec §Byte-stream
+              // producer, File.rho line 1237); use `.nth(0)` to extract
+              // the integer byte value.
+              returnCh!(acc + byte.nth(0))
+            } |
+            for(@r <- @byteStream!?("foldConcurrent", 0, *plus, 8)) {
+              match r {
+                [true, total] => stdout!(("total byte sum", total))
+                _             => stdout!(("foldConcurrent failed", r))
+              }
+            }
+          }
+          _ => stdout!(("file.bytes() failed", bytesReply))
+        }
+      }
+    }
+  }
+}
