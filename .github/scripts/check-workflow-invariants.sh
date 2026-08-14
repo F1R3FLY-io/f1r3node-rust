@@ -420,6 +420,12 @@ puts "canary duration is not bounded to 1800s" unless body&.include?("duration_s
 puts "canary checkpoint slots are not cleared" unless body&.include?("checkpoints=()")
 puts "canary retry attempts are not rejected" unless body&.include?("INPUT_RETRY_ATTEMPT")
 puts "protection injection is not restricted to canaries" unless body&.include?("inject_protection_breach requires canary")
+puts "preflight-only runs are not bounded to four hours" unless body&.include?("duration_seconds=14400")
+puts "preflight-only runs do not clear checkpoint slots" unless body&.include?('INPUT_PREFLIGHT_ONLY:-false}" = "true" ] || [ "${INPUT_CANARY') || body&.include?('INPUT_CANARY:-false}" = "true" ] || [ "${INPUT_PREFLIGHT_ONLY')
+puts "preflight-only output is missing" unless body&.include?('echo "preflight_only=${INPUT_PREFLIGHT_ONLY:-false}"')
+puts "preflight-only controls can combine with incompatible modes" unless body&.include?("preflight_only cannot be combined")
+retry_condition = jobs.dig("retry_within_window", "if").to_s
+puts "preflight-only dispatches can restart as soaks" unless retry_condition.include?("preflight_only != 'true'")
 injection = jobs.dig("soak", "steps").find { |step| step["name"] == "Configure injected protection breach" }
 puts "protection injection step is missing or not gate-controlled" unless injection&.dig("if").to_s == "needs.schedule_gate.outputs.inject_protection_breach == 'true'"
 publish_steps = jobs.dig("perf_report", "steps")
@@ -438,8 +444,48 @@ raw = File.read(ARGV[0])
 puts "OCI scheduled runs are not serialized by slot" unless raw.include?("merge-recovery-soak-slot-")
 puts "scheduled_slot_epoch input is missing" unless raw.include?("scheduled_slot_epoch:")
 puts "scheduled run names are not slot-stable" unless raw.include?("Merge Recovery Soak [scheduled:{0}]")
+soak = jobs.fetch("soak")
+steps = Array(soak["steps"])
+preflight = steps.find { |step| step["id"] == "integration_preflight" }
+pending = steps.find { |step| step["name"] == "Report integration preflight pending" }
+result = steps.find { |step| step["name"] == "Report integration preflight status" }
+puts "full integration preflight is missing" unless preflight
+puts "exact-SHA preflight status is not set to pending before execution" unless pending && preflight && steps.index(pending) < steps.index(preflight) && pending.dig("run").to_s.include?("state=pending")
+puts "exact-SHA preflight result is not published" unless result&.dig("run").to_s.include?("Soak Integration Preflight")
+puts "full integration preflight must skip canaries" unless preflight&.dig("if").to_s.include?("canary != 'true'")
+puts "full integration preflight must use the bounded driver" unless preflight&.dig("run").to_s.include?("run-integration-preflight.sh")
+puts "full integration preflight must subtract its elapsed time from the soak" unless preflight&.dig("run").to_s.include?("DURATION_SECONDS - elapsed")
+puts "soak job cannot publish exact-SHA preflight statuses" unless soak.dig("permissions", "statuses") == "write"
+puts "soak job does not expose its preflight result" unless soak.dig("outputs", "preflight").to_s.include?("integration_preflight.outputs.result")
+puts "soak job does not expose telemetry reset status" unless soak.dig("outputs", "telemetry_reset").to_s.include?("reset_telemetry.outcome")
+segment_steps = steps.select { |step| step["name"].to_s.match?(/^Soak (segment [1-5]|final segment)$/) }
+puts "expected six soak segments behind the preflight" unless segment_steps.length == 6
+segment_steps.each do |step|
+  condition = step["if"].to_s
+  duration = step.dig("with", "duration_seconds").to_s
+  puts "#{step['name']} runs during preflight-only dispatches" unless condition.include?("preflight_only != 'true'")
+  puts "#{step['name']} does not stop after a preflight failure" unless condition.include?("integration_preflight.outputs.result == 'passed'")
+  puts "#{step['name']} does not stop after telemetry cleanup fails" unless condition.include?("reset_telemetry.outcome == 'success'")
+  puts "#{step['name']} no longer permits canaries" unless condition.include?("canary == 'true'")
+  puts "#{step['name']} does not use the post-preflight budget" unless duration.include?("integration_preflight.outputs.remaining_seconds")
+end
+publisher_condition = jobs.dig("perf_report", "if").to_s
+puts "dashboard publication runs for preflight-only dispatches" unless publisher_condition.include?("preflight_only != 'true'")
+puts "dashboard publication does not require a completed preflight" unless publisher_condition.include?("needs.soak.outputs.preflight == 'passed'")
+puts "dashboard publication does not require clean soak telemetry" unless publisher_condition.include?("needs.soak.outputs.telemetry_reset == 'success'")
+profile = File.readlines(ARGV[1], chomp: true).reject(&:empty?)
+deselects = File.read(ARGV[2]).scan(/--deselect\s+([^\s\\]+)/).flatten
+puts "soak preflight profile differs from regular CI exclusions" unless profile == deselects
+runner = File.read(ARGV[3])
+puts "preflight is not resource-limited to one worker" unless runner.include?("-n 1 --dist=loadgroup")
+puts "preflight does not reject skipped tests" unless runner.include?("skipped == 0")
+puts "preflight does not require one collected test per selector" unless runner.include?("tests >= minimum_tests")
 RUBY
-soak_errors="$(ruby "$scratch/check-canary.rb" .github/workflows/merge-recovery-soak.yml)"
+soak_errors="$(ruby "$scratch/check-canary.rb" \
+	.github/workflows/merge-recovery-soak.yml \
+	.github/system-integration-soak-preflight.txt \
+	.github/workflows/_integration-pipeline.yml \
+	scripts/run-integration-preflight.sh)"
 if [ -n "$soak_errors" ]; then
 	err "soak workflow invariants failed: $(printf '%s' "$soak_errors" | tr '\n' ';')"
 else

@@ -173,6 +173,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash scripts/bench/test-latency-benchmark.sh
 
+      - name: Verify integration preflight driver
+        shell: bash -euo pipefail {0}
+        run: scripts/bench/test-run-integration-preflight.sh
+
       - name: Verify soak fail-closed driver
         shell: bash -euo pipefail {0}
         run: scripts/bench/test-run-merge-recovery-soak.sh

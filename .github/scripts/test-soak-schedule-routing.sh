@@ -76,6 +76,7 @@ run_gate() {
 		INPUT_SERIES="" \
 		INPUT_RETRY_ATTEMPT=0 \
 		INPUT_CANARY=false \
+		INPUT_PREFLIGHT_ONLY=false \
 		INPUT_INJECT_PROTECTION_BREACH=false \
 		GH_TOKEN=test \
 		GITHUB_REPOSITORY=F1R3FLY-io/f1r3node-rust \
@@ -133,6 +134,7 @@ if PATH="$TMP/bin:$PATH" \
 	INPUT_SERIES="" \
 	INPUT_RETRY_ATTEMPT=0 \
 	INPUT_CANARY=true \
+	INPUT_PREFLIGHT_ONLY=false \
 	INPUT_INJECT_PROTECTION_BREACH=false \
 	GH_TOKEN=test \
 	GITHUB_REPOSITORY=F1R3FLY-io/f1r3node-rust \
@@ -143,5 +145,33 @@ if PATH="$TMP/bin:$PATH" \
 	echo 'scheduled slot accepted conflicting canary controls' >&2
 	exit 1
 fi
+
+preflight_output="$TMP/preflight-output"
+: >"$preflight_output"
+PATH="$TMP/bin:$PATH" \
+	FAKE_NOW_EPOCH=1785810660 \
+	FAKE_SLOT_EPOCH=1785810600 \
+	FAKE_PACIFIC_WEEKDAY=1 \
+	EVENT_NAME=workflow_dispatch \
+	EVENT_SCHEDULE="" \
+	INPUT_SCHEDULED_SLOT="" \
+	INPUT_DURATION=daily-24h \
+	INPUT_TARGET_REF=dev \
+	INPUT_WINDOW_END="" \
+	INPUT_SERIES="" \
+	INPUT_RETRY_ATTEMPT=0 \
+	INPUT_CANARY=false \
+	INPUT_PREFLIGHT_ONLY=true \
+	INPUT_INJECT_PROTECTION_BREACH=false \
+	GH_TOKEN=test \
+	GITHUB_REPOSITORY=F1R3FLY-io/f1r3node-rust \
+	GITHUB_RUN_ID=999 \
+	GITHUB_OUTPUT="$preflight_output" \
+	GITHUB_STEP_SUMMARY="$TMP/summary" \
+	bash -euo pipefail "$TMP/gate.sh" >/dev/null
+grep -qx 'duration_seconds=14400' "$preflight_output"
+grep -qx 'preflight_only=true' "$preflight_output"
+grep -qx 'run_benchmarks=false' "$preflight_output"
+grep -qx 'checkpoint_1=' "$preflight_output"
 
 printf 'soak schedule routing tests passed\n'
