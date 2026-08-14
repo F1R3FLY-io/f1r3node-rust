@@ -32,12 +32,18 @@ CSV
 # __system__ row is host state and must not become a grid node, and the
 # non-numeric core id is a malformed row that must be rejected — the grid
 # assertion below proves both filters.
+# validator1 appears under BOTH container namings — the legacy
+# "rnode.<network>." prefix and the bare per-iteration shard hash
+# ("f6f7eb46.") that once leaked 42 columns into the published grid. The
+# node id is the name's final dot-segment, so both rows must fold into one
+# "validator1" key with the per-cell max (7.5 beats 3.0).
 # CRLF matters most here: cpu_percent is the LAST column, so without
 # CR-stripping every row fails the numeric check (smoke run 31547587950
 # published an all-fallback grid exactly this way).
 cat <<'CSV' | sed 's/$/\r/' >"$FAKE_ARCHIVE_DIR/session/resource-percore-timeseries.csv"
 elapsed_s,node,core,cpu_percent
-1.0,rnode.test.validator1,0,7.5
+1.0,f6f7eb46.validator1,0,3.0
+2.0,rnode.test.validator1,0,7.5
 1.0,rnode.test.validator1,1,42.0
 1.0,__system__,0,93.0
 1.0,rnode.test.validator1,not-a-core,88.0
