@@ -256,9 +256,12 @@ impl WebApiImpl {
         }
     }
 
-    /// Enrich a BlockInfoSerde with transfer data from BlockReportAPI.
-    /// On success: each deploy gets `Some(transfers)`.
-    /// On failure (validator node): each deploy gets `None` (field omitted).
+    /// Enrich a BlockInfoSerde with transfer data from the report cache.
+    ///
+    /// A cached report gives each deploy `Some(transfers)`, where an empty vector
+    /// means the deploy moved nothing. Anything else — a validator node, a block
+    /// whose report was never pre-cached, or a store failure — gives `None`, which
+    /// omits the field rather than claiming the deploy had no transfers.
     async fn enrich_transfers(&self, serde: &mut BlockInfoSerde, block_hash_hex: String) {
         let deploys = match serde.deploys.as_mut() {
             Some(deploys) => deploys,

@@ -262,20 +262,9 @@ pub fn rho_reporter(
     })
 }
 
+/// Genesis is the only block without parents, and it replays without cost
+/// accounting because no precharge or refund system deploy is wrapped around it.
 fn with_cost_accounting(parent_hashes: &[prost::bytes::Bytes]) -> bool { !parent_hashes.is_empty() }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn genesis_deploys_are_not_cost_accounted() {
-        assert!(!with_cost_accounting(&[]));
-        assert!(with_cost_accounting(&[prost::bytes::Bytes::from_static(
-            b"parent",
-        )]));
-    }
-}
 
 /// ReportingRuntime wraps RhoRuntimeImpl with ReportingRspace to enable event collection
 pub struct ReportingRuntime {
@@ -411,5 +400,18 @@ impl ReportingRuntime {
             runtime,
             space: reporting_space,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn genesis_deploys_are_not_cost_accounted() {
+        assert!(!with_cost_accounting(&[]));
+        assert!(with_cost_accounting(&[prost::bytes::Bytes::from_static(
+            b"parent",
+        )]));
     }
 }
