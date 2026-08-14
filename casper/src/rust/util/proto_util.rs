@@ -17,6 +17,7 @@ use models::rust::casper::protocol::casper_message::{
     ProcessedSystemDeploy, RejectedDeploy,
 };
 use models::rust::validator::Validator;
+use prost::bytes::Bytes;
 use rholang::rust::interpreter::deploy_parameters::DeployParameters;
 use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::ByteString;
@@ -276,6 +277,17 @@ pub fn kept_rejected_records(block: &BlockMessage) -> impl Iterator<Item = &Reje
         .rejected_deploys
         .iter()
         .filter(|record| !record.duplicate)
+}
+
+pub fn mark_processed_rejections_duplicate(
+    rejected_deploys: &mut [RejectedDeploy],
+    processed_deploy_sigs: &HashSet<Bytes>,
+) {
+    for record in rejected_deploys {
+        if processed_deploy_sigs.contains(&record.sig) {
+            record.duplicate = true;
+        }
+    }
 }
 
 pub fn system_deploys(block: &BlockMessage) -> Vec<ProcessedSystemDeploy> {

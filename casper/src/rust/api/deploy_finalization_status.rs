@@ -258,7 +258,8 @@ fn bfs_finalized_window(
             PrettyPrinter::build_string_bytes(&lfb_hash),
         )
     })?;
-    let scan_floor = (lfb_height - deploy_lifespan).max(0);
+    let scan_floor =
+        crate::rust::util::deploy_window::earliest_valid_after(lfb_height, deploy_lifespan)?.max(0);
 
     // Active sigs as a HashSet for O(1) membership checks during body scans.
     // Cloning sig bytes once here avoids per-block-per-sig clones.
@@ -544,8 +545,11 @@ fn finalize_sig_state(
                 PrettyPrinter::build_string_bytes(&dag.last_finalized_block()),
             )
         })?;
-    let expired = lfb_height > state.valid_after_block_number + deploy_lifespan
-        && clean_finalized_height.is_none();
+    let expired = crate::rust::util::deploy_window::is_past_expiration_cutoff(
+        state.valid_after_block_number,
+        lfb_height,
+        deploy_lifespan,
+    )? && clean_finalized_height.is_none();
 
     let final_state = if failed_finalized {
         DeployFinalizationState::Failed

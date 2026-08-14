@@ -129,7 +129,9 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
             .await
             {
                 Ok(ctx) => floor_ctx = Some(ctx),
-                Err(ex) => return Ok(Either::Left(BlockError::BlockException(ex))),
+                Err(ex) => {
+                    return Ok(Either::Left(BlockError::from_floor_context_error(ex)));
+                }
             }
         }
         let (validate_block_checkpoint_result, t2) = timed_step(

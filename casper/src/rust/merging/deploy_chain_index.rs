@@ -51,7 +51,7 @@ impl DeployChainIndex {
         history_repository: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
         source_block_hash: BlockHash,
         source_block_number: i64,
-        deploy_windows: std::collections::HashMap<Bytes, i64>,
+        deploy_windows: &std::collections::HashMap<Bytes, i64>,
     ) -> Result<Self, HistoryError>
     where
         C: std::clone::Clone
@@ -100,8 +100,9 @@ impl DeployChainIndex {
             StateChange::new(pre_history_reader, post_history_reader, &event_log_index)?;
 
         let deploy_windows = deploy_windows
-            .into_iter()
-            .filter(|(id, _)| deploys_with_cost.iter().any(|d| d.deploy_id == *id))
+            .iter()
+            .filter(|(id, _)| deploys_with_cost.iter().any(|d| d.deploy_id == ***id))
+            .map(|(id, valid_after)| (id.clone(), *valid_after))
             .collect();
 
         Ok(Self {
