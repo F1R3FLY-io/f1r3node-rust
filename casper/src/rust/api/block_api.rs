@@ -655,17 +655,27 @@ impl BlockAPI {
 
         if let Some(casper) = eng.with_casper() {
             let dag = casper.block_dag().await?;
-            let latest_block_number = dag.latest_block_number();
+            // A deploy admitted now can only ever land in a block that doesn't
+            // exist yet — the next one, at `latest_block_number + 1` — never
+            // in the current tip, which is already built. block_creator.rs's
+            // own expiry filter checks against exactly that next block's
+            // number (`earliest_block_number = block_number - deploy_lifespan`
+            // for the block being assembled). Checking admission against
+            // `latest_block_number` instead of `latest_block_number + 1` is
+            // off by one: a deploy admitted "just inside" the window at the
+            // current tip is then found expired by the very next block's
+            // filter, so it can never actually be included.
+            let next_block_number = dag.latest_block_number() + 1;
             let deploy_lifespan = casper.casper_shard_conf().deploy_lifespan;
             if deploy_is_block_expired(
                 d.data.valid_after_block_number,
-                latest_block_number,
+                next_block_number,
                 deploy_lifespan,
             ) {
                 return Err(eyre::Report::new(DeployValidationError {
                     message: format!(
                         "Deploy validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
-                        d.data.valid_after_block_number, latest_block_number, deploy_lifespan
+                        d.data.valid_after_block_number, next_block_number, deploy_lifespan
                     ),
                 }));
             }
