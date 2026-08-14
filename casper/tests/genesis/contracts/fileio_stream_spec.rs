@@ -181,12 +181,14 @@ in {{
         .expect("line_stream_foldchunks spec failed");
 }
 
-/// LineStream.foldConcurrent / .mapReduce fall through to the Stream
-/// agent's `default(...@args)` arm since neither method is implemented
-/// (Stream.rho line 23: "Deferred to follow-up commits").  Pins the
-/// default-arm contract so a future landing of these methods on any
-/// specialization other than LineStream will need to also add an
-/// explicit LineStream-rejection branch (spec §Stream §111).
+/// LineStream.foldConcurrent / .mapReduce return FSERR_UNSUPPORTED
+/// via the explicit chunk-builder probe at the top of each method
+/// (spec §255 / §289).  Pins the EXACT re-wrapped message text each
+/// method emits — a refactor that skipped the re-wrap and forwarded
+/// the raw probe reply verbatim ("chunk unsupported on LineStream
+/// (single-active-inner rule)") would leak chunk-builder-layer
+/// verbiage into the parallel-combinator error surface and would
+/// fail this assertion.
 ///
 /// Runs both dispatches sequentially against the same LineStream so
 /// the whole-outer-stream sequential lock (Phase 8 slice 8a step 4e-4)
@@ -223,17 +225,14 @@ in {{
         for(@[true, lineStream] <- @file!?("lines")) {{
           for(@rFold <- @lineStream!?("foldConcurrent", 0, *noopBinary, 4)) {{
             for(@rMap <- @lineStream!?("mapReduce", *noopUnary, *noopBinary, 0, 4)) {{
-              match [rFold, rMap] {{
-                [[false, "FSERR_UNSUPPORTED", _], [false, "FSERR_UNSUPPORTED", _]] => {{
-                  rhoSpec!("assert", (true, "==", true),
-                    "foldConcurrent and mapReduce both return FSERR_UNSUPPORTED", *ackCh)
-                }}
-                _ => {{
-                  rhoSpec!("assert", ([rFold, rMap], "==",
-                    "[[false, FSERR_UNSUPPORTED, _], [false, FSERR_UNSUPPORTED, _]]"),
-                    "foldConcurrent and mapReduce both return FSERR_UNSUPPORTED", *ackCh)
-                }}
-              }}
+              rhoSpec!("assert",
+                ([rFold, rMap], "==",
+                 [[false, "FSERR_UNSUPPORTED",
+                   "foldConcurrent not supported for this specialization"],
+                  [false, "FSERR_UNSUPPORTED",
+                   "mapReduce not supported for this specialization"]]),
+                "foldConcurrent and mapReduce both return FSERR_UNSUPPORTED with method-specific messages",
+                *ackCh)
             }}
           }}
         }}

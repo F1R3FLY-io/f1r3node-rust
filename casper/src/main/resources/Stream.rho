@@ -327,10 +327,14 @@ new foldConcurrentDispatch, foldConcurrentWorker, mapReduceDispatch, mapReduceWo
     // combines with expensive per-value work, prefer `mapReduce`
     // (whose parallel workers run mapFn concurrently by design).
     //
-    // "Commutative and associative" per the spec is satisfied
-    // vacuously since combines are strictly sequential; the multi-
-    // worker semantics preserves fold-left order under replay
-    // regardless of local scheduling.
+    // Combines are strictly sequential under the accP mutex, so
+    // associativity holds vacuously.  Commutativity IS still required:
+    // workers race for the accP mutex after successful pulls, so a
+    // lead can combine `(init⊕v2)⊕v1` when values arrived v1 before
+    // v2.  Under replay the lead's scheduling is captured and replayed
+    // to followers, so consensus is deterministic even if the callback
+    // isn't strictly commutative — but local dev runs may vary if the
+    // user's combine isn't commutative.
     //
     // Not supported on `LineStream` (would require multiple
     // concurrently-active inner streams sharing the source cursor,
@@ -342,9 +346,10 @@ new foldConcurrentDispatch, foldConcurrentWorker, mapReduceDispatch, mapReduceWo
     // the source producer (chunk-builder is called directly, bypassing
     // gatherN), so it is non-destructive.
     //
-    // Argument validation: `workers` must be a positive integer.
-    // Zero or negative returns `FSERR_BAD_ARG`; non-Int returns
-    // `FSERR_BAD_ARG`.
+    // Argument validation: `workers` must be a positive integer, at
+    // most 256 (the impl's chosen quota per spec §253 — bounds spawn
+    // cost).  Zero or negative returns `FSERR_BAD_ARG`; non-Int
+    // returns `FSERR_BAD_ARG`; > 256 returns `FSERR_QUOTA_EXCEEDED`.
     method foldConcurrent(@init, @combine, @workers) {
       match workers {
         w /\ Int => {
@@ -352,6 +357,11 @@ new foldConcurrentDispatch, foldConcurrentWorker, mapReduceDispatch, mapReduceWo
             true => return!(
               [false, "FSERR_BAD_ARG", "workers must be positive"])
             false => {
+              match w > 256 {
+                true => return!(
+                  [false, "FSERR_QUOTA_EXCEEDED",
+                   "workers exceeds cap (256)"])
+                false => {
               // LineStream detection: probe chunk-builder with [].
               // Peek at paramsP (params are immutable while open).
               for (@params <<- @[*private, *paramsP]) {
@@ -385,6 +395,8 @@ new foldConcurrentDispatch, foldConcurrentWorker, mapReduceDispatch, mapReduceWo
                     [false, "FSERR_IO", "params malformed"])
                 }
               }
+                }
+              }
             }
           }
         }
@@ -413,6 +425,12 @@ new foldConcurrentDispatch, foldConcurrentWorker, mapReduceDispatch, mapReduceWo
     // the error propagates; the worker publishes ("err", code, msg)
     // to the collector and other workers drain toward EOS or their
     // own errors.  Auto-close on exit.
+    //
+    // Argument validation: `workers` must be a positive integer, at
+    // most 256 (same cap as `foldConcurrent`, per spec §288 +
+    // implementation-chosen quota).  Zero or negative returns
+    // `FSERR_BAD_ARG`; non-Int returns `FSERR_BAD_ARG`; > 256 returns
+    // `FSERR_QUOTA_EXCEEDED`.
     method mapReduce(@mapFn, @reduceFn, @init, @workers) {
       match workers {
         w /\ Int => {
@@ -420,6 +438,11 @@ new foldConcurrentDispatch, foldConcurrentWorker, mapReduceDispatch, mapReduceWo
             true => return!(
               [false, "FSERR_BAD_ARG", "workers must be positive"])
             false => {
+              match w > 256 {
+                true => return!(
+                  [false, "FSERR_QUOTA_EXCEEDED",
+                   "workers exceeds cap (256)"])
+                false => {
               for (@params <<- @[*private, *paramsP]) {
                 match params {
                   (_p, cb) => {
@@ -448,6 +471,8 @@ new foldConcurrentDispatch, foldConcurrentWorker, mapReduceDispatch, mapReduceWo
                   }
                   _ => return!(
                     [false, "FSERR_IO", "params malformed"])
+                }
+              }
                 }
               }
             }
