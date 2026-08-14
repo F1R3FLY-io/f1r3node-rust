@@ -395,6 +395,8 @@ jobs:
   # Internal-only: fork PRs get this check from ci-fork-pr.yml instead, so this
   # one skips for them (a skipped required check is treated as passing).
   # PRs from dev/master skip too, mirroring the pipeline job's dedupe condition.
+  # Each gate checks only its two architecture slots. A failure in another
+  # architecture does not change this gate's result.
   integration_tests_amd64:
     name: Integration Tests (amd64)
     needs: pipeline
@@ -418,17 +420,20 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash -e {0}
         run: |
-          if [ "${{ needs.pipeline.result }}" = "failure" ] || [ "${{ needs.pipeline.result }}" = "cancelled" ]; then
-            echo "Heavy Pipeline did not succeed (result: ${{ needs.pipeline.result }}); failing gate."
-            exit 1
-          fi
-          failures=$(gh api \
+          slots=$(gh api \
             "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
             --paginate \
-            --jq '.jobs[] | select(.name | contains("Integration Tests (amd64-")) | select(.conclusion != "success") | "\(.conclusion)\t\(.name)"')
+            --jq '.jobs[] | select(.name | contains("Integration Tests (amd64-")) | "\(.conclusion // "pending")\t\(.name)"')
+          slot_count=$(printf '%s\n' "$slots" | grep -c . || true)
+          if [ "$slot_count" -ne 2 ]; then
+            echo "Expected 2 amd64 integration test slots, but found $slot_count:"
+            printf '%s\n' "$slots"
+            exit 1
+          fi
+          failures=$(printf '%s\n' "$slots" | awk -F '\t' '$1 != "success"')
           if [ -n "$failures" ]; then
             echo "amd64 integration test failures:"
-            echo "$failures"
+            printf '%s\n' "$failures"
             exit 1
           fi
           echo "All amd64 integration test slots succeeded"
@@ -456,17 +461,20 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash -e {0}
         run: |
-          if [ "${{ needs.pipeline.result }}" = "failure" ] || [ "${{ needs.pipeline.result }}" = "cancelled" ]; then
-            echo "Heavy Pipeline did not succeed (result: ${{ needs.pipeline.result }}); failing gate."
-            exit 1
-          fi
-          failures=$(gh api \
+          slots=$(gh api \
             "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
             --paginate \
-            --jq '.jobs[] | select(.name | contains("Integration Tests (arm64-")) | select(.conclusion != "success") | "\(.conclusion)\t\(.name)"')
+            --jq '.jobs[] | select(.name | contains("Integration Tests (arm64-")) | "\(.conclusion // "pending")\t\(.name)"')
+          slot_count=$(printf '%s\n' "$slots" | grep -c . || true)
+          if [ "$slot_count" -ne 2 ]; then
+            echo "Expected 2 arm64 integration test slots, but found $slot_count:"
+            printf '%s\n' "$slots"
+            exit 1
+          fi
+          failures=$(printf '%s\n' "$slots" | awk -F '\t' '$1 != "success"')
           if [ -n "$failures" ]; then
             echo "arm64 integration test failures:"
-            echo "$failures"
+            printf '%s\n' "$failures"
             exit 1
           fi
           echo "All arm64 integration test slots succeeded"
