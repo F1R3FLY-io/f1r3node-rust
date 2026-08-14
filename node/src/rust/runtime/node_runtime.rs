@@ -1014,12 +1014,12 @@ async fn clear_connections_loop(
     node_discovery: Arc<dyn comm::rust::discovery::node_discovery::NodeDiscovery + Send + Sync>,
     node_conf: NodeConf,
 ) -> eyre::Result<()> {
-    use std::collections::HashMap;
-
     use comm::rust::transport::transport_layer::TransportLayer;
     use tokio::time::sleep;
 
-    let mut failure_streaks = HashMap::new();
+    let mut liveness = comm::rust::rp::connect::PeerLivenessTracker::new(
+        node_conf.peers_discovery.heartbeat_failure_threshold,
+    )?;
 
     loop {
         tracing::debug!("clearConnectionsLoop: Starting iteration");
@@ -1084,13 +1084,12 @@ async fn clear_connections_loop(
 
         // Clear connections: heartbeats, ConnectionsCell update, Kademlia removal
         // (with bootstrap pinning), and gRPC disconnect — all handled inside clear_connections.
-        match comm::rust::rp::connect::clear_connections_with_failure_streaks(
+        match comm::rust::rp::connect::clear_connections(
             &connections,
             &rp_conf,
             &transport,
             &*node_discovery,
-            &mut failure_streaks,
-            comm::rust::rp::connect::DEFAULT_HEARTBEAT_FAILURE_THRESHOLD,
+            &mut liveness,
         )
         .await
         {

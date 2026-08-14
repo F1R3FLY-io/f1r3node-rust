@@ -19,7 +19,75 @@ use crate::rust::rp::rp_conf::RPConf;
 use crate::rust::transport::transport_layer::TransportLayer;
 
 pub type Connection = PeerNode;
-pub const DEFAULT_HEARTBEAT_FAILURE_THRESHOLD: usize = 3;
+
+/// Outcome of recording one failed heartbeat against a peer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeartbeatFailure {
+    /// The streak is short of the threshold, so the peer keeps its connection.
+    Retained { streak: usize, threshold: usize },
+    /// The streak reached the threshold; the peer is evicted and its count cleared.
+    Evicted,
+}
+
+/// Consecutive heartbeat failures per peer, and the streak length that evicts.
+///
+/// A peer survives until it fails `threshold` heartbeats in a row; any success
+/// clears its count. The caller owns one tracker for the lifetime of its cleanup
+/// loop — a tracker rebuilt each pass would evict on first failure.
+#[derive(Debug)]
+pub struct PeerLivenessTracker {
+    streaks: HashMap<Bytes, usize>,
+    threshold: usize,
+}
+
+impl PeerLivenessTracker {
+    /// Rejects a zero threshold: it would name a streak no peer can reach, and
+    /// silently clamping it hides a misconfiguration behind eviction behaviour
+    /// nobody asked for.
+    pub fn new(threshold: u32) -> Result<Self, CommError> {
+        if threshold == 0 {
+            return Err(CommError::ConfigError(
+                "heartbeat failure threshold must be at least 1".to_string(),
+            ));
+        }
+
+        Ok(Self {
+            streaks: HashMap::new(),
+            threshold: threshold as usize,
+        })
+    }
+
+    pub fn threshold(&self) -> usize { self.threshold }
+
+    /// Current consecutive-failure count for a peer; zero when it has none.
+    pub fn streak(&self, peer_id: &Bytes) -> usize {
+        self.streaks.get(peer_id).copied().unwrap_or(0)
+    }
+
+    pub fn record_success(&mut self, peer_id: &Bytes) { self.streaks.remove(peer_id); }
+
+    pub fn record_failure(&mut self, peer_id: &Bytes) -> HeartbeatFailure {
+        let streak = self.streaks.entry(peer_id.clone()).or_insert(0);
+        *streak += 1;
+
+        if *streak >= self.threshold {
+            self.streaks.remove(peer_id);
+            HeartbeatFailure::Evicted
+        } else {
+            HeartbeatFailure::Retained {
+                streak: *streak,
+                threshold: self.threshold,
+            }
+        }
+    }
+
+    /// Drop counts for peers that are no longer connected, bounding the map to
+    /// the live connection set.
+    pub fn retain_connected(&mut self, connected: &HashSet<Bytes>) {
+        self.streaks
+            .retain(|peer_id, _| connected.contains(peer_id));
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Connections(pub Vec<Connection>);
@@ -178,46 +246,30 @@ impl ConnectionsCell {
 /// re-establish the connection on the next discovery cycle. Removing it is
 /// irreversible and strands the node if no other peers are known.
 ///
+/// A peer is removed only after `liveness` records enough consecutive failures;
+/// the tracker must outlive the call for that streak to accumulate.
+///
 /// Returns tuple of (number of failed peers, list of failed peers).
 pub async fn clear_connections<T>(
     connections_cell: &ConnectionsCell,
     conf: &RPConf,
     transport: &T,
     node_discovery: &dyn crate::rust::discovery::node_discovery::NodeDiscovery,
-) -> Result<(usize, Vec<PeerNode>), CommError>
-where
-    T: TransportLayer + Sync,
-{
-    let mut failure_streaks = HashMap::new();
-    clear_connections_with_failure_streaks(
-        connections_cell,
-        conf,
-        transport,
-        node_discovery,
-        &mut failure_streaks,
-        1,
-    )
-    .await
-}
-
-pub async fn clear_connections_with_failure_streaks<T>(
-    connections_cell: &ConnectionsCell,
-    conf: &RPConf,
-    transport: &T,
-    node_discovery: &dyn crate::rust::discovery::node_discovery::NodeDiscovery,
-    failure_streaks: &mut HashMap<Bytes, usize>,
-    failure_threshold: usize,
+    liveness: &mut PeerLivenessTracker,
 ) -> Result<(usize, Vec<PeerNode>), CommError>
 where
     T: TransportLayer + Sync,
 {
     let connections = connections_cell.read()?;
     let num_to_ping = conf.clear_connections.num_of_connections_pinged;
+    // Only the first `num_to_ping` peers are probed, and both successful and
+    // retained peers are appended to the back below, so the list rotates. Beyond
+    // that many connections a streak spans rotations rather than consecutive
+    // cleanup intervals.
     let to_ping = connections.take(num_to_ping);
     let connected_ids: HashSet<Bytes> =
         connections.iter().map(|peer| peer.id.key.clone()).collect();
-    failure_streaks.retain(|peer_id, _| connected_ids.contains(peer_id));
-    let failure_threshold = failure_threshold.max(1);
+    liveness.retain_connected(&connected_ids);
 
     let results = join_all(to_ping.iter().cloned().map(|peer| {
         let heartbeat_msg = protocol_helper::heartbeat(&conf.local, &conf.network_id);
@@ -234,23 +286,19 @@ where
     for (peer, result) in results {
         match result {
             Ok(()) => {
-                failure_streaks.remove(&peer.id.key);
+                liveness.record_success(&peer.id.key);
                 successful_peers.push(peer);
             }
-            Err(error) => {
-                let streak = failure_streaks.entry(peer.id.key.clone()).or_insert(0);
-                *streak += 1;
-                if *streak >= failure_threshold {
-                    failure_streaks.remove(&peer.id.key);
-                    failed_peers.push(peer);
-                } else {
+            Err(error) => match liveness.record_failure(&peer.id.key) {
+                HeartbeatFailure::Evicted => failed_peers.push(peer),
+                HeartbeatFailure::Retained { streak, threshold } => {
                     warn!(
                         "Heartbeat to {} failed ({}/{}); retaining connection: {}",
-                        peer, streak, failure_threshold, error
+                        peer, streak, threshold, error
                     );
                     successful_peers.push(peer);
                 }
-            }
+            },
         }
     }
 
