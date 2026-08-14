@@ -289,11 +289,12 @@ mod batched_put_tests {
             value: ByteBuffer,
         ) -> Result<bool, KvStoreError> {
             let mut map = self.map.lock().unwrap();
-            if map.contains_key(&key) {
-                Ok(false)
-            } else {
-                map.insert(key, value);
-                Ok(true)
+            match map.entry(key) {
+                std::collections::btree_map::Entry::Occupied(_) => Ok(false),
+                std::collections::btree_map::Entry::Vacant(e) => {
+                    e.insert(value);
+                    Ok(true)
+                }
             }
         }
 
