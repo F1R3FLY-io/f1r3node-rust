@@ -203,6 +203,12 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                                 e
                             ))
                         })?;
+                    let now_ms = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as i64;
+                    self.last_peer_block_arrival_ms
+                        .store(now_ms, std::sync::atomic::Ordering::Relaxed);
                 }
                 Ok(())
             }
@@ -346,6 +352,12 @@ pub struct Running<T: TransportLayer + Send + Sync> {
     conf: RPConf,
     block_retriever: BlockRetriever<T>,
     recovery_context: Option<RunningRecoveryContext>,
+    /// Wall-clock of the last peer block accepted for processing. The
+    /// stale-rejoin trigger requires receive-quiescence in addition to
+    /// own-message staleness: a node that keeps receiving blocks is not
+    /// partitioned — it is failing to PROPOSE, and ejecting it into an
+    /// approved-block state rejoin destroys its custody duties.
+    last_peer_block_arrival_ms: Arc<std::sync::atomic::AtomicI64>,
 }
 
 #[derive(Clone)]
@@ -370,6 +382,22 @@ const MAX_BLOCKS_IN_PROCESSING: usize = 2_048;
 
 fn max_blocks_in_processing() -> usize { MAX_BLOCKS_IN_PROCESSING }
 
+/// The stale-rejoin trigger: rejoin-from-approved-block only when the
+/// validator's own latest message is stale AND no peer block has arrived
+/// for the same window. Own-staleness alone is not a partition signal — a
+/// node that keeps receiving and validating peer blocks has a working
+/// network and a local PROPOSE problem, and ejecting it into a state
+/// rejoin abandons its owner-custody duties for the rejoin's duration
+/// (observed as an 80-minute self-eviction in the ucc ca7197d8 specimen,
+/// where every validator was propose-wedged but fully connected).
+fn should_rejoin_from_approved_block(
+    own_latest_age_ms: i64,
+    arrival_age_ms: i64,
+    threshold_ms: i64,
+) -> bool {
+    own_latest_age_ms >= threshold_ms && arrival_age_ms >= threshold_ms
+}
+
 impl<T: TransportLayer + Send + Sync> Running<T> {
     pub fn new(
         block_processing_queue_tx: mpsc::Sender<(
@@ -388,6 +416,10 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         block_retriever: BlockRetriever<T>,
         recovery_context: Option<RunningRecoveryContext>,
     ) -> Self {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
         Running {
             block_processing_queue_tx,
             blocks_in_processing,
@@ -400,6 +432,7 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             conf,
             block_retriever,
             recovery_context,
+            last_peer_block_arrival_ms: Arc::new(std::sync::atomic::AtomicI64::new(now_ms)),
         }
     }
 
@@ -444,7 +477,15 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             .unwrap()
             .as_millis() as i64;
         let latest_age_ms = now_ms.saturating_sub(latest_block.header.timestamp);
-        if latest_age_ms < delay_threshold.as_millis() as i64 {
+        let arrival_age_ms = now_ms.saturating_sub(
+            self.last_peer_block_arrival_ms
+                .load(std::sync::atomic::Ordering::Relaxed),
+        );
+        if !should_rejoin_from_approved_block(
+            latest_age_ms,
+            arrival_age_ms,
+            delay_threshold.as_millis() as i64,
+        ) {
             return Ok(false);
         }
 
@@ -714,5 +755,26 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
 
         tracing::info!("Store items sent to {}", peer);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_rejoin_from_approved_block;
+
+    /// A propose-wedged but connected validator must NOT rejoin: its own
+    /// latest message is stale, yet peer blocks keep arriving — the network
+    /// is alive and the fault is local to proposing.
+    #[test]
+    fn a_receiving_validator_with_a_stale_own_message_must_not_rejoin() {
+        assert!(!should_rejoin_from_approved_block(120_000, 500, 60_000));
+    }
+
+    /// Genuine quiescence: own message stale AND nothing arriving for the
+    /// window — the partition signal the rejoin exists for.
+    #[test]
+    fn a_quiescent_stale_validator_rejoins() {
+        assert!(should_rejoin_from_approved_block(120_000, 90_000, 60_000));
+        assert!(!should_rejoin_from_approved_block(500, 90_000, 60_000));
     }
 }

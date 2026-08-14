@@ -424,6 +424,11 @@ mod tests {
         );
         engine_cell.set(Arc::new(running)).await;
 
+        // The rejoin requires receive-quiescence in addition to the stale
+        // own message: no peer block has arrived since construction, so
+        // aging past the threshold makes the node genuinely quiescent.
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+
         update_fork_choice_tips_if_stuck(
             &engine_cell,
             &fixture.transport_layer,
