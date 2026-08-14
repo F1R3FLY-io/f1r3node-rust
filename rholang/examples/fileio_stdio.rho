@@ -1,0 +1,71 @@
+// fileio_stdio.rho — Phase 10 canonical example
+//
+// Echo stdin lines to stdout, one line at a time, terminating on
+// end-of-input.  Uses the standard `readLine()` → CharStream →
+// `writeLine(charStream)` composition: each read produces a bounded
+// CharStream (single line up to LF or EOS), and each write drains
+// that CharStream and appends the newline.
+//
+// Sequence:
+//   1. Look up Fs and resolve `stdin`, `stdout` caps.
+//   2. Tail-recursive loop `echoLoop`:
+//        - `stdin!readLine()` → `[true, lineStream]` or
+//          `[false, "EOS", _]` on end-of-input.
+//        - `stdout!writeLine(lineStream)` drains the CharStream and
+//          appends LF to stdout.
+//        - Recur.
+//        - On EOS, terminate the loop.
+//
+// Concurrency note (Phase 8): `stdin!readLine()` acquires a per-
+// stdin sequential lock for the outer stream's lifetime.  A second
+// `stdin!readLine()` while a prior CharStream is still live blocks
+// on that lock (FSERR_BUSY under wait:false; blocks under wait:true).
+// The echo loop respects this by draining each CharStream fully
+// before starting the next readLine.
+//
+// ## Prerequisite: stdio replay wiring
+//
+// Stdio input capture / follower replay for Stdin.fsRead was
+// deferred from Phase 6 to Phase 10 (see implementation-plan.md
+// line 332).  This example runs cleanly on a lead node with a
+// live stdin fd but does NOT yet produce deterministic replay
+// records — a follower would re-read from its own (typically
+// empty) stdin.  Slice 10c wires the capture side.
+//
+// Companion regression: casper/tests/genesis/contracts/
+// fileio_examples_spec.rs :: fileio_stdio_caps_are_resolvable
+// (verifies Fs.stdin / Fs.stdout return usable caps; the full
+// echo-loop test lands with slice 10c's replay wiring).
+
+new
+  rl(`rho:registry:lookup`),
+  fsCh,
+  echoLoop
+in {
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *fsCh) |
+  for(@(_, fs) <- fsCh) {
+    for(@[true, stdin]  <- @fs!?("stdin");
+        @[true, stdout] <- @fs!?("stdout")) {
+      contract echoLoop(done) = {
+        for(@r <- @stdin!?("readLine")) {
+          match r {
+            [true, lineStream] => {
+              for(@wr <- @stdout!?("writeLine", lineStream)) {
+                match wr {
+                  [true] => echoLoop!(*done)
+                  _      => done!(("writeLine failed", wr))
+                }
+              }
+            }
+            [false, "EOS", _] => done!(("done, EOS", true))
+            _                 => done!(("readLine failed", r))
+          }
+        }
+      } |
+      new done in {
+        echoLoop!(*done) |
+        for(@_ <- done) { Nil }
+      }
+    }
+  }
+}

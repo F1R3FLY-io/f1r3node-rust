@@ -643,7 +643,72 @@ async fn fileio_buffer_loop_bounded_read() {
     unimplemented!("blocked on PB-B-5: Allocator publication at rho:lang:buffer:1.0.0")
 }
 
-/// Slice 10a-7: canonical example `fileio_rows.rho`.
+/// Slice 10a-8 (partial): sanity check that `Fs.stdin` and
+/// `Fs.stdout` return caps that can be dispatched.  The full
+/// echo-loop test from `fileio_stdio.rho` is deferred to slice 10c
+/// (stdio replay wiring), which lands the capture side of
+/// Stdin.fsRead so a follower replay can reproduce a lead's stdin
+/// reads deterministically.
+///
+/// This test verifies the surface exists — a regression in Fs's
+/// stdin / stdout methods or in Stdin.rho / Stdout.rho constructor
+/// invocations would fail here without needing live stdin input.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fileio_stdio_caps_are_resolvable() {
+    let params = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    let fs_uri = fs_genesis::fs_genesis_uri(&standard_deploys::FS_GENERATOR_PUB_KEY);
+
+    let test_source = format!(
+        r#"
+new
+  rl(`rho:registry:lookup`),
+  RhoSpecCh,
+  fsCh,
+  test_stdin_and_stdout_return_caps
+in {{
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for(@(_, RhoSpec) <- RhoSpecCh) {{
+    @RhoSpec!("testSuite",
+      [
+        ("Fs.stdin and Fs.stdout both return [true, cap]",
+         *test_stdin_and_stdout_return_caps)
+      ])
+  }} |
+
+  rl!(`{fs_uri}`, *fsCh) |
+  for(@(_, fs) <- fsCh) {{
+    contract test_stdin_and_stdout_return_caps(rhoSpec, _, ackCh) = {{
+      for(@rIn  <- @fs!?("stdin");
+          @rOut <- @fs!?("stdout")) {{
+        match [rIn, rOut] {{
+          [[true, _], [true, _]] => {{
+            rhoSpec!("assert", (true, "==", true),
+              "stdin and stdout resolve to caps", *ackCh)
+          }}
+          _ => {{
+            rhoSpec!("assert", ([rIn, rOut], "==", "[[true, _], [true, _]]"),
+              "stdin and stdout resolve to caps", *ackCh)
+          }}
+        }}
+      }}
+    }}
+  }}
+}}
+"#
+    );
+
+    let compiled = CompiledRholangSource::new(
+        test_source,
+        HashMap::new(),
+        "FileioStdioCapsSpec".to_string(),
+    )
+    .expect("compile fileio_stdio caps test source");
+
+    let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
+    spec.run_tests()
+        .await
+        .expect("fileio_stdio caps spec failed");
+}
 ///
 /// Buffer-of-buffers via `alloc.allocRows(128, 8192, "utf8")` +
 /// `file.readLinesInto(rows)`.  Same PB-B-5 block as slice 10a-6 —
