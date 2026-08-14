@@ -298,19 +298,19 @@ fn small_workload_does_not_slow_down_with_more_worker_threads() {
         results.push((threads, ms));
     }
 
-    let (min_threads, min_threads_ms) = results[0];
+    let (baseline_threads, baseline_ms) = results[0];
     let (max_threads, max_threads_ms) = *results.last().unwrap();
-    let slowdown = max_threads_ms / min_threads_ms.max(0.001);
+    let slowdown = max_threads_ms / baseline_ms.max(0.001);
 
     eprintln!(
-        "worker_threads_scaling: {min_threads} thread(s)={min_threads_ms:.3}ms  {max_threads} \
+        "worker_threads_scaling: {baseline_threads} thread(s)={baseline_ms:.3}ms  {max_threads} \
          thread(s)={max_threads_ms:.3}ms  slowdown={slowdown:.2}x"
     );
 
     assert!(
         slowdown < 3.0,
         "small fixed workload ({DEPLOYS} deploys) got {slowdown:.2}x slower going from \
-         {min_threads} to {max_threads} tokio worker_threads (expected <3x). If this reproduces \
+         {baseline_threads} to {max_threads} tokio worker_threads (expected <3x). If this reproduces \
          on a CI/production-like host, node/src/main.rs's \
          Builder::new_multi_thread().enable_all() (no explicit worker_threads(), so it defaults \
          to available_parallelism()/cgroup CPU quota) is a live suspect for the issue-43 \

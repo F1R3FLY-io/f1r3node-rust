@@ -17,7 +17,12 @@ set -e
 # resolves the correct target-architecture build. Set USE_JEMALLOC=0 to opt
 # out (e.g. A/B debugging against glibc malloc).
 if [ "${USE_JEMALLOC:-1}" != "0" ]; then
-    export LD_PRELOAD="/usr/lib/x86_64-linux-gnu/libjemalloc.so.2${LD_PRELOAD:+:$LD_PRELOAD}"
+    JEMALLOC_LIB="/usr/lib/$(uname -m)-linux-gnu/libjemalloc.so.2"
+    if [ -f "$JEMALLOC_LIB" ]; then
+        export LD_PRELOAD="${JEMALLOC_LIB}${LD_PRELOAD:+:$LD_PRELOAD}"
+    else
+        echo "jemalloc library not found at ${JEMALLOC_LIB}; continuing with glibc malloc" >&2
+    fi
 fi
 
 # Execute the node binary with docker profile and any arguments passed to the container

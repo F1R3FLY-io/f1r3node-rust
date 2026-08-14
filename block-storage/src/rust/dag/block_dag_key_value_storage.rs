@@ -1112,16 +1112,18 @@ impl BlockDagKeyValueStorage {
                 .into_iter()
                 .map(|deploy_id| (deploy_id, BlockHashSerde(block.block_hash.clone())))
                 .collect();
-            let deploy_index_guard = self.deploy_index.write();
-            let deploy_entries_encoded: Vec<(ByteBuffer, ByteBuffer)> = deploy_entries
-                .iter()
-                .map(|(k, v)| {
-                    Ok((
-                        deploy_index_guard.encode_key(k)?,
-                        deploy_index_guard.encode_value(v)?,
-                    ))
-                })
-                .collect::<Result<_, KvStoreError>>()?;
+            let deploy_entries_encoded: Vec<(ByteBuffer, ByteBuffer)> = {
+                let deploy_index_guard = self.deploy_index.write();
+                deploy_entries
+                    .iter()
+                    .map(|(k, v)| {
+                        Ok((
+                            deploy_index_guard.encode_key(k)?,
+                            deploy_index_guard.encode_value(v)?,
+                        ))
+                    })
+                    .collect::<Result<_, KvStoreError>>()?
+            };
 
             if invalid {
                 self.invalid_blocks_index
@@ -1170,17 +1172,22 @@ impl BlockDagKeyValueStorage {
             // `dagstorage` LMDB environment; batching avoids two separate
             // acquisitions of LMDB's single-writer lock per block insert (see
             // issue #146 / lmdb_key_value_store::batched_put doc comment).
-            shared::rust::store::lmdb_key_value_store::batched_put(vec![
-                (
-                    deploy_index_guard.raw_store().as_ref(),
-                    deploy_entries_encoded,
-                ),
-                (
-                    self.latest_messages_index.raw_store().as_ref(),
-                    latest_messages_encoded,
-                ),
-            ])?;
-            drop(deploy_index_guard);
+            // `deploy_index` is only re-locked here, not held since the encode
+            // step above, so unrelated work (invalid_blocks_index write,
+            // new_latest_messages()) doesn't serialize on it.
+            {
+                let deploy_index_guard = self.deploy_index.write();
+                shared::rust::store::lmdb_key_value_store::batched_put(vec![
+                    (
+                        deploy_index_guard.raw_store().as_ref(),
+                        deploy_entries_encoded,
+                    ),
+                    (
+                        self.latest_messages_index.raw_store().as_ref(),
+                        latest_messages_encoded,
+                    ),
+                ])?;
+            }
 
             if approved {
                 let mut block_metadata_guard = self.block_metadata_index.write();
