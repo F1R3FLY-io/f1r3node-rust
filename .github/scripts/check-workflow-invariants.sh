@@ -124,7 +124,7 @@ EOF
 done
 ok "both pipeline callers pass secrets down"
 
-# 5. Fast checks use per-SHA push groups. Heavy branch work keeps only the
+# 5. Fast checks use ref-and-SHA push groups. Heavy branch work keeps only the
 #    current head, while each version tag has an independent release group.
 #    A branch publisher must also reject a stale SHA after it gets its lock.
 ci_concurrency_errors=""
@@ -134,27 +134,31 @@ def environment_name(job)
   value.is_a?(Hash) ? value["name"] : value
 end
 
+def normalized(value)
+  value.to_s.gsub(/\s+/, " ").strip
+end
+
 doc = YAML.load_file(ARGV[0])
 jobs = doc.fetch("jobs")
-expected_group = "${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}"
+expected_group = "${{ github.workflow }}-${{ github.event_name == 'push' && format('{0}-{1}', github.ref, github.sha) || github.ref }}"
 expected_cancel = "${{ github.event_name == 'pull_request' }}"
 concurrency = doc.fetch("concurrency", {})
-puts "workflow concurrency must give every push SHA an independent group" unless concurrency["group"].to_s == expected_group
-puts "workflow concurrency must cancel only superseded PR runs" unless concurrency["cancel-in-progress"].to_s == expected_cancel
+puts "workflow concurrency must separate branch and tag pushes at the same SHA" unless normalized(concurrency["group"]) == normalized(expected_group)
+puts "workflow concurrency must cancel only superseded PR runs" unless normalized(concurrency["cancel-in-progress"]) == normalized(expected_cancel)
 
 pipeline = jobs.fetch("pipeline", {})
 pipeline_concurrency = pipeline.fetch("concurrency", {})
 expected_pipeline_group = "ci-heavy-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}"
 expected_pipeline_cancel = "${{ !startsWith(github.ref, 'refs/tags/') }}"
-puts "heavy pipeline must use a PR-or-ref queue" unless pipeline_concurrency["group"] == expected_pipeline_group
-puts "heavy branch and PR work must replace obsolete heads without cancelling version tags" unless pipeline_concurrency["cancel-in-progress"].to_s == expected_pipeline_cancel
+puts "heavy pipeline must use a PR-or-ref queue" unless normalized(pipeline_concurrency["group"]) == normalized(expected_pipeline_group)
+puts "heavy branch and PR work must replace obsolete heads without cancelling version tags" unless normalized(pipeline_concurrency["cancel-in-progress"]) == normalized(expected_pipeline_cancel)
 
 publisher = jobs.fetch("release_docker_image", {})
 publisher_concurrency = publisher.fetch("concurrency", {})
-puts "image publication must use a ref-specific queue" unless publisher_concurrency["group"] == "ci-image-publish-${{ github.ref }}"
+puts "image publication must use a ref-specific queue" unless normalized(publisher_concurrency["group"]) == normalized("ci-image-publish-${{ github.ref }}")
 puts "image publication queue must not cancel in-progress work" unless publisher_concurrency["cancel-in-progress"] == false
-expected_environment = "${{ startsWith(github.ref, 'refs/tags/v') && 'ephemeral-launch' || 'ephemeral-launch-internal' }}"
-puts "version tags must use reviewer approval while protected branches use the internal environment" unless environment_name(publisher) == expected_environment
+expected_environment = "${{ (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') && 'protected-branch-image-publish' || 'ephemeral-launch' }}"
+puts "only dev and master can bypass reviewer approval for image publication" unless normalized(environment_name(publisher)) == normalized(expected_environment)
 puts "image publication must remain gated on the unit-test matrix" unless Array(publisher["needs"]).include?("test")
 
 steps = Array(publisher["steps"])
@@ -162,17 +166,37 @@ gate_index = steps.index { |step| step.is_a?(Hash) && step["id"] == "publish_gat
 if gate_index.nil?
   puts "image publication must check the current branch tip"
 else
+  puts "branch-tip gate must run before checkout" unless gate_index == 0
   gate_body = steps[gate_index]["run"].to_s
-  required_gate_tokens = %w[GITHUB_REF GITHUB_SHA GITHUB_REPOSITORY publish=false GITHUB_OUTPUT]
-  puts "branch-tip publication gate is incomplete" unless required_gate_tokens.all? { |token| gate_body.include?(token) }
+  gate_patterns = [
+    /^\s*branch_tip_status\(\)/,
+    /^\s*publish_mutable\(\)/,
+    /^\s*for attempt in 1 2 3;/,
+    /^\s*publish=false\s*$/,
+    /repos\/\$\{GITHUB_REPOSITORY\}\/git\/ref\/heads/,
+    /GITHUB_OUTPUT/
+  ]
+  puts "branch-tip publication gate is incomplete" unless gate_patterns.all? { |pattern| gate_body.match?(pattern) }
+
   publish_condition = "steps.publish_gate.outputs.publish == 'true'"
-  later_steps = steps[(gate_index + 1)..-1] || []
-  puts "all image publication steps must use the branch-tip gate" unless later_steps.all? { |step| step.is_a?(Hash) && step["if"].to_s == publish_condition }
+  guarded_steps = steps[(gate_index + 1)..-1].to_a.reject { |step| step["name"] == "Report image publication result" }
+  puts "all image publication steps must use the branch-tip gate" unless guarded_steps.all? { |step| normalized(step["if"]) == normalized(publish_condition) }
+
+  report = steps.find { |step| step["name"] == "Report image publication result" }
+  puts "image publication must report published or stale status" unless report.is_a?(Hash) && normalized(report["if"]) == "always()"
+
+  %w[Publish\ Docker\ Image Publish\ to\ OCIR].each do |name|
+    step = steps.find { |candidate| candidate["name"] == name }
+    body = step && step["run"].to_s
+    puts "#{name} must source the branch-tip guard" unless body&.match?(/^\s*source "\$RUNNER_TEMP\/branch-tip-guard\.sh"/)
+    puts "#{name} must recheck every mutable remote update" unless body&.scan(/^\s*publish_mutable /)&.length.to_i >= 3
+    puts "#{name} must authenticate branch-tip checks" unless step&.dig("env", "GH_TOKEN")
+  end
 end
 
 packages = jobs.fetch("release_packages", {})
 packages_concurrency = packages.fetch("concurrency", {})
-puts "package publication must use a ref-specific queue" unless packages_concurrency["group"] == "ci-package-publish-${{ github.ref }}"
+puts "package publication must use a ref-specific queue" unless normalized(packages_concurrency["group"]) == normalized("ci-package-publish-${{ github.ref }}")
 puts "package publication queue must not cancel in-progress work" unless packages_concurrency["cancel-in-progress"] == false
 puts "package publication must remain gated on the unit-test matrix" unless Array(packages["needs"]).include?("test")
 

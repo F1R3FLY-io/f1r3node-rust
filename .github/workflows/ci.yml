@@ -18,10 +18,13 @@ on:
       - trying
       - "feature/**"
 
-# Each push SHA runs its own checks and tests. A newer PR head cancels only the
-# older run for that PR. Heavy work and publication use job-level groups below.
+# GitHub keeps one running item and one pending item in each concurrency group.
+# Issue #267 showed that one shared push group can discard a pending test run.
+# A push key includes its ref and SHA. Thus, a branch and tag at one SHA stay
+# separate.
+# A newer PR head cancels only the obsolete run for that PR.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && format('{0}-{1}', github.ref, github.sha) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -490,29 +493,66 @@ jobs:
         github.ref == 'refs/heads/dev'
       )
     runs-on: ubuntu-latest
-    environment: ${{ startsWith(github.ref, 'refs/tags/v') && 'ephemeral-launch' || 'ephemeral-launch-internal' }}
+    environment: ${{ (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') && 'protected-branch-image-publish' || 'ephemeral-launch' }}
     steps:
-      - name: Checkout (for version)
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-
       - name: Check branch publish tip
         id: publish_gate
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash -euo pipefail {0}
         run: |
-          publish=true
-          if [[ "$GITHUB_REF" == refs/heads/* ]]; then
-            branch="${GITHUB_REF#refs/heads/}"
-            tip="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" --jq '.object.sha')"
-            if [[ "$tip" != "$GITHUB_SHA" ]]; then
-              echo "Skip image publication because $GITHUB_SHA is not the tip of $GITHUB_REF."
-              publish=false
+          cat > "$RUNNER_TEMP/branch-tip-guard.sh" <<'GUARD'
+          branch_tip_status() {
+            if [[ "$GITHUB_REF" != refs/heads/* ]]; then
+              echo current
+              return 0
             fi
+
+            local branch tip attempt
+            branch="${GITHUB_REF#refs/heads/}"
+            for attempt in 1 2 3; do
+              if tip="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" --jq '.object.sha')"; then
+                if [[ "$tip" == "$GITHUB_SHA" ]]; then
+                  echo current
+                else
+                  echo stale
+                fi
+                return 0
+              fi
+              if [[ "$attempt" -lt 3 ]]; then
+                sleep $((attempt * 2))
+              fi
+            done
+            echo "Unable to read the tip of $GITHUB_REF after 3 attempts." >&2
+            return 1
+          }
+
+          publish_mutable() {
+            local status
+            status="$(branch_tip_status)" || return 1
+            if [[ "$status" == stale ]]; then
+              echo "Skip mutable publication because $GITHUB_SHA is not the tip of $GITHUB_REF."
+              return 0
+            fi
+            "$@"
+          }
+          GUARD
+
+          source "$RUNNER_TEMP/branch-tip-guard.sh"
+          status="$(branch_tip_status)"
+          if [[ "$status" == stale ]]; then
+            echo "Skip image publication because $GITHUB_SHA is not the tip of $GITHUB_REF."
+            publish=false
+          else
+            publish=true
           fi
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout (for version)
+        if: steps.publish_gate.outputs.publish == 'true'
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Load AMD64 Docker Image
         if: steps.publish_gate.outputs.publish == 'true'
@@ -523,7 +563,7 @@ jobs:
 
       - name: Import AMD64 Docker Image
         if: steps.publish_gate.outputs.publish == 'true'
-        shell: bash -ex {0}
+        shell: bash -euxo pipefail {0}
         run: zcat /tmp/amd64/rust-node-docker.tar.gz | docker image load
 
       - name: Load ARM64 Docker Image
@@ -535,7 +575,7 @@ jobs:
 
       - name: Import ARM64 Docker Image
         if: steps.publish_gate.outputs.publish == 'true'
-        shell: bash -ex {0}
+        shell: bash -euxo pipefail {0}
         run: zcat /tmp/arm64/rust-node-docker.tar.gz | docker image load
 
       - name: Log in to Docker Hub
@@ -550,8 +590,10 @@ jobs:
         env:
           VERSION: ${{ needs.build_base.outputs.VERSION }}
           BRANCH: ${{ needs.build_base.outputs.BRANCH }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash -exu -o pipefail {0}
         run: |
+          source "$RUNNER_TEMP/branch-tip-guard.sh"
           SOURCE_AMD64="${DOCKER_IMAGE_NAME}:amd64"
           SOURCE_ARM64="${DOCKER_IMAGE_NAME}:arm64"
 
@@ -597,16 +639,17 @@ jobs:
           docker push "${IMG_VERSION}-amd64"
           docker push "${IMG_VERSION}-arm64"
 
-          docker tag "$SOURCE_AMD64" "${IMG_LATEST}-amd64"
-          docker tag "$SOURCE_ARM64" "${IMG_LATEST}-arm64"
-          docker push "${IMG_LATEST}-amd64"
-          docker push "${IMG_LATEST}-arm64"
-
-          # Multi-arch manifests
+          # Multi-arch version manifest
           docker manifest create "${IMG_VERSION}" --amend "${IMG_VERSION}-amd64" "${IMG_VERSION}-arm64"
           docker manifest push "${IMG_VERSION}"
+
+          # Mutable channel pointers
+          docker tag "$SOURCE_AMD64" "${IMG_LATEST}-amd64"
+          docker tag "$SOURCE_ARM64" "${IMG_LATEST}-arm64"
+          publish_mutable docker push "${IMG_LATEST}-amd64"
+          publish_mutable docker push "${IMG_LATEST}-arm64"
           docker manifest create "${IMG_LATEST}" --amend "${IMG_LATEST}-amd64" "${IMG_LATEST}-arm64"
-          docker manifest push "${IMG_LATEST}"
+          publish_mutable docker manifest push "${IMG_LATEST}"
 
       - name: Log in to OCIR
         if: steps.publish_gate.outputs.publish == 'true'
@@ -621,8 +664,10 @@ jobs:
         env:
           VERSION: ${{ needs.build_base.outputs.VERSION }}
           BRANCH: ${{ needs.build_base.outputs.BRANCH }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash -exu -o pipefail {0}
         run: |
+          source "$RUNNER_TEMP/branch-tip-guard.sh"
           OCIR_BASE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.OCIR_NAMESPACE }}/${{ secrets.OCIR_REPO }}"
           SOURCE_AMD64="${DOCKER_IMAGE_NAME}:amd64"
           SOURCE_ARM64="${DOCKER_IMAGE_NAME}:arm64"
@@ -662,15 +707,36 @@ jobs:
           docker push "${IMG_VERSION}-amd64"
           docker push "${IMG_VERSION}-arm64"
 
-          docker tag "$SOURCE_AMD64" "${IMG_LATEST}-amd64"
-          docker tag "$SOURCE_ARM64" "${IMG_LATEST}-arm64"
-          docker push "${IMG_LATEST}-amd64"
-          docker push "${IMG_LATEST}-arm64"
-
           docker manifest create "${IMG_VERSION}" --amend "${IMG_VERSION}-amd64" "${IMG_VERSION}-arm64"
           docker manifest push "${IMG_VERSION}"
+
+          docker tag "$SOURCE_AMD64" "${IMG_LATEST}-amd64"
+          docker tag "$SOURCE_ARM64" "${IMG_LATEST}-arm64"
+          publish_mutable docker push "${IMG_LATEST}-amd64"
+          publish_mutable docker push "${IMG_LATEST}-arm64"
           docker manifest create "${IMG_LATEST}" --amend "${IMG_LATEST}-amd64" "${IMG_LATEST}-arm64"
-          docker manifest push "${IMG_LATEST}"
+          publish_mutable docker manifest push "${IMG_LATEST}"
+
+      - name: Report image publication result
+        if: always()
+        env:
+          PUBLISH_ALLOWED: ${{ steps.publish_gate.outputs.publish }}
+          PUBLICATION_STATUS: ${{ job.status }}
+        shell: bash -euo pipefail {0}
+        run: |
+          if [[ "$PUBLICATION_STATUS" != success ]]; then
+            result=failed
+          elif [[ "$PUBLISH_ALLOWED" != true ]]; then
+            result=skipped-stale-sha
+          else
+            result=published
+          fi
+          {
+            echo "### Image publication"
+            printf -- '- Result: `%s`\n' "$result"
+            printf -- '- Ref: `%s`\n' "$GITHUB_REF"
+            printf -- '- SHA: `%s`\n' "$GITHUB_SHA"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # GitHub release with multi-arch binaries attached (tag pushes only).
   release_packages:
