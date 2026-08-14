@@ -467,6 +467,8 @@ mod tests {
     }
 
     impl KeyValueStore for MockKeyValueStore {
+        fn as_any(&self) -> &dyn std::any::Any { self }
+
         fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
             self.update_input_keys(keys.to_vec());
             Ok(vec![self.get_result.clone()])
@@ -541,6 +543,8 @@ mod tests {
     pub struct NotImplementedKV;
 
     impl KeyValueStore for NotImplementedKV {
+        fn as_any(&self) -> &dyn std::any::Any { self }
+
         fn get(&self, _keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
             todo!()
         }
