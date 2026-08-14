@@ -38,6 +38,18 @@ use crate::rust::safety::clique_oracle::FtThreshold;
 pub(crate) type CanonicalDispositions =
     Arc<HashMap<Bytes, crate::rust::util::rholang::interpreter_util::SigDisposition>>;
 
+/// The retry gate's verdict with its basis. Closed splits into the three
+/// distinguishable conditions: the sig has no canonical disposition in the
+/// walk window, its latest disposition carries no kept rejection record, or
+/// the record exists but its carrier is not settled inside the floor closure
+/// (the carrier block is named for diagnostics).
+pub enum RetryGateBasis {
+    Open,
+    NoDisposition,
+    NoKeptRejection,
+    RecordAboveFloor(BlockHash),
+}
+
 pub struct FloorContext {
     pub floor: Floor,
     /// The floor block's committed post-state: the merge base and the
@@ -187,16 +199,39 @@ impl FloorContext {
         earliest_block_number: i64,
         sig: &Bytes,
     ) -> Result<bool, CasperError> {
+        Ok(matches!(
+            self.retry_gate_basis(dag, block_store, earliest_block_number, sig)?,
+            RetryGateBasis::Open
+        ))
+    }
+
+    /// The gate's decision with its basis, for per-sig diagnostics: which
+    /// of the three closed conditions held, and for an unsettled record,
+    /// which block carries it.
+    pub fn retry_gate_basis(
+        &self,
+        dag: &KeyValueDagRepresentation,
+        block_store: &KeyValueBlockStore,
+        earliest_block_number: i64,
+        sig: &Bytes,
+    ) -> Result<RetryGateBasis, CasperError> {
         let dispositions = self.dispositions(block_store, earliest_block_number)?;
         let Some(disposition) = dispositions.get(sig) else {
-            return Ok(false);
+            return Ok(RetryGateBasis::NoDisposition);
         };
         match &disposition.latest_kept_rejection {
-            None => Ok(false),
-            Some((_, record_block)) => Ok(*record_block == self.floor.hash
-                || dag
-                    .is_dag_ancestor(record_block, &self.floor.hash)
-                    .map_err(CasperError::KvStoreError)?),
+            None => Ok(RetryGateBasis::NoKeptRejection),
+            Some((_, record_block)) => {
+                let settled = *record_block == self.floor.hash
+                    || dag
+                        .is_dag_ancestor(record_block, &self.floor.hash)
+                        .map_err(CasperError::KvStoreError)?;
+                if settled {
+                    Ok(RetryGateBasis::Open)
+                } else {
+                    Ok(RetryGateBasis::RecordAboveFloor(record_block.clone()))
+                }
+            }
         }
     }
 

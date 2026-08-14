@@ -31,7 +31,7 @@ use tracing;
 use crate::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
-use crate::rust::finality::floor_context::FloorContext;
+use crate::rust::finality::floor_context::{FloorContext, RetryGateBasis};
 use crate::rust::slashing_authorization::{authorized_slash_candidates, checked_next_seq};
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
 use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
@@ -169,6 +169,29 @@ const FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS: i64 = 8;
 /// `deploy_sig_prefix(&d.sig)` at four
 /// sites in `log_deploy_pool_filtering`.
 fn deploy_sig_prefix(sig: &Bytes) -> String { hex::encode(&sig[..std::cmp::min(8, sig.len())]) }
+
+/// One line per deferred retry with the gate's basis — a recurring deferral
+/// for one sig is the starvation tripwire, and the basis says which of the
+/// gate's closed conditions is holding it.
+fn trace_retry_gate_deferral(sig: &Bytes, basis: &RetryGateBasis, ctx: &FloorContext) {
+    let (basis_name, record_block) = match basis {
+        RetryGateBasis::Open => return,
+        RetryGateBasis::NoDisposition => ("no-disposition", String::new()),
+        RetryGateBasis::NoKeptRejection => ("no-kept-rejection", String::new()),
+        RetryGateBasis::RecordAboveFloor(block) => (
+            "record-above-floor",
+            hex::encode(&block[..std::cmp::min(8, block.len())]),
+        ),
+    };
+    tracing::debug!(
+        target: "f1r3fly.casper.recovery",
+        sig = %deploy_sig_prefix(sig),
+        basis = basis_name,
+        record_block = %record_block,
+        floor_number = ctx.floor.block_number,
+        "retry deferred by the gate"
+    );
+}
 
 fn ordered_user_deploys(deploys: &HashSet<Signed<DeployData>>) -> Vec<Signed<DeployData>> {
     let mut ordered: Vec<Signed<DeployData>> = deploys.iter().cloned().collect();
@@ -587,15 +610,19 @@ async fn prepare_user_deploys_with_policy(
             }
             match floor_ctx {
                 Some(ctx) => {
-                    if ctx.retry_gate_open(
+                    match ctx.retry_gate_basis(
                         &casper_snapshot.dag,
                         block_store,
                         earliest_block_number,
                         &deploy.sig,
                     )? {
-                        kept.insert(deploy);
-                    } else {
-                        gated_count += 1;
+                        RetryGateBasis::Open => {
+                            kept.insert(deploy);
+                        }
+                        basis => {
+                            trace_retry_gate_deferral(&deploy.sig, &basis, ctx);
+                            gated_count += 1;
+                        }
                     }
                 }
                 None => gated_count += 1,
@@ -680,12 +707,12 @@ async fn prepare_user_deploys_with_policy(
         .collect();
 
     tracing::debug!(
-        target: "f1r3fly.merge.step",
+        target: "f1r3fly.merge.cpps",
         step = "prepare_user_deploys.POOL",
         block_number,
         unfinalized_pool = unfinalized.len(),
         recovered = recovered_count,
-        "merge.step: deploy pool assembled (unfinalized + recovered re-admits)"
+        "merge.cpps: deploy pool assembled (unfinalized + recovered re-admits)"
     );
 
     let canonical_scan_floor = unfinalized
@@ -812,15 +839,19 @@ async fn prepare_user_deploys_with_policy(
         }
         match floor_ctx {
             Some(ctx) => {
-                if ctx.retry_gate_open(
+                match ctx.retry_gate_basis(
                     &casper_snapshot.dag,
                     block_store,
                     earliest_block_number,
                     &deploy.sig,
                 )? {
-                    retry_candidates.insert(deploy.clone());
-                } else {
-                    gated_pool_retries += 1;
+                    RetryGateBasis::Open => {
+                        retry_candidates.insert(deploy.clone());
+                    }
+                    basis => {
+                        trace_retry_gate_deferral(&deploy.sig, &basis, ctx);
+                        gated_pool_retries += 1;
+                    }
                 }
             }
             None => gated_pool_retries += 1,
@@ -978,35 +1009,35 @@ async fn prepare_user_deploys_with_policy(
         );
     }
 
-    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+    if tracing::enabled!(target: "f1r3fly.merge.cpps", tracing::Level::DEBUG) {
         for d in &future_deploys {
             tracing::debug!(
-                target: "f1r3fly.merge.step",
+                target: "f1r3fly.merge.cpps",
                 step = "prepare_user_deploys.FILTER",
                 deploy = %hex::encode(&d.sig[..8.min(d.sig.len())]),
                 decision = "filtered",
                 reason = "future",
-                "merge.step: deploy filter decision"
+                "merge.cpps: deploy filter decision"
             );
         }
         for d in &block_expired_deploys {
             tracing::debug!(
-                target: "f1r3fly.merge.step",
+                target: "f1r3fly.merge.cpps",
                 step = "prepare_user_deploys.FILTER",
                 deploy = %hex::encode(&d.sig[..8.min(d.sig.len())]),
                 decision = "filtered",
                 reason = "block-expired",
-                "merge.step: deploy filter decision"
+                "merge.cpps: deploy filter decision"
             );
         }
         for d in &time_expired_deploys {
             tracing::debug!(
-                target: "f1r3fly.merge.step",
+                target: "f1r3fly.merge.cpps",
                 step = "prepare_user_deploys.FILTER",
                 deploy = %hex::encode(&d.sig[..8.min(d.sig.len())]),
                 decision = "filtered",
                 reason = "time-expired",
-                "merge.step: deploy filter decision"
+                "merge.cpps: deploy filter decision"
             );
         }
         for d in already_in_scope
@@ -1014,22 +1045,22 @@ async fn prepare_user_deploys_with_policy(
             .filter(|d| !selected_in_scope_recovery_sigs.contains(&d.sig))
         {
             tracing::debug!(
-                target: "f1r3fly.merge.step",
+                target: "f1r3fly.merge.cpps",
                 step = "prepare_user_deploys.FILTER",
                 deploy = %hex::encode(&d.sig[..8.min(d.sig.len())]),
                 decision = "filtered",
                 reason = "already-in-scope (repeat_deploy / deploys_in_scope, non-stale)",
-                "merge.step: deploy filter decision"
+                "merge.cpps: deploy filter decision"
             );
         }
         for d in &valid_unique {
             tracing::debug!(
-                target: "f1r3fly.merge.step",
+                target: "f1r3fly.merge.cpps",
                 step = "prepare_user_deploys.FILTER",
                 deploy = %hex::encode(&d.sig[..8.min(d.sig.len())]),
                 decision = "selected-candidate",
                 reason = "passed expiry + scope filters",
-                "merge.step: deploy filter decision"
+                "merge.cpps: deploy filter decision"
             );
         }
     }
@@ -1121,13 +1152,13 @@ async fn prepare_user_deploys_with_policy(
         buffer_guard.remove(expired_list)?;
     }
 
-    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+    if tracing::enabled!(target: "f1r3fly.merge.cpps", tracing::Level::DEBUG) {
         let chosen: Vec<String> = selected
             .iter()
             .map(|d| hex::encode(&d.sig[..8.min(d.sig.len())]))
             .collect();
         tracing::debug!(
-            target: "f1r3fly.merge.step",
+            target: "f1r3fly.merge.cpps",
             step = "prepare_user_deploys.CHOSEN",
             block_number,
             count = selected.len(),
@@ -1141,7 +1172,7 @@ async fn prepare_user_deploys_with_policy(
             deferred_user_deploy_bytes,
             byte_cap_hit,
             chosen = ?chosen,
-            "merge.step: final deploy set chosen for block"
+            "merge.cpps: final deploy set chosen for block"
         );
     }
 
