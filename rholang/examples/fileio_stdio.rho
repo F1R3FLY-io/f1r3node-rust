@@ -57,6 +57,18 @@ in {
                 }
               }
             }
+            // Note: per FIP §930 / §1090 the current `Stdin.readLine`
+            // contract always replies `[true, streamHandle]` — EOS is
+            // observed by draining the returned CharStream, not at the
+            // outer readLine call.  A pre-EOF `readLine` returns a
+            // stream whose first `next()` yields `[false, "EOS", _]`.
+            // This outer `[false, "EOS", _]` arm is defensive against
+            // a hypothetical alternative Stdin variant that fires EOS
+            // at the outer call; the current implementation will
+            // instead fall through to the write-loop below and observe
+            // EOS through `writeLine`'s drain.  Slice 10c restructures
+            // this example to observe EOS through the drain and lands
+            // the full echo-loop E2E test.
             [false, "EOS", _] => done!(("done, EOS", true))
             _                 => done!(("readLine failed", r))
           }

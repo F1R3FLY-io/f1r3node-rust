@@ -70,10 +70,15 @@ fn bundle_file(
 ///   - seek(0, "set") returns [true, 0]; tell() confirms position 0.
 ///   - seek(5, "set") returns [true, 5]; tell() confirms position 5.
 ///   - size() returns exactly the file's byte length.
-///   - readN(0) returns [true, empty ByteArray] (POSIX read(2) no-op).
+///   - readN(100) at cursor=5 returns a 7-byte short read of "e chars"
+///     (n > bytes-remaining-to-eof → returns exactly the remaining bytes,
+///     not FSERR nor a padded reply — POSIX read(2) short-read semantics).
+///   - readN(0) returns exactly [true, empty ByteArray] (POSIX read(2)
+///     no-op; pinned to the exact empty ByteArray, not a `[true, _]`
+///     wildcard, so a regression that returned bytes for n=0 would fail).
 ///   - readN(-1) returns FSERR_BAD_ARG.
 ///
-/// All five assertions run against one File cap so they share the
+/// All six assertions run against one File cap so they share the
 /// genesis-setup overhead.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn file_cursor_size_and_readn_on_read_only() {
@@ -104,19 +109,28 @@ in {{
             for(@rSeek5 <- @file!?("seek", 5, "set")) {{
               for(@rTell5 <- @file!?("tell")) {{
                 for(@rSize <- @file!?("size")) {{
-                  for(@rReadEmpty <- @file!?("readN", 0)) {{
-                    for(@rReadNeg <- @file!?("readN", -1)) {{
-                      match [rSeek0, rTell0, rSeek5, rTell5, rSize, rReadEmpty, rReadNeg] {{
-                        [[true, 0], [true, 0], [true, 5], [true, 5], [true, 12],
-                         [true, _], [false, "FSERR_BAD_ARG", _]] => {{
-                          rhoSpec!("assert", (true, "==", true),
-                            "cursor + size + readN edge cases", *ackCh)
-                        }}
-                        _ => {{
-                          rhoSpec!("assert",
-                            ([rSeek0, rTell0, rSeek5, rTell5, rSize, rReadEmpty, rReadNeg],
-                             "==", "[expected shape tuple]"),
-                            "cursor + size + readN edge cases", *ackCh)
+                  for(@rReadShort <- @file!?("readN", 100)) {{
+                    for(@rReadEmpty <- @file!?("readN", 0)) {{
+                      for(@rReadNeg <- @file!?("readN", -1)) {{
+                        match [rSeek0, rTell0, rSeek5, rTell5, rSize,
+                               rReadShort, rReadEmpty, rReadNeg] {{
+                          [[true, 0], [true, 0], [true, 5], [true, 5], [true, 12],
+                           [true, shortBytes /\ ByteArray],
+                           [true, emptyBytes /\ ByteArray],
+                           [false, "FSERR_BAD_ARG", _]] => {{
+                            rhoSpec!("assert",
+                              ([shortBytes, emptyBytes], "==",
+                               ["65206368617273".hexToBytes(), "".hexToBytes()]),
+                              "cursor + size + readN edge cases (short-read at pos 5 == \"e chars\"; readN(0) == empty)",
+                              *ackCh)
+                          }}
+                          _ => {{
+                            rhoSpec!("assert",
+                              ([rSeek0, rTell0, rSeek5, rTell5, rSize,
+                                rReadShort, rReadEmpty, rReadNeg],
+                               "==", "[expected shape tuple]"),
+                              "cursor + size + readN edge cases", *ackCh)
+                          }}
                         }}
                       }}
                     }}
