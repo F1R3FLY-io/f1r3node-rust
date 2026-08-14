@@ -45,19 +45,24 @@ struct EmptyFrontierPressure {
     backpressure: bool,
 }
 
+/// `self_recovery_throttled` must combine "ahead of the LFB" with "minted
+/// within the stale-recovery interval": a validator that has been silent for
+/// a full interval is exempt from the width cap, so a finalization stall can
+/// never silence every validator permanently (the cap bounds churn to the
+/// recovery cadence; it is not a proposal deadline the shard can miss forever).
 fn empty_frontier_pressure(
     snapshot: &CasperSnapshot,
     max_unfinalized_blocks: i64,
     has_pending_deploys: bool,
     has_new_parent_with_user_deploys: bool,
     deploy_grace_active: bool,
-    self_recently_proposed: bool,
+    self_recovery_throttled: bool,
 ) -> Result<EmptyFrontierPressure, casper::rust::errors::CasperError> {
     let max_unfinalized_blocks = usize::try_from(max_unfinalized_blocks).unwrap_or(usize::MAX);
     if has_pending_deploys
         || has_new_parent_with_user_deploys
         || deploy_grace_active
-        || !self_recently_proposed
+        || !self_recovery_throttled
     {
         return Ok(EmptyFrontierPressure {
             max_unfinalized_blocks,
@@ -464,13 +469,24 @@ async fn check_lfb_and_propose(
     } else {
         frontier_chase_max_lag
     };
+    // The backpressure exemption key must be TEMPORAL, not height-based:
+    // "my latest block is above the LFB" is permanently true for every
+    // validator during a finalization stall, so keying the exemption on it
+    // deadlocks the shard once the cap is exceeded — no proposals, no
+    // witnessing rounds, no floor advance, no drain. A validator idle for a
+    // full stale-recovery interval gets one proposal through the cap: the
+    // cap bounds empty-block churn to the recovery cadence, never to zero.
+    let self_minted_within_recovery_interval =
+        self_latest_block_timestamp_ms.is_some_and(|timestamp_ms| {
+            now.saturating_sub(timestamp_ms) < stale_recovery_min_interval_ms
+        });
     let empty_frontier_pressure = empty_frontier_pressure(
         &snapshot,
         config.advanced.empty_frontier_max_unfinalized_blocks,
         has_pending_deploys,
         has_new_parent_with_user_deploys,
         deploy_grace_active,
-        self_recently_proposed,
+        self_recently_proposed && self_minted_within_recovery_interval,
     )?;
     let empty_frontier_backpressure = empty_frontier_pressure.backpressure;
     if empty_frontier_backpressure {
@@ -1610,11 +1626,23 @@ mod tests {
             let validator_id = validator.public_key.bytes.clone();
             let (snapshot, lfb) = wide_unfinalized_snapshot(validator_id);
 
-            let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(
-                casper::rust::casper::test_helpers::TestCasperWithSnapshot::new(snapshot, lfb),
-            );
+            let casper_impl =
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::new(snapshot, lfb);
+            // The validator minted moments ago: still inside the
+            // stale-recovery interval, so the width cap applies. (An idle
+            // validator is exempt — see the deadlock test below.)
+            let mut self_tip = models::rust::block_implicits::get_random_block_default();
+            self_tip.block_hash = test_hash(0x18);
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64;
+            self_tip.header.timestamp = now_ms;
+            casper_impl.insert_block(&self_tip);
+            let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(casper_impl);
             let (propose_count, propose_func) = create_counting_propose_function();
-            let config = empty_frontier_backpressure_config();
+            let mut config = empty_frontier_backpressure_config();
+            config.stale_recovery_min_interval = Duration::from_secs(60);
 
             let result =
                 do_heartbeat_check(casper, &*propose_func, &validator, &config, false, false).await;
@@ -1649,6 +1677,52 @@ mod tests {
                 propose_count.load(Ordering::SeqCst),
                 1,
                 "Pending deploys should bypass empty-frontier backpressure"
+            );
+        }
+
+        /// The terminal ucc-stall state (session 3cd723b6): finalization
+        /// stalled long enough that unfinalized width exceeded the cap, and
+        /// every validator's latest block sits above the frozen LFB — so a
+        /// height-based "recently proposed" exemption never fires, every
+        /// recovery arm is vetoed by backpressure, no one ever proposes
+        /// again, and the witnessing rounds finalization needs can never
+        /// happen. A validator that has been TEMPORALLY idle for a full
+        /// stale-recovery interval must get one recovery proposal through
+        /// the cap; the cap bounds churn, it must not be a deadlock.
+        #[tokio::test]
+        async fn stale_recovery_breaks_the_empty_frontier_deadlock() {
+            let validator = create_test_validator_identity();
+            let validator_id = validator.public_key.bytes.clone();
+            let (snapshot, lfb) = wide_unfinalized_snapshot(validator_id);
+
+            let casper_impl =
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::new(snapshot, lfb);
+            // The validator's own tip was minted an hour ago — the whole
+            // shard has been silent while width sits above the cap.
+            let mut self_tip = models::rust::block_implicits::get_random_block_default();
+            self_tip.block_hash = test_hash(0x18);
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64;
+            self_tip.header.timestamp = now_ms - 3_600_000;
+            casper_impl.insert_block(&self_tip);
+            let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(casper_impl);
+
+            let (propose_count, propose_func) = create_counting_propose_function();
+            let mut config = empty_frontier_backpressure_config();
+            config.stale_recovery_min_interval = Duration::from_secs(60);
+
+            let result =
+                do_heartbeat_check(casper, &*propose_func, &validator, &config, false, false).await;
+
+            assert!(result.is_ok(), "do_heartbeat_check should succeed");
+            assert_eq!(
+                propose_count.load(Ordering::SeqCst),
+                1,
+                "a temporally idle validator under a stale LFB must get one \
+                 stale-recovery proposal through the unfinalized cap — a cap \
+                 that silences every validator forever is a consensus deadlock"
             );
         }
     }

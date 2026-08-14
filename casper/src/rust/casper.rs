@@ -484,6 +484,14 @@ pub mod test_helpers {
             }
         }
 
+        /// Stage a block in the test block store (e.g. the validator's own
+        /// latest message, so timestamp-based pacing reads a real header).
+        pub fn insert_block(&self, block: &BlockMessage) {
+            self.block_store
+                .put_block_message(block)
+                .expect("insert test block");
+        }
+
         /// Create an empty CasperSnapshot for testing.
         pub fn create_empty_snapshot() -> CasperSnapshot {
             use std::sync::Arc;
