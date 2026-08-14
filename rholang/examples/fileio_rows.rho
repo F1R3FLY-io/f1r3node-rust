@@ -1,0 +1,79 @@
+// fileio_rows.rho — Phase 10 canonical example
+//
+// Buffer-of-buffers demonstration: allocate a Rows buffer (128 inner
+// utf8 buffers, each 8192 units) and drive `readLinesInto(rows)` to
+// fill up to 128 lines in a single call.  Iterate the populated rows
+// and print each line.
+//
+// Sequence:
+//   1. Look up the Allocator (`rho:lang:buffer:1.0.0`).
+//   2. Open a bundled File in "r" mode.
+//   3. `alloc!allocRows(128, 8192, "utf8")` → a Rows cap wrapping 128
+//      pre-allocated inner buffers.
+//   4. `file!readLinesInto(rows)` fills as many inner buffers as it
+//      can before hitting EOF, buffer-of-buffers exhaustion, or a
+//      per-line overflow (marked `truncated`).  Reply shape:
+//      `[true, [nLinesWritten, {"eof": Bool, "truncated": Bool}]]`.
+//   5. Loop i ∈ [0, nLinesWritten): `rows!getAt(i)` → inner buffer;
+//      `inner!toByteArray()` → line bytes; print.
+//
+// Bounded memory: total footprint is `128 * 8192 * 4 = 4 MiB`
+// regardless of the source file's size — one readLinesInto call
+// captures at most this much before returning to the caller.
+//
+// ## Prerequisite: Allocator publication
+//
+// Same block as fileio_buffer_loop.rho — Allocator isn't user-reachable
+// pre-PB-B-5.  See fs_genesis.rs MVP note §6.
+//
+// Companion regression: casper/tests/genesis/contracts/
+// fileio_examples_spec.rs :: fileio_rows_readlinesinto (currently
+// `#[ignore]`; unblocks when PB-B-5 lands).
+
+new
+  rl(`rho:registry:lookup`),
+  stdout(`rho:io:stdout`),
+  fsCh,
+  allocCh,
+  printRow
+in {
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *fsCh) |
+  rl!(`rho:lang:buffer:1.0.0`, *allocCh) |
+  for(@(_, fs) <- fsCh; @(_, alloc) <- allocCh) {
+    for(@[true, file] <- @fs!?("openFile", "target", {"mode": "r"});
+        @[true, rows] <- @alloc!?("allocRows", 128, 8192, "utf8")) {
+      for(@r <- @file!?("readLinesInto", rows)) {
+        match r {
+          [true, [n /\ Int, _meta]] => {
+            // Tail-recursive iteration: printRow(i, upto).
+            contract printRow(@i, @upto) = {
+              match i < upto {
+                false => stdout!(("done, printed", i, "lines"))
+                true  => {
+                  for(@innerReply <- @rows!?("getAt", i)) {
+                    match innerReply {
+                      [true, inner] => {
+                        for(@bytesReply <- @inner!?("toByteArray")) {
+                          match bytesReply {
+                            [true, lineBytes] => {
+                              stdout!((i, lineBytes.toUtf8String())) |
+                              printRow!(i + 1, upto)
+                            }
+                            _ => stdout!(("toByteArray failed at", i, bytesReply))
+                          }
+                        }
+                      }
+                      _ => stdout!(("getAt failed at", i, innerReply))
+                    }
+                  }
+                }
+              }
+            } |
+            printRow!(0, n)
+          }
+          _ => stdout!(("readLinesInto failed", r))
+        }
+      }
+    }
+  }
+}

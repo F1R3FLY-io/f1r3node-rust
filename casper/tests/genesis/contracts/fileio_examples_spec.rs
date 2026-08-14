@@ -642,3 +642,24 @@ async fn fileio_buffer_loop_bounded_read() {
     //   - Assert the loop terminates on eof=true.
     unimplemented!("blocked on PB-B-5: Allocator publication at rho:lang:buffer:1.0.0")
 }
+
+/// Slice 10a-7: canonical example `fileio_rows.rho`.
+///
+/// Buffer-of-buffers via `alloc.allocRows(128, 8192, "utf8")` +
+/// `file.readLinesInto(rows)`.  Same PB-B-5 block as slice 10a-6 —
+/// the `.rho` example ships as documentation; this test's body is a
+/// placeholder that will be filled in once the Allocator publication
+/// lands.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "blocked on PB-B-5: Allocator not yet published to user deploys"]
+async fn fileio_rows_readlinesinto() {
+    // See rholang/examples/fileio_rows.rho for the intended user
+    // code.  Once PB-B-5 publishes the Allocator, this test should:
+    //   - Bundle a "target" file with N > 128 lines.
+    //   - Run allocRows(128, 8192, "utf8") + readLinesInto.
+    //   - Assert reply is [true, [128, {"eof": false, ...}]] (fills
+    //     to buffer-of-buffers capacity).
+    //   - Iterate rows.getAt(i) and assert each inner line matches
+    //     the source file's i-th line.
+    unimplemented!("blocked on PB-B-5: Allocator publication at rho:lang:buffer:1.0.0")
+}
