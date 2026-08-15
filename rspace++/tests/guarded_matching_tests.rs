@@ -33,7 +33,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use rspace_plus_plus::rspace::candidate_order::order_candidates_with_index;
+use rspace_plus_plus::rspace::data_index::RSpaceDataIndex;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepositoryInstances;
 use rspace_plus_plus::rspace::hot_store::{HotStoreInstances, HotStoreState};
 use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
@@ -240,14 +240,19 @@ async fn waiting(space: &TestSpace, channels: &[&str]) -> usize {
 /// exercises backtracking rather than accidentally agreeing with the old
 /// behaviour.
 fn canonical_position(channel: &str, data: &[&str], datum: &str) -> usize {
-    let datums: Vec<Datum<String>> = data
-        .iter()
-        .map(|value| Datum::create(&channel.to_string(), value.to_string(), false))
-        .collect();
-    let ordered = order_candidates_with_index(datums);
+    let channel = channel.to_string();
+    let mut index = RSpaceDataIndex::new();
+    for value in data {
+        index
+            .insert(&channel, &Datum::create(&channel, value.to_string(), false))
+            .expect("test datum must encode into the PathMap index");
+    }
+    let ordered = index
+        .ordered_channel_entries::<_, String>(&channel)
+        .expect("test candidate pool must decode");
     ordered
         .iter()
-        .position(|(candidate, _)| *candidate.a == datum)
+        .position(|candidate| *candidate.datum.a == datum)
         .unwrap_or_else(|| panic!("{datum:?} must be among {data:?}"))
 }
 
@@ -488,15 +493,11 @@ async fn a_guard_free_join_no_longer_strands_on_a_spatial_dead_end() {
 /// ⚠ **CONSENSUS.** A receive that takes two data from the SAME channel must
 /// leave neither behind. It used to leave one.
 ///
-/// `remove_datum` removes POSITIONALLY, so a batch of removals from one channel
-/// must run from the highest index down; removing a low index first shifts
-/// every higher one. Both spaces sorted their candidates highest-first and then
-/// `.rev()`ed that into lowest-first, so the second removal of a same-channel
-/// pair ran off the end, its `Err` was swallowed, and the datum stayed in the
-/// store AFTER being delivered to the continuation — free to be consumed again.
-/// (Scala's `storePersistentData` / `removeMatchedDatumAndJoin` sort
-/// `_.datumIndex` with `Ordering[Int].reverse` and traverse in THAT order; the
-/// port re-reversed it.)
+/// The former vector store removed data positionally, so removing a lower index
+/// shifted every higher one. A reversed batch order made the second removal of
+/// a same-channel pair run off the end; its `Err` was swallowed and the datum
+/// remained after delivery. PathMap candidates now carry exact trie paths, so
+/// removals neither shift nor depend on batch order.
 ///
 /// The defect is independent of the guard work, but it could not be left: the
 /// guard-aware search reaches same-channel selections that previously stranded,
@@ -543,6 +544,40 @@ async fn a_receive_taking_two_data_from_one_channel_removes_both() {
              could be consumed a second time"
         );
     }
+}
+
+#[tokio::test]
+async fn two_identical_occurrences_fill_two_binds_without_expansion() {
+    let (space, _replay, _matcher) = fixture().await;
+    for _ in 0..2 {
+        assert!(
+            space
+                .produce("ch".to_string(), "7".to_string(), false)
+                .await
+                .expect("produce")
+                .is_none()
+        );
+    }
+    let fired = space
+        .consume(
+            vec!["ch".to_string(), "ch".to_string()],
+            vec![Pattern::Wildcard, Pattern::Wildcard],
+            GuardedContinuation::unguarded("pair"),
+            false,
+            BTreeSet::new(),
+        )
+        .await
+        .expect("consume")
+        .expect("two occurrences fill two binds");
+    assert_eq!(
+        fired
+            .1
+            .iter()
+            .map(|result| result.matched_datum.as_str())
+            .collect::<Vec<_>>(),
+        vec!["7", "7"]
+    );
+    assert!(resting(&space, "ch").await.is_empty());
 }
 
 /// The same, on the produce path (`remove_matched_datum_and_join`), where the
@@ -958,42 +993,34 @@ async fn the_cost_of_a_complete_guarded_search_is_bounded_and_measured() {
     println!("  control — the SAME store with no guard: {spatial} Match::get, {elapsed:?}");
 }
 
-/// The candidate order the selection rests on is a function of the candidates
-/// alone, not of the order they were inserted in. Two stores holding the same
-/// data in different insertion orders present the same candidate sequence to
-/// the matcher — modulo the store index each carries, which is exactly the
-/// removal address and must NOT be canonicalized.
+/// The PathMap candidate order is a function of candidate bytes and trie paths,
+/// not insertion order. The same data inserted in opposite orders therefore
+/// presents the same exact-path-addressed sequence to the matcher.
 #[test]
 fn the_canonical_candidate_order_is_a_pure_function_of_the_candidates() {
-    let make = |values: &[&str]| -> Vec<Datum<String>> {
-        values
-            .iter()
-            .map(|value| Datum::create(&"ch".to_string(), value.to_string(), false))
+    let ordered_payloads = |values: &[&str]| -> Vec<String> {
+        let channel = "ch".to_string();
+        let mut index = RSpaceDataIndex::new();
+        for value in values {
+            index
+                .insert(&channel, &Datum::create(&channel, value.to_string(), false))
+                .expect("test datum must encode into the PathMap index");
+        }
+        index
+            .ordered_channel_entries::<_, String>(&channel)
+            .expect("test candidate pool must decode")
+            .into_iter()
+            .map(|entry| (*entry.datum.a).clone())
             .collect()
     };
 
-    let forwards = order_candidates_with_index(make(&["91", "77", "42", "68"]));
-    let backwards = order_candidates_with_index(make(&["68", "42", "77", "91"]));
-
-    let payloads = |ordered: &[(Datum<String>, i32)]| -> Vec<String> {
-        ordered
-            .iter()
-            .map(|(datum, _)| (*datum.a).clone())
-            .collect()
-    };
-    assert_eq!(
-        payloads(&forwards),
-        payloads(&backwards),
-        "insertion order does not survive into the candidate order"
-    );
-
-    let mut indices: Vec<i32> = forwards.iter().map(|(_, index)| *index).collect();
-    indices.sort();
-    assert_eq!(indices, vec![0, 1, 2, 3], "every STORE index is preserved exactly once");
+    let forwards = ordered_payloads(&["91", "77", "42", "68"]);
+    let backwards = ordered_payloads(&["68", "42", "77", "91"]);
+    assert_eq!(forwards, backwards, "insertion order does not survive into the candidate order");
 
     assert_eq!(
-        payloads(&order_candidates_with_index(make(&["91", "77", "42", "68"]))),
-        payloads(&forwards),
+        ordered_payloads(&["91", "77", "42", "68"]),
+        forwards,
         "and the order is stable across calls"
     );
 }

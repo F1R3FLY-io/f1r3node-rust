@@ -2,29 +2,31 @@
 //!
 //! # Why this module exists
 //!
-//! RSpace picks the data and the waiting continuations a COMM fires on out of
-//! per-channel *pools*. Which element of a pool the matcher reaches first is
-//! therefore part of the answer to "which COMM fires", and "which COMM fires"
-//! is a consensus quantity: every validator replaying a block must select the
-//! same rendezvous the proposer selected, or the post-state root diverges.
+//! RSpace picks waiting continuations from vector-backed per-channel-group
+//! pools. Which continuation the matcher reaches first is therefore part of
+//! the answer to "which COMM fires", and "which COMM fires" is a consensus
+//! quantity: every validator replaying a block must select the same rendezvous
+//! the proposer selected, or the post-state root diverges.
 //!
-//! The pools come out of the hot store in **insertion order**, which is an
-//! artifact of how a particular node interleaved its reductions rather than a
-//! property of the program. Ordering the pool by a hash of the candidate's own
-//! bytes replaces that artifact with a function of the candidate values alone.
-//! The original store position survives as the tie-breaker (and as the index
-//! `remove_datum` later removes at), so the order is a *total* order — no two
-//! entries compare equal — and is reproduced exactly by anyone holding the same
-//! pool.
+//! Those vectors come out of the hot store in **insertion order**, which is an
+//! artifact of how a particular node interleaved its reductions. Ordering by a
+//! hash of each candidate's bytes replaces that artifact with a function of the
+//! values. The original vector position survives as both tie-breaker and the
+//! continuation-removal address, making the order total.
+//!
+//! Datum candidates no longer use this vector/index representation. Their
+//! authoritative pool is a PathMap Bag, their total order is `(hash, trie
+//! path)`, and their removal address is the exact trie path; see
+//! [`crate::rspace::data_index::RSpaceDataIndex::ordered_channel_entries`].
 //!
 //! ```text
 //!   store order          ordering key                      canonical order
 //!   ┌───────────┐        ┌───────────────────────┐         ┌───────────┐
-//!   │ 0: datum A│  ───▶  │ (H(bytes(A)), 0)      │  sort   │ 2: datum C│
-//!   │ 1: datum B│        │ (H(bytes(B)), 1)      │  ────▶  │ 0: datum A│
-//!   │ 2: datum C│        │ (H(bytes(C)), 2)      │         │ 1: datum B│
+//!   │ 0: cont A │  ───▶  │ (H(bytes(A)), 0)      │  sort   │ 2: cont C │
+//!   │ 1: cont B │        │ (H(bytes(B)), 1)      │  ────▶  │ 0: cont A │
+//!   │ 2: cont C │        │ (H(bytes(C)), 2)      │         │ 1: cont B │
 //!   └───────────┘        └───────────────────────┘         └───────────┘
-//!             the i32 riding along is always the STORE index
+//!             the i32 riding along is the vector store index
 //! ```
 //!
 //! # Why it is shared
@@ -37,10 +39,9 @@
 //! moot as soon as the matcher can select a candidate other than the first
 //! spatial match — see
 //! [`crate::rspace::space_matcher::SpaceMatcher::extract_guarded_data_candidates`].
-//! Play and replay therefore share this one order, so that the
-//! replay-equivalence argument recorded there ("replay's pool is a subsequence
-//! of play's pool, so the lexicographically least admissible selection is the
-//! same in both") actually holds.
+//! Play and replay therefore share this order for continuations. They share the
+//! PathMap-backed candidate-pool construction for data, so the same
+//! replay-equivalence argument holds on both axes.
 //!
 //! # Cost
 //!
@@ -68,15 +69,12 @@ where D: CandidateOrderingBytes {
     Blake2b256Hash::new(&bytes)
 }
 
-/// Pair every candidate with its **store index** and return the pool in the
-/// canonical order described in the module documentation.
+/// Pair every vector-backed candidate with its **store index** and return the
+/// pool in the canonical order described in the module documentation.
 ///
 /// The `i32` of each pair is the candidate's position in `candidates` as
-/// received — that is the index `HotStore::remove_datum` /
-/// `HotStore::remove_continuation` later address, so it must NOT be recomputed
-/// after the sort. The fresh datum a `produce` injects into its own pool is
-/// given index `-1` by the caller and is inserted ahead of this order (it is
-/// not in the store, so it has no store index and nothing removes it).
+/// received — currently the index `HotStore::remove_continuation` later
+/// addresses — so it must not be recomputed after the sort.
 pub fn order_candidates_with_index<D>(candidates: Vec<D>) -> Vec<(D, i32)>
 where D: CandidateOrderingBytes {
     // Decorate: one hash per candidate, computed exactly once.

@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use serde::Serialize;
 
+use super::data_index::CandidatePool;
 use super::r#match::Match;
 use super::rspace_interface::ISpace;
 use crate::rspace::candidate_order::order_candidates_with_index;
@@ -20,16 +21,13 @@ use crate::rspace::metrics_constants::{
 };
 use crate::rspace::serializers::serializers::CandidateOrderingBytes;
 
-type MatchingDataCandidate<C, A> = (ConsumeCandidate<C, A>, Vec<(Datum<A>, i32)>);
-
-struct CandidateWalkFrame<'a, C, P, A: Clone> {
+struct CandidateWalkFrame<'a, C, P> {
     channel: &'a C,
     pattern: &'a P,
-    pool: Vec<(Datum<A>, i32)>,
     level: usize,
     cursor: usize,
+    reserved_position: Option<usize>,
     any_leaf_reached: bool,
-    is_last_bind: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -79,7 +77,7 @@ fn walk_candidate_selections<S, C, P, A, K, OnAdmissible, OnBacktrack>(
     matcher: &Box<dyn Match<P, A, K>>,
     channel_pattern_pairs: &[(&C, &P)],
     continuation: &K,
-    channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
+    channel_to_indexed_data: &mut HashMap<C, CandidatePool<A>>,
     level: usize,
     chosen: &mut Vec<ConsumeCandidate<C, A>>,
     mut on_admissible: OnAdmissible,
@@ -100,7 +98,7 @@ where
         Return(CandidateWalkResult),
     }
 
-    let mut frames: Vec<CandidateWalkFrame<'_, C, P, A>> = Vec::new();
+    let mut frames: Vec<CandidateWalkFrame<'_, C, P>> = Vec::new();
     let mut state = State::Descend(level);
     loop {
         match state {
@@ -118,21 +116,20 @@ where
                 }
 
                 let (channel, pattern) = channel_pattern_pairs[current_level];
-                let Some(pool) = channel_to_indexed_data.get(channel).cloned() else {
+                if !channel_to_indexed_data.contains_key(channel) {
                     state = State::Return(CandidateWalkResult {
                         stopped: false,
                         any_leaf_reached: false,
                     });
                     continue;
-                };
+                }
                 frames.push(CandidateWalkFrame {
                     channel,
                     pattern,
-                    pool,
                     level: current_level,
                     cursor: 0,
+                    reserved_position: None,
                     any_leaf_reached: false,
-                    is_last_bind: current_level + 1 == channel_pattern_pairs.len(),
                 });
                 state = State::Scan;
             }
@@ -142,7 +139,9 @@ where
                     space.next_spatial_match(
                         matcher,
                         frame.channel.clone(),
-                        &frame.pool,
+                        channel_to_indexed_data
+                            .get(frame.channel)
+                            .expect("candidate channel disappeared during traversal"),
                         frame.pattern,
                         frame.cursor,
                     )
@@ -152,21 +151,21 @@ where
                         .last_mut()
                         .expect("candidate walk scan without a frame");
                     frame.cursor = position + 1;
-                    if !frame.is_last_bind {
-                        let residual = <S as SpaceMatcher<C, P, A, K>>::residual_pool(
-                            &frame.pool,
-                            position,
-                            candidate.datum.persist,
+                    if !candidate.datum.persist {
+                        assert!(
+                            channel_to_indexed_data
+                                .get_mut(frame.channel)
+                                .expect("candidate channel disappeared during reservation")
+                                .reserve(position),
+                            "available candidate could not be reserved"
                         );
-                        channel_to_indexed_data.insert(frame.channel.clone(), residual);
+                        frame.reserved_position = Some(position);
                     }
                     chosen.push(candidate);
                     state = State::Descend(frame.level + 1);
                 } else {
                     let frame = frames.pop().expect("candidate walk scan without a frame");
-                    if !frame.is_last_bind {
-                        channel_to_indexed_data.insert(frame.channel.clone(), frame.pool);
-                    }
+                    debug_assert!(frame.reserved_position.is_none());
                     state = State::Return(CandidateWalkResult {
                         stopped: false,
                         any_leaf_reached: frame.any_leaf_reached,
@@ -183,6 +182,12 @@ where
                 chosen
                     .pop()
                     .expect("candidate walk returned without a parent choice");
+                if let Some(position) = parent.reserved_position.take() {
+                    channel_to_indexed_data
+                        .get_mut(parent.channel)
+                        .expect("candidate channel disappeared during rollback")
+                        .release(position);
+                }
                 let outcome = if result.any_leaf_reached {
                     SelectionOutcome::GuardRejected
                 } else {
@@ -203,8 +208,8 @@ where
     A: Clone + Send + Sync,
     K: Clone + Send + Sync,
 {
-    /// The first datum of `data` that matches `pattern` **spatially**, with the
-    /// pool the remaining binds would then see.
+    /// The first available datum of `data` that matches `pattern`
+    /// **spatially**.
     ///
     /// ⚠ The commit guard (`Match::check_commit`) is deliberately NOT consulted
     /// here, and cannot be: a guard is a predicate over the bindings of EVERY
@@ -213,27 +218,13 @@ where
     /// [`SpaceMatcher::extract_guarded_data_candidates`], which drives
     /// [`SpaceMatcher::next_spatial_match`] directly so it can enumerate a
     /// channel's spatial matches one at a time.
-    fn find_matching_data_candidate(
-        &self,
-        matcher: &Box<dyn Match<P, A, K>>,
-        channel: C,
-        data: &[(Datum<A>, i32)],
-        pattern: &P,
-    ) -> Option<MatchingDataCandidate<C, A>> {
-        self.next_spatial_match(matcher, channel, data, pattern, 0)
-            .map(|(position, candidate)| {
-                let residual = Self::residual_pool(data, position, candidate.datum.persist);
-                (candidate, residual)
-            })
-    }
-
     /// The scan alone, resumable: the first datum of `data` at or after `start`
     /// that matches `pattern` spatially, as a [`ConsumeCandidate`], with the
     /// POSITION it was found at so a caller can resume at `position + 1`.
     ///
-    /// The returned position indexes `data`; it is NOT the datum's store index
-    /// (that rides along inside the candidate as `datum_index`, and for the
-    /// datum a `produce` injects into its own pool it is `-1`).
+    /// The returned position indexes the pool's derived order table. Stored
+    /// candidates carry their exact trie path; an arriving datum carries the
+    /// distinct fresh address.
     ///
     /// The residual pool is deliberately NOT built here. A search that TRIES
     /// candidates needs a residual only for the ones it descends through;
@@ -246,15 +237,15 @@ where
         &self,
         matcher: &Box<dyn Match<P, A, K>>,
         channel: C,
-        data: &[(Datum<A>, i32)],
+        data: &CandidatePool<A>,
         pattern: &P,
         start: usize,
     ) -> Option<(usize, ConsumeCandidate<C, A>)> {
-        if start >= data.len() {
-            return None;
-        }
-        for (offset, (datum, data_index)) in data[start..].iter().enumerate() {
-            let idx = start + offset;
+        let mut cursor = start;
+        while let Some(position) = data.next_available(cursor) {
+            let (datum, address) = data
+                .candidate(position)
+                .expect("available candidate must have a payload");
             metrics::counter!("rspace.matcher.get_calls", "source" => "rspace").increment(1);
             // The matcher borrows the pattern and the Arc-shared datum
             // payload — a failing attempt copies nothing at this boundary
@@ -268,7 +259,7 @@ where
                 .increment(t_match.elapsed().as_nanos() as u64);
 
             if let Some(mat) = match_result {
-                return Some((idx, ConsumeCandidate {
+                return Some((position, ConsumeCandidate {
                     channel,
                     datum: Datum {
                         // The MATCHED payload (possibly bind-transformed
@@ -280,79 +271,20 @@ where
                     // The stored payload as removed — an Arc bump
                     // (before Arc-shaped transport: a deep copy per candidate).
                     removed_datum: std::sync::Arc::clone(&datum.a),
-                    datum_index: *data_index,
+                    address,
                 }));
             }
+            cursor = position + 1;
         }
         None
     }
 
-    /// The pool the REMAINING binds see once the datum at `position` has been
-    /// speculatively taken: `data` without it, or the whole of `data` when the
-    /// datum persists (a persistent datum satisfies any number of binds).
-    fn residual_pool(
-        data: &[(Datum<A>, i32)],
-        position: usize,
-        persist: bool,
-    ) -> Vec<(Datum<A>, i32)> {
-        match persist {
-            true => data.to_vec(),
-            false => {
-                let mut remaining = Vec::with_capacity(data.len() - 1);
-                remaining.extend_from_slice(&data[..position]);
-                remaining.extend_from_slice(&data[position + 1..]);
-                remaining
-            }
-        }
-    }
-
     /// Attempts to match all channel-pattern pairs against the data map.
-    /// Records mutations in `rollback` so the caller can undo them on failure.
-    ///
     /// The pairs are borrowed (`(&C, &P)`) — callers zip references
     /// into the channels/patterns they already hold instead of cloning a
     /// pair list per candidate continuation (extract_first_match previously
     /// cloned every channel and every pattern per candidate iterated).
-    fn extract_data_candidates_rollback(
-        &self,
-        matcher: &Box<dyn Match<P, A, K>>,
-        channel_pattern_pairs: &[(&C, &P)],
-        channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
-        rollback: &mut Vec<(C, Vec<(Datum<A>, i32)>)>,
-    ) -> Vec<Option<ConsumeCandidate<C, A>>> {
-        let mut acc = Vec::with_capacity(channel_pattern_pairs.len());
-
-        for &(channel, pattern) in channel_pattern_pairs {
-            let maybe_tuple: Option<MatchingDataCandidate<C, A>> =
-                match channel_to_indexed_data.get(channel) {
-                    Some(indexed_data) => self.find_matching_data_candidate(
-                        matcher,
-                        channel.clone(),
-                        indexed_data,
-                        pattern,
-                    ),
-                    None => None,
-                };
-
-            match maybe_tuple {
-                Some((cand, rem)) => {
-                    acc.push(Some(cand));
-                    // Save the original before mutating
-                    if let Some(original) = channel_to_indexed_data.get(channel) {
-                        rollback.push((channel.clone(), original.clone()));
-                    }
-                    channel_to_indexed_data.insert(channel.clone(), rem);
-                }
-                None => {
-                    acc.push(None);
-                }
-            }
-        }
-
-        acc
-    }
-
-    /// Non-rollback version. Spatial matching ONLY — the commit guard is not
+    /// Spatial matching ONLY — the commit guard is not
     /// consulted, so this may only be used where a guard cannot apply.
     ///
     /// The one remaining production caller is the `install` path
@@ -366,15 +298,30 @@ where
         &self,
         matcher: &Box<dyn Match<P, A, K>>,
         channel_pattern_pairs: &[(&C, &P)],
-        channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
+        channel_to_indexed_data: &mut HashMap<C, CandidatePool<A>>,
     ) -> Vec<Option<ConsumeCandidate<C, A>>> {
-        let mut rollback = Vec::new();
-        self.extract_data_candidates_rollback(
-            matcher,
-            channel_pattern_pairs,
-            channel_to_indexed_data,
-            &mut rollback,
-        )
+        let mut candidates = Vec::with_capacity(channel_pattern_pairs.len());
+        for &(channel, pattern) in channel_pattern_pairs {
+            let next = channel_to_indexed_data.get(channel).and_then(|pool| {
+                self.next_spatial_match(matcher, channel.clone(), pool, pattern, 0)
+            });
+            match next {
+                Some((position, candidate)) => {
+                    if !candidate.datum.persist {
+                        assert!(
+                            channel_to_indexed_data
+                                .get_mut(channel)
+                                .expect("candidate channel disappeared during reservation")
+                                .reserve(position),
+                            "available candidate could not be reserved"
+                        );
+                    }
+                    candidates.push(Some(candidate));
+                }
+                None => candidates.push(None),
+            }
+        }
+        candidates
     }
 
     /// THE candidate selector: the complete, guard-aware search for one datum
@@ -491,7 +438,7 @@ where
         matcher: &Box<dyn Match<P, A, K>>,
         channel_pattern_pairs: &[(&C, &P)],
         continuation: &K,
-        channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
+        channel_to_indexed_data: &mut HashMap<C, CandidatePool<A>>,
     ) -> Option<Vec<ConsumeCandidate<C, A>>> {
         let mut chosen: Vec<ConsumeCandidate<C, A>> =
             Vec::with_capacity(channel_pattern_pairs.len());
@@ -514,7 +461,7 @@ where
         matcher: &Box<dyn Match<P, A, K>>,
         channel_pattern_pairs: &[(&C, &P)],
         continuation: &K,
-        channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
+        channel_to_indexed_data: &mut HashMap<C, CandidatePool<A>>,
         level: usize,
         chosen: &mut Vec<ConsumeCandidate<C, A>>,
     ) -> SelectionOutcome {
@@ -557,7 +504,7 @@ where
         matcher: &Box<dyn Match<P, A, K>>,
         channels: Vec<C>,
         match_candidates: Vec<(WaitingContinuation<P, K>, i32)>,
-        mut channel_to_index_data: HashMap<C, Vec<(Datum<A>, i32)>>,
+        mut channel_to_index_data: HashMap<C, CandidatePool<A>>,
     ) -> Option<ProduceCandidate<C, P, A, K>> {
         metrics::counter!(RSPACE_MATCHER_EXTRACT_FIRST_MATCH_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(1);
@@ -646,7 +593,7 @@ where
         matcher: &Box<dyn Match<P, A, K>>,
         channel_pattern_pairs: &[(&C, &P)],
         continuation: &K,
-        channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
+        channel_to_indexed_data: &mut HashMap<C, CandidatePool<A>>,
         level: usize,
         chosen: &mut Vec<ConsumeCandidate<C, A>>,
         out: &mut Vec<Vec<ConsumeCandidate<C, A>>>,
@@ -674,12 +621,12 @@ where
     /// # What a caller gets
     ///
     /// A [`ProduceCandidate`] per enabled rendezvous, carrying the channel
-    /// group, the firing [`WaitingContinuation`], its **store index**, and the
-    /// selected [`ConsumeCandidate`]s with **their** store indices. That is
-    /// precisely the argument
+    /// group, the firing [`WaitingContinuation`] with its vector store index,
+    /// and selected [`ConsumeCandidate`]s with exact trie paths (or the
+    /// distinct fresh address). That is precisely the argument
     /// [`crate::rspace::rspace::RSpace::process_match_found`] takes, so an
     /// enumerated rendezvous can be fired verbatim — the enumeration and the
-    /// firing address the store through the same indices, computed once.
+    /// firing uses, so enumeration and firing share the same addresses.
     ///
     /// # Determinism — this is a consensus surface
     ///
@@ -692,22 +639,23 @@ where
     ///    *set* in different *orders*, and any trace that names a rendezvous by
     ///    position would diverge.
     /// 2. **Continuations within a group** are ordered by
-    ///    [`order_candidates_with_index`] — THE canonical candidate order, the
-    ///    same one `produce` uses — with the store index as tie breaker.
+    ///    [`order_candidates_with_index`] with the vector store index as tie
+    ///    breaker.
     /// 3. **Selections within a continuation** are ordered by the depth-first
     ///    descent of [`SpaceMatcher::enumerate_admissible_selections`] over
-    ///    canonically ordered data pools.
+    ///    PathMap candidate pools ordered by `(candidate hash, trie path)`.
     ///
     /// # ⚠ The head of a group's selections is NOT "what an ordinary run does"
     ///
     /// It is what an ordinary **`consume` arriving at this state** does. An
-    /// ordinary **`produce`** splices its arriving datum into the pool at index
-    /// `-1` (`RSpace::extract_produce_candidate`), ahead of the canonical
-    /// order, so the produce regime's least admissible selection is
-    /// generally a different member of the same set. The *set* is the same
-    /// — admissibility is monotone in the pool — and this query computes
-    /// that set. A caller that wants to reproduce a particular execution
-    /// must name the selection it wants; it must not assume element 0.
+    /// ordinary **`produce`** prepends its arriving datum with the distinct
+    /// [`crate::rspace::internal::DatumAddress::Fresh`] address, ahead of the
+    /// canonical stored order, so the produce regime's least admissible
+    /// selection is generally a different member of the same set. The *set*
+    /// is the same — admissibility is monotone in the pool — and this query
+    /// computes that set. A caller that wants to reproduce a particular
+    /// execution must name the selection it wants; it must not assume
+    /// element 0.
     ///
     /// # Installed continuations
     ///
@@ -744,14 +692,11 @@ where
 
         // (2) The data pools, one canonical ordering per channel, computed once
         // and shared by every continuation that binds that channel.
-        let mut pools: HashMap<C, Vec<(Datum<A>, i32)>> = HashMap::new();
+        let mut pools: HashMap<C, CandidatePool<A>> = HashMap::new();
         for channels in groups.iter() {
             for channel in channels.iter() {
                 if !pools.contains_key(channel) {
-                    pools.insert(
-                        channel.clone(),
-                        order_candidates_with_index(store.get_data(channel)),
-                    );
+                    pools.insert(channel.clone(), store.get_candidate_pool(channel));
                 }
             }
         }
@@ -766,7 +711,7 @@ where
                 // A FRESH pool map per continuation: the descent mutates and
                 // restores it, but no continuation may observe a sibling's
                 // residue.
-                let mut per_continuation: HashMap<C, Vec<(Datum<A>, i32)>> =
+                let mut per_continuation: HashMap<C, CandidatePool<A>> =
                     HashMap::with_capacity(channels.len());
                 for channel in channels.iter() {
                     if let Some(pool) = pools.get(channel) {

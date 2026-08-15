@@ -12,7 +12,7 @@ use rand::{Rng, thread_rng};
 use serde::Serialize;
 use tracing::warn;
 
-use super::data_index::{DataIndexError, RSpaceDataStore};
+use super::data_index::{CandidatePool, DataIndexError, RSpaceDataStore};
 use super::errors::RSpaceError;
 use crate::rspace::history::history_reader::HistoryReaderBase;
 use crate::rspace::hot_store_action::{
@@ -60,8 +60,10 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
     fn remove_continuation(&self, channels: &[C], index: i32) -> Option<()>;
 
     fn get_data(&self, channel: &C) -> Vec<Datum<A>>;
+    fn get_candidate_pool(&self, channel: &C) -> CandidatePool<A>;
     fn put_datum(&self, channel: &C, d: Datum<A>) -> ();
     fn remove_datum(&self, channel: &C, index: i32) -> Result<(), RSpaceError>;
+    fn remove_datum_path(&self, path: &[u8]) -> Result<(), RSpaceError>;
 
     fn get_joins(&self, channel: &C) -> Vec<Vec<C>>;
     fn put_join(&self, channel: &C, join: &[C]) -> Option<()>;
@@ -178,8 +180,8 @@ where
             .map(|_| T::default())
             .collect::<Vec<T>>()
             .iter()
-            .cloned()
             .take(rng.gen_range(0..size + 1))
+            .cloned()
             .collect()
     }
 
@@ -418,39 +420,27 @@ where
     fn get_data(&self, channel: &C) -> Vec<Datum<A>> {
         metrics::counter!(HOT_STORE_GET_DATA_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(1);
-        let maybe_data = self
-            .state
+        self.ensure_data_loaded(channel);
+        self.state
             .read()
             .expect("hot store state read lock")
             .data
             .channel_data(channel)
-            .expect("PathMap-backed hot store must decode values it encoded");
+            .expect("PathMap-backed hot store must decode values it encoded")
+            .expect("loaded channel must have a data view")
+    }
 
-        if let Some(data) = maybe_data {
-            data
-        } else {
-            metrics::counter!(HOT_STORE_GET_DATA_HISTORY_FILL_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                .increment(1);
-            let data = self.get_data_from_history_store(channel);
-            let mut state = self.state.write().expect("hot store state write lock");
-            if let Some(current) = state
-                .data
-                .channel_data(channel)
-                .expect("PathMap-backed hot store must decode values it encoded")
-            {
-                current
-            } else {
-                state
-                    .data
-                    .set_channel(channel.clone(), data.iter().cloned())
-                    .expect("history data must fit the PathMap multiplicity model");
-                state
-                    .data
-                    .channel_data(channel)
-                    .expect("PathMap-backed hot store must decode values it encoded")
-                    .expect("newly loaded channel must be present")
-            }
-        }
+    fn get_candidate_pool(&self, channel: &C) -> CandidatePool<A> {
+        metrics::counter!(HOT_STORE_GET_DATA_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
+            .increment(1);
+        self.ensure_data_loaded(channel);
+        self.state
+            .read()
+            .expect("hot store state read lock")
+            .data
+            .channel_pool(channel)
+            .expect("PathMap-backed hot store must decode values it encoded")
+            .expect("loaded channel must have a candidate pool")
     }
 
     fn put_datum(&self, channel: &C, d: Datum<A>) {
@@ -516,6 +506,22 @@ where
                 )))
             }
             Err(error) => Err(error.into()),
+        }
+    }
+
+    fn remove_datum_path(&self, path: &[u8]) -> Result<(), RSpaceError> {
+        if self
+            .state
+            .write()
+            .expect("hot store state write lock")
+            .data
+            .remove_path(path)
+        {
+            Ok(())
+        } else {
+            Err(RSpaceError::BugFoundError(
+                "Stored datum path was absent during removal".to_string(),
+            ))
         }
     }
 
@@ -1064,6 +1070,28 @@ where
         };
         Self::update_history_cache_metrics(&cache);
         result
+    }
+
+    fn ensure_data_loaded(&self, channel: &C) {
+        if self
+            .state
+            .read()
+            .expect("hot store state read lock")
+            .data
+            .is_loaded(channel)
+        {
+            return;
+        }
+        metrics::counter!(HOT_STORE_GET_DATA_HISTORY_FILL_METRIC, "source" => RSPACE_METRICS_SOURCE)
+            .increment(1);
+        let data = self.get_data_from_history_store(channel);
+        let mut state = self.state.write().expect("hot store state write lock");
+        if !state.data.is_loaded(channel) {
+            state
+                .data
+                .set_channel(channel.clone(), data)
+                .expect("history data must fit the PathMap multiplicity model");
+        }
     }
 
     fn get_joins_from_history_store(&self, channel: &C) -> Vec<Vec<C>> {

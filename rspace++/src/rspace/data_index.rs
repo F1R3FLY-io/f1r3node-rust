@@ -1,12 +1,14 @@
 use std::fmt;
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 use pathmap::PathMap;
+use pathmap::zipper::ZipperSubtries;
 use serde::Serialize;
 
 use super::bag::{Bag, BagError, Multiplicity};
 use super::candidate_order::deterministic_candidate_hash;
-use super::internal::Datum;
+use super::internal::{Datum, DatumAddress};
 use super::rho_path::{RhoPathEncode, RhoPathError, RhoPathV1};
 use super::serializers::cold_store_decode::{ColdStoreDecode, ColdStoreDecodeError};
 use super::serializers::serializers::{CandidateOrderingBytes, decode_datum, encode_datum};
@@ -59,6 +61,149 @@ pub struct IndexedDatum<A: Clone> {
     pub path: Vec<u8>,
     pub datum: Datum<A>,
     pub multiplicity: Multiplicity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CandidatePoolEntry<A: Clone> {
+    storage_path: Arc<[u8]>,
+    relative_path: Arc<[u8]>,
+    datum: Datum<A>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidatePool<A: Clone> {
+    availability: Bag,
+    ordered: Arc<[CandidatePoolEntry<A>]>,
+    fresh: Option<Datum<A>>,
+    fresh_available: bool,
+}
+
+impl<A: Clone> CandidatePool<A> {
+    fn from_index_entries(
+        prefix_len: usize,
+        availability: Bag,
+        entries: Vec<IndexedDatum<A>>,
+    ) -> Self {
+        let ordered = entries
+            .into_iter()
+            .map(|entry| CandidatePoolEntry {
+                relative_path: Arc::from(&entry.path[prefix_len..]),
+                storage_path: Arc::from(entry.path),
+                datum: entry.datum,
+            })
+            .collect::<Vec<_>>()
+            .into();
+        Self {
+            availability,
+            ordered,
+            fresh: None,
+            fresh_available: false,
+        }
+    }
+
+    pub fn prepend_fresh(&mut self, datum: Datum<A>) {
+        self.fresh = Some(datum);
+        self.fresh_available = true;
+    }
+
+    pub fn len(&self) -> usize { self.ordered.len() + usize::from(self.fresh.is_some()) }
+
+    pub fn is_empty(&self) -> bool { !self.fresh_available && self.availability.is_empty() }
+
+    pub fn next_available(&self, start: usize) -> Option<usize> {
+        (start..self.len()).find(|position| self.is_available(*position))
+    }
+
+    pub fn candidate(&self, position: usize) -> Option<(&Datum<A>, DatumAddress)> {
+        if !self.is_available(position) {
+            return None;
+        }
+        if self.fresh.is_some() {
+            if position == 0 {
+                return self
+                    .fresh
+                    .as_ref()
+                    .map(|datum| (datum, DatumAddress::Fresh));
+            }
+            let entry = self.ordered.get(position - 1)?;
+            return Some((&entry.datum, DatumAddress::Stored(Arc::clone(&entry.storage_path))));
+        }
+        let entry = self.ordered.get(position)?;
+        Some((&entry.datum, DatumAddress::Stored(Arc::clone(&entry.storage_path))))
+    }
+
+    pub fn reserve(&mut self, position: usize) -> bool {
+        if self.fresh.is_some() {
+            if position == 0 {
+                if self.fresh_available {
+                    self.fresh_available = false;
+                    return true;
+                }
+                return false;
+            }
+            let Some(entry) = self.ordered.get(position - 1) else {
+                return false;
+            };
+            if self.availability.count(&entry.relative_path) == 0 {
+                return false;
+            }
+            self.availability.remove(&entry.relative_path);
+            return true;
+        }
+        let Some(entry) = self.ordered.get(position) else {
+            return false;
+        };
+        if self.availability.count(&entry.relative_path) == 0 {
+            return false;
+        }
+        self.availability.remove(&entry.relative_path);
+        true
+    }
+
+    pub fn release(&mut self, position: usize) {
+        if self.fresh.is_some() {
+            if position == 0 {
+                self.fresh_available = true;
+                return;
+            }
+            let entry = &self.ordered[position - 1];
+            self.availability
+                .insert(&entry.relative_path)
+                .expect("candidate reservation release cannot overflow");
+            return;
+        }
+        let entry = &self.ordered[position];
+        self.availability
+            .insert(&entry.relative_path)
+            .expect("candidate reservation release cannot overflow");
+    }
+
+    pub fn retain(&mut self, mut predicate: impl FnMut(&Datum<A>) -> bool) {
+        if self.fresh.as_ref().is_some_and(|datum| !predicate(datum)) {
+            self.fresh = None;
+            self.fresh_available = false;
+        }
+        for entry in self.ordered.iter() {
+            if !predicate(&entry.datum) {
+                self.availability.set_count(&entry.relative_path, None);
+            }
+        }
+    }
+
+    fn is_available(&self, position: usize) -> bool {
+        if self.fresh.is_some() {
+            if position == 0 {
+                return self.fresh_available;
+            }
+            return self
+                .ordered
+                .get(position - 1)
+                .is_some_and(|entry| self.availability.contains(&entry.relative_path));
+        }
+        self.ordered
+            .get(position)
+            .is_some_and(|entry| self.availability.contains(&entry.relative_path))
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -161,6 +306,28 @@ impl RSpaceDataIndex {
                 .then_with(|| left.path.cmp(&right.path))
         });
         Ok(decorated.into_iter().map(|(_, entry)| entry).collect())
+    }
+
+    pub fn candidate_pool<C, A>(&self, channel: &C) -> Result<CandidatePool<A>, DataIndexError>
+    where
+        C: RhoPathEncode,
+        A: Clone + ColdStoreDecode + Serialize,
+        Datum<A>: CandidateOrderingBytes,
+    {
+        let prefix = RhoPathV1::datum_prefix(channel);
+        let entries = self.ordered_channel_entries(channel)?;
+        let distinct_len = entries.len();
+        let cardinality = channel_cardinality(&entries);
+        let availability = Bag::from_pathmap_with_metrics(
+            self.bag
+                .as_pathmap()
+                .read_zipper_at_borrowed_path(&prefix)
+                .make_map()
+                .unwrap_or_default(),
+            distinct_len,
+            cardinality,
+        );
+        Ok(CandidatePool::from_index_entries(prefix.len(), availability, entries))
     }
 
     fn entries_at_prefix<A>(&self, prefix: &[u8]) -> Result<Vec<IndexedDatum<A>>, DataIndexError>
@@ -295,6 +462,26 @@ impl<C, A> RSpaceDataStore<C, A> {
         self.channel_entries(channel)?
             .map(expand_entries)
             .transpose()
+    }
+
+    pub fn channel_pool(&self, channel: &C) -> Result<Option<CandidatePool<A>>, DataIndexError>
+    where
+        C: RhoPathEncode,
+        A: Clone + ColdStoreDecode + Serialize,
+        Datum<A>: CandidateOrderingBytes,
+    {
+        if self.is_loaded(channel) {
+            self.index.candidate_pool(channel).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn remove_path(&mut self, path: &[u8]) -> bool {
+        self.index.count_path(path) != 0 && {
+            self.index.remove_path(path);
+            true
+        }
     }
 
     pub fn remove_index(&mut self, channel: &C, index: i32) -> Result<(), DataIndexError>

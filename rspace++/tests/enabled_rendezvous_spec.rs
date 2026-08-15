@@ -14,7 +14,7 @@
 //! | export | what it does |
 //! |---|---|
 //! | [`SpaceMatcher::enumerate_enabled_rendezvous`] (bound as `RSpace::enabled_rendezvous` / `ReplayRSpace::enabled_rendezvous`) | read-only: every (continuation × admissible selection) pair the current hot store admits |
-//! | `RSpace::process_match_found` (visibility only — the body is untouched) | fire one named rendezvous: remove its data and continuation by store index, drop the joins, emit the `COMM` |
+//! | `RSpace::process_match_found` | fire one named rendezvous: remove data by exact trie path, remove the continuation by vector index, drop the joins, emit the `COMM` |
 //!
 //! Both are consensus surfaces, so this file pins them the way a consensus
 //! surface has to be pinned — by measurement against the production selector,
@@ -33,13 +33,14 @@
 //! | [`t6_play_and_replay_enumerate_identically`] | ★ the D1 lesson: one enumeration, two spaces |
 //! | [`t7_teeth_an_unsatisfiable_state_enumerates_to_nothing`] | the query can say NO |
 //! | [`t8_a_join_enumerates_its_cross_product`] | multi-bind selections, and the guard filtering them |
+//! | [`t9_identical_multiset_occurrences_form_one_normalized_rendezvous`] | indistinguishable Bag occurrences do not create duplicate rendezvous permutations |
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepositoryInstances;
 use rspace_plus_plus::rspace::hot_store::{HotStoreInstances, HotStoreState};
-use rspace_plus_plus::rspace::internal::{Datum, ProduceCandidate};
+use rspace_plus_plus::rspace::internal::ProduceCandidate;
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::replay_rspace::ReplayRSpace;
 use rspace_plus_plus::rspace::rspace::RSpace;
@@ -168,13 +169,12 @@ async fn play_space() -> TestSpace { fixture().await.0 }
 
 /// The `AtMost(45)` corpus, chosen by MEASUREMENT rather than by eye.
 ///
-/// THE canonical candidate order is a Blake2b hash of the serialized candidate
-/// (`candidate_order::deterministic_candidate_hash`), so which of two data
-/// comes first has nothing to do with their numeric values. The first pair
-/// written here was `["55", "42"]` — and `t0` measured that the canonical order
-/// puts the *admissible* `42` first, which would have made every "the guard and
-/// the enumeration agree" assertion below vacuous: no backtracking would ever
-/// have been entered.
+/// THE canonical datum order is `(Blake2b(serialized candidate), trie path)`,
+/// so which of two data comes first has nothing to do with their numeric
+/// values. The first pair written here was `["55", "42"]` — and `t0` measured
+/// that the canonical order puts the *admissible* `42` first, which would have
+/// made every "the guard and the enumeration agree" assertion below vacuous: no
+/// backtracking would ever have been entered.
 ///
 /// A sweep of the 54 × 45 rejected/admitted pairs on channel `"offer"` found
 /// 1115 pairs whose REJECTED member sorts first; `("46", "2")` is the least of
@@ -236,7 +236,7 @@ fn selected(enabled: &[TestRendezvous]) -> Vec<(String, Vec<i64>)> {
 fn resting_ints(state: &TestState, channel: &str) -> Vec<i64> {
     state
         .data
-        .get(&channel.to_string())
+        .get(channel)
         .map(|data| data.iter().map(|datum| as_int(&datum.a)).collect())
         .unwrap_or_default()
 }
@@ -259,12 +259,11 @@ async fn t0_teeth_the_fixture_puts_the_admissible_datum_off_the_front() {
     let space = play_space().await;
     rest_data(&space, "offer", &REJECTED_FIRST).await;
 
-    let pool = space.get_store().get_data(&"offer".to_string());
-    let canonical: Vec<i64> =
-        rspace_plus_plus::rspace::candidate_order::order_candidates_with_index(pool)
-            .iter()
-            .map(|(datum, _)| as_int(&datum.a))
-            .collect();
+    let pool = space.get_store().get_candidate_pool(&"offer".to_string());
+    let canonical: Vec<i64> = (0..pool.len())
+        .filter_map(|position| pool.candidate(position))
+        .map(|(datum, _)| as_int(&datum.a))
+        .collect();
 
     assert_eq!(
         canonical[0], 46,
@@ -318,7 +317,7 @@ async fn t1_the_enumeration_head_is_the_selector_choice() {
         rest_data(&staged, "offer", &REJECTED_FIRST).await;
         let store = staged.get_store();
         store.put_continuation(
-            &vec!["offer".to_string()],
+            &["offer".to_string()],
             rspace_plus_plus::rspace::internal::WaitingContinuation::create(
                 &vec!["offer".to_string()],
                 &receiver_patterns,
@@ -374,7 +373,7 @@ async fn t2_the_enumeration_is_complete() {
     rest_data(&space, "c", &["10", "20", "30", "40"]).await;
     let store = space.get_store();
     store.put_continuation(
-        &vec!["c".to_string()],
+        &["c".to_string()],
         rspace_plus_plus::rspace::internal::WaitingContinuation::create(
             &vec!["c".to_string()],
             &vec![Pattern::Wildcard],
@@ -398,7 +397,7 @@ async fn t2_the_enumeration_is_complete() {
     let guarded = play_space().await;
     rest_data(&guarded, "c", &["10", "20", "30", "40"]).await;
     guarded.get_store().put_continuation(
-        &vec!["c".to_string()],
+        &["c".to_string()],
         rspace_plus_plus::rspace::internal::WaitingContinuation::create(
             &vec!["c".to_string()],
             &vec![Pattern::Wildcard],
@@ -419,7 +418,7 @@ async fn t2_the_enumeration_is_complete() {
     rest_data(&two, "c", &["10", "20"]).await;
     for name in ["k1", "k2"] {
         two.get_store().put_continuation(
-            &vec!["c".to_string()],
+            &["c".to_string()],
             rspace_plus_plus::rspace::internal::WaitingContinuation::create(
                 &vec!["c".to_string()],
                 &vec![Pattern::Wildcard],
@@ -455,7 +454,7 @@ async fn t3_the_query_is_read_only() {
     let space = play_space().await;
     rest_data(&space, "c", &["10", "20"]).await;
     space.get_store().put_continuation(
-        &vec!["c".to_string()],
+        &["c".to_string()],
         rspace_plus_plus::rspace::internal::WaitingContinuation::create(
             &vec!["c".to_string()],
             &vec![Pattern::Wildcard],
@@ -520,7 +519,7 @@ async fn t4_the_enumeration_is_deterministic() {
         for channel in channel_order {
             rest_data(&space, channel, data_order).await;
             space.get_store().put_continuation(
-                &vec![channel.to_string()],
+                &[channel.to_string()],
                 rspace_plus_plus::rspace::internal::WaitingContinuation::create(
                     &vec![channel.to_string()],
                     &vec![Pattern::Wildcard],
@@ -559,7 +558,7 @@ async fn t5_a_named_non_least_selection_fires_exactly_itself() {
     let space = play_space().await;
     rest_data(&space, "c", &["10", "20", "30"]).await;
     space.get_store().put_continuation(
-        &vec!["c".to_string()],
+        &["c".to_string()],
         rspace_plus_plus::rspace::internal::WaitingContinuation::create(
             &vec!["c".to_string()],
             &vec![Pattern::Wildcard],
@@ -626,7 +625,7 @@ async fn t6_play_and_replay_enumerate_identically() {
 
     rest_data(&play, "offer", &["55", "42", "13"]).await;
     play.get_store().put_continuation(
-        &vec!["offer".to_string()],
+        &["offer".to_string()],
         rspace_plus_plus::rspace::internal::WaitingContinuation::create(
             &vec!["offer".to_string()],
             &vec![Pattern::Wildcard],
@@ -679,7 +678,7 @@ async fn t7_teeth_an_unsatisfiable_state_enumerates_to_nothing() {
     let refused = play_space().await;
     rest_data(&refused, "c", &["50", "60"]).await;
     refused.get_store().put_continuation(
-        &vec!["c".to_string()],
+        &["c".to_string()],
         rspace_plus_plus::rspace::internal::WaitingContinuation::create(
             &vec!["c".to_string()],
             &vec![Pattern::Wildcard],
@@ -697,7 +696,7 @@ async fn t7_teeth_an_unsatisfiable_state_enumerates_to_nothing() {
     let mismatched = play_space().await;
     rest_data(&mismatched, "c", &["10"]).await;
     mismatched.get_store().put_continuation(
-        &vec!["c".to_string()],
+        &["c".to_string()],
         rspace_plus_plus::rspace::internal::WaitingContinuation::create(
             &vec!["c".to_string()],
             &vec![Pattern::StringMatch("99".to_string())],
@@ -789,12 +788,32 @@ async fn t8_a_join_enumerates_its_cross_product() {
     );
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// A HashMap import keeps the enumeration's own pool type nameable in doc tests
-// and silences an otherwise-unused import in future edits of this file.
-// ════════════════════════════════════════════════════════════════════════════
-#[allow(dead_code)]
-fn _pool_type_is_nameable(pool: HashMap<String, Vec<(Datum<String>, i32)>>) -> usize { pool.len() }
+#[tokio::test]
+async fn t9_identical_multiset_occurrences_form_one_normalized_rendezvous() {
+    let space = play_space().await;
+    rest_data(&space, "c", &["7", "7"]).await;
+    let channels = vec!["c".to_string(), "c".to_string()];
+    space.get_store().put_continuation(
+        &channels,
+        rspace_plus_plus::rspace::internal::WaitingContinuation::create(
+            &channels,
+            &vec![Pattern::Wildcard, Pattern::Wildcard],
+            &GuardedContinuation::unguarded("pair"),
+            false,
+            BTreeSet::new(),
+        ),
+    );
+    space.get_store().put_join(&"c".to_string(), &channels);
+    let enabled = space.enabled_rendezvous();
+    assert_eq!(enabled.len(), 1);
+    assert_eq!(selected(&enabled), vec![("pair".to_string(), vec![7, 7])]);
+    assert!(
+        space
+            .process_match_found(enabled.into_iter().next().unwrap())
+            .is_some()
+    );
+    assert!(resting_ints(&space.get_store().snapshot(), "c").is_empty());
+}
 
 // ───────────────────────────────────────────────────────────────────────────
 // The cold-store DECODE boundary for this file's test doubles.

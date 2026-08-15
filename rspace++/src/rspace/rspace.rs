@@ -21,6 +21,7 @@ use tracing::{Level, event};
 
 use super::candidate_order::order_candidates_with_index;
 use super::checkpoint::SoftCheckpoint;
+use super::data_index::CandidatePool;
 use super::errors::{HistoryRepositoryError, RSpaceError};
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::hashing::stable_hash_provider::StableHashSerialize;
@@ -846,12 +847,10 @@ where
      * Put another way, this allows us to speculatively remove matching data
      * without affecting the actual store contents.
      */
-    fn fetch_channel_to_index_data(&self, channels: &[C]) -> HashMap<C, Vec<(Datum<A>, i32)>> {
+    fn fetch_channel_to_index_data(&self, channels: &[C]) -> HashMap<C, CandidatePool<A>> {
         let mut map = HashMap::with_capacity(channels.len());
         for c in channels {
-            let data = self.get_store().get_data(c);
-            let shuffled_data = self.shuffle_with_index(data);
-            map.insert(c.clone(), shuffled_data);
+            map.insert(c.clone(), self.get_store().get_candidate_pool(c));
         }
         map
     }
@@ -892,9 +891,9 @@ where
             Some(produce_candidate) => {
                 let t2 = Instant::now();
                 // ★ The produced datum must be either CONSUMED or STORED —
-                // never neither. It rides in its own candidate pool at index
-                // `-1` (`extract_produce_candidate` above), so the fired COMM
-                // consumed it exactly when a candidate carries that index.
+                // never neither. It rides in its own candidate pool under the
+                // distinct fresh address, so the fired COMM consumed it exactly
+                // when a candidate carries that address.
                 //
                 // With the guard-aware selector this is unreachable from any
                 // state the fixed matcher itself produced, and the reasoning is
@@ -914,12 +913,11 @@ where
                 // pair. Dropping the produced message there would be silent
                 // message loss — no rule of the rho calculus discards a
                 // message — so it is stored instead. AFTER `process_match_found`,
-                // which addresses the store by index: `put_datum` inserts at
-                // position 0 and would shift every index out from under it.
+                // which removes resting data by exact trie path.
                 let comm_consumed_the_produced_datum = produce_candidate
                     .data_candidates
                     .iter()
-                    .any(|candidate| candidate.datum_index < 0);
+                    .any(|candidate| candidate.address.is_fresh());
 
                 let result =
                     Ok(self
@@ -988,13 +986,12 @@ where
          *
          * In this version, we also add the produced data directly to this cache.
          */
-        let fetch_matching_data = |channel| -> (C, Vec<(Datum<A>, i32)>) {
-            let data_vec = self.get_store().get_data(&channel);
-            let mut shuffled_data = self.shuffle_with_index(data_vec);
+        let fetch_matching_data = |channel| -> (C, CandidatePool<A>) {
+            let mut pool = self.get_store().get_candidate_pool(&channel);
             if channel == bat_channel {
-                shuffled_data.insert(0, (data.clone(), -1));
+                pool.prepend_fresh(data.clone());
             }
-            (channel, shuffled_data)
+            (channel, pool)
         };
 
         self.run_matcher_for_channels(
@@ -1017,8 +1014,8 @@ where
     }
 
     /// Fire the rendezvous `pc` names: remove its continuation (unless
-    /// persistent), remove the data it selected (highest store index first),
-    /// drop the joins, append the `COMM` event, and return the continuation and
+    /// persistent), remove each selected stored datum by exact trie path, drop
+    /// the joins, append the `COMM` event, and return the continuation and
     /// matched payloads for dispatch.
     ///
     /// # Why this is `pub`
@@ -1030,16 +1027,14 @@ where
     /// would return. Forcing the choice by trimming the store instead
     /// ("install a state in which the wanted match is the only one and let
     /// the search find it") is not sound: a persistent continuation or a
-    /// join over a channel bound twice still admits several selections
-    /// after any such trim, and the trim itself perturbs the very store
-    /// indices the removal arithmetic below addresses.
+    /// join over a channel bound twice still admits several selections after
+    /// any such trim.
     ///
-    /// The alternative to exporting it is for the caller to reimplement the
-    /// index arithmetic, the join bookkeeping and the event emission outside
-    /// this crate, where they could drift from the consensus behaviour
-    /// silently. Nothing about the method changed: the body below is
-    /// untouched, and every production caller still reaches it through
-    /// `locked_produce`.
+    /// The alternative to exporting it is for the caller to reimplement exact
+    /// datum addressing, continuation removal, join bookkeeping and event
+    /// emission outside this crate, where they could drift from consensus
+    /// behaviour silently. Every production caller still reaches this method
+    /// through `locked_produce`.
     pub fn process_match_found(
         &self,
         pc: ProduceCandidate<C, P, A, K>,
@@ -1219,40 +1214,21 @@ where
         data_candidates: &Vec<ConsumeCandidate<C, A>>,
         _peeks: &BTreeSet<i32>,
     ) -> Option<Vec<()>> {
-        // ★ HIGHEST index FIRST, and no `.rev()`.
-        //
-        // `remove_datum` removes POSITIONALLY, so removing a low index shifts
-        // every higher one down by one and the next removal addresses the wrong
-        // element (or runs off the end). Removing from the back leaves the
-        // indices of everything still to be removed untouched. This matters
-        // exactly when one receive takes two data from the SAME channel —
-        // `for(@x <- c; @y <- c)` — because only then do two candidates carry
-        // indices into the same vector.
-        //
-        // The `.rev()` this replaces inverted the sort into ascending order and
-        // so removed exactly one datum of such a pair: the second `remove_datum`
-        // ran out of bounds, its `Err` was swallowed by `.ok()`, and the
-        // caller discards this function's `None`. The datum was therefore
-        // DELIVERED to the continuation and LEFT RESTING — available to be
-        // consumed a second time. Scala's `storePersistentData` sorts
-        // `_.datumIndex` with `Ordering[Int].reverse` and traverses in that
-        // order, i.e. descending; the port re-reversed it.
-        let mut sorted_candidates: Vec<_> = data_candidates.iter().collect();
-        sorted_candidates.sort_by(|a, b| b.datum_index.cmp(&a.datum_index));
-        let results: Vec<_> = sorted_candidates
-            .into_iter()
+        let results: Vec<_> = data_candidates
+            .iter()
             .map(|consume_candidate| {
                 let ConsumeCandidate {
-                    channel,
                     datum: Datum { persist, .. },
                     removed_datum: _,
-                    datum_index,
+                    address,
+                    ..
                 } = consume_candidate;
 
-                if !persist {
-                    self.get_store().remove_datum(channel, *datum_index).ok()
-                } else {
-                    Some(())
+                match (persist, address) {
+                    (false, DatumAddress::Stored(path)) => {
+                        self.get_store().remove_datum_path(path).ok()
+                    }
+                    _ => Some(()),
                 }
             })
             .collect();
@@ -1405,28 +1381,22 @@ where
         channels: &[C],
         data_candidates: &[ConsumeCandidate<C, A>],
     ) -> Option<Vec<()>> {
-        // ★ HIGHEST index FIRST — see `store_persistent_data` for why the
-        // `.rev()` this replaces silently duplicated a datum whenever one
-        // receive took two data from the same channel.
-        let mut sorted_candidates: Vec<_> = data_candidates.iter().collect();
-        sorted_candidates.sort_by(|a, b| b.datum_index.cmp(&a.datum_index));
-        let results: Vec<_> = sorted_candidates
-            .into_iter()
+        let results: Vec<_> = data_candidates
+            .iter()
             .map(|consume_candidate| {
                 let ConsumeCandidate {
                     channel,
                     datum: Datum { persist, .. },
                     removed_datum: _,
-                    datum_index,
+                    address,
                 } = consume_candidate;
 
-                if *datum_index >= 0 &&
-                    !persist &&
-                    self.get_store()
-                        .remove_datum(channel, *datum_index)
-                        .is_err()
-                {
-                    return None;
+                if !persist {
+                    if let DatumAddress::Stored(path) = address {
+                        if self.get_store().remove_datum_path(path).is_err() {
+                            return None;
+                        }
+                    }
                 }
                 self.get_store().remove_join(channel, channels);
 
@@ -1445,7 +1415,7 @@ where
         &self,
         grouped_channels: Vec<Vec<C>>,
         fetch_matching_continuations: impl Fn(Vec<C>) -> Vec<(WaitingContinuation<P, K>, i32)>,
-        fetch_matching_data: impl Fn(C) -> (C, Vec<(Datum<A>, i32)>),
+        fetch_matching_data: impl Fn(C) -> (C, CandidatePool<A>),
     ) -> MaybeProduceCandidate<C, P, A, K> {
         let mut remaining = grouped_channels;
 
@@ -1460,7 +1430,7 @@ where
                         .increment(match_candidates.len() as u64);
 
                     let t_data = Instant::now();
-                    let channel_to_indexed_data: HashMap<C, Vec<(Datum<A>, i32)>> = channels
+                    let channel_to_indexed_data: HashMap<C, CandidatePool<A>> = channels
                         .iter()
                         .map(|c| fetch_matching_data(c.clone()))
                         .collect();
@@ -1489,7 +1459,7 @@ where
         }
     }
 
-    /// The candidate pool in THE canonical order — see
+    /// A vector-backed candidate pool in THE canonical order — see
     /// [`crate::rspace::candidate_order`], which now owns it so the replay
     /// space can order its pools identically (the guard-aware selector's
     /// replay-equivalence argument depends on play and replay enumerating
@@ -1497,7 +1467,8 @@ where
     ///
     /// The name is historical: this never shuffled. A random shuffle would make
     /// equally valid matches diverge across validators, so the order is a hash
-    /// of the serialized candidate with the store index as tie breaker.
+    /// of the serialized candidate with the vector store index as tie breaker.
+    /// Datum pools use `RSpaceDataIndex`'s `(hash, trie path)` order instead.
     fn shuffle_with_index<D>(&self, t: Vec<D>) -> Vec<(D, i32)>
     where D: CandidateOrderingBytes {
         order_candidates_with_index(t)

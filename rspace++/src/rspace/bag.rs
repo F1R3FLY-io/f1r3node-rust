@@ -130,6 +130,18 @@ impl Bag {
         }
     }
 
+    pub(crate) fn from_pathmap_with_metrics(
+        entries: PathMap<Multiplicity>,
+        distinct_len: usize,
+        cardinality: u128,
+    ) -> Self {
+        Self {
+            entries,
+            distinct_len,
+            cardinality,
+        }
+    }
+
     pub fn as_pathmap(&self) -> &PathMap<Multiplicity> { &self.entries }
 
     pub fn into_pathmap(self) -> PathMap<Multiplicity> { self.entries }

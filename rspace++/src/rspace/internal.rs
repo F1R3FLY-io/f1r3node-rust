@@ -104,7 +104,17 @@ pub struct ConsumeCandidate<C, A: Clone> {
     /// referenced by peek re-produces and `wrap_result`; previously a deep
     /// copy per candidate.
     pub removed_datum: Arc<A>,
-    pub datum_index: i32,
+    pub address: DatumAddress,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DatumAddress {
+    Stored(Arc<[u8]>),
+    Fresh,
+}
+
+impl DatumAddress {
+    pub fn is_fresh(&self) -> bool { matches!(self, Self::Fresh) }
 }
 
 /// `Clone` mirrors [`ConsumeCandidate`]'s, and is what lets a caller HOLD an

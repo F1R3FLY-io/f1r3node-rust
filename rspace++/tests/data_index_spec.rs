@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use rspace_plus_plus::rspace::data_index::{DataIndexError, RSpaceDataIndex, RSpaceDataStore};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::internal::Datum;
+use rspace_plus_plus::rspace::internal::{Datum, DatumAddress};
 use rspace_plus_plus::rspace::trace::event::Produce;
 
 fn datum(value: &str, persist: bool, discriminator: u8) -> Datum<String> {
@@ -198,4 +198,69 @@ fn removing_an_invalid_expanded_index_is_non_mutating() {
         })
     ));
     assert_eq!(store, before);
+}
+
+#[test]
+fn candidate_pool_keeps_multiplicity_in_the_subtrie() {
+    let channel = "channel".to_string();
+    let repeated = datum("repeated", false, 1);
+    let other = datum("other", false, 2);
+    let mut store = RSpaceDataStore::new();
+    store
+        .set_channel(channel.clone(), [repeated.clone(), repeated.clone(), repeated.clone(), other])
+        .unwrap();
+    let mut pool = store.channel_pool(&channel).unwrap().unwrap();
+    assert_eq!(pool.len(), 2);
+    let repeated_position = (0..pool.len())
+        .find(|position| {
+            pool.candidate(*position)
+                .is_some_and(|(value, _)| value == &repeated)
+        })
+        .unwrap();
+    assert!(pool.reserve(repeated_position));
+    assert_eq!(pool.next_available(repeated_position), Some(repeated_position));
+    assert!(pool.reserve(repeated_position));
+    assert_eq!(pool.next_available(repeated_position), Some(repeated_position));
+    assert!(pool.reserve(repeated_position));
+    assert_ne!(pool.next_available(repeated_position), Some(repeated_position));
+    assert!(!pool.reserve(repeated_position));
+    pool.release(repeated_position);
+    pool.release(repeated_position);
+    pool.release(repeated_position);
+    assert_eq!(pool.next_available(repeated_position), Some(repeated_position));
+}
+
+#[test]
+fn candidate_pool_addresses_remove_exact_path_multiplicity() {
+    let channel = "channel".to_string();
+    let repeated = datum("repeated", false, 1);
+    let mut store = RSpaceDataStore::new();
+    store
+        .set_channel(channel.clone(), [repeated.clone(), repeated])
+        .unwrap();
+    let pool = store.channel_pool(&channel).unwrap().unwrap();
+    let (_, address) = pool.candidate(0).unwrap();
+    let DatumAddress::Stored(path) = address else {
+        panic!("resting data must have a PathMap address");
+    };
+    assert!(store.remove_path(&path));
+    assert_eq!(store.cardinality(), 1);
+    assert!(store.remove_path(&path));
+    assert_eq!(store.cardinality(), 0);
+    assert!(!store.remove_path(&path));
+}
+
+#[test]
+fn fresh_candidate_reservation_is_reversible_and_not_stored() {
+    let channel = "channel".to_string();
+    let mut store = RSpaceDataStore::new();
+    store.set_channel(channel.clone(), []).unwrap();
+    let mut pool = store.channel_pool(&channel).unwrap().unwrap();
+    pool.prepend_fresh(datum("fresh", false, 9));
+    assert!(matches!(pool.candidate(0), Some((_, DatumAddress::Fresh))));
+    assert!(pool.reserve(0));
+    assert!(pool.is_empty());
+    assert_eq!(pool.candidate(0), None);
+    pool.release(0);
+    assert!(matches!(pool.candidate(0), Some((_, DatumAddress::Fresh))));
 }

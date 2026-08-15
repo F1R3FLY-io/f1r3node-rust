@@ -134,8 +134,8 @@ fn continuation_ser<'a, P: Clone, K: Clone>(
     }
 }
 
-/// The deterministic candidate-ordering bytes (`rspace.rs`
-/// `shuffle_with_index` → `deterministic_candidate_hash`). Candidate ordering
+/// The deterministic candidate-ordering bytes used by vector-backed
+/// continuation ordering and PathMap-backed datum ordering. Candidate ordering
 /// participates in replay-visible COMM selection, so these bytes must equal
 /// the earlier value-shaped `bincode::serialize(candidate)` exactly — they go
 /// through the same twins as the cold-store encoding (one layout, one pin).
