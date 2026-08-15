@@ -48,6 +48,17 @@ impl Match<Pattern, String, StringsCaptor> for StringMatch {
             }
         }
     }
+
+    fn retained_pattern_path(&self, pattern: &Pattern) -> Option<Vec<u8>> {
+        match pattern {
+            Pattern::Wildcard => None,
+            Pattern::StringMatch(value) => Some(value.as_bytes().to_vec()),
+        }
+    }
+
+    fn retained_datum_path(&self, datum: &String) -> Option<Vec<u8>> {
+        Some(datum.as_bytes().to_vec())
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]

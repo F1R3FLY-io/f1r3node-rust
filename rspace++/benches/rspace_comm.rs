@@ -43,6 +43,17 @@ impl Match<Pattern, String, String> for StringMatcher {
             Pattern::Exact(_) => None,
         }
     }
+
+    fn retained_pattern_path(&self, pattern: &Pattern) -> Option<Vec<u8>> {
+        match pattern {
+            Pattern::Wildcard => None,
+            Pattern::Exact(value) => Some(value.as_bytes().to_vec()),
+        }
+    }
+
+    fn retained_datum_path(&self, datum: &String) -> Option<Vec<u8>> {
+        Some(datum.as_bytes().to_vec())
+    }
 }
 
 type BenchSpace = RSpace<String, Pattern, String, String>;

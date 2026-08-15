@@ -6,7 +6,7 @@ use pathmap::zipper::{ZipperMoving, ZipperReadOnlyValues};
 use super::internal::WaitingContinuation;
 use super::r#match::Match;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct RetainedSetAutomaton {
     segments: Vec<PathMap<Arc<[usize]>>>,
     candidate_count: usize,

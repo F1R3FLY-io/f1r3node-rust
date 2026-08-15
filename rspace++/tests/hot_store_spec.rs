@@ -1066,6 +1066,51 @@ pub fn fixture_with_cache(
     (history, hot_store)
 }
 
+#[test]
+fn continuation_versions_change_only_for_the_mutated_group() {
+    let (_, hot_store) = fixture();
+    let first = vec!["first".to_string()];
+    let second = vec!["second".to_string()];
+    let waiting = WaitingContinuation::<Pattern, StringsCaptor>::default();
+
+    let (first_v0, first_values) = hot_store.get_continuations_versioned(&first);
+    let (second_v0, second_values) = hot_store.get_continuations_versioned(&second);
+    assert!(first_values.is_empty());
+    assert!(second_values.is_empty());
+    assert_eq!(first_v0, second_v0);
+
+    assert_eq!(hot_store.put_continuation(&first, waiting.clone()), Some(true));
+    let (first_v1, first_values) = hot_store.get_continuations_versioned(&first);
+    let (second_still_v0, _) = hot_store.get_continuations_versioned(&second);
+    assert_ne!(first_v1, first_v0);
+    assert_eq!(second_still_v0, second_v0);
+    assert_eq!(first_values, vec![waiting.clone()]);
+
+    assert_eq!(hot_store.put_continuation(&first, waiting), Some(false));
+    let (first_after_duplicate, _) = hot_store.get_continuations_versioned(&first);
+    assert_eq!(first_after_duplicate, first_v1);
+
+    assert_eq!(hot_store.remove_continuation(&first, 0), Some(()));
+    let (first_v2, first_values) = hot_store.get_continuations_versioned(&first);
+    assert_ne!(first_v2, first_v1);
+    assert!(first_values.is_empty());
+}
+
+#[test]
+fn replacing_or_clearing_state_invalidates_all_continuation_versions() {
+    let (_, hot_store) = fixture();
+    let channels = vec!["channel".to_string()];
+    let (before_replace, _) = hot_store.get_continuations_versioned(&channels);
+
+    hot_store.set_state(HotStoreState::default());
+    let (after_replace, _) = hot_store.get_continuations_versioned(&channels);
+    assert_ne!(after_replace, before_replace);
+
+    hot_store.clear();
+    let (after_clear, _) = hot_store.get_continuations_versioned(&channels);
+    assert_ne!(after_clear, after_replace);
+}
+
 // ── the recorded counterexample, PROMOTED
 // ───────────────────────────────────────────
 //
