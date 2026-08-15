@@ -83,6 +83,14 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
         Self { d: new_d }
     }
 
+    fn add_continuation(&self, key: Key) -> Self {
+        let mut new_d = self.d.clone();
+        if matches!(self.d.get(&key), None | Some(&ReqStatus::Done)) {
+            new_d.insert(key, ReqStatus::Init);
+        }
+        Self { d: new_d }
+    }
+
     /// Returns the next batch of keys to request. Init keys always; if
     /// `resend` is true, also Requested keys (for timeout-driven retries).
     pub fn get_next(&self, resend: bool) -> (Self, Vec<Key>) {
@@ -236,6 +244,7 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
 
         // Apply items to local rspace. Radix nodes are content-addressed so
         // the importer can validate keys against contents internally.
+        // Reopened continuations repeat identical key-value writes idempotently.
         let history_count = history_items.len();
         let data_count = data_items.len();
         self.state_importer.set_history_items(history_items);
@@ -333,9 +342,8 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
             }
             {
                 let mut state = self.st.lock().expect("ST lock");
-                let mut next = HashSet::new();
-                next.insert(last_path);
-                let new_state = state.add(next);
+                // A completed cursor reopens when a later root reaches its shared continuation.
+                let new_state = state.add_continuation(last_path);
                 // Mark the just-processed chunk Done so it doesn't keep
                 // counting against is_finished. (Pagination continues via
                 // the freshly-added Init entry.)
@@ -661,6 +669,16 @@ mod tests {
         // 2 should be Init now; 1 should still be Requested → only 2 picked.
         let (_, requested) = st.get_next(false);
         assert_eq!(requested, vec![2]);
+    }
+
+    #[test]
+    fn st_add_leaves_done_keys_done() {
+        let st: ST<i32> = ST::new(vec![1]);
+        let (st, _) = st.received(1);
+        let st = st.done(1);
+        let mut existing = HashSet::new();
+        existing.insert(1);
+        assert!(st.add(existing).is_finished());
     }
 
     #[test]
@@ -1239,5 +1257,115 @@ mod tests {
             "exactly 2 roots should have been recorded; recorded = {:?}",
             recorded
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn stream_reopens_shared_continuation_for_late_root() {
+        let r1 = hash_for(30);
+        let r2 = hash_for(31);
+        let shared_cont = vec![(hash_for(109), Some(0u8))];
+
+        let (importer_inner, recorded) = RecordingImporter::new();
+        let importer: Arc<dyn RSpaceImporter> = Arc::new(importer_inner);
+        let recorded_for_has_root = recorded.clone();
+        let has_root: HasRootFn =
+            Arc::new(move |q| Ok(recorded_for_has_root.lock().unwrap().contains(q)));
+
+        let ops = MockOps::new();
+        let (sends, _) = ops.handles();
+        let (tx, rx) = test_mpsc::channel::<StoreItemsMessage>(8);
+
+        let start1 = vec![(r1.clone(), None)];
+        let start2 = vec![(r2.clone(), None)];
+        let resp1 = make_response(start1.clone(), shared_cont.clone(), Some(hash_for(111)));
+        let resp2 = make_response(start2.clone(), shared_cont.clone(), Some(hash_for(112)));
+        let terminal = make_response(
+            shared_cont.clone(),
+            shared_cont.clone(),
+            Some(hash_for(113)),
+        );
+
+        let feeder_sends = sends.clone();
+        let feeder_recorded = recorded.clone();
+        let feeder_r1 = r1.clone();
+        let feeder_start1 = start1.clone();
+        let feeder_start2 = start2.clone();
+        let feeder_cont = shared_cont.clone();
+        let feeder = tokio::spawn(async move {
+            tokio::time::timeout(Duration::from_secs(10), async move {
+                loop {
+                    let both_sent = {
+                        let sent = feeder_sends.lock().unwrap();
+                        sent.contains(&feeder_start1) && sent.contains(&feeder_start2)
+                    };
+                    if both_sent {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+
+                tx.send(resp1).await.unwrap();
+                loop {
+                    if feeder_sends.lock().unwrap().contains(&feeder_cont) {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+
+                tx.send(terminal.clone()).await.unwrap();
+                loop {
+                    if feeder_recorded.lock().unwrap().contains(&feeder_r1) {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+
+                tx.send(resp2).await.unwrap();
+                let continuation_reopened = tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        let request_count = feeder_sends
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .filter(|path| **path == feeder_cont)
+                            .count();
+                        if request_count >= 2 {
+                            break;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .is_ok();
+                assert!(
+                    continuation_reopened,
+                    "shared continuation was not requested for the late root"
+                );
+
+                tx.send(terminal).await.unwrap();
+                drop(tx);
+            })
+            .await
+            .expect("late-root feeder timed out");
+        });
+
+        let (stream, _) = stream(
+            vec![r1.clone(), r2.clone()],
+            has_root,
+            importer,
+            ops,
+            rx,
+            Duration::from_secs(5),
+            Duration::from_secs(60),
+        )
+        .await
+        .unwrap();
+        let final_st = drain(stream).await.expect("stream yields final state");
+        feeder.await.unwrap();
+
+        assert!(final_st.is_finished());
+        let recorded = recorded.lock().unwrap();
+        assert!(recorded.contains(&r1));
+        assert!(recorded.contains(&r2));
     }
 }

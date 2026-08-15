@@ -188,7 +188,24 @@ env:
   # wait for registry state visibility after deploy finalization, which closes
   # the finalized-block versus canonical-effect race from CI run 31856863708.
   # Verified that c4dbcd5 is the protected main tip and matches main exactly.
-  SYSTEM_INTEGRATION_REF: c4dbcd5488ba6d38a4212d1eb4c13ac55d0953a4
+  #
+  # 2026-08-15: bumped to the SI PR #117 main merge. Bonding and convergence
+  # now use dedicated shards, bond-map assertions handle epoch-boundary
+  # activation, and finalization checks select canonical finalized blocks
+  # instead of arbitrary orphan candidates. Verified that afcce4b1 is the
+  # protected main tip, all PR checks passed, and the bonding lifecycle passed
+  # locally against the node image built from master 35674b389.
+  #
+  # 2026-08-15: bumped to the reviewed SI PR #118 head. The convergence test
+  # now accepts finalized FT at or above FTT and checks monotonicity. Boundary
+  # bond blocks accept either valid closeBlock transition map, while a later
+  # finalized block must contain the exact activated map. Retired log snapshots
+  # now retain test-owner allowances without leaking allowances across tests,
+  # with focused unit coverage. Bond-map assertions use the finalization
+  # resolver's canonical deploy block instead of an orphaned first inclusion.
+  # Verified that 735a7b95 is the immutable PR head, the local bonding suite
+  # passed, and the local repin helper and workflow security invariants pass.
+  SYSTEM_INTEGRATION_REF: 735a7b95a3af74677f9519a6f01049cbc004bca4
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
