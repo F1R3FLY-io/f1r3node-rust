@@ -630,8 +630,8 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
         A: Clone + ColdStoreDecode + Serialize,
         Datum<A>: CandidateOrderingBytes,
     {
-        if self.is_loaded(channel) {
-            let prefix = RhoPathV1::datum_prefix(channel);
+        let prefix = RhoPathV1::datum_prefix(channel);
+        if self.loaded_channels.contains(&prefix) {
             let cached = self
                 .candidate_catalogs
                 .read()

@@ -420,6 +420,15 @@ where
     fn get_data(&self, channel: &C) -> Vec<Datum<A>> {
         metrics::counter!(HOT_STORE_GET_DATA_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(1);
+        let state = self.state.read().expect("hot store state read lock");
+        if let Some(data) = state
+            .data
+            .channel_data(channel)
+            .expect("PathMap-backed hot store must decode values it encoded")
+        {
+            return data;
+        }
+        drop(state);
         self.ensure_data_loaded(channel);
         self.state
             .read()
@@ -433,6 +442,15 @@ where
     fn get_candidate_pool(&self, channel: &C) -> CandidatePool<A> {
         metrics::counter!(HOT_STORE_GET_DATA_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(1);
+        let state = self.state.read().expect("hot store state read lock");
+        if let Some(pool) = state
+            .data
+            .channel_pool(channel)
+            .expect("PathMap-backed hot store must decode values it encoded")
+        {
+            return pool;
+        }
+        drop(state);
         self.ensure_data_loaded(channel);
         self.state
             .read()
