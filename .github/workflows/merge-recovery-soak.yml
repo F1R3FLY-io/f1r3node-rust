@@ -183,7 +183,12 @@ env:
   # provenance, not content: the main merge SHA stays reachable after the
   # test branch is deleted, where the branch commit could be garbage
   # collected out from under the secret-bearing launch job's checkout.
-  SYSTEM_INTEGRATION_REF: e1e1364d020da003f05fed0fb471f5b9db73d87d
+  #
+  # 2026-08-15: bumped to the SI PR #115 main merge. The storage tests now
+  # wait for registry state visibility after deploy finalization, which closes
+  # the finalized-block versus canonical-effect race from CI run 31856863708.
+  # Verified that c4dbcd5 is the protected main tip and matches main exactly.
+  SYSTEM_INTEGRATION_REF: c4dbcd5488ba6d38a4212d1eb4c13ac55d0953a4
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
