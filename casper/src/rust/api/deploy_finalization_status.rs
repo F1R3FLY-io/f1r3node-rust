@@ -89,8 +89,7 @@ impl DeployFinalizationStatus {
 }
 
 /// Per-sig BFS state accumulated during the finalized-window scan.
-/// Lifted out of `resolve` so the same scan can update many sigs in one
-/// pass (`resolve_batch`).
+/// Lifted out of `resolve` so one scan can serve every sig it tracks.
 struct ResolverState {
     sig_bytes: Bytes,
     valid_after_block_number: i64,
@@ -142,8 +141,7 @@ enum PreludeOutcome {
 }
 
 /// Per-sig prelude: deploy-index lookup, first-seen block fetch, and
-/// extraction of `valid_after_block_number`. Shared by `resolve` and
-/// `resolve_batch` so both entry points have identical error semantics:
+/// extraction of `valid_after_block_number`. Error semantics:
 ///
 /// - `Ok(Active(state))` — sig is in the index and the first-seen block
 ///   was readable.
@@ -260,7 +258,8 @@ fn bfs_finalized_window(
             PrettyPrinter::build_string_bytes(&lfb_hash),
         )
     })?;
-    let scan_floor = (lfb_height - deploy_lifespan).max(0);
+    let scan_floor =
+        crate::rust::util::deploy_window::earliest_valid_after(lfb_height, deploy_lifespan)?.max(0);
 
     // Active sigs as a HashSet for O(1) membership checks during body scans.
     // Cloning sig bytes once here avoids per-block-per-sig clones.
@@ -546,8 +545,11 @@ fn finalize_sig_state(
                 PrettyPrinter::build_string_bytes(&dag.last_finalized_block()),
             )
         })?;
-    let expired = lfb_height > state.valid_after_block_number + deploy_lifespan
-        && clean_finalized_height.is_none();
+    let expired = crate::rust::util::deploy_window::is_past_expiration_cutoff(
+        state.valid_after_block_number,
+        lfb_height,
+        deploy_lifespan,
+    )? && clean_finalized_height.is_none();
 
     let final_state = if failed_finalized {
         DeployFinalizationState::Failed
@@ -574,7 +576,7 @@ fn finalize_sig_state(
 /// `deploy_lifespan`. The gRPC / HTTP wrappers call this under their
 /// async unwrap of the Casper instance.
 ///
-/// Error semantics shared with `resolve_batch`: deploy-index
+/// Error semantics: deploy-index
 /// inconsistencies (sig indexed at a block whose body does not contain
 /// the sig) propagate as `Err(DeployFinalizationCorruption)`, so the
 /// consensus path can conservative-fail and the HTTP/gRPC layer can
@@ -638,67 +640,6 @@ pub fn resolve_with_known_block(
     };
 
     resolve_from_state(dag, block_store, deploy_lifespan, state)
-}
-
-/// Batched resolver for many sigs in a single canonical-chain scan.
-/// Optimizes the catchup-heavy hot path in
-/// `compute_parents_post_state::should_admit_to_rejected_buffer`, where
-/// every rejected deploy in a merge would otherwise trigger an
-/// independent BFS over the same finalized window.
-///
-/// Cost vs. calling `resolve` per sig: with N sigs and M blocks in the
-/// `deploy_lifespan` window, this is O(M + N) block fetches instead of
-/// O(N · M). For a 50-rejected merge with M=200, that is 200 fetches
-/// instead of 10 000.
-///
-/// Error semantics match `resolve`: any failure during the prelude (IO,
-/// deploy-index inconsistency, LFB lookup) propagates as `Err` for the
-/// whole batch. Sigs that are simply not in the deploy index (or whose
-/// first-seen block is missing) yield
-/// `DeployFinalizationStatus::pending_unknown()` for that sig — those
-/// are absences, not corruptions.
-///
-/// The `compute_parents_post_state` caller wraps the batch call in a
-/// "skip on Err" fallback (admit nothing for the merge step), so a
-/// single corrupted sig does pause admit decisions for that one merge
-/// rather than silently mislabeling the corruption as a healthy
-/// `Pending`.
-pub fn resolve_batch(
-    dag: &KeyValueDagRepresentation,
-    block_store: &KeyValueBlockStore,
-    deploy_lifespan: i64,
-    sigs: &HashSet<Bytes>,
-) -> ApiErr<HashMap<Bytes, DeployFinalizationStatus>> {
-    let mut results: HashMap<Bytes, DeployFinalizationStatus> = HashMap::new();
-    if sigs.is_empty() {
-        return Ok(results);
-    }
-
-    // Per-sig prelude. `Unknown` (sig absent / first-seen body missing)
-    // becomes `pending_unknown`. A `DeployFinalizationCorruption` error
-    // propagates and aborts the batch — the caller's "skip on Err"
-    // fallback then declines to admit anything for the merge step.
-    let mut per_sig: HashMap<Bytes, ResolverState> = HashMap::new();
-    for sig in sigs {
-        match run_prelude(dag, block_store, sig.as_ref())? {
-            PreludeOutcome::Unknown => {
-                results.insert(sig.clone(), DeployFinalizationStatus::pending_unknown());
-            }
-            PreludeOutcome::Active(state) => {
-                per_sig.insert(state.sig_bytes.clone(), state);
-            }
-        }
-    }
-
-    // Single BFS pass — the whole point of this function.
-    bfs_finalized_window(dag, block_store, deploy_lifespan, &mut per_sig)?;
-
-    // Per-sig post-processing.
-    for (sig, state) in per_sig {
-        results.insert(sig, finalize_sig_state(dag, deploy_lifespan, state)?);
-    }
-
-    Ok(results)
 }
 
 #[cfg(test)]
