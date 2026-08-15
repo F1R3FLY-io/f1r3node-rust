@@ -236,7 +236,10 @@ fn candidate_scope_has_rejected_deploys(
     current_block_number: i64,
     deploy_lifespan: i64,
 ) -> Result<bool, CasperError> {
-    let earliest_block_number = current_block_number - deploy_lifespan;
+    let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
+        current_block_number,
+        deploy_lifespan,
+    )?;
     let neighbor_fn = |block_metadata: &BlockMetadata| {
         proto_util::get_parent_metadatas_above_block_number(
             block_metadata,
@@ -290,7 +293,10 @@ fn local_rejected_buffer_has_recoverable_deploys(
         return Ok(false);
     }
 
-    let earliest_block_number = current_block_number - deploy_lifespan;
+    let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
+        current_block_number,
+        deploy_lifespan,
+    )?;
     let candidates: Vec<_> = buffered_deploys
         .iter()
         .filter(|deploy| {
@@ -665,8 +671,10 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
                     max_block_num
                 ))
             })?;
-            let earliest_block_number =
-                current_block_number - on_chain_state.shard_conf.deploy_lifespan;
+            let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
+                current_block_number,
+                on_chain_state.shard_conf.deploy_lifespan,
+            )?;
 
             // Propagate storage errors out of the BFS neighbor
             // expansion. Silent `.unwrap_or_default()` here is a
@@ -1211,6 +1219,8 @@ mod tests {
         );
         rejected.body.rejected_deploys = vec![RejectedDeploy {
             sig: prost::bytes::Bytes::from_static(b"sig"),
+            duplicate: false,
+            carrier: prost::bytes::Bytes::new(),
         }];
 
         block_store

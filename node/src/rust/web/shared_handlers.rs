@@ -336,6 +336,7 @@ fn classify_casper_error(err: &CasperError) -> (StatusCode, &'static str, String
         ReplayFailure(_) => internal("replay_failure"),
         StreamError(_) => internal("stream_error"),
         LockError(_) => internal("lock_error"),
+        MissingBlock(_) => (S::SERVICE_UNAVAILABLE, "missing_block", err.to_string()),
         Other(_) => internal("other_error"),
     }
 }
