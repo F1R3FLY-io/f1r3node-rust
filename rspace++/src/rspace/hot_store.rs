@@ -9,8 +9,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use proptest::prelude::*;
 #[cfg(test)]
 use rand::{Rng, thread_rng};
+use serde::Serialize;
 use tracing::warn;
 
+use super::data_index::{DataIndexError, RSpaceDataStore};
 use super::errors::RSpaceError;
 use crate::rspace::history::history_reader::HistoryReaderBase;
 use crate::rspace::hot_store_action::{
@@ -40,6 +42,8 @@ use crate::rspace::metrics_constants::{
     HOT_STORE_STATE_INSTALLED_JOINS_ITEMS_METRIC, HOT_STORE_STATE_INSTALLED_JOINS_SIZE_METRIC,
     HOT_STORE_STATE_JOINS_ITEMS_METRIC, HOT_STORE_STATE_JOINS_SIZE_METRIC, RSPACE_METRICS_SOURCE,
 };
+use crate::rspace::rho_path::RhoPathEncode;
+use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 
 const MAX_HISTORY_STORE_CACHE_ENTRIES: usize = 512;
 const MAX_HISTORY_STORE_CACHE_CONT_ITEMS: usize = 8192;
@@ -92,6 +96,70 @@ where
     pub data: HashMap<C, Vec<Datum<A>>>,
     pub joins: HashMap<C, Vec<Vec<C>>>,
     pub installed_joins: HashMap<C, Vec<Vec<C>>>,
+}
+
+struct InMemHotStoreState<C, P, A, K>
+where
+    C: Eq + Hash,
+    A: Clone,
+    P: Clone,
+    K: Clone,
+{
+    continuations: HashMap<Vec<C>, Vec<WaitingContinuation<P, K>>>,
+    installed_continuations: HashMap<Vec<C>, WaitingContinuation<P, K>>,
+    data: RSpaceDataStore<C, A>,
+    joins: HashMap<C, Vec<Vec<C>>>,
+    installed_joins: HashMap<C, Vec<Vec<C>>>,
+}
+
+impl<C, P, A, K> InMemHotStoreState<C, P, A, K>
+where
+    C: Clone + Eq + Hash + RhoPathEncode + ColdStoreDecode,
+    P: Clone,
+    A: Clone + Serialize + RhoPathEncode + ColdStoreDecode,
+    K: Clone,
+{
+    fn from_snapshot(snapshot: HotStoreState<C, P, A, K>) -> Result<Self, DataIndexError> {
+        let mut data = RSpaceDataStore::new();
+        for (channel, datums) in snapshot.data {
+            data.set_channel(channel, datums)?;
+        }
+        Ok(Self {
+            continuations: snapshot.continuations,
+            installed_continuations: snapshot.installed_continuations,
+            data,
+            joins: snapshot.joins,
+            installed_joins: snapshot.installed_joins,
+        })
+    }
+
+    fn snapshot(&self) -> Result<HotStoreState<C, P, A, K>, DataIndexError> {
+        Ok(HotStoreState {
+            continuations: self.continuations.clone(),
+            installed_continuations: self.installed_continuations.clone(),
+            data: self.data.loaded_records()?.into_iter().collect(),
+            joins: self.joins.clone(),
+            installed_joins: self.installed_joins.clone(),
+        })
+    }
+}
+
+impl<C, P, A, K> Default for InMemHotStoreState<C, P, A, K>
+where
+    C: Eq + Hash,
+    A: Clone,
+    P: Clone,
+    K: Clone,
+{
+    fn default() -> Self {
+        Self {
+            continuations: HashMap::new(),
+            installed_continuations: HashMap::new(),
+            data: RSpaceDataStore::new(),
+            joins: HashMap::new(),
+            installed_joins: HashMap::new(),
+        }
+    }
 }
 
 // This impl is needed for hot_store_spec.rs
@@ -158,7 +226,7 @@ where
     P: Clone + Sync + Send,
     K: Clone + Sync + Send,
 {
-    state: std::sync::RwLock<HotStoreState<C, P, A, K>>,
+    state: std::sync::RwLock<InMemHotStoreState<C, P, A, K>>,
     history_cache: std::sync::RwLock<HistoryStoreCache<C, P, A, K>>,
     history_reader_base: Box<dyn HistoryReaderBase<C, P, A, K>>,
 }
@@ -166,20 +234,16 @@ where
 // See rspace/src/main/scala/coop/rchain/rspace/HotStore.scala
 impl<C, P, A, K> HotStore<C, P, A, K> for InMemHotStore<C, P, A, K>
 where
-    C: Clone + Debug + Hash + Eq + Send + Sync,
+    C: Clone + Debug + Hash + Eq + RhoPathEncode + ColdStoreDecode + Send + Sync,
     P: Clone + Debug + Send + Sync,
-    A: Clone + Debug + Send + Sync,
+    A: Clone + Debug + Serialize + RhoPathEncode + ColdStoreDecode + Send + Sync,
     K: Clone + Debug + Send + Sync,
 {
     fn snapshot(&self) -> HotStoreState<C, P, A, K> {
         let state = self.state.read().expect("hot store state read lock");
-        HotStoreState {
-            continuations: state.continuations.clone(),
-            installed_continuations: state.installed_continuations.clone(),
-            data: state.data.clone(),
-            joins: state.joins.clone(),
-            installed_joins: state.installed_joins.clone(),
-        }
+        state
+            .snapshot()
+            .expect("PathMap-backed hot store must decode values it encoded")
     }
 
     // Continuations
@@ -359,8 +423,8 @@ where
             .read()
             .expect("hot store state read lock")
             .data
-            .get(channel)
-            .cloned();
+            .channel_data(channel)
+            .expect("PathMap-backed hot store must decode values it encoded");
 
         if let Some(data) = maybe_data {
             data
@@ -368,12 +432,24 @@ where
             metrics::counter!(HOT_STORE_GET_DATA_HISTORY_FILL_METRIC, "source" => RSPACE_METRICS_SOURCE)
                 .increment(1);
             let data = self.get_data_from_history_store(channel);
-            self.state
-                .write()
-                .expect("hot store state write lock")
+            let mut state = self.state.write().expect("hot store state write lock");
+            if let Some(current) = state
                 .data
-                .insert(channel.clone(), data.clone());
-            data
+                .channel_data(channel)
+                .expect("PathMap-backed hot store must decode values it encoded")
+            {
+                current
+            } else {
+                state
+                    .data
+                    .set_channel(channel.clone(), data.iter().cloned())
+                    .expect("history data must fit the PathMap multiplicity model");
+                state
+                    .data
+                    .channel_data(channel)
+                    .expect("PathMap-backed hot store must decode values it encoded")
+                    .expect("newly loaded channel must be present")
+            }
         }
     }
 
@@ -386,8 +462,7 @@ where
             .read()
             .expect("hot store state read lock")
             .data
-            .get(channel)
-            .is_some();
+            .is_loaded(channel);
         let from_history_store = if has_existing {
             None
         } else {
@@ -397,52 +472,50 @@ where
         };
 
         let mut state = self.state.write().expect("hot store state write lock");
-        match state.data.entry(channel.clone()) {
-            Entry::Occupied(mut occupied) => {
-                occupied.get_mut().insert(0, d);
-            }
-            Entry::Vacant(vacant) => {
-                let mut new_data = from_history_store.unwrap_or_default();
-                new_data.insert(0, d);
-                vacant.insert(new_data);
-            }
+        if state.data.is_loaded(channel) {
+            state
+                .data
+                .insert(channel, &d)
+                .expect("datum multiplicity must fit in u64");
+        } else {
+            let mut new_data = from_history_store.unwrap_or_default();
+            new_data.push(d);
+            state
+                .data
+                .set_channel(channel.clone(), new_data)
+                .expect("history data must fit the PathMap multiplicity model");
         }
         metrics::counter!(HOT_STORE_PUT_DATUM_TIME_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(__start.elapsed().as_nanos() as u64);
     }
 
     fn remove_datum(&self, channel: &C, index: i32) -> Result<(), RSpaceError> {
+        let has_existing = self
+            .state
+            .read()
+            .expect("hot store state read lock")
+            .data
+            .is_loaded(channel);
+        let from_history_store = if has_existing {
+            None
+        } else {
+            Some(self.get_data_from_history_store(channel))
+        };
+
         let mut state = self.state.write().expect("hot store state write lock");
-        match state.data.entry(channel.clone()) {
-            Entry::Occupied(mut occupied) => {
-                let out_of_bounds = index < 0 || index as usize >= occupied.get().len();
-                if out_of_bounds {
-                    Err(RSpaceError::BugFoundError(format!(
-                        "Index {} out of bounds when removing datum (len={})",
-                        index,
-                        occupied.get().len()
-                    )))
-                } else {
-                    occupied.get_mut().remove(index as usize);
-                    Ok(())
-                }
+        if !state.data.is_loaded(channel) {
+            state
+                .data
+                .set_channel(channel.clone(), from_history_store.unwrap_or_default())?;
+        }
+        match state.data.remove_index(channel, index) {
+            Ok(()) => Ok(()),
+            Err(DataIndexError::IndexOutOfBounds { cardinality, .. }) => {
+                Err(RSpaceError::BugFoundError(format!(
+                    "Index {index} out of bounds when removing datum (len={cardinality})"
+                )))
             }
-            Entry::Vacant(vacant) => {
-                let mut from_history_store = self.get_data_from_history_store(channel);
-                let out_of_bounds = index < 0 || index as usize >= from_history_store.len();
-                if out_of_bounds {
-                    let len = from_history_store.len();
-                    vacant.insert(from_history_store);
-                    Err(RSpaceError::BugFoundError(format!(
-                        "Index {} out of bounds when removing datum (len={})",
-                        index, len
-                    )))
-                } else {
-                    from_history_store.remove(index as usize);
-                    vacant.insert(from_history_store);
-                    Ok(())
-                }
-            }
+            Err(error) => Err(error.into()),
         }
     }
 
@@ -613,17 +686,17 @@ where
 
         let data: Vec<HotStoreAction<C, P, A, K>> = cache
             .data
-            .iter()
+            .loaded_records()
+            .expect("PathMap-backed hot store must decode values it encoded")
+            .into_iter()
             .map(|entry| {
                 let (k, v) = entry;
                 if v.is_empty() {
-                    HotStoreAction::Delete(DeleteAction::DeleteData(DeleteData {
-                        channel: k.clone(),
-                    }))
+                    HotStoreAction::Delete(DeleteAction::DeleteData(DeleteData { channel: k }))
                 } else {
                     HotStoreAction::Insert(InsertAction::InsertData(InsertData {
-                        channel: k.clone(),
-                        data: v.clone(),
+                        channel: k,
+                        data: v,
                     }))
                 }
             })
@@ -653,17 +726,23 @@ where
     fn to_map(&self) -> HashMap<Vec<C>, Row<P, A, K>> {
         let state = self.state.read().expect("hot store state read lock");
         let mut map = HashMap::with_capacity(
-            state.data.len() + state.continuations.len() + state.installed_continuations.len(),
+            state.data.loaded_channel_count() +
+                state.continuations.len() +
+                state.installed_continuations.len(),
         );
 
         // Data and continuations use different key shapes: a datum is indexed
         // by one channel, while a joined continuation is indexed by its full
         // channel vector. Build the union of those domains. Iterating only the
         // data keys silently dropped continuation-only rows and every join.
-        for (channel, data) in &state.data {
+        for (channel, data) in state
+            .data
+            .loaded_records()
+            .expect("PathMap-backed hot store must decode values it encoded")
+        {
             if !data.is_empty() {
-                map.insert(vec![channel.clone()], Row {
-                    data: data.clone(),
+                map.insert(vec![channel], Row {
+                    data,
                     wks: Vec::new(),
                 });
             }
@@ -711,8 +790,11 @@ where
         }
 
         println!("\nData:");
-        for entry in hot_store_state.data.iter() {
-            let (key, value) = (entry.0, entry.1);
+        for (key, value) in hot_store_state
+            .data
+            .loaded_records()
+            .expect("PathMap-backed hot store must decode values it encoded")
+        {
             println!("Key: {:?}, Value: {:?}", key, value);
         }
 
@@ -806,15 +888,17 @@ where
         *self
             .state
             .write()
-            .expect("hot store state write lock for set_state") = new_state;
+            .expect("hot store state write lock for set_state") =
+            InMemHotStoreState::from_snapshot(new_state)
+                .expect("snapshot data must fit the PathMap multiplicity model");
     }
 }
 
 impl<C, P, A, K> InMemHotStore<C, P, A, K>
 where
-    C: Clone + Debug + Hash + Eq + Sync + Send,
+    C: Clone + Debug + Hash + Eq + RhoPathEncode + ColdStoreDecode + Sync + Send,
     P: Clone + Debug + Sync + Send,
-    A: Clone + Debug + Sync + Send,
+    A: Clone + Debug + Serialize + RhoPathEncode + ColdStoreDecode + Sync + Send,
     K: Clone + Debug + Sync + Send,
 {
     fn continuation_identity(wc: &WaitingContinuation<P, K>) -> String {
@@ -854,14 +938,14 @@ where
         }
     }
 
-    fn update_hot_store_state_metrics(state: &HotStoreState<C, P, A, K>) {
+    fn update_hot_store_state_metrics(state: &InMemHotStoreState<C, P, A, K>) {
         static LAST_EMIT_AT_MS: AtomicU64 = AtomicU64::new(0);
         if !Self::should_emit_metrics(&LAST_EMIT_AT_MS, Self::state_metrics_update_interval_ms()) {
             return;
         }
 
         let cont_items: usize = state.continuations.values().map(|v| v.len()).sum();
-        let data_items: usize = state.data.values().map(|v| v.len()).sum();
+        let data_items = state.data.cardinality();
         let joins_items: usize = state.joins.values().map(|v| v.len()).sum();
         let installed_cont_items = state.installed_continuations.len();
         let installed_joins_items: usize = state.installed_joins.values().map(|v| v.len()).sum();
@@ -869,7 +953,7 @@ where
         metrics::gauge!(HOT_STORE_STATE_CONT_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .set(state.continuations.len() as f64);
         metrics::gauge!(HOT_STORE_STATE_DATA_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(state.data.len() as f64);
+            .set(state.data.loaded_channel_count() as f64);
         metrics::gauge!(HOT_STORE_STATE_JOINS_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .set(state.joins.len() as f64);
         metrics::gauge!(HOT_STORE_STATE_INSTALLED_CONT_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE)
@@ -1010,13 +1094,33 @@ impl HotStoreInstances {
         history_reader: Box<dyn HistoryReaderBase<C, P, A, K>>,
     ) -> Box<dyn HotStore<C, P, A, K>>
     where
-        C: Default + Clone + Debug + Eq + Hash + Send + Sync + 'static,
+        C: Default
+            + Clone
+            + Debug
+            + Eq
+            + Hash
+            + RhoPathEncode
+            + ColdStoreDecode
+            + Send
+            + Sync
+            + 'static,
         P: Default + Clone + Debug + Send + Sync + 'static,
-        A: Default + Clone + Debug + Send + Sync + 'static,
+        A: Default
+            + Clone
+            + Debug
+            + Serialize
+            + RhoPathEncode
+            + ColdStoreDecode
+            + Send
+            + Sync
+            + 'static,
         K: Default + Clone + Debug + Send + Sync + 'static,
     {
         Box::new(InMemHotStore {
-            state: std::sync::RwLock::new(cache),
+            state: std::sync::RwLock::new(
+                InMemHotStoreState::from_snapshot(cache)
+                    .expect("snapshot data must fit the PathMap multiplicity model"),
+            ),
             history_cache: std::sync::RwLock::new(HistoryStoreCache::default()),
             history_reader_base: history_reader,
         })
@@ -1026,9 +1130,26 @@ impl HotStoreInstances {
         history_reader: Box<dyn HistoryReaderBase<C, P, A, K>>,
     ) -> Box<dyn HotStore<C, P, A, K>>
     where
-        C: Default + Clone + Debug + Eq + Hash + 'static + Send + Sync,
+        C: Default
+            + Clone
+            + Debug
+            + Eq
+            + Hash
+            + RhoPathEncode
+            + ColdStoreDecode
+            + 'static
+            + Send
+            + Sync,
         P: Default + Clone + Debug + 'static + Send + Sync,
-        A: Default + Clone + Debug + 'static + Send + Sync,
+        A: Default
+            + Clone
+            + Debug
+            + Serialize
+            + RhoPathEncode
+            + ColdStoreDecode
+            + 'static
+            + Send
+            + Sync,
         K: Default + Clone + Debug + 'static + Send + Sync,
     {
         HotStoreInstances::create_from_hs_and_hr(HotStoreState::default(), history_reader)

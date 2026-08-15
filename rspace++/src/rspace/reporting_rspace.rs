@@ -17,6 +17,7 @@ use super::hot_store::HotStore;
 use super::internal::{ConsumeCandidate, Datum, Row, WaitingContinuation};
 use super::r#match::Match;
 use super::replay_rspace::ReplayRSpace;
+use super::rho_path::RhoPathEncode;
 use super::rspace::RSpace;
 use super::trace::Log;
 use super::trace::event::{COMM, Consume, Produce};
@@ -89,9 +90,27 @@ where
 #[derive(Clone)]
 pub struct ReportingRspace<C, P, A, K>
 where
-    C: Clone + Debug + Default + StableHashSerialize + Hash + Ord + Eq + 'static + Sync + Send,
+    C: Clone
+        + Debug
+        + Default
+        + StableHashSerialize
+        + RhoPathEncode
+        + Hash
+        + Ord
+        + Eq
+        + 'static
+        + Sync
+        + Send,
     P: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
-    A: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
+    A: Clone
+        + Debug
+        + Default
+        + Serialize
+        + StableHashSerialize
+        + RhoPathEncode
+        + 'static
+        + Sync
+        + Send,
     K: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
 {
     replay_rspace: ReplayRSpace<C, P, A, K>,
@@ -111,6 +130,7 @@ where
         + Send
         + Sync
         + StableHashSerialize
+        + RhoPathEncode
         + Ord
         + Hash
         + Eq
@@ -132,6 +152,7 @@ where
         + Sync
         + Serialize
         + StableHashSerialize
+        + RhoPathEncode
         + ColdStoreDecode
         + 'static,
     K: Clone
@@ -262,6 +283,7 @@ where
         + Send
         + Sync
         + StableHashSerialize
+        + RhoPathEncode
         + Ord
         + Hash
         + Eq
@@ -283,6 +305,7 @@ where
         + Sync
         + Serialize
         + StableHashSerialize
+        + RhoPathEncode
         + ColdStoreDecode
         + 'static,
     K: Clone

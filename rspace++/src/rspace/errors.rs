@@ -2,12 +2,15 @@
 
 use shared::rust::store::key_value_store::KvStoreError;
 
+use super::data_index::DataIndexError;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum RSpaceError {
     InterpreterError(String),
     HistoryError(HistoryError),
     RadixTreeError(RadixTreeError),
     KvStoreError(KvStoreError),
+    DataIndexError(DataIndexError),
     BugFoundError(String),
     ReportingError(String),
 }
@@ -19,6 +22,7 @@ impl std::fmt::Display for RSpaceError {
             RSpaceError::HistoryError(err) => write!(f, "History Error: {}", err),
             RSpaceError::RadixTreeError(err) => write!(f, "Radix Tree Error: {}", err),
             RSpaceError::KvStoreError(err) => write!(f, "Key Value Store Error: {}", err),
+            RSpaceError::DataIndexError(err) => write!(f, "RSpace Data Index Error: {}", err),
             RSpaceError::BugFoundError(err) => write!(f, "RSpace Bug Found Error: {}", err),
             RSpaceError::ReportingError(err) => write!(f, "Reporting Error: {}", err),
         }
@@ -31,6 +35,10 @@ impl From<RadixTreeError> for RSpaceError {
 
 impl From<KvStoreError> for RSpaceError {
     fn from(error: KvStoreError) -> Self { RSpaceError::KvStoreError(error) }
+}
+
+impl From<DataIndexError> for RSpaceError {
+    fn from(error: DataIndexError) -> Self { RSpaceError::DataIndexError(error) }
 }
 
 impl From<HistoryError> for RSpaceError {

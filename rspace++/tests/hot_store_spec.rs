@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap, HashSet, LinkedList};
+use std::collections::{BTreeSet, HashMap, LinkedList};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::{Arc, Mutex};
@@ -8,6 +8,8 @@ use proptest::prelude::*;
 use proptest_derive::Arbitrary;
 use rand::prelude::SliceRandom;
 use rand::thread_rng;
+use rspace_plus_plus::rspace::candidate_order::deterministic_candidate_hash;
+use rspace_plus_plus::rspace::data_index::RSpaceDataIndex;
 use rspace_plus_plus::rspace::history::history_reader::HistoryReaderBase;
 use rspace_plus_plus::rspace::hot_store::{HotStore, HotStoreInstances, HotStoreState};
 use rspace_plus_plus::rspace::hot_store_action::{
@@ -181,8 +183,9 @@ proptest! {
 
       let read_data = hot_store.get_data(&channel);
       let cache = hot_store.snapshot();
-      assert_eq!(cache.data.get(&channel).unwrap().clone(), history_data);
-      assert_eq!(read_data, history_data);
+      let cached = cache.data.get(&channel).unwrap().clone();
+      assert!(check_same_elements(cached.clone(), history_data));
+      assert_eq!(read_data, cached);
   }
 
   #[test]
@@ -195,8 +198,9 @@ proptest! {
 
       let read_data = hot_store.get_data(&channel);
       let cache = hot_store.snapshot();
-      assert_eq!(cache.data.get(&channel).unwrap().clone(), cached_data);
-      assert_eq!(read_data, cached_data);
+      let cached = cache.data.get(&channel).unwrap().clone();
+      assert!(check_same_elements(cached.clone(), cached_data));
+      assert_eq!(read_data, cached);
   }
 
   #[test]
@@ -208,8 +212,8 @@ proptest! {
       hot_store.put_datum(&channel.clone(), inserted_data.clone());
 
       let cache = hot_store.snapshot();
-      history_data.insert(0, inserted_data);
-      assert_eq!(cache.data.get(&channel).unwrap().clone(), history_data);
+      history_data.push(inserted_data);
+      assert!(check_same_elements(cache.data.get(&channel).unwrap().clone(), history_data));
   }
 
   #[test]
@@ -222,8 +226,8 @@ proptest! {
 
       hot_store.put_datum(&channel.clone(), inserted_data.clone());
       let cache = hot_store.snapshot();
-      cached_data.insert(0, inserted_data);
-      assert_eq!(cache.data.get(&channel).unwrap().clone(), cached_data);
+      cached_data.push(inserted_data);
+      assert!(check_same_elements(cache.data.get(&channel).unwrap().clone(), cached_data));
   }
 
   #[test]
@@ -235,7 +239,8 @@ proptest! {
       let res = hot_store.remove_datum(&channel.clone(), index);
 
       let cache = hot_store.snapshot();
-      assert!(check_datum_removal_works_or_fails_on_error(res, cache.data.get(&channel).map_or(Vec::new(), |x| x.clone()), history_data, index).is_ok());
+      let initial = canonical_data(&channel, history_data);
+      assert!(check_datum_removal_works_or_fails_on_error(res, cache.data.get(&channel).map_or(Vec::new(), |x| x.clone()), initial, index).is_ok());
   }
 
   #[test]
@@ -248,7 +253,8 @@ proptest! {
 
       let res = hot_store.remove_datum(&channel.clone(), index);
       let cache = hot_store.snapshot();
-      assert!(check_datum_removal_works_or_fails_on_error(res, cache.data.get(&channel).unwrap().clone(), cached_data, index).is_ok());
+      let initial = canonical_data(&channel, cached_data);
+      assert!(check_datum_removal_works_or_fails_on_error(res, cache.data.get(&channel).unwrap().clone(), initial, index).is_ok());
   }
 
   #[test]
@@ -452,6 +458,7 @@ proptest! {
       if data.is_empty() {
         assert!(res.contains(&HotStoreAction::Delete(DeleteAction::DeleteData(DeleteData { channel: channel.clone() }))));
       } else {
+        let data = cache.data.get(&channel).unwrap().clone();
         assert!(res.contains(&HotStoreAction::Insert(InsertAction::InsertData(InsertData { channel: channel.clone(), data }))));
       }
 
@@ -496,11 +503,11 @@ proptest! {
 
       let r1 = hot_store.lock().unwrap().get_data(&channel1);
       let r2 = hot_store.lock().unwrap().get_data(&channel2);
-      history_data1.insert(0, inserted_data1);
-      history_data2.insert(0, inserted_data2);
+      history_data1.push(inserted_data1);
+      history_data2.push(inserted_data2);
 
-      assert_eq!(r1, history_data1);
-      assert_eq!(r2, history_data2);
+      assert!(check_same_elements(r1, history_data1));
+      assert!(check_same_elements(r2, history_data2));
   }
 
   #[test]
@@ -584,12 +591,17 @@ proptest! {
         hot_store.put_datum(&key.clone(), d);
       }
 
-      let _ = hot_store.remove_datum(&key.clone(), index - 1);
+      let mut expected = canonical_data(&key, data);
+      let removed_index = index - 1;
+      let result = hot_store.remove_datum(&key.clone(), removed_index);
       let res = hot_store.get_data(&key);
-      let expected: Vec<Datum<String>> = data.into_iter()
-         .filter(|d| *d.a != datum_value.clone() + &(11 - index).to_string())
-         .collect();
-      assert!(check_same_elements(res, expected));
+      if removed_index >= 0 && (removed_index as usize) < expected.len() {
+          assert!(result.is_ok());
+          expected.remove(removed_index as usize);
+      } else {
+          assert!(result.is_err());
+      }
+      assert_eq!(res, expected);
   }
 
   #[test]
@@ -786,6 +798,26 @@ fn to_map_returns_the_union_of_data_and_continuation_key_domains() {
     );
 }
 
+#[test]
+fn duplicate_datums_preserve_multiplicity_and_loaded_empty_state() {
+    let (_, hot_store) = fixture();
+    let channel = "duplicate-channel".to_string();
+    let datum = Datum::create(&channel, "duplicate-value".to_string(), false);
+
+    hot_store.put_datum(&channel, datum.clone());
+    hot_store.put_datum(&channel, datum.clone());
+
+    assert_eq!(hot_store.get_data(&channel), vec![datum.clone(), datum.clone()]);
+    assert_eq!(hot_store.snapshot().data.get(&channel), Some(&vec![datum.clone(), datum.clone()]));
+
+    hot_store.remove_datum(&channel, 0).unwrap();
+    assert_eq!(hot_store.get_data(&channel), vec![datum]);
+
+    hot_store.remove_datum(&channel, 0).unwrap();
+    assert!(hot_store.get_data(&channel).is_empty());
+    assert_eq!(hot_store.snapshot().data.get(&channel), Some(&Vec::new()));
+}
+
 fn check_removal_works_or_fails_on_error<T>(
     res: Option<()>,
     actual: Vec<T>,
@@ -861,11 +893,35 @@ where
     Ok(())
 }
 
-// We only care that both vectors contain the same elements, not their ordering
 fn check_same_elements<T: Hash + Eq>(vec1: Vec<T>, vec2: Vec<T>) -> bool {
-    let set1: HashSet<_> = vec1.into_iter().collect();
-    let set2: HashSet<_> = vec2.into_iter().collect();
-    set1 == set2
+    fn counts<T: Hash + Eq>(values: Vec<T>) -> HashMap<T, usize> {
+        let mut counts = HashMap::new();
+        for value in values {
+            *counts.entry(value).or_insert(0) += 1;
+        }
+        counts
+    }
+
+    counts(vec1) == counts(vec2)
+}
+
+fn canonical_data(channel: &String, data: Vec<Data>) -> Vec<Data> {
+    let mut decorated = data
+        .into_iter()
+        .map(|datum| {
+            (
+                deterministic_candidate_hash(&datum),
+                RSpaceDataIndex::datum_path(channel, &datum),
+                datum,
+            )
+        })
+        .collect::<Vec<_>>();
+    decorated.sort_unstable_by(|(left_hash, left_path, _), (right_hash, right_path, _)| {
+        left_hash
+            .cmp(right_hash)
+            .then_with(|| left_path.cmp(right_path))
+    });
+    decorated.into_iter().map(|(_, _, datum)| datum).collect()
 }
 
 pub fn compare_hashmaps<K, V>(map1: &HashMap<K, V>, map2: &HashMap<K, V>) -> bool

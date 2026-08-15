@@ -33,6 +33,7 @@ use super::metrics_constants::{
     REPLAY_WAITING_CONTINUATIONS_MATCHED_TOTAL_METRIC,
     REPLAY_WAITING_CONTINUATIONS_STORED_TOTAL_METRIC,
 };
+use super::rho_path::RhoPathEncode;
 use super::rspace_interface::{
     ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult, RSpaceResult,
 };
@@ -43,6 +44,7 @@ use crate::rspace::checkpoint::Checkpoint;
 use crate::rspace::history::history_repository::HistoryRepository;
 use crate::rspace::hot_store::{HotStore, HotStoreInstances};
 use crate::rspace::internal::*;
+use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use crate::rspace::space_matcher::SpaceMatcher;
 
 #[repr(C)]
@@ -68,6 +70,8 @@ where
         + Debug
         + Default
         + StableHashSerialize
+        + RhoPathEncode
+        + ColdStoreDecode
         + std::hash::Hash
         + Ord
         + Eq
@@ -75,7 +79,16 @@ where
         + Sync
         + Send,
     P: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
-    A: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
+    A: Clone
+        + Debug
+        + Default
+        + Serialize
+        + StableHashSerialize
+        + RhoPathEncode
+        + ColdStoreDecode
+        + 'static
+        + Sync
+        + Send,
     K: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
 {
     pub fn get_store(&self) -> Arc<Box<dyn HotStore<C, P, A, K>>> {
@@ -174,6 +187,8 @@ where
         + Debug
         + Default
         + StableHashSerialize
+        + RhoPathEncode
+        + ColdStoreDecode
         + std::hash::Hash
         + Ord
         + Eq
@@ -181,7 +196,16 @@ where
         + Sync
         + Send,
     P: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
-    A: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
+    A: Clone
+        + Debug
+        + Default
+        + Serialize
+        + StableHashSerialize
+        + RhoPathEncode
+        + ColdStoreDecode
+        + 'static
+        + Sync
+        + Send,
     K: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
 {
 }
@@ -193,6 +217,8 @@ where
         + Debug
         + Default
         + StableHashSerialize
+        + RhoPathEncode
+        + ColdStoreDecode
         + std::hash::Hash
         + Ord
         + Eq
@@ -200,7 +226,16 @@ where
         + Sync
         + Send,
     P: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
-    A: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
+    A: Clone
+        + Debug
+        + Default
+        + Serialize
+        + StableHashSerialize
+        + RhoPathEncode
+        + ColdStoreDecode
+        + 'static
+        + Sync
+        + Send,
     K: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
 {
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {
@@ -517,9 +552,29 @@ where
 
 impl<C, P, A, K> ReplayRSpace<C, P, A, K>
 where
-    C: Clone + Debug + Default + StableHashSerialize + Hash + Ord + Eq + 'static + Sync + Send,
+    C: Clone
+        + Debug
+        + Default
+        + StableHashSerialize
+        + RhoPathEncode
+        + ColdStoreDecode
+        + Hash
+        + Ord
+        + Eq
+        + 'static
+        + Sync
+        + Send,
     P: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
-    A: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
+    A: Clone
+        + Debug
+        + Default
+        + Serialize
+        + StableHashSerialize
+        + RhoPathEncode
+        + ColdStoreDecode
+        + 'static
+        + Sync
+        + Send,
     K: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
 {
     /**
