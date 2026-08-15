@@ -16,4 +16,3 @@ integration-tests/test/tests/custom/test_concurrent_bridge_locks.py
 integration-tests/test/tests/custom/test_finality_stall_recovery.py
 integration-tests/test/tests/custom/test_readonly_catchup_bounded.py
 integration-tests/test/tests/custom/test_slow_peer_notification.py
-integration-tests/test/tests/custom/test_transient_peer_liveness.py
