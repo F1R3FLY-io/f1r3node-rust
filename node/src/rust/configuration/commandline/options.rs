@@ -211,6 +211,10 @@ pub struct RunOptions {
     #[arg(long = "discovery-heartbeat-batch-size")]
     pub discovery_heartbeat_batch_size: Option<u32>,
 
+    /// Consecutive failed heartbeats before a peer is dropped
+    #[arg(long = "discovery-heartbeat-failure-threshold")]
+    pub discovery_heartbeat_failure_threshold: Option<u32>,
+
     /// gRPC port serving F1r3fly Protocol messages
     #[arg(short = 'p', long = "protocol-port", default_value = "40400")]
     pub protocol_port: Option<u16>,
