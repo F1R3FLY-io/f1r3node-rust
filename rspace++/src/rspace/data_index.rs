@@ -1,6 +1,6 @@
 use std::fmt;
 use std::marker::PhantomData;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use pathmap::PathMap;
 use pathmap::zipper::ZipperSubtries;
@@ -8,6 +8,7 @@ use serde::Serialize;
 
 use super::bag::{Bag, BagError, Multiplicity};
 use super::candidate_order::deterministic_candidate_hash;
+use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::internal::{Datum, DatumAddress};
 use super::rho_path::{RhoPathEncode, RhoPathError, RhoPathV1};
 use super::serializers::cold_store_decode::{ColdStoreDecode, ColdStoreDecodeError};
@@ -63,33 +64,79 @@ pub struct IndexedDatum<A: Clone> {
     pub multiplicity: Multiplicity,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 struct CandidatePoolEntry<A: Clone> {
     storage_path: Arc<[u8]>,
-    relative_path: Arc<[u8]>,
-    datum: Datum<A>,
+    relative_offset: usize,
+    identity_offset: usize,
+    datum: OnceLock<Datum<A>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl<A: Clone> PartialEq for CandidatePoolEntry<A> {
+    fn eq(&self, other: &Self) -> bool {
+        self.storage_path == other.storage_path &&
+            self.relative_offset == other.relative_offset &&
+            self.identity_offset == other.identity_offset
+    }
+}
+
+impl<A: Clone> Eq for CandidatePoolEntry<A> {}
+
+impl<A: Clone> CandidatePoolEntry<A> {
+    fn relative_path(&self) -> &[u8] { &self.storage_path[self.relative_offset..] }
+
+    fn datum(&self, decode: fn(&[u8]) -> Datum<A>) -> &Datum<A> {
+        self.datum
+            .get_or_init(|| decode(&self.storage_path[self.identity_offset..]))
+    }
+}
+
+fn decode_candidate<A: Clone + ColdStoreDecode>(bytes: &[u8]) -> Datum<A> {
+    decode_datum(bytes).expect("PathMap candidate identity must decode after insertion")
+}
+
+struct EncodedIndexedDatum {
+    path: Vec<u8>,
+    identity_offset: usize,
+    multiplicity: Multiplicity,
+}
+
+#[derive(Debug, Clone)]
 pub struct CandidatePool<A: Clone> {
     availability: Bag,
     ordered: Arc<[CandidatePoolEntry<A>]>,
     fresh: Option<Datum<A>>,
     fresh_available: bool,
+    decode: fn(&[u8]) -> Datum<A>,
 }
 
+impl<A: Clone + PartialEq> PartialEq for CandidatePool<A> {
+    fn eq(&self, other: &Self) -> bool {
+        self.availability == other.availability &&
+            self.ordered == other.ordered &&
+            self.fresh == other.fresh &&
+            self.fresh_available == other.fresh_available
+    }
+}
+
+impl<A: Clone + Eq> Eq for CandidatePool<A> {}
+
 impl<A: Clone> CandidatePool<A> {
-    fn from_index_entries(
+    fn from_encoded_entries(
         prefix_len: usize,
         availability: Bag,
-        entries: Vec<IndexedDatum<A>>,
-    ) -> Self {
+        entries: Vec<EncodedIndexedDatum>,
+    ) -> Self
+    where
+        A: ColdStoreDecode,
+    {
         let ordered = entries
             .into_iter()
             .map(|entry| CandidatePoolEntry {
-                relative_path: Arc::from(&entry.path[prefix_len..]),
                 storage_path: Arc::from(entry.path),
-                datum: entry.datum,
+                relative_offset: prefix_len,
+                identity_offset: entry.identity_offset,
+                datum: OnceLock::new(),
             })
             .collect::<Vec<_>>()
             .into();
@@ -98,6 +145,7 @@ impl<A: Clone> CandidatePool<A> {
             ordered,
             fresh: None,
             fresh_available: false,
+            decode: decode_candidate::<A>,
         }
     }
 
@@ -126,10 +174,13 @@ impl<A: Clone> CandidatePool<A> {
                     .map(|datum| (datum, DatumAddress::Fresh));
             }
             let entry = self.ordered.get(position - 1)?;
-            return Some((&entry.datum, DatumAddress::Stored(Arc::clone(&entry.storage_path))));
+            return Some((
+                entry.datum(self.decode),
+                DatumAddress::Stored(Arc::clone(&entry.storage_path)),
+            ));
         }
         let entry = self.ordered.get(position)?;
-        Some((&entry.datum, DatumAddress::Stored(Arc::clone(&entry.storage_path))))
+        Some((entry.datum(self.decode), DatumAddress::Stored(Arc::clone(&entry.storage_path))))
     }
 
     pub fn reserve(&mut self, position: usize) -> bool {
@@ -144,19 +195,19 @@ impl<A: Clone> CandidatePool<A> {
             let Some(entry) = self.ordered.get(position - 1) else {
                 return false;
             };
-            if self.availability.count(&entry.relative_path) == 0 {
+            if self.availability.count(entry.relative_path()) == 0 {
                 return false;
             }
-            self.availability.remove(&entry.relative_path);
+            self.availability.remove(entry.relative_path());
             return true;
         }
         let Some(entry) = self.ordered.get(position) else {
             return false;
         };
-        if self.availability.count(&entry.relative_path) == 0 {
+        if self.availability.count(entry.relative_path()) == 0 {
             return false;
         }
-        self.availability.remove(&entry.relative_path);
+        self.availability.remove(entry.relative_path());
         true
     }
 
@@ -168,13 +219,13 @@ impl<A: Clone> CandidatePool<A> {
             }
             let entry = &self.ordered[position - 1];
             self.availability
-                .insert(&entry.relative_path)
+                .insert(entry.relative_path())
                 .expect("candidate reservation release cannot overflow");
             return;
         }
         let entry = &self.ordered[position];
         self.availability
-            .insert(&entry.relative_path)
+            .insert(entry.relative_path())
             .expect("candidate reservation release cannot overflow");
     }
 
@@ -184,8 +235,8 @@ impl<A: Clone> CandidatePool<A> {
             self.fresh_available = false;
         }
         for entry in self.ordered.iter() {
-            if !predicate(&entry.datum) {
-                self.availability.set_count(&entry.relative_path, None);
+            if !predicate(entry.datum(self.decode)) {
+                self.availability.set_count(entry.relative_path(), None);
             }
         }
     }
@@ -198,11 +249,11 @@ impl<A: Clone> CandidatePool<A> {
             return self
                 .ordered
                 .get(position - 1)
-                .is_some_and(|entry| self.availability.contains(&entry.relative_path));
+                .is_some_and(|entry| self.availability.contains(entry.relative_path()));
         }
         self.ordered
             .get(position)
-            .is_some_and(|entry| self.availability.contains(&entry.relative_path))
+            .is_some_and(|entry| self.availability.contains(entry.relative_path()))
     }
 }
 
@@ -315,9 +366,12 @@ impl RSpaceDataIndex {
         Datum<A>: CandidateOrderingBytes,
     {
         let prefix = RhoPathV1::datum_prefix(channel);
-        let entries = self.ordered_channel_entries(channel)?;
+        let entries = self.ordered_encoded_channel_entries(&prefix)?;
         let distinct_len = entries.len();
-        let cardinality = channel_cardinality(&entries);
+        let cardinality = entries
+            .iter()
+            .map(|entry| u128::from(entry.multiplicity.get()))
+            .sum();
         let availability = Bag::from_pathmap_with_metrics(
             self.bag
                 .as_pathmap()
@@ -327,7 +381,30 @@ impl RSpaceDataIndex {
             distinct_len,
             cardinality,
         );
-        Ok(CandidatePool::from_index_entries(prefix.len(), availability, entries))
+        Ok(CandidatePool::from_encoded_entries(prefix.len(), availability, entries))
+    }
+
+    fn ordered_encoded_channel_entries(
+        &self,
+        prefix: &[u8],
+    ) -> Result<Vec<EncodedIndexedDatum>, DataIndexError> {
+        let mut decorated = Vec::new();
+        self.bag.try_visit_prefix(prefix, |path, multiplicity| {
+            let view = RhoPathV1::parse_datum(path)?;
+            let identity_offset = path.len() - view.datum_identity().len();
+            decorated.push((Blake2b256Hash::new(view.datum_identity()), EncodedIndexedDatum {
+                path: path.to_vec(),
+                identity_offset,
+                multiplicity,
+            }));
+            Ok::<(), DataIndexError>(())
+        })?;
+        decorated.sort_unstable_by(|(left_hash, left), (right_hash, right)| {
+            left_hash
+                .cmp(right_hash)
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        Ok(decorated.into_iter().map(|(_, entry)| entry).collect())
     }
 
     fn entries_at_prefix<A>(&self, prefix: &[u8]) -> Result<Vec<IndexedDatum<A>>, DataIndexError>

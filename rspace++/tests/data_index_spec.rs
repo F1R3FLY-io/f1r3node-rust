@@ -1,9 +1,34 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rspace_plus_plus::rspace::data_index::{DataIndexError, RSpaceDataIndex, RSpaceDataStore};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use rspace_plus_plus::rspace::internal::{Datum, DatumAddress};
+use rspace_plus_plus::rspace::rho_path::RhoPathEncode;
+use rspace_plus_plus::rspace::serializers::cold_store_decode::{
+    ColdStoreDecode, ColdStoreDecodeError, legacy_prefix,
+};
 use rspace_plus_plus::rspace::trace::event::Produce;
+use serde::{Deserialize, Serialize};
+
+static COUNTING_VALUE_DECODES: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct CountingValue(String);
+
+impl StableHashSerialize for CountingValue {}
+
+impl RhoPathEncode for CountingValue {
+    fn rho_path_structure(&self) -> Vec<u8> { self.0.as_bytes().to_vec() }
+}
+
+impl ColdStoreDecode for CountingValue {
+    fn cold_decode_prefix(bytes: &[u8]) -> Result<(Self, usize), ColdStoreDecodeError> {
+        COUNTING_VALUE_DECODES.fetch_add(1, Ordering::Relaxed);
+        legacy_prefix(bytes)
+    }
+}
 
 fn datum(value: &str, persist: bool, discriminator: u8) -> Datum<String> {
     Datum {
@@ -124,6 +149,44 @@ fn canonical_candidate_order_is_independent_of_insertion_order() {
         .map(|entry| entry.path)
         .collect::<Vec<_>>();
     assert_eq!(forward_paths, reverse_paths);
+}
+
+#[test]
+fn candidate_pool_uses_identity_bytes_for_order_and_decodes_on_first_access() {
+    let channel = "channel".to_string();
+    let values = [datum("alpha", false, 1), datum("beta", false, 2), datum("gamma", false, 3)];
+    let mut string_index = RSpaceDataIndex::new();
+    for value in &values {
+        string_index.insert(&channel, value).unwrap();
+    }
+    let expected = string_index
+        .ordered_channel_entries::<_, String>(&channel)
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.datum)
+        .collect::<Vec<_>>();
+    let pool = string_index.candidate_pool::<_, String>(&channel).unwrap();
+    let actual = (0..pool.len())
+        .map(|position| pool.candidate(position).unwrap().0.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+
+    let counted = Datum {
+        a: Arc::new(CountingValue("payload".to_string())),
+        persist: false,
+        source: Produce::new(Blake2b256Hash::new(&[8]), Blake2b256Hash::new(&[8, 1]), false),
+    };
+    let mut counted_store = RSpaceDataStore::new();
+    counted_store
+        .set_channel(channel.clone(), [counted.clone()])
+        .unwrap();
+    COUNTING_VALUE_DECODES.store(0, Ordering::Relaxed);
+    let counted_pool = counted_store.channel_pool(&channel).unwrap().unwrap();
+    assert_eq!(COUNTING_VALUE_DECODES.load(Ordering::Relaxed), 0);
+    assert_eq!(counted_pool.candidate(0).unwrap().0, &counted);
+    assert_eq!(COUNTING_VALUE_DECODES.load(Ordering::Relaxed), 1);
+    assert_eq!(counted_pool.clone().candidate(0).unwrap().0, &counted);
+    assert_eq!(COUNTING_VALUE_DECODES.load(Ordering::Relaxed), 1);
 }
 
 #[test]
