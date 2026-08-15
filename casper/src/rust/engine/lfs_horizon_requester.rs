@@ -76,9 +76,17 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
     pub fn add(&self, keys: HashSet<Key>) -> Self {
         let mut new_d = self.d.clone();
         for key in keys {
-            if matches!(self.d.get(&key), None | Some(&ReqStatus::Done)) {
+            if !self.d.contains_key(&key) {
                 new_d.insert(key, ReqStatus::Init);
             }
+        }
+        Self { d: new_d }
+    }
+
+    fn add_continuation(&self, key: Key) -> Self {
+        let mut new_d = self.d.clone();
+        if matches!(self.d.get(&key), None | Some(&ReqStatus::Done)) {
+            new_d.insert(key, ReqStatus::Init);
         }
         Self { d: new_d }
     }
@@ -236,6 +244,7 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
 
         // Apply items to local rspace. Radix nodes are content-addressed so
         // the importer can validate keys against contents internally.
+        // Reopened continuations repeat identical key-value writes idempotently.
         let history_count = history_items.len();
         let data_count = data_items.len();
         self.state_importer.set_history_items(history_items);
@@ -333,9 +342,8 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
             }
             {
                 let mut state = self.st.lock().expect("ST lock");
-                let mut next = HashSet::new();
-                next.insert(last_path);
-                let new_state = state.add(next);
+                // A completed cursor reopens when a later root reaches its shared continuation.
+                let new_state = state.add_continuation(last_path);
                 // Mark the just-processed chunk Done so it doesn't keep
                 // counting against is_finished. (Pagination continues via
                 // the freshly-added Init entry.)
@@ -661,6 +669,16 @@ mod tests {
         // 2 should be Init now; 1 should still be Requested → only 2 picked.
         let (_, requested) = st.get_next(false);
         assert_eq!(requested, vec![2]);
+    }
+
+    #[test]
+    fn st_add_leaves_done_keys_done() {
+        let st: ST<i32> = ST::new(vec![1]);
+        let (st, _) = st.received(1);
+        let st = st.done(1);
+        let mut existing = HashSet::new();
+        existing.insert(1);
+        assert!(st.add(existing).is_finished());
     }
 
     #[test]
@@ -1274,55 +1292,61 @@ mod tests {
         let feeder_start2 = start2.clone();
         let feeder_cont = shared_cont.clone();
         let feeder = tokio::spawn(async move {
-            loop {
-                let both_sent = {
-                    let sent = feeder_sends.lock().unwrap();
-                    sent.contains(&feeder_start1) && sent.contains(&feeder_start2)
-                };
-                if both_sent {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-
-            tx.send(resp1).await.unwrap();
-            loop {
-                if feeder_sends.lock().unwrap().contains(&feeder_cont) {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-
-            tx.send(terminal.clone()).await.unwrap();
-            loop {
-                if feeder_recorded.lock().unwrap().contains(&feeder_r1) {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-
-            tx.send(resp2).await.unwrap();
-            let continuation_reopened = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::time::timeout(Duration::from_secs(10), async move {
                 loop {
-                    let request_count = feeder_sends
-                        .lock()
-                        .unwrap()
-                        .iter()
-                        .filter(|path| **path == feeder_cont)
-                        .count();
-                    if request_count >= 2 {
+                    let both_sent = {
+                        let sent = feeder_sends.lock().unwrap();
+                        sent.contains(&feeder_start1) && sent.contains(&feeder_start2)
+                    };
+                    if both_sent {
                         break;
                     }
                     tokio::task::yield_now().await;
                 }
+
+                tx.send(resp1).await.unwrap();
+                loop {
+                    if feeder_sends.lock().unwrap().contains(&feeder_cont) {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+
+                tx.send(terminal.clone()).await.unwrap();
+                loop {
+                    if feeder_recorded.lock().unwrap().contains(&feeder_r1) {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+
+                tx.send(resp2).await.unwrap();
+                let continuation_reopened = tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        let request_count = feeder_sends
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .filter(|path| **path == feeder_cont)
+                            .count();
+                        if request_count >= 2 {
+                            break;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .is_ok();
+                assert!(
+                    continuation_reopened,
+                    "shared continuation was not requested for the late root"
+                );
+
+                tx.send(terminal).await.unwrap();
+                drop(tx);
             })
             .await
-            .is_ok();
-
-            if continuation_reopened {
-                tx.send(terminal).await.unwrap();
-            }
-            drop(tx);
+            .expect("late-root feeder timed out");
         });
 
         let (stream, _) = stream(
