@@ -271,7 +271,6 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                 .map_err(|e| CasperError::Other(format!("Failed to get rspace stores: {}", e)))?;
             reporting_casper::rho_reporter(
                 &rspace_stores,
-                &block_store,
                 &block_dag_storage,
                 rholang::rust::interpreter::external_services::ExternalServices::noop(),
             )
@@ -589,32 +588,74 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     {
         use futures::StreamExt;
         use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
+        use tokio::sync::mpsc::error::TrySendError;
 
-        let report_api = block_report_api.clone();
-        let transfer_unforgeable_for_events = transfer_unforgeable.clone();
-        let event_pub = event_publisher.clone();
         let is_ready_flag = is_ready.clone();
         let mut event_stream = event_publisher.consume();
+        // Bounds how far pre-caching may fall behind finalization before blocks
+        // start being dropped.
+        const PREWARM_QUEUE_CAPACITY: usize = 64;
+        let (report_tx, mut report_rx) = tokio::sync::mpsc::channel::<
+            shared::rust::shared::f1r3fly_event::BlockFinalised,
+        >(PREWARM_QUEUE_CAPACITY);
+        let report_api = block_report_api.clone();
+        let transfer_unforgeable_for_reports = transfer_unforgeable.clone();
+        let event_pub_for_reports = event_publisher.clone();
+
+        tokio::spawn(async move {
+            while let Some(finalized) = report_rx.recv().await {
+                metrics::gauge!("block_report.prewarm_queue_depth", "source" => "node")
+                    .set(report_rx.len() as f64);
+                handle_block_finalized(
+                    report_api.clone(),
+                    transfer_unforgeable_for_reports.clone(),
+                    event_pub_for_reports.clone(),
+                    finalized.block_hash,
+                    finalized.block_number,
+                )
+                .await;
+            }
+        });
 
         tokio::spawn(async move {
             while let Some(event) = event_stream.next().await {
                 match &event {
-                    F1r3flyEvent::BlockFinalised(finalized) => {
-                        let api = report_api.clone();
-                        let unforgeable = transfer_unforgeable_for_events.clone();
-                        let publisher = event_pub.clone();
-                        let block_hash = finalized.block_hash.clone();
-                        let block_number = finalized.block_number;
-                        tokio::spawn(async move {
-                            handle_block_finalized(
-                                api,
-                                unforgeable,
-                                publisher,
-                                block_hash,
-                                block_number,
-                            )
-                            .await;
-                        });
+                    F1r3flyEvent::BlockFinalised(finalized)
+                        if is_node_read_only
+                            && is_ready_flag.load(std::sync::atomic::Ordering::Acquire) =>
+                    {
+                        match report_tx.try_send(finalized.clone()) {
+                            // Depth is reported by the consumer alone, so the two
+                            // tasks cannot race to define the same series.
+                            Ok(()) => {}
+                            Err(TrySendError::Full(_)) => {
+                                metrics::counter!(
+                                    "block_report.prewarm_skipped",
+                                    "source" => "node",
+                                    "reason" => "queue_full"
+                                )
+                                .increment(1);
+                            }
+                            Err(TrySendError::Closed(_)) => {
+                                metrics::counter!(
+                                    "block_report.prewarm_skipped",
+                                    "source" => "node",
+                                    "reason" => "queue_closed"
+                                )
+                                .increment(1);
+                            }
+                        }
+                    }
+                    // Finalizations arriving before the node is ready are dropped
+                    // like any other skip, and are counted so a catch-up that
+                    // pre-caches nothing is visible rather than merely quiet.
+                    F1r3flyEvent::BlockFinalised(_) if is_node_read_only => {
+                        metrics::counter!(
+                            "block_report.prewarm_skipped",
+                            "source" => "node",
+                            "reason" => "not_ready"
+                        )
+                        .increment(1);
                     }
                     F1r3flyEvent::EnteredRunningState(_) => {
                         is_ready_flag.store(true, std::sync::atomic::Ordering::Release);
@@ -987,7 +1028,7 @@ async fn handle_block_finalized(
             return;
         }
     };
-    match report_api.block_report(block_hash_bytes, false).await {
+    match report_api.prewarm_block_report(block_hash_bytes).await {
         Ok(report) => {
             let transfers_by_deploy = extract_transfers_from_report(&report, &transfer_unforgeable);
 
@@ -1022,11 +1063,14 @@ async fn handle_block_finalized(
             }
         }
         Err(e) => {
-            tracing::debug!(
+            // Nothing retries a pre-cache: the event has been consumed and no
+            // path revisits finalized blocks, so this block's transfers stay
+            // unavailable until something traces it by hand.
+            tracing::warn!(
                 target: "f1r3fly.node.transaction",
                 %block_hash,
                 error = %e,
-                "Block report pre-cache skipped (expected on validators)"
+                "Block report pre-cache failed; transfers for this block will be unavailable"
             );
         }
     }
