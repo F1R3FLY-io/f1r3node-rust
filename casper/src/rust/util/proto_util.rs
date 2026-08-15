@@ -14,9 +14,10 @@ use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, Bond, DeployData, Header, Justification, ProcessedDeploy,
-    ProcessedSystemDeploy,
+    ProcessedSystemDeploy, RejectedDeploy,
 };
 use models::rust::validator::Validator;
+use prost::bytes::Bytes;
 use rholang::rust::interpreter::deploy_parameters::DeployParameters;
 use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::ByteString;
@@ -264,6 +265,30 @@ pub fn get_parent_metadatas_above_block_number(
 }
 
 pub fn deploys(block: &BlockMessage) -> Vec<ProcessedDeploy> { block.body.deploys.clone() }
+
+/// The block's KEPT rejection records. A duplicate-flagged record states
+/// that the copy it discarded was redundant — its effect already stood in
+/// the forming merge's own post-state — so it does not dispute the sig's
+/// standing win. Every disposition reader consumes records through this
+/// one filter so the discard policy cannot drift between readers.
+pub fn kept_rejected_records(block: &BlockMessage) -> impl Iterator<Item = &RejectedDeploy> {
+    block
+        .body
+        .rejected_deploys
+        .iter()
+        .filter(|record| !record.duplicate)
+}
+
+pub fn mark_processed_rejections_duplicate(
+    rejected_deploys: &mut [RejectedDeploy],
+    processed_deploy_sigs: &HashSet<Bytes>,
+) {
+    for record in rejected_deploys {
+        if processed_deploy_sigs.contains(&record.sig) {
+            record.duplicate = true;
+        }
+    }
+}
 
 pub fn system_deploys(block: &BlockMessage) -> Vec<ProcessedSystemDeploy> {
     block.body.system_deploys.clone()

@@ -254,8 +254,10 @@ pub(crate) async fn admit_has_pending_deploys_in_storage_for_snapshot<
     snapshot: &CasperSnapshot,
 ) -> Result<bool, CasperError> {
     let latest_block_number = snapshot.dag.latest_block_number();
-    let earliest_block_number =
-        latest_block_number - snapshot.on_chain_state.shard_conf.deploy_lifespan;
+    let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
+        latest_block_number,
+        snapshot.on_chain_state.shard_conf.deploy_lifespan,
+    )?;
     // Pre-epoch system clock (operationally impossible on modern
     // systems, but per-correctness directive: handle the corner). A
     // silent zero would make every deploy's `is_expired_at(0)` return

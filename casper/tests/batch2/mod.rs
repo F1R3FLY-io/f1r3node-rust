@@ -1,11 +1,15 @@
+pub mod carrier_record_spec;
 pub mod clique_oracle_test;
 pub mod dedup_orphan_recovery_spec;
 pub mod estimator_test;
+pub mod exactly_once_spec;
 pub mod finalized_win_pending_rejection_spec;
 pub mod finalizer_test;
 pub mod limited_parent_depth_spec;
 pub mod lmdb_key_value_store_spec;
 pub mod map_cell_convergence_spec;
+pub mod merge_window_spec;
+pub mod netted_noop_merge_spec;
 pub mod multi_validator_recovery_spec;
 pub mod recovery_cycle_spec;
 pub mod recovery_repeat_deploy_misfire_spec;
