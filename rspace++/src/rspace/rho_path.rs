@@ -14,6 +14,7 @@ pub enum RhoPathError {
     InvalidKind(u8),
     TruncatedFrame,
     InvalidEscape(u8),
+    TrailingBytes,
 }
 
 impl fmt::Display for RhoPathError {
@@ -23,6 +24,7 @@ impl fmt::Display for RhoPathError {
             Self::InvalidKind(kind) => write!(f, "invalid RhoPathV1 kind {kind}"),
             Self::TruncatedFrame => f.write_str("truncated RhoPathV1 frame"),
             Self::InvalidEscape(byte) => write!(f, "invalid RhoPathV1 escape {byte:#04x}"),
+            Self::TrailingBytes => f.write_str("unexpected bytes after RhoPathV1 prefix"),
         }
     }
 }
@@ -49,8 +51,18 @@ impl RhoPathEncode for String {
 
 impl RhoPathEncode for Vec<u8> {
     fn rho_path_structure(&self) -> Vec<u8> { self.clone() }
+}
 
-    fn rho_path_identity(&self) -> Vec<u8> { self.clone() }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChannelPathView<'a> {
+    encoded_channel_structure: &'a [u8],
+    encoded_channel_identity: &'a [u8],
+}
+
+impl ChannelPathView<'_> {
+    pub fn channel_structure(&self) -> Vec<u8> { decode_frame(self.encoded_channel_structure) }
+
+    pub fn channel_identity(&self) -> Vec<u8> { decode_frame(self.encoded_channel_identity) }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,24 +119,44 @@ impl RhoPathV1 {
     }
 
     pub fn parse_datum(path: &[u8]) -> Result<DatumPathView<'_>, RhoPathError> {
-        if path.len() < MAGIC.len() || path[..MAGIC.len()] != MAGIC {
-            return Err(RhoPathError::InvalidMagic);
-        }
-        let kind = *path.get(MAGIC.len()).ok_or(RhoPathError::TruncatedFrame)?;
-        if kind != DATUM_KIND {
-            return Err(RhoPathError::InvalidKind(kind));
-        }
-        let mut cursor = MAGIC.len() + 1;
-        let channel_structure = take_frame(path, &mut cursor)?;
-        let channel_identity = take_frame(path, &mut cursor)?;
+        let (channel, mut cursor) = parse_channel(path)?;
         let datum_structure = take_frame(path, &mut cursor)?;
         Ok(DatumPathView {
-            encoded_channel_structure: channel_structure,
-            encoded_channel_identity: channel_identity,
+            encoded_channel_structure: channel.encoded_channel_structure,
+            encoded_channel_identity: channel.encoded_channel_identity,
             encoded_datum_structure: datum_structure,
             datum_identity: &path[cursor..],
         })
     }
+
+    pub fn parse_datum_prefix(path: &[u8]) -> Result<ChannelPathView<'_>, RhoPathError> {
+        let (channel, cursor) = parse_channel(path)?;
+        if cursor == path.len() {
+            Ok(channel)
+        } else {
+            Err(RhoPathError::TrailingBytes)
+        }
+    }
+}
+
+fn parse_channel(path: &[u8]) -> Result<(ChannelPathView<'_>, usize), RhoPathError> {
+    if path.len() < MAGIC.len() || path[..MAGIC.len()] != MAGIC {
+        return Err(RhoPathError::InvalidMagic);
+    }
+    let kind = *path.get(MAGIC.len()).ok_or(RhoPathError::TruncatedFrame)?;
+    if kind != DATUM_KIND {
+        return Err(RhoPathError::InvalidKind(kind));
+    }
+    let mut cursor = MAGIC.len() + 1;
+    let channel_structure = take_frame(path, &mut cursor)?;
+    let channel_identity = take_frame(path, &mut cursor)?;
+    Ok((
+        ChannelPathView {
+            encoded_channel_structure: channel_structure,
+            encoded_channel_identity: channel_identity,
+        },
+        cursor,
+    ))
 }
 
 pub fn encode_structural_sequence<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> Vec<u8> {

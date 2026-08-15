@@ -105,6 +105,19 @@ fn prefix_queries_remain_in_trie_order() {
 }
 
 #[test]
+fn prefix_removal_detaches_only_the_selected_subtrie_and_updates_metadata() {
+    let mut value =
+        bag(&[(b"prefix/a", 2), (b"prefix/a/deeper", 3), (b"prefix/b", 4), (b"other", 5)]);
+    assert_eq!(value.remove_prefix(b"prefix/a"), (2, 5));
+    assert_eq!(value.entries_with_prefix(b"prefix/"), vec![(
+        b"prefix/b".to_vec(),
+        Multiplicity::new(4).unwrap()
+    ),]);
+    assert_eq!(value.distinct_len(), 2);
+    assert_eq!(value.cardinality(), 9);
+}
+
+#[test]
 fn clone_is_copy_on_write_and_merkleization_preserves_semantics() {
     let original = bag(&[(b"shared/left", 2), (b"shared/right", 3)]);
     let mut fork = original.clone();

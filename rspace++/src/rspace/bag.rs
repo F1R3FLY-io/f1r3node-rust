@@ -186,6 +186,22 @@ impl Bag {
         }
     }
 
+    pub fn remove_prefix(&mut self, prefix: &[u8]) -> (usize, u128) {
+        let mut removed_distinct = 0usize;
+        let mut removed_cardinality = 0u128;
+        self.visit_prefix(prefix, |_path, multiplicity| {
+            removed_distinct += 1;
+            removed_cardinality += u128::from(multiplicity.get());
+        });
+        if removed_distinct != 0 {
+            self.entries.remove_branches_at(prefix, true);
+            self.entries.remove_val_at(prefix, true);
+            self.distinct_len -= removed_distinct;
+            self.cardinality -= removed_cardinality;
+        }
+        (removed_distinct, removed_cardinality)
+    }
+
     pub fn set_count(&mut self, path: &[u8], count: Option<Multiplicity>) {
         let previous = self.entries.get(path).copied();
         match (previous, count) {

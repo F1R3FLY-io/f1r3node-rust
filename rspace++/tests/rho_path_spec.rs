@@ -1,3 +1,4 @@
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use rspace_plus_plus::rspace::rho_path::{RhoPathError, RhoPathV1, encode_structural_sequence};
 
 #[test]
@@ -8,7 +9,7 @@ fn datum_paths_round_trip_all_byte_values() {
     let path = RhoPathV1::datum_key(&channel, &structure, &identity);
     let view = RhoPathV1::parse_datum(&path).unwrap();
     assert_eq!(view.channel_structure(), channel);
-    assert_eq!(view.channel_identity(), channel);
+    assert_eq!(view.channel_identity(), channel.stable_hash_bytes());
     assert_eq!(view.datum_structure(), structure);
     assert_eq!(view.datum_identity(), identity);
 }

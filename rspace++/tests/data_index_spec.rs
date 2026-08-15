@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rspace_plus_plus::rspace::data_index::RSpaceDataIndex;
+use rspace_plus_plus::rspace::data_index::{DataIndexError, RSpaceDataIndex, RSpaceDataStore};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::trace::event::Produce;
@@ -129,7 +129,6 @@ fn canonical_candidate_order_is_independent_of_insertion_order() {
 #[test]
 fn malformed_index_keys_fail_locally() {
     use rspace_plus_plus::rspace::bag::Bag;
-    use rspace_plus_plus::rspace::data_index::DataIndexError;
 
     let channel = "channel".to_string();
     let mut bag = Bag::new();
@@ -138,4 +137,65 @@ fn malformed_index_keys_fail_locally() {
     bag.insert(&malformed).unwrap();
     let index = RSpaceDataIndex::from_bag(bag);
     assert!(matches!(index.channel_entries::<_, String>(&channel), Err(DataIndexError::Path(_))));
+}
+
+#[test]
+fn data_store_distinguishes_unloaded_from_loaded_empty_channels() {
+    let channel = "channel".to_string();
+    let mut store = RSpaceDataStore::<String, String>::new();
+    assert_eq!(store.channel_data(&channel).unwrap(), None);
+    store.set_channel(channel.clone(), []).unwrap();
+    assert_eq!(store.channel_data(&channel).unwrap(), Some(Vec::new()));
+    assert_eq!(store.loaded_channel_count(), 1);
+    assert_eq!(store.loaded_records().unwrap(), vec![(channel, Vec::new())]);
+}
+
+#[test]
+fn channel_replacement_is_transactional_and_removes_the_old_subtrie() {
+    let channel = "channel".to_string();
+    let mut store = RSpaceDataStore::new();
+    store
+        .set_channel(channel.clone(), [datum("old", false, 1), datum("old", false, 1)])
+        .unwrap();
+    store
+        .set_channel(channel.clone(), [datum("new", true, 2)])
+        .unwrap();
+    let values = store.channel_data(&channel).unwrap().unwrap();
+    assert_eq!(values, vec![datum("new", true, 2)]);
+    assert_eq!(store.distinct_len(), 1);
+    assert_eq!(store.cardinality(), 1);
+}
+
+#[test]
+fn removing_an_expanded_index_decrements_only_its_multiplicity() {
+    let channel = "channel".to_string();
+    let repeated = datum("repeated", false, 1);
+    let other = datum("other", false, 2);
+    let mut store = RSpaceDataStore::new();
+    store
+        .set_channel(channel.clone(), [repeated.clone(), other.clone(), repeated.clone()])
+        .unwrap();
+    let before = store.channel_data(&channel).unwrap().unwrap();
+    let repeated_index = before.iter().position(|datum| datum == &repeated).unwrap();
+    store.remove_index(&channel, repeated_index as i32).unwrap();
+    assert_eq!(store.index().count(&channel, &repeated), 1);
+    assert_eq!(store.index().count(&channel, &other), 1);
+    assert_eq!(store.cardinality(), 2);
+}
+
+#[test]
+fn removing_an_invalid_expanded_index_is_non_mutating() {
+    let channel = "channel".to_string();
+    let value = datum("value", false, 1);
+    let mut store = RSpaceDataStore::new();
+    store.set_channel(channel.clone(), [value]).unwrap();
+    let before = store.clone();
+    assert!(matches!(
+        store.remove_index(&channel, -1),
+        Err(DataIndexError::IndexOutOfBounds {
+            index: -1,
+            cardinality: 1
+        })
+    ));
+    assert_eq!(store, before);
 }
