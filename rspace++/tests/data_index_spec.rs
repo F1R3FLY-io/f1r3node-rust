@@ -187,6 +187,44 @@ fn candidate_pool_uses_identity_bytes_for_order_and_decodes_on_first_access() {
     assert_eq!(COUNTING_VALUE_DECODES.load(Ordering::Relaxed), 1);
     assert_eq!(counted_pool.clone().candidate(0).unwrap().0, &counted);
     assert_eq!(COUNTING_VALUE_DECODES.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        counted_store
+            .channel_pool(&channel)
+            .unwrap()
+            .unwrap()
+            .candidate(0)
+            .unwrap()
+            .0,
+        &counted
+    );
+    assert_eq!(COUNTING_VALUE_DECODES.load(Ordering::Relaxed), 1);
+
+    let (_, address) = counted_pool.candidate(0).unwrap();
+    let DatumAddress::Stored(path) = address else {
+        panic!("resting data must have a PathMap address");
+    };
+    assert!(counted_store.remove_path(&path));
+    counted_store.insert(&channel, &counted).unwrap();
+    assert_eq!(
+        counted_store
+            .channel_pool(&channel)
+            .unwrap()
+            .unwrap()
+            .candidate(0)
+            .unwrap()
+            .0,
+        &counted
+    );
+    assert_eq!(COUNTING_VALUE_DECODES.load(Ordering::Relaxed), 1);
+
+    assert!(counted_store.remove_path(&path));
+    assert!(
+        counted_store
+            .channel_pool(&channel)
+            .unwrap()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

@@ -1,6 +1,7 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::marker::PhantomData;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use pathmap::PathMap;
 use pathmap::zipper::ZipperSubtries;
@@ -102,6 +103,65 @@ struct EncodedIndexedDatum {
 }
 
 #[derive(Debug, Clone)]
+struct CandidateCatalog<A: Clone> {
+    ordered: Arc<[CandidatePoolEntry<A>]>,
+    known_paths: PathMap<()>,
+    active_distinct_len: usize,
+    cardinality: u128,
+}
+
+impl<A: Clone> CandidateCatalog<A> {
+    fn from_encoded_entries(prefix_len: usize, entries: Vec<EncodedIndexedDatum>) -> Self
+    where A: ColdStoreDecode {
+        let active_distinct_len = entries.len();
+        let cardinality = entries
+            .iter()
+            .map(|entry| u128::from(entry.multiplicity.get()))
+            .sum();
+        let mut known_paths = PathMap::new();
+        let ordered = entries
+            .into_iter()
+            .map(|entry| {
+                known_paths.insert(&entry.path, ());
+                CandidatePoolEntry {
+                    storage_path: Arc::from(entry.path),
+                    relative_offset: prefix_len,
+                    identity_offset: entry.identity_offset,
+                    datum: OnceLock::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .into();
+        Self {
+            ordered,
+            known_paths,
+            active_distinct_len,
+            cardinality,
+        }
+    }
+
+    fn needs_refresh(&self) -> bool { self.active_distinct_len != self.ordered.len() }
+
+    fn record_insert(&mut self, path: &[u8], multiplicity: Multiplicity) -> bool {
+        self.cardinality += 1;
+        if multiplicity == Multiplicity::ONE {
+            if !self.known_paths.contains(path) {
+                return false;
+            }
+            self.active_distinct_len += 1;
+        }
+        true
+    }
+
+    fn record_remove(&mut self, previous: Multiplicity) {
+        self.cardinality -= 1;
+        if previous == Multiplicity::ONE {
+            self.active_distinct_len -= 1;
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct CandidatePool<A: Clone> {
     availability: Bag,
     ordered: Arc<[CandidatePoolEntry<A>]>,
@@ -122,27 +182,11 @@ impl<A: Clone + PartialEq> PartialEq for CandidatePool<A> {
 impl<A: Clone + Eq> Eq for CandidatePool<A> {}
 
 impl<A: Clone> CandidatePool<A> {
-    fn from_encoded_entries(
-        prefix_len: usize,
-        availability: Bag,
-        entries: Vec<EncodedIndexedDatum>,
-    ) -> Self
-    where
-        A: ColdStoreDecode,
-    {
-        let ordered = entries
-            .into_iter()
-            .map(|entry| CandidatePoolEntry {
-                storage_path: Arc::from(entry.path),
-                relative_offset: prefix_len,
-                identity_offset: entry.identity_offset,
-                datum: OnceLock::new(),
-            })
-            .collect::<Vec<_>>()
-            .into();
+    fn from_catalog(availability: Bag, catalog: &CandidateCatalog<A>) -> Self
+    where A: ColdStoreDecode {
         Self {
             availability,
-            ordered,
+            ordered: Arc::clone(&catalog.ordered),
             fresh: None,
             fresh_available: false,
             decode: decode_candidate::<A>,
@@ -366,22 +410,34 @@ impl RSpaceDataIndex {
         Datum<A>: CandidateOrderingBytes,
     {
         let prefix = RhoPathV1::datum_prefix(channel);
-        let entries = self.ordered_encoded_channel_entries(&prefix)?;
-        let distinct_len = entries.len();
-        let cardinality = entries
-            .iter()
-            .map(|entry| u128::from(entry.multiplicity.get()))
-            .sum();
+        let catalog = self.candidate_catalog::<A>(&prefix)?;
+        self.candidate_pool_from_catalog(&prefix, &catalog)
+    }
+
+    fn candidate_catalog<A>(&self, prefix: &[u8]) -> Result<CandidateCatalog<A>, DataIndexError>
+    where A: Clone + ColdStoreDecode {
+        self.ordered_encoded_channel_entries(prefix)
+            .map(|entries| CandidateCatalog::from_encoded_entries(prefix.len(), entries))
+    }
+
+    fn candidate_pool_from_catalog<A>(
+        &self,
+        prefix: &[u8],
+        catalog: &CandidateCatalog<A>,
+    ) -> Result<CandidatePool<A>, DataIndexError>
+    where
+        A: Clone + ColdStoreDecode,
+    {
         let availability = Bag::from_pathmap_with_metrics(
             self.bag
                 .as_pathmap()
-                .read_zipper_at_borrowed_path(&prefix)
+                .read_zipper_at_borrowed_path(prefix)
                 .make_map()
                 .unwrap_or_default(),
-            distinct_len,
-            cardinality,
+            catalog.active_distinct_len,
+            catalog.cardinality,
         );
-        Ok(CandidatePool::from_encoded_entries(prefix.len(), availability, entries))
+        Ok(CandidatePool::from_catalog(availability, catalog))
     }
 
     fn ordered_encoded_channel_entries(
@@ -425,36 +481,44 @@ impl RSpaceDataIndex {
     }
 }
 
-pub struct RSpaceDataStore<C, A> {
+pub struct RSpaceDataStore<C, A: Clone> {
     index: RSpaceDataIndex,
     loaded_channels: PathMap<()>,
     loaded_channel_count: usize,
+    candidate_catalogs: RwLock<HashMap<Vec<u8>, Arc<CandidateCatalog<A>>>>,
     marker: PhantomData<fn() -> (C, A)>,
 }
 
-impl<C, A> Clone for RSpaceDataStore<C, A> {
+impl<C, A: Clone> Clone for RSpaceDataStore<C, A> {
     fn clone(&self) -> Self {
         Self {
             index: self.index.clone(),
             loaded_channels: self.loaded_channels.clone(),
             loaded_channel_count: self.loaded_channel_count,
+            candidate_catalogs: RwLock::new(
+                self.candidate_catalogs
+                    .read()
+                    .expect("candidate catalog read lock")
+                    .clone(),
+            ),
             marker: PhantomData,
         }
     }
 }
 
-impl<C, A> Default for RSpaceDataStore<C, A> {
+impl<C, A: Clone> Default for RSpaceDataStore<C, A> {
     fn default() -> Self {
         Self {
             index: RSpaceDataIndex::new(),
             loaded_channels: PathMap::new(),
             loaded_channel_count: 0,
+            candidate_catalogs: RwLock::new(HashMap::new()),
             marker: PhantomData,
         }
     }
 }
 
-impl<C, A> RSpaceDataStore<C, A> {
+impl<C, A: Clone> RSpaceDataStore<C, A> {
     pub fn new() -> Self { Self::default() }
 
     pub fn index(&self) -> &RSpaceDataIndex { &self.index }
@@ -471,6 +535,10 @@ impl<C, A> RSpaceDataStore<C, A> {
         self.index = RSpaceDataIndex::new();
         self.loaded_channels = PathMap::new();
         self.loaded_channel_count = 0;
+        self.candidate_catalogs
+            .get_mut()
+            .expect("candidate catalog write lock")
+            .clear();
     }
 
     pub fn is_loaded(&self, channel: &C) -> bool
@@ -491,6 +559,11 @@ impl<C, A> RSpaceDataStore<C, A> {
         let mut replacement = self.clone();
         replacement.index.clear_channel(&channel);
         let marker = RhoPathV1::datum_prefix(&channel);
+        replacement
+            .candidate_catalogs
+            .get_mut()
+            .expect("candidate catalog write lock")
+            .remove(&marker);
         if replacement.loaded_channels.insert(&marker, ()).is_none() {
             replacement.loaded_channel_count += 1;
         }
@@ -506,8 +579,18 @@ impl<C, A> RSpaceDataStore<C, A> {
         C: RhoPathEncode,
         A: Clone + Serialize + RhoPathEncode,
     {
-        let (_, multiplicity) = self.index.insert(channel, datum)?;
+        let (path, multiplicity) = self.index.insert(channel, datum)?;
         let marker = RhoPathV1::datum_prefix(channel);
+        let catalogs = self
+            .candidate_catalogs
+            .get_mut()
+            .expect("candidate catalog write lock");
+        if catalogs
+            .get_mut(&marker)
+            .is_some_and(|catalog| !Arc::make_mut(catalog).record_insert(&path, multiplicity))
+        {
+            catalogs.remove(&marker);
+        }
         if self.loaded_channels.insert(&marker, ()).is_none() {
             self.loaded_channel_count += 1;
         }
@@ -548,17 +631,61 @@ impl<C, A> RSpaceDataStore<C, A> {
         Datum<A>: CandidateOrderingBytes,
     {
         if self.is_loaded(channel) {
-            self.index.candidate_pool(channel).map(Some)
+            let prefix = RhoPathV1::datum_prefix(channel);
+            let cached = self
+                .candidate_catalogs
+                .read()
+                .expect("candidate catalog read lock")
+                .get(&prefix)
+                .filter(|catalog| !catalog.needs_refresh())
+                .cloned();
+            let catalog = match cached {
+                Some(catalog) => catalog,
+                None => {
+                    let mut catalogs = self
+                        .candidate_catalogs
+                        .write()
+                        .expect("candidate catalog write lock");
+                    if catalogs
+                        .get(&prefix)
+                        .is_none_or(|catalog| catalog.needs_refresh())
+                    {
+                        catalogs.insert(
+                            prefix.clone(),
+                            Arc::new(self.index.candidate_catalog(&prefix)?),
+                        );
+                    }
+                    Arc::clone(
+                        catalogs
+                            .get(&prefix)
+                            .expect("candidate catalog must exist after insertion"),
+                    )
+                }
+            };
+            self.index
+                .candidate_pool_from_catalog(&prefix, catalog.as_ref())
+                .map(Some)
         } else {
             Ok(None)
         }
     }
 
     pub fn remove_path(&mut self, path: &[u8]) -> bool {
-        self.index.count_path(path) != 0 && {
-            self.index.remove_path(path);
-            true
+        let Some(previous) = Multiplicity::new(self.index.count_path(path)).ok() else {
+            return false;
+        };
+        self.index.remove_path(path);
+        if let Ok(view) = RhoPathV1::parse_datum(path) {
+            if let Some(catalog) = self
+                .candidate_catalogs
+                .get_mut()
+                .expect("candidate catalog write lock")
+                .get_mut(&path[..view.channel_prefix_len()])
+            {
+                Arc::make_mut(catalog).record_remove(previous);
+            }
         }
+        true
     }
 
     pub fn remove_index(&mut self, channel: &C, index: i32) -> Result<(), DataIndexError>
@@ -573,7 +700,7 @@ impl<C, A> RSpaceDataStore<C, A> {
             .map_err(|_| DataIndexError::IndexOutOfBounds { index, cardinality })?;
         for entry in entries {
             if remaining < entry.multiplicity.get() {
-                self.index.remove_path(&entry.path);
+                self.remove_path(&entry.path);
                 return Ok(());
             }
             remaining -= entry.multiplicity.get();
@@ -598,7 +725,7 @@ impl<C, A> RSpaceDataStore<C, A> {
     }
 }
 
-impl<C, A> fmt::Debug for RSpaceDataStore<C, A> {
+impl<C, A: Clone> fmt::Debug for RSpaceDataStore<C, A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RSpaceDataStore")
             .field("loaded_channel_count", &self.loaded_channel_count)
@@ -608,7 +735,7 @@ impl<C, A> fmt::Debug for RSpaceDataStore<C, A> {
     }
 }
 
-impl<C, A> PartialEq for RSpaceDataStore<C, A> {
+impl<C, A: Clone> PartialEq for RSpaceDataStore<C, A> {
     fn eq(&self, other: &Self) -> bool {
         self.index == other.index &&
             self.loaded_channel_count == other.loaded_channel_count &&
@@ -618,7 +745,7 @@ impl<C, A> PartialEq for RSpaceDataStore<C, A> {
     }
 }
 
-impl<C, A> Eq for RSpaceDataStore<C, A> {}
+impl<C, A: Clone> Eq for RSpaceDataStore<C, A> {}
 
 fn channel_cardinality<A: Clone>(entries: &[IndexedDatum<A>]) -> u128 {
     entries

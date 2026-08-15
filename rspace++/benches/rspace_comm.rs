@@ -245,6 +245,8 @@ criterion_group! {
     name = benches;
     config = Criterion::default()
         .sample_size(51)
+        .confidence_level(0.99)
+        .significance_level(0.01)
         .warm_up_time(Duration::from_secs(2))
         .measurement_time(Duration::from_secs(5));
     targets = bench_rspace_comm

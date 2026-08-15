@@ -71,6 +71,7 @@ pub struct DatumPathView<'a> {
     encoded_channel_identity: &'a [u8],
     encoded_datum_structure: &'a [u8],
     datum_identity: &'a [u8],
+    channel_prefix_len: usize,
 }
 
 impl<'a> DatumPathView<'a> {
@@ -81,6 +82,8 @@ impl<'a> DatumPathView<'a> {
     pub fn datum_structure(&self) -> Vec<u8> { decode_frame(self.encoded_datum_structure) }
 
     pub const fn datum_identity(&self) -> &'a [u8] { self.datum_identity }
+
+    pub const fn channel_prefix_len(&self) -> usize { self.channel_prefix_len }
 }
 
 pub struct RhoPathV1;
@@ -120,12 +123,14 @@ impl RhoPathV1 {
 
     pub fn parse_datum(path: &[u8]) -> Result<DatumPathView<'_>, RhoPathError> {
         let (channel, mut cursor) = parse_channel(path)?;
+        let channel_prefix_len = cursor;
         let datum_structure = take_frame(path, &mut cursor)?;
         Ok(DatumPathView {
             encoded_channel_structure: channel.encoded_channel_structure,
             encoded_channel_identity: channel.encoded_channel_identity,
             encoded_datum_structure: datum_structure,
             datum_identity: &path[cursor..],
+            channel_prefix_len,
         })
     }
 
