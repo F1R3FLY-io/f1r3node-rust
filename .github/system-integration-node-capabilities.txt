@@ -7,5 +7,6 @@ expired-deploy-admission
 finality-stall-recovery
 observer-exploratory-backpressure
 observer-missing-block-retry
+readonly-observer-api-catchup
 slow-peer-notification-quorum
 transient-peer-liveness
