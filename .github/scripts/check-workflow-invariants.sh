@@ -455,6 +455,7 @@ finalizer_body = finalizer.dig("steps", 0, "run").to_s
 puts "full integration preflight is missing" unless preflight
 puts "full integration preflight must skip canaries" unless preflight&.dig("if").to_s.include?("canary != 'true'")
 puts "full integration preflight must use the bounded driver" unless preflight&.dig("run").to_s.include?("run-integration-preflight.sh")
+puts "full integration preflight must use the harness-owned suite profile" unless preflight&.dig("env", "PREFLIGHT_PROFILE_FILE").to_s.end_with?("/system-integration/integration-tests/test/full-suite.txt")
 puts "full integration preflight must subtract its elapsed time from the soak" unless preflight&.dig("run").to_s.include?("DURATION_SECONDS - elapsed")
 puts "preflight-only runs still enforce a soak reserve" unless preflight&.dig("run").to_s.include?('[ "$PREFLIGHT_ONLY" != "true" ] && [ "$remaining" -lt 3600 ]')
 puts "preflight-only pytest does not use the absolute window" unless preflight&.dig("run").to_s.include?("PREFLIGHT_END_EPOCH - started - 600")
@@ -494,14 +495,14 @@ publisher_condition = jobs.dig("perf_report", "if").to_s
 puts "dashboard publication runs for preflight-only dispatches" unless publisher_condition.include?("preflight_only != 'true'")
 puts "dashboard publication does not require a completed preflight" unless publisher_condition.include?("needs.soak.outputs.preflight == 'passed'")
 puts "dashboard publication does not require clean soak telemetry" unless publisher_condition.include?("needs.soak.outputs.telemetry_reset == 'success'")
-profile = File.readlines(ARGV[1], chomp: true).reject(&:empty?)
-deselects = File.read(ARGV[2]).scan(/--deselect\s+([^\s\\]+)/).flatten
-puts "soak preflight profile differs from regular CI exclusions" unless profile == deselects
-runner = File.read(ARGV[3])
+runner = File.read(ARGV[1])
 puts "preflight is not resource-limited to one worker" unless runner.include?("-n 1 --dist=loadgroup")
+puts "preflight does not collect the complete suite before execution" unless runner.include?("--collect-only -q")
+puts "preflight does not execute capability-gated tests" unless runner.scan("--run-all-node-capability-tests").length == 2
+puts "preflight can pass after running fewer tests than it collected" unless runner.include?("tests == expected_tests")
 puts "preflight does not reject skipped tests" unless runner.include?("skipped == 0")
-puts "preflight does not require one collected test per selector" unless runner.include?("tests >= minimum_tests")
-status_doc = YAML.load_file(ARGV[4])
+puts "preflight runner contains a deselection" if runner.include?("--deselect")
+status_doc = YAML.load_file(ARGV[2])
 status_job = status_doc.dig("jobs", "report")
 status_body = status_job&.dig("steps", 0, "run").to_s
 puts "isolated status workflow lacks status write permission" unless status_doc.dig("permissions", "statuses") == "write"
@@ -513,8 +514,6 @@ puts "isolated status workflow does not reject older source runs" unless status_
 RUBY
 soak_errors="$(ruby "$scratch/check-canary.rb" \
 	.github/workflows/merge-recovery-soak.yml \
-	.github/system-integration-soak-preflight.txt \
-	.github/workflows/_integration-pipeline.yml \
 	scripts/run-integration-preflight.sh \
 	.github/workflows/soak-preflight-status.yml)"
 if [ -n "$soak_errors" ]; then

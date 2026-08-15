@@ -1371,7 +1371,7 @@ jobs:
           F1R3FLY_NODE_DEFAULTS_CONF: ${{ github.workspace }}/node-under-test/node/src/main/resources/defaults.conf
           SYSTEM_INTEGRATION_DIR: ${{ github.workspace }}/system-integration
           NODE_REPO_DIR: ${{ github.workspace }}/node-under-test
-          PREFLIGHT_PROFILE_FILE: ${{ github.workspace }}/ci-control/.github/system-integration-soak-preflight.txt
+          PREFLIGHT_PROFILE_FILE: ${{ github.workspace }}/system-integration/integration-tests/test/full-suite.txt
           PREFLIGHT_OUTPUT_DIR: /tmp/merge-recovery-soak/preflight
           PREFLIGHT_PROVIDER: docker
           PREFLIGHT_TIMEOUT_SECONDS: "10800"
