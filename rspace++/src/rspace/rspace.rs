@@ -27,6 +27,7 @@ use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::hashing::stable_hash_provider::StableHashSerialize;
 use super::history::history_reader::HistoryReader;
 use super::history::instances::radix_history::RadixHistory;
+use super::hot_store::ContinuationVersion;
 use super::logging::{BasicLogger, StepCommObserver};
 use super::r#match::Match;
 use super::metrics_constants::{
@@ -35,6 +36,7 @@ use super::metrics_constants::{
     RSPACE_METRICS_SOURCE, RSPACE_PRODUCE_UNCONSUMED_DATUM_STORED_METRIC,
 };
 use super::replay_rspace::ReplayRSpace;
+use super::retained_set_automaton::RetainedSetAutomaton;
 use super::rho_path::RhoPathEncode;
 use super::rspace_interface::{
     ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult, RSpaceResult,
@@ -57,6 +59,12 @@ pub struct RSpaceStore {
     pub cold: Arc<dyn KeyValueStore>,
 }
 
+#[derive(Clone)]
+struct CachedRetainedSetAutomaton {
+    version: ContinuationVersion,
+    automaton: RetainedSetAutomaton,
+}
+
 #[repr(C)]
 #[derive(Clone)]
 pub struct RSpace<C, P, A, K> {
@@ -76,6 +84,7 @@ pub struct RSpace<C, P, A, K> {
     /// has no `extern "C"` consumers); appended last so existing field offsets
     /// are unchanged.
     step_observer: Option<Arc<dyn StepCommObserver<C, P, A, K>>>,
+    retained_set_automata: Arc<std::sync::RwLock<HashMap<Vec<C>, CachedRetainedSetAutomaton>>>,
 }
 
 impl<C, P, A, K> RSpace<C, P, A, K>
@@ -390,6 +399,10 @@ where
         );
 
         *self.store.write().expect("store write lock") = Arc::new(hot_store);
+        self.retained_set_automata
+            .write()
+            .expect("retained automata write lock")
+            .clear();
         *self.event_log.lock().expect("event log lock") = checkpoint.log;
         *self.produce_counter.lock().expect("produce counter lock") = checkpoint.produce_counter;
 
@@ -623,6 +636,7 @@ where
             phase_a_locks: Arc::new(DashMap::new()),
             phase_b_locks: Arc::new(DashMap::new()),
             step_observer: None,
+            retained_set_automata: Arc::new(std::sync::RwLock::new(HashMap::new())),
         }
     }
 
@@ -969,10 +983,30 @@ where
         bat_channel: C,
         data: Datum<A>,
     ) -> MaybeProduceCandidate<C, P, A, K> {
+        let store = self.get_store();
+        let fresh_datum_is_required = store.get_candidate_pool(&bat_channel).is_empty();
         let fetch_matching_continuations =
             |channels: Vec<C>| -> Vec<(WaitingContinuation<P, K>, i32)> {
-                let continuations = self.get_store().get_continuations(&channels);
-                self.shuffle_with_index(continuations)
+                let (version, continuations) = store.get_continuations_versioned(&channels);
+                let selection = self.retained_candidate_selection(
+                    &channels,
+                    &continuations,
+                    version,
+                    &bat_channel,
+                    &data.a,
+                    fresh_datum_is_required,
+                );
+                let mut ordered = self.shuffle_with_index(continuations);
+                if let Some(selection) = selection {
+                    ordered.retain(|(_, index)| {
+                        usize::try_from(*index)
+                            .ok()
+                            .and_then(|index| selection.get(index))
+                            .copied()
+                            .unwrap_or(false)
+                    });
+                }
+                ordered
             };
 
         /*
@@ -987,7 +1021,7 @@ where
          * In this version, we also add the produced data directly to this cache.
          */
         let fetch_matching_data = |channel| -> (C, CandidatePool<A>) {
-            let mut pool = self.get_store().get_candidate_pool(&channel);
+            let mut pool = store.get_candidate_pool(&channel);
             if channel == bat_channel {
                 pool.prepend_fresh(data.clone());
             }
@@ -999,6 +1033,59 @@ where
             fetch_matching_continuations,
             fetch_matching_data,
         )
+    }
+
+    fn retained_candidate_selection(
+        &self,
+        channels: &[C],
+        candidates: &[WaitingContinuation<P, K>],
+        version: Option<ContinuationVersion>,
+        bat_channel: &C,
+        datum: &A,
+        fresh_datum_is_required: bool,
+    ) -> Option<Vec<bool>> {
+        if !fresh_datum_is_required {
+            return None;
+        }
+        let datum_path = self.matcher.retained_datum_path(datum)?;
+        let bind_positions = channels
+            .iter()
+            .enumerate()
+            .filter_map(|(position, channel)| (channel == bat_channel).then_some(position))
+            .collect::<Vec<_>>();
+        if bind_positions.is_empty() {
+            return None;
+        }
+
+        let automaton = match version {
+            Some(version) => {
+                let cached = self
+                    .retained_set_automata
+                    .read()
+                    .expect("retained automata read lock")
+                    .get(channels)
+                    .filter(|cached| {
+                        cached.version == version &&
+                            cached.automaton.candidate_count() == candidates.len()
+                    })
+                    .cloned();
+                if let Some(cached) = cached {
+                    cached.automaton
+                } else {
+                    let automaton = RetainedSetAutomaton::compile(&**self.matcher, candidates);
+                    self.retained_set_automata
+                        .write()
+                        .expect("retained automata write lock")
+                        .insert(channels.to_vec(), CachedRetainedSetAutomaton {
+                            version,
+                            automaton: automaton.clone(),
+                        });
+                    automaton
+                }
+            }
+            None => RetainedSetAutomaton::compile(&**self.matcher, candidates),
+        };
+        Some(automaton.matching_candidates(&datum_path, &bind_positions))
     }
 
     /// `E(S)` for this space — see
@@ -1340,6 +1427,10 @@ where
     ) {
         let next_hot_store = HotStoreInstances::create_from_hr(history_reader.base());
         *self.store.write().expect("store write lock") = Arc::new(next_hot_store);
+        self.retained_set_automata
+            .write()
+            .expect("retained automata write lock")
+            .clear();
     }
 
     // The public result stays value-shaped (`RSpaceResult<C, A>` /

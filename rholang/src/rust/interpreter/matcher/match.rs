@@ -1,10 +1,12 @@
 use std::marker::{Send, Sync};
 
 use models::rhoapi::expr::ExprInstance;
+use models::rust::canonical_path::encode_trie_path;
 use models::rust::rholang::implicits::vector_par;
 use models::rust::utils::{new_elist_expr, to_vec};
 use rho_pure_eval::{Env as PureEnv, EvalError, SpatialMatch};
 use rspace_plus_plus::rspace::r#match::Match;
+use rspace_plus_plus::rspace::rho_path::{encode_structural_sequence, RhoPathEncode};
 
 use super::exports::*;
 use super::fold_match::FoldMatch;
@@ -66,6 +68,28 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
             }
             None => None,
         }
+    }
+
+    fn retained_pattern_path(&self, pattern: &BindPattern) -> Option<Vec<u8>> {
+        if pattern.remainder.is_some()
+            || pattern.free_count != 0
+            || pattern
+                .patterns
+                .iter()
+                .any(|par| par.connective_used || !par.locally_free.is_empty())
+        {
+            return None;
+        }
+        let paths = pattern
+            .patterns
+            .iter()
+            .map(encode_trie_path)
+            .collect::<Vec<_>>();
+        Some(encode_structural_sequence(paths.iter().map(Vec::as_slice)))
+    }
+
+    fn retained_datum_path(&self, datum: &ListParWithRandom) -> Option<Vec<u8>> {
+        Some(datum.rho_path_structure())
     }
 
     /// Cross-channel `where`-clause guard. Called by the matcher

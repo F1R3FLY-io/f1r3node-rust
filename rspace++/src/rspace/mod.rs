@@ -23,6 +23,7 @@ pub mod tuplespace_interface;
 pub mod replay_rspace_interface;
 pub mod errors;
 pub mod replay_rspace;
+pub mod retained_set_automaton;
 pub mod merger;
 pub mod reporting_rspace;
 pub mod reporting_transformer;

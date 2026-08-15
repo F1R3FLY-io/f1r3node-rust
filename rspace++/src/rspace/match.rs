@@ -22,6 +22,10 @@
 pub trait Match<P, A, K>: Send + Sync {
     fn get(&self, p: &P, a: &A) -> Option<A>;
 
+    fn retained_pattern_path(&self, _pattern: &P) -> Option<Vec<u8>> { None }
+
+    fn retained_datum_path(&self, _datum: &A) -> Option<Vec<u8>> { None }
+
     /// Called once per candidate consume after every spatial bind has
     /// matched and the continuation is about to commit. Default is
     /// always-true (no guard, no veto). Returning `false` rolls the

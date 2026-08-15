@@ -55,6 +55,12 @@ const HOT_STORE_HISTORY_CACHE_METRICS_UPDATE_INTERVAL_MS: u64 = 250;
 // See rspace/src/main/scala/coop/rchain/rspace/HotStore.scala
 pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + Send {
     fn get_continuations(&self, channels: &[C]) -> Vec<WaitingContinuation<P, K>>;
+    fn get_continuations_versioned(
+        &self,
+        channels: &[C],
+    ) -> (Option<ContinuationVersion>, Vec<WaitingContinuation<P, K>>) {
+        (None, self.get_continuations(channels))
+    }
     fn put_continuation(&self, channels: &[C], wc: WaitingContinuation<P, K>) -> Option<bool>;
     fn install_continuation(&self, channels: &[C], wc: WaitingContinuation<P, K>) -> Option<()>;
     fn remove_continuation(&self, channels: &[C], index: i32) -> Option<()>;
@@ -81,6 +87,25 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
     fn is_empty(&self) -> bool;
 
     fn set_state(&self, state: HotStoreState<C, P, A, K>);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContinuationVersion {
+    generation: u64,
+    group_revision: u64,
+}
+
+fn with_installed<P: Clone, K: Clone>(
+    installed: Option<WaitingContinuation<P, K>>,
+    continuations: Vec<WaitingContinuation<P, K>>,
+) -> Vec<WaitingContinuation<P, K>> {
+    let Some(installed) = installed else {
+        return continuations;
+    };
+    let mut result = Vec::with_capacity(continuations.len() + 1);
+    result.push(installed);
+    result.extend(continuations);
+    result
 }
 
 pub fn new_hashmap<K: std::cmp::Eq + std::hash::Hash, V>() -> HashMap<K, V> { HashMap::new() }
@@ -112,6 +137,8 @@ where
     data: RSpaceDataStore<C, A>,
     joins: HashMap<C, Vec<Vec<C>>>,
     installed_joins: HashMap<C, Vec<Vec<C>>>,
+    continuation_generation: u64,
+    continuation_revisions: HashMap<Vec<C>, u64>,
 }
 
 impl<C, P, A, K> InMemHotStoreState<C, P, A, K>
@@ -132,6 +159,8 @@ where
             data,
             joins: snapshot.joins,
             installed_joins: snapshot.installed_joins,
+            continuation_generation: 0,
+            continuation_revisions: HashMap::new(),
         })
     }
 
@@ -160,7 +189,44 @@ where
             data: RSpaceDataStore::new(),
             joins: HashMap::new(),
             installed_joins: HashMap::new(),
+            continuation_generation: 0,
+            continuation_revisions: HashMap::new(),
         }
+    }
+}
+
+impl<C, P, A, K> InMemHotStoreState<C, P, A, K>
+where
+    C: Clone + Eq + Hash,
+    A: Clone,
+    P: Clone,
+    K: Clone,
+{
+    fn continuation_version(&self, channels: &[C]) -> Option<ContinuationVersion> {
+        let group_revision = self
+            .continuation_revisions
+            .get(channels)
+            .copied()
+            .unwrap_or(0);
+        (self.continuation_generation != u64::MAX && group_revision != u64::MAX).then_some(
+            ContinuationVersion {
+                generation: self.continuation_generation,
+                group_revision,
+            },
+        )
+    }
+
+    fn bump_continuation_revision(&mut self, channels: &[C]) {
+        let revision = self
+            .continuation_revisions
+            .entry(channels.to_vec())
+            .or_insert(0);
+        *revision = revision.saturating_add(1);
+    }
+
+    fn bump_continuation_generation(&mut self) {
+        self.continuation_generation = self.continuation_generation.saturating_add(1);
+        self.continuation_revisions.clear();
     }
 }
 
@@ -251,47 +317,37 @@ where
     // Continuations
 
     fn get_continuations(&self, channels: &[C]) -> Vec<WaitingContinuation<P, K>> {
+        self.get_continuations_versioned(channels).1
+    }
+
+    fn get_continuations_versioned(
+        &self,
+        channels: &[C],
+    ) -> (Option<ContinuationVersion>, Vec<WaitingContinuation<P, K>>) {
         metrics::counter!(HOT_STORE_GET_CONT_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(1);
         let state = self.state.read().expect("hot store state read lock");
-        let continuations = state.continuations.get(channels).cloned();
-        let installed = state.installed_continuations.get(channels).cloned();
-        drop(state);
-
-        match (continuations, installed) {
-            (Some(conts), Some(inst)) => {
-                let mut result = Vec::with_capacity(conts.len() + 1);
-                result.push(inst);
-                result.extend(conts);
-                result
-            }
-            (Some(conts), None) => conts,
-            (None, Some(inst)) => {
-                metrics::counter!(HOT_STORE_GET_CONT_HISTORY_FILL_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                    .increment(1);
-                let from_history_store = self.get_cont_from_history_store(channels);
-                self.state
-                    .write()
-                    .expect("hot store state write lock")
-                    .continuations
-                    .insert(channels.to_vec(), from_history_store.clone());
-                let mut result = Vec::with_capacity(from_history_store.len() + 1);
-                result.push(inst);
-                result.extend(from_history_store);
-                result
-            }
-            (None, None) => {
-                metrics::counter!(HOT_STORE_GET_CONT_HISTORY_FILL_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                    .increment(1);
-                let from_history_store = self.get_cont_from_history_store(channels);
-                self.state
-                    .write()
-                    .expect("hot store state write lock")
-                    .continuations
-                    .insert(channels.to_vec(), from_history_store.clone());
-                from_history_store
-            }
+        if let Some(continuations) = state.continuations.get(channels) {
+            let version = state.continuation_version(channels);
+            let result = with_installed(
+                state.installed_continuations.get(channels).cloned(),
+                continuations.clone(),
+            );
+            return (version, result);
         }
+        drop(state);
+        metrics::counter!(HOT_STORE_GET_CONT_HISTORY_FILL_METRIC, "source" => RSPACE_METRICS_SOURCE)
+            .increment(1);
+        let from_history_store = self.get_cont_from_history_store(channels);
+        let mut state = self.state.write().expect("hot store state write lock");
+        let continuations = state
+            .continuations
+            .entry(channels.to_vec())
+            .or_insert(from_history_store);
+        let result = continuations.clone();
+        let installed = state.installed_continuations.get(channels).cloned();
+        let version = state.continuation_version(channels);
+        (version, with_installed(installed, result))
     }
 
     fn put_continuation(&self, channels: &[C], wc: WaitingContinuation<P, K>) -> Option<bool> {
@@ -361,17 +417,18 @@ where
                 vacant.insert(new_continuations);
             }
         }
+        if inserted {
+            state.bump_continuation_revision(channels);
+        }
         metrics::counter!(HOT_STORE_PUT_CONT_TIME_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(__put_start.elapsed().as_nanos() as u64);
         Some(inserted)
     }
 
     fn install_continuation(&self, channels: &[C], wc: WaitingContinuation<P, K>) -> Option<()> {
-        self.state
-            .write()
-            .expect("hot store state write lock")
-            .installed_continuations
-            .insert(channels.to_vec(), wc);
+        let mut state = self.state.write().expect("hot store state write lock");
+        state.installed_continuations.insert(channels.to_vec(), wc);
+        state.bump_continuation_revision(channels);
         Some(())
     }
 
@@ -381,7 +438,7 @@ where
         let removing_installed = is_installed && index == 0;
         let removed_index = if is_installed { index - 1 } else { index };
 
-        if removing_installed {
+        let removed = if removing_installed {
             warn!("Attempted to remove an installed continuation");
             None
         } else {
@@ -412,7 +469,11 @@ where
                     }
                 }
             }
+        };
+        if removed.is_some() {
+            state.bump_continuation_revision(channels);
         }
+        removed
     }
 
     // Data
@@ -858,6 +919,7 @@ where
 
     fn clear(&self) {
         let mut state = self.state.write().expect("hot store state write lock");
+        state.bump_continuation_generation();
         state.continuations.clear();
         state.installed_continuations.clear();
         state.data.clear();
@@ -909,12 +971,15 @@ where
     }
 
     fn set_state(&self, new_state: HotStoreState<C, P, A, K>) {
-        *self
+        let mut state = self
             .state
             .write()
-            .expect("hot store state write lock for set_state") =
-            InMemHotStoreState::from_snapshot(new_state)
-                .expect("snapshot data must fit the PathMap multiplicity model");
+            .expect("hot store state write lock for set_state");
+        let generation = state.continuation_generation.saturating_add(1);
+        let mut replacement = InMemHotStoreState::from_snapshot(new_state)
+            .expect("snapshot data must fit the PathMap multiplicity model");
+        replacement.continuation_generation = generation;
+        *state = replacement;
     }
 }
 
