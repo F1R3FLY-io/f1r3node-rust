@@ -128,6 +128,9 @@ pub struct PeersDiscovery {
     #[serde(rename = "heartbeat-batch-size")]
     pub heartbeat_batch_size: u32,
 
+    #[serde(rename = "heartbeat-failure-threshold")]
+    pub heartbeat_failure_threshold: u32,
+
     #[serde(rename = "init-wait-loop-interval", deserialize_with = "de_duration")]
     pub init_wait_loop_interval: Duration,
 }

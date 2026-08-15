@@ -1,8 +1,10 @@
 // See comm/src/main/scala/coop/rchain/comm/rp/Connect.scala
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
+use futures::future::join_all;
+use prost::bytes::Bytes;
 use rand::seq::SliceRandom;
 use tracing::{info, warn};
 
@@ -17,6 +19,75 @@ use crate::rust::rp::rp_conf::RPConf;
 use crate::rust::transport::transport_layer::TransportLayer;
 
 pub type Connection = PeerNode;
+
+/// Outcome of recording one failed heartbeat against a peer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeartbeatFailure {
+    /// The streak is short of the threshold, so the peer keeps its connection.
+    Retained { streak: usize, threshold: usize },
+    /// The streak reached the threshold; the peer is evicted and its count cleared.
+    Evicted,
+}
+
+/// Consecutive heartbeat failures per peer, and the streak length that evicts.
+///
+/// A peer survives until it fails `threshold` heartbeats in a row; any success
+/// clears its count. The caller owns one tracker for the lifetime of its cleanup
+/// loop — a tracker rebuilt each pass would evict on first failure.
+#[derive(Debug)]
+pub struct PeerLivenessTracker {
+    streaks: HashMap<Bytes, usize>,
+    threshold: usize,
+}
+
+impl PeerLivenessTracker {
+    /// Rejects a zero threshold: it would name a streak no peer can reach, and
+    /// silently clamping it hides a misconfiguration behind eviction behaviour
+    /// nobody asked for.
+    pub fn new(threshold: u32) -> Result<Self, CommError> {
+        if threshold == 0 {
+            return Err(CommError::ConfigError(
+                "heartbeat failure threshold must be at least 1".to_string(),
+            ));
+        }
+
+        Ok(Self {
+            streaks: HashMap::new(),
+            threshold: threshold as usize,
+        })
+    }
+
+    pub fn threshold(&self) -> usize { self.threshold }
+
+    /// Current consecutive-failure count for a peer; zero when it has none.
+    pub fn streak(&self, peer_id: &Bytes) -> usize {
+        self.streaks.get(peer_id).copied().unwrap_or(0)
+    }
+
+    pub fn record_success(&mut self, peer_id: &Bytes) { self.streaks.remove(peer_id); }
+
+    pub fn record_failure(&mut self, peer_id: &Bytes) -> HeartbeatFailure {
+        let streak = self.streaks.entry(peer_id.clone()).or_insert(0);
+        *streak += 1;
+
+        if *streak >= self.threshold {
+            self.streaks.remove(peer_id);
+            HeartbeatFailure::Evicted
+        } else {
+            HeartbeatFailure::Retained {
+                streak: *streak,
+                threshold: self.threshold,
+            }
+        }
+    }
+
+    /// Drop counts for peers that are no longer connected, bounding the map to
+    /// the live connection set.
+    pub fn retain_connected(&mut self, connected: &HashSet<Bytes>) {
+        self.streaks
+            .retain(|peer_id, _| connected.contains(peer_id));
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Connections(pub Vec<Connection>);
@@ -175,48 +246,61 @@ impl ConnectionsCell {
 /// re-establish the connection on the next discovery cycle. Removing it is
 /// irreversible and strands the node if no other peers are known.
 ///
+/// A peer is removed only after `liveness` records enough consecutive failures;
+/// the tracker must outlive the call for that streak to accumulate.
+///
 /// Returns tuple of (number of failed peers, list of failed peers).
-pub async fn clear_connections<T: TransportLayer>(
+pub async fn clear_connections<T>(
     connections_cell: &ConnectionsCell,
     conf: &RPConf,
     transport: &T,
     node_discovery: &dyn crate::rust::discovery::node_discovery::NodeDiscovery,
-) -> Result<(usize, Vec<PeerNode>), CommError> {
+    liveness: &mut PeerLivenessTracker,
+) -> Result<(usize, Vec<PeerNode>), CommError>
+where
+    T: TransportLayer + Sync,
+{
     let connections = connections_cell.read()?;
     let num_to_ping = conf.clear_connections.num_of_connections_pinged;
+    // Only the first `num_to_ping` peers are probed, and both successful and
+    // retained peers are appended to the back below, so the list rotates. Beyond
+    // that many connections a streak spans rotations rather than consecutive
+    // cleanup intervals.
     let to_ping = connections.take(num_to_ping);
+    let connected_ids: HashSet<Bytes> =
+        connections.iter().map(|peer| peer.id.key.clone()).collect();
+    liveness.retain_connected(&connected_ids);
 
-    let mut results = Vec::new();
-
-    // Send heartbeats to each peer
-    for peer in to_ping.iter() {
+    let results = join_all(to_ping.iter().cloned().map(|peer| {
         let heartbeat_msg = protocol_helper::heartbeat(&conf.local, &conf.network_id);
-        let result = transport.send(peer, &heartbeat_msg).await;
-        results.push((peer.clone(), result));
+        async move {
+            let result = transport.send(&peer, &heartbeat_msg).await;
+            (peer, result)
+        }
+    }))
+    .await;
+
+    let mut retained_peers = Vec::new();
+    let mut failed_peers = Vec::new();
+
+    for (peer, result) in results {
+        match result {
+            Ok(()) => {
+                liveness.record_success(&peer.id.key);
+                retained_peers.push(peer);
+            }
+            Err(error) => match liveness.record_failure(&peer.id.key) {
+                HeartbeatFailure::Evicted => failed_peers.push(peer),
+                HeartbeatFailure::Retained { streak, threshold } => {
+                    warn!(
+                        "Heartbeat to {} failed ({}/{}); retaining connection: {}",
+                        peer, streak, threshold, error
+                    );
+                    retained_peers.push(peer);
+                }
+            },
+        }
     }
-
-    // Separate successful and failed peers
-    let successful_peers: Vec<PeerNode> = results
-        .iter()
-        .filter_map(|(peer, result)| {
-            if result.is_ok() {
-                Some(peer.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    let failed_peers: Vec<PeerNode> = results
-        .iter()
-        .filter_map(|(peer, result)| {
-            if result.is_err() {
-                Some(peer.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
 
     // Bootstrap peer is pinned in KademliaStore so the node can always
     // rediscover it via findAndConnect.  Removing it from the routing
@@ -256,7 +340,7 @@ pub async fn clear_connections<T: TransportLayer>(
     let failed_count = failed_peers.len();
     connections_cell.flat_modify(|conns| {
         let updated = conns.remove_conns(to_ping.into_vec())?;
-        updated.add_conns(successful_peers)
+        updated.add_conns(retained_peers)
     })?;
 
     // Report connections if any were cleared
