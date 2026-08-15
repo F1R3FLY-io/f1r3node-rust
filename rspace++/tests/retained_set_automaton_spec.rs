@@ -81,3 +81,15 @@ fn automaton_selection_is_a_superset_of_direct_matches() {
         }
     }
 }
+
+#[test]
+fn every_candidate_in_a_large_shared_terminal_chain_is_selected() {
+    let candidates = (0..4_096)
+        .map(|_| waiting(vec![Pattern::Any]))
+        .collect::<Vec<_>>();
+    let automaton = RetainedSetAutomaton::compile(&Matcher, &candidates);
+    let selected = automaton.matching_candidates(b"datum", &[0]);
+
+    assert_eq!(selected.len(), candidates.len());
+    assert!(selected.into_iter().all(|candidate| candidate));
+}
