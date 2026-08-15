@@ -51,6 +51,72 @@ fn create_deploy(
         .expect("Failed to create signed deploy")
 }
 
+/// Gives the snapshot a parent whose main-parent chain roots at a
+/// PARENTLESS block at `floor_height`: the cold frontier walk treats a
+/// parentless block as genesis (finalized by definition), so the derived
+/// floor lands exactly there — letting a test close or open the
+/// floor-clock validity window by choosing the height.
+async fn stage_floor_at(
+    snapshot: &mut CasperSnapshot,
+    block_store: &KeyValueBlockStore,
+    kvm: &mut InMemoryStoreManager,
+    floor_height: i64,
+    parent_height: i64,
+) {
+    use block_storage::rust::dag::block_dag_key_value_storage::{
+        BlockDagKeyValueStorage, InsertMode,
+    };
+    use models::rust::block_implicits;
+
+    let root = block_implicits::get_random_block(
+        Some(floor_height),
+        Some(0),
+        None,
+        None,
+        None,
+        None,
+        Some(0),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some("test-shard".to_string()),
+        None,
+    );
+    let parent = block_implicits::get_random_block(
+        Some(parent_height),
+        Some(1),
+        None,
+        None,
+        None,
+        None,
+        Some(1),
+        Some(vec![root.block_hash.clone()]),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some("test-shard".to_string()),
+        None,
+    );
+    let dag_storage = BlockDagKeyValueStorage::new(kvm)
+        .await
+        .expect("dag storage");
+    block_store.put_block_message(&root).expect("store root");
+    block_store
+        .put_block_message(&parent)
+        .expect("store parent");
+    dag_storage
+        .insert(&root, InsertMode::Approved)
+        .expect("insert root");
+    dag_storage
+        .insert(&parent, InsertMode::Normal)
+        .expect("insert parent");
+    snapshot.dag = dag_storage.get_representation().expect("dag");
+    snapshot.parents = vec![parent];
+}
+
 /// Creates a CasperSnapshot for testing with the given parameters.
 /// Uses an in-memory DAG representation (matching Scala's TestBlockDagRepresentation).
 fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
@@ -662,7 +728,11 @@ async fn block_expired_rejected_deploy_is_purged_not_retried() {
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
         .expect("block store");
-    let snapshot = create_snapshot(100, validator_id);
+    let mut snapshot = create_snapshot(100, validator_id);
+    // Floor at #60, lifespan 50: the valid_after-0 window closed at floor
+    // #50 — expiry is judged on the FLOOR clock, so the purge needs a
+    // derivable floor past the window (a tip past it is not enough).
+    stage_floor_at(&mut snapshot, &block_store, &mut kvm, 60, 100).await;
     let deploy = create_deploy(0, None, &validator_sk);
     snapshot.rejected_in_scope.insert(deploy.sig.clone());
     deploy_storage
@@ -1058,7 +1128,10 @@ async fn should_remove_expired_deploys_from_rejected_deploy_buffer() {
         );
     }
 
-    let snapshot = create_snapshot(100, validator_id);
+    let mut snapshot = create_snapshot(100, validator_id);
+    // Floor at #60, lifespan 50: valid_after 0 is window-closed at the
+    // floor clock (removal fires); valid_after 60 stays window-open.
+    stage_floor_at(&mut snapshot, &block_store, &mut kvm, 60, 100).await;
 
     let _ = block_creator::create(
         &snapshot,
