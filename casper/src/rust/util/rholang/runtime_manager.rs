@@ -160,11 +160,33 @@ pub struct ParentsPostStateCacheKey {
     pub disable_late_block_filtering: bool,
 }
 
-pub type ParentsPostStateCacheVal = (
-    StateHash,
-    Vec<prost::bytes::Bytes>,
-    Vec<crate::rust::merging::rejected_slash::RejectedSlash>,
-);
+/// The merged pre-state a block builds on, with every fact the merge
+/// derived alongside it. One struct through the derivation, the
+/// parents-post-state cache, and the checkpoint path — the facts travel
+/// together or not at all: a consumer holding the state without the
+/// applied set cannot tell which deploys' effects that state already
+/// contains, and executing one of them again double-applies it.
+#[derive(Clone, Debug)]
+pub struct MergedPreState {
+    pub state: StateHash,
+    /// Rejected user deploys as full records — each names the carrier it
+    /// adjudicated and carries the formation-time duplicate flag. These
+    /// travel to the block body as-is; the record IS the consensus content.
+    pub rejected_user: Vec<models::rust::casper::protocol::casper_message::RejectedDeploy>,
+    pub rejected_slashes: Vec<crate::rust::merging::rejected_slash::RejectedSlash>,
+    /// User sigs whose chains the merge APPLIED from scope: their effects
+    /// are in `state`, so executing any of them on top would double-apply.
+    /// Empty on the non-merging shapes (genesis, single parent, covering
+    /// parent), where effects arrive via a parent's post-state instead.
+    pub applied_from_scope: std::collections::HashSet<prost::bytes::Bytes>,
+    pub settled_user_sigs: std::collections::HashSet<prost::bytes::Bytes>,
+    /// The block whose committed state `state` derives from: the floor for
+    /// the merged path; `None` where the header already determines it
+    /// (genesis, single parent, covering parent).
+    pub merge_base: Option<BlockHash>,
+}
+
+pub type ParentsPostStateCacheVal = MergedPreState;
 
 impl RuntimeManager {
     const MAX_BLOCK_INDEX_CACHE_ENTRIES: usize = 128;

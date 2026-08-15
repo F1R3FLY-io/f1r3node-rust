@@ -53,6 +53,7 @@ fn mk_snapshot(
     let mut shard_conf = CasperShardConf::new();
     shard_conf.shard_name = shard_name;
     shard_conf.max_parent_depth = 0;
+    shard_conf.deploy_lifespan = 50;
     shard_conf.disable_late_block_filtering = false;
     shard_conf.disable_validator_progress_check = false;
 
@@ -118,25 +119,25 @@ async fn step_block(
         .map(|d| d.deploy)
         .collect::<Vec<_>>();
 
-    let (_, post_state_hash, processed_deploys, _, processed_system_deploys, bonds) =
-        compute_deploys_checkpoint(
-            block_store,
-            parents,
-            deploys,
-            Vec::<SystemDeployEnum>::new(),
-            &snapshot,
-            runtime_manager,
-            BlockData::from_block(block),
-            HashMap::new(),
-            None,
-        )
-        .await?;
+    let checkpoint = compute_deploys_checkpoint(
+        block_store,
+        parents,
+        deploys,
+        Vec::<SystemDeployEnum>::new(),
+        &snapshot,
+        runtime_manager,
+        BlockData::from_block(block),
+        HashMap::new(),
+        None,
+        None,
+    )
+    .await?;
 
     let mut updated = block.clone();
-    updated.body.state.post_state_hash = post_state_hash;
-    updated.body.deploys = processed_deploys;
-    updated.body.system_deploys = processed_system_deploys;
-    updated.body.state.bonds = bonds;
+    updated.body.state.post_state_hash = checkpoint.post_state_hash;
+    updated.body.deploys = checkpoint.deploys;
+    updated.body.system_deploys = checkpoint.system_deploys;
+    updated.body.state.bonds = checkpoint.bonds;
 
     block_store
         .put_block_message(&updated)
@@ -326,18 +327,18 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (state_without_skew, rejected_without_skew, _rejected_slashes) =
-        compute_parents_post_state(
-            &block_store,
-            parents.clone(),
-            &snapshot_without_skew,
-            &runtime_manager,
-            &latest_messages_without_skew,
-            None,
-            None,
-        )
-        .await
-        .expect("Failed to compute parents post-state without finalized skew");
+    let merged_without_skew = compute_parents_post_state(
+        &block_store,
+        parents.clone(),
+        &snapshot_without_skew,
+        &runtime_manager,
+        &latest_messages_without_skew,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("Failed to compute parents post-state without finalized skew");
 
     runtime_manager.parents_post_state_cache.clear();
     runtime_manager.block_index_cache.clear();
@@ -361,7 +362,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (state_with_skew, rejected_with_skew, _rejected_slashes) = compute_parents_post_state(
+    let merged_with_skew = compute_parents_post_state(
         &block_store,
         parents,
         &snapshot_with_skew,
@@ -369,16 +370,17 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         &latest_messages_with_skew,
         None,
         None,
+        None,
     )
     .await
     .expect("Failed to compute parents post-state with finalized skew");
 
     assert_eq!(
-        state_without_skew, state_with_skew,
+        merged_without_skew.state, merged_with_skew.state,
         "Parents post-state should be invariant to finalized-set skew for the same parent set."
     );
     assert_eq!(
-        rejected_without_skew, rejected_with_skew,
+        merged_without_skew.rejected_user, merged_with_skew.rejected_user,
         "Rejected deploy set should be invariant to finalized-set skew for the same parent set."
     );
 }
@@ -610,7 +612,7 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
     runtime_manager.parents_post_state_cache.clear();
     runtime_manager.block_index_cache.clear();
 
-    let (merged_state, rejected, _rejected_slashes) = compute_parents_post_state(
+    let merged = compute_parents_post_state(
         &block_store,
         vec![cover.clone(), side.clone()],
         &snapshot,
@@ -618,16 +620,17 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         &latest_messages,
         None,
         None,
+        None,
     )
     .await
     .expect("Failed to compute parents post-state");
 
     assert!(
-        rejected.is_empty(),
+        merged.rejected_user.is_empty(),
         "non-conflicting side deploy should merge cleanly"
     );
     assert_eq!(
-        merged_state,
+        merged.state,
         proto_util::post_state_hash(&cover),
         "a valid DAG-covering parent should already contain the secondary parent's effects"
     );
@@ -828,6 +831,7 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
         &snapshot,
         &runtime_manager,
         &latest_messages,
+        None,
         None,
         None,
     )

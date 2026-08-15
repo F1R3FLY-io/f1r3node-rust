@@ -105,8 +105,12 @@ fn deploy_is_block_expired(
     valid_after_block_number: i64,
     latest_block_number: i64,
     deploy_lifespan: i64,
-) -> bool {
-    valid_after_block_number <= latest_block_number.saturating_sub(deploy_lifespan)
+) -> Result<bool, CasperError> {
+    Ok(!crate::rust::util::deploy_window::is_open(
+        valid_after_block_number,
+        latest_block_number,
+        deploy_lifespan,
+    )?)
 }
 
 fn should_retry_deploy_propose(status: &ProposeStatus) -> bool {
@@ -671,7 +675,7 @@ impl BlockAPI {
                 d.data.valid_after_block_number,
                 next_block_number,
                 deploy_lifespan,
-            ) {
+            )? {
                 return Err(eyre::Report::new(DeployValidationError {
                     message: format!(
                         "Deploy validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
@@ -2045,8 +2049,8 @@ mod tests {
 
     #[test]
     fn block_expiration_matches_proposer_window() {
-        assert!(deploy_is_block_expired(0, 50, 50));
-        assert!(!deploy_is_block_expired(1, 50, 50));
-        assert!(!deploy_is_block_expired(0, 49, 50));
+        assert!(deploy_is_block_expired(0, 50, 50).unwrap());
+        assert!(!deploy_is_block_expired(1, 50, 50).unwrap());
+        assert!(!deploy_is_block_expired(0, 49, 50).unwrap());
     }
 }
