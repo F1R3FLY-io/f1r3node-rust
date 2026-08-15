@@ -44,14 +44,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
-// Phase 9 (A-3): deploy_storage uses parking_lot::Mutex.
-use parking_lot::Mutex;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use shared::rust::store::key_value_store::KvStoreError;
 
@@ -87,7 +84,6 @@ impl Drop for FinalizationGuard<'_> {
 pub(crate) struct FinalizationContext {
     pub(crate) block_dag_storage: BlockDagKeyValueStorage,
     pub(crate) block_store: KeyValueBlockStore,
-    pub(crate) deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
     pub(crate) runtime_manager: Arc<RuntimeManager>,
     pub(crate) event_publisher: F1r3flyEvents,
     pub(crate) finalization_in_progress: Arc<AtomicBool>,
@@ -98,7 +94,7 @@ pub(crate) struct FinalizationContext {
 }
 
 /// Build a `FinalizationContext` from a `MultiParentCasperImpl`. Single
-/// source of truth for the 10-field clone — previously duplicated at
+/// source of truth for the field-by-field clone — previously duplicated at
 /// `traits::last_finalized_block` and the trigger site in
 /// `finalization_runner::run_finalization`. Replaces both literal
 /// constructions so adding/renaming a context field is one edit.
@@ -110,7 +106,6 @@ pub(crate) fn build_finalization_context<
     FinalizationContext {
         block_dag_storage: this.block_dag_storage.clone(),
         block_store: this.block_store.clone(),
-        deploy_storage: this.deploy_storage.clone(),
         runtime_manager: this.runtime_manager.clone(),
         event_publisher: this.event_publisher.clone(),
         finalization_in_progress: this.finalization_in_progress.clone(),
@@ -169,7 +164,6 @@ pub(crate) async fn compute_last_finalized_block(
     let FinalizationContext {
         block_dag_storage,
         block_store,
-        deploy_storage,
         runtime_manager,
         event_publisher,
         finalization_in_progress,
@@ -188,7 +182,6 @@ pub(crate) async fn compute_last_finalized_block(
     // Keep effect closure FnMut-compatible by cloning captured state on each invocation.
     let block_dag_storage_for_effect = block_dag_storage.clone();
     let block_store_for_effect = block_store.clone();
-    let deploy_storage_for_effect = deploy_storage.clone();
     let runtime_manager_for_effect = runtime_manager.clone();
     let event_publisher_for_effect = event_publisher.clone();
     let finalization_in_progress_for_effect = finalization_in_progress.clone();
@@ -197,7 +190,6 @@ pub(crate) async fn compute_last_finalized_block(
     let new_lfb_found_effect = move |(new_lfb, ft_value): (BlockHash, f32)| {
         let block_dag_storage = block_dag_storage_for_effect.clone();
         let block_store = block_store_for_effect.clone();
-        let deploy_storage = deploy_storage_for_effect.clone();
         let runtime_manager = runtime_manager_for_effect.clone();
         let event_publisher = event_publisher_for_effect.clone();
         let finalization_in_progress = finalization_in_progress_for_effect.clone();
@@ -207,7 +199,6 @@ pub(crate) async fn compute_last_finalized_block(
                 .record_directly_finalized(new_lfb.clone(), ft_value, |finalized_set: &HashSet<BlockHash>| {
                     let finalized_set = finalized_set.clone();
                     let block_store = block_store.clone();
-                    let deploy_storage = deploy_storage.clone();
                     let runtime_manager = runtime_manager.clone();
                     let event_publisher = event_publisher.clone();
                     let finalization_in_progress = finalization_in_progress.clone();
@@ -229,25 +220,6 @@ pub(crate) async fn compute_last_finalized_block(
                                     PrettyPrinter::build_string_bytes(block_hash)
                                 ))
                             })?;
-                            let deploys: Vec<_> = block
-                                .body
-                                .deploys
-                                .iter()
-                                .map(|pd| pd.deploy.clone())
-                                .collect();
-
-                            // Remove block deploys from persistent store.
-                            // Phase 9 (A-3): parking_lot::Mutex — no poison.
-                            let deploys_count = deploys.len();
-                            deploy_storage.lock().remove(deploys)?;
-                            let finalized_set_str = PrettyPrinter::build_string_hashes(
-                                &finalized_set.iter().map(|h| h.to_vec()).collect::<Vec<_>>(),
-                            );
-                            let removed_deploy_msg = format!(
-                                "Removed {} deploys from deploy history as we finalized block {}.",
-                                deploys_count, finalized_set_str
-                            );
-                            tracing::info!("{}", removed_deploy_msg);
 
                             // Remove block index from cache
                             runtime_manager.remove_block_index_cache(block_hash);

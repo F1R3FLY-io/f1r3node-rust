@@ -14,7 +14,7 @@ use node::rust::configuration::commandline::options::{
     OptionsSubCommand, GRPC_EXTERNAL_PORT, GRPC_INTERNAL_PORT,
 };
 use node::rust::configuration::config_check::{
-    check_host, check_ports, load_private_key_from_file,
+    check_api_server, check_host, check_ports, load_private_key_from_file,
 };
 use node::rust::configuration::{NodeConf, Options, Profile};
 use node::rust::effects::console_io::{console_io, decrypt_key_from_file};
@@ -46,7 +46,30 @@ fn main() -> Result<()> {
         .is_some_and(|subcommand| matches!(subcommand, OptionsSubCommand::Run(_)))
     {
         // Start the node
-        let rt = Builder::new_multi_thread().enable_all().build()?;
+        let mut rt_builder = Builder::new_multi_thread();
+        rt_builder.enable_all();
+        // TOKIO_WORKER_THREADS lets deployments (e.g. k8s pods with a cgroup CPU
+        // quota) cap the worker pool explicitly. Without it, tokio defaults to
+        // available_parallelism(), which in a container can read the host's
+        // core count rather than the pod's actual CPU quota — see
+        // https://github.com/F1R3FLY-io/f1r3node-rust/issues/43.
+        if let Ok(threads_str) = std::env::var("TOKIO_WORKER_THREADS") {
+            match threads_str.parse::<usize>() {
+                Ok(n) if n > 0 => {
+                    rt_builder.worker_threads(n);
+                }
+                _ => {
+                    // Logging isn't initialized yet at this point (it happens
+                    // inside start_node, after the runtime is built).
+                    eprintln!(
+                        "Ignoring invalid TOKIO_WORKER_THREADS={:?} (expected a positive \
+                         integer); using tokio's default worker thread count",
+                        threads_str
+                    );
+                }
+            }
+        }
+        let rt = rt_builder.build()?;
         rt.block_on(async {
             // Execute CLI command
             start_node(options).await?;
@@ -96,6 +119,7 @@ async fn start_node(options: Options) -> Result<()> {
 
     // Start the node with configuration validation and setup
     check_host(&node_conf).await?;
+    check_api_server(&node_conf)?;
     let conf_with_ports = check_ports(&node_conf).await?;
     let conf_with_decrypt = load_private_key_from_file(conf_with_ports).await?;
     info!("{}", get_version_info_str());

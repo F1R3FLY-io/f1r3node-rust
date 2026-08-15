@@ -72,7 +72,7 @@ pub trait WebApi {
     /// Find a deploy by ID with the specified view.
     async fn find_deploy(&self, deploy_id: String, view: ViewMode) -> Result<DeployResponse>;
 
-    /// Perform exploratory deploy
+    /// Perform exploratory deploy against the requested block or the LFB post-state.
     async fn exploratory_deploy(
         &self,
         term: String,

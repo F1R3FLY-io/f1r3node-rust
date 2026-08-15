@@ -239,6 +239,28 @@ impl InvalidBlock {
     }
 }
 
+impl BlockError {
+    pub fn from_floor_context_error(error: CasperError) -> Self {
+        match error {
+            CasperError::MissingBlock(_) => Self::MissingBlocks,
+            error => Self::BlockException(error),
+        }
+    }
+}
+
 impl From<KvStoreError> for BlockError {
     fn from(error: KvStoreError) -> Self { BlockError::BlockException(CasperError::from(error)) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_floor_data_is_not_block_invalidity() {
+        let status =
+            BlockError::from_floor_context_error(CasperError::MissingBlock("missing".to_string()));
+
+        assert_eq!(status, BlockError::MissingBlocks);
+    }
 }

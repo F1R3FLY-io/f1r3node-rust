@@ -243,6 +243,11 @@ async fn test_case(
                 history_repo.clone(),
                 prost::bytes::Bytes::from(vec![0xAAu8; 32]),
                 1,
+                &deploy_index
+                    .0
+                    .iter()
+                    .map(|d| (d.deploy_id.clone(), 0))
+                    .collect::<std::collections::HashMap<_, _>>(),
             )
             .unwrap()
         })
@@ -259,6 +264,11 @@ async fn test_case(
                 history_repo.clone(),
                 prost::bytes::Bytes::from(vec![0xBBu8; 32]),
                 2,
+                &deploy_index
+                    .0
+                    .iter()
+                    .map(|d| (d.deploy_id.clone(), 0))
+                    .collect::<std::collections::HashMap<_, _>>(),
             )
             .unwrap()
         })
@@ -415,10 +425,11 @@ async fn test_case(
 
     let mut runtime_ops = RuntimeOps::new(runtime);
     let (res, _cost) = runtime_ops
-        .play_exploratory_deploy(
+        .play_exploratory_deploy_with_phlo_limit(
             RHO_EXPLORE_READ.to_owned(),
             &final_hash.to_bytes_prost(),
             None,
+            5_000_000,
         )
         .await
         .unwrap();
