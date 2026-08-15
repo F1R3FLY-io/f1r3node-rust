@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use comm::rust::errors::{timeout, CommError};
 use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
-use comm::rust::rp::connect::{clear_connections, Connections, ConnectionsCell};
+use comm::rust::rp::connect::{
+    clear_connections, Connections, ConnectionsCell, PeerLivenessTracker,
+};
 use comm::rust::rp::rp_conf::{ClearConnectionsConf, RPConf};
 use comm::rust::test_instances::{NodeDiscoveryStub, TransportLayerStub, NETWORK_ID};
 use prost::bytes::Bytes;
@@ -90,6 +92,11 @@ impl comm::rust::discovery::node_discovery::NodeDiscovery for TrackingNodeDiscov
 mod tests {
     use super::*;
 
+    /// Threshold 1: a peer is evicted by its first failed heartbeat. The tests
+    /// below make a single cleanup pass each, so the streak never advances and
+    /// this isolates the behaviour under test from the failure-tolerance window.
+    fn evict_on_first_failure() -> PeerLivenessTracker { PeerLivenessTracker::new(1).unwrap() }
+
     #[tokio::test]
     async fn test_clear_connections_small_number_should_not_clear_any() {
         // given
@@ -100,10 +107,15 @@ mod tests {
         let discovery = NodeDiscoveryStub::new();
 
         // when
-        let (cleared, failed_peers) =
-            clear_connections(&connections, &rp_conf, &transport, &discovery)
-                .await
-                .unwrap();
+        let (cleared, failed_peers) = clear_connections(
+            &connections,
+            &rp_conf,
+            &transport,
+            &discovery,
+            &mut evict_on_first_failure(),
+        )
+        .await
+        .unwrap();
 
         // then
         let final_connections = connections.read().unwrap();
@@ -124,10 +136,15 @@ mod tests {
         let discovery = NodeDiscoveryStub::new();
 
         // when
-        let (cleared, failed_peers) =
-            clear_connections(&connections, &rp_conf, &transport, &discovery)
-                .await
-                .unwrap();
+        let (cleared, failed_peers) = clear_connections(
+            &connections,
+            &rp_conf,
+            &transport,
+            &discovery,
+            &mut evict_on_first_failure(),
+        )
+        .await
+        .unwrap();
 
         // then
         assert_eq!(cleared, 0);
@@ -144,9 +161,15 @@ mod tests {
         let discovery = NodeDiscoveryStub::new();
 
         // when
-        let _ = clear_connections(&connections, &rp_conf, &transport, &discovery)
-            .await
-            .unwrap();
+        let _ = clear_connections(
+            &connections,
+            &rp_conf,
+            &transport,
+            &discovery,
+            &mut evict_on_first_failure(),
+        )
+        .await
+        .unwrap();
 
         // then
         assert_eq!(transport.request_count(), 2);
@@ -178,10 +201,15 @@ mod tests {
         let discovery = NodeDiscoveryStub::new();
 
         // when
-        let (cleared, failed_peers) =
-            clear_connections(&connections, &rp_conf, &transport, &discovery)
-                .await
-                .unwrap();
+        let (cleared, failed_peers) = clear_connections(
+            &connections,
+            &rp_conf,
+            &transport,
+            &discovery,
+            &mut evict_on_first_failure(),
+        )
+        .await
+        .unwrap();
 
         // then
         let final_connections = connections.read().unwrap();
@@ -216,9 +244,15 @@ mod tests {
         let discovery = NodeDiscoveryStub::new();
 
         // when
-        let _ = clear_connections(&connections, &rp_conf, &transport, &discovery)
-            .await
-            .unwrap();
+        let _ = clear_connections(
+            &connections,
+            &rp_conf,
+            &transport,
+            &discovery,
+            &mut evict_on_first_failure(),
+        )
+        .await
+        .unwrap();
 
         // then
         let final_connections = connections.read().unwrap();
@@ -250,10 +284,15 @@ mod tests {
         let discovery = NodeDiscoveryStub::new();
 
         // when
-        let (cleared, failed_peers) =
-            clear_connections(&connections, &rp_conf, &transport, &discovery)
-                .await
-                .unwrap();
+        let (cleared, failed_peers) = clear_connections(
+            &connections,
+            &rp_conf,
+            &transport,
+            &discovery,
+            &mut evict_on_first_failure(),
+        )
+        .await
+        .unwrap();
 
         // then
         assert_eq!(cleared, 1);
@@ -278,10 +317,15 @@ mod tests {
         let discovery = TrackingNodeDiscovery::new();
 
         // when
-        let (cleared, _failed_peers) =
-            clear_connections(&connections, &rp_conf, &transport, &discovery)
-                .await
-                .unwrap();
+        let (cleared, _failed_peers) = clear_connections(
+            &connections,
+            &rp_conf,
+            &transport,
+            &discovery,
+            &mut evict_on_first_failure(),
+        )
+        .await
+        .unwrap();
 
         // then: peer("A") should NOT have been removed from Kademlia
         assert_eq!(cleared, 1);
@@ -314,10 +358,15 @@ mod tests {
         let discovery = TrackingNodeDiscovery::new();
 
         // when
-        let (cleared, _failed_peers) =
-            clear_connections(&connections, &rp_conf, &transport, &discovery)
-                .await
-                .unwrap();
+        let (cleared, _failed_peers) = clear_connections(
+            &connections,
+            &rp_conf,
+            &transport,
+            &discovery,
+            &mut evict_on_first_failure(),
+        )
+        .await
+        .unwrap();
 
         // then: peer("A") SHOULD have been removed from Kademlia (it's not bootstrap)
         assert_eq!(cleared, 1);
@@ -326,5 +375,142 @@ mod tests {
             removed_keys.contains(&peer("A").id.key),
             "Non-bootstrap peer should be removed from KademliaStore"
         );
+    }
+
+    #[tokio::test]
+    async fn test_clear_connections_should_require_consecutive_failures() {
+        let connections = mk_connections(&[peer("A"), peer("B")]);
+        let rp_conf = conf(5, Some(2), None);
+        let transport = TransportLayerStub::new();
+        transport.set_responses(|remote, protocol| {
+            if remote.id.key == peer("A").id.key {
+                always_fail(remote, protocol)
+            } else {
+                always_success(remote, protocol)
+            }
+        });
+        let discovery = NodeDiscoveryStub::new();
+        let mut liveness = PeerLivenessTracker::new(3).unwrap();
+
+        for expected_streak in 1..3 {
+            let (cleared, failed_peers) = clear_connections(
+                &connections,
+                &rp_conf,
+                &transport,
+                &discovery,
+                &mut liveness,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(cleared, 0);
+            assert!(failed_peers.is_empty());
+            assert_eq!(liveness.streak(&peer("A").id.key), expected_streak);
+            assert!(connections.read().unwrap().as_slice().contains(&peer("A")));
+        }
+
+        let (cleared, failed_peers) = clear_connections(
+            &connections,
+            &rp_conf,
+            &transport,
+            &discovery,
+            &mut liveness,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(cleared, 1);
+        assert_eq!(failed_peers, vec![peer("A")]);
+        assert!(!connections.read().unwrap().as_slice().contains(&peer("A")));
+    }
+
+    #[tokio::test]
+    async fn test_clear_connections_should_reset_failure_streak_after_success() {
+        let connections = mk_connections(&[peer("A")]);
+        let rp_conf = conf(5, Some(1), None);
+        let transport = TransportLayerStub::new();
+        let discovery = NodeDiscoveryStub::new();
+        let mut liveness = PeerLivenessTracker::new(3).unwrap();
+
+        transport.set_responses(always_fail);
+        clear_connections(
+            &connections,
+            &rp_conf,
+            &transport,
+            &discovery,
+            &mut liveness,
+        )
+        .await
+        .unwrap();
+        assert_eq!(liveness.streak(&peer("A").id.key), 1);
+
+        transport.set_responses(always_success);
+        clear_connections(
+            &connections,
+            &rp_conf,
+            &transport,
+            &discovery,
+            &mut liveness,
+        )
+        .await
+        .unwrap();
+        assert_eq!(liveness.streak(&peer("A").id.key), 0);
+
+        transport.set_responses(always_fail);
+        let (cleared, _) = clear_connections(
+            &connections,
+            &rp_conf,
+            &transport,
+            &discovery,
+            &mut liveness,
+        )
+        .await
+        .unwrap();
+        assert_eq!(cleared, 0);
+        assert_eq!(liveness.streak(&peer("A").id.key), 1);
+    }
+
+    #[tokio::test]
+    async fn test_peer_liveness_tracker_rejects_a_zero_threshold() {
+        assert!(PeerLivenessTracker::new(0).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_clear_connections_forgets_streaks_for_disconnected_peers() {
+        let connections = mk_connections(&[peer("A"), peer("B")]);
+        let rp_conf = conf(5, Some(2), None);
+        let transport = TransportLayerStub::new();
+        transport.set_responses(always_fail);
+        let discovery = NodeDiscoveryStub::new();
+        let mut liveness = PeerLivenessTracker::new(3).unwrap();
+
+        clear_connections(
+            &connections,
+            &rp_conf,
+            &transport,
+            &discovery,
+            &mut liveness,
+        )
+        .await
+        .unwrap();
+        assert_eq!(liveness.streak(&peer("A").id.key), 1);
+
+        // Drop A from the connection set behind the tracker's back, as a peer
+        // removed elsewhere would be, and confirm the next pass discards its count.
+        connections
+            .flat_modify(|conns| conns.remove_conns(vec![peer("A")]))
+            .unwrap();
+        clear_connections(
+            &connections,
+            &rp_conf,
+            &transport,
+            &discovery,
+            &mut liveness,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(liveness.streak(&peer("A").id.key), 0);
+        assert_eq!(liveness.streak(&peer("B").id.key), 2);
     }
 }

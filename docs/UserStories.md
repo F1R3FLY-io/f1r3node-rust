@@ -1,7 +1,7 @@
 ---
 doc_type: user_stories
-version: "1.0"
-last_updated: 2026-04-15
+version: "1.1"
+last_updated: 2026-08-13
 ---
 
 # User Stories
@@ -16,14 +16,14 @@ This document captures user stories that drive feature development. User stories
 **Format:** Each story follows the standard template:
 > As a [persona], I want [capability] so that [benefit].
 
+**User Stories Standard Reference** (canonical):
+[user-stories-standard.md](https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/user-stories-standard.md)
+
 ---
 
 ## Completed Stories
 
-<!-- Add completed user stories here -->
-
 ---
-
 
 #### US-004: 60-hour merge-recovery soak benchmark metrics
 
@@ -125,3 +125,25 @@ User stories capture the **why** (user need and benefit). Epics capture the **wh
 
 - **Task Tracking:** `docs/ToDos.md`
 - **Completed Work:** `docs/CompletedTasks.md`
+- **User Stories Standard** (canonical): [user-stories-standard.md](https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/user-stories-standard.md)
+
+## Story Template
+
+Use this template when adding new user stories:
+
+```markdown
+#### US-XXX: [Short Title]
+
+> As a **[persona]**, I want **[capability]** so that **[benefit]**.
+
+**Implemented in:** [EPIC-ID or "Planned"]
+
+**Acceptance Criteria:**
+- [ ] Criterion 1
+- [ ] Criterion 2
+- [ ] Criterion 3
+
+**Completed:** [Date or "Planned"]
+```
+
+---

@@ -21,6 +21,7 @@ pub enum CasperError {
     HistoryError(HistoryError),
     StreamError(String),
     LockError(String),
+    MissingBlock(String),
     /// Phase 9 (R-2): typed `Slash`-deploy authorization failure. Carries
     /// the [`SlashAuthError`] variant so callers in
     /// `engine::multi_parent_casper::validation_dispatcher` can `match` on the structured
@@ -42,6 +43,7 @@ impl fmt::Display for CasperError {
             CasperError::HistoryError(error) => write!(f, "History error: {}", error),
             CasperError::StreamError(error) => write!(f, "Stream error: {}", error),
             CasperError::LockError(error) => write!(f, "Lock error: {}", error),
+            CasperError::MissingBlock(error) => write!(f, "Missing block: {}", error),
             CasperError::SlashAuth(error) => write!(f, "Slash authorization error: {}", error),
             CasperError::Other(error) => write!(f, "Other error: {}", error),
         }

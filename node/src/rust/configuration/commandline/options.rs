@@ -211,6 +211,10 @@ pub struct RunOptions {
     #[arg(long = "discovery-heartbeat-batch-size")]
     pub discovery_heartbeat_batch_size: Option<u32>,
 
+    /// Consecutive failed heartbeats before a peer is dropped
+    #[arg(long = "discovery-heartbeat-failure-threshold")]
+    pub discovery_heartbeat_failure_threshold: Option<u32>,
+
     /// gRPC port serving F1r3fly Protocol messages
     #[arg(short = 'p', long = "protocol-port", default_value = "40400")]
     pub protocol_port: Option<u16>,
@@ -274,6 +278,21 @@ pub struct RunOptions {
     /// Use this flag to enable reporting endpoints
     #[arg(long = "api-enable-reporting", action = ArgAction::SetTrue)]
     pub api_enable_reporting: bool,
+
+    /// Concurrent exploratory queries admitted before further ones are rejected
+    #[arg(long = "api-exploratory-deploy-max-concurrent")]
+    pub api_exploratory_deploy_max_concurrent: Option<usize>,
+
+    /// Maximum phlogiston available to one exploratory query
+    #[arg(long = "api-exploratory-deploy-phlo-limit")]
+    pub api_exploratory_deploy_phlo_limit: Option<i64>,
+
+    /// Best-effort deadline for one exploratory query
+    #[arg(
+        long = "api-exploratory-deploy-execution-timeout",
+        value_parser = ValueParser::new(parse_duration)
+    )]
+    pub api_exploratory_deploy_execution_timeout: Option<Duration>,
 
     /// Sets a custom keepalive time
     #[arg(long = "api-keep-alive-time", value_parser = ValueParser::new(parse_duration))]

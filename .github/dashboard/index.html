@@ -209,10 +209,12 @@
      zero cells use --heat-zero, matching the SVG's baked-in neutral. */
   .swatch-cell { height: 12px; border-radius: 3px; }
   .heat-ramp { background: linear-gradient(90deg, #fff5f0, #fb6a4a, #67000d); }
-  /* The CPU cluster grid's cool-to-hot scale — mirrors charton's Jet map
-     (idle blue through to saturated red), which the SVGs bake in. */
-  .jet-ramp { background: linear-gradient(90deg, #00007f, #0000ff, #00ffff,
-              #7fff00, #ffff00, #ff7f00, #ff0000, #7f0000); }
+  /* The CPU cluster grid's idle-to-hot scale — mirrors charton's Oranges
+     map (single-hue sequential: pale = idle, deep = a saturated core),
+     which the SVGs bake in. Keep in step with render_cpu_grid in
+     scripts/soak-charts. */
+  .heat-cpu-ramp { background: linear-gradient(90deg, #fff5eb, #fdae6b,
+                   #f16913, #a63603, #7f2704); }
   /* Every chart is a pre-rendered SVG pair from scripts/soak-charts with theme
      colors baked in; show the variant matching the active theme with the same
      three-state logic as the CSS vars above. */
@@ -308,6 +310,7 @@
 (async function () {
   const RUNS_URL = "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/";
   const COMMIT_URL = "https://github.com/F1R3FLY-io/f1r3node-rust/commit/";
+  const GLOSSARY_URL = "https://github.com/F1R3FLY-io/f1r3node-rust/blob/master/docs/Glossary.md";
 
   const SERIES = [
     { key: "weekend", history: "data/history.json", verdict: "data/latest-verdict.json",
@@ -333,20 +336,20 @@
       series: [
         { name: "total", path: ["passive", "iterations_per_hour"], c: 0 },
       ] },
-    { slug: "peak-rss", title: "Peak node RSS",
+    { slug: "peak-rss", title: "Peak node RSS", glossary: "peak-node-rss",
       unit: "MB · Resident Set Size (footprint)",
       fmt: v => Math.round(v).toLocaleString(),
       series: [
         { name: "soak load", path: ["passive", "rss_peak_mb"], c: 0 },
         { name: "bench segments", path: ["active", "rss_peak_mb"], c: 2 },
       ] },
-    { slug: "peak-cpu", title: "Peak node CPU",
+    { slug: "peak-cpu", title: "Peak node CPU", glossary: "peak-node-cpu",
       unit: "% of one core · readings above 100% mean several cores were busy",
       fmt: v => v.toFixed(1),
       series: [
         { name: "soak load", path: ["passive", "cpu_peak_pct"], c: 0 },
       ] },
-    { slug: "finality-p95", title: "Finalization latency p95", unit: "ms",
+    { slug: "finality-p95", title: "Finalization latency p95", glossary: "finalization-latency-p95", unit: "ms",
       fmt: v => Math.round(v).toLocaleString(),
       series: [
         { name: "soak load", path: ["passive", "finalization_p95_ms"], c: 0 },
@@ -359,12 +362,12 @@
         { name: "p95", path: ["passive", "finalization_p95_ms"], c: 1 },
         { name: "p99", path: ["passive", "finalization_p99_ms"], c: 2 },
       ] },
-    { slug: "too-far-ahead", title: "Too-far-ahead errors", unit: "rejections / run",
+    { slug: "too-far-ahead", title: "Too-far-ahead errors", glossary: "too-far-ahead-errors", unit: "rejections / run",
       fmt: v => Math.round(v).toLocaleString(), zeroBadge: true,
       series: [
         { name: "total", path: ["passive", "too_far_ahead_errors"], c: 0 },
       ] },
-    { slug: "lfb-spread", title: "LFB convergence spread", unit: "blocks",
+    { slug: "lfb-spread", title: "LFB convergence spread", glossary: "lfb-convergence-spread", unit: "blocks",
       empty: "Awaiting the first emitted LFB convergence sample.",
       fmt: v => Math.round(v).toLocaleString(),
       series: [
@@ -569,13 +572,13 @@
     el.appendChild(box);
   }
 
-  function renderCaption(fig, seriesKey, slug, title, unit, latest = "") {
+  function renderCaption(fig, seriesKey, slug, title, unit, latest = "", glossary = "") {
     const id = fragmentFor(seriesKey, slug);
     fig.id = id;
-    const caption = document.createElement("figcaption");
     const permalink = element("a", "chart-permalink", title);
-    permalink.href = seriesURL(seriesKey, "#" + id);
-    permalink.title = `Link to ${title}`;
+    permalink.href = glossary ? `${GLOSSARY_URL}#${glossary}` : seriesURL(seriesKey, "#" + id);
+    permalink.title = glossary ? `Read the ${title} definition` : `Link to ${title}`;
+    const caption = document.createElement("figcaption");
     caption.append(permalink, " ", element("span", "unit", unit));
     if (latest) caption.append(" ", element("span", "latest", `· latest ${latest}`));
     fig.appendChild(caption);
@@ -647,7 +650,7 @@
       const fig = document.createElement("figure");
       if (all.length === 0) {
         if (!def.empty) continue;
-        renderCaption(fig, seriesKey, def.slug, def.title, def.unit);
+        renderCaption(fig, seriesKey, def.slug, def.title, def.unit, "", def.glossary);
         fig.appendChild(element("p", "chart-empty", def.empty));
         container.appendChild(fig);
         continue;
@@ -657,7 +660,7 @@
       // never poses as information; the number still deserves a surface,
       // because "no rejections, and we are watching" is the good news.
       if (def.zeroBadge && all.every(v => v === 0)) {
-        renderCaption(fig, seriesKey, def.slug, def.title, def.unit);
+        renderCaption(fig, seriesKey, def.slug, def.title, def.unit, "", def.glossary);
         const kpi = element("p", "kpi-zero", "0");
         kpi.appendChild(element("span", "unit",
           `across ${all.length} run${all.length > 1 ? "s" : ""} · target 0`));
@@ -679,7 +682,7 @@
       const legend = element("div", "legend");
       if (gridRun) {
         const scale = element("span");
-        scale.append(element("i", "swatch swatch-cell jet-ramp"), "0% → hot");
+        scale.append(element("i", "swatch swatch-cell heat-cpu-ramp"), "0% → hot");
         legend.append(scale,
           element("span", "unit", "cell = one core · labelled ≥ 100% (a full core)"));
       } else if (seriesData.length > 1) {
@@ -699,7 +702,7 @@
         ? seriesData[0].values.reduce((acc, v) => v !== null ? v : acc, null)
         : null;
       renderCaption(fig, seriesKey, def.slug, def.title, def.unit,
-        latest !== null ? def.fmt(latest) : "");
+        latest !== null ? def.fmt(latest) : "", def.glossary);
       if (legend.childElementCount > 0) fig.appendChild(legend);
       const alt = `${def.title} chart`;
       appendChartImage(fig, `data/chart-${def.slug}-${seriesKey}-light.svg`, "light", alt);

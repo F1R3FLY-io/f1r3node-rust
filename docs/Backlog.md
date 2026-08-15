@@ -1,7 +1,7 @@
 ---
 doc_type: backlog
-version: "1.0"
-last_updated: 2026-08-11
+version: "1.1"
+last_updated: 2026-08-13
 ---
 
 # Backlog
@@ -24,7 +24,9 @@ Items are organized by category and rough priority within each category.
 
 ### Technical Debt
 
-<!-- Items that improve code quality, performance, or maintainability -->
+Items that improve code quality, performance, or maintainability but aren't blocking active development.
+
+---
 
 #### BACKLOG-TD-001: Deterministic test for the soak finalization-lag failure
 
@@ -67,7 +69,9 @@ system-integration's `test_load.py`; node-side work belongs in `casper`.
 
 ### Feature Ideas
 
-<!-- Future features that have been identified but aren't yet prioritized -->
+Future features that have been identified but aren't yet prioritized.
+
+---
 
 #### BACKLOG-FI-003: Per-core CPU sampling in the soak harness monitor
 
@@ -162,7 +166,7 @@ related_epic: EPIC-009
 
 ### Research & Exploration
 
-<!-- Items that need investigation before they can become actionable -->
+Items that need investigation before they can become actionable tasks.
 
 ---
 
@@ -202,6 +206,10 @@ explicit sequencing: "when complete with tasks").
 ---
 
 ### Dependencies & Blockers
+
+Items waiting on external factors (upstream releases, third-party APIs, etc.)
+
+---
 
 #### BACKLOG-DB-001: system-integration Branch Reference
 
