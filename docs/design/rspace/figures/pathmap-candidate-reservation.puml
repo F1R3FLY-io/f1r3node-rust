@@ -1,0 +1,36 @@
+@startuml pathmap-candidate-reservation
+skinparam backgroundColor #F7FAFC
+skinparam shadowing false
+skinparam defaultFontName SansSerif
+skinparam ArrowColor #334155
+skinparam rectangle {
+  BorderColor #334155
+  FontColor #0F172A
+  RoundCorner 10
+}
+
+rectangle "HotStore" as hot #DBEAFE
+database "RSpaceDataStore\nPathMap<Multiplicity>\nsemantic authority" as trie #DCFCE7
+rectangle "Exact-channel read zipper\nmake_map() subtrie" as zipper #E0E7FF
+rectangle "CandidatePool\nBag residual + shared distinct-order table\nderived, reconstructible" as pool #FEF3C7
+rectangle "Selection PDA\nDescend / Scan / Return" as pda #FCE7F3
+rectangle "ConsumeCandidate\nStored(exact trie path) | Fresh" as candidate #FFEDD5
+rectangle "COMM commit\nremove_datum_path(path)\nor retain Fresh/persistent" as commit #CCFBF1
+
+hot --> trie : owns
+trie --> zipper : root at framed channel prefix
+zipper --> pool : copy-on-write Bag view
+pool --> pda : next available distinct key
+pda --> pool : reserve / release multiplicity
+pda --> candidate : accepted leaf
+candidate --> commit : address, payload, source metadata
+commit --> trie : decrement exact key; prune at zero
+
+legend right
+  |= Color |= Meaning |
+  |<#DCFCE7> green | semantic authority |
+  |<#FEF3C7> amber | derived candidate view |
+  |<#FCE7F3> pink | explicit-stack control |
+  |<#CCFBF1> teal | committed mutation |
+endlegend
+@enduml

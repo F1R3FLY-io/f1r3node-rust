@@ -1,11 +1,12 @@
 # PathMap Bag and RSpace matching integration
 
-Status: approved implementation design and living engineering report
+Status: implementation in progress and living engineering report
 
 Campaign: `campaign-4131-rspace-pathmap-integration`
 
 Experiment: `rspace-pathmap-end-to-end-layout-2026-08-15`
 Last updated: 2026-08-15
+Current implementation checkpoint: `5329b27a3`
 
 ## Purpose and scope
 
@@ -20,6 +21,40 @@ The work has three separable layers:
 | Matcher | Explicit pushdown automata over PathMap zippers | Directional spatial matching, ordered matching, associative-commutative matching, guard backtracking, and replay-equivalent selection |
 
 Neither a `Vec<Par>` nor a hash table is an authoritative substitute for a trie layer. Compatibility vectors may be materialized only at legacy API boundaries, and their cost must be measured and removed from hot paths.
+
+## Current implementation checkpoint
+
+The implementation has reached the first end-to-end PathMap candidate-selection checkpoint. In the
+terminology used below, an **authority** is the data structure whose contents define RSpace state; a
+**derived view** is reconstructible from that authority and may be discarded without changing
+semantics. The current provisional layout is treatment B: one flattened, channel-prefixed PathMap.
+The layout experiment remains open until the preregistered A/B/C comparison selects or rejects it.
+
+![PathMap candidate reservation and exact-path firing](figures/pathmap-candidate-reservation.svg)
+
+| Stage | Commit | Current evidence | Disposition |
+|---|---|---|---|
+| Lawful `Bag` over `PathMap<Multiplicity>` | `a82288ae0` | algebra and multiplicity property tests | implemented |
+| Canonical framed `RhoPathV1` | `651f278aa` | exact-channel isolation, structural-prefix pruning, malformed-key refusal | implemented |
+| Multiplicity-aware datum index | `5d4c5eca9` | one trie key per identical complete record; one decode per distinct key | implemented |
+| Authoritative hot-store datum trie | `ccec9b730`, `bd55758e4` | history fill, loaded-empty state, snapshots, indexed compatibility removal, and package tests | implemented |
+| Multiplicity-native matching pools | `5329b27a3` | exact-path firing; reversible Bag reservations; fresh-datum addressing; repeated-channel duplicate tests | implemented |
+| Retained receive automaton and pattern-over-trie product walk | pgmcp `rspace-retained-set-automaton`, `rspace-pattern-over-pathmap` | no production evidence yet | next implementation stage |
+| Layout selection and performance verdict | pgmcp experiment 208 | preregistered; idle-core preflight rejected the first run window because competing release/coverage tests occupied the host | measurement pending |
+
+At `5329b27a3`, each exact channel produces a `CandidatePool`. Its semantic residual is a
+channel-local `Bag`, obtained as a copy-on-write PathMap subtrie through a read zipper. Its derived
+`Arc` order table contains one decoded record per distinct trie key, not one record per occurrence.
+The explicit matcher PDA decrements and restores Bag multiplicities during descent and rollback.
+An accepted stored candidate carries its complete trie path; an arriving produce carries the
+separate `Fresh` address. Firing therefore removes by exact path and cannot suffer positional-index
+shifts.
+
+Identical complete records are indistinguishable Bag occurrences. A repeated-channel receive may
+reserve the same trie key repeatedly while its multiplicity remains positive, but exhaustive
+enumeration emits one multiset-distinct rendezvous rather than factorially many permutations of
+identical occurrences. Production selection, COMM contents, and the resulting Bag are unchanged by
+which indistinguishable occurrence is imagined to have been selected.
 
 ## Bag algebra
 
@@ -64,7 +99,7 @@ RhoPathV1 := version || structural-length || structural-path || identity-bytes
 
 The structural region is compiled from the existing canonical Rholang PathMap grammar. The identity region is the exact canonical record encoding required to reconstruct a `Datum`, including payload, persistence, and source. Pattern automata operate only on the structural region; exact membership and decoding use the complete key.
 
-Identical records share one trie value whose `Multiplicity` counts occurrences. The current store-index tie breaker does not distinguish identical record bytes semantically: choosing and removing any occurrence leaves the same record and decremented multiplicity. Unequal candidates retain the existing ordering by the Blake2b-256 digest of canonical candidate bytes. Differential play/replay tests must prove this quotienting argument before the vector store is retired.
+Identical records share one trie value whose `Multiplicity` counts occurrences. No tie breaker can distinguish identical record bytes semantically: choosing and removing any occurrence leaves the same record and decremented multiplicity. Unequal candidates retain the existing ordering by the Blake2b-256 digest of canonical candidate bytes, with the complete trie path providing a deterministic collision tie breaker. The vector candidate hot path is retired at `5329b27a3`; the bounded duplicate, exact-removal, and play/replay witnesses pass, while the campaign's exhaustive generated differential and formal quotient proof remain required before closure.
 
 ## Matching architecture
 
@@ -78,6 +113,11 @@ The optimized path is staged and directional:
 6. Commit the least admissible reservation under the existing consensus order.
 
 Production matching is directional: receive patterns match produced data. Symmetric Martelli-Montanari unification is an experiment for contexts that genuinely require variables on both sides; it is not silently substituted for receive semantics. Ordered children use linear PDA traversal. Associative-commutative collections use multiplicity-aware residual Bags rather than expanded vectors.
+
+The current checkpoint implements the multiplicity-aware reservation and exact-path commit portions
+of steps 4 and 6 over the existing spatial matcher. Steps 1–3—the retained automaton and direct
+pattern/PathMap product walk—remain the next production optimization; until they land, the derived
+order table still visits and decodes each distinct channel record once when a pool is constructed.
 
 ## Native PathMap operations
 
@@ -115,6 +155,21 @@ The workload matrix crosses distinct cardinality, duplicate multiplicity, shared
 
 Benchmarks run only after a preflight confirms enough idle physical cores and no competing compiler or benchmark process. Each run follows the pgmcp-prescribed warm-up, sample count, CPU affinity, hardware record, and statistical test.
 
+The first post-`5329b27a3` benchmark window was deliberately not used: the host preflight showed
+multiple concurrent release/coverage test processes consuming more than one core each. This is a
+negative scheduling result, not performance evidence. The implementation evidence available at this
+checkpoint is:
+
+| Gate | Result | Interpretation |
+|---|---:|---|
+| `data_index_spec` | 14/14 | Bag subtries, multiplicity, exact paths, and fresh rollback behave as specified |
+| `guarded_matching_tests` | 17/17 | selector rollback, repeated channels, 20,000-bind stack gate, and production PathMap ordering pass |
+| `enabled_rendezvous_spec` | 10/10 | play/replay enumeration and duplicate-occurrence normalization pass |
+| complete `rspace_plus_plus` package checkpoint | 376 passed / 0 failed | no package-level behavioral regression at the candidate-pool implementation checkpoint |
+| strict lint over modified library and test targets | pass | no warning debt was introduced in the changed surface |
+
+These are correctness and engineering gates, not a throughput verdict. Experiment 208 remains open.
+
 ## Verification ladder
 
 | Level | Evidence |
@@ -146,6 +201,12 @@ Procedure notation describes semantics only. Nested matching and multi-channel s
 
 ## Migration and completion
 
-The migration order is lawful Bag, RhoPathV1 codec, shadow index, retained automaton, reservation PDA, replay and cold-store integration, and removal of the vector hot path. Set, Map, and merkleization experiments are independent treatments and cannot be promoted merely because the Bag treatment succeeds.
+The migration order is lawful Bag, RhoPathV1 codec, authoritative index, multiplicity-native
+reservation PDA, retained automaton, direct pattern-over-trie traversal, replay/cold-store
+integration, and final removal of compatibility materializations. Through `5329b27a3`, the first four
+steps and the live play/replay exact-path flow are implemented; retained automata, direct trie-pruned
+matching, experiment selection, formal closure, and legacy-boundary retirement remain open and
+visible in the pgmcp subtree. Set, Map, and merkleization experiments are independent treatments and
+cannot be promoted merely because the Bag treatment succeeds.
 
 The campaign completes only when the selected implementation is active end to end, old-path references are removed or test-only, every reachable pgmcp task has trusted evidence, the stack-safety report contains final profiles, the consensus register records the exact wire and state disposition, and the release workspace suite passes under a bounded resident-memory scope without `RUST_MIN_STACK`, `stacker`, or traversal caps.

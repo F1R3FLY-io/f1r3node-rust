@@ -3220,43 +3220,49 @@ guard consultation two implementations of one consensus-visible rule.
 ##### 5.16.5.2 Architecture of the repair, and why this shape
 
 One explicit-frame PDA now owns both modes. Its states are `Descend`, `Scan`, and `Return`; a frame
-stores the current channel/pattern pair, immutable candidate-pool snapshot, scan cursor, whether any
-complete leaf reached the guard, and whether the bind is last. The selector supplies a leaf callback
+stores the current channel/pattern pair, derived-order scan cursor, an optional reserved position,
+and whether any complete leaf reached the guard. The selector supplies a leaf callback
 that stops at the first admissible selection. The enumerator supplies a callback that clones the
 accepted selection and continues. Thus the enumeration head is the selector result by construction,
 not by coordination between sibling algorithms.
 
-The chosen-candidate stack and residual-pool map retain their original transaction law: an accepted
-early stop leaves the selected candidates and residual pools installed; an exhausted subtree pops its
-choice and restores its parent's pool; exhaustive enumeration restores the entry state. A `Vec<Par>`,
-set, hash map, traversal-depth cap, enlarged `RUST_MIN_STACK`, `stacker`, and a second enumerator were
-all rejected because none represents the search continuation or preserves the single ordering source.
+Each channel has one `CandidatePool`: a copy-on-write `PathMap<Multiplicity>` Bag subtrie is the
+residual authority, while a shared `Arc` table holds one decoded record per distinct trie key in
+canonical order. The chosen-candidate stack and Bag reservations obey the transaction law: an
+accepted early stop leaves nonpersistent decrements installed; an exhausted subtree releases its
+parent's multiplicity; exhaustive enumeration restores the entry state. Persistent records are never
+decremented. A `Vec<Par>`, expanded occurrence list, per-frame pool clone, traversal-depth cap,
+enlarged `RUST_MIN_STACK`, `stacker`, and a second enumerator were rejected.
 
 ##### 5.16.5.3 How the fix was made
 
 The former `search_candidate_selection` and `enumerate_admissible_selections` recursive bodies were
 replaced by calls to private `walk_candidate_selections`. The machine preserves pool order, advances a
 parent cursor only after the selected child returns, and emits the pre-existing
-`GuardRejected`/`NoSpatialMatch` backtrack counters at the same return boundary. The last-bind fast path
-still avoids constructing a residual pool that no descendant can observe. No public trait surface,
-store representation, event hash, serialization, PathMap code, or cost-accounting rule changed.
+`GuardRejected`/`NoSpatialMatch` backtrack counters at the same return boundary. Refinement
+`5329b27a3` removes expanded datum pools and per-frame residual copies: descent decrements the
+channel-local Bag, return increments it, and accepted candidates carry either an exact stored trie
+path or the distinct `Fresh` address. Firing removes exact paths, so same-channel batches cannot shift
+one another. No event hash, serialized record, PathMap crate code, or cost-accounting rule changed.
 
 ##### 5.16.5.4 Results
 
-All commands ran under a user systemd scope with **3 GiB `MemoryHigh`, 4 GiB `MemoryMax`, and zero
-swap**. **MEASURED:**
+The original SS-A11 depth measurements ran under a user systemd scope with **3 GiB `MemoryHigh`, 4
+GiB `MemoryMax`, and zero swap**. The `5329b27a3` refinement gates ran with **8 GiB `MemoryMax`, zero
+swap, and two-core CPU quota**. **MEASURED:**
 
 | metric | recursive baseline | explicit-frame PDA | provenance |
 |---|---:|---:|---|
 | native stack versus bind count | $`\Theta(b)`$ (**DERIVED**, one Rust call per bind) | 20,000 binds complete on 256 KiB | public `consume` plus `enabled_rendezvous` gate |
 | focused deep gate | NOT MEASURED — the unsafe baseline was not restored | **1/1 in 2.62 s** | `selector_and_enumerator_are_stack_safe_at_twenty_thousand_binds` |
 | profiled deep gate | NOT MEASURED — no baseline process | **2.61 s; 96,216 KiB maximum RSS; 0 major faults** | GNU `time -v` around the capped test process |
-| guarded-selection suite | same semantic corpus | **16/16** | selector retry, rollback, metrics, play/replay, and deep gate |
-| enabled-rendezvous suite | same semantic corpus | **9/9** | ordering and enumeration-head identity |
-| complete `rspace_plus_plus` package | n/a — acceptance total | **340 passed / 0 failed** | all package test binaries |
+| guarded-selection suite | same semantic corpus | **17/17** | adds two identical occurrences satisfying two binds without occurrence expansion |
+| enabled-rendezvous suite | same semantic corpus | **10/10** | adds one multiset-distinct rendezvous for indistinguishable duplicate occurrences |
+| data-index suite | pre-PathMap candidate pool absent | **14/14** | subtrie multiplicity, exact addresses, reversible Fresh reservation, one decode per distinct key |
+| complete `rspace_plus_plus` package checkpoint | n/a — acceptance total | **376 passed / 0 failed** | all package test binaries at the candidate-pool implementation checkpoint |
 | exact source census | 574 recursive components before this conversion | **572** after the PDA; then **566 recursive / 42 term-family / 19 mutual / 25 production files** after relocating recursive oracles; current **566 / 41 / 18 / 24** after the fused evaluator cycle disappeared and its stale disposition was retired | `handwritten_recursion_census`, 5/5; independent normalizer control 31 members $`\geq`$ 26 required |
 
-The guarded-search workload retained its expected algorithmic counts: the 1,000-datum single-bind
+At the initial SS-A11 checkpoint, the guarded-search workload retained its expected algorithmic counts: the 1,000-datum single-bind
 exhaustive guard performed 1,000 spatial matches and 1,000 guard checks in 17.303 ms; the 60-by-60
 guarded join performed 3,660 spatial matches and 3,600 guard checks in 11.653 ms; the unguarded store
 needed two spatial matches in 1.878 ms. These are one-run regression observations, not comparative
@@ -3267,9 +3273,10 @@ throughput claims.
 Native-stack complexity changes from $`\Theta(b)`$ to $`O(1)`$. Explicit control storage is
 $`O(b)`$, which is the irreducible selected-candidate/frame frontier. Search time and output storage
 remain proportional to the candidate combinations actually visited and, for enumeration, emitted.
-The machine creates one frame per live bind and retains one pool snapshot per live frame, matching the
-rollback information the recursive implementation already owned; it does not materialize a Cartesian
-product or convert trie-backed payloads into another collection.
+The machine creates one frame per live bind, one chosen-candidate entry per selected bind, and one
+copy-on-write Bag pool per distinct channel. A frame records only an optional reservation position;
+it does not clone the pool. The derived order table is linear in distinct records rather than total
+multiplicity. The traversal does not materialize a Cartesian product or expand duplicate trie keys.
 
 ##### 5.16.5.6 What is still recursive
 
@@ -3287,7 +3294,7 @@ gate with **4 failures / 300 passes** because it retained a duplicate `[1]` cach
 `Par` and changed canonical protobuf bytes; the transfer-preserving form restores **9/9** focused
 normalizer differential cases and **8/8** provenance checks. The one genuine classic-pgmcp residual
 is the reducer's eleven-function evaluator SCC.
-This repair introduces no depth limit, stack-growing dependency, PathMap fork, or alternate RSpace
+This repair introduces no depth limit, stack-growing dependency, PathMap fork, or non-trie fallback
 representation.
 
 ##### 5.16.5.7 Anti-vacuity
@@ -3298,6 +3305,12 @@ That pair fails if either former recursive body is restored, if the selector sho
 deep leaf, or if enumeration omits the continuation. Existing guarded tests separately reject cursor,
 rollback, ordering, guard-veto, and metric drift. The source census must count both removed recursive
 components; its 574-to-572 change supplies the structural anti-vacuity witness.
+
+The multiplicity refinement adds two orthogonal anti-vacuity witnesses. One test requires two
+identical nonpersistent occurrences to fill two binds without an expanded occurrence vector. Another
+requires exhaustive enumeration to emit exactly one rendezvous for those indistinguishable
+occurrences, then fires it and observes cardinality zero. Exact-path data-index tests independently
+remove one of two identical occurrences and observe multiplicity one before the final removal.
 
 #### 5.16.6 Sparse relational-row reuse inside the production PDA [SS-A10 refinement]
 
