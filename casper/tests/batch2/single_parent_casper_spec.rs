@@ -158,7 +158,6 @@ async fn should_reject_multi_parent_blocks() {
         &mut snapshot,
         max_number_of_parents,
         i32::MAX, // max_parent_depth: disable depth check for this test
-        0,        // depth_buffer
         false,    // disable_validator_progress_check
     );
 
