@@ -95,6 +95,10 @@ impl ConfigMapper<Options> for NodeConf {
                 run.discovery_heartbeat_batch_size,
             );
             Self::try_override_value(
+                &mut self.peers_discovery.heartbeat_failure_threshold,
+                run.discovery_heartbeat_failure_threshold,
+            );
+            Self::try_override_value(
                 &mut self.peers_discovery.init_wait_loop_interval,
                 run.discovery_init_wait_loop_interval,
             );
@@ -622,6 +626,7 @@ mod tests {
                 discovery_lookup_interval: Some(Duration::from_secs(111111)),
                 discovery_cleanup_interval: Some(Duration::from_secs(111111)),
                 discovery_heartbeat_batch_size: Some(111111),
+                discovery_heartbeat_failure_threshold: Some(111111),
                 discovery_init_wait_loop_interval: Some(Duration::from_secs(111111)),
                 protocol_port: Some(11111),
                 protocol_grpc_max_recv_message_size: Some(111111),
@@ -742,6 +747,7 @@ mod tests {
                 lookup_interval: Duration::from_secs(30),
                 cleanup_interval: Duration::from_secs(30),
                 heartbeat_batch_size: 4,
+                heartbeat_failure_threshold: 3,
                 init_wait_loop_interval: Duration::from_secs(30),
             },
             api_server: crate::rust::configuration::model::ApiServer {

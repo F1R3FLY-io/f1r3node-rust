@@ -120,6 +120,7 @@ mod tests {
                 lookup_interval: Duration::from_secs(20),
                 cleanup_interval: Duration::from_secs(10 * 60),
                 heartbeat_batch_size: 50,
+                heartbeat_failure_threshold: 3,
                 init_wait_loop_interval: Duration::from_secs(5),
             },
             api_server: ApiServer {
