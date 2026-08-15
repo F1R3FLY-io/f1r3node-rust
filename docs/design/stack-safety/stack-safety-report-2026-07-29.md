@@ -3227,8 +3227,11 @@ accepted selection and continues. Thus the enumeration head is the selector resu
 not by coordination between sibling algorithms.
 
 Each channel has one `CandidatePool`: a copy-on-write `PathMap<Multiplicity>` Bag subtrie is the
-residual authority, while a shared `Arc` table holds one decoded record per distinct trie key in
-canonical order. The chosen-candidate stack and Bag reservations obey the transaction law: an
+residual authority, while a derived `CandidateCatalog` shares canonical order and one lazy decode
+cell per distinct trie key across pool snapshots. A catalog-local `PathMap<()>` records paths already
+seen so persistent zero-to-one reactivation does not rebuild the order; it is constructed once with
+the catalog, refreshed after permanent membership changes, and never substitutes for the
+`PathMap<Multiplicity>` authority. The chosen-candidate stack and Bag reservations obey the transaction law: an
 accepted early stop leaves nonpersistent decrements installed; an exhausted subtree releases its
 parent's multiplicity; exhaustive enumeration restores the entry state. Persistent records are never
 decremented. A `Vec<Par>`, expanded occurrence list, per-frame pool clone, traversal-depth cap,
@@ -3243,7 +3246,9 @@ parent cursor only after the selected child returns, and emits the pre-existing
 `5329b27a3` removes expanded datum pools and per-frame residual copies: descent decrements the
 channel-local Bag, return increments it, and accepted candidates carry either an exact stored trie
 path or the distinct `Fresh` address. Firing removes exact paths, so same-channel batches cannot shift
-one another. No event hash, serialized record, PathMap crate code, or cost-accounting rule changed.
+one another. `2eb0d3871` shares the canonical catalog and decode cells across pool construction;
+`d50b1183d` encodes the channel prefix once and holds one loaded-store read lock across the hot
+PathMap lookup. No event hash, serialized record, PathMap crate code, or cost-accounting rule changed.
 
 ##### 5.16.5.4 Results
 
@@ -3258,8 +3263,8 @@ swap, and two-core CPU quota**. **MEASURED:**
 | profiled deep gate | NOT MEASURED — no baseline process | **2.61 s; 96,216 KiB maximum RSS; 0 major faults** | GNU `time -v` around the capped test process |
 | guarded-selection suite | same semantic corpus | **17/17** | adds two identical occurrences satisfying two binds without occurrence expansion |
 | enabled-rendezvous suite | same semantic corpus | **10/10** | adds one multiset-distinct rendezvous for indistinguishable duplicate occurrences |
-| data-index suite | pre-PathMap candidate pool absent | **14/14** | subtrie multiplicity, exact addresses, reversible Fresh reservation, one decode per distinct key |
-| complete `rspace_plus_plus` package checkpoint | n/a — acceptance total | **376 passed / 0 failed** | all package test binaries at the candidate-pool implementation checkpoint |
+| data-index suite | pre-PathMap candidate pool absent | **15/15** | subtrie multiplicity, exact addresses, reversible Fresh reservation, cross-pool lazy-decode reuse, persistent reactivation, and permanent removal |
+| complete `rspace_plus_plus` package checkpoint | n/a — acceptance total | **372 passed / 0 failed** | all package test binaries at the shared-catalog and hot-lookup checkpoint |
 | exact source census | 574 recursive components before this conversion | **572** after the PDA; then **566 recursive / 42 term-family / 19 mutual / 25 production files** after relocating recursive oracles; current **566 / 41 / 18 / 24** after the fused evaluator cycle disappeared and its stale disposition was retired | `handwritten_recursion_census`, 5/5; independent normalizer control 31 members $`\geq`$ 26 required |
 
 At the initial SS-A11 checkpoint, the guarded-search workload retained its expected algorithmic counts: the 1,000-datum single-bind
@@ -3268,6 +3273,11 @@ guarded join performed 3,660 spatial matches and 3,600 guard checks in 11.653 ms
 needed two spatial matches in 1.878 ms. These are one-run regression observations, not comparative
 throughput claims.
 
+The first post-catalog control/treatment pair is also **not a throughput claim**. Another agent ran a
+large unit-test workload concurrently; once discovered, the host load average was 58.62. Both arms
+are invalidated and excluded from pgmcp measurements, report conclusions, and optimization verdicts.
+The preregistered 51-sample, 99%-confidence comparison remains pending an idle-core preflight.
+
 ##### 5.16.5.5 What it cost
 
 Native-stack complexity changes from $`\Theta(b)`$ to $`O(1)`$. Explicit control storage is
@@ -3275,8 +3285,10 @@ $`O(b)`$, which is the irreducible selected-candidate/frame frontier. Search tim
 remain proportional to the candidate combinations actually visited and, for enumeration, emitted.
 The machine creates one frame per live bind, one chosen-candidate entry per selected bind, and one
 copy-on-write Bag pool per distinct channel. A frame records only an optional reservation position;
-it does not clone the pool. The derived order table is linear in distinct records rather than total
-multiplicity. The traversal does not materialize a Cartesian product or expand duplicate trie keys.
+it does not clone the pool. The derived catalog is linear in distinct records rather than total
+multiplicity. Its path topology and lazy decode cells are shared across pool snapshots;
+multiplicity-only changes update derived counts without rebuilding it. The traversal does not
+materialize a Cartesian product or expand duplicate trie keys.
 
 ##### 5.16.5.6 What is still recursive
 

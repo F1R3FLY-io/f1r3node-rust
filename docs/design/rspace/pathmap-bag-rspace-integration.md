@@ -6,7 +6,7 @@ Campaign: `campaign-4131-rspace-pathmap-integration`
 
 Experiment: `rspace-pathmap-end-to-end-layout-2026-08-15`
 Last updated: 2026-08-15
-Current implementation checkpoint: `5329b27a3`
+Current implementation checkpoint: `d50b1183d`
 
 ## Purpose and scope
 
@@ -39,12 +39,19 @@ The layout experiment remains open until the preregistered A/B/C comparison sele
 | Multiplicity-aware datum index | `5d4c5eca9` | one trie key per identical complete record; one decode per distinct key | implemented |
 | Authoritative hot-store datum trie | `ccec9b730`, `bd55758e4` | history fill, loaded-empty state, snapshots, indexed compatibility removal, and package tests | implemented |
 | Multiplicity-native matching pools | `5329b27a3` | exact-path firing; reversible Bag reservations; fresh-datum addressing; repeated-channel duplicate tests | implemented |
+| Shared canonical candidate catalogs | `2eb0d3871` | one canonical order and one lazy decode cell per distinct record across channel-pool snapshots; multiplicity-only updates do not rebuild the catalog | implemented |
+| Single-lookup hot-store reads | `d50b1183d` | one encoded prefix and one loaded-store read lock per hot pool/data lookup; final performance verdict remains pending | implemented |
 | Retained receive automaton and pattern-over-trie product walk | pgmcp `rspace-retained-set-automaton`, `rspace-pattern-over-pathmap` | no production evidence yet | next implementation stage |
 | Layout selection and performance verdict | pgmcp experiment 208 | preregistered; idle-core preflight rejected the first run window because competing release/coverage tests occupied the host | measurement pending |
 
-At `5329b27a3`, each exact channel produces a `CandidatePool`. Its semantic residual is a
-channel-local `Bag`, obtained as a copy-on-write PathMap subtrie through a read zipper. Its derived
-`Arc` order table contains one decoded record per distinct trie key, not one record per occurrence.
+At `d50b1183d`, each exact channel produces a `CandidatePool`. Its semantic residual is a
+channel-local `Bag`, obtained as a copy-on-write PathMap subtrie through a read zipper. Pools share a
+derived `CandidateCatalog`: its `Arc` order table contains one lazy decode cell per distinct trie
+key, not one record per occurrence. The catalog also retains a `PathMap<()>` of paths already seen at
+that channel so a persistent record that temporarily reaches multiplicity zero can be reactivated
+without reconstructing canonical order or decoding its datum again. This unit-valued trie is built
+with the catalog, not against every lookup; it is non-authoritative and is refreshed after a
+permanent membership change. The `PathMap<Multiplicity>` Bag remains the sole membership authority.
 The explicit matcher PDA decrements and restores Bag multiplicities during descent and rollback.
 An accepted stored candidate carries its complete trie path; an arriving produce carries the
 separate `Fresh` address. Firing therefore removes by exact path and cannot suffer positional-index
@@ -105,8 +112,12 @@ Identical records share one trie value whose `Multiplicity` counts occurrences. 
 
 The optimized path is staged and directional:
 
-1. Compile a `BindPattern` into a retained set automaton whose transitions consume RhoPathV1 structural bytes.
-2. Product-walk that automaton with a Bag read zipper, pruning nonmatching prefixes before decoding complete records.
+1. Compile a `BindPattern` into a retained set automaton whose authoritative transition index is one
+   or more prefix-compressed `PathMap` segments keyed by RhoPathV1 structural bytes. Compact state
+   identifiers and binding actions may be terminal values; a dense state arena may hold their
+   payloads but must not replace or flatten the trie transition relation.
+2. Product-walk the automaton PathMap and the Bag PathMap with iterative read zippers, pruning
+   nonmatching prefixes before decoding complete records.
 3. Use the current Rholang spatial semantics as the acceptance oracle while the byte automaton is established.
 4. Enumerate multi-channel reservations with an explicit pushdown automaton whose frames contain zipper positions, residual multiplicities, bindings, and rollback state.
 5. Evaluate the continuation guard only at complete leaves and backtrack iteratively after rejection.
@@ -116,8 +127,11 @@ Production matching is directional: receive patterns match produced data. Symmet
 
 The current checkpoint implements the multiplicity-aware reservation and exact-path commit portions
 of steps 4 and 6 over the existing spatial matcher. Steps 1–3—the retained automaton and direct
-pattern/PathMap product walk—remain the next production optimization; until they land, the derived
-order table still visits and decodes each distinct channel record once when a pool is constructed.
+pattern/PathMap product walk—remain the next production optimization; until they land, catalog
+construction still visits each distinct channel record. Datum decoding is lazy and shared across
+all pools derived from that catalog. Multiplicity-only changes update derived cardinalities in
+constant time, and a hot pool lookup encodes the channel prefix once and reads the loaded store under
+one outer lock.
 
 ## Native PathMap operations
 
@@ -131,7 +145,16 @@ order table still visits and decodes each distinct channel record once when a po
 | Compact snapshots | `ArenaCompactTree` produced directly from a read zipper |
 | Repeated-subtrie sharing | `merkleize`, only after end-to-end evidence justifies its construction cost |
 
-No production operation may flatten the trie merely to perform an operation already supplied by PathMap. A decoded-object cache, if later justified experimentally, is derived and invalidatable rather than a second authoritative store.
+No production operation may flatten the trie merely to perform an operation already supplied by
+PathMap. The decoded-object catalog is derived, shared, and invalidatable rather than a second
+authoritative store: dropping the catalog and reconstructing it from the Bag cannot change a
+candidate, multiplicity, ordering decision, COMM, or serialized byte.
+
+The same representation rule applies to the retained set automaton. `HashMap`, `BTreeMap`, and
+expanded `Vec` transition indexes are scientific controls, not eligible default implementations.
+Generated flat dispatch may be promoted only if an end-to-end preregistered comparison demonstrates
+a principled advantage while preserving trie-to-trie product pruning, prefix sharing, deterministic
+ordering, and bounded native-stack use.
 
 ## Consensus and compatibility invariants
 
@@ -156,16 +179,20 @@ The workload matrix crosses distinct cardinality, duplicate multiplicity, shared
 Benchmarks run only after a preflight confirms enough idle physical cores and no competing compiler or benchmark process. Each run follows the pgmcp-prescribed warm-up, sample count, CPU affinity, hardware record, and statistical test.
 
 The first post-`5329b27a3` benchmark window was deliberately not used: the host preflight showed
-multiple concurrent release/coverage test processes consuming more than one core each. This is a
-negative scheduling result, not performance evidence. The implementation evidence available at this
-checkpoint is:
+multiple concurrent release/coverage test processes consuming more than one core each. Later
+exploratory measurements exposed avoidable catalog reconstruction and duplicate PathMap lookup work;
+those observations guided `2eb0d3871` and `d50b1183d` but are not the preregistered verdict. The
+attempted final control/treatment pair is also invalid: another agent was running a large unit-test
+workload, and the host load average was measured at 58.62 when the interference was identified. Both
+arms are quarantined from the report and pgmcp measurement table. This is a negative scheduling
+result, not performance evidence. The implementation evidence available at this checkpoint is:
 
 | Gate | Result | Interpretation |
 |---|---:|---|
-| `data_index_spec` | 14/14 | Bag subtries, multiplicity, exact paths, and fresh rollback behave as specified |
+| `data_index_spec` | 15/15 | Bag subtries, multiplicity, exact paths, fresh rollback, cross-pool lazy decode reuse, persistent reactivation, and permanent removal behave as specified |
 | `guarded_matching_tests` | 17/17 | selector rollback, repeated channels, 20,000-bind stack gate, and production PathMap ordering pass |
 | `enabled_rendezvous_spec` | 10/10 | play/replay enumeration and duplicate-occurrence normalization pass |
-| complete `rspace_plus_plus` package checkpoint | 376 passed / 0 failed | no package-level behavioral regression at the candidate-pool implementation checkpoint |
+| complete `rspace_plus_plus` package checkpoint | 372 passed / 0 failed | no package-level behavioral regression at the shared-catalog and hot-lookup checkpoint |
 | strict lint over modified library and test targets | pass | no warning debt was introduced in the changed surface |
 
 These are correctness and engineering gates, not a throughput verdict. Experiment 208 remains open.
