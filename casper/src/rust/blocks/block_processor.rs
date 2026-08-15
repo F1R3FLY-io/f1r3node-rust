@@ -168,6 +168,14 @@ fn missing_dependency_quarantine_ms() -> u64 {
     })
 }
 
+fn block_age_is_of_interest(
+    block_number: i64,
+    approved_block_number: i64,
+    requested_as_dependency: bool,
+) -> bool {
+    block_number >= approved_block_number || requested_as_dependency
+}
+
 impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
     pub fn new(dependencies: BlockProcessorDependencies<T>) -> Self { Self { dependencies } }
 
@@ -191,11 +199,17 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
             .get_approved_block()
             .map(|approved_block| Validate::version(block, approved_block.header.version))?;
 
-        let old_block = casper.get_approved_block().map(|approved_block| {
-            proto_util::block_number(block) < proto_util::block_number(approved_block)
+        let block_age_of_interest = casper.get_approved_block().map(|approved_block| {
+            block_age_is_of_interest(
+                proto_util::block_number(block),
+                proto_util::block_number(approved_block),
+                self.dependencies
+                    .casper_buffer
+                    .requested_as_dependency(&BlockHashSerde(block.block_hash.clone())),
+            )
         })?;
 
-        Ok(!already_processed && shard_of_interest && version_of_interest && !old_block)
+        Ok(!already_processed && shard_of_interest && version_of_interest && block_age_of_interest)
     }
 
     /// check block format and store if check passed
@@ -987,4 +1001,17 @@ pub fn new_block_processor<T: TransportLayer + Send + Sync>(
     );
 
     BlockProcessor::new(dependencies)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::block_age_is_of_interest;
+
+    #[test]
+    fn old_block_requested_as_dependency_remains_of_interest() {
+        assert!(!block_age_is_of_interest(5, 6, false));
+        assert!(block_age_is_of_interest(5, 6, true));
+        assert!(block_age_is_of_interest(6, 6, false));
+        assert!(block_age_is_of_interest(7, 6, false));
+    }
 }
