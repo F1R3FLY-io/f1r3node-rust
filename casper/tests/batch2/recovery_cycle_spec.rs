@@ -446,13 +446,19 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
         hex::encode(&surviving_sig)
     );
 
-    // Terminal purge: once the replay block is finalized, the next proposal's
-    // buffer scan sees the sig finalized-won and drops the buffer entry.
+    // Buffer custody after the replay wins: the purge keys on floor-state
+    // evidence of the deploy's effect, and this deploy (`Nil` — the
+    // conflict is the system-level precharge) creates no number cells, so
+    // the probe can never attest it. Its custody therefore ends at window
+    // close via the retain, never at a node-local finality marker — the
+    // entry STAYS buffered here, while the canonical-won selection filter
+    // keeps it from ever being re-proposed. (The probe-visible purge path
+    // is pinned in exactly_once_spec.)
     nodes[0]
         .block_dag_storage
         .record_directly_finalized(recovery_block.block_hash.clone(), 1.0, |_| async { Ok(()) })
         .await
-        .expect("mark recovery_block finalized for terminal purge");
+        .expect("mark recovery_block finalized");
     let marker_deploy_3 = {
         tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         construct_deploy::basic_deploy_data(2, None, Some(shard_id.clone()))
@@ -473,10 +479,11 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
     {
         let buffer_guard = nodes[0].rejected_deploy_buffer.lock().expect("buffer lock");
         assert!(
-            !buffer_guard
+            buffer_guard
                 .contains_sig(&conflict_sig)
                 .expect("buffer.contains_sig"),
-            "finalized-won recovered sig must be purged from the rejected-deploy buffer"
+            "a probe-invisible deploy stays in buffer custody until window \
+             close; no node-local finality marker may evict it"
         );
     }
 }

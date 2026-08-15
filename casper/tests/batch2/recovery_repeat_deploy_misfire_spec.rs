@@ -130,6 +130,8 @@ async fn repeat_deploy_grants_exemption_on_parent_rejection_record() {
         );
         block_n.body.rejected_deploys = vec![RejectedDeploy {
             sig: deploy_sig.clone(),
+            duplicate: false,
+            carrier: prost::bytes::Bytes::new(),
         }];
         block_store
             .put(block_n.block_hash.clone(), &block_n)
@@ -353,6 +355,8 @@ async fn repeat_deploy_verdict_is_identical_across_divergent_local_views() {
         );
         block_m.body.rejected_deploys = vec![RejectedDeploy {
             sig: deploy_sig.clone(),
+            duplicate: false,
+            carrier: prost::bytes::Bytes::new(),
         }];
         block_store
             .put(block_m.block_hash.clone(), &block_m)

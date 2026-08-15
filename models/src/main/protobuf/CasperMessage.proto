@@ -190,7 +190,18 @@ message BodyProto {
 }
 
 message RejectedDeployProto{
-  bytes sig = 1;
+  bytes sig       = 1;
+  // Set by the merge that formed this record when the sig's effect is
+  // present in that merge's own post-state (a kept copy in the same merge,
+  // or already settled in its base): the record discarded a redundant copy
+  // and does not dispute the sig's standing win. Validators recompute the
+  // flag during checkpoint validation; a mismatch invalidates the block.
+  bool duplicate  = 2;
+  // The block that held the copy this record adjudicated. The merge knows
+  // it exactly (the rejected chain's source block); recording it makes
+  // coverage an equality instead of an inference. Validators recompute the
+  // carrier during checkpoint validation; a mismatch invalidates the block.
+  bytes carrier   = 3;
 }
 
 message JustificationProto {
