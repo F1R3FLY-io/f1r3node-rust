@@ -195,7 +195,15 @@ env:
   # instead of arbitrary orphan candidates. Verified that afcce4b1 is the
   # protected main tip, all PR checks passed, and the bonding lifecycle passed
   # locally against the node image built from master 35674b389.
-  SYSTEM_INTEGRATION_REF: afcce4b11c028513a9160873cdec0ec4b9adc9ee
+  #
+  # 2026-08-15: bumped to the reviewed SI PR #118 head. The convergence test
+  # now accepts finalized FT at or above FTT and checks monotonicity. Boundary
+  # bond blocks accept either valid closeBlock transition map, while a later
+  # finalized block must contain the exact activated map. Retired log snapshots
+  # now retain test-owner allowances without leaking allowances across tests,
+  # with focused unit coverage. Verified that dcc9353f is the immutable PR head
+  # and that the local repin helper and workflow security invariants pass.
+  SYSTEM_INTEGRATION_REF: dcc9353f33c94ca531d18b8e6a19a4e08e460fd9
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
