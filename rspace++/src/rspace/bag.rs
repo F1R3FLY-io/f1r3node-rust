@@ -215,16 +215,38 @@ impl Bag {
     }
 
     pub fn entries_with_prefix(&self, prefix: &[u8]) -> Vec<(Vec<u8>, Multiplicity)> {
-        let mut absolute = Vec::new();
         let mut result = Vec::new();
+        self.visit_prefix(prefix, |path, multiplicity| {
+            result.push((path.to_vec(), multiplicity));
+        });
+        result
+    }
+
+    pub fn visit_prefix(&self, prefix: &[u8], mut visitor: impl FnMut(&[u8], Multiplicity)) {
+        let result = self.try_visit_prefix(prefix, |path, multiplicity| {
+            visitor(path, multiplicity);
+            Ok::<(), std::convert::Infallible>(())
+        });
+        match result {
+            Ok(()) => {}
+            Err(error) => match error {},
+        }
+    }
+
+    pub fn try_visit_prefix<E>(
+        &self,
+        prefix: &[u8],
+        mut visitor: impl FnMut(&[u8], Multiplicity) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let mut absolute = Vec::new();
         for (relative, multiplicity) in self.entries.read_zipper_at_borrowed_path(prefix) {
             absolute.clear();
             absolute.reserve(prefix.len() + relative.len());
             absolute.extend_from_slice(prefix);
             absolute.extend_from_slice(&relative);
-            result.push((absolute.clone(), *multiplicity));
+            visitor(&absolute, *multiplicity)?;
         }
-        result
+        Ok(())
     }
 
     pub fn sum(&self, other: &Self) -> Result<Self, BagError> {

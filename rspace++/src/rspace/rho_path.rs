@@ -41,7 +41,11 @@ macro_rules! impl_default_rho_path {
     };
 }
 
-impl_default_rho_path!(String, i32, u64, bool);
+impl_default_rho_path!(i32, u64, bool);
+
+impl RhoPathEncode for String {
+    fn rho_path_structure(&self) -> Vec<u8> { self.as_bytes().to_vec() }
+}
 
 impl RhoPathEncode for Vec<u8> {
     fn rho_path_structure(&self) -> Vec<u8> { self.clone() }

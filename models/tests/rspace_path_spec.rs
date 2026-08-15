@@ -1,6 +1,8 @@
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, ListParWithRandom, Par};
 use models::rust::canonical_path::decode_trie_path;
+use rspace_plus_plus::rspace::data_index::RSpaceDataIndex;
+use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::rho_path::{RhoPathEncode, RhoPathV1};
 
 fn integer(value: i64) -> Par {
@@ -52,4 +54,38 @@ fn par_sequence_framing_preserves_arity_and_element_boundaries() {
     };
     assert_ne!(one.rho_path_structure(), other.rho_path_structure());
     assert_ne!(one.rho_path_structure(), longer.rho_path_structure());
+}
+
+#[test]
+fn data_index_collapses_exact_duplicates_but_not_random_state() {
+    let channel = integer(99);
+    let first = ListParWithRandom {
+        pars: vec![integer(1), integer(2)],
+        random_state: vec![1, 2, 3],
+    };
+    let second = ListParWithRandom {
+        random_state: vec![4, 5, 6],
+        ..first.clone()
+    };
+    let first_datum = Datum::create(&channel, first.clone(), false);
+    let second_datum = Datum::create(&channel, second.clone(), false);
+    let mut index = RSpaceDataIndex::new();
+    index.insert(&channel, &first_datum).unwrap();
+    index.insert(&channel, &first_datum).unwrap();
+    index.insert(&channel, &second_datum).unwrap();
+    let entries = index
+        .structure_prefix_entries::<_, ListParWithRandom>(&channel, &first.rho_path_structure())
+        .unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.multiplicity.get())
+            .sum::<u64>(),
+        3
+    );
+    assert!(entries.iter().any(|entry| entry.datum.a.as_ref() == &first));
+    assert!(entries
+        .iter()
+        .any(|entry| entry.datum.a.as_ref() == &second));
 }
