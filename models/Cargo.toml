@@ -221,6 +221,10 @@ name = "protobuf_encoder_differential"
 path = "tests/protobuf_encoder_differential.rs"
 
 [[test]]
+name = "rspace_path_spec"
+path = "tests/rspace_path_spec.rs"
+
+[[test]]
 name = "schema_meta_conformance"
 path = "tests/schema_meta_conformance.rs"
 

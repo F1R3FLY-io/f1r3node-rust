@@ -5,6 +5,7 @@ pub mod history;
 pub mod hot_store;
 pub mod internal;
 pub mod logging;
+pub mod rho_path;
 pub mod rspace;
 mod space_matcher;
 pub mod checkpoint;

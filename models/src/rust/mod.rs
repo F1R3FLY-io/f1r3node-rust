@@ -27,6 +27,7 @@ pub mod pathmap_zipper;
 // storage plus canonical EPM1 caches); re-exported from `crate::rhoapi` in lib.rs.
 pub mod rhoapi_ext;
 pub mod rholang;
+pub mod rspace_path;
 pub mod sorted_par_hash_set;
 pub mod sorted_par_map;
 pub mod string_ops;

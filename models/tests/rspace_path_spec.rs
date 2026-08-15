@@ -1,0 +1,55 @@
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::{Expr, ListParWithRandom, Par};
+use models::rust::canonical_path::decode_trie_path;
+use rspace_plus_plus::rspace::rho_path::{RhoPathEncode, RhoPathV1};
+
+fn integer(value: i64) -> Par {
+    let mut par = Par::default();
+    par.exprs.push(Expr {
+        expr_instance: Some(ExprInstance::GInt(value)),
+    });
+    par
+}
+
+#[test]
+fn par_channel_structure_is_the_canonical_reversible_trie_path() {
+    let channel = integer(42);
+    let path = RhoPathV1::datum_key(&channel, b"datum", b"identity");
+    let view = RhoPathV1::parse_datum(&path).unwrap();
+    assert_eq!(
+        decode_trie_path(&view.channel_structure()).unwrap(),
+        channel
+    );
+}
+
+#[test]
+fn random_state_changes_identity_without_destroying_structural_sharing() {
+    let first = ListParWithRandom {
+        pars: vec![integer(1), integer(2)],
+        random_state: vec![1, 2, 3],
+    };
+    let second = ListParWithRandom {
+        random_state: vec![4, 5, 6],
+        ..first.clone()
+    };
+    assert_eq!(first.rho_path_structure(), second.rho_path_structure());
+    assert_ne!(first.rho_path_identity(), second.rho_path_identity());
+}
+
+#[test]
+fn par_sequence_framing_preserves_arity_and_element_boundaries() {
+    let one = ListParWithRandom {
+        pars: vec![integer(1), integer(2)],
+        random_state: Vec::new(),
+    };
+    let other = ListParWithRandom {
+        pars: vec![integer(12)],
+        random_state: Vec::new(),
+    };
+    let longer = ListParWithRandom {
+        pars: vec![integer(1), integer(2), integer(3)],
+        random_state: Vec::new(),
+    };
+    assert_ne!(one.rho_path_structure(), other.rho_path_structure());
+    assert_ne!(one.rho_path_structure(), longer.rho_path_structure());
+}
