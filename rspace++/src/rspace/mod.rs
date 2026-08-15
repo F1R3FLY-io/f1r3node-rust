@@ -1,3 +1,4 @@
+pub mod bag;
 pub mod candidate_order;
 pub mod hashing;
 pub mod history;
