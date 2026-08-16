@@ -118,8 +118,8 @@ struct FocusProduct<'a> {
 impl<'a> FocusProduct<'a> {
     fn new(availability: &'a PathMap<u64>, positions: &'a PathMap<u64>) -> Self {
         Self {
-            availability: availability.trie_ref_at_path(&[]),
-            positions: positions.trie_ref_at_path(&[]),
+            availability: availability.trie_ref_at_path([]),
+            positions: positions.trie_ref_at_path([]),
         }
     }
 
