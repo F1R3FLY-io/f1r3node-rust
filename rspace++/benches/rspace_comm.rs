@@ -59,6 +59,8 @@ impl Match<Pattern, String, String> for StringMatcher {
     fn retained_datum_path(&self, datum: &String) -> Option<Vec<u8>> {
         self.retained_paths.then(|| datum.as_bytes().to_vec())
     }
+
+    fn supports_rho_path_candidate_pruning(&self) -> bool { self.retained_paths }
 }
 
 type BenchSpace = RSpace<String, Pattern, String, String>;
@@ -132,12 +134,12 @@ fn worst_ordered_value(channel: &str, values: &[String]) -> String {
         .clone()
 }
 
-fn distinct_fixture(cardinality: usize, shared_prefix: bool) -> CommFixture {
+fn distinct_fixture(cardinality: usize, shared_prefix: bool, retained_paths: bool) -> CommFixture {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("Tokio runtime");
-    let space = runtime.block_on(create_space(true));
+    let space = runtime.block_on(create_space(retained_paths));
     let channel = "bench-channel".to_string();
     let values = (0..cardinality)
         .map(|index| {
@@ -334,11 +336,13 @@ fn bench_rspace_comm(criterion: &mut Criterion) {
         };
         let mut group = criterion.benchmark_group(name);
         for cardinality in [1usize, 16, 256, 4096] {
-            let fixture = distinct_fixture(cardinality, shared_prefix);
-            group.throughput(Throughput::Elements(1));
-            group.bench_function(BenchmarkId::from_parameter(cardinality), |bencher| {
-                bencher.iter_custom(|iterations| fixture.measure(iterations));
-            });
+            for (label, retained_paths) in [("control", false), ("pathmap", true)] {
+                let fixture = distinct_fixture(cardinality, shared_prefix, retained_paths);
+                group.throughput(Throughput::Elements(1));
+                group.bench_function(BenchmarkId::new(label, cardinality), |bencher| {
+                    bencher.iter_custom(|iterations| fixture.measure(iterations));
+                });
+            }
         }
         group.finish();
     }

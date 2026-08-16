@@ -26,6 +26,20 @@ pub trait Match<P, A, K>: Send + Sync {
 
     fn retained_datum_path(&self, _datum: &A) -> Option<Vec<u8>> { None }
 
+    /// Opt in to pruning a resting-data candidate pool by the PathMap paths
+    /// returned from `retained_pattern_path` and `retained_datum_path`.
+    ///
+    /// Returning `true` is a soundness assertion with two obligations:
+    ///
+    /// 1. every datum path is exactly the unframed byte sequence returned by
+    ///    `RhoPathEncode::rho_path_structure` for that datum; and
+    /// 2. whenever `get(pattern, datum)` succeeds and the pattern supplies a
+    ///    retained path, the datum path starts with the pattern path.
+    ///
+    /// A false positive merely reaches the spatial matcher. A false negative
+    /// would hide an enabled COMM, so the conservative default is `false`.
+    fn supports_rho_path_candidate_pruning(&self) -> bool { false }
+
     /// Called once per candidate consume after every spatial bind has
     /// matched and the continuation is about to commit. Default is
     /// always-true (no guard, no veto). Returning `false` rolls the

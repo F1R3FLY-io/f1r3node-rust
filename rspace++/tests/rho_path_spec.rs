@@ -21,10 +21,12 @@ fn channel_and_structural_prefixes_are_real_trie_prefixes() {
     let second = RhoPathV1::datum_key(&channel, b"shared\0right", b"second");
     let channel_prefix = RhoPathV1::datum_prefix(&channel);
     let structure_prefix = RhoPathV1::datum_structure_prefix(&channel, b"shared\0");
+    let relative_structure_prefix = RhoPathV1::relative_datum_structure_prefix(b"shared\0");
     assert!(first.starts_with(&channel_prefix));
     assert!(second.starts_with(&channel_prefix));
     assert!(first.starts_with(&structure_prefix));
     assert!(second.starts_with(&structure_prefix));
+    assert_eq!(&structure_prefix[channel_prefix.len()..], relative_structure_prefix.as_slice());
 }
 
 #[test]

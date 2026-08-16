@@ -92,6 +92,8 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
         Some(datum.rho_path_structure())
     }
 
+    fn supports_rho_path_candidate_pruning(&self) -> bool { true }
+
     /// Cross-channel `where`-clause guard. Called by the matcher
     /// coordinator after every spatial bind has produced a
     /// `ListParWithRandom`. The bound variables of every bind are

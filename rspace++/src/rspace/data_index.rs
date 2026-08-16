@@ -102,10 +102,27 @@ struct EncodedIndexedDatum {
     multiplicity: Multiplicity,
 }
 
+/// Fixed-width position in a candidate catalog's canonical order.
+///
+/// The identifier lives only in a derived in-memory PathMap. It is not a wire
+/// value and deliberately does not use platform-width `usize` as trie data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CandidatePosition(u64);
+
+impl CandidatePosition {
+    fn from_index(index: usize) -> Self {
+        Self(u64::try_from(index).expect("candidate catalog length must fit in u64"))
+    }
+
+    fn index(self) -> usize {
+        usize::try_from(self.0).expect("candidate position must fit on the current platform")
+    }
+}
+
 #[derive(Debug, Clone)]
 struct CandidateCatalog<A: Clone> {
     ordered: Arc<[CandidatePoolEntry<A>]>,
-    known_paths: PathMap<()>,
+    positions: Arc<PathMap<CandidatePosition>>,
     active_distinct_len: usize,
     cardinality: u128,
 }
@@ -118,11 +135,14 @@ impl<A: Clone> CandidateCatalog<A> {
             .iter()
             .map(|entry| u128::from(entry.multiplicity.get()))
             .sum();
-        let mut known_paths = PathMap::new();
+        let mut positions = PathMap::new();
         let ordered = entries
             .into_iter()
-            .map(|entry| {
-                known_paths.insert(&entry.path, ());
+            .enumerate()
+            .map(|(position, entry)| {
+                let previous = positions
+                    .insert(&entry.path[prefix_len..], CandidatePosition::from_index(position));
+                debug_assert!(previous.is_none(), "candidate paths are distinct");
                 CandidatePoolEntry {
                     storage_path: Arc::from(entry.path),
                     relative_offset: prefix_len,
@@ -134,7 +154,7 @@ impl<A: Clone> CandidateCatalog<A> {
             .into();
         Self {
             ordered,
-            known_paths,
+            positions: Arc::new(positions),
             active_distinct_len,
             cardinality,
         }
@@ -142,10 +162,10 @@ impl<A: Clone> CandidateCatalog<A> {
 
     fn needs_refresh(&self) -> bool { self.active_distinct_len != self.ordered.len() }
 
-    fn record_insert(&mut self, path: &[u8], multiplicity: Multiplicity) -> bool {
+    fn record_insert(&mut self, relative_path: &[u8], multiplicity: Multiplicity) -> bool {
         self.cardinality += 1;
         if multiplicity == Multiplicity::ONE {
-            if !self.known_paths.contains(path) {
+            if !self.positions.contains(relative_path) {
                 return false;
             }
             self.active_distinct_len += 1;
@@ -165,6 +185,7 @@ impl<A: Clone> CandidateCatalog<A> {
 pub struct CandidatePool<A: Clone> {
     availability: Bag,
     ordered: Arc<[CandidatePoolEntry<A>]>,
+    positions: Arc<PathMap<CandidatePosition>>,
     fresh: Option<Datum<A>>,
     fresh_available: bool,
     decode: fn(&[u8]) -> Datum<A>,
@@ -187,6 +208,7 @@ impl<A: Clone> CandidatePool<A> {
         Self {
             availability,
             ordered: Arc::clone(&catalog.ordered),
+            positions: Arc::clone(&catalog.positions),
             fresh: None,
             fresh_available: false,
             decode: decode_candidate::<A>,
@@ -205,6 +227,33 @@ impl<A: Clone> CandidatePool<A> {
     pub fn next_available(&self, start: usize) -> Option<usize> {
         (start..self.len()).find(|position| self.is_available(*position))
     }
+
+    /// Canonical candidate positions whose RhoPath structure has `prefix`.
+    ///
+    /// PathMap performs the prefix cut before any stored datum is decoded. The
+    /// zipper yields trie order, whereas RSpace consensus uses the catalog's
+    /// deterministic hash order, so the fixed-width position values are sorted
+    /// before they leave this derived index. Availability remains authoritative
+    /// and is checked by the caller as reservations change during backtracking.
+    pub(crate) fn positions_with_structure_prefix(
+        &self,
+        prefix: &[u8],
+        fresh_matches: bool,
+    ) -> Vec<usize> {
+        let mut result = Vec::new();
+        if self.fresh.is_some() && fresh_matches {
+            result.push(0);
+        }
+        let stored_offset = usize::from(self.fresh.is_some());
+        let encoded_prefix = RhoPathV1::relative_datum_structure_prefix(prefix);
+        for (_, position) in self.positions.read_zipper_at_borrowed_path(&encoded_prefix) {
+            result.push(position.index() + stored_offset);
+        }
+        result.sort_unstable();
+        result
+    }
+
+    pub(crate) fn fresh_datum(&self) -> Option<&Datum<A>> { self.fresh.as_ref() }
 
     pub fn candidate(&self, position: usize) -> Option<(&Datum<A>, DatumAddress)> {
         if !self.is_available(position) {
@@ -285,7 +334,7 @@ impl<A: Clone> CandidatePool<A> {
         }
     }
 
-    fn is_available(&self, position: usize) -> bool {
+    pub(crate) fn is_available(&self, position: usize) -> bool {
         if self.fresh.is_some() {
             if position == 0 {
                 return self.fresh_available;
@@ -581,14 +630,16 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
     {
         let (path, multiplicity) = self.index.insert(channel, datum)?;
         let marker = RhoPathV1::datum_prefix(channel);
+        let relative_path = path
+            .strip_prefix(marker.as_slice())
+            .expect("an inserted datum path must begin with its channel prefix");
         let catalogs = self
             .candidate_catalogs
             .get_mut()
             .expect("candidate catalog write lock");
-        if catalogs
-            .get_mut(&marker)
-            .is_some_and(|catalog| !Arc::make_mut(catalog).record_insert(&path, multiplicity))
-        {
+        if catalogs.get_mut(&marker).is_some_and(|catalog| {
+            !Arc::make_mut(catalog).record_insert(relative_path, multiplicity)
+        }) {
             catalogs.remove(&marker);
         }
         if self.loaded_channels.insert(&marker, ()).is_none() {

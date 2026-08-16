@@ -59,6 +59,8 @@ impl Match<Pattern, String, StringsCaptor> for StringMatch {
     fn retained_datum_path(&self, datum: &String) -> Option<Vec<u8>> {
         Some(datum.as_bytes().to_vec())
     }
+
+    fn supports_rho_path_candidate_pruning(&self) -> bool { true }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]

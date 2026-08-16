@@ -25,9 +25,81 @@ struct CandidateWalkFrame<'a, C, P> {
     channel: &'a C,
     pattern: &'a P,
     level: usize,
-    cursor: usize,
+    scan: CandidateScan,
     reserved_position: Option<usize>,
     any_leaf_reached: bool,
+}
+
+/// Resumable candidate source for one frame of the selection PDA.
+///
+/// `All` preserves the generic full-scan contract. `Indexed` is a canonical-
+/// order projection of a native PathMap prefix query and is enabled only when
+/// the matcher explicitly attests that its retained paths are sound RhoPath
+/// structure prefixes.
+enum CandidateScan {
+    All {
+        next_position: usize,
+    },
+    Indexed {
+        positions: Vec<usize>,
+        next_index: usize,
+    },
+}
+
+impl CandidateScan {
+    fn for_pattern<P, A, K>(
+        matcher: &Box<dyn Match<P, A, K>>,
+        data: &CandidatePool<A>,
+        pattern: &P,
+        start: usize,
+    ) -> Self
+    where
+        A: Clone,
+    {
+        if !matcher.supports_rho_path_candidate_pruning() {
+            return Self::All {
+                next_position: start,
+            };
+        }
+        let Some(pattern_path) = matcher.retained_pattern_path(pattern) else {
+            return Self::All {
+                next_position: start,
+            };
+        };
+        let fresh_matches = data.fresh_datum().is_some_and(|datum| {
+            matcher
+                .retained_datum_path(&datum.a)
+                .is_some_and(|datum_path| datum_path.starts_with(&pattern_path))
+        });
+        let positions = data.positions_with_structure_prefix(&pattern_path, fresh_matches);
+        let next_index = positions.partition_point(|position| *position < start);
+        Self::Indexed {
+            positions,
+            next_index,
+        }
+    }
+
+    fn next_available<A: Clone>(&mut self, data: &CandidatePool<A>) -> Option<usize> {
+        match self {
+            Self::All { next_position } => {
+                let position = data.next_available(*next_position)?;
+                *next_position = position + 1;
+                Some(position)
+            }
+            Self::Indexed {
+                positions,
+                next_index,
+            } => {
+                while let Some(position) = positions.get(*next_index).copied() {
+                    *next_index += 1;
+                    if data.is_available(position) {
+                        return Some(position);
+                    }
+                }
+                None
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -72,8 +144,7 @@ pub(crate) enum SelectionOutcome {
 /// and deliberately preserves `chosen` plus the residual pools, which is the
 /// committing selector's contract. Returning `false` continues the traversal;
 /// exhaustive completion restores both structures to their entry state.
-fn walk_candidate_selections<S, C, P, A, K, OnAdmissible, OnBacktrack>(
-    space: &S,
+fn walk_candidate_selections<C, P, A, K, OnAdmissible, OnBacktrack>(
     matcher: &Box<dyn Match<P, A, K>>,
     channel_pattern_pairs: &[(&C, &P)],
     continuation: &K,
@@ -84,7 +155,6 @@ fn walk_candidate_selections<S, C, P, A, K, OnAdmissible, OnBacktrack>(
     mut on_backtrack: OnBacktrack,
 ) -> CandidateWalkResult
 where
-    S: SpaceMatcher<C, P, A, K> + ?Sized,
     C: Clone + std::hash::Hash + Eq + Send + Sync,
     P: Clone + Send + Sync,
     A: Clone + Send + Sync,
@@ -123,11 +193,19 @@ where
                     });
                     continue;
                 }
+                let scan = CandidateScan::for_pattern(
+                    matcher,
+                    channel_to_indexed_data
+                        .get(channel)
+                        .expect("candidate channel disappeared during traversal"),
+                    pattern,
+                    0,
+                );
                 frames.push(CandidateWalkFrame {
                     channel,
                     pattern,
                     level: current_level,
-                    cursor: 0,
+                    scan,
                     reserved_position: None,
                     any_leaf_reached: false,
                 });
@@ -135,22 +213,23 @@ where
             }
             State::Scan => {
                 let next = {
-                    let frame = frames.last().expect("candidate walk scan without a frame");
-                    space.next_spatial_match(
+                    let frame = frames
+                        .last_mut()
+                        .expect("candidate walk scan without a frame");
+                    next_spatial_match_from_scan(
                         matcher,
-                        frame.channel.clone(),
+                        frame.channel,
                         channel_to_indexed_data
                             .get(frame.channel)
                             .expect("candidate channel disappeared during traversal"),
                         frame.pattern,
-                        frame.cursor,
+                        &mut frame.scan,
                     )
                 };
                 if let Some((position, candidate)) = next {
                     let frame = frames
                         .last_mut()
                         .expect("candidate walk scan without a frame");
-                    frame.cursor = position + 1;
                     if !candidate.datum.persist {
                         assert!(
                             channel_to_indexed_data
@@ -201,6 +280,43 @@ where
     }
 }
 
+fn next_spatial_match_from_scan<C, P, A, K>(
+    matcher: &Box<dyn Match<P, A, K>>,
+    channel: &C,
+    data: &CandidatePool<A>,
+    pattern: &P,
+    scan: &mut CandidateScan,
+) -> Option<(usize, ConsumeCandidate<C, A>)>
+where
+    C: Clone,
+    A: Clone,
+{
+    while let Some(position) = scan.next_available(data) {
+        let (datum, address) = data
+            .candidate(position)
+            .expect("available candidate must have a payload");
+        metrics::counter!("rspace.matcher.get_calls", "source" => "rspace").increment(1);
+        let t_match = std::time::Instant::now();
+        let match_result = matcher.get(pattern, &datum.a);
+        metrics::counter!("rspace.matcher.fold_match_ns", "source" => "rspace")
+            .increment(t_match.elapsed().as_nanos() as u64);
+
+        if let Some(mat) = match_result {
+            return Some((position, ConsumeCandidate {
+                channel: channel.clone(),
+                datum: Datum {
+                    a: Arc::new(mat),
+                    persist: datum.persist,
+                    source: datum.source.clone(),
+                },
+                removed_datum: Arc::clone(&datum.a),
+                address,
+            }));
+        }
+    }
+    None
+}
+
 pub trait SpaceMatcher<C, P, A, K>: ISpace<C, P, A, K>
 where
     C: Clone + std::hash::Hash + Eq + Send + Sync,
@@ -241,42 +357,8 @@ where
         pattern: &P,
         start: usize,
     ) -> Option<(usize, ConsumeCandidate<C, A>)> {
-        let mut cursor = start;
-        while let Some(position) = data.next_available(cursor) {
-            let (datum, address) = data
-                .candidate(position)
-                .expect("available candidate must have a payload");
-            metrics::counter!("rspace.matcher.get_calls", "source" => "rspace").increment(1);
-            // The matcher borrows the pattern and the Arc-shared datum
-            // payload — a failing attempt copies nothing at this boundary
-            // (the earlier value-shaped path made one full pattern clone plus one full
-            // payload clone per candidate per attempt; the
-            // `rspace.matcher.clone_ns` timer that measured them is retired
-            // with the clones).
-            let t_match = std::time::Instant::now();
-            let match_result = matcher.get(pattern, &datum.a);
-            metrics::counter!("rspace.matcher.fold_match_ns", "source" => "rspace")
-                .increment(t_match.elapsed().as_nanos() as u64);
-
-            if let Some(mat) = match_result {
-                return Some((position, ConsumeCandidate {
-                    channel,
-                    datum: Datum {
-                        // The MATCHED payload (possibly bind-transformed
-                        // by the matcher) — a fresh value, Arc'd once.
-                        a: std::sync::Arc::new(mat),
-                        persist: datum.persist,
-                        source: datum.source.clone(),
-                    },
-                    // The stored payload as removed — an Arc bump
-                    // (before Arc-shaped transport: a deep copy per candidate).
-                    removed_datum: std::sync::Arc::clone(&datum.a),
-                    address,
-                }));
-            }
-            cursor = position + 1;
-        }
-        None
+        let mut scan = CandidateScan::for_pattern(matcher, data, pattern, start);
+        next_spatial_match_from_scan(matcher, &channel, data, pattern, &mut scan)
     }
 
     /// Attempts to match all channel-pattern pairs against the data map.
@@ -385,9 +467,10 @@ where
     /// not. They are separated by [`SelectionOutcome`] and counted apart so the
     /// second can be reviewed, and if consensus review decides to narrow the
     /// change to defect D1 alone, one place decides it — refusing to advance
-    /// `cursor` in the shared candidate-walk automaton when the
-    /// subtree returned [`SelectionOutcome::NoSpatialMatch`] reproduces the
-    /// predecessor's behaviour exactly for guard-free receives.
+    /// the frame's [`CandidateScan`] in the shared candidate-walk automaton
+    /// when the subtree returned [`SelectionOutcome::NoSpatialMatch`]
+    /// reproduces the predecessor's behaviour exactly for guard-free
+    /// receives.
     ///
     /// # Determinism
     ///
@@ -466,7 +549,6 @@ where
         chosen: &mut Vec<ConsumeCandidate<C, A>>,
     ) -> SelectionOutcome {
         let result = walk_candidate_selections(
-            self,
             matcher,
             channel_pattern_pairs,
             continuation,
@@ -599,7 +681,6 @@ where
         out: &mut Vec<Vec<ConsumeCandidate<C, A>>>,
     ) {
         let _ = walk_candidate_selections(
-            self,
             matcher,
             channel_pattern_pairs,
             continuation,

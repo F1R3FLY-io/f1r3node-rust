@@ -117,6 +117,18 @@ impl RhoPathV1 {
         structure_prefix: &[u8],
     ) -> Vec<u8> {
         let mut output = Self::datum_prefix(channel);
+        output.extend_from_slice(&Self::relative_datum_structure_prefix(structure_prefix));
+        output
+    }
+
+    /// Encode a datum-structure prefix relative to its channel subtrie.
+    ///
+    /// Candidate pools already hold the channel's PathMap subtree, so their
+    /// keys begin at the datum-structure frame. Keeping this helper beside the
+    /// complete-key encoder prevents the derived candidate index from growing
+    /// a second, subtly different escaping implementation.
+    pub fn relative_datum_structure_prefix(structure_prefix: &[u8]) -> Vec<u8> {
+        let mut output = Vec::with_capacity(structure_prefix.len());
         append_frame_prefix(&mut output, structure_prefix);
         output
     }
