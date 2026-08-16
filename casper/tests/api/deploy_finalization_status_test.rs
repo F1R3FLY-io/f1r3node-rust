@@ -1347,3 +1347,195 @@ async fn resolve_accepts_later_secondary_recovery_after_canonical_rejection() {
     assert_eq!(status.rejection_count, 1);
     assert_eq!(status.latest_block_hash, Some(recovered.block_hash));
 }
+
+#[tokio::test]
+async fn resolve_waits_for_visible_unfinalized_rejection_disposition() {
+    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+    use casper::rust::util::construct_deploy;
+    use models::rust::block_implicits;
+    use models::rust::casper::protocol::casper_message::{ProcessedDeploy, RejectedDeploy};
+
+    use crate::util::rholang::resources::{
+        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
+    };
+
+    let ctx = TestContext::new().await;
+    let genesis_block = ctx.genesis.genesis_block.clone();
+    let mut kvm = mk_test_rnode_store_manager_from_genesis(&ctx.genesis);
+    let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
+        .await
+        .expect("block store");
+    let dag_storage = block_dag_storage_from_dyn(&mut *kvm)
+        .await
+        .expect("dag storage");
+    block_store
+        .put_block_message(&genesis_block)
+        .expect("store genesis");
+    dag_storage
+        .insert(&genesis_block, InsertMode::Approved)
+        .expect("dag genesis");
+
+    let deploy = construct_deploy::source_deploy_now_full(
+        "@10!(10)".to_string(),
+        None,
+        None,
+        None,
+        Some(0),
+        None,
+    )
+    .expect("construct deploy");
+    let sig = deploy.sig.clone();
+    let clean = block_implicits::get_random_block(
+        Some(1),
+        Some(1),
+        None,
+        None,
+        None,
+        None,
+        Some(0),
+        Some(vec![genesis_block.block_hash.clone()]),
+        Some(Vec::new()),
+        Some(vec![ProcessedDeploy::empty(deploy)]),
+        Some(Vec::new()),
+        Some(genesis_block.body.state.bonds.clone()),
+        Some(genesis_block.shard_id.clone()),
+        None,
+    );
+    let mut rejected = block_implicits::get_random_block(
+        Some(2),
+        Some(2),
+        None,
+        None,
+        None,
+        None,
+        Some(0),
+        Some(vec![clean.block_hash.clone()]),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(genesis_block.body.state.bonds.clone()),
+        Some(genesis_block.shard_id.clone()),
+        None,
+    );
+    rejected.body.rejected_deploys = vec![RejectedDeploy {
+        sig: sig.clone(),
+        duplicate: false,
+        carrier: clean.block_hash.clone(),
+    }];
+
+    for block in [&clean, &rejected] {
+        block_store.put_block_message(block).expect("store block");
+        dag_storage
+            .insert(block, InsertMode::Normal)
+            .expect("dag insert block");
+    }
+    let mut dag = dag_storage
+        .get_representation()
+        .expect("get representation");
+    dag.last_finalized_block_hash = clean.block_hash.clone();
+
+    let status = deploy_finalization_status::resolve(&dag, &block_store, 50, &sig)
+        .expect("resolve should not fail");
+
+    assert_eq!(status.state, DeployFinalizationState::Pending);
+    assert_eq!(status.rejection_count, 0);
+    assert_eq!(status.latest_block_hash, Some(rejected.block_hash));
+}
+
+#[tokio::test]
+async fn resolve_waits_when_later_rejection_targets_a_newer_clean_carrier() {
+    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+    use casper::rust::util::construct_deploy;
+    use models::rust::block_implicits;
+    use models::rust::casper::protocol::casper_message::{ProcessedDeploy, RejectedDeploy};
+
+    use crate::util::rholang::resources::{
+        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
+    };
+
+    let ctx = TestContext::new().await;
+    let genesis_block = ctx.genesis.genesis_block.clone();
+    let mut kvm = mk_test_rnode_store_manager_from_genesis(&ctx.genesis);
+    let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
+        .await
+        .expect("block store");
+    let dag_storage = block_dag_storage_from_dyn(&mut *kvm)
+        .await
+        .expect("dag storage");
+    block_store
+        .put_block_message(&genesis_block)
+        .expect("store genesis");
+    dag_storage
+        .insert(&genesis_block, InsertMode::Approved)
+        .expect("dag genesis");
+
+    let deploy = construct_deploy::source_deploy_now_full(
+        "@11!(11)".to_string(),
+        None,
+        None,
+        None,
+        Some(0),
+        None,
+    )
+    .expect("construct deploy");
+    let sig = deploy.sig.clone();
+    let make_clean = |height, seq, parent| {
+        block_implicits::get_random_block(
+            Some(height),
+            Some(seq),
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+            Some(vec![parent]),
+            Some(Vec::new()),
+            Some(vec![ProcessedDeploy::empty(deploy.clone())]),
+            Some(Vec::new()),
+            Some(genesis_block.body.state.bonds.clone()),
+            Some(genesis_block.shard_id.clone()),
+            None,
+        )
+    };
+    let older_clean = make_clean(1, 1, genesis_block.block_hash.clone());
+    let newer_clean = make_clean(2, 2, older_clean.block_hash.clone());
+    let mut rejected = block_implicits::get_random_block(
+        Some(3),
+        Some(3),
+        None,
+        None,
+        None,
+        None,
+        Some(0),
+        Some(vec![newer_clean.block_hash.clone()]),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(genesis_block.body.state.bonds.clone()),
+        Some(genesis_block.shard_id.clone()),
+        None,
+    );
+    rejected.body.rejected_deploys = vec![RejectedDeploy {
+        sig: sig.clone(),
+        duplicate: false,
+        carrier: newer_clean.block_hash.clone(),
+    }];
+
+    for block in [&older_clean, &newer_clean, &rejected] {
+        block_store.put_block_message(block).expect("store block");
+        dag_storage
+            .insert(block, InsertMode::Normal)
+            .expect("dag insert block");
+    }
+    let mut dag = dag_storage
+        .get_representation()
+        .expect("get representation");
+    dag.last_finalized_block_hash = rejected.block_hash.clone();
+
+    let status = deploy_finalization_status::resolve(&dag, &block_store, 50, &sig)
+        .expect("resolve should not fail");
+
+    assert_eq!(status.state, DeployFinalizationState::Pending);
+    assert_eq!(status.rejection_count, 1);
+    assert_eq!(status.latest_block_hash, Some(rejected.block_hash));
+}

@@ -511,8 +511,7 @@ async fn prepare_user_deploys_with_policy(
             .collect();
         buffered_deploys.retain(|deploy| !expired_sigs.contains(&deploy.sig));
     }
-    let mut buffered_sigs: HashSet<Bytes> =
-        buffered_deploys.iter().map(|d| d.sig.clone()).collect();
+    let buffered_sigs: HashSet<Bytes> = buffered_deploys.iter().map(|d| d.sig.clone()).collect();
 
     let skipped_buffered_ordinary = if allow_ordinary_deploys && !allow_recovered_deploys {
         stored_unfinalized
@@ -548,39 +547,6 @@ async fn prepare_user_deploys_with_policy(
         Some(ctx) => ctx.floor_won_sigs(block_store, floor_scan_bound)?,
         None => HashSet::new(),
     };
-    let settled_buffered: Vec<Signed<DeployData>> = buffered_deploys
-        .iter()
-        .filter(|deploy| floor_won_sigs.contains(&deploy.sig))
-        .cloned()
-        .collect();
-    if !settled_buffered.is_empty() {
-        for deploy in &settled_buffered {
-            tracing::info!(
-                target: "f1r3fly.casper.deploy_lifecycle",
-                event = "buffer_removed",
-                deploy_sig = %hex::encode(&deploy.sig),
-                reason = "floor_won",
-                floor_hash = floor_ctx.map(|ctx| hex::encode(&ctx.floor.hash)),
-                floor_block = floor_ctx.map(|ctx| ctx.floor.block_number),
-                next_block = block_number,
-                "deploy lifecycle"
-            );
-        }
-        rejected_deploy_buffer
-            .lock()
-            .map_err(|e| CasperError::LockError(e.to_string()))?
-            .remove(settled_buffered.clone())?;
-        tracing::info!(
-            target: "f1r3fly.casper.recovery",
-            "Purged {} rejected-buffer entr(y/ies) with floor-settled effects before block #{}",
-            settled_buffered.len(),
-            block_number
-        );
-        for deploy in &settled_buffered {
-            buffered_deploys.remove(deploy);
-            buffered_sigs.remove(&deploy.sig);
-        }
-    }
     let settled_stored: Vec<Signed<DeployData>> = stored_unfinalized
         .iter()
         .filter(|deploy| floor_won_sigs.contains(&deploy.sig))
