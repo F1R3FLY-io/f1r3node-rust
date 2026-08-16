@@ -7,6 +7,7 @@ use models::rust::rholang::match_path::{
 use models::rust::rholang::match_schema::{RhoPathCursor, RhoPathEvent};
 use models::rust::rholang::match_schema_tables::ParCursor;
 use models::rust::utils::{new_elist_expr, to_vec};
+use pathmap::PathMap;
 use rho_pure_eval::{Env as PureEnv, EvalError, SpatialMatch};
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::rho_path::{
@@ -103,10 +104,11 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
             Some(FreeVar(_) | Wildcard(_)) => true,
             Some(_) => return None,
         };
+        let mut captures = PathMap::new();
         let atoms = pattern
             .patterns
             .iter()
-            .map(rho_path_query_atom)
+            .map(|pattern| rho_path_query_atom(pattern, &mut captures))
             .collect::<Option<Vec<_>>>()?;
         Some(RhoPathQuery::structural_sequence(atoms, accepts_remainder))
     }
@@ -136,29 +138,32 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
     }
 }
 
-fn rho_path_query_atom(pattern: &Par) -> Option<RhoPathQueryAtom> {
+fn rho_path_query_atom(pattern: &Par, captures: &mut PathMap<()>) -> Option<RhoPathQueryAtom> {
     if let Some(hole) = rho_match_hole(pattern) {
+        if !record_linear_capture(captures, &hole) {
+            return None;
+        }
         return Some(match hole {
             RhoMatchQueryPart::Capture(id) => RhoPathQueryAtom::Capture(id),
             RhoMatchQueryPart::Wildcard => RhoPathQueryAtom::Wildcard,
             RhoMatchQueryPart::Exact(_) => unreachable!("a pattern hole is never exact"),
         });
     }
-    if let Some(query) = compile_ordered_nested_query(pattern) {
+    if let Some(query) = compile_ordered_nested_query(pattern, captures) {
         return Some(RhoPathQueryAtom::Match(query));
     }
     (!pattern.connective_used && pattern.locally_free.is_empty())
         .then(|| RhoPathQueryAtom::Exact(encode_par_match_path(pattern)))
 }
 
-fn compile_ordered_nested_query(pattern: &Par) -> Option<RhoMatchQuery> {
+fn compile_ordered_nested_query(
+    pattern: &Par,
+    captures: &mut PathMap<()>,
+) -> Option<RhoMatchQuery> {
     if !single_expr_carrier(pattern) {
         return None;
     }
-    match pattern.exprs[0].expr_instance.as_ref()? {
-        ExprInstance::EListBody(_) | ExprInstance::ETupleBody(_) => {}
-        _ => return None,
-    }
+    pattern.exprs[0].expr_instance.as_ref()?;
 
     let mut parts = Vec::new();
     let mut exact = Vec::with_capacity(256);
@@ -181,6 +186,9 @@ fn compile_ordered_nested_query(pattern: &Par) -> Option<RhoMatchQuery> {
             RhoPathEvent::EnterNode { cursor, .. } => {
                 if let ParCursor::Par(par) = cursor {
                     if let Some(hole) = rho_match_hole(par) {
+                        if !record_linear_capture(captures, &hole) {
+                            return None;
+                        }
                         flush_exact_query_part(&mut parts, &mut exact);
                         parts.push(hole);
                         suppressed_nodes = 1;
@@ -193,6 +201,11 @@ fn compile_ordered_nested_query(pattern: &Par) -> Option<RhoMatchQuery> {
                 }
                 match cursor {
                     ParCursor::EList(list) if list.remainder.is_some() => return None,
+                    // These carriers have associative-commutative matching
+                    // semantics. Their dynamic children belong to the AC
+                    // query machine, not this ordered cursor program. Ground
+                    // instances still take the exact structural-path lane in
+                    // `rho_path_query_atom`.
                     ParCursor::ESet(_)
                     | ParCursor::EMap(_)
                     | ParCursor::EPathMap(_)
@@ -221,6 +234,19 @@ fn compile_ordered_nested_query(pattern: &Par) -> Option<RhoMatchQuery> {
     }
     flush_exact_query_part(&mut parts, &mut exact);
     Some(RhoMatchQuery::new(parts))
+}
+
+/// Rholang receive binders are linear, while hand-built or persisted nonlinear
+/// `BindPattern`s retain the spatial matcher's historical accumulation
+/// behavior. A repeated level therefore cannot be reinterpreted as the generic
+/// RhoPath query language's equality-constrained capture. Returning `false`
+/// makes the entire derived query fall back to the authoritative matcher.
+fn record_linear_capture(captures: &mut PathMap<()>, hole: &RhoMatchQueryPart) -> bool {
+    match hole {
+        RhoMatchQueryPart::Capture(id) => captures.insert(id.get().to_be_bytes(), ()).is_none(),
+        RhoMatchQueryPart::Wildcard => true,
+        RhoMatchQueryPart::Exact(_) => unreachable!("a pattern hole is never exact"),
+    }
 }
 
 fn flush_exact_query_part(parts: &mut Vec<RhoMatchQueryPart>, exact: &mut Vec<u8>) {
