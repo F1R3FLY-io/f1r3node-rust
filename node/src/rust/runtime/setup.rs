@@ -276,6 +276,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             reporting_casper::rho_reporter(
                 &rspace_stores,
                 &block_dag_storage,
+                runtime_manager.replay_lock(),
                 rholang::rust::interpreter::external_services::ExternalServices::noop(),
             )
         } else {
