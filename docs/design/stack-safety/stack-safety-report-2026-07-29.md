@@ -3434,6 +3434,31 @@ processes make that wall time scientifically invalid. The implementation neverth
 unnecessary all-distinct trie lane on structural grounds. No throughput, RSS, or allocation claim
 is made until an uncontended release experiment compares the duplicate lane.
 
+Checkpoint `ad5d37a59` removes repeated structural and canonical-bincode walks for adjacent
+byte-identical normalized targets. The equality gate is the generated stack-safe total order, whose
+comparison includes `locally_free` metadata; Rholang's metadata-insensitive `PartialEq` is not used.
+A 64-occurrence duplicate control records one target-key encoding, whereas values that differ only
+in metadata retain two identities. No recursive traversal, auxiliary stack, or traversal cap is
+introduced.
+
+Checkpoint `26b72b096` removes the `T-P` occurrence-expanded universal remainder vertices from the
+associative-commutative matching graph. It seeds their predecessor-equivalent occupancy in one
+linear pass and quotient-compresses their identity into a single `Remainder` assignment kind. If a
+real term displaces an occupant, one explicit heap-PDA cursor restarts the same locally-free target
+scan that the displaced filler root formerly performed. Search backtracking, pending assignments,
+and displacement chains remain heap state; native call depth is independent of target and pattern
+width. Final remainder multiplicities are the authoritative target Bag minus the term-consumed Bag,
+with original positions retained solely as deterministic witnesses. No `RUST_MIN_STACK`, `stacker`,
+alternate stack, or depth/width limit is used.
+
+The width-128 remainder witness evaluates one real edge and captures the other 127 sends rather than
+constructing a dense filler relation. Full verdict and `FreeMap` equality with the frozen recursive
+oracle holds for all 651 binary target/pattern sequences through width four and for the
+locally-free refusal edge case. The complete spatial differential module passes 12/12, five
+affected matcher integration suites pass 81/81, and strict production-library lint passes. These
+are stack architecture, semantic, and deterministic-work results. They are not a release latency,
+allocation, or RSS comparison; that resource evidence remains open.
+
 ##### 5.16.5.4 Results
 
 The original SS-A11 depth measurements ran under a user systemd scope with **3 GiB `MemoryHigh`, 4
@@ -3462,7 +3487,7 @@ swap, and two-core CPU quota**. **MEASURED:**
 | nested `RMP1` instruction PDA | unpruned nested spatial scan | **9/9 framing/query cases plus the 8/8 product suite** | one- and two-layer escaping; every tested shallow token truncation rejected; 20,000 levels on 128 KiB; zero-heavy 256-candidate result equivalence with 256-to-1 spatial pruning |
 | datum-first retained structural queries | root fallback for every non-ground pattern | **9/9 combined production pruning cases** | identical COMM result/event trace/post-state map and 256-to-1 spatial calls for a canonically last waiting receive; unsupported patterns remain root fallbacks |
 | retained-filter formal composition | no theorem connecting both prefilters to canonical selection | **Rocq theorem plus complete bounded formal bundle** | exact-prefix and residual-query superset premises imply no false negatives and preservation of the first canonical spatial success; Rocq, Verus 6/6, Z3, and both exhaustive TLC models pass; concrete compiler premises remain open |
-| AC element candidate Bag | full unordered target scan | **8,256 to 128 exact diagonal spatial edges; 128 ordered-nested ESet edges; 128 generalized Send edges from 16,384 possible pairs; 16,257 exhaustive displacement edges in each of 51 samples** | the initial fixed-width candidate cut passed 53/53 matcher and 22/22 RSpace tests; `2d91c4394` makes exact multiplicity and residual subtraction Bag-authoritative; `bbe91b90f` extends exact stack-safe keys/queries to every unordered `Par` field root and passes 18/18 focused matcher plus strict lint; `3a70ddc58` uses Bag visitation only for true duplicates and preserves the permutation/semantic oracles; isolated pre-Bag counter process was 56.90 s and 100.8 MiB RSS under 4 GiB/zero swap; competing processes invalidate post-Bag durations, so no new throughput or RSS claim is inferred |
+| AC element candidate Bag | full unordered target scan | **8,256 to 128 exact diagonal spatial edges; 128 ordered-nested ESet edges; 128 generalized Send edges from 16,384 possible pairs; one real edge for a width-128 remainder; 16,257 exhaustive displacement edges in each of 51 samples** | the initial fixed-width candidate cut passed 53/53 matcher and 22/22 RSpace tests; `2d91c4394` makes exact multiplicity and residual subtraction Bag-authoritative; `bbe91b90f` extends exact stack-safe keys/queries to every unordered `Par` field root and passes 18/18 focused matcher plus strict lint; `3a70ddc58` uses Bag visitation only for true duplicates; `ad5d37a59` encodes one identity for 64 adjacent duplicates without merging metadata-distinct values; `26b72b096` quotient-compresses universal remainder vertices, passes all 651 bounded recursive-oracle cases, 12/12 spatial differential tests, and 81/81 matcher integrations; isolated pre-Bag counter process was 56.90 s and 100.8 MiB RSS under 4 GiB/zero swap; competing processes invalidate post-Bag durations, so no new throughput or RSS claim is inferred |
 | retained waiting-receive throughput | full canonical candidate scan | **23.2–44.6% more COMMs/s** | six treatment pairs; 51 samples/arm; 99% confidence; 16/256/4,096 receives; diverse/shared prefixes |
 | resting-data prefix throughput | full canonical candidate scan | **48.7–53.4% more COMMs/s at 16; 12.22–13.01× at 256; 238.8–256.9× at 4,096** | post-repair eight-pair matrix; 51 samples/arm; 99% confidence; singleton arms are non-regressing because zero/one physical candidates use the direct scan |
 | singleton repair package gate | pre-repair indexed singleton | **392 passed / 0 failed** | full `rspace_plus_plus` package under 5 GiB, zero swap; focused pruning suite is 5/5 |

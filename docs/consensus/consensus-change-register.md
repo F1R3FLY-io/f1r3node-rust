@@ -594,7 +594,7 @@ is a *future* fork, not a present one).
 | [CBR-042](#cbr-042) | N | …and on the **bincode** wire too — `U(m)` verbatim and contiguous, then the values (FORM ②), so the reader never decodes a trie key | `3a32cf07` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-043](#cbr-043) | N | …but of **the entries that surface WRITES**. FORM ② keyed lf-blanked values by the *unblanked* entries, putting an entry's `locally_free` on the event hash | `8cf0b770` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-044](#cbr-044) | N | EPathMap becomes a homogeneous PathMap set/map and both codecs carry one versioned EPM1 trie snapshot; generated protobuf PDAs remove the read ceiling | `26876b65` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
-| [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`; benchmark `7bc5c6994` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
+| [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`; benchmark `7bc5c6994` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
 | [CBR-L07](#cbr-l07) | L | `List.last()` in MeTTaIL's Rholang | `bbceb6d9`, `6e543c01` | · | · | · | · | · | ● | · | PERMISSIVE | **W** |
 | [CBR-L08](#cbr-l08) | L | The kv element-category gate — a Name in a kv slot is refused, not silently dropped | *in flight* | ● | ● | ● | ● | ● | ● | ○ | REGRESSIVE | **W** |
 | [CBR-L10](#cbr-l10) | L | A pathmap's entries come from a projection, not a field | `832d510f` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
@@ -2322,7 +2322,7 @@ Legacy protobuf fields are read-only migration inputs; removing them is a later 
 
 | | |
 |---|---|
-| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`; benchmark `7bc5c6994` |
+| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`; benchmark `7bc5c6994` |
 | Status | LANDED ON CAMPAIGN BRANCH; VERIFICATION OPEN |
 | Direction | UNVERIFIED |
 | Evidence grade | UNVERIFIED |
@@ -2412,6 +2412,26 @@ no multiplicity to compress. These refinements change neither candidate order no
 verdict authority, but their generated-query superset premise is still consensus-relevant.
 CBR-053 therefore remains `UNVERIFIED`.
 
+Checkpoint `ad5d37a59` reuses the exact target identity only when adjacent normalized values compare
+equal under their generated stack-safe total order. That comparison includes transient
+`locally_free` metadata, unlike Rholang's value-oriented `PartialEq`; a metadata distinction cannot
+therefore be hidden by the reuse. A 64-occurrence control records one identity encoding, and a
+metadata-only distinction records two groups. This changes construction work but neither the Bag
+key nor candidate order.
+
+Checkpoint `26b72b096` quotient-compresses the `T-P` indistinguishable universal remainder roots.
+It seeds the same first locally-free occupancy that predecessor Kuhn traversal created and uses one
+generic explicit heap-PDA cursor when a term displaces a remainder occupant. The final residual is
+the authoritative target Bag minus the term-consumed Bag; original positions select witnesses only
+to preserve predecessor materialization and displacement order. The first attempted term-only
+rewrite disagreed with the recursive oracle and was not retained; preserving the implicit filler
+occupancy repaired that discrepancy. Full verdict and `FreeMap` equality then holds for all 651
+binary target/pattern cases through width four, including locally-free refusal, while the width-128
+remainder control evaluates one real edge and captures 127 residual sends. The complete spatial
+differential module passes 12/12 and the affected matcher integration suites pass 81/81. These
+checks strengthen the ordering and residual evidence, but generated-query soundness, schedule
+replay, and post-state equivalence remain open; CBR-053 remains `UNVERIFIED`.
+
 Checkpoint `e1a587c9f` applies that same structural-query contract to datum-first lookup. A supported
 waiting pattern is retained at its longest exact prefix in the existing
 `PathMap<TerminalId>` segment; a residual query must accept the fresh datum bytes before the terminal
@@ -2453,7 +2473,7 @@ subsets before any datum decode or spatial-match state allocation. A flat `Vec`,
 `BTreeMap` transition authority would lose that shared-prefix property and is not the selected
 design.
 
-The current containment argument has twelve independently checked parts:
+The current containment argument has thirteen independently checked parts:
 
 1. exact-ground `BindPattern` and matching `ListParWithRandom` values use the same canonical
    structural sequence;
@@ -2476,7 +2496,9 @@ The current containment argument has twelve independently checked parts:
     preserve canonical candidate order after filtering; and
 12. Rocq proves that if the exact-prefix and residual-query predicates are each supersets of the
     authoritative spatial relation, their conjunction cannot remove a spatial success and filtering
-    preserves the first spatially accepted candidate in canonical order.
+    preserves the first spatially accepted candidate in canonical order; and
+13. compact remainder occupancy reproduces the predecessor universal-root initialization and
+    displacement scan, while Bag subtraction conserves the exact unassigned multiplicity.
 
 Cache-counter saturation returns `None` and recompiles instead of accepting a stale trie. Cache hits
 borrow the trie under a sharded map guard and perform no `PathMap` clone. Empty groups remove their
@@ -2520,14 +2542,19 @@ the verdict axis.
   changed production libraries compile and pass strict lint under 8 GiB/zero-swap scopes.
   Competing host `rustc` processes invalidate this window for comparative benchmarking, so these
   gates make no latency, throughput, or RSS claim. **MEASURED.**
-- generalized AC Bag authority at `bbe91b90f` and `3a70ddc58`: the focused matcher-library group
+- generalized AC Bag authority at `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, and `26b72b096`: the focused matcher-library group
   passes **18/18** after every unordered `Par` field root receives an exact stack-safe identity and
   conservative query lane; the new width-128 Send control performs **128** successful edges from
   16,384 possible pairs and agrees with the recursive oracle on all bindings. The duplicate and
-  permutation differential plus the semantic corpus pass with multiplicity-native visitation, and
-  the 51-sample displacement schedule remains **16,257** treatment edges versus **699,263** nominal
-  calls. Competing pgmcp and `rustc` workloads make wall time and RSS inadmissible as comparative
-  evidence. **MEASURED for semantics/work counts; resource verdict OPEN.**
+  permutation differential plus the semantic corpus pass with multiplicity-native visitation. A
+  run of 64 adjacent identical targets performs one exact identity encoding without merging a
+  metadata-only distinction. Compact remainder occupancy and Bag subtraction agree with the frozen
+  recursive oracle on all **651** bounded binary target/pattern cases; the width-128 remainder gate
+  evaluates one real edge and captures 127 sends; the complete spatial differential module passes
+  **12/12** and affected matcher integrations pass **81/81**. The 51-sample displacement schedule
+  remains **16,257** treatment edges versus **699,263** nominal calls. Competing pgmcp and `rustc`
+  workloads make earlier wall time and RSS inadmissible as comparative evidence. **MEASURED for
+  semantics/work counts; resource verdict OPEN.**
 - generated resting-data differential: **64 corpora** with identical selected result, RSpace event
   trace, and post-state maps under full and indexed scans. **MEASURED.**
 - both changed libraries plus all tests and benchmark targets compile under a **5 GiB** resident-set
