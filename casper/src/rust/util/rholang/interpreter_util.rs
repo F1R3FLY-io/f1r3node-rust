@@ -1000,13 +1000,14 @@ async fn resolve_merge_floor(
 
 /// True iff `parent`'s committed state carries everything settled in the
 /// floor's state — the precondition for taking a parent's post-state
-/// verbatim. "Base is the floor block's committed post-state, always": a
-/// fast path may skip the merge only when the parent's state lineage
-/// already holds the floor. Otherwise the block must re-base — a verbatim
-/// state inherited across a floor advance is missing settled content, it
-/// can collect no scope to recover it, and every witnessed descendant is
-/// then refused by containment while unfinalized width piles up (the
-/// 3cd723b6 finalization stall).
+/// verbatim. A fast path may skip the merge only when the parent's state
+/// lineage already holds the floor; otherwise the block goes through the
+/// full merge, where this same question decides the base and a parent that
+/// fails it is replaced by the floor, so the scope re-collects what the
+/// parent is missing. A verbatim state has no such repair available — it
+/// is missing settled content, collects no scope to recover it, and every
+/// witnessed descendant is then refused by containment while unfinalized
+/// width piles up (the 3cd723b6 finalization stall).
 fn parent_state_holds_floor(
     dag: &KeyValueDagRepresentation,
     block_store: &KeyValueBlockStore,
@@ -1303,12 +1304,16 @@ pub async fn compute_parents_post_state(
                 Ok(block_index)
             };
 
-            // Compute scope: the unsealed band not represented by the finalized floor.
+            // Compute scope: the band not already represented by the merge
+            // base's committed state.
             //
-            // H3: derive the floor BEFORE collecting the merge scope so the
-            // ancestor walk can drop only blocks represented by the floor's
-            // DAG past. A below-floor sibling can still be a direct parent, and
-            // its effects are not in the floor's post-state.
+            // The floor is derived BEFORE the scope is collected because the
+            // base depends on it — the base is the main parent only while that
+            // parent's state holds the floor's settled content. Once the base
+            // is fixed, the ancestor walk drops exactly the blocks it already
+            // carries. A block at or below the base's height can still be a
+            // direct parent off its ancestry, and its effects are not in the
+            // base's post-state.
             let max_parent_block_number = parents
                 .iter()
                 .map(|p| p.body.state.block_number)
@@ -1316,11 +1321,11 @@ pub async fn compute_parents_post_state(
                 .unwrap_or(0);
 
             // Node-deterministic finalized floor, derived from the block's frozen
-            // justification snapshot — the cut the merge builds on (already
-            // resolved when a fast-path guard refused). Replaces the LCA base:
-            // the floor is finalization-aware and advance-only, so the merged
-            // state is MONOTONE, where the LCA base let it churn
-            // (path-dependent FS).
+            // justification snapshot (already resolved when a fast-path guard
+            // refused). The floor is no longer the base — it is the finality
+            // clock: it keys the validity window, supplies the bonds committee,
+            // bounds the base's lineage walk, and is the base of last resort
+            // when the main parent's state does not hold its settled content.
             let floor_derive_started = std::time::Instant::now();
             let (floor_hash, floor_state, floor_block_number, settled_floors) = match pre_resolved {
                 Some(resolved) => resolved,
@@ -1489,16 +1494,19 @@ pub async fn compute_parents_post_state(
                     step = "compute_parents_post_state.FLOOR",
                     floor = %hex::encode(&floor_hash[..8.min(floor_hash.len())]),
                     floor_block = floor_block_number,
-                    base_state = %hex::encode(&floor_state.bytes()[..8]),
+                    floor_state = %hex::encode(&floor_state.bytes()[..8]),
+                    base = %hex::encode(&scope_anchor_hash[..8.min(scope_anchor_hash.len())]),
+                    base_block = scope_anchor_number,
+                    base_state = %hex::encode(&base_state.bytes()[..8]),
                     scope_before = pre_filter_count,
                     scope_after = visible_blocks.len(),
                     n_dropped = dropped.len(),
                     dropped = ?dropped,
                     n_parents = parents.len(),
-                    "merge.cpps: floor derived; base=floor.post_state; scope filtered to >= floor block"
+                    "merge.cpps: floor derived; base=anchor.post_state; scope filtered to the band above the base"
                 );
             }
-            tracing::debug!(target: "f1r3fly.casper.compute_parents_post_state", floor = %hex::encode(&floor_hash[..8.min(floor_hash.len())]), floor_block = floor_block_number, base_state = %hex::encode(&floor_state.bytes()[..8]), scope_blocks = visible_blocks.len(), n_parents = parents.len(), "merge.compute_parents_post_state: floor+base+scope computed");
+            tracing::debug!(target: "f1r3fly.casper.compute_parents_post_state", floor = %hex::encode(&floor_hash[..8.min(floor_hash.len())]), floor_block = floor_block_number, base = %hex::encode(&scope_anchor_hash[..8.min(scope_anchor_hash.len())]), base_state = %hex::encode(&base_state.bytes()[..8]), scope_blocks = visible_blocks.len(), n_parents = parents.len(), "merge.compute_parents_post_state: floor+base+scope computed");
             if visible_blocks.len() < pre_filter_count {
                 tracing::debug!(
                     target: "f1r3fly.casper.compute_parents_post_state",
@@ -1623,7 +1631,8 @@ pub async fn compute_parents_post_state(
                 target: "f1r3fly.merge.cpps",
                 step = "compute_parents_post_state.MERGE_PRE",
                 floor = %hex::encode(&floor_hash[..8.min(floor_hash.len())]),
-                base_state = %hex::encode(&floor_state.bytes()[..8.min(floor_state.bytes().len())]),
+                base = %hex::encode(&scope_anchor_hash[..8.min(scope_anchor_hash.len())]),
+                base_state = %hex::encode(&base_state.bytes()[..8.min(base_state.bytes().len())]),
                 scope_blocks = visible_blocks_len,
                 disable_late_block_filtering,
                 "merge.cpps: dag_merger::merge begin"

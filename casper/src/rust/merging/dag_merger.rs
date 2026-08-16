@@ -408,6 +408,10 @@ fn split_overfilled_single_value_cells(
     ) -> Result<Vec<Vec<u8>>, rspace_plus_plus::rspace::errors::HistoryError>,
     // Chains already committed in the main parent's state; preferred as the
     // survivor when a single-value cell has to keep exactly one writer.
+    //
+    // ALWAYS EMPTY in production: the base became the main parent, so its
+    // chains are in the base rather than in the conflict set and there is
+    // nothing to prefer. Only unit tests supply a non-empty set.
     pinned: &HashSet<DeployChainIndex>,
 ) -> Result<HashableSet<DeployChainIndex>, rspace_plus_plus::rspace::errors::HistoryError> {
     let mut all_chains: Vec<DeployChainIndex> = resolved
@@ -530,15 +534,16 @@ fn split_overfilled_single_value_cells(
 /// removes on it (the candidates for the offending removal) with its source
 /// block and deploy sigs, every rejected chain that ADDS on it (a rejected
 /// producer is how a survivor's removal loses its backing), and the merge
-/// coordinates — floor, base state, scope size, survivor/rejected counts.
+/// coordinates — base, base state, floor height, scope size,
+/// survivor/rejected counts.
 ///
 /// Best-effort by construction: it runs only when the merge already failed, so
 /// a probe that cannot answer degrades the report rather than the error.
 fn explain_merge_failure(
     err: &rspace_plus_plus::rspace::errors::HistoryError,
     resolved: &conflict_set_merger::ResolvedConflicts<DeployChainIndex>,
-    lfb: &BlockHash,
-    lfb_post_state: &Blake2b256Hash,
+    base: &BlockHash,
+    base_post_state: &Blake2b256Hash,
     floor_block_number: i64,
     scope: &Option<HashSet<BlockHash>>,
 ) {
@@ -601,8 +606,8 @@ fn explain_merge_failure(
         error = %message,
         channel = channel_hex.as_deref().unwrap_or("unparsed"),
         floor_block = floor_block_number,
-        lfb = %hex::encode(&lfb[..8.min(lfb.len())]),
-        base_state = %hex::encode(&lfb_post_state.clone().bytes()[..8]),
+        base = %hex::encode(&base[..8.min(base.len())]),
+        base_state = %hex::encode(&base_post_state.clone().bytes()[..8]),
         scope_blocks = scope.as_ref().map(|s| s.len()).unwrap_or(0),
         surviving_chains = resolved.to_merge.iter().map(|b| b.0.len()).sum::<usize>(),
         rejected_chains = resolved.rejected.0.len(),
@@ -673,8 +678,8 @@ fn resolve_conflicts_with_unavailable_retry(
 /// The floor — never the merge height — is the correct clock: for any
 /// VALIDLY included chain, inclusion height `h <= valid_after + lifespan`,
 /// so if the rule fires (`floor > valid_after + lifespan >= h`) the
-/// chain's block lies below the floor — an above-floor ancestor being
-/// routinely re-applied onto the floor base can never be hit. The rule
+/// chain's block lies below the floor — and the base sits at or above the
+/// floor, so an in-scope chain of ordinary standing can never be hit. The rule
 /// fires exactly on the below-floor-sibling (late-carrier) class. The
 /// floor is a pure function of the block's parents and justifications, and
 /// justification-regression validation stops a proposer from faking a
@@ -699,10 +704,17 @@ fn split_window_closed_chains(
     })
 }
 
+/// Merge the scope onto `base`.
+///
+/// `base` is the merging block's state parent — its main parent, or the
+/// finalized floor when that parent's state does not hold the floor's settled
+/// content. It is NOT the LFB, and has not been since the base moved off the
+/// floor; the merge only ever needed a committed state to build on and the
+/// block hash that names it.
 pub fn merge(
     dag: &KeyValueDagRepresentation,
-    lfb: &BlockHash,
-    lfb_post_state: &Blake2b256Hash,
+    base: &BlockHash,
+    base_post_state: &Blake2b256Hash,
     index: impl Fn(&BlockHash) -> Result<Vec<DeployChainIndex>, CasperError>,
     history_repository: &RhoHistoryRepository,
     rejection_cost_f: impl Fn(&DeployChainIndex) -> u64,
@@ -740,32 +752,32 @@ pub fn merge(
 > {
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
         tracing::debug!(target: "f1r3fly.merge.step", step = "merge.ENTER",
-            lfb = %hex::encode(&lfb[..]),
-            lfb_post_state = %hex::encode(lfb_post_state.clone().bytes()),
+            base = %hex::encode(&base[..]),
+            base_post_state = %hex::encode(base_post_state.clone().bytes()),
             scope = %scope
                 .as_ref()
                 .map_or("ALL".to_string(), |s| format!("{} blocks", s.len())),
             disable_late_block_filtering = disable_late_block_filtering);
     }
 
-    // Blocks to merge are all blocks in scope that are NOT the LFB or its ancestors.
-    // This includes:
-    // 1. Descendants of LFB (blocks built on top of LFB)
-    // 2. Siblings of LFB (blocks at same height but different branch) that are ancestors of the tips
+    // Blocks to merge are all blocks in scope that are NOT the base or on its
+    // main-parent chain. This includes:
+    // 1. Descendants of the base (blocks built on top of it)
+    // 2. Siblings of the base (same height, different branch) that are ancestors of the tips
     // Previously we only included descendants, which missed deploy effects from sibling branches.
     let actual_blocks: HashSet<BlockHash> = match &scope {
         Some(scope_blocks) => {
-            // Avoid unbounded full-DAG ancestor scans. Check each scope block against LFB directly.
+            // Avoid unbounded full-DAG ancestor scans. Check each scope block against the base directly.
             let mut result = HashSet::new();
             for candidate in scope_blocks {
-                if !dag.is_in_main_chain(candidate, lfb)? {
+                if !dag.is_in_main_chain(candidate, base)? {
                     result.insert(candidate.clone());
                 }
             }
             if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
                 let included: Vec<String> = result.iter().map(|b| hex::encode(&b[..])).collect();
-                // Scope blocks excluded from the merge set because they ARE in the
-                // LFB main chain (i.e. the LFB or its ancestors).
+                // Scope blocks excluded from the merge set because they ARE on the
+                // base's main chain (the base itself or one of its main-parent ancestors).
                 let excluded_in_main: Vec<String> = scope_blocks
                     .iter()
                     .filter(|b| !result.contains(*b))
@@ -781,8 +793,8 @@ pub fn merge(
             result
         }
         None => {
-            // Legacy behavior: use descendants of LFB
-            let descendants = dag.descendants(lfb)?;
+            // Legacy behavior: use descendants of the base
+            let descendants = dag.descendants(base)?;
             if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
                 tracing::debug!(target: "f1r3fly.merge.step", step = "merge.actual_blocks.LEGACY_DESCENDANTS",
                     n_descendants = descendants.len());
@@ -809,8 +821,8 @@ pub fn merge(
 
     // Log the block sets for debugging
     tracing::info!(
-        "DagMerger.merge: LFB={}, scope={}, actualBlocks (above LFB)={}, lateBlocks={}",
-        hex::encode(&lfb[..std::cmp::min(8, lfb.len())]),
+        "DagMerger.merge: base={}, scope={}, actualBlocks (above base)={}, lateBlocks={}",
+        hex::encode(&base[..std::cmp::min(8, base.len())]),
         scope
             .as_ref()
             .map_or("ALL".to_string(), |s| format!("{} blocks", s.len())),
@@ -1148,6 +1160,11 @@ pub fn merge(
         );
     }
 
+    // Nothing to pin. Pinning existed to keep the main parent's chains out of
+    // the rejection set while the merge rebuilt state from the floor and those
+    // chains were in scope competing on cost. The base is the main parent now,
+    // so its content is committed under the merge rather than adjudicated by
+    // it, and every consumer below runs its empty-set path.
     #[allow(clippy::mutable_key_type)]
     let pinned: HashSet<DeployChainIndex> = HashSet::new();
 
@@ -1208,7 +1225,7 @@ pub fn merge(
     // Create history reader for base state
     let history_reader = std::sync::Arc::new(
         history_repository
-            .get_history_reader(lfb_post_state)
+            .get_history_reader(base_post_state)
             .map_err(|e| CasperError::HistoryError(e))?,
     );
 
@@ -1356,7 +1373,7 @@ pub fn merge(
 
     let apply_trie_actions_fn = |actions| {
         history_repository
-            .reset(lfb_post_state)
+            .reset(base_post_state)
             .map(|reset_repo| reset_repo.do_checkpoint(actions))
             .map(|checkpoint| checkpoint.root())
             .map_err(|e| e.into())
@@ -1790,8 +1807,8 @@ pub fn merge(
         explain_merge_failure(
             &e,
             &resolved,
-            lfb,
-            lfb_post_state,
+            base,
+            base_post_state,
             floor_block_number,
             &scope,
         );
@@ -1878,8 +1895,8 @@ pub fn merge(
     rejected_slashes.sort();
 
     tracing::debug!(
-        "DagMerger.merge: LFB={}, scope={}, actual={}, late={}, rejected_user={}, rejected_slash={}",
-        hex::encode(&lfb[..std::cmp::min(8, lfb.len())]),
+        "DagMerger.merge: base={}, scope={}, actual={}, late={}, rejected_user={}, rejected_slash={}",
+        hex::encode(&base[..std::cmp::min(8, base.len())]),
         scope
             .as_ref()
             .map_or("ALL".to_string(), |s| s.len().to_string()),
@@ -2015,9 +2032,9 @@ mod tests {
 
     /// The window rule keys on `valid_after <= floor - lifespan` — the
     /// proposer's block-expired bound evaluated at the merging block's
-    /// FLOOR (never the merge height: above-floor ancestors being
-    /// re-applied onto the floor base must be unreachable, which the floor
-    /// key guarantees arithmetically). Closed-window chains are split out
+    /// FLOOR (never the merge height: an in-scope chain of ordinary
+    /// standing must be unreachable by this rule, which the floor key
+    /// guarantees arithmetically). Closed-window chains are split out
     /// for rejection-with-record; the boundary (valid_after == floor -
     /// lifespan) is CLOSED (matches the selection filter); window-less
     /// (system-only) chains are exempt.
@@ -2477,6 +2494,11 @@ mod tests {
     ///
     /// Here the main parent's chain is deliberately the CHEAPER side, so an
     /// unpinned selection rejects it.
+    ///
+    /// Pins a path the node no longer takes: production passes an empty
+    /// `pinned` set because the base is the main parent, which keeps its
+    /// content out of the conflict set entirely. Kept until the pinning
+    /// machinery is removed or restored.
     #[test]
     fn conflict_resolution_never_rejects_main_parent_content() {
         let channel = Blake2b256Hash::from_bytes(vec![0x55; 32]);
@@ -2563,6 +2585,10 @@ mod tests {
     /// class this whole effort exists to remove. Resolution must therefore
     /// complete, logging the fallback, and leave the floor's containment guard
     /// to catch the residual loudly.
+    ///
+    /// Unreachable from the node for the same reason as
+    /// `conflict_resolution_never_rejects_main_parent_content`: production
+    /// pins nothing.
     #[test]
     fn pinning_falls_back_rather_than_wedging_when_pinned_chains_conflict() {
         let channel = Blake2b256Hash::from_bytes(vec![0x66; 32]);
@@ -2636,6 +2662,10 @@ mod tests {
     /// a main-parent writer landing later in the order is ordinary, not exotic
     /// — and dropping it leaves the block's state missing content its own
     /// spine ancestor holds, the same defect by a different route.
+    ///
+    /// Also unreachable from the node: `split_overfilled_single_value_cells`
+    /// is called with an empty `pinned` set, so the ordering preference this
+    /// asserts never applies in production.
     #[test]
     fn overfill_keep_one_prefers_main_parent_content() {
         let counter = Blake2b256Hash::from_bytes(vec![0x71; 32]);
