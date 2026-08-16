@@ -3469,12 +3469,18 @@ reader without sharing Bag value semantics or projecting entries into a vector.
 
 The compact-image gate round-trips one 200,000-byte compressed key on a **256 KiB** worker stack.
 Malformed, noncanonical, zero-valued, and value-free terminal images fail closed. The complete Bag
-suite passes **20/20**, the affected EPathMap matrix passes **183/183**, and strict lint passes for
-both production libraries. A randomized `BTreeMap<Vec<u8>, u64>` oracle also distinguishes the
-Bag's exact-key pointwise lattice from PathMap's generic prefix-aware lattice; exact PathMap lookups
-and copy-on-write updates preserve Bag laws without changing PathMap. This is evidence of constant
-native stack for the codec and of semantic equivalence for the tested domains. It is **not** an
-allocation, throughput, or peak-RSS result; those measurements and live delta consumption remain
+suite passes **22/22**, the isolated construction-allocation gate passes **1/1**, the affected
+EPathMap matrix passes **183/183**, and strict lint passes for both production libraries. Randomized
+`BTreeMap<Vec<u8>, u64>` and legacy `HashMultiSet` oracles distinguish the Bag's exact-key pointwise
+lattice from PathMap's generic prefix-aware lattice; exact PathMap lookups and copy-on-write updates
+preserve Bag laws without changing PathMap. Multiplicities 1 and `u64::MAX` allocate the same one
+trie entry and have the same construction-allocation count; the largest ACTree03 scalar image is
+only eight bytes larger because the branchless `u64` varint occupies one through nine bytes. Rocq
+kernel-checks exact-key independence, the sum monoid, distributive lattice, subtraction, and
+normalized/canonical delta laws. Verus with `--no-cheating` verifies the executable `u64`
+underflow/overflow boundary and successful normalized reversal. The complete Rocq, Verus, Z3, and
+TLC bundle passes. This is constant-native-stack, semantic-equivalence, allocation-shape, and formal
+evidence for the standalone Bag. Live delta consumption and end-to-end comparative memory remain
 open.
 
 ##### 5.16.5.4 Results
@@ -3506,7 +3512,9 @@ swap, and two-core CPU quota**. **MEASURED:**
 | datum-first retained structural queries | root fallback for every non-ground pattern | **9/9 combined production pruning cases** | identical COMM result/event trace/post-state map and 256-to-1 spatial calls for a canonically last waiting receive; unsupported patterns remain root fallbacks |
 | retained-filter formal composition | no theorem connecting both prefilters to canonical selection | **Rocq theorem plus complete bounded formal bundle** | exact-prefix and residual-query superset premises imply no false negatives and preservation of the first canonical spatial success; Rocq, Verus 6/6, Z3, and both exhaustive TLC models pass; concrete compiler premises remain open |
 | AC element candidate Bag | full unordered target scan | **8,256 to 128 exact diagonal spatial edges; 128 ordered-nested ESet edges; 128 generalized Send edges from 16,384 possible pairs; one real edge for a width-128 remainder; 16,257 exhaustive displacement edges in each of 51 samples** | the initial fixed-width candidate cut passed 53/53 matcher and 22/22 RSpace tests; `2d91c4394` makes exact multiplicity and residual subtraction Bag-authoritative; `bbe91b90f` extends exact stack-safe keys/queries to every unordered `Par` field root and passes 18/18 focused matcher plus strict lint; `3a70ddc58` uses Bag visitation only for true duplicates; `ad5d37a59` encodes one identity for 64 adjacent duplicates without merging metadata-distinct values; `26b72b096` quotient-compresses universal remainder vertices, passes all 651 bounded recursive-oracle cases, 12/12 spatial differential tests, and 81/81 matcher integrations; isolated pre-Bag counter process was 56.90 s and 100.8 MiB RSS under 4 GiB/zero swap; competing processes invalidate post-Bag durations, so no new throughput or RSS claim is inferred |
-| standalone Bag delta and compact-trie codec | no direct Bag codec or normalized reversible transition carrier | **200,000-byte compressed key round-trips on 256 KiB; 20/20 Bag tests; 183/183 affected EPathMap tests** | `0d7a6a3f8` adds atomic exact-key delta apply/revert; `1560f4371` uses raw canonical ACTree03 with native `u64` value slots and a shared iterative reader, rejects malformed/noncanonical/zero/dangling images, and passes randomized exact-key `BTreeMap` algebra/codec differentials plus strict lint; no allocation, throughput, or RSS claim is made |
+| standalone Bag delta and compact-trie codec | no direct Bag codec or normalized reversible transition carrier | **200,000-byte compressed key round-trips on 256 KiB; 22/22 Bag tests; 1/1 allocation gate; 183/183 affected EPathMap tests** | `0d7a6a3f8` adds atomic exact-key delta apply/revert; `1560f4371` uses raw canonical ACTree03 with native `u64` value slots and a shared iterative reader; `46aaa6472` adds legacy parity, prefix, algebra, delta, deep/wide, Merkle-image, and multiplicity-allocation evidence; malformed/noncanonical/zero/dangling images fail closed and strict lint passes |
+| standalone Bag formal laws | informal implementation equations | **Rocq and Verus `--no-cheating` pass inside the complete bounded bundle** | `8e4938ec6` proves exact-key multiplicity algebra and normalized/canonical deltas in Rocq, plus executable checked-`u64` apply/revert in Verus; the focused proofs use 351,028 KiB and 261,824 KiB peak RSS respectively with zero swap; the bundle's existing Z3 and two TLC models also pass |
+| standalone Bag microbenchmark | legacy `HashMultiSet` controls | **15/15 comparative pairs plus 6 logical-multiplicity points** | construction improves 20.5–54.6%; the full exact-lookup sweep improves except for an operationally neutral 0.236% loss at 4,096; copy-on-write clone/update improves from 16 keys but loses 65.9% at one; one-key construction remains approximately 76 ns through `u64::MAX`; aggregate benchmark-process RSS is 39,912 KiB, not a comparative per-operation memory result |
 | retained waiting-receive throughput | full canonical candidate scan | **23.2–44.6% more COMMs/s** | six treatment pairs; 51 samples/arm; 99% confidence; 16/256/4,096 receives; diverse/shared prefixes |
 | resting-data prefix throughput | full canonical candidate scan | **48.7–53.4% more COMMs/s at 16; 12.22–13.01× at 256; 238.8–256.9× at 4,096** | post-repair eight-pair matrix; 51 samples/arm; 99% confidence; singleton arms are non-regressing because zero/one physical candidates use the direct scan |
 | singleton repair package gate | pre-repair indexed singleton | **392 passed / 0 failed** | full `rspace_plus_plus` package under 5 GiB, zero swap; focused pruning suite is 5/5 |
@@ -3565,6 +3573,27 @@ both arms execute the same direct-scan code, so these small differences are not 
 treatment. Treatment retains **48.7–53.4%** higher throughput at 16, **12.22–13.01 times** control
 at 256, and **238.8–256.9 times** control at 4,096. Raw post-repair estimates are
 [`measurements/rspace-resting-pathmap-singleton-repair-2026-08-15.tsv`](measurements/rspace-resting-pathmap-singleton-repair-2026-08-15.tsv).
+
+The standalone Bag microbenchmark at harness commit `7b3254573` is a separate admitted result. A
+first run was interrupted and discarded as soon as another session began unit tests; its Criterion
+result directories were deleted before the accepted run. The clean preflight found **74% aggregate
+idle** on the 32-physical-core, SMT-disabled host. The release executable completed in **4 min
+50.69 s** under **8 GiB `MemoryMax`**, zero swap, and unrestricted affinity; postflight idle was
+82%, and peak process RSS was **39,912 KiB**. Each arm used 51 samples, 2 s warm-up, a requested 5 s
+measurement interval, 99% confidence, and 1% significance.
+
+Against legacy `HashMultiSet`, PathMap Bag construction latency is **20.5–54.6% lower** across 1,
+16, 256, 4,096, and 16,384 distinct shared-prefix keys. Full exact-lookup-sweep latency is **3.5–37.8% lower**
+at every size except 4,096, where it is **0.236% higher** with disjoint confidence intervals; this
+is recorded as operationally neutral rather than a universal-win claim. Clone followed by one
+update is **55.1% lower latency** at 16 keys and **98.1–99.975% lower** from 256 through 16,384
+because PathMap shares structure, but at one key its fixed cost is **65.9% higher**. That falsifying
+singleton point remains in the ledger. With one distinct key, construction latency stays approximately
+**76 ns** while logical multiplicity grows from 1 to `u64::MAX`; this agrees with the isolated
+allocator gate that occurrences are not expanded. The 39,912 KiB figure covers the complete
+benchmark process and is not a comparative heap or per-operation RSS measurement. Raw estimates
+and resource metadata are
+[`measurements/pathmap-bag-microbench-2026-08-16.tsv`](measurements/pathmap-bag-microbench-2026-08-16.tsv).
 
 ##### 5.16.5.5 What it cost
 
@@ -7827,7 +7856,7 @@ DOCLINT_DOI=on ../mettail-rust/docs/languages/validate.sh \
   docs/design/stack-safety/stack-safety-report-2026-07-29.md
 ```
 
-The run of record for this revision (2026-08-09) passes **16 of 17** mechanised checks with the
+The run of record for this revision (2026-08-16) passes **16 of 17** mechanised checks with the
 network-dependent DOI-resolution check explicitly skipped (`DOCLINT_DOI=off`); the four
 editorially-judged guidelines are dispositioned in §E.3. This is a timestamped measurement, not a
 standing property — re-run the command after any edit, and do not count the skip as a pass.

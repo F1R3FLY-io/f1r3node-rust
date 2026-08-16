@@ -594,7 +594,7 @@ is a *future* fork, not a present one).
 | [CBR-042](#cbr-042) | N | …and on the **bincode** wire too — `U(m)` verbatim and contiguous, then the values (FORM ②), so the reader never decodes a trie key | `3a32cf07` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-043](#cbr-043) | N | …but of **the entries that surface WRITES**. FORM ② keyed lf-blanked values by the *unblanked* entries, putting an entry's `locally_free` on the event hash | `8cf0b770` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-044](#cbr-044) | N | EPathMap becomes a homogeneous PathMap set/map and both codecs carry one versioned EPM1 trie snapshot; generated protobuf PDAs remove the read ceiling | `26876b65` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
-| [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`; benchmark `7bc5c6994` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
+| [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`; benchmarks `7bc5c6994`, `7b3254573` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
 | [CBR-L07](#cbr-l07) | L | `List.last()` in MeTTaIL's Rholang | `bbceb6d9`, `6e543c01` | · | · | · | · | · | ● | · | PERMISSIVE | **W** |
 | [CBR-L08](#cbr-l08) | L | The kv element-category gate — a Name in a kv slot is refused, not silently dropped | *in flight* | ● | ● | ● | ● | ● | ● | ○ | REGRESSIVE | **W** |
 | [CBR-L10](#cbr-l10) | L | A pathmap's entries come from a projection, not a field | `832d510f` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
@@ -2322,7 +2322,7 @@ Legacy protobuf fields are read-only migration inputs; removing them is a later 
 
 | | |
 |---|---|
-| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`; benchmark `7bc5c6994` |
+| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`; benchmarks `7bc5c6994`, `7b3254573` |
 | Status | LANDED ON CAMPAIGN BRANCH; VERIFICATION OPEN |
 | Direction | UNVERIFIED |
 | Evidence grade | UNVERIFIED |
@@ -2447,6 +2447,18 @@ trie updates without changing PathMap. The AC residual already depends on exact-
 this is consensus-sensitive implementation evidence under CBR-053 rather than a separate active
 wire change. The standalone Bag, malformed-image, prefix-regression, and tiny-stack gates pass, but
 schedule/replay and post-state equivalence remain open; CBR-053 remains `UNVERIFIED`.
+
+Checkpoint `46aaa6472` adds differential parity with the predecessor `HashMultiSet`, exact-key
+prefix regression cases, multiplicity-independent allocation shape, algebraic laws, reversible
+delta laws, deep/wide tiny-stack gates, and a Merkle-image witness. Checkpoint `8e4938ec6` then
+kernel-checks the exact-key sum/lattice/subtraction and normalized/canonical delta equations in
+Rocq and verifies the executable checked-`u64` boundary with Verus `--no-cheating`. Benchmark
+harness `7b3254573` records standalone construction, lookup, copy-on-write update, and logical-
+multiplicity behavior; it does not alter a consensus lane. These checkpoints strengthen the Bag
+representation and transition evidence, but the standalone image is still not an RSpace wire or
+persistence format and no live selector consumes `BagDelta`. They therefore introduce no new axis
+movement and do not discharge schedule/replay or post-state equivalence; CBR-053 remains
+`UNVERIFIED`.
 
 Checkpoint `e1a587c9f` applies that same structural-query contract to datum-first lookup. A supported
 waiting pattern is retained at its longest exact prefix in the existing

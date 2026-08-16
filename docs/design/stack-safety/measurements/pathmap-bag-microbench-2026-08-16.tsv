@@ -1,0 +1,42 @@
+# PathMap<Multiplicity> Bag microbenchmark measurements.
+# Times are Criterion slope estimates and 99% confidence intervals. Percentage changes compare PathMap with legacy HashMultiSet at the same workload and distinct cardinality; negative latency and positive throughput changes are improvements. Logical-multiplicity rows have no legacy arm and therefore no comparative percentage.
+# Host: AMD Ryzen Threadripper PRO 5975WX, 32 physical cores, SMT disabled. Scheduler affinity was unrestricted; the immediate preflight samples were 74% aggregate idle (approximately 8.3/32 occupied cores), below the user-approved stop threshold of 30 occupied cores. Postflight was 82% idle.
+# Command: systemd-run --user --scope -p MemoryHigh=6G -p MemoryMax=8G -p MemorySwapMax=0 -p CPUQuota=800% /usr/bin/time -v target/release/deps/bag-37147a55112c3895 --bench --noplot
+# Criterion: 51 samples, 2 s warm-up, 5 s requested measurement time, 99% confidence, 1% significance. Runtime 4 min 50.69 s; process peak 39,912 KiB RSS; zero swap. A prior run interrupted after competing tests began is excluded and its generated result directories were deleted before this run.
+date	production_commit	harness_commit	workload	arm	distinct	logical_multiplicity	lower_ns	estimate_ns	upper_ns	latency_change_percent	throughput_change_percent	memory_max_mib	process_peak_kib	swap_max_mib	cpu_affinity	result
+2026-08-16	46aaa6472	7b3254573	build_shared_prefix	legacy_hash_multiset	1	1	61.234	61.327	61.439	0.000	0.000	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	build_shared_prefix	pathmap	1	1	48.744	48.768	48.788	-20.479	25.753	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	build_shared_prefix	legacy_hash_multiset	16	136	1225.3	1226.5	1228.7	0.000	0.000	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	build_shared_prefix	pathmap	16	136	973.39	974.82	976.22	-20.520	25.818	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	build_shared_prefix	legacy_hash_multiset	256	2176	25391	25402	25412	0.000	0.000	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	build_shared_prefix	pathmap	256	2176	11510	11528	11556	-54.618	120.350	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	build_shared_prefix	legacy_hash_multiset	4096	34816	425190	425810	426880	0.000	0.000	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	build_shared_prefix	pathmap	4096	34816	231900	232000	232110	-45.516	83.539	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	build_shared_prefix	legacy_hash_multiset	16384	139264	2049300	2092200	2151600	0.000	0.000	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	build_shared_prefix	pathmap	16384	139264	955680	957320	960450	-54.243	118.548	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	exact_lookup_shared_prefix	legacy_hash_multiset	1	1	24.839	24.909	24.982	0.000	0.000	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	exact_lookup_shared_prefix	pathmap	1	1	15.476	15.483	15.493	-37.842	60.880	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	exact_lookup_shared_prefix	legacy_hash_multiset	16	136	400.92	401.61	402.80	0.000	0.000	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	exact_lookup_shared_prefix	pathmap	16	136	341.75	341.81	341.87	-14.890	17.495	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	exact_lookup_shared_prefix	legacy_hash_multiset	256	2176	6639.0	6645.9	6649.8	0.000	0.000	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	exact_lookup_shared_prefix	pathmap	256	2176	6413.1	6413.9	6414.6	-3.491	3.617	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	exact_lookup_shared_prefix	legacy_hash_multiset	4096	34816	127190	127280	127400	0.000	0.000	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	exact_lookup_shared_prefix	pathmap	4096	34816	127510	127580	127670	0.236	-0.235	8192	39912	0	unrestricted	neutral
+2026-08-16	46aaa6472	7b3254573	exact_lookup_shared_prefix	legacy_hash_multiset	16384	139264	596700	598180	599770	0.000	0.000	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	exact_lookup_shared_prefix	pathmap	16384	139264	509560	509650	509740	-14.800	17.371	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	clone_then_update_shared_prefix	legacy_hash_multiset	1	1	70.826	70.950	71.074	0.000	0.000	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	clone_then_update_shared_prefix	pathmap	1	1	117.60	117.69	117.79	65.877	-39.715	8192	39912	0	unrestricted	regression
+2026-08-16	46aaa6472	7b3254573	clone_then_update_shared_prefix	legacy_hash_multiset	16	136	256.98	257.13	257.31	0.000	0.000	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	clone_then_update_shared_prefix	pathmap	16	136	115.40	115.49	115.57	-55.085	122.643	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	clone_then_update_shared_prefix	legacy_hash_multiset	256	2176	6169.8	6171.6	6173.4	0.000	0.000	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	clone_then_update_shared_prefix	pathmap	256	2176	116.86	116.97	117.14	-98.105	5176.225	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	clone_then_update_shared_prefix	legacy_hash_multiset	4096	34816	108380	108460	108550	0.000	0.000	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	clone_then_update_shared_prefix	pathmap	4096	34816	115.41	115.53	115.67	-99.893	93780.377	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	clone_then_update_shared_prefix	legacy_hash_multiset	16384	139264	459790	461000	462400	0.000	0.000	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	clone_then_update_shared_prefix	pathmap	16384	139264	117.13	117.19	117.27	-99.975	393278.275	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	logical_multiplicity	pathmap	1	1	76.359	76.406	76.461	0.000	0.000	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	logical_multiplicity	pathmap	1	16	76.329	76.375	76.428	0.000	0.000	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	logical_multiplicity	pathmap	1	256	76.684	76.745	76.808	0.000	0.000	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	logical_multiplicity	pathmap	1	4096	76.784	76.826	76.873	0.000	0.000	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	logical_multiplicity	pathmap	1	1000000	76.000	76.064	76.133	0.000	0.000	8192	39912	0	unrestricted	pass
+2026-08-16	46aaa6472	7b3254573	logical_multiplicity	pathmap	1	18446744073709551615	76.464	76.521	76.573	0.000	0.000	8192	39912	0	unrestricted	pass

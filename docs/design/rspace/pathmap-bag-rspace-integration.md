@@ -48,7 +48,7 @@ The layout experiment remains open until the preregistered A/B/C comparison sele
 
 | Stage | Commit | Current evidence | Disposition |
 |---|---|---|---|
-| Lawful `Bag` over `PathMap<Multiplicity>` | `a82288ae0`, `0d7a6a3f8`, `1560f4371` | exact multiplicity laws, normalized reversible transaction deltas, direct canonical ACTree03 byte images, malformed-image refusal, a 200,000-byte compressed-key gate on a 256 KiB stack, and randomized `BTreeMap` differential properties | implemented as a standalone authority; allocation/RSS characterization, complete formal laws, and end-to-end RSpace consumption remain open |
+| Lawful `Bag` over `PathMap<Multiplicity>` | `a82288ae0`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `7b3254573`, `8e4938ec6` | exact multiplicity laws, normalized reversible transaction deltas, direct canonical ACTree03 byte images, malformed-image refusal, a 200,000-byte compressed-key gate on a 256 KiB stack, 22 legacy/differential laws, multiplicity-independent construction allocation, clean comparative microbenchmarks, and kernel-checked Rocq/Verus proofs | implemented as a standalone authority; live delta consumption, end-to-end allocation/RSS comparison, and final RSpace layout selection remain open |
 | Canonical framed `RhoPathV1` | `651f278aa` | exact-channel isolation, structural-prefix pruning, malformed-key refusal | implemented |
 | Multiplicity-aware datum index | `5d4c5eca9` | one trie key per identical complete record; one decode per distinct key | implemented |
 | Authoritative hot-store datum trie | `ccec9b730`, `bd55758e4` | history fill, loaded-empty state, snapshots, indexed compatibility removal, and package tests | implemented |
@@ -354,7 +354,7 @@ open.
 | Exact multiplicity | `get` or a zipper descended to the complete key |
 | Increment/decrement | One write zipper; remove and prune at zero |
 | Prefix discovery | Read zipper rooted at the structural prefix |
-| Join, meet, difference | PathMap algebra with lawful multiplicity values |
+| Join, meet, difference | Exact-key pointwise Bag algorithms using PathMap lookup and copy-on-write updates; PathMap's generic prefix-aware lattice is deliberately not substituted |
 | Copy-on-write snapshots | `PathMap::clone` structural sharing |
 | Compact snapshots | `ArenaCompactTree` produced directly from a read zipper |
 | Repeated-subtrie sharing | `merkleize`, only after end-to-end evidence justifies its construction cost |
@@ -415,6 +415,24 @@ waiting receives with diverse and shared prefixes. In every pair, the treatment'
 bound is also below 95% of the control's lower bound, so the preregistered five-percent threshold is
 met without relying only on point estimates. Raw estimates and run metadata are recorded in
 [`rspace-retained-pathmap-prefilter-2026-08-15.tsv`](../stack-safety/measurements/rspace-retained-pathmap-prefilter-2026-08-15.tsv).
+
+The standalone Bag microbenchmark at harness commit `7b3254573` was then run after a fresh
+preflight found 74% aggregate idle capacity on the 32-physical-core, SMT-disabled host and no
+competing Rust test process. The release executable ran for 4 min 50.69 s under an 8 GiB
+resident-memory cap and zero swap; its peak process RSS was 39,912 KiB. PathMap construction was
+20.5–54.6% lower latency than the legacy `HashMultiSet` control from 1 through 16,384 distinct
+shared-prefix keys. The full exact-lookup sweep was 3.5–37.8% lower latency at 1, 16, 256, and 16,384 keys; at
+4,096 keys PathMap was a statistically disjoint but operationally neutral 0.236% slower. A
+copy-on-write clone followed by one update was 55.1% lower latency at 16 keys and 98.1–99.975%
+lower at 256 through 16,384, but its fixed cost made the singleton 65.9% slower. That singleton
+result is retained as a falsification, not hidden by an empirical cutoff. One-key Bag construction latency
+remained flat at approximately 76 ns when one key's logical multiplicity ranged from 1 through
+`u64::MAX`, establishing that occurrences are not expanded. The aggregate process RSS is not a
+per-operation or comparative memory result; the separate counting-allocator gate establishes only
+that multiplicities 1 and `u64::MAX` have the same construction allocation shape. Raw estimates,
+confidence intervals, resource bounds, and the excluded interrupted-run declaration are recorded in
+[`pathmap-bag-microbench-2026-08-16.tsv`](../stack-safety/measurements/pathmap-bag-microbench-2026-08-16.tsv).
+
 The implementation evidence available at this checkpoint is:
 
 | Gate | Result | Interpretation |
@@ -436,7 +454,9 @@ The implementation evidence available at this checkpoint is:
 | generated structural match path | 3/3 encoder gates plus 4/4 models RSpace-path and 11/11 Rholang compiler gates | exhaustive-corpus determinism and adjacent-term distinction; canonical EPathMap digest golden; insertion-order independence; set/map separation; deliberate map-value false-positive lane; snapshot remains cold; 20,000-deep/wide encoding on 256 KiB; exact, whole-term, and ordered nested query behavior preserved |
 | nested RMP1 instruction PDA | 9/9 framing/query cases plus the 8/8 product suite | one- and two-layer escaping agree; every tested shallow token truncation fails closed; a 20,000-level nested value matches on a 128 KiB worker stack; a zero-heavy 256-candidate production differential preserves the result with 256-to-1 spatial pruning |
 | AC element candidate Bag | 53/53 matcher-library tests plus 22/22 affected RSpace suites at the candidate-cut checkpoint; 17/17 focused matcher-library and 10/10 RhoPath after `2d91c4394`; 18/18 focused matcher-library and strict production lint after `bbe91b90f`; duplicate/permutation and semantic-oracle controls after `3a70ddc58`; adjacent-identity controls after `ad5d37a59`; 12/12 spatial differential and 81/81 matcher integrations after `26b72b096` | exact diagonal, ordered nested ESet, and generalized unordered-Send controls each require 128 successful edges at width 128 and agree with the recursive oracle; one run of 64 byte-identical targets requires one exact identity encoding; the width-128 remainder control evaluates one term edge and captures 127 residual sends; exact target identity follows framed RMP1 structure in an authoritative Bag, residuals use native Bag subtraction, and byte-identical search visitation uses multiplicities; all 651 bounded binary target/pattern cases agree with the recursive oracle; the unchanged 51-sample adversarial displacement gate remains exhaustive at 16,257 treatment edges versus 699,263 nominal calls; contended earlier runs invalidate comparative debug durations, so no post-Bag throughput or RSS claim is made |
-| standalone Bag algebra and compact image | 20/20 Bag integration tests; 183/183 EPathMap codec and representation tests; strict `-D warnings` lint for the affected RSpace and models libraries | reversible normalized deltas apply and revert atomically; exact-key join/meet/subtraction agree with a randomized `BTreeMap` finite-support oracle even when one key prefixes another; raw ACTree03 and bincode byte images round-trip canonically; malformed, noncanonical, zero-valued, and dangling-terminal images are refused; a 200,000-byte compressed key round-trips on a 256 KiB stack; the shared reader leaves EPathMap behavior unchanged; no allocation, throughput, or RSS improvement is inferred from this correctness checkpoint |
+| standalone Bag algebra and compact image | 22/22 Bag integration tests; 1/1 isolated allocation gate; 183/183 EPathMap codec and representation tests; strict `-D warnings` lint for the affected RSpace and models libraries | reversible normalized deltas apply and revert atomically; exact-key join/meet/subtraction agree with randomized `BTreeMap` and legacy `HashMultiSet` oracles even when one key prefixes another; raw ACTree03 and bincode byte images round-trip canonically; malformed, noncanonical, zero-valued, and dangling-terminal images are refused; a 200,000-byte compressed key round-trips on a 256 KiB stack; multiplicity 1 and `u64::MAX` allocate one trie entry with the same construction-allocation count; the shared reader leaves EPathMap behavior unchanged |
+| standalone Bag formal laws | complete bounded formal bundle | Rocq proves exact-key independence, sum monoid, distributive max/min lattice, subtraction conservation, and normalized/canonical delta apply/revert; Verus `--no-cheating` proves the executable `u64` underflow/overflow boundary and successful normalized reversal; those additions pass within the complete bounded bundle, whose existing Z3 and two TLC models also pass |
+| standalone Bag microbenchmark | 15/15 comparative treatment pairs plus 6 logical-multiplicity points | construction wins at every tested cardinality; the full exact-lookup sweep wins or is operationally neutral; clone/update wins from 16 keys but regresses at one; one-key construction time is flat through `u64::MAX`; 39,912 KiB aggregate process RSS is recorded but is not a comparative memory claim |
 | encoded structural-path validation | 3/3 byte-cursor gates plus 4/4 generated-schema gates | all 58 message programs use one-based constant-time type dispatch; child type IDs and every oneof arm/payload are descriptor-derived; malformed token/length/UTF-8/boolean/field/nesting/type/oneof/PathMap cases fail closed; exhaustive subtrees validate; a 20,000-level path validates and navigates on a 256 KiB stack |
 | waiting-receive COMM throughput | 6/6 treatment pairs pass | 51 samples per arm at 99% confidence; 23.2–44.6% more completed COMMs/s; intervals are disjoint |
 | resting-data COMM throughput | 8/8 treatment pairs do not regress after repair | at 16/256/4,096 distinct entries, throughput improves 48.7–25,589.8%; the one-entry base case is 2.2% faster on diverse input and statistically neutral at a +0.6% point estimate on shared input |
@@ -525,9 +545,10 @@ as consensus-order witnesses for materialization and displacement order. Checkpo
 adds normalized reversible Bag deltas with atomic apply/revert, and `1560f4371` gives the Bag a
 direct canonical ACTree03 image through the shared iterative trie reader. It also corrects the Bag
 lattice boundary to exact-key finite-support semantics rather than PathMap's generic prefix-aware
-lattice relation. The standalone algebra, delta, codec, malformed-input, property, and tiny-stack
-gates pass; allocation/RSS characterization, complete formal laws, and live consumption of those
-deltas remain open. Term-assignment/reservation deltas during augmenting search,
+lattice relation. The standalone algebra, delta, codec, malformed-input, property, tiny-stack,
+allocation-shape, comparative-microbenchmark, and core Rocq/Verus law gates pass. End-to-end
+comparative allocation/RSS, the concrete Rust-to-formal correspondence beyond checked scalar delta
+cells, and live consumption of those deltas remain open. Term-assignment/reservation deltas during augmenting search,
 constrained-first dynamic search, residual-state memoization, native
 EPathMap algebra, concrete
 generated-compiler soundness, schedule/replay equivalence,
