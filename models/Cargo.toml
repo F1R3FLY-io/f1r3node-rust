@@ -229,6 +229,10 @@ name = "schema_meta_conformance"
 path = "tests/schema_meta_conformance.rs"
 
 [[test]]
+name = "match_schema_cursor"
+path = "tests/match_schema_cursor.rs"
+
+[[test]]
 name = "serializer_par_byte_goldens"
 path = "tests/serializer_par_byte_goldens.rs"
 

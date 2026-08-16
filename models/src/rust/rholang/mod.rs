@@ -1,6 +1,7 @@
 pub mod drive;
 pub mod grpc_client;
 pub mod implicits;
+pub mod match_schema;
 pub mod par_children;
 pub mod pooled_stack;
 pub mod bincode_decoder;
@@ -19,13 +20,12 @@ pub mod bincode_encoder;
 pub(crate) mod phase7_depth_histogram;
 
 // ---------------------------------------------------------------------------
-// ★ THE FIVE GENERATED MODULES — ONE build-script pass, five outputs
+// ★ THE SIX GENERATED MODULES — ONE build-script pass, six outputs
 //
 // `models/codegen/schema.rs` resolves every `rhoapi` message ONCE and emits
-// five files into `OUT_DIR`; `models/build.rs` writes each one. All five are
-// included here, including the one that is currently empty, so the pipeline a
-// later stage fills is exercised from the stage that built it: five files
-// written, five modules compiled, one walk of the descriptor.
+// six files into `OUT_DIR`; `models/build.rs` writes each one. All six are
+// included here: six files written, six modules compiled, one walk of the
+// descriptor.
 //
 // ⚠★ The two field tables are the SAME resolved fields under TWO SORT KEYS —
 // `identity` for serde/bincode, `sort_by_key(min_tag)` for protobuf — and the
@@ -109,4 +109,9 @@ pub mod schema_meta_tables {
 #[allow(clippy::all, unused_imports)]
 pub mod protobuf_decoder {
     include!(concat!(env!("OUT_DIR"), "/rhoapi_protobuf_decoder.rs"));
+}
+
+#[allow(clippy::all, unused_imports)]
+pub mod match_schema_tables {
+    include!(concat!(env!("OUT_DIR"), "/rhoapi_match_schema.rs"));
 }

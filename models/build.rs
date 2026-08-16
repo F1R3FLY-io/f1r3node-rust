@@ -283,13 +283,13 @@ fn main() {
     check_debug_join(&debug_stripped, &counts.clone_cut_set);
     check_message_join(&message_stripped, &counts.clone_cut_set);
 
-    // ── the five outputs of the one pass ──
+    // ── the six outputs of the one pass ──
     assert_eq!(
         generated.sources.len(),
-        5,
-        "models/build.rs: schema codegen must produce exactly five outputs \
-         (bincode table, protobuf table, term-op slot, schema meta, protobuf deserializer); \
-         it produced {}. `models/src/rust/rholang/mod.rs` includes five modules and a \
+        6,
+        "models/build.rs: schema codegen must produce exactly six outputs \
+         (bincode table, protobuf table, term-op slot, schema meta, protobuf deserializer, \
+         matching cursor); it produced {}. `models/src/rust/rholang/mod.rs` includes six modules and a \
          missing file is a compile error whose message names `OUT_DIR`, not this pass.",
         generated.sources.len()
     );
