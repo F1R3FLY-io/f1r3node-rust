@@ -127,7 +127,7 @@ EOF
     rm -rf "$tmpd"
     n_closed=$(grep -c "Closed under the global context" <<<"$out")
     if [[ "$n_closed" == "26" ]]; then
-      pass "all 26 headline results axiom-free, including exact-effect causal closure and state-lineage LFB admissibility"
+      pass "all 26 headline results axiom-free, including exact-effect causal closure and dual-certificate state-lineage LFB admissibility"
     else
       fail "headline results NOT all axiom-free ($n_closed/26 Closed):"; printf '      %s\n' "${out//$'\n'/$'\n      '}"
     fi
@@ -200,7 +200,7 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
     fi
   done
   if tlc_run "$(tlc_metadir ff_state_lineage)" "$TLA_DIR/MC_StateLineageFinality.cfg" "$TLA_DIR/StateLineageFinality.tla" >"$LOG_DIR/ff_tlc_state_lineage.log" 2>&1; then
-    pass "TLA+ state-lineage guard preserves committed LFB state and rebase liveness without changing clique certificates"
+    pass "TLA+ dual-certificate state admission preserves committed LFB state and rebase liveness without changing causal certificates"
   else
     fail "TLA+ state-lineage safe model failed (see $LOG_DIR/ff_tlc_state_lineage.log)"
   fi
@@ -210,6 +210,13 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
     pass "TLA+ unguarded control reproduces certified stale-state LFB advancement"
   else
     fail "TLA+ unguarded state-lineage control failed for the wrong reason (see $LOG_DIR/ff_tlc_state_lineage_unsafe.log)"
+  fi
+  if tlc_run "$(tlc_metadir ff_state_support_unsafe)" "$TLA_DIR/MC_StateLineageFinality_state_support_unsafe.cfg" "$TLA_DIR/StateLineageFinality.tla" >"$LOG_DIR/ff_tlc_state_support_unsafe.log" 2>&1; then
+    fail "TLA+ causal-only support control should promote a state-unsupported floor but passed"
+  elif grep -q "Inv_NoUnsupportedStateFloor is violated" "$LOG_DIR/ff_tlc_state_support_unsafe.log"; then
+    pass "TLA+ causal-only control reproduces rejected-parent state-floor promotion"
+  else
+    fail "TLA+ causal-only support control failed for the wrong reason (see $LOG_DIR/ff_tlc_state_support_unsafe.log)"
   fi
   if tlc_run "$(tlc_metadir ff_state_lineage_main_spine_bug)" "$TLA_DIR/MC_StateLineageFinality_main_spine_bug.cfg" "$TLA_DIR/StateLineageFinality.tla" >"$LOG_DIR/ff_tlc_state_lineage_main_spine_bug.log" 2>&1; then
     fail "TLA+ main-spine admission control should reject a valid state-preserving merge but passed"
@@ -267,6 +274,16 @@ if command -v apalache-mc >/dev/null 2>&1; then
     pass "Apalache unguarded control finds the stale-state counterexample"
   else
     fail "Apalache unguarded control did not reproduce the expected counterexample (see $LOG_DIR/ff_apalache_state_lineage_unsafe.log)"
+  fi
+  state_support_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/state-support-unsafe" check --config=MC_StateLineageFinality_state_support_unsafe.cfg --inv=Inv_NoUnsupportedStateFloor --length=3 StateLineageFinality.tla 2>&1)"
+  state_support_rc=$?
+  printf '%s\n' "$state_support_output" >"$LOG_DIR/ff_apalache_state_support_unsafe.log"
+  if [[ $state_support_rc -ne 0 ]] \
+       && grep -qE 'state invariant [0-9]+ violated' "$LOG_DIR/ff_apalache_state_support_unsafe.log" \
+       && grep -q 'The outcome is: Error' "$LOG_DIR/ff_apalache_state_support_unsafe.log"; then
+    pass "Apalache causal-only control finds rejected-parent state-floor promotion"
+  else
+    fail "Apalache causal-only support control did not reproduce the expected counterexample (see $LOG_DIR/ff_apalache_state_support_unsafe.log)"
   fi
   main_spine_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/main-spine-bug" check --config=MC_StateLineageFinality_main_spine_bug.cfg --inv=Inv_OffMainRebaseRestoresEligibility --length=1 StateLineageFinality.tla 2>&1)"
   main_spine_rc=$?

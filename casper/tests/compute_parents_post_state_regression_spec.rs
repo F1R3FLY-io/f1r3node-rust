@@ -457,7 +457,9 @@ fn compute_parents_post_state_fast_paths_only_when_the_cover_preserves_the_floor
 async fn run_compute_parents_dag_cover_fast_path_regression() {
     let secp = Secp256k1;
     let (_validator_sk, validator_pk) = secp.new_key_pair();
+    let (_stale_validator_sk, stale_validator_pk) = secp.new_key_pair();
     let validator: Bytes = validator_pk.bytes.clone();
+    let stale_validator: Bytes = stale_validator_pk.bytes.clone();
     let shard_name = "test-shard".to_string();
 
     let mut kvm = InMemoryStoreManager::new();
@@ -489,13 +491,19 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         proof_of_stake: ProofOfStake {
             minimum_bond: 1,
             maximum_bond: i64::MAX,
-            validators: vec![GenesisValidator {
-                pk: validator_pk.clone(),
-                stake: 100,
-            }],
+            validators: vec![
+                GenesisValidator {
+                    pk: validator_pk.clone(),
+                    stake: 7,
+                },
+                GenesisValidator {
+                    pk: stale_validator_pk.clone(),
+                    stake: 3,
+                },
+            ],
             epoch_length: 1000,
             quarantine_length: 50000,
-            number_of_active_validators: 1,
+            number_of_active_validators: 2,
             fault_tolerance_threshold_ppm: 0,
             initial_phlogiston: casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
             epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
@@ -678,7 +686,7 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
     let stale_raw = build_empty_block(
         2,
         4,
-        validator.clone(),
+        stale_validator.clone(),
         vec![
             finalized_branch.block_hash.clone(),
             other_branch.block_hash.clone(),
@@ -692,7 +700,7 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         &dag_storage,
         &mut runtime_manager,
         &stale_raw,
-        validator.clone(),
+        stale_validator.clone(),
         shard_name.clone(),
         genesis_hash.clone(),
     )
@@ -760,7 +768,10 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         .dag
         .put_cached_floor(stale.block_hash.clone(), genesis_hash)
         .expect("Failed to cache stale floor");
-    let latest_messages = std::collections::BTreeMap::from([(validator, stale.block_hash.clone())]);
+    let latest_messages = std::collections::BTreeMap::from([
+        (validator, finalized_branch.block_hash.clone()),
+        (stale_validator, stale.block_hash.clone()),
+    ]);
     runtime_manager.parents_post_state_cache.clear();
     runtime_manager.clear_block_index_cache();
 

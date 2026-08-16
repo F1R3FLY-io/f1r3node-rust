@@ -786,6 +786,15 @@ async fn finalizer_rejects_dag_descendant_without_state_lineage() {
             .latest_message_hashes()
             .into_iter()
             .collect::<std::collections::BTreeMap<_, _>>();
+        for latest in latest_messages.values() {
+            casper::rust::finality::floor::floor_of_block(
+                &dag,
+                latest,
+                FtThreshold::from_f32_lossy(-1.0),
+            )
+            .await
+            .expect("latest-message state lineage");
+        }
         assert!(CliqueOracle::ft_witnessed_exact(
             &merge.block_hash,
             &dag,
@@ -795,6 +804,15 @@ async fn finalizer_rejects_dag_descendant_without_state_lineage() {
         )
         .await
         .expect("exact clique decision"));
+        assert!(casper::rust::finality::floor::state_witnessed_exact(
+            &dag,
+            &merge.block_hash,
+            &latest_messages,
+            FtThreshold::from_f32_lossy(-1.0),
+            true,
+        )
+        .await
+        .expect("state certificate"));
 
         let result = Finalizer::run(
             &dag,
@@ -808,6 +826,156 @@ async fn finalizer_rejects_dag_descendant_without_state_lineage() {
         .expect("finalizer run");
 
         assert!(result.is_none());
+
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    })
+    .await
+    .expect("validation fixture");
+}
+
+#[tokio::test]
+async fn finalizer_rejects_causal_certificate_without_state_support() {
+    with_storage(|mut store, mut dag_store| async move {
+        let validators = [
+            generate_validator(Some("State Support Heavy Validator")),
+            generate_validator(Some("State Support Source Validator")),
+            generate_validator(Some("State Support Other Validator 1")),
+            generate_validator(Some("State Support Other Validator 2")),
+        ];
+        let bonds = vec![
+            Bond {
+                validator: validators[0].clone(),
+                stake: 7,
+            },
+            Bond {
+                validator: validators[1].clone(),
+                stake: 3,
+            },
+            Bond {
+                validator: validators[2].clone(),
+                stake: 3,
+            },
+            Bond {
+                validator: validators[3].clone(),
+                stake: 3,
+            },
+        ];
+        let genesis = create_genesis_block(
+            &mut store,
+            &mut dag_store,
+            None,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let creators: Vec<_> = validators
+            .iter()
+            .map(|validator| create_block_creator(&bonds, &genesis, validator))
+            .collect();
+        let genesis_justifications: HashMap<&Validator, &BlockMessage> = validators
+            .iter()
+            .map(|validator| (validator, &genesis))
+            .collect();
+        let rejected_parent = creators[1](
+            &mut store,
+            &mut dag_store,
+            vec![&genesis],
+            &genesis_justifications,
+        );
+        let sibling = creators[2](
+            &mut store,
+            &mut dag_store,
+            vec![&genesis],
+            &genesis_justifications,
+        );
+        let merge_justifications = HashMap::from([
+            (&validators[0], &genesis),
+            (&validators[1], &rejected_parent),
+            (&validators[2], &sibling),
+            (&validators[3], &genesis),
+        ]);
+        let merge = creators[0](
+            &mut store,
+            &mut dag_store,
+            vec![&rejected_parent, &sibling],
+            &merge_justifications,
+        );
+        let sibling_justifications = HashMap::from([
+            (&validators[0], &merge),
+            (&validators[1], &rejected_parent),
+            (&validators[2], &sibling),
+            (&validators[3], &sibling),
+        ]);
+        let sibling_support = creators[3](
+            &mut store,
+            &mut dag_store,
+            vec![&sibling],
+            &sibling_justifications,
+        );
+
+        let dag = dag_store.get_representation().expect("dag representation");
+        for (block, floor) in [
+            (&genesis, &genesis),
+            (&rejected_parent, &genesis),
+            (&sibling, &genesis),
+            (&merge, &genesis),
+            (&sibling_support, &genesis),
+        ] {
+            dag.put_cached_floor(block.block_hash.clone(), floor.block_hash.clone())
+                .expect("state floor");
+        }
+
+        let latest_messages = dag
+            .latest_message_hashes()
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let threshold = FtThreshold::from_f32_lossy(0.1);
+        assert!(CliqueOracle::ft_witnessed_exact(
+            &rejected_parent.block_hash,
+            &dag,
+            &latest_messages,
+            threshold,
+            true,
+        )
+        .await
+        .expect("causal certificate"));
+        assert!(!casper::rust::finality::floor::state_witnessed_exact(
+            &dag,
+            &rejected_parent.block_hash,
+            &latest_messages,
+            threshold,
+            true,
+        )
+        .await
+        .expect("state certificate"));
+
+        let promoted = Rc::new(RefCell::new(Vec::new()));
+        let result = {
+            let promoted = promoted.clone();
+            Finalizer::run(
+                &dag,
+                threshold,
+                &genesis.block_hash,
+                genesis.body.state.block_number,
+                move |(hash, _ft)| {
+                    promoted.borrow_mut().push(hash);
+                    async { Ok::<(), KvStoreError>(()) }
+                },
+                &FinalizerConf::default(),
+            )
+            .await
+            .expect("finalizer run")
+        };
+
+        assert_ne!(
+            result.map(|(hash, _)| hash),
+            Some(rejected_parent.block_hash.clone())
+        );
+        assert!(!promoted.borrow().contains(&rejected_parent.block_hash));
 
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     })

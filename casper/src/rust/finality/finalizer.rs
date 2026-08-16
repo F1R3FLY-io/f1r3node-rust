@@ -11,7 +11,7 @@ use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::rust::errors::CasperError;
 use crate::rust::finality::floor::{
-    is_state_ancestor_from_cached_floors, materialize_state_lineage,
+    is_state_ancestor_from_cached_floors, materialize_state_lineage, state_witnessed_exact,
 };
 use crate::rust::safety::clique_oracle::{ft_decides_exact, CliqueOracle, FtThreshold};
 
@@ -169,6 +169,22 @@ impl Finalizer {
             .iter()
             .map(|(validator, message)| (validator.clone(), message.block_hash.clone()))
             .collect::<std::collections::BTreeMap<_, _>>();
+        for latest in latest_messages_snapshot.values() {
+            let materialize_started = std::time::Instant::now();
+            materialize_state_lineage(dag, latest, ftt).await?;
+            if dag.get_cached_floor(latest)?.is_none() {
+                return Err(CasperError::Other(format!(
+                    "state lineage was not materialized for latest message {}",
+                    hex::encode(latest)
+                )));
+            }
+            tracing::debug!(
+                target: "f1r3fly.finalizer.timing",
+                latest = %hex::encode(latest),
+                elapsed_ms = materialize_started.elapsed().as_millis(),
+                "Finalizer materialized latest-message state lineage"
+            );
+        }
 
         // sort latest messages by agreeing validator to ensure random ordering does not change output
         let mut sorted_latest_messages: Vec<(Validator, BlockMetadata)> = lms.into_iter().collect();
@@ -402,6 +418,22 @@ impl Finalizer {
                         candidate = %hex::encode(&message.block_hash[..]),
                         current_lfb = %hex::encode(&curr_lfb_hash[..]),
                         "Finalizer candidate does not preserve the current LFB state lineage"
+                    );
+                    continue;
+                }
+                if !state_witnessed_exact(
+                    dag,
+                    &message.block_hash,
+                    &latest_messages_snapshot,
+                    ftt,
+                    true,
+                )
+                .await?
+                {
+                    tracing::debug!(
+                        target: "f1r3fly.finalizer",
+                        candidate = %hex::encode(&message.block_hash[..]),
+                        "Finalizer candidate lacks a state-preserving clique certificate"
                     );
                     continue;
                 }

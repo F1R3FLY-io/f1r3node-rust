@@ -5,6 +5,8 @@ CONSTANTS
   \* @type: Bool;
   EnforceStateLineage,
   \* @type: Bool;
+  EnforceStateSupport,
+  \* @type: Bool;
   RequireMainLineage,
   \* @type: Int;
   ThresholdNum,
@@ -14,13 +16,14 @@ CONSTANTS
   TotalStake
 
 ASSUME /\ EnforceStateLineage \in BOOLEAN
+       /\ EnforceStateSupport \in BOOLEAN
        /\ RequireMainLineage \in BOOLEAN
        /\ ThresholdDen > 0
        /\ TotalStake > 0
 
-Blocks == {"G", "F", "X", "S", "R"}
+Blocks == {"G", "F", "X", "S", "P", "R"}
 Nodes == {"n1", "n2"}
-Candidates == {"S", "R"}
+Candidates == {"S", "P", "R"}
 Validators == {"v1", "v2", "v3"}
 
 Stake == [validator \in Validators |->
@@ -28,9 +31,16 @@ Stake == [validator \in Validators |->
     [] validator = "v2" -> 20
     [] OTHER -> 15]
 
-Agreeing == [block \in Blocks |->
+CausalAgreeing == [block \in Blocks |->
   CASE block = "X" -> {}
     [] block \in {"S", "R"} -> {"v1"}
+    [] block = "P" -> {"v1", "v2"}
+    [] OTHER -> Validators]
+
+StateAgreeing == [block \in Blocks |->
+  CASE block = "X" -> {}
+    [] block \in {"S", "R"} -> {"v1"}
+    [] block = "P" -> {"v2"}
     [] OTHER -> Validators]
 
 WeightOf(validators) ==
@@ -38,20 +48,25 @@ WeightOf(validators) ==
   (IF "v2" \in validators THEN Stake["v2"] ELSE 0) +
   (IF "v3" \in validators THEN Stake["v3"] ELSE 0)
 
-CliqueWeight(block) == WeightOf(Agreeing[block])
+CausalCliqueWeight(block) == WeightOf(CausalAgreeing[block])
+StateCliqueWeight(block) == WeightOf(StateAgreeing[block])
 
-ExactStrictVote(block) ==
-  /\ 2 * CliqueWeight(block) > TotalStake
-  /\ 2 * CliqueWeight(block) * ThresholdDen
+ExactStrictVote(weight) ==
+  /\ 2 * weight > TotalStake
+  /\ 2 * weight * ThresholdDen
        > TotalStake * (ThresholdDen + ThresholdNum)
 
-Certified == {block \in Blocks : ExactStrictVote(block)}
+CausalCertified ==
+  {block \in Blocks : ExactStrictVote(CausalCliqueWeight(block))}
+StateCertified ==
+  {block \in Blocks : ExactStrictVote(StateCliqueWeight(block))}
 
 MainPast == [block \in Blocks |->
   CASE block = "G" -> {"G"}
     [] block = "F" -> {"G", "F"}
     [] block = "X" -> {"G", "X"}
     [] block = "S" -> {"G", "F", "S"}
+    [] block = "P" -> {"G", "F", "P"}
     [] OTHER -> {"G", "X", "R"}]
 
 DagPast == [block \in Blocks |->
@@ -59,6 +74,7 @@ DagPast == [block \in Blocks |->
     [] block = "F" -> {"G", "F"}
     [] block = "X" -> {"G", "X"}
     [] block = "S" -> {"G", "F", "S"}
+    [] block = "P" -> {"G", "F", "P"}
     [] OTHER -> {"G", "F", "X", "R"}]
 
 StatePast == [block \in Blocks |->
@@ -66,6 +82,7 @@ StatePast == [block \in Blocks |->
     [] block = "F" -> {"G", "F"}
     [] block = "X" -> {"G", "X"}
     [] block = "S" -> {"G", "S"}
+    [] block = "P" -> {"G", "F", "P"}
     [] OTHER -> {"G", "F", "R"}]
 
 MainDescendant(ancestor, descendant) == ancestor \in MainPast[descendant]
@@ -88,7 +105,8 @@ Init ==
   /\ known = [node \in Nodes |-> {}]
 
 Admissible(current, candidate) ==
-  /\ candidate \in Certified
+  /\ candidate \in CausalCertified
+  /\ (~EnforceStateSupport \/ candidate \in StateCertified)
   /\ candidate # current
   /\ (~RequireMainLineage \/ MainDescendant(current, candidate))
   /\ (~EnforceStateLineage \/ StateDescendant(current, candidate))
@@ -129,28 +147,42 @@ TypeOK ==
 Inv_AllCommittedStatesRemainInLineage ==
   \A node \in Nodes : committed[node] \subseteq StatePast[lfb[node]]
 
-Inv_CliqueCertificateIsUnchanged == Certified = {"G", "F", "S", "R"}
+Inv_CliqueCertificateIsUnchanged ==
+  CausalCertified = {"G", "F", "S", "P", "R"}
 
 Inv_AsymmetricStakeTopology ==
   /\ TotalStake = WeightOf(Validators)
   /\ Stake["v1"] = 60
   /\ Stake["v2"] = 20
   /\ Stake["v3"] = 15
-  /\ CliqueWeight("S") = 60
-  /\ CliqueWeight("R") = 60
+  /\ CausalCliqueWeight("S") = 60
+  /\ CausalCliqueWeight("P") = 80
+  /\ StateCliqueWeight("P") = 20
+  /\ CausalCliqueWeight("R") = 60
+  /\ StateCliqueWeight("R") = 60
 
 Inv_StaleMergeSeparatesDagAndState ==
   /\ MainDescendant("F", "S")
   /\ DagDescendant("F", "S")
   /\ ~StateDescendant("F", "S")
-  /\ "S" \in Certified
+  /\ "S" \in CausalCertified
 
 Inv_OffMainRebaseRestoresEligibility ==
   /\ ~MainDescendant("F", "R")
   /\ DagDescendant("F", "R")
   /\ StateDescendant("F", "R")
-  /\ "R" \in Certified
+  /\ "R" \in CausalCertified
+  /\ "R" \in StateCertified
   /\ Admissible("F", "R")
+
+Inv_CausalMergeVoteIsNotStateSupport ==
+  /\ "P" \in CausalCertified
+  /\ "P" \notin StateCertified
+  /\ StateDescendant("F", "P")
+  /\ ~Admissible("F", "P")
+
+Inv_NoUnsupportedStateFloor ==
+  \A node \in Nodes : lfb[node] # "P"
 
 Live_RebaseProgress == <>(\A node \in Nodes : lfb[node] = "R")
 =============================================================================

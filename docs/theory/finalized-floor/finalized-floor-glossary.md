@@ -34,8 +34,10 @@ make them correct.
 | **`ft_witnessed(C, J)`** | The clique oracle's normalized fault tolerance of block `C` over snapshot `J`: `ft = (2q − S)/S`, where `S = Σ committee weights` and `q =` max-clique agreeing weight. `C` is **finalized** over `J` iff `ft_witnessed(C,J) ≥ θ`. (`clique_oracle.rs`; Rocq `CliqueOracle.Finalized`.) |
 | **quorum** | A majority-weight sub-committee that mutually agree on `C` (a clique). The oracle finalizes `C` when a quorum witnesses it. |
 | **`Finalized c J b`** | Rocq abstraction: *some majority-weight sub-committee `c` all agree on `b` over `J`* — a faithful monotone abstraction of `ft_witnessed ≥ θ`. |
-| **clique certificate** | The unchanged result of the exact clique-oracle decision: a block has sufficient mutually agreeing stake at the configured strict fault-tolerance threshold. It does not by itself select the next LFB. |
-| **LFB admissibility** | The conjunction of unchanged exact clique certification and state descent from the current LFB. Main-parent descent is not required: a multi-parent block may derive its state from the current LFB through a secondary parent. The predicate filters which certified block may replace the committed state pointer without changing any vote. |
+| **causal clique certificate** | The original exact clique-oracle decision. A validator causally supports candidate `C` when `C` is in the all-parent DAG past of that validator's frozen latest message. A certificate proves that sufficient mutually agreeing causal support clears the configured exact fault-tolerance threshold. |
+| **state-preserving support** | A validator causally supports `C` **and** the validator's frozen latest-message state descends from `C`'s state. A merge that names `C` as a parent but rejects `C`'s state effects is causal support, not state-preserving support. |
+| **state-preserving clique certificate** | The same exact weighted maximum-clique calculation and threshold as the causal certificate, evaluated after restricting the committee to validators with state-preserving support. It is an additional certificate; it neither alters nor substitutes for the causal certificate. |
+| **LFB admissibility** | The conjunction of a causal clique certificate, a state-preserving clique certificate, and state descent from the current LFB. Main-parent descent is not required: a multi-parent block may derive its state from the current LFB through a secondary parent. The predicate filters which causally certified block may replace the committed state pointer. |
 | **state base** | The state from which a block's post-state was actually computed: a covering parent when that parent preserves the floor; otherwise the floor used by full merge/replay. |
 | **state ancestry** | Reflexive, transitive closure of state-base edges. It records derivation provenance rather than tuple-set inclusion, so consuming a tuple does not break ancestry. |
 | **stale-state descendant** | A block that is a main-chain descendant of the current LFB but whose replay state was based below that LFB and therefore does not preserve its committed transition. It may remain valid and clique-certified while being ineligible as the next LFB. |
@@ -175,17 +177,24 @@ wrapping group; `checked_apply` models the terminal apply. Regression:
 LFB while its replay state was derived from an older floor. Its clique certificate
 is still valid, but promoting it would erase a committed state transition.
 
-**Separation of concerns.** `clique_certified` remains the existing exact
-majority/clique calculation. `state_ancestor` is checked only after certification;
-it never changes the candidate's voters, stake, threshold, or certificate.
+**Separation of concerns.** `causal_certified` remains the original exact
+majority/clique calculation. `state_certified` applies that same calculation to
+the subset whose latest states preserve the candidate. `state_ancestor` then
+checks that the candidate also preserves the current committed LFB. The second
+certificate does not rewrite the causal voters or their result: it proves the
+additional proposition needed before a block becomes a replay floor.
 
 ⟨ *Evaluate the complete, deterministically ordered frozen candidate set.* ⟩
 ```
 for candidate in ordered_candidates:
-    certified, fault_tolerance ← exact_clique_decision(candidate, frozen_snapshot)
-    if not certified:
+    causal_certified, fault_tolerance ← exact_clique_decision(candidate, frozen_snapshot)
+    if not causal_certified:
         continue
-    materialize_state_lineage(candidate)
+    materialize_state_lineages(candidate, frozen_snapshot)
+    state_support ← validators whose latest states descend from candidate
+    state_certified ← exact_clique_decision(candidate, state_support)
+    if not state_certified:
+        continue
     if not state_ancestor(current_lfb, candidate):
         continue
     install_lfb(candidate, fault_tolerance)
@@ -193,11 +202,14 @@ for candidate in ordered_candidates:
 return none
 ```
 
-The skipped stale candidate remains a valid speculative block. When a later
-proposal sees the advanced floor, the covering-parent fast path is permitted only
-if that parent already preserves the floor; otherwise replay starts from the floor.
-The resulting rebase state-descends the LFB and becomes admissible when the same
-unchanged clique rule certifies it.
+Two candidates are intentionally skipped. A stale candidate can have both
+certificates yet fail current-LFB ancestry. A rejected-parent candidate can
+preserve the current LFB and retain its causal certificate while failing the
+state-preserving certificate because the apparent majority merged, but did not
+retain, its effects. When a later proposal sees the advanced floor, the
+covering-parent fast path is permitted only if that parent already preserves the
+floor; otherwise replay starts from the floor. The resulting rebase becomes
+admissible after both exact certificates and current-LFB ancestry hold.
 
 ---
 

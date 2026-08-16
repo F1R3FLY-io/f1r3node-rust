@@ -205,6 +205,36 @@ merge computed below it, prove that merge is still clique-certified, and then
 require a later floor rebase to preserve the finalized value. H8 closes those
 omissions rather than weakening the assertion to make the observed test pass.
 
+The first H8 repair exposed a second, strictly different counterexample. Suppose
+candidate `P` preserves the current LFB, but a heavy validator's latest block is a
+merge that names `P` as a DAG parent while rejecting `P`'s conflicting state
+effect. The original causal oracle counts that validator because `P` is in the
+merge's all-parent DAG past. The validator's latest state does **not** descend
+from `P`. With weights $`7/3/3/3`$, the merge validator and `P`'s proposer contribute
+causal weight $`10/16`$, enough to clear a strict $`0.1`$ threshold, while only weight
+$`3/16`$ preserves `P`'s state. Current-LFB ancestry alone admits `P`; using it as a
+later replay floor reintroduces the rejected transition and can apply its private
+resource twice.
+
+This is not a flaw in weighted-majority arithmetic. It is a mismatch between the
+proposition certified by causal ancestry and the stronger proposition required of
+a state floor. The complete repair retains the causal certificate and additionally
+requires an exact **state-preserving certificate**. Its supporting validators are
+those whose frozen latest messages both causally include the candidate and
+state-descend from it; the node then runs the same hard-majority, maximum-clique,
+and exact-threshold calculation over that restricted support. A candidate must
+also state-descend from the current LFB. Thus neither certificate can stand in for
+the other.
+
+Earlier verification missed this refinement because `certified` was deliberately
+abstract in the state-lineage proof and the TLA+ model assigned certification per
+block. Neither model related each certificate voter's frozen latest-message state
+to the candidate. The strengthened Rocq theory defines state agreement and proves
+that state-preserving finalization refines causal finalization. The strengthened
+TLA+ model contains a candidate that passes causal certification and current-LFB
+ancestry but fails state certification; disabling only the new gate reproduces
+the unsupported-floor promotion.
+
 ### H9 (LIVENESS) — state-safe multi-parent rebase rejected off the main spine
 
 The first H8 repair kept the old main-chain-descendant condition and added state
@@ -486,26 +516,41 @@ parent already preserves the block's floor; otherwise it derives from the floor
 whose state is used by full merge/replay. State ancestry is the reflexive,
 transitive closure of those direct-base edges.
 
-Floor-frontier advancement filters raw clique-certified candidates through this
-state relation. Floor selection also rejects a candidate at or above an inherited
-floor when it does not state-descend that inherited state. The execution fast path
-is conditional on the same predicate; otherwise `compute_parents_post_state`
-replays the floor-bounded merge. These three sites use the same provenance rule,
-so proposal, replay, and finalization cannot assign different meanings to a block's
-state base.
+Floor-frontier advancement first reduces the raw causal main-parent frontier to
+the highest state-lineage-safe candidate, then lowers it along direct state bases
+until it holds the state-preserving certificate. Floor selection also rejects a
+candidate at or above an inherited floor when it does not state-descend that
+inherited state. The execution fast path is conditional on the same predicate;
+otherwise `compute_parents_post_state` replays the floor-bounded merge. These three
+sites use the same provenance rule, so proposal, replay, and finalization cannot
+assign different meanings to a block's state base.
 
-The clique oracle is unchanged. `Finalizer::run` still discovers and orders the
-complete frozen main-parent candidate set, applies the same exact strict-majority
-upper-bound test, and calls the same exact maximum-clique decision. Only after that
-decision returns `certified = true` does it require the current LFB to be a state
-ancestor of the candidate. A stale-state block remains valid and certified but
-cannot replace committed state. The next proposal detects that its covering parent
-does not preserve the advanced floor, rebases from the floor, and restores progress.
+The causal clique oracle is unchanged. `Finalizer::run` still discovers and orders
+the complete frozen main-parent candidate set, applies the same exact
+strict-majority upper-bound test, and calls the same exact maximum-clique decision.
+After causal certification, it requires a second exact certificate over validators
+whose frozen latest-message states preserve the candidate. It finally requires the
+current LFB to be a state ancestor of the candidate. A stale-state block remains
+valid and causally certified but cannot replace committed state. A causally
+certified rejected parent likewise cannot become a state floor merely because a
+heavy validator named it as a merge parent.
+
+The floor path applies the same state certificate to each causal frontier before
+using it as an advancement candidate. Its state-lineage materializer closes over
+both DAG parents and frozen justification tips, because either can be traversed by
+the state-support predicate. The dependencies are acyclic block references and are
+resolved bottom-up. Within a query, direct state bases and ancestry results are
+memoized; this changes no result because both are immutable functions of block
+metadata and the persisted floor cache.
+
+The next proposal detects that its covering parent does not preserve the advanced
+floor, rebases from the floor, and restores progress.
 
 This separation avoids the unsafe alternative of retroactively invalidating the
 stale block after another block finalizes. Validity remains a pure function of the
-block and its ancestors; LFB admissibility remains a transition predicate over the
-current committed state.
+block and its ancestors. The causal and state-preserving certificates are pure
+functions of a frozen snapshot; LFB admissibility adds the transition predicate
+over the current committed state.
 
 ---
 
@@ -518,6 +563,7 @@ current committed state.
 | **L-SNAP** | snapshot-monotone finalization | Rocq `CliqueOracle.L_SNAP`, `L_ANC_SNAP` |
 | **C1 — θ-exact refinement** | the node's REAL θ-decision (`ft_exact_ge`, not the strict-majority θ=0 proxy) is ancestor- and snapshot-monotone, and every θ-finalized block (θ ∈ (0,1), positive stake) is strict-majority `Finalized` — so T-CACHE's no-fork rests on the test the node runs | Rocq `CliqueOracle.L_ANC_ft`, `L_SNAP_ft`, `L_ANC_SNAP_ft`, **`Finalized_ft_refines_Finalized`** (side-conditions `0<num`, `0<cweight c` disclosed + necessary — VACUOUS at θ≤0, see C1′), `is_quorum_ft_mono_weight`/`Finalized_ft_enlarge` (via `FtExact.ft_exact_mono_q`); capstone conjuncts of `finalized_floor_thetaexact_advance_correct` |
 | **C1′ — θ≤0 coverage (hard gate)** | the num>0 refinement is VACUOUS at the DEFAULT θ=0 and the negative-θ sentinels; the node's REAL decision ALSO applies a θ-INDEPENDENT hard majority gate (`2·agreeing > S`, clique_oracle.rs:79-81), which ALONE yields strict-majority `Finalized` for **ALL** num, and T-CACHE holds directly over `Finalized_ft` for all num via `L_ANC_ft` — so θ≤0 is covered both ways | Rocq `CliqueOracle.hard_gate`, `hard_gate_iff_Finalized`, `Finalized_ft_hg`, **`Finalized_ft_hg_refines_Finalized`** (ALL num — no `0<num`, no positive-stake side-condition), `L_ANC_ft_hg`/`L_SNAP_ft_hg`; **`GuardBridge.BridgeFt.guard_constant_committee_transparent_ft`** + `upgo_finalized_ft` (θ-exact cache transparency, all num); Z3 `ft_exact_no_overflow.py` (the θ≤0 GAP `sat` + hard-gate closure `unsat`); capstone conjunct C1′ of `finalized_floor_thetaexact_advance_correct` |
+| **C11 — state-support refinement** | LFB/floor promotion requires both the original causal certificate and an exact certificate whose supporting validators' frozen latest states preserve the candidate; state certification refines causal certification and cannot be inferred from DAG-parent inclusion | Rocq `CliqueOracle.state_agreement_refines_causal_agreement`, `state_finalization_refines_causal_finalization`, `StateLineageFinality.causally_certified_state_unsupported_candidate_is_ineligible`; TLA+ `Inv_CausalMergeVoteIsNotStateSupport`, `Inv_NoUnsupportedStateFloor`; Rust `causal_merge_vote_cannot_certify_a_rejected_parent_state`, `finalizer_rejects_causal_certificate_without_state_support` |
 | **C5 — snapshot advancement** | growth modeled as latest-message ADVANCEMENT (each binding → a DAG-descendant), not just preservation; L-SNAP holds for it, and preservation ⇒ advancement so the old L-SNAP is subsumed | Rocq `CliqueOracle.snap_advances`, `agrees_snap_advance_mono`, **`L_SNAP_advance`**, `L_ANC_SNAP_advance`, `L_SNAP_advance_ft`, `snap_extends_snap_advances`, `L_SNAP_of_extends` (original L-SNAP re-derived) |
 | **T-CACHE** | warm up-walk == cold walk (no fork from cache, S1) | Rocq `Floor.frontier_cache_transparent` (takes `AdjDC`) **+ `GuardBridge.chain_adj_AdjDC` / `guard_constant_committee_transparent`** — the committee-constancy guard *derives* `AdjDC` from L-ANC, so the seam is bridged, not assumed; Rust test `guard_trip_committee_change_falls_back_to_cold` |
 | **T-DETMERGE / T-CONV** | merge order-independent (no fork, S6) | Rocq `Merge.merge_or_perm`, `merge_max_perm`; Rust proptests `bitmask_or_is_commutative`, `integer_add_is_commutative` (`rspace++/…/merging_logic.rs` — the fold operands commute ⇒ order-independent) + `multiple_branches_should_merge_number_channels` (`casper/tests/merging/merge_number_channel_spec.rs`, concurrent IntegerAdd branches merge deterministically) |
@@ -549,8 +595,8 @@ current committed state.
 | **T-ALG (IntegerAdd c/d)** | wrapping-add group + checked-apply reject overflow/`<0` (S7) | Rocq `IntegerAdd.wadd_assoc`, `checked_apply_rejects_overflow`/`_negative`; Rust proptests `integer_add_is_commutative`, `integer_add_is_associative`, `integer_add_overflow_returns_none` (`≡ i64::checked_add`) + unit `integer_add_rejects_overflow_and_underflow` (`rspace++/…/merging_logic.rs`) |
 | **IntegerAdd launder** | fail-loudly at BOTH combine **and terminal apply**; the diff (`end−prev`) stays wrapping — it is the group inverse that recovers the true delta; supply-cap bound | Rocq `IntegerAdd.launder_exhibit`/`checked_combine_sound`/`supply_cap_no_launder`; Z3 `integeradd_launder_bitvec.py`; Rust `combine_mergeable_value` (combine, `checked_add`), `calculate_number_channel_merge` (terminal apply, `checked_add`+`≥0`); tests `cal_merged_result_rejects_integer_add_true_launder_wraps_nonnegative`, `merge_integer_add_overflow_is_rejected`, `diff_integer_add_recovers_wrapped_delta` |
 | **A9 exact-integer FT** | finalization decides `2·q·den ⋛ S·(den+num)` in i128 (`≥` floor / `>` LFB), not the fuzzy f32 ratio — precise + node-identical | Rocq `MainTheorem.finalized_floor_ftexact_correct` (`FtExact.v`); Z3 `ft_exact_no_overflow.py`; Sage `ft_algebra.sage`; Rust `clique_oracle.ft_decides_exact`/`ft_witnessed_exact`; test `ft_decides_exact_tests` |
-| **T-CERT-SEPARATION** | state-lineage admission does not alter clique certification: the stale merge remains exact-threshold certified while being ineligible to replace the LFB | Rocq `StateLineageFinality.{eligibility_preserves_certificate, certified_stale_candidate_is_ineligible, state_lineage_end_to_end}`; TLA⁺/Apalache `Inv_CliqueCertificateIsUnchanged` and `Inv_StaleMergeSeparatesDagAndState`; Rust `finalizer_rejects_dag_descendant_without_state_lineage` first proves the exact unchanged clique decision succeeds |
-| **T-STATE-LINEAGE / S24** | every LFB promotion preserves every previously committed state-base ancestor; a stale certified promotion violates the invariant, while an off-main-parent floor rebase restores admissibility and progress | Rocq `StateLineageFinality.{certified_off_main_rebase_is_eligible, eligible_promotion_preserves_lineage, base_state_ancestor_reflexive, base_state_ancestor_transitive, base_lineage_promotion_correct}` and `MainTheorem.finalized_floor_state_lineage_correct`; two-node asymmetric 60/20/15 TLA⁺ full-state check `StateLineageFinality` plus stale-state, main-spine eligibility, and fair main-spine starvation negative controls; Apalache bounded safe/unsafe checks; Rust state-frontier proptest, stale-state rejection, off-main advancement, and real conflicting-deploy execution-rebase regressions |
+| **T-CERT-SEPARATION** | state admission does not alter causal certification: a stale merge may hold both exact certificates yet fail current-LFB ancestry, while a rejected parent may retain its causal certificate but fail the distinct state-preserving certificate | Rocq `StateLineageFinality.{eligibility_preserves_certificate, certified_stale_candidate_is_ineligible, causally_certified_state_unsupported_candidate_is_ineligible, state_lineage_end_to_end}` and `CliqueOracle.state_finalization_refines_causal_finalization`; TLA⁺/Apalache `Inv_CliqueCertificateIsUnchanged`, `Inv_StaleMergeSeparatesDagAndState`, and `Inv_CausalMergeVoteIsNotStateSupport`; Rust `finalizer_rejects_dag_descendant_without_state_lineage`, `causal_merge_vote_cannot_certify_a_rejected_parent_state`, and `finalizer_rejects_causal_certificate_without_state_support` |
+| **T-STATE-LINEAGE / S24** | every floor/LFB promotion has state-preserving support and preserves every previously committed state-base ancestor; stale-state and rejected-parent promotions violate distinct invariants, while an off-main-parent floor rebase restores admissibility and progress | Rocq `StateLineageFinality.{certified_off_main_rebase_is_eligible, eligible_promotion_preserves_lineage, base_state_ancestor_reflexive, base_state_ancestor_transitive, base_lineage_promotion_correct}` and `MainTheorem.{finalized_floor_state_lineage_correct, finalized_floor_state_support_refines_causal_certificate}`; 144-state two-node asymmetric 60/20/15 TLA⁺ full-state check `StateLineageFinality` plus stale-state, causal-only state-support, main-spine eligibility, and fair main-spine starvation negative controls; Apalache bounded safe/unsafe checks; Rust state-frontier/state-support proptests, stale-state rejection, rejected-parent rejection, off-main advancement, and real conflicting-deploy execution-rebase regressions |
 | **T-FPROGRESS / L6** | a complete finite frozen candidate scan selects the highest ready candidate, reports exhaustive absence only after full coverage, never converts interruption/error into absence, and schedules each reachable validator/block pair once | Rocq `FinalizerProgress.{scan_selected_sound, scan_exhausted_complete, complete_scan_selects_when_ready_candidate_exists, inconclusive_is_not_exhaustion, schedule_once_has_no_duplicates, schedule_once_preserves_exact_membership}` and `MainTheorem.finalizer_progress_correct`; TLA⁺ `FinalizerProgress` safe model plus cap/budget/timeout starvation controls; Rust `finalizer_examines_a_complete_frozen_candidate_set_beyond_the_old_prefix` and `finalizer_visits_each_validator_block_agreement_once_in_a_reconvergent_dag` |
 | **ancestry precondition (GAP-2/GAP-4)** | `CliqueOracle.v`/`Selection.v` model DAG ancestry ABSTRACTLY (`anc_of`); the trusted realization `is_dag_ancestor` (`block_dag_key_value_storage.rs`, used by `floor.rs`) computes EXACTLY that relation. Its block-number prune is sound under strict per-edge monotonicity (`wf_dag`: `block_number = 1 + max parent`), which block validation enforces — **not** the global contiguity (`max−min==len`) that `block_metadata_store.rs` demoted to a `warn!` (GAP-4: a strictly stronger, separate diagnostic the prune never needed) | Rust property test `is_dag_ancestor_matches_reflexive_transitive_closure_over_parents` (`block-storage`, `--features test-internals`): on random well-formed DAGs, `is_dag_ancestor` (with the prune) ≡ the reflexive-transitive closure over parents |
 | **capstone** | all of the above, axiom-free | Rocq `MainTheorem.{finalized_floor_merge_correct, finalized_floor_occurrence_correct, finalized_floor_recovery_admission_correct, finalized_floor_recovery_leadership_correct, finalized_floor_selection_correct, finalized_floor_arithmetic_correct, finalized_floor_phase7_correct, finalized_floor_ftexact_correct, finalized_floor_ftprovenance_correct, finalized_floor_thetaexact_advance_correct, finalizer_progress_correct, bootstrap_replay_and_local_fault_recovery_correct, terminal_funding_admission_lifecycle_correct, finalized_floor_effect_causal_closure_correct, finalized_floor_state_lineage_correct}`; occurrence details are specified in [`deploy-occurrence-specification.md`](../deploy-occurrence/deploy-occurrence-specification.md) |
@@ -641,12 +687,15 @@ only `snap_extends`; `L_SNAP_advance` re-proves L-SNAP for it (via
 (preservation ⇒ advancement, `anc_refl`) makes the original `L_SNAP` its
 reflexive-descendant corollary — nothing existing is weakened.
 
-**State-lineage proof.** `StateLineageFinality.v` keeps `certified` abstract so
-the unchanged clique result is carried into, rather than recomputed by, the LFB
-admission theorem. `certified_stale_candidate_is_ineligible` proves that a
-certified candidate lacking state ancestry is not admissible.
+**State-lineage and state-support proof.** `StateLineageFinality.v` keeps the
+causal `certified` predicate and the additional `state_certified` predicate
+abstract so LFB admission cannot conflate them.
+`causally_certified_state_unsupported_candidate_is_ineligible` proves that causal
+certification plus current-LFB ancestry is insufficient without state support.
+`certified_stale_candidate_is_ineligible` proves that a candidate lacking
+current-LFB state ancestry is not admissible even when certified.
 `certified_off_main_rebase_is_eligible` proves that main-parent ancestry is
-irrelevant once certification and state ancestry hold.
+irrelevant once both certificates and state ancestry hold.
 `eligible_promotion_preserves_lineage` proves that any admissible promotion
 preserves every earlier committed state under a reflexive, transitive ancestry
 relation. `base_state_ancestor_reflexive` and
@@ -654,7 +703,12 @@ relation. `base_state_ancestor_reflexive` and
 relation induced by repeatedly following the implementation's functional state
 base. The concrete `Funding`/`Stale`/`Rebased` scenario proves that the stale
 candidate remains certified, unsafe promotion loses the committed funding state,
-and an off-main-spine rebase promotion preserves it.
+a causally certified rejected parent is ineligible without state support, and an
+off-main-spine rebase promotion preserves it. `CliqueOracle.v` separately defines
+`state_agrees` and `StateFinalized_ft_hg`, then proves that state-preserving
+certification refines causal certification whenever state ancestry refines DAG
+ancestry. `MainTheorem.v` exports that bridge as
+`finalized_floor_state_support_refines_causal_certificate`.
 `finalized_floor_state_lineage_correct` bundles all of these results and is checked
 axiom-free.
 
@@ -696,17 +750,24 @@ for H4.
 
 `StateLineageFinality.tla` models two independent nodes, arbitrary delivery order
 for a certified stale merge and its rebased successor, the asymmetric validator
-stakes 60/20/15, exact strict hard-majority plus `FTT=0.1` arithmetic, and separate
-clique-certification and LFB-admission predicates. The rebase state-descends and
-DAG-descends from the LFB but deliberately does not main-descend from it. TLC
-exhausts all 36 reachable safe states and proves that both nodes eventually
-converge on the rebase while every committed state remains in each local LFB's
-lineage. One unsafe configuration disables only the state-lineage conjunct and
-produces “deliver stale, promote stale, lose committed funding.” A second enables
-the obsolete main-spine conjunct and immediately violates off-main rebase
-eligibility. Apalache independently proves the safe invariants through bound 8
-and finds both counterexamples. Every configuration asserts that the certified
-set is unchanged, so the result does not redefine majority voting.
+stakes $`60/20/15`$, exact strict hard-majority plus `FTT=0.1` arithmetic, and
+separate causal certification, state-preserving certification, and LFB-admission
+predicates. Candidate `P` receives causal support from a merge validator and its
+source proposer but state support only from the proposer. It therefore passes the
+original exact certificate and current-LFB ancestry while failing the additional
+state certificate. The rebase state-descends and DAG-descends from the LFB but
+deliberately does not main-descend from it. TLC exhausts all 144 reachable safe
+states and proves that both nodes eventually converge on the rebase while every
+committed state remains in each local LFB's lineage.
+
+One unsafe configuration disables only current-LFB state ancestry and produces
+“deliver stale, promote stale, lose committed funding.” A second disables only
+state-support certification and produces “deliver rejected parent, promote
+rejected parent.” A third enables the obsolete main-spine conjunct and immediately
+violates off-main rebase eligibility. Apalache independently proves the safe
+invariants through bound 8 and finds all three counterexamples. Every
+configuration asserts that the causal certified set is unchanged, so the
+refinement does not redefine the original majority vote.
 
 The deploy-recovery model family in `formal/tlaplus/deploy_recovery/` closes the
 floor-to-scope boundary. `MergeRecoveryCoherence.tla` checks finalized receipt
@@ -940,10 +1001,10 @@ multi-node integration suite to pass for the candidate binary.
 |---|---|
 | Rust build | `cargo check -p casper --all-targets` / `-p rspace_plus_plus` clean |
 | Convergence green-gate | 3/3 pass; 400+-block soak holds all fix invariants (~421 blocks) |
-| Rust unit/regression | combine + terminal-apply launder (`checked_add`), discriminating true-launder (sum wraps non-negative), wrapping-group diff recovery, guard-trip cold-fallback, Case-B dominating-tip, incompatible-fork `Err`, backstop predicate, floor warm==cold + cache-transparent, frontier round-trip, complete finalizer scan, clique-certified stale-state rejection, asymmetric 60/20/15 off-main state-lineage advancement, state-frontier property cases, and real conflicting-deploy floor rebase — all pass |
+| Rust unit/regression | combine + terminal-apply launder (`checked_add`), discriminating true-launder (sum wraps non-negative), wrapping-group diff recovery, guard-trip cold-fallback, Case-B dominating-tip, incompatible-fork `Err`, backstop predicate, floor warm==cold + cache-transparent, frontier round-trip, complete finalizer scan, clique-certified stale-state rejection, causal-certificate/state-support separation, asymmetric $`60/20/15`$ off-main state-lineage advancement, state-frontier property cases, and real conflicting-deploy floor rebase — all pass |
 | Rocq | full development builds `-j1`; **26 headline results axiom-free**, including source-aware occurrence disposition, recovery admission/leadership, merge/recovery coherence, exact-effect causal rejection closure, rejection-reason confluence, protocol activation and lifecycle, block-bound bootstrap replay, local-fault deferral, terminal funding admission, A9 exact FT, G2 provenance, θ-exact advancement, finalizer progress, state-lineage preservation, and standalone bridge/refinement results |
 | Rocq kernel (coqchk) | **independent kernel re-check** of `FinalizedFloor.MainTheorem` + all deps ⇒ "Modules were successfully checked" (C3) |
-| TLA⁺ / Apalache | `SpecFixed`, `FinalizedFloorScan`, `FinalizerProgress`, the complete 36-state two-node asymmetric-stake `StateLineageFinality` model, and `EffectCausalClosure` pass; write-loss, cut-above-floor, cap-starvation, budget-restart, timeout-restart, stale-state promotion, erroneous main-spine admission, blanket block-lineage rejection, and direct-only rejection controls reproduce their counterexamples; Apalache independently passes the safe lineage and exact-effect models and finds their unsafe traces |
+| TLA⁺ / Apalache | `SpecFixed`, `FinalizedFloorScan`, `FinalizerProgress`, the complete 144-state two-node asymmetric-stake `StateLineageFinality` model, and `EffectCausalClosure` pass; write-loss, cut-above-floor, cap-starvation, budget-restart, timeout-restart, stale-state promotion, unsupported-state-floor promotion, erroneous main-spine admission, blanket block-lineage rejection, and direct-only rejection controls reproduce their counterexamples; Apalache independently passes the safe lineage and exact-effect models and finds their unsafe traces |
 | Deploy recovery TLA⁺ | `MergeRecoveryCoherence`, `EffectCausalClosure`, `RejectionReasonConfluence`, `ProtocolActivationCoherence`, all three `ProtocolVersionLifecycle` safe configurations, `ApprovedStateReplay`, `LocalValidationRecovery`, and `FundingAdmissionLifecycle` pass; their targeted unsafe controls reproduce finalized-receipt masking, partial-chain retention, exact independent-effect loss, orphaned transitive-effect acceptance, state-record mismatch, identity mismatch, last-writer reason divergence, floor-version selection, mixed scope, malformed encoding, stale ceremony, version non-adoption, proposer bypass, receiver disagreement, unsupported startup, current-context historical root divergence, immediate local-fault self-requeue, live-state funding disagreement, and indefinitely pending underfunding |
 | Z3 | FT-algebra + BitVec-64 IntegerAdd launder (exists on wrap; checked-combine launder-free) + **G2 `ft_ppm_roundtrip`** (FPA Float32/64 RNE: `to_ppm` monotone/range, ½ppm round-trip, exact-decision display-invariance) |
 | Sage | FT-algebra identity + finalization-margin monotonicity |
@@ -982,10 +1043,13 @@ Concretely they establish floor/cache determinism (`frontier_cache_transparent`,
 `guard_constant_committee_transparent`(`_ft`)), monotone finalization (L-ANC /
 L-SNAP, and their θ-exact and advancement variants), sound selection
 (`select_sound`, `select_highest_sound`), and the arithmetic hardening (A9/G2).
-The state-lineage capstone additionally proves that, once the unchanged oracle
-certifies a candidate, the separate admission conjunct preserves every previously
-committed state ancestor. It deliberately treats certification as an input; the
-proof does not manufacture or modify a certificate.
+The state-lineage capstone additionally proves that a promoted candidate preserves
+every previously committed state ancestor. It treats causal and state-preserving
+certification as separate inputs. `CliqueOracle.v` proves the refinement bridge:
+every state-preserving certificate is also a causal certificate when state
+ancestry implies DAG ancestry. The proof neither manufactures a causal certificate
+nor treats a causal merge edge as evidence that the merged state retained the
+candidate.
 
 They do **NOT** prove **CBC finalization safety** — the *quorum-intersection /
 agreement* property that two conflicting blocks can never both finalize. **No such
@@ -1067,11 +1131,11 @@ full-resolution SVG.
 
 *Provenance: §6.A9; Rocq `FtExact.v`; Z3 `ft_exact_no_overflow.py`; Sage `ft_algebra.sage`.*
 
-### 8.8 Certified state-lineage admission
+### 8.8 Dual-certificate state-lineage admission
 
-[![Diagram 8 — sequence: the unchanged exact clique oracle certifies both a stale merge and its rebased successor; the separate state-lineage gate leaves the stale block valid but does not promote it, then admits the rebased successor and preserves committed state](./diagrams/08-state-lineage-admission.svg)](./diagrams/08-state-lineage-admission.svg)
+[![Diagram 8 — sequence: the original exact causal certificate accepts a rejected-parent candidate, the second exact certificate rejects it because the apparent merge support did not preserve its state, and both certificates plus current-LFB ancestry admit the rebased successor](./diagrams/08-state-lineage-admission.svg)](./diagrams/08-state-lineage-admission.svg)
 
-*Provenance: §3.9; Rocq `StateLineageFinality.v`; TLA⁺/Apalache `StateLineageFinality.tla`; Rust stale-state, asymmetric off-main advancement, and execution-rebase regressions.*
+*Provenance: §3.9; Rocq `CliqueOracle.v` and `StateLineageFinality.v`; TLA⁺/Apalache `StateLineageFinality.tla`; Rust stale-state, state-support, asymmetric off-main advancement, and execution-rebase regressions.*
 
 ---
 

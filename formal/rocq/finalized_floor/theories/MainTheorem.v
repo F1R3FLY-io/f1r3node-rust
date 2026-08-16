@@ -673,3 +673,18 @@ Proof.
 Qed.
 
 Print Assumptions finalized_floor_state_lineage_correct.
+
+Theorem finalized_floor_state_support_refines_causal_certificate :
+  forall
+    (d : DAG)
+    (state_ancestor : BlockHash -> BlockHash -> Prop),
+    (forall ancestor descendant,
+      state_ancestor ancestor descendant -> anc_of d ancestor descendant) ->
+    forall c J b num den,
+      StateFinalized_ft_hg state_ancestor c J b num den ->
+      Finalized_ft_hg d c J b num den.
+Proof.
+  exact state_finalization_refines_causal_finalization.
+Qed.
+
+Print Assumptions finalized_floor_state_support_refines_causal_certificate.

@@ -6,10 +6,12 @@ Section General.
 
 Context {Block : Type}.
 Variable certified : Block -> Prop.
+Variable state_certified : Block -> Prop.
 Variable state_ancestor : Block -> Block -> Prop.
 
 Definition lfb_eligible (current candidate : Block) : Prop :=
   certified candidate /\
+  state_certified candidate /\
   state_ancestor current candidate.
 
 Record finality_state : Type := {
@@ -35,6 +37,27 @@ Proof.
   exact Hcertified.
 Qed.
 
+Theorem eligibility_preserves_state_certificate :
+  forall current candidate,
+    lfb_eligible current candidate ->
+    state_certified candidate.
+Proof.
+  intros current candidate [_ [Hstate_certified _]].
+  exact Hstate_certified.
+Qed.
+
+Theorem causally_certified_state_unsupported_candidate_is_ineligible :
+  forall current candidate,
+    certified candidate ->
+    state_ancestor current candidate ->
+    ~ state_certified candidate ->
+    ~ lfb_eligible current candidate.
+Proof.
+  intros current candidate Hcertified Hlineage Hstate
+    [_ [Heligible_state _]].
+  exact (Hstate Heligible_state).
+Qed.
+
 Theorem certified_stale_candidate_is_ineligible :
   forall current candidate,
     certified candidate ->
@@ -42,18 +65,19 @@ Theorem certified_stale_candidate_is_ineligible :
     ~ lfb_eligible current candidate.
 Proof.
   intros current candidate Hcertified Hstate
-    [_ Heligible_state].
+    [_ [_ Heligible_state]].
   exact (Hstate Heligible_state).
 Qed.
 
 Theorem certified_rebase_is_eligible :
   forall current candidate,
     certified candidate ->
+    state_certified candidate ->
     state_ancestor current candidate ->
     lfb_eligible current candidate.
 Proof.
-  intros current candidate Hcertified Hstate.
-  exact (conj Hcertified Hstate).
+  intros current candidate Hcertified Hstate_certified Hstate.
+  exact (conj Hcertified (conj Hstate_certified Hstate)).
 Qed.
 
 Theorem certified_off_main_rebase_is_eligible :
@@ -61,12 +85,13 @@ Theorem certified_off_main_rebase_is_eligible :
     (main_ancestor : Block -> Block -> Prop)
     current candidate,
     certified candidate ->
+    state_certified candidate ->
     ~ main_ancestor current candidate ->
     state_ancestor current candidate ->
     lfb_eligible current candidate.
 Proof.
-  intros main_ancestor current candidate Hcertified _ Hstate.
-  exact (conj Hcertified Hstate).
+  intros main_ancestor current candidate Hcertified Hstate_certified _ Hstate.
+  exact (conj Hcertified (conj Hstate_certified Hstate)).
 Qed.
 
 Theorem eligible_promotion_preserves_lineage :
@@ -81,7 +106,7 @@ Theorem eligible_promotion_preserves_lineage :
     lineage_invariant (promote state candidate).
 Proof.
   intros Hreflexive Htransitive state candidate Hinvariant
-    [_ Hcurrent_candidate].
+    [_ [_ Hcurrent_candidate]].
   unfold lineage_invariant, promote.
   simpl.
   constructor.
@@ -134,11 +159,18 @@ Inductive scenario_block : Type :=
 | Funding
 | Sibling
 | Stale
+| RejectedParent
 | Rebased.
 
 Definition scenario_certified (block : scenario_block) : Prop :=
   match block with
   | Sibling => False
+  | _ => True
+  end.
+
+Definition scenario_state_certified (block : scenario_block) : Prop :=
+  match block with
+  | RejectedParent => False
   | _ => True
   end.
 
@@ -148,9 +180,11 @@ Definition scenario_main_ancestor
   | Genesis, _ => True
   | Funding, Funding => True
   | Funding, Stale => True
+  | Funding, RejectedParent => True
   | Sibling, Sibling => True
   | Sibling, Rebased => True
   | Stale, Stale => True
+  | RejectedParent, RejectedParent => True
   | Stale, Rebased => True
   | Rebased, Rebased => True
   | _, _ => False
@@ -162,8 +196,10 @@ Definition scenario_state_ancestor
   | Genesis, _ => True
   | Funding, Funding => True
   | Funding, Rebased => True
+  | Funding, RejectedParent => True
   | Sibling, Sibling => True
   | Stale, Stale => True
+  | RejectedParent, RejectedParent => True
   | Rebased, Rebased => True
   | _, _ => False
   end.
@@ -174,10 +210,12 @@ Definition scenario_initial_state : @finality_state scenario_block :=
 
 Definition state_lineage_contract : Prop :=
   scenario_certified Stale /\
+  scenario_state_certified Stale /\
   scenario_main_ancestor Funding Stale /\
   ~ scenario_state_ancestor Funding Stale /\
   ~ lfb_eligible
       scenario_certified
+      scenario_state_certified
       scenario_state_ancestor
       Funding
       Stale /\
@@ -185,9 +223,19 @@ Definition state_lineage_contract : Prop :=
   scenario_main_ancestor Sibling Rebased /\
   lfb_eligible
       scenario_certified
+      scenario_state_certified
       scenario_state_ancestor
       Funding
       Rebased /\
+  scenario_certified RejectedParent /\
+  ~ scenario_state_certified RejectedParent /\
+  scenario_state_ancestor Funding RejectedParent /\
+  ~ lfb_eligible
+      scenario_certified
+      scenario_state_certified
+      scenario_state_ancestor
+      Funding
+      RejectedParent /\
   lineage_invariant
       scenario_state_ancestor
       scenario_initial_state /\
@@ -202,7 +250,7 @@ Theorem state_lineage_end_to_end : state_lineage_contract.
 Proof.
   unfold state_lineage_contract, scenario_initial_state,
     scenario_certified, scenario_main_ancestor,
-    scenario_state_ancestor, lfb_eligible,
+    scenario_state_certified, scenario_state_ancestor, lfb_eligible,
     lineage_invariant, promote.
   repeat split; simpl; try tauto.
   - constructor.
@@ -227,6 +275,7 @@ Definition promotion_preservation_contract : Prop :=
   forall
     (Block : Type)
     (certified : Block -> Prop)
+    (state_certified : Block -> Prop)
     (state_ancestor : Block -> Block -> Prop),
     (forall block, state_ancestor block block) ->
     (forall left middle right,
@@ -235,14 +284,14 @@ Definition promotion_preservation_contract : Prop :=
       state_ancestor left right) ->
     forall state candidate,
       lineage_invariant state_ancestor state ->
-      lfb_eligible certified state_ancestor
+      lfb_eligible certified state_certified state_ancestor
         (current_lfb state) candidate ->
       lineage_invariant state_ancestor (promote state candidate).
 
 Theorem state_lineage_promotion_correct : promotion_preservation_contract.
 Proof.
   unfold promotion_preservation_contract.
-  intros Block certified state_ancestor
+  intros Block certified state_certified state_ancestor
     Hreflexive Htransitive state candidate Hinvariant Heligible.
   eapply eligible_promotion_preserves_lineage.
   - exact Hreflexive.
@@ -256,17 +305,18 @@ Definition base_lineage_promotion_contract : Prop :=
     (Block : Type)
     (base : Block -> Block)
     (certified : Block -> Prop)
+    (state_certified : Block -> Prop)
     (state : @finality_state Block)
     (candidate : Block),
     lineage_invariant (base_state_ancestor base) state ->
-    lfb_eligible certified (base_state_ancestor base)
+    lfb_eligible certified state_certified (base_state_ancestor base)
       (current_lfb state) candidate ->
     lineage_invariant (base_state_ancestor base) (promote state candidate).
 
 Theorem base_lineage_promotion_correct : base_lineage_promotion_contract.
 Proof.
   unfold base_lineage_promotion_contract.
-  intros Block base certified state candidate Hinvariant Heligible.
+  intros Block base certified state_certified state candidate Hinvariant Heligible.
   eapply eligible_promotion_preserves_lineage.
   - apply base_state_ancestor_reflexive.
   - apply base_state_ancestor_transitive.

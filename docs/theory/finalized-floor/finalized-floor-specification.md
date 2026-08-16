@@ -36,8 +36,9 @@ from either cost-accounting paper. The source-checkout papers
 the atomic resource-commitment and conservation obligations. The existing
 Casper contract supplies the separate premise that finalized effects are
 permanent. R-LFB-STATE is the implementation rule that composes those two
-obligations: a certificate remains a certificate, but it cannot install a state
-that omits an already committed resource transition.
+obligations: causal certification remains unchanged, while a separate
+state-preserving certificate and current-LFB ancestry prevent installation of a
+state that omits an already committed resource transition.
 
 ## 2. The floor rule (normative)
 
@@ -74,12 +75,13 @@ For a block `B` with non-empty parent set `P₁…Pₖ` and frozen justification
   truncate this consensus search.
 - **R-FINALIZER-ORDER.** The complete candidate set MUST be ordered by block number
   descending, agreeing stake descending, agreeing-set size ascending, then hash
-  ascending. For each candidate, the finalizer MUST run the existing exact clique
-  decision without modifying its voters, weights, threshold, or strictness. The
-  first clique-certified candidate that also preserves the current LFB's state
-  lineage is the next LFB. The current LFB need not lie on the candidate's
-  main-parent spine: a multi-parent rebase may preserve it through a secondary
-  parent.
+  ascending. For each candidate, the finalizer MUST first run the existing exact
+  causal clique decision without modifying its voters, weights, threshold, or
+  strictness. It MUST then run the same exact decision over state-preserving
+  support as required by R-STATE-CERT. The first candidate that holds both
+  certificates and preserves the current LFB's state lineage is the next LFB.
+  The current LFB need not lie on the candidate's main-parent spine: a
+  multi-parent rebase may preserve it through a secondary parent.
 - **R-FINALIZER-ERROR.** Missing or unreadable consensus metadata and failed clique
   evaluation MUST make the invocation inconclusive and return an error. They MUST
   NOT be treated as a negative finality vote or skipped in favor of another block.
@@ -89,11 +91,14 @@ For a block `B` with non-empty parent set `P₁…Pₖ` and frozen justification
 
 ### 2.2 State derivation and LFB admissibility
 
-A **clique certificate** answers whether sufficient mutually agreeing stake has
-certified a block. **LFB admissibility** answers whether installing that certified
-block would retain the state already committed by the current LFB. These are
-separate predicates. The state-lineage check MUST NOT add, remove, or reweight a
-vote.
+A **causal clique certificate** answers whether sufficient mutually agreeing
+stake causally supports a block. A **state-preserving clique certificate** answers
+whether sufficient mutually agreeing stake has retained that block's state in
+its frozen latest messages. **LFB admissibility** additionally answers whether
+installing the candidate would retain the state already committed by the current
+LFB. These are separate predicates. The state-support calculation MUST NOT alter
+the causal certificate, and the current-LFB lineage check MUST NOT alter either
+certificate.
 
 - **R-STATE-BASE.** Genesis derives from itself. For every non-genesis block `B`,
   its direct state base MUST be the covering parent only when one parent covers
@@ -104,22 +109,35 @@ vote.
   of the direct state-base relation. It is derivation provenance, not tuple-set
   inclusion: an authorized later reduction may consume data while still deriving
   from its predecessor.
-- **R-STATE-FRONTIER.** A raw clique-certified frontier MUST be filtered along its
-  main-parent spine so that each accepted advancement state-descends the last
-  accepted frontier. A clique-certified stale-state descendant remains a valid
-  speculative block but MUST NOT become a floor advancement.
+- **R-STATE-CERT.** For candidate `C` and frozen snapshot `just(B)`, state support
+  MUST contain exactly the validators whose latest messages both causally include
+  `C` and state-descend from `C`. The node MUST run the same hard-majority,
+  maximum-clique, exact-threshold decision used for causal certification over
+  that restricted support. Causal support through a merge-parent edge MUST NOT
+  count as state support when the merge state rejected `C`'s effects.
+- **R-STATE-DEPENDENCIES.** State-lineage materialization MUST close over both DAG
+  parents and the frozen latest-message justifications consulted by R-STATE-CERT.
+  A missing dependency or cyclic lineage MUST fail the derivation; it MUST NOT be
+  interpreted as absent state support.
+- **R-STATE-FRONTIER.** A raw causally certified main-parent frontier MUST first
+  be reduced to the highest candidate on that spine that preserves the accepted
+  state lineage, then lowered along its direct state-base lineage until it reaches
+  a state-certified candidate. A causally certified stale-state descendant or
+  rejected parent remains a valid speculative block but MUST NOT become a floor
+  advancement.
 - **R-FLOOR-STATE.** A candidate floor at or above an inherited parent floor MUST
   state-descend that inherited floor. A candidate that bypasses an inherited
   committed state MUST be skipped; an older common sound base MAY be selected.
-- **R-LFB-STATE.** A candidate MAY become the next LFB only if the unchanged
-  clique oracle certifies it and the current LFB is in its state lineage. Main-
-  parent ancestry MUST NOT be an additional admission condition: it describes
-  vote propagation, not multi-parent state derivation.
-- **R-REBASE.** If a clique-certified speculative block fails R-LFB-STATE, a later
-  child MUST recompute from the certified floor rather than reuse the stale
-  covering-parent post-state. The rebase restores state lineage and eventual LFB
-  progress even when parent selection places the old LFB in a secondary-parent
-  branch.
+- **R-LFB-STATE.** A candidate MAY become the next LFB only if its causal
+  certificate, state-preserving certificate, and current-LFB state ancestry all
+  hold over the same frozen snapshot. Main-parent ancestry MUST NOT be an
+  additional admission condition: it describes vote propagation, not
+  multi-parent state derivation.
+- **R-REBASE.** If a causally certified speculative block fails R-STATE-CERT or
+  R-LFB-STATE, a later child MUST recompute from the certified floor rather than
+  reuse the stale covering-parent post-state. The rebase restores state lineage
+  and eventual LFB progress even when parent selection places the old LFB in a
+  secondary-parent branch.
 - **R-VALIDITY-STABILITY.** Learning that another block finalized MUST NOT
   retroactively make an otherwise valid speculative block invalid. Consensus
   validity is block-structural; LFB eligibility is evaluated separately when the
@@ -315,7 +333,7 @@ state-validation property, not authorization for an in-place protocol upgrade.
 | **S21** | Proposal and validation classify the same deploy from different supply states (violates R-FUNDING-PRESTATE). |
 | **S22** | An attempted underfunded deploy remains pending, produces user effects, or is later resurrected without a new deploy occurrence (violates R-FUNDING-TERMINAL/R-FUNDING-NO-EFFECT). |
 | **S23** | A proposer forges either side of the state-bound admitted/rejected partition (violates R-FUNDING-AUTHENTICITY). |
-| **S24** | A clique-certified block advances the LFB while bypassing a state already committed by the current LFB (violates R-LFB-STATE). |
+| **S24** | A causally certified block advances the floor or LFB without a state-preserving certificate, or while bypassing a state already committed by the current LFB (violates R-STATE-CERT/R-STATE-FRONTIER/R-LFB-STATE). |
 | **S25** | A covering-parent fast path reuses a stale post-state after the block's floor advanced past that parent's state lineage (violates R-STATE-BASE/R-REBASE). |
 | **S26** | Rejecting one exact effect removes an independent effect solely because its source block descends from the rejected effect's block (violates R-EXACT-SURVIVAL). |
 | **S27** | Rejection stops after one dependency hop and retains an effect that transitively consumes rejected state (violates R-CHAIN-ATOMIC/R-REJECTION-FIXPOINT). |
