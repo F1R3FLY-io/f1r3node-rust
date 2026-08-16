@@ -593,7 +593,7 @@ is a *future* fork, not a present one).
 | [CBR-042](#cbr-042) | N | …and on the **bincode** wire too — `U(m)` verbatim and contiguous, then the values (FORM ②), so the reader never decodes a trie key | `3a32cf07` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-043](#cbr-043) | N | …but of **the entries that surface WRITES**. FORM ② keyed lf-blanked values by the *unblanked* entries, putting an entry's `locally_free` on the event hash | `8cf0b770` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-044](#cbr-044) | N | EPathMap becomes a homogeneous PathMap set/map and both codecs carry one versioned EPM1 trie snapshot; generated protobuf PDAs remove the read ceiling | `26876b65` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
-| [CBR-053](#cbr-053) | N | Retained PathMap prefix indexes skip waiting receives or resting data that cannot match an exact-ground counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`; benchmark `7bc5c6994` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
+| [CBR-053](#cbr-053) | N | Retained PathMap prefix indexes skip waiting receives or resting data that cannot match an exact-ground counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`; benchmark `7bc5c6994` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
 | [CBR-L07](#cbr-l07) | L | `List.last()` in MeTTaIL's Rholang | `bbceb6d9`, `6e543c01` | · | · | · | · | · | ● | · | PERMISSIVE | **W** |
 | [CBR-L08](#cbr-l08) | L | The kv element-category gate — a Name in a kv slot is refused, not silently dropped | *in flight* | ● | ● | ● | ● | ● | ● | ○ | REGRESSIVE | **W** |
 | [CBR-L10](#cbr-l10) | L | A pathmap's entries come from a projection, not a field | `832d510f` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
@@ -2321,7 +2321,7 @@ Legacy protobuf fields are read-only migration inputs; removing them is a later 
 
 | | |
 |---|---|
-| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`; benchmark `7bc5c6994` |
+| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`; benchmark `7bc5c6994` |
 | Status | LANDED ON CAMPAIGN BRANCH; VERIFICATION OPEN |
 | Direction | UNVERIFIED |
 | Evidence grade | UNVERIFIED |
@@ -2432,14 +2432,19 @@ the verdict axis.
   at 256, and **239–259×** at 4,096, but regresses **7.1–11.4%** at one entry; all arms use 51
   samples at 99% confidence. **MEASURED.** The crossover is performance evidence only and leaves the
   semantic superset obligation unchanged.
+- checkpoint `0b601ce67` sends zero/one-candidate pools directly through the canonical scan; the
+  focused test proves zero retained-path queries and the full package passes **392/392**. The repeated
+  matrix is non-regressing at one entry and retains **48.7–53.4%**, **12.22–13.01×**, and
+  **238.8–256.9×** treatment throughput at 16/256/4,096. **MEASURED.** This repairs the resource
+  regression but does not discharge verdict or post-state equivalence.
 
 This entry retires as `OPTIMIZATION_MEASURED_NEUTRAL` only after the campaign's generated
 old-selector/new-selector differential covers every eligible and fallback `BindPattern` family,
 play/replay traces and post-state roots agree over generated schedules, and the formal superset
 obligation proves that filtering cannot remove the first admissible candidate. The retained-receive
-throughput pair has passed; the resting-data curve passes from 16 through 4,096 entries and exposes
-an open one-entry fixed-cost regression. Timing cannot close a consensus obligation in either
-direction.
+throughput pair has passed; the resting-data curve is non-regressing at one entry after the
+proof-derived base-case repair and passes from 16 through 4,096 entries. Timing cannot close a
+consensus obligation in either direction.
 
 ---
 

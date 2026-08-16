@@ -3294,9 +3294,10 @@ swap, and two-core CPU quota**. **MEASURED:**
 | continuation-version lifecycle | no compiled automaton cache | **2/2** | group-local insert/remove invalidation plus generation invalidation on replace/clear |
 | Rholang structural-path contract | no retained path hook | **3/3** | exact-ground equality/inequality and binding/connective fallback |
 | RSpace actions with retained indexing enabled | same 41-case semantic corpus | **41/41** | consume/produce, joins, persistence, checkpoint, reset, and soft-revert |
-| resting-datum structural-prefix pruning | full canonical scan | **4/4 plus 64 generated corpora** | 256-to-1 spatial-call witness, embedded-zero framing, prefix false-positive oracle check, and identical result/event/post-state maps |
+| resting-datum structural-prefix pruning | full canonical scan | **5/5 plus 64 generated corpora** | 256-to-1 spatial-call witness, embedded-zero framing, prefix false-positive oracle check, singleton zero-query base case, and identical result/event/post-state maps |
 | retained waiting-receive throughput | full canonical candidate scan | **23.2–44.6% more COMMs/s** | six treatment pairs; 51 samples/arm; 99% confidence; 16/256/4,096 receives; diverse/shared prefixes |
-| resting-data prefix throughput | full canonical candidate scan | **43.9–55.0% more COMMs/s at 16; 12.39–13.30× at 256; 239–259× at 4,096** | eight treatment pairs; 51 samples/arm; 99% confidence; the one-entry arms instead regress 7.1–11.4% and remain an open fast-path target |
+| resting-data prefix throughput | full canonical candidate scan | **48.7–53.4% more COMMs/s at 16; 12.22–13.01× at 256; 238.8–256.9× at 4,096** | post-repair eight-pair matrix; 51 samples/arm; 99% confidence; singleton arms are non-regressing because zero/one physical candidates use the direct scan |
+| singleton repair package gate | pre-repair indexed singleton | **392 passed / 0 failed** | full `rspace_plus_plus` package under 5 GiB, zero swap; focused pruning suite is 5/5 |
 | exact source census | 574 recursive components before this conversion | **572** after the PDA; then **566 recursive / 42 term-family / 19 mutual / 25 production files** after relocating recursive oracles; current **566 / 41 / 18 / 24** after the fused evaluator cycle disappeared and its stale disposition was retired | `handwritten_recursion_census`, 5/5; independent normalizer control 31 members $`\geq`$ 26 required |
 
 At the initial SS-A11 checkpoint, the guarded-search workload retained its expected algorithmic counts: the 1,000-datum single-bind
@@ -3329,7 +3330,7 @@ throughput hypothesis therefore passes for this exact-ground slice; direct autom
 construction cost, allocations, and the broader workload matrix remain open. The recorded estimates
 are [`measurements/rspace-retained-pathmap-prefilter-2026-08-15.tsv`](measurements/rspace-retained-pathmap-prefilter-2026-08-15.tsv).
 
-The paired resting-datum control/PathMap benchmark at `564dac0b4` is now admitted to the measurement
+The paired resting-datum control/PathMap benchmark at `564dac0b4` is admitted to the measurement
 ledger. The run used 51 samples per arm at 99% confidence under a 5 GiB no-swap scope on the
 32-physical-core host. Approximately six cores were occupied at preflight, below the user-approved
 stop threshold of 30; scheduler affinity was unrestricted. Treatment throughput is **43.9–55.0%
@@ -3341,6 +3342,17 @@ but rejects a blanket “never regresses” claim; a single-entry bypass or lowe
 be tested before final layout selection. The scope's 1.5 GiB peak includes compilation and therefore
 does not establish allocation or steady-state RSS. Raw estimates are
 [`measurements/rspace-resting-pathmap-prefix-2026-08-15.tsv`](measurements/rspace-resting-pathmap-prefix-2026-08-15.tsv).
+
+That falsifying singleton result was repaired at `0b601ce67` by recognizing a structural base case:
+a physical pool with at most one candidate has no proper subset for an index to select. The PDA
+therefore takes its existing canonical direct scan before any retained-path construction, zipper
+descent, position allocation, or sort. The focused test observes one spatial match and zero retained-
+path queries. All **392** package tests pass. In the repeated eight-pair matrix, the diverse
+singleton is 2.2% faster and the shared singleton has a statistically neutral +0.6% point estimate;
+both arms execute the same direct-scan code, so these small differences are not attributed to the
+treatment. Treatment retains **48.7–53.4%** higher throughput at 16, **12.22–13.01 times** control
+at 256, and **238.8–256.9 times** control at 4,096. Raw post-repair estimates are
+[`measurements/rspace-resting-pathmap-singleton-repair-2026-08-15.tsv`](measurements/rspace-resting-pathmap-singleton-repair-2026-08-15.tsv).
 
 ##### 5.16.5.5 What it cost
 
@@ -3363,9 +3375,10 @@ matching prefix's fixed-width catalog positions and sorts it in $`O(m \log m)`$,
 number of prefix candidates, before the final spatial checks. The full-scan control is $`O(n)`$ in
 distinct channel records. Native-stack use remains $`O(1)`$ in both cases because the zipper and PDA
 are iterative. The admitted curve shows that this collection/sort decisively wins once the pool has
-16 entries in the tested worst-order workloads, but its fixed cost loses at one entry. Whether a
-small-pool bypass or a direct ordered zipper product gives the best general crossover remains an
-open measured question, not a settled optimization claim.
+16 entries in the tested worst-order workloads. The proof-derived zero/one-candidate base case
+removes the known fixed-cost loss without choosing an empirical cutoff. Whether a direct ordered
+zipper product further improves the general crossover remains an open measured question, not a
+settled optimization claim.
 
 ##### 5.16.5.6 What is still recursive
 
