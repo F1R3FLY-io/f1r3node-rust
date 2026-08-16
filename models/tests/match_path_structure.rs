@@ -2,7 +2,9 @@ mod par_corpus;
 
 use models::rhoapi::Par;
 use models::rust::rhoapi_ext::EPathMap;
-use models::rust::rholang::match_path::{encode_par_match_path, RHO_MATCH_PATH_VERSION};
+use models::rust::rholang::match_path::{
+    encode_par_match_path, epathmap_match_digest, RHO_MATCH_PATH_VERSION,
+};
 
 #[test]
 fn structural_paths_are_deterministic_and_schema_sensitive() {
@@ -40,6 +42,10 @@ fn epathmap_token_uses_the_native_logical_trie_without_a_snapshot() {
         None,
     );
     assert!(format!("{set_forward:?}").contains("snapshot_cached: false"));
+    assert_eq!(
+        hex::encode(epathmap_match_digest(&set_forward)),
+        "9a637685a61e33171ea5e35a90b60d82e92697517a4fc56c02d7fbbeddd5befd"
+    );
     assert_eq!(
         encode_par_match_path(&wrap(set_forward.clone())),
         encode_par_match_path(&wrap(set_reverse))

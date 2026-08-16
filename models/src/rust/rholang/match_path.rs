@@ -3,9 +3,13 @@
 //! This format is a derived in-memory search key, not a protobuf, bincode, or
 //! consensus identity encoding. It follows the generated matching cursor and
 //! therefore covers the complete rhoapi descriptor without recursive calls.
-//! `EPathMap` stays native: its token is computed from PathMap's logical trie
-//! hash and never materializes entries or forces the EPM1 snapshot cache.
+//! `EPathMap` stays native: its token is a domain-separated BLAKE2b-256 digest
+//! streamed from a logical zipper walk. It never materializes entries or
+//! forces the EPM1 snapshot cache.
 
+use crypto::rust::hash::blake2b256::Blake2b256;
+use pathmap::utils::ByteMaskIter;
+use pathmap::zipper::{Zipper, ZipperMoving, ZipperReadOnlyValues};
 use pathmap::PathMap;
 
 use super::match_schema::{RhoPathCursor, RhoPathEvent, RhoScalarRef};
@@ -135,12 +139,59 @@ fn append_pathmap(output: &mut Vec<u8>, map: &EPathMap) {
     output.push(PATHMAP);
     output.push(map.mode() as u8);
     append_len(output, map.len());
-    let logical_hash = match map.representation() {
-        EPathMapRepr::Empty => PathMap::<()>::INVIS_HASH,
-        EPathMapRepr::Set(entries) => entries.hash(|_| PathMap::<()>::INVIS_HASH),
-        EPathMapRepr::Map(entries) => entries.hash(|_| PathMap::<Par>::INVIS_HASH),
+    output.extend_from_slice(&epathmap_match_digest(map));
+}
+
+/// Deterministic EPathMap key-topology digest for the derived match index.
+///
+/// Values in map mode are deliberately absent: the native EPathMap matcher is
+/// the acceptance authority, so equal key topology may admit a conservative
+/// false positive but can never accept one. Mode and cardinality are encoded
+/// beside this digest by [`encode_match_path`].
+pub fn epathmap_match_digest(map: &EPathMap) -> [u8; 32] {
+    let digest = match map.representation() {
+        EPathMapRepr::Empty => logical_pathmap_digest::<()>(None),
+        EPathMapRepr::Set(entries) => logical_pathmap_digest(Some(entries)),
+        EPathMapRepr::Map(entries) => logical_pathmap_digest(Some(entries)),
     };
-    output.extend_from_slice(&logical_hash.to_be_bytes());
+    digest
+        .try_into()
+        .expect("BLAKE2b-256 always returns exactly 32 bytes")
+}
+
+fn logical_pathmap_digest<V>(entries: Option<&PathMap<V>>) -> Vec<u8>
+where V: Clone + Send + Sync + Unpin {
+    const DOMAIN: &[u8] = b"RhoMatchPath/EPathMap/key-topology/v1";
+    const EDGE: u8 = 1;
+    const LEAVE: u8 = 2;
+
+    Blake2b256::hash_stream(|feed| {
+        feed(DOMAIN);
+        let Some(entries) = entries else {
+            feed(&[0, LEAVE]);
+            return;
+        };
+        let mut zipper = entries.read_zipper();
+        feed(&[u8::from(zipper.get_val().is_some())]);
+        let mut levels: Vec<ByteMaskIter> = vec![zipper.child_mask().iter()];
+        while let Some(children) = levels.last_mut() {
+            match children.next() {
+                Some(byte) => {
+                    feed(&[EDGE, byte]);
+                    zipper.descend_to_byte(byte);
+                    feed(&[u8::from(zipper.get_val().is_some())]);
+                    levels.push(zipper.child_mask().iter());
+                }
+                None => {
+                    feed(&[LEAVE]);
+                    levels.pop();
+                    if !levels.is_empty() {
+                        assert!(zipper.ascend_byte());
+                    }
+                }
+            }
+        }
+    })
 }
 
 fn append_bytes(output: &mut Vec<u8>, bytes: &[u8]) {
