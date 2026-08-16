@@ -16,7 +16,8 @@ verification_tmpdir_cleanup() {
 }
 
 verification_tmpdir_install() {
-  VERIFY_TMP_PARENT="$1"
+  mkdir -p "$1"
+  VERIFY_TMP_PARENT="$(cd "$1" && pwd -P)"
   VERIFY_TMP="$(verification_tmpdir_create "$VERIFY_TMP_PARENT")"
   export TMPDIR="$VERIFY_TMP"
   trap 'verification_tmpdir_cleanup "$VERIFY_TMP" "$VERIFY_TMP_PARENT"' EXIT

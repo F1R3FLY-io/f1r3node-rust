@@ -6,6 +6,7 @@ source "$ROOT/scripts/lib/verification-tmpdir.sh"
 
 mkdir -p "$ROOT/target/verification"
 TEST_PARENT="$(mktemp -d "$ROOT/target/verification/cost-accounted-rho-scratch.XXXXXX")"
+RELATIVE_TEST_PARENT="${TEST_PARENT#"$ROOT"/}"
 trap 'rm -rf -- "$TEST_PARENT"' EXIT
 
 set +e
@@ -13,9 +14,12 @@ bash -c '
   set -euo pipefail
   source "$1"
   verification_tmpdir_install "$2"
+  cd "$3"
+  test "${TMPDIR#/}" != "$TMPDIR"
+  test -d "$TMPDIR"
   mkdir -p "$TMPDIR/casper-shared-lmdb-regression"
   exit 17
-' _ "$ROOT/scripts/lib/verification-tmpdir.sh" "$TEST_PARENT"
+' _ "$ROOT/scripts/lib/verification-tmpdir.sh" "$RELATIVE_TEST_PARENT" "$ROOT/models"
 probe_status=$?
 set -e
 
