@@ -71,11 +71,36 @@ Given a base state and a set of deploy chains to merge:
   observations of one identity with equal state and number-channel contributions count
   once. Repeated observations of one identity with unequal contributions are an invariant
   violation and **MUST** fail closed.
+- **R-CAUSAL-REJECT.** For exact-witness effects, rejection **MUST** propagate
+  through the least transitive closure of physical effect dependencies. A target
+  physically depends on a source exactly when it removes a byte-identical
+  ordinary datum or continuation that the source added under the same channel
+  key. Mergeable number-channel materializations are excluded because their
+  typed deltas compose through R-NUMERIC rather than by physical datum
+  consumption. An exact effect outside this closure **MUST** survive even when
+  its source block is a DAG descendant of a rejected block. Conservative
+  descendant-block expansion is permitted only for legacy indices without exact
+  state witnesses.
 - **R-FOLD.** After causal deduplication, distinct execution deltas **MUST** compose by
   additive multiset union and normalize once. The additive fold is associative and
   commutative, so survivor enumeration and association cannot alter the result. It is
   intentionally not idempotent: two independent sends with byte-identical payloads are two
   RSpace data, exactly as two parallel outputs form a two-element bag.
+- **R-NUMERIC.** For an `IntegerAdd` channel with base value $`b`$ and surviving
+  contributions $`d_1,\ldots,d_n`$, selection and application **MUST** both decide from
+  the simultaneous mathematical result
+
+  ```math
+  r = b + \sum_{i=1}^{n} d_i.
+  ```
+
+  The implementation **MUST** accumulate the complete contribution multiset in a widened
+  signed representation and range-check $`r`$ exactly once against the stored integer
+  domain. It **MUST NOT** reject because an arbitrary enumeration has an out-of-range
+  prefix. For `BitmaskOr`, both phases **MUST** use the bitwise union of all contributions.
+  A channel observed with two merge types **MUST** fail closed. The survivor selector and
+  trie-action builder **MUST** call the same aggregate operation, so they cannot disagree
+  about an accepted set.
 - **R-CONFLICT.** Every conflict the removed single-value-cell check would flag **MUST** be
   caught by the retained double-consume / same-IO-event race detector (`conflicts`,
   Check #1) **or** be an intrinsically-mergeable number/foldable channel. No real conflict
@@ -110,6 +135,12 @@ Given a base state and a set of deploy chains to merge:
      are added and normalized once.
   3. **Union-monoid split** (R-SPLIT): the user/system partition recombines, by a
      commutative-associative-idempotent set-union monoid, to exactly the monolithic index.
+  4. **Simultaneous numeric aggregation** (R-NUMERIC): range validity is a property of the
+     final commutative total, and the same total drives both survivor selection and state
+     application.
+  5. **Least causal rejection closure** (R-CAUSAL-REJECT): direct rejection seeds
+     transitively reject physical dependents, while independent exact effects remain
+     eligible regardless of block ancestry or enumeration order.
 - **R-RECOMPUTE.** Block validation **MUST** recompute the merge and reject the block on
   any pre-state-hash or rejected-deploy-set mismatch; a pre-state-mismatched block **MUST
   NOT** be replayed (`interpreter_util.rs:259` reject/no-replay; `:269` rejected-set
@@ -170,6 +201,33 @@ merge_exact_effects(surviving_chains):
     return apply(state_delta, numeric_delta)
 ```
 
+Exact-effect rejection precedes that fold. The following algorithm is normative:
+
+```text
+reject_exact_effects(seed_rejections, exact_effects):
+    rejected := seed_rejections
+    repeat
+        changed := false
+        for target in canonical_order(exact_effects):
+            if target is not rejected and
+               any source in rejected where physically_depends(target, source):
+                rejected.add(target)
+                changed := true
+    until changed is false
+    return rejected
+```
+
+For exact effects `$`e_t`$` and `$`e_s`$`, ordinary added resources
+`$`A(e_s)`$` and ordinary removed resources `$`R(e_t)`$`, the dependency is:
+
+```math
+D(e_t,e_s) \iff \exists r.\; r \in R(e_t) \land r \in A(e_s).
+```
+
+The resource `$`r`$` includes its channel key, serialized physical identity,
+and kind (datum or continuation). The least fixed point makes the result
+independent of the order in which candidate effects are inspected.
+
 This separation is not an implementation preference. Meredith's RSpace denotation treats
 parallel composition as key-wise finite-multiset union and explicitly distinguishes two
 equal outputs from one output (`../publications/denotational-semantics-for-rho/knot-rho.tex`,
@@ -181,7 +239,15 @@ therefore deduplicates executions, not messages.
 - **R-ACTIVATION.** Per-execution witnesses alter the block wire shape and additive
   projection changes merge results for reachable Rholang programs. The feature **MUST**
   activate atomically on an unreleased shard or at an explicit protocol boundary after a
-  finalized cut. A merge epoch **MUST NOT** mix exact-witness and legacy block indices.
+  finalized cut. The active shard protocol, not the historical floor block's version,
+  **MUST** select exact finalized-receipt precedence. A merge epoch **MUST NOT** mix
+  exact-witness and legacy block indices above the floor. A legacy floor MAY serve as the
+  materialized base of the first exact epoch; its committed receipts still dominate
+  above-floor tombstones and duplicates.
+- **R-RECORD-VERSION.** Exact disposition records **MUST** carry causal provenance and a
+  specified reason. Legacy records **MUST** carry neither. The containing block header's
+  protocol version **MUST** select the encoding; implementations **MUST NOT** infer a
+  protocol mode from optional record contents.
 - **N-MAX.** The implementation **MUST NOT** use max-union to compose distinct execution
   effects. It loses valid multiplicity.
 - **N-WHOLE.** The implementation **MUST NOT** add per-chain deltas derived from the same
@@ -202,6 +268,8 @@ therefore deduplicates executions, not messages.
 | **S8** | Two distinct executions that emit identical serialized data collapse to one datum (violates R-FOLD / RSpace finite-multiset semantics). |
 | **S9** | A whole-block delta is attributed to more than one deploy chain and then added repeatedly (violates R-WITNESS / N-WHOLE). |
 | **S10** | The same causal identity is accepted with two unequal contributions (violates R-CAUSAL). |
+| **S11** | A legacy floor version disables exact base receipts, or a mixed-version above-floor scope/record encoding is accepted (violates R-ACTIVATION/R-RECORD-VERSION). |
+| **S12** | A rejected exact effect suppresses an independent descendant-block effect, or a transitive physical dependent survives a one-hop rejection pass (violates R-CAUSAL-REJECT). |
 
 ## 8. Conformance
 

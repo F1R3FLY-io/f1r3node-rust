@@ -1,6 +1,15 @@
-# Stage B Minting + Stage C Halt Interface — Authoritative Design
+# Stage B minting and Stage C halt interface (historical design)
 
-**Status:** Authoritative design (grounded against `feature/cost-accounted-rho @ 53bcc16e`; spec law `publications/cost-accounting/cost-accounted-rho.tex`). **Binding contract for the C-Stage-B implementation agent and the Stage-C halt interface.** Builds on DR-3, DR-13, [supply-realization-c-d-handoff.md](supply-realization-c-d-handoff.md), and Stage A (`5f4a235b`). Supersedes the Stage B/C sketch in [workstream-c-economic.md](workstream-c-economic.md) where they differ.
+> **Retired implementation design; do not implement from this document.** The
+> dual-credit `W_v` plus `produce_balance` architecture described below was an
+> intermediate stage. Production minting, halt, quarantine, and redemption now
+> refine the papers through the existing SystemVault and PoS contracts. The
+> normative contract is
+> [End-to-End Authority Settlement](end-to-end-authority-settlement.md).
+
+**Status:** Historical design grounded against
+`feature/cost-accounted-rho @ 53bcc16e`; retained to explain the evolution of
+the implementation and its discarded alternatives.
 
 **Foundational fact (verified):** there is **no** `produce_balance`/`read_balance`/`TOKEN_TAG` in the tree yet (only doc mentions). The RSpace write primitive that exists is `DebruijnInterpreter::produce` (reduce.rs:325), reachable on a live system runtime as `runtime_ops.runtime.reducer.space.produce(chan, ListParWithRandom, persistent)`. `SignatureChannel::from_sig` exists (accounting/mod.rs:1544). Stage B **creates** the supply read/write helpers and co-locates them with the close-block system deploy.
 
@@ -21,7 +30,7 @@ Two distinct channels, written by ONE authorized deploy:
 
 - **B.1a confirmed:** `bond` (PoS.rhox:330) is a USER deploy (no `sysAuthToken`) ⇒ cannot mint inline. StageA already made `bond` record stake + install `VB` (empty `@W_v` ⇒ DR-3 halt until funded). Minting happens on the next authorized `closeBlock`.
 - **`closeBlock`** (PoS.rhox:731, sysAuthToken-gated): non-epoch branch (`blockNumber % epochLength != 0`) currently a no-op; epoch branch a `runMVar` state pipeline (`commitCurrentEpochRewards`→…→`pickActiveValidators`→`stateUpdateCh`).
-- **DECISION:** minting lives in `closeBlock`, folding over `allBonds`, mint to `pk` iff `active ∧ ¬mintingHalted ∧ ¬mintedEpochs.contains((pk, epochIndex))`, `epochIndex = blockNumber / epochLength`. Steady epoch path mints `epochPhlogiston` (newly-bonded validators get their first mint here — the catch-up is the same loop). The **genesis bonded set** is funded `initialPhlogiston` on **block 1** via the same fold run on the non-epoch branch at `epochIndex=0` (factor a shared `mintPhlogistonToValidators(@state,@amount,@epochIdx,ret)`; lift the non-epoch branch to the `runMVar`/`stateUpdateCh` pattern). *Runner-up (separate newly-bonded set + initialPhlogiston for catch-up): rejected — spec draws no such distinction (tex 2365-2367).*
+- **DECISION:** minting lives in `closeBlock`, folding over `allBonds`, mint to `pk` iff `active ∧ ¬mintingHalted ∧ ¬mintedEpochs.contains((pk, epochIndex))`, `epochIndex = blockNumber / epochLength`. Steady epoch path mints `epochPhlogiston` (newly-bonded validators get their first mint here — the catch-up is the same loop). The **genesis bonded set** receives `initialPhlogiston` in two coordinated halves: `Σ⟦v⟧` is committed in the genesis post-state so block-1 admission is funded, and block 1 installs the Rholang `@W_v` draw via the same fold on the non-epoch branch at `epochIndex=0`. Rust skips the block-1 mirror because the `Σ` half already exists. *Runner-up (separate newly-bonded set + initialPhlogiston for catch-up): rejected — spec draws no such distinction (tex 2365-2367).*
 - **Co-location seam (DECISIVE):** add a default-no-op `async fn post_eval(&self, runtime_ops, block_data, pre_state_hash)` to `SystemDeployTrait`; `CloseBlockDeploy::post_eval` performs the `Σ⟦v⟧` writes. Invoke it in `play_system_deploy` (runtime.rs ~1015-1018, between `play_system_deploy_internal` and `create_checkpoint`) and in `replay_block_system_deploy`'s CloseBlock branch (replay_runtime.rs ~529) — symmetric play/replay, same live runtime, so the writes land in the checkpointed state. *Runner-up (inline behind `downcast_ref::<CloseBlockDeploy>`): rejected — duplicates logic across play/replay.* `post_eval` recomputes the mint set **independently in Rust** from the pre-state (same predicate + amount as the Rholang fold), then per `pk`: `chan=from_sig(Ground(pk)); old=read_balance(chan); produce_balance(chan, old.checked_add(amount).expect("overflow"))`.
 
 ## Decision 3 — Idempotency under multi-parent merge
@@ -71,11 +80,11 @@ Channel (`from_sig` pure), amount (genesis const), validator set + predicate (de
 
 ## Decision 8 — Threat/UC rows (dedup against DR-13)
 
-DR-13 already covers mint-replay/double-credit (**TM-CA-154**) and balance/commit/settlement (UC-CA-150/151/152) — do NOT duplicate. New: **TM-CA-155** (unauthorized mint — sysAuthToken gate + Rust-only writer), **TM-CA-156** (halted-validator residual-supply funding — slash zeros `Σ⟦v⟧` + `mintingHalted`), **TM-CA-157** (redemption double-credit/unauthorized — supersedes the stale "TM-CA-152 unauthorized redemption" label in workstream-c). **UC-CA-153** (epoch mint funds active validators), **UC-CA-154** (bond-then-first-close + genesis block-1 funding). Rows in `cost-accounting-threat-model.md` / `cost-accounting-use-cases.md` (no TODO markers — CI-gated).
+DR-13 already covers mint-replay/double-credit (**TM-CA-154**) and balance/commit/settlement (UC-CA-150/151/152) — do NOT duplicate. New: **TM-CA-155** (unauthorized mint — sysAuthToken gate + Rust-only writer), **TM-CA-156** (halted-validator residual-supply funding — slash zeros `Σ⟦v⟧` + `mintingHalted`), **TM-CA-157** (redemption double-credit/unauthorized — supersedes the stale "TM-CA-152 unauthorized redemption" label in workstream-c). **UC-CA-153** (epoch mint funds active validators), **UC-CA-154** (genesis-root authority + block-1 draw installation and bond-then-first-close). Rows in `cost-accounting-threat-model.md` / `cost-accounting-use-cases.md` (no TODO markers — CI-gated).
 
 ## Decision 9 — Doc deltas
 
-- **workstream-c-economic.md Stage B:** dual-write (Rholang `mintPhlogiston`→`@W_v`; Rust `CloseBlockDeploy::post_eval`→`Σ⟦v⟧`); `mintedEpochs: Set[(Pk,Int)]`; genesis block-1 `initialPhlogiston` path; note `generate_epoch_mint_deploy_random_seed` dormant. **Stage C halt interface:** slash adds `Σ⟦v⟧`-zero + `mintingHalted`; redeem clears flag + stale epochs, no direct restore; supersede stale TM/UC labels (→ TM-CA-157, UC-CA-153/154).
+- **workstream-c-economic.md Stage B:** steady-state dual-write (Rholang `mintPhlogiston`→`@W_v`; Rust `CloseBlockDeploy::post_eval`→`Σ⟦v⟧`); `mintedEpochs: Set[(Pk,Int)]`; genesis-root `Σ` bootstrap plus block-1 `@W_v` installation with no second Rust credit; note `generate_epoch_mint_deploy_random_seed` dormant. **Stage C halt interface:** slash adds `Σ⟦v⟧`-zero + `mintingHalted`; redeem clears flag + stale epochs, no direct restore; supersede stale TM/UC labels (→ TM-CA-157, UC-CA-153/154).
 - **supply-realization-c-d-handoff.md:** producer = `CloseBlockDeploy::post_eval` (not a standalone slash_deploy.rs sibling); helpers in `supply.rs`; `TOKEN_TAG="phlo"`; shared symbols `supply::read_balance`/`decode_balance_datum`.
 - **decision-records.md:** no new DR; add a DR-3 sub-bullet (slash zeros `Σ⟦v⟧`) + a DR-13 note (producer seam = `CloseBlockDeploy::post_eval`, helper `supply.rs`).
 
@@ -83,7 +92,7 @@ DR-13 already covers mint-replay/double-credit (**TM-CA-154**) and balance/commi
 1. `supply.rs` (TOKEN_TAG, supply_channel, read_balance/decode_balance_datum, produce_balance) + `supply_channel_equals_lane_pool_channel` test; register in `mod.rs`.
 2. `post_eval` (default no-op) on `SystemDeployTrait`; call in `play_system_deploy` + `replay_block_system_deploy` CloseBlock branch.
 3. `CloseBlockDeploy::post_eval` (recompute mint set, dual-write `Σ⟦v⟧`).
-4. Rholang `closeBlock`: add `mintedEpochs:{}` + `mintingHalted:{}` genesis-init; the `mintEpochPhlogiston` fold (epoch branch) + genesis block-1 `initialPhlogiston` path; lift non-epoch branch to `runMVar`.
+4. Rholang `closeBlock`: add `mintedEpochs:{}` + `mintingHalted:{}` genesis-init; the `mintEpochPhlogiston` fold (epoch branch) + block-1 `initialPhlogiston` draw path; seed the matching validator `Σ` authority in the genesis root and suppress its block-1 Rust mirror; lift non-epoch branch to `runMVar`.
 5. `ReplaySupplyMismatch` in `replay_failure.rs`.
 6. Proofs: extend `MintingInjection.v`, new `MintingHalt.v`, `_CoqProject` + heredoc.
 7. TLA+/Sage/threat-UC/doc deltas.

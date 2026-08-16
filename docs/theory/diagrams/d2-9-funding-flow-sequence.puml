@@ -1,4 +1,4 @@
-' §D2.9 funding flow — wallet → funding_sig → gate (Σ≥Δ) → debit → replay.
+' §D2.9 funding flow — wallet → proof-bound reservation → realized settlement → replay.
 ' One Cosigned yields TWO keys: deploy_id (wire-sig, on-chain identity) and the
 ' funding key funding_sig = Sig::Ground(pk) (the signer's wallet Σ⟦Ground(pk)⟧).
 '
@@ -38,10 +38,19 @@ autonumber
 actor       "Deployer"                       as D   #F8C3B8
 participant "Ingress\nfrom_proto_cosigned"   as IN  #FFECB3
 participant "funding_sig\n(accounting)"      as FS  #C8E6C9
+participant "Genesis\ncanonical authority" as GE  #B2DFDB
 participant "Gate\nadmit_by_funding"         as G   #B2DFDB
 database    "Σ⟦Ground(pk)⟧\n(the wallet)"     as W   #BBDEFB
+participant "Runtime\nrealized cost κ"       as RT  #FFECB3
 participant "CloseBlock\nsettlement"         as CB  #C8E6C9
 participant "Replay\nrecompute"              as RP  #B2DFDB
+
+== Genesis authority trust root ==
+GE -> GE : combine duplicate validator/client grants\nchecked-add; omit zero; sort by public-key bytes
+GE -[#2E7D32]-> W : seed every positive Σ⟦Ground(pk)⟧\nbefore the genesis checkpoint
+GE -> GE : commit exact ordered list in\nF1r3flyState.genesis_supply
+GE -[#2E7D32]-> RP : authenticated allocation payload
+RP -> RP : require strict canonical form before cache lookup\nand reconstruct the same genesis root
 
 D -> IN ++ : submit Cosigned { wire_sig, pk }
 IN -> IN : verify each cosigner sig vs its pk\n(forgery ⇒ reject at ingress)
@@ -55,33 +64,37 @@ IN -[#9E9E9E]->> IN : deploy_id := envelope_sig(wire_sig)  [decoupled]
 
 IN -> FS ++ : funding_sig(cosigned)
 FS --> IN -- : Sig::Ground(pk)\n(multi-sig: And-fold of Ground(pkᵢ),\nplaceholders filtered)
-IN -> G ++ : candidate { funding_sig, Δ_s }
+IN -> G ++ : candidate { funding_sig, protocol version,\nprogram hash, pre-state root, reservation id,\ncertified Δ_s^max + proof }
 
 G -[#2E7D32]-> W ++ : read Σ⟦Ground(pk)⟧
 W --> G -- : Σ_s
-G -> G : is_funded:  Σ_s ≥ Δ_s  ? (Def 19)\nmargin only on the `unknown` branch (F-B)
-alt Σ_s ≥ Δ_s  (funded)
-  G --> CB ++ : admit ⇒ settlement debit ΣΔ_s
-  CB -[#C62828]-> W : debit  post = pre − ΣΔ_s  (checked_sub)
+G -> G : verify finite proof and Σ_s ≥ Δ_s^max + fee
+alt finite proof and funded
+  G --> RT ++ : admit with reservation Δ_s^max
+  RT -> RT : execute; canonical cost witness yields κ\n0 ≤ κ ≤ Δ_s^max
+  RT --> CB ++ : processed deploy { cost = κ }
+  CB -[#C62828]-> W : debit post = pre − κ − fee (checked_sub)
   deactivate CB
-else Σ_s < Δ_s  (strict shard)
+  deactivate RT
+else unprovable or Σ_s < Δ_s^max + fee
   G --> D : REJECT (under-funded; no execution, no debit)
 end
 deactivate G
 deactivate IN
 
 == Replay (independent re-verification) ==
-RP -> RP : to_cosigned() ⇒ re-derive the SAME funding_sig\n(no drift)
-RP -[#C62828]-> W : recompute Σ⟦Ground(pk)⟧ debit
+RP -> RP : to_cosigned() ⇒ reconstruct certificate context\nand re-derive funding_sig and Δ_s^max
+RP -> RP : reexecute exact event log; require replay κ = wire κ
+RP -[#C62828]-> W : recompute and apply the SAME κ + fee debit
 note over RP, W #E8F5E9
 Replay reconstructs the verified cosigner set and re-derives
-funding_sig, so the settlement-debit map is BYTE-IDENTICAL
-to play. Strict compound deploys key on the effective supply
+funding_sig and realized κ, so the settlement map is BYTE-IDENTICAL
+to play. Compound deploys reserve against effective supply
 (effectiveΣ = Σ_compound + min(Σ_l,Σ_r)), not raw presence.
 end note
 
 note over D, W #E3F2FD
-**Σ⟦signer⟧ == Σ⟦wallet⟧** — the pool the gate proves Σ≥Δ
+**Σ⟦signer⟧ == Σ⟦wallet⟧** — the pool the gate proves Σ≥Δ^max
 against and debits IS the genesis-seeded wallet Σ⟦Ground(pk)⟧.
 Pre-§D2.9 the wire-sig pool was always absent ⇒ never debited.
 end note

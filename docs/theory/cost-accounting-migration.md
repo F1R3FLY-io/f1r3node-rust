@@ -52,7 +52,7 @@ The correctness of this approach rests on two independent formal verifications:
 
 1. **Rocq mechanization** (`formal/rocq/cost_accounted_rho/`): 23 modules with zero admissions and zero axioms. The consensus-critical results (token conservation, cost determinism, step determinism, fuel-gate safety, strong normalization, full confluence, fuel-event multiset determinism, channel separation, fee settlement, slashing composition, typed mergeable-channel accounting, bounded-memory runtime-budget refinement, replay-payload trace equivalence, and use-case adequacy) are unconditional except for the explicit translation-side hash hypotheses described below. One abstract `hash_process : list bool → proc` encoding parameter plus three explicit section hypotheses (`hash_process_injective`, `hash_process_closed`, `hash_process_head_count_one`) scope only the translation-side theorems that reason about hash-derived signature channels. The replication appendix is also axiom-free: it proves Meredith's reflective encoding performs the expected one-step unfold and that every weak input/output barb of the replicated body propagates to both the primitive `PReplicate` wrapper and the reflective `bang_encoding` wrapper (`replication_encoding_forward_barb_sound`). The headline results are: (a) the token conservation theorem (`token_monotone_step`, `token_monotone_reachable`): no reduction step creates fuel, and every step consumes a strictly positive amount; (b) the cost determinism theorem (`ca_cost_deterministic` in `Confluence.v`): all terminal states reachable from a given initial system have the same token count, proven via strong normalization (`StrongNormalization.v`) and local confluence (`ca_local_confluence`) composed through Newman's lemma; (c) the step determinism theorem (`ca_step_deterministic` in `StepDeterminism.v`): in a system with at most one `SToken` node (a single deploy), `ca_step` is deterministic — there is exactly one possible successor, formally capturing the sequential ordering enforced by the token chain; (d) the channel separation theorem (`ChannelSeparation.v`): fuel-gate channels are structurally disjoint from application channels, ensuring that multi-channel consumes (joins) in user code cannot interfere with cost accounting; (e) the runtime-budget refinement theorems (`RuntimeBudgetRefinement.v`): a coalesced counter preserves consumed/remaining conservation, out-of-phlo boundary commitment, finalization-read trace commitments, and reset-time trace clearing; (f) the slashing composition theorem family (`SlashingComposition.v`): cost-invalid evidence may feed slashing without changing user cost, and slash system effects preserve user fuel and fee settlement; and (g) the typed mergeable-channel theorem family (`MergeableChannelAccounting.v`): `IntegerAdd` keeps additive diff/merge semantics, `BitmaskOr` records newly-set bits and replays by OR, non-numeric tagged payloads stay outside numeric merge accounting, and mergeable metadata does not mutate the user cost boundary.
 
-2. **TLA+ model** (`formal/tlaplus/cost_accounted_rho/`): eight specifications with concrete model-checking instances, verified by TLC with zero errors across all reachable states and cross-checked through Apalache for the typed threat/search-frontier models. The core protocol/scheduling models (`CostAccountedRho.tla`, `CompoundProtocol.tla`, `FullProtocol.tla`, `EvalScheduling.tla`) check token conservation, cost determinism, fuel-gate safety, gate ordering, and liveness across all interleavings — from a minimal 3-process atomic system (79 states) up to a fully generalized 7-process system with shared channels, arbitrary nesting (depth 0/1/2), Split mediators, Join mediators, and recursive eval (12,960 states). The implementation/security/search models (`RuntimeBudgetReplay.tla`, `CostAccountingThreats.tla`, `CostAccountingSearchFrontier.tla`, `MergeableChannelAccounting.tla`) check bounded runtime-budget replay, threat-model, slash-authorization, search-frontier, and typed mergeable-channel invariants.
+2. **TLA+ model** (`formal/tlaplus/cost_accounted_rho/`): a suite of concrete model-checking instances, verified by TLC with zero errors across all reachable safe states and cross-checked through Apalache for the typed threat/search-frontier models. The core protocol/scheduling models (`CostAccountedRho.tla`, `CompoundProtocol.tla`, `FullProtocol.tla`, `EvalScheduling.tla`) check token conservation, cost determinism, fuel-gate safety, gate ordering, and liveness across all interleavings — from a minimal 3-process atomic system (79 states) up to a fully generalized 7-process system with shared channels, arbitrary nesting (depth 0/1/2), Split mediators, Join mediators, and recursive eval (12,960 states). `EndToEndCostConsensus.tla` extends that boundary from canonical genesis authority commitment and independent replay through admission, concurrent realization, exact settlement, validation disposition, and DAG finality. The implementation/security/search models (`RuntimeBudgetReplay.tla`, `CostAccountingThreats.tla`, `CostAccountingSearchFrontier.tla`, `MergeableChannelAccounting.tla`) check bounded runtime-budget replay, threat-model, slash-authorization, search-frontier, and typed mergeable-channel invariants.
 
 Both verifications are documented in detail in the verification
 companion, [*Formal Verification of Cost-Accounted Rho Calculus*](cost-accounted-rho-verification.md)
@@ -93,7 +93,7 @@ Terms are defined here in the order they are needed. Every symbol, acronym, and 
 | **`RuntimeBudget`**                  | Current staged runtime-budget implementation in `rholang/src/rust/interpreter/accounting/mod.rs`. It records bounded billable source-token events, maintains consumed/remaining counters, and computes the consensus `total_cost` (clamped) plus a diagnostic cost-trace digest/count (the digest is not a consensus quantity — see §8.1's consensus-surface update and TM-CA-151). |
 | **`MeteredMachine`**                 | Current staged metering adapter in `rholang/src/rust/interpreter/metering.rs`. It routes billable, nonbillable, and system frames into `RuntimeBudget` without reintroducing a broad RSpace charging wrapper. |
 | **`Cost`**                           | A Rust struct with an `i64` value and a `Cow<'static, str>` operation label. Represents a phlogiston amount.                                                                                                    |
-| **phlogiston**                       | The one system token (canonical name). *phlogiston / token / REV* all name the single consumable — REV is a legacy NAME, not a separate token; `Pay(τ)` is a *type* on it, not a second token; stake is a locked-token role. Genesis supply is `wallets.txt` / `client_fuel_allocations` (DR-27, Greg 2026-06-15; see `cost-accounting-decision-records.md`). |
+| **phlogiston**                       | The paper's name for the consumable cost resource. In the node, authenticated authority is backed by canonical REV custody in SystemVault or a prepaid located-stack cell; `Pay(τ)` is a type, not another currency, and stake is a locked-token role. Genesis protocol allocations are installed through blessed SystemVault initialization (DR-36). |
 | **`storage_cost_produce`**           | Function computing phlogiston for a produce: `storage_cost(channel) + storage_cost(data.pars)`.                                                                                                                 |
 | **`storage_cost_consume`**           | Function computing phlogiston for a consume: `storage_cost(channels) + storage_cost(patterns) + storage_cost(body)`.                                                                                            |
 | **`FuturesUnordered`**               | `futures::stream::FuturesUnordered`, a Rust combinator that polls futures in completion order rather than submission order, enabling true concurrent evaluation. The post-migration eval loop is built around `FuturesUnordered`. |
@@ -631,7 +631,7 @@ deploy based on the deploy's cryptographic signature, which is part of the deplo
 metadata (deployer public key, timestamp, term, signature) — **not** from the Rholang source
 code. For most deploys, this will be `Sig::Hash(blake2b256("f1r3node:cost-accounted-rho:deploy-signature:v1" || deploy.sig))`, where `deploy.sig` is the deploy's Ed25519/Secp256k1 signature (unique per deploy by construction — it signs `hash(term) + timestamp` with the deployer's private key). Domain separation prevents raw signature bytes from being reused accidentally as another protocol hash. This ensures per-deploy signature channel isolation (see Section 5.8.1 for the rationale and security analysis). The deploy's phlogiston limit initializes the bounded token budget (Section 5.3); the implementation must not materialize one runtime object per phlo.
 
-> **§D2.9 — funding key vs. isolation channel.** The `Sig::Hash(blake2b256(… ‖ deploy.sig))` above (the legacy spelling of the current `Sig::Quote` wire-signature digest) is the per-deploy **`deploy_id` + fuel-artifact-isolation** basis (§5.8.1) — it is NOT the funding key. The consensus FUNDING/SUPPLY pool a user deploy reads and debits is keyed by `funding_sig = Sig::Ground(pk)` (the signer's ground public key), so it is the genesis-seeded wallet `Σ⟦Ground(pk)⟧` (`Σ⟦signer⟧ == Σ⟦wallet⟧`). See [`cost-accounting-impl/d2-9-funding-flow.md`](cost-accounting-impl/d2-9-funding-flow.md) and `cost-accounting-impl/wd-d2-acceptance-gate.md` §D2.9.
+> **§D2.9 — funding key vs. isolation channel.** The `Sig::Hash(blake2b256(… ‖ deploy.sig))` above (the legacy spelling of the current `Sig::Quote` wire-signature digest) is the per-deploy **`deploy_id` + fuel-artifact-isolation** basis (§5.8.1) — it is not the funding key. `funding_sig = Sig::Ground(pk)` selects the verified signer's canonical SystemVault payer plus any authenticated located authority delegated to that signature. See [`cost-accounting-impl/end-to-end-authority-settlement.md`](cost-accounting-impl/end-to-end-authority-settlement.md).
 
 **System deploy exemption.** System deploys (genesis, slash, close-block, heartbeat), identified by `is_system_deploy_id(deploy_id)`, are exempt from the user-deploy cost-accounting translation. They run directly as plain `Par` terms under an explicit unmetered/no-op budget, not under the legacy `CostManager` framework. The Signature Annotator skips the translation pipeline for system deploy execution, while user-deploy fee settlement still uses system deploys as described in Section 5.9.2. Slash system deploys remain outside user metering, but their cost-invalid evidence must be current at the slashing boundary and authorized by the parent pre-state bond view.
 
@@ -1205,11 +1205,12 @@ settlement: a slash system deploy may update PoS bond, vault, active-set,
 and slashed-validator state, but it must preserve the user deploy's
 `phlo_limit`, `phlo_price`, computed `token_cost`, final user fuel, and
 escrow/refund arithmetic. The bridge now models the slashing-side
-current-evidence predicate explicitly: recovered rejected slashes require
-both evidence epoch and target activation epoch to equal the current
-epoch, authorization reads the parent pre-state bond rather than an
-ambient post-state view, and a zero-bond no-op slash preserves the cost
-boundary. Mechanized bridge theorems in `SlashingComposition.v` prove
+current-evidence predicate explicitly: complete canonical evidence scanning
+requires present evidence, both the evidence epoch and target activation epoch
+to equal the current epoch, and a positive canonical merged-pre-state bond.
+Authorization never reads an ambient post-state view, and a zero-bond execution
+no-op preserves the cost boundary. Mechanized bridge theorems in
+`SlashingComposition.v` prove
 that current cost-invalid block evidence can feed the slashing evidence
 pipeline without changing the already-computed user cost, and that
 applying a slash effect after evaluation cannot add fuel or alter
@@ -1357,7 +1358,14 @@ The migration from the externalized cost model to the internalized model is a fo
 
 21. **Benchmark throughput:** measure deploys/second with the new `FuturesUnordered` eval loop on the standard Rholang benchmark suite. Depends on step 20.
 
-22. **Coordinate network-wide activation** via a block-height trigger (hard fork). At block height `H_activation`, the internalized cost model becomes the sole cost model across all validators. Depends on step 20 (all integration tests pass) and step 21 (throughput regression is acceptable).
+22. **Coordinate the protocol-2 fresh-genesis cutover.** Stop the protocol-1
+    network, derive and review the protocol-2 genesis inputs for bonds, wallets,
+    client fuel allocations, and shard parameters, and require every validator
+    to approve that protocol-2 candidate before starting the new shard. The D3
+    protobuf reserves the removed legacy cost fields, so this is not an
+    in-place block-height transition and no mixed-version running window is
+    valid. Depends on step 20 (all integration tests pass) and step 21
+    (throughput regression is acceptable).
 
 23. **Monitor the network** post-activation: validator cost agreement should hold by `ca_cost_deterministic` (no recurrence of the order-dependent class even theoretically); track throughput metrics (deploys/second, block fill rate) and latency metrics (deploy-to-finalization time) and compare against the externalized-model baseline to quantify the per-COMM bookkeeping overhead reclaimed. Depends on step 22.
 
@@ -1523,7 +1531,36 @@ Across deploys in a block, the deploy-level digests are combined in canonical bl
 
 ### 8.3 Backward Compatibility
 
-Existing deploys submitted before the activation block height `H_activation` are validated using the externalized cost model. Deploys submitted after `H_activation` are validated using the internalized model.
+Backward compatibility is at the Rholang source level, not at the active wire
+protocol boundary. This release implements the D3 fresh-genesis design:
+protocol 2 is the only supported running protocol, and all ordinary non-genesis
+user execution uses the internalized cost model. A protocol-1 approved genesis
+or an unknown approved version fails closed before Casper starts. There is no
+`H_activation`, accounting enable/disable flag, A/B mode, or retained
+externalized charging engine in the user-deploy path.
+
+The network migration therefore creates and approves a fresh protocol-2 genesis.
+Required balances, bonds, client fuel allocations, and shard parameters are
+committed through the protocol-2 genesis inputs. Validators do not run the
+protocol-2 binary on top of a protocol-1 approved block, and old pending deploy
+envelopes are not reinterpreted under the new wire contract; clients resubmit
+source-compatible programs in protocol-2 envelopes.
+
+Historical version-1 disposition encodings remain modeled so state reducers and
+offline validation fail deterministically if such metadata is presented. The
+active-version-over-legacy-floor result in
+`ProtocolActivationCoherence.tla` is a defensive composition theorem, not an
+authorized in-place upgrade path. The actual startup path is checked by
+`ProtocolVersionLifecycle.tla`: current ceremony, approval, adoption, proposal,
+and reception must agree on version 2; legacy and unknown approved versions must
+stop before running. The matching axiom-free Rocq capstones are
+`finalized_floor_protocol_activation_correct` and
+`finalized_floor_protocol_lifecycle_correct`.
+
+Rust regressions cover genesis candidate and approver version agreement,
+fail-closed approved-block validation, mutation-free rejection, authoritative
+running-version adoption, proposer/receiver source agreement, malformed records,
+mixed scope, and finalized-receipt dominance.
 
 For backward compatibility of existing deploy patterns, the Signature Annotator wraps legacy deploys in an internal unit-signature `SignedProcess`:
 
@@ -1652,30 +1689,37 @@ the acceptance gate (`admit_by_funding`) groups the canonical-ordered deploys by
 **funding key** and admits the largest prefix per group whose cumulative demand `Δ`
 fits the signer's supply `Σ` — the funding obligation `Σ ≥ Δ` (paper Definition 19).
 
-**§D2.9 — fund from the signer's wallet (`Σ⟦signer⟧ == Σ⟦wallet⟧`).** A deploy's cost
-is debited from the pool keyed by `funding_sig = Sig::Ground(pk)` (single signer) / the
-`And`-fold of `Sig::Ground(pkᵢ)` over the non-placeholder cosigners (multi-sig) — the
-signer's genesis-seeded wallet `Σ⟦Ground(pk)⟧`, not the per-deploy wire signature
-(which survives only as the `deploy_id`). `CloseBlockDeploy` settles the admitted
-demand once (`post = pre − ΣΔ`).
+**§D2.9 — fund from native custody and located authority.** The papers assume the
+existing node architecture: `Σ⟦s⟧` denotes the authority available to signature `s`,
+not a second balance store. For a ground signer, `funding_sig = Sig::Ground(pk)` and
+the verified key derives the canonical SystemVault payer address. For a compound
+signature, the `And`-fold over non-placeholder cosigners determines the balanced
+authority shape. Admission draws from `V_s + L_s`: reservable SystemVault custody
+plus authenticated prepaid located-stack cells. The wire signature survives only as
+the stable `deploy_id`.
 
-**Cross-group bound + no-weakening.** A LIVE cross-group residual ledger bounds the
-combined draw of distinct cosigner sets sharing a component wallet at `≤ Σ⟦Ground(s)⟧`
+**Cross-group bound + no-weakening.** A live cross-group residual ledger bounds the
+combined draw of distinct cosigner sets sharing a component purse at `≤ Σ⟦Ground(s)⟧`
 (TM-CA-165), and a single component may never discharge its demand from a compound
 token (no-weakening, §D2.9-R2 / TM-CA-166). Replay re-runs the identical margin-free
 ledger and raises `ReplayAdmissionMismatch` on over-admission; the debit map is
 byte-identical play↔replay.
 
-**Migration safety.** On a default (non-strict) shard every pool is genesis-absent, so
-the gate early-admits unenforced and the post-state is byte-identical to the
-pre-cost-accounting node; strict enforcement binds only once a signer's wallet is
-provisioned (`client_fuel_allocations` / `wallets.txt`). Verified full-stack: Rocq
-(`cross_group_draw_le_supply`, `join_no_weakening`, `settlement_conserves`, axiom-free),
-TLA+ (`Inv_CrossGroupAdmissionBounded`, TLC pass), and a 12,605-trace Sage sweep. See
-[DR-28](cost-accounting-decision-records.md), TM-CA-164/165/166 in
-[`cost-accounting-threat-model.md`](cost-accounting-threat-model.md), and the gate
-contract in [`cost-accounting-impl/wd-d2-acceptance-gate.md`](cost-accounting-impl/wd-d2-acceptance-gate.md)
-/ [`cost-accounting-impl/d2-9-funding-flow.md`](cost-accounting-impl/d2-9-funding-flow.md).
+**Migration safety.** Funding enforcement is consensus-mandatory. An absent
+SystemVault purse and absent located stack contribute zero and cannot authorize
+positive cost plus the flat fee. Validator/client protocol allocations are combined
+by address with checked arithmetic and installed by the blessed SystemVault genesis
+contracts before the genesis checkpoint. Ceremony validation and historical replay
+rebuild the same blessed deploys and compare the resulting content/root. There is no
+`genesis_supply` wire payload, block-one mirror, parallel wallet, or accounting-off
+mode. Verified full-stack: Rocq (`genesis_system_vault_funding_is_exact`,
+`cross_group_draw_le_supply`, `join_no_weakening`, `settlement_conserves`), TLA+
+(`Inv_CrossGroupAdmissionBounded`, `GenesisCommitIsExact`,
+`AdmissionRequiresGenesisAgreement`, `SettlementDoesNotReapplyGenesisFunding`), and
+Sage settlement/frontier sweeps. See [DR-36](cost-accounting-decision-records.md),
+TM-CA-164/165/166/168 in
+[`cost-accounting-threat-model.md`](cost-accounting-threat-model.md), and
+[`cost-accounting-impl/end-to-end-authority-settlement.md`](cost-accounting-impl/end-to-end-authority-settlement.md).
 
 ## 9. References
 
@@ -1697,7 +1741,12 @@ contract in [`cost-accounting-impl/wd-d2-acceptance-gate.md`](cost-accounting-im
 
 ---
 
-## 10. Migration Note: Option E (Post-Hoc Canonical Reconciliation)
+## 10. Historical Migration Note: Option E Reconciliation
+
+> **Superseded by §11 and DR-32.** This section preserves the migration record
+> for the reducer-attempt design so old deployments and test expectations can
+> be interpreted. Its fresh-counter and candidate-order arguments do not define
+> current native Rholang cost semantics.
 
 **Audience:** downstream contract authors and node operators who
 previously relied on the legacy schedule-dependent cost-trace semantics.
@@ -1806,3 +1855,90 @@ over up to a million elements and bounds memory, and it leaves
   removed in favor of a single-threaded-finalization debug-assert. Per-op
   `deploy_id`/`initial`/`unmetered` are copied by value into scopes, so
   reset no longer requires a per-event lock read.
+
+## 11. Migration Note: Native Atomic-COMM Accounting
+
+**Audience:** contract authors and node operators migrating from reducer-attempt
+or syntax-introduction accounting.
+
+### 11.1 Semantic boundary
+
+A **COMM** is one successful atomic RSpace match: one consume continuation and
+the complete producer set required by that continuation. A binary receive and
+an `n`-ary join therefore each produce one semantic event. Merely storing an
+unmatched send or receive produces no COMM and costs zero.
+
+For a successful execution with committed COMM trace `C`, native cost is:
+
+```math
+\operatorname{cost}(C)=\lvert C\rvert.
+```
+
+The RSpace observer runs while the matching channel group is locked and before
+the event log or tuplespace is mutated. It reserves one authority unit for the
+complete match. If reservation fails, the operation returns an error without
+removing data, removing a continuation, appending a COMM, or consuming replay
+evidence. This ordering makes funding and state transition one atomic decision.
+
+Play and replay install the same observer. Both derive COMM identity from the
+same semantic projection: consume channel and pattern hashes, continuation
+hash, persistence, sorted producer channel and datum hashes, producer
+persistence and repetition counts, and peek indices. Trigger direction,
+reducer paths, thread scheduling, external output bytes, and failure telemetry
+are excluded.
+
+### 11.2 Admission and settlement
+
+The proposer derives a finite authority capacity from the authenticated parent
+state and evaluates a candidate against that bound. A candidate is admitted
+only with evidence bound to its program, pre-state root, protocol context, and
+reservation. Exhausted and underfunded candidates are removed to a fixed point.
+The accepted execution result is carried forward directly; it is not replayed a
+second time under an unconstrained scheduler. Validators independently derive
+the same capacity and replay the authenticated causal event witness.
+
+For each authority lane `s`, reservation and realization satisfy:
+
+```math
+0 \leq \operatorname{realized}_s \leq \operatorname{reserved}_s
+\leq \operatorname{available}_s.
+```
+
+Settlement debits exact realized cost plus the authenticated fee and refunds
+the unused reservation. Genesis supply, block-one wallet draw, epoch minting,
+fee conversion, and slash-related supply changes use distinct authenticated
+transitions and replay the same arithmetic.
+
+### 11.3 Diagnostic reservation machinery
+
+`RuntimeBudget` still retains a bounded canonical attempt reconciliation and an
+out-of-phlogiston boundary for diagnostics and resource control. This historical
+Option E machinery is not the definition of native Rholang cost. In particular,
+syntax introductions, fork-local counters, and compare-and-swap race winners
+cannot create a semantic charge. `cost_trace_digest`,
+`cost_trace_event_count`, and `last_oop_event()` remain diagnostic interfaces
+rather than independent consensus commitments.
+
+### 11.4 Observable migration changes
+
+- Eight unmatched sends cost zero; they no longer consume eight units merely
+  because eight syntax nodes were visited.
+- One receive that atomically matches eight producers costs one unit, not eight.
+- Producer-triggered and consumer-triggered discovery of the same match use the
+  same cost identity.
+- An underfunded match leaves RSpace and replay evidence unchanged.
+- `total_cost()` reports the successful committed COMM count. Status and the
+  adjacent pre-state/post-state roots authenticate whether that execution
+  completed or rejected.
+- Tests compare play/replay COMM identities, exact cost, status, and adjacent
+  roots. They do not infer cost from send/receive introduction counts or
+  scheduler-local telemetry.
+
+### 11.5 Lifecycle requirements
+
+`reset_from_token` clears deploy-local budget and diagnostic state strictly
+between deployments. The retained state-bound execution witness owns its RSpace
+resources until block creation consumes it, after which those resources are
+dropped. The advancing-DAG regression creates consecutive blocks, advances the
+parent snapshot after every block, requires distinct post-state roots, and
+checks that process memory remains bounded across the sequence.

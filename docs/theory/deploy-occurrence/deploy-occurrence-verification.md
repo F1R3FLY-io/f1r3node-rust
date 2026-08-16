@@ -11,6 +11,14 @@
 | Signature-only rejection can erase every duplicate | TLA⁺ pre-fix config violates `Inv_OneWinnerPreserved` | legacy records are compatibility-only; new records require source provenance |
 | Finalization cannot jump to a sibling of the current LFB | exact-hash ancestry premise in the finalized-floor design | `finalizer_never_moves_to_a_sibling_of_the_exact_lfb` |
 | Stale rejection history cannot narrow parents indefinitely | deploy lifecycle admission model | `historical_rejection_without_local_backlog_does_not_trigger_recovery` |
+| Retry requires every exact source to be tombstoned | Rocq `no_active_iff_all_sources_tombstoned`, `retry_requires_no_active_source`, TLA⁺ `Inv_RetryRequiresNoActiveSource` | `recovery_projection_preserves_every_untombstoned_source`, `exact_rejection_preserves_another_source_as_canonical_win` |
+| Recovery cannot cross the deploy lifespan boundary | Rocq `expiry_closes_recovery`, TLA⁺ `Inv_NoExpiredRetry` | `recovered_buffered_deploy_is_purged_after_block_expiry`, `rejected_buffer_backlog_requires_selectable_deploy` |
+| At most one validator packages recovery from one committed finalized-height view | Rocq `recovery_authorization_unique_per_finalized_view`; TLA⁺ `Inv_OneRecoveryProposerPerFinalizedView`, `Inv_RecoveryLeaderIsCommittedViewDerived` | finalized-height rotation, duplicate-validator normalization, and per-view uniqueness tests |
+| A canonically selected retry survives downstream self-chain filtering without admitting ordinary duplicates | TLA⁺ `Inv_SelectedRetrySurvivesSelfChainFilter` and packaging pre-fix counterexample | `self_chain_filter_keeps_only_selected_recoveries`, D3 vault-draining merge recovery end-to-end test |
+| Concurrent retries across lagging finalized views are bounded | TLA⁺ `Inv_CrossViewRetriesAreBounded`, `Inv_OnePendingRetryPerValidator` | independent-height rotation tests and exact-occurrence admission tests |
+| Recovery expiry uses proposal height, not finalized height | TLA⁺ `Inv_RecoveryHeightUsesCommittedDagView`, `Inv_NoExpiredRetry` | exact proposal-height expiry tests |
+| An offline recovery leader cannot halt finality | TLA⁺ `Live_RecoveryOrExpiry` | heartbeat and consensus-safety system integration scenarios |
+| Multiple exact tombstones in one block are one rejection event | occurrence-aware status reducer | `multiple_exact_rejections_in_one_block_count_as_one_rejection_event` |
 
 The Rocq capstone is checked with `Print Assumptions` and `coqchk`. The TLA⁺
 post-fix models must exhaust their bounded state spaces without violation. Each
@@ -25,7 +33,7 @@ occurrence. Cost accounting changed the interference relation: same-signer
 deploys now compete for the same linear funding resource, so independent
 validators can create source-distinct occurrences that reach the same merge.
 
-Three implementation shortcuts then crossed the abstraction boundary:
+Four implementation shortcuts then crossed the abstraction boundary:
 
 1. `DeployChainIndex` equality collapsed chains with equal deploy sets even when
    their source blocks differed.
@@ -39,6 +47,22 @@ already been erased. It therefore could not state, much less falsify, the
 one-winner-preservation property. This was a modeling omission exposed by the
 cost-accounting branch, not evidence that the rho calculus promised a particular
 block winner.
+
+The first occurrence repair still stopped one layer too early. Its model ended
+at the canonical active/rejected projection and then represented the shard with
+one height and one instantaneous validator view. It did not include the
+proposer that consumes the projection, the distinction between proposal and
+finalized height, delayed occurrence/tombstone visibility, concurrent
+validators taking different finalized views, or the heartbeat transition
+needed to rotate past an offline leader. Consequently, a raw signature-wide
+rejection set, an expiry exemption, and a recovery-only heartbeat suppression
+could each fit behind a formally correct occurrence reducer, while the model's
+global single-leader claim was stronger than an asynchronous implementation can
+realize. `DeployRecovery.tla` now composes independently lagging proposal and
+finalized views, asynchronous exact-source visibility, preparation/publication,
+and heartbeat/finality progress. Its safe invariants permit bounded cross-view
+concurrency while excluding multiple proposers from the same finalized view;
+four negative controls retain the original defect witnesses.
 
 ## Relationship to the publications
 
@@ -81,6 +105,12 @@ published constraints.
 - recovery projection preserves every untombstoned source;
 - occurrence index and its compatibility representative are invariant under
   block insertion permutation.
+- retry eligibility is equivalent to an empty active-source set;
+- retry selection is invariant under parent and validator observation order;
+- exact lifespan boundaries are closed to both backlog probing and selection;
+- finalized-height leader rotation is invariant under parent sender and order;
+- each fixed finalized-height view elects exactly one validator after validator-set normalization;
+- proposal-height expiry and finalized-height leader rotation remain independent.
 
 ### Integration tests
 
@@ -102,6 +132,7 @@ scripts/check-finalized-floor-ALL.sh
 cargo test -p models rejected_deploy
 cargo test -p block-storage --features test-internals --test block_dag_storage_test deploy_index
 cargo test -p casper --lib deploy_finalization_status::tests
+cargo test -p casper --test mod multiple_exact_rejections_in_one_block_count_as_one_rejection_event
 cargo test -p casper --test mod -- finalizer
 ```
 

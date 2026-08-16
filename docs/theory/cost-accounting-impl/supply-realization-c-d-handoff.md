@@ -1,6 +1,19 @@
-# Per-Signature Token-Supply Realization (C↔D handoff)
+# Per-signature token-supply realization (historical C-to-D handoff)
 
-**Status:** Authoritative design (grounded against `feature/cost-accounted-rho @ b670d3fb`). **This document is the binding contract for the C-StageA/B (supply producer) and WD-D1/D2 (supply consumer) implementation agents.** Where it conflicts with `workstream-c-economic.md` / `workstream-d-acceptance.md`, this document and DR-13 govern (those docs have been reconciled to match). Spec (LAW): `publications/cost-accounting/cost-accounted-rho.tex`.
+> **Retired implementation design; do not implement from this document.** This
+> handoff predates native `CostSignedTerm` regions, canonical SystemVault
+> reservation, authenticated purse inventories, state-bound exact evidence, and
+> physical stack-pop settlement. Its separate `produce_balance` store,
+> `dual_write_supply`, `W_v` mirror, and close-block debit were removed. The
+> channel algebra remains useful history, but no storage or settlement decision
+> below is normative. See
+> [End-to-End Authority Settlement](end-to-end-authority-settlement.md) and the
+> [Executable Conformance Matrix](../cost-accounting-executable-conformance-matrix.md).
+
+**Status:** Retired historical design grounded against
+`feature/cost-accounted-rho @ b670d3fb`. It records why signer identity must be
+stable, but its persistence architecture has been superseded. Spec law:
+`publications/cost-accounting/cost-accounted-rho.tex`.
 
 **Verdict (hypotheses tested):** channel = `from_sig(s)` (**confirmed**); balance representation (**confirmed and strengthened** — the runtime already uses `Token::Count{sig, remaining:u64}`, accounting/mod.rs:1156-1164); the consensus decrement is the **acceptance commit at block assembly**, not a runtime per-COMM RSpace mutation (the "decrement at reduction" hypothesis is **refuted** by spec tex 1677-1729).
 
@@ -53,7 +66,7 @@ Rholang `mintPhlogiston` keeps the authorization shape + `@W_v` bookkeeping; the
 
 - **Write:** `from_sig(Ground(pk))` is pure (Blake2b256 + canonical sort); `amount` is a genesis constant or a deterministic `allBonds` epoch fold; epoch-key idempotency ⇒ replayed mint is a no-op (`MintingInjection.v`).
 - **Read:** `get_data(merged_pre_state_hash, …)` is deterministic (merged pre-state hash is already a consensus quantity — cf. `compute_parents_post_state_regression_spec.rs`); decode is pure.
-- **Decrement:** `admit_by_funding` is a pure fold (pure `Δ_s`, `BTreeMap` groups, canonical order, genesis `margin`).
+- **Decrement:** `admit_by_funding` is a pure fold (proof-bearing `Δ_s`, `BTreeMap` groups, canonical order, exact cost-plus-fee reservation).
 - **Replay check:** add `ReplayFailure::ReplayAdmissionMismatch` (casper/src/rust/util/rholang/replay_failure.rs, sibling of `ReplayCostMismatch`) and `replay_admission_mismatch` (replay_runtime.rs ~442) — recompute `admit_by_funding` against the same merged pre-state hash + genesis constants; assert admitted/rejected match. Existing `replay_cost_mismatch` continues to guard `total_cost == consumed == Δ_s` (the gate↔runtime bridge).
 
 ## Decision 6 — Security / threat model
@@ -65,7 +78,7 @@ Rholang `mintPhlogiston` keeps the authorization shape + `@W_v` bookkeeping; the
 | Mint replay / multi-parent double-credit | D3/D5: epoch-key idempotency; `MintingInjection.v` idempotency; content-addressed Produce |
 | Double-spend `Σ_s` across deploys in a block | D4(b): in-pass residual + reject-both (§7.7) |
 | Forge `sysAuthToken` | system_processes.rs:709-714 accepts only `GSysAuthToken` (no in-language constructor) |
-| Non-deterministic gate ⇒ fork | D5: pure analyzer + genesis margin + canonical order + replay recompute |
+| Non-deterministic gate ⇒ fork | D5: pure analyzer + certified bound + canonical order + replay recompute |
 | Speculative I/O leak / pre-gate commit | DR-11/D4(d): soft checkpoint, I/O gated on `committed` |
 | `TOKEN_TAG` confusion | D2: fixed tag; only Rust writes the channel |
 

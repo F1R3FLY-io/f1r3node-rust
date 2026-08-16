@@ -140,7 +140,7 @@ BondMap, Active set, Slashed set, Coop vault balance). Labels are:
 The `InvalidBlock` enum has **27** variants. **17** are *slashable*
 in the current Rust source pre-fix; **19** are slashable post-fix
 (bug #1 promotes `IgnorableEquivocation`; the 27th variant
-`UnauthorizedSlashDeploy` is slashable, `block_status.rs:206`). The
+`UnauthorizedSlashDeploy` is slashable, `block_status.rs:214-238`). The
 slashable set:
 
 ```

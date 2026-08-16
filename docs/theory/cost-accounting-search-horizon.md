@@ -164,7 +164,7 @@ The stateful search emits:
 | `horizon-v9-<profile>-<mode>-rust-fixtures.json` | Differential corpus/security fixtures and adequacy gates consumed by nextest. |
 | `horizon-v10-<profile>-<mode>.json` | Hybrid fuzz, Kani-bound, parallel stress, settlement, slashing, legacy-quarantine, and coverage-adequacy records. |
 | `horizon-v10-<profile>-<mode>-rust-fixtures.json` | Hybrid fuzz/security fixtures and adequacy gates consumed by nextest. |
-| `source-surface.json` | Extracted Rust source anchors for runtime budget, metering, parallel evaluation, Casper replay, settlement, slashing authorization, recovered rejected slash current-evidence filtering, typed mergeable channels, and legacy quarantine. |
+| `source-surface.json` | Extracted Rust source anchors for runtime budget, metering, parallel evaluation, Casper replay, settlement, canonical slash-candidate authorization, typed mergeable channels, and legacy quarantine. |
 | `horizon-v11-<profile>-<mode>.json` | Source-anchored cost-surface records classified against the current `f1r3node-rust` source tree. |
 | `horizon-v11-<profile>-<mode>-rust-fixtures.json` | Source-anchored fixtures and adequacy gates consumed by nextest. |
 | `horizon-v12-<profile>-<mode>.json` | Production-oracle records that bind source anchors to native RuntimeBudget, metering, parallel evaluation, Casper replay, settlement, slashing, and legacy-quarantine oracles. |
@@ -311,8 +311,8 @@ The current highest-value expansion points are:
     authentication, and legacy-to-runtime quarantine.
 29. Source-graph security horizon search: cost-accounting witnesses must be
     aligned with the current Rust graph for API ingress, replay cache payload
-    binding, slashing authorization, recovered rejected slash current-evidence
-    filtering, typed mergeable-channel accounting, TLS peer identity,
+    binding, slashing authorization, complete canonical evidence scanning,
+    typed mergeable-channel accounting, TLS peer identity,
     private-key debug surfaces, and accepted dependency advisories before any
     bug or security claim is promoted.
 
@@ -354,16 +354,23 @@ production disposition.
 | `ALLOW_UNBOUNDED_SEARCH=1` | Explicit escape hatch when cgroup limiting is unavailable. |
 | `SYSTEMD_CPU_QUOTA` | Optional CPU quota when `systemd-run --user` is available. |
 
-## Option E — Reconciliation Search Anchors
+## Historical Option E — Diagnostic Reconciliation Search Anchors
 
-The post-hoc canonical reconciliation introduced for the
-`cost_trace_digest` schedule-invariance fix (see TM-CA-144 in the
-threat model and Appendix A of the verification doc) adds the
+> This section preserves the search record that discovered scheduler-sensitive
+> reducer attempts. It is no longer the native consensus-cost design. DR-32
+> moves cost identity to successful atomic RSpace COMM; the current promotion
+> anchors are `AtomicCommAccounting`, `AtomicCommRejection`, and their
+> introduction-charging negative control.
+
+The earlier post-hoc canonical reconciliation experiment adds the
 following Sage scenario record to the search frontier:
 
 | Sage record | Scenario | Promotion target |
 |-------------|----------|------------------|
 | `sage_concurrency_reconciliation_is_schedule_independent` | 2-event OOP race against budget=4 | `rocq:rb_reconcile_consumed_invariant_under_permutation` |
+| `sage_atomic_comm_arrival_order_is_semantically_irrelevant` | all 720 arrival orders for two independent matches plus one unmatched introduction | `tla:AtomicCommAccounting` |
+| `sage_atomic_comm_identity_excludes_scheduler_telemetry` | opposite trigger paths and distinct producer telemetry | `rocq:trigger_side_does_not_change_cost` |
+| `sage_atomic_comm_rejection_precedes_state_mutation` | all trigger orders at zero authority | `tla:AtomicCommRejection` |
 
 The accompanying coverage anchors:
 
@@ -371,7 +378,6 @@ The accompanying coverage anchors:
 - Rocq: `rb_reconcile_consumed_eq_min_initial_or_sum`, `rb_reconcile_consumed_invariant_under_permutation`, `rb_reconcile_oop_iff_sum_overflows`, `rb_reconcile_oop_occurrence_invariant_under_permutation`.
 - TLA+: `RuntimeBudgetReplay.ConsumedAndVerdictScheduleIndependent`, `TotalCostMatchesClampedSum`, `ConsumedFollowsReconciliationContract`, `NoCrossWorkerStateMixing`.
 
-The search horizon still has a checked adequacy gate on
-`concurrency_schedule` coverage; the Option-E record is admitted on
-the same gate as the prior `repeated_oop` and
-`finalization_completion` records.
+The search horizon has a checked adequacy gate on `concurrency_schedule`
+coverage. The historical diagnostic record and the three native atomic-COMM
+records pass through the same schema and promotion gate.

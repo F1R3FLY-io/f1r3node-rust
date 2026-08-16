@@ -8,8 +8,6 @@ up-walk and the launder-free IntegerAdd combine — in Knuth's literate-programm
 style (prose interleaved with the code chunks it explains), with the invariants that
 make them correct.
 
-All mathematical expressions use unicode and are quoted in backticks.
-
 ---
 
 ## 1. Glossary
@@ -36,6 +34,12 @@ All mathematical expressions use unicode and are quoted in backticks.
 | **`ft_witnessed(C, J)`** | The clique oracle's normalized fault tolerance of block `C` over snapshot `J`: `ft = (2q − S)/S`, where `S = Σ committee weights` and `q =` max-clique agreeing weight. `C` is **finalized** over `J` iff `ft_witnessed(C,J) ≥ θ`. (`clique_oracle.rs`; Rocq `CliqueOracle.Finalized`.) |
 | **quorum** | A majority-weight sub-committee that mutually agree on `C` (a clique). The oracle finalizes `C` when a quorum witnesses it. |
 | **`Finalized c J b`** | Rocq abstraction: *some majority-weight sub-committee `c` all agree on `b` over `J`* — a faithful monotone abstraction of `ft_witnessed ≥ θ`. |
+| **clique certificate** | The unchanged result of the exact clique-oracle decision: a block has sufficient mutually agreeing stake at the configured strict fault-tolerance threshold. It does not by itself select the next LFB. |
+| **LFB admissibility** | The conjunction of unchanged exact clique certification and state descent from the current LFB. Main-parent descent is not required: a multi-parent block may derive its state from the current LFB through a secondary parent. The predicate filters which certified block may replace the committed state pointer without changing any vote. |
+| **state base** | The state from which a block's post-state was actually computed: a covering parent when that parent preserves the floor; otherwise the floor used by full merge/replay. |
+| **state ancestry** | Reflexive, transitive closure of state-base edges. It records derivation provenance rather than tuple-set inclusion, so consuming a tuple does not break ancestry. |
+| **stale-state descendant** | A block that is a main-chain descendant of the current LFB but whose replay state was based below that LFB and therefore does not preserve its committed transition. It may remain valid and clique-certified while being ineligible as the next LFB. |
+| **rebase** | Recompute a successor from the certified floor instead of reusing a stale covering-parent post-state. This restores state ancestry and permits later LFB progress. |
 
 ### 1.3 The floor and the merge
 
@@ -164,6 +168,36 @@ a wrapped `end`. Overflow is caught downstream (combine + apply), **never at the
 must instead be gracefully rejected at merge time. (Rocq: `wadd`/`wsum` model the
 wrapping group; `checked_apply` models the terminal apply. Regression:
 `diff_integer_add_recovers_wrapped_delta`.)
+
+### 2.3 Certified-candidate LFB admission
+
+**Problem.** A multi-parent block can be a main-chain descendant of the current
+LFB while its replay state was derived from an older floor. Its clique certificate
+is still valid, but promoting it would erase a committed state transition.
+
+**Separation of concerns.** `clique_certified` remains the existing exact
+majority/clique calculation. `state_ancestor` is checked only after certification;
+it never changes the candidate's voters, stake, threshold, or certificate.
+
+⟨ *Evaluate the complete, deterministically ordered frozen candidate set.* ⟩
+```
+for candidate in ordered_candidates:
+    certified, fault_tolerance ← exact_clique_decision(candidate, frozen_snapshot)
+    if not certified:
+        continue
+    materialize_state_lineage(candidate)
+    if not state_ancestor(current_lfb, candidate):
+        continue
+    install_lfb(candidate, fault_tolerance)
+    return candidate
+return none
+```
+
+The skipped stale candidate remains a valid speculative block. When a later
+proposal sees the advanced floor, the covering-parent fast path is permitted only
+if that parent already preserves the floor; otherwise replay starts from the floor.
+The resulting rebase state-descends the LFB and becomes admissible when the same
+unchanged clique rule certifies it.
 
 ---
 

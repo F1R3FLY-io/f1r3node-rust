@@ -39,6 +39,8 @@ o = (d, b).
 Two occurrences may have the same deploy identifier and different source
 blocks. They are not the same protocol event.
 
+[![Deploy recovery state machine: an exact-source disposition gates one elected retry proposer, while ordinary heartbeats rotate past an unavailable leader and lifespan expiry closes admission.](diagrams/01-state-recovery-protocol.svg)](diagrams/01-state-recovery-protocol.svg)
+
 A **rejection tombstone** is
 
 ```math
@@ -135,19 +137,106 @@ DAG, the HTTP API returns `409 block_pending_admission`. It does not report the
 block as absent and does not convert a synchronization race into an internal
 error.
 
+### O10 — canonical retry authorization
+
+For deploy identifier $`d`$, let $`O_d`$ be every source occurrence visible in
+the selected parent closure and let $`T_d`$ be the exact-source tombstones in
+that same closure. Recovery is authorized only when the active-source set is
+empty:
+
+```math
+A_d = O_d \setminus T_d = \varnothing.
+```
+
+A signature appearing in any rejection record is not sufficient. If one exact
+source is rejected while another survives, $`A_d \neq \varnothing`$ and the
+buffered deploy remains suppressed.
+
+### O11 — strict recovery lifespan
+
+Let $`v_d`$ be `valid_after_block_number`, $`n`$ the proposed block number, and
+$`L`$ the shard deploy lifespan. Ordinary admission and recovery use the same
+strict interval:
+
+```math
+v_d < n < v_d + L.
+```
+
+At $`n = v_d + L`$, the deploy is expired. Rejection history cannot extend the
+interval. Expired entries are removed from both deploy storage and the local
+rejected-deploy buffer.
+
+### O12 — deterministic recovery leadership
+
+Let $`V_h`$ be the lexicographically sorted active validator set committed at a
+last finalized block of height $`h`$, with positive bonds as the compatibility
+fallback when the active set is unavailable. The recovery leader for that
+committed view is
+
+```math
+\operatorname{leader}(h) = V_h[h \bmod |V_h|].
+```
+
+The leader depends only on finalized on-chain state. Parent order, parent
+sender, local arrival order, and wall-clock time do not participate. There is
+exactly one leader for each fixed finalized-height view. Validators can
+temporarily observe different finalized views, so leaders from different views
+can prepare concurrent retries. This is not a consensus disagreement: each
+retry is a distinct source occurrence, exact tombstones preserve surviving
+sources, and pending concurrency is bounded by the number of distinct observed
+views and validators. Eventual finalized-view convergence collapses the leader
+set to one validator. A validator that is not the leader for its view may
+propose ordinary heartbeat and finality-support blocks, but it cannot package
+rejected-buffer deploys.
+
+Recovery authorization is preserved through every downstream packaging filter.
+In particular, a selected retry may bypass the legacy self-chain duplicate
+filter because its exact-source disposition has already established that it is
+not an ordinary duplicate. The exemption is the finite set of retries selected
+for the current proposal, never the raw rejected-signature set. Ordinary
+self-chain occurrences remain suppressed.
+
+### O13 — recovery leadership cannot suppress finality
+
+An unavailable recovery leader cannot halt the shard. Non-leaders continue the
+ordinary heartbeat protocol, advancing finality and therefore rotating
+$`\operatorname{leader}(h)`$. Under the fairness premises that at least one
+eligible validator remains online and published DAG data is eventually
+observed, an eligible recovery record eventually either produces an active
+occurrence or reaches the strict proposal-height expiry boundary.
+
+### O14 — fail-closed consensus inputs
+
+Canonical disposition reduction, finalized-ancestry scans, visible-source
+checks, and leader selection require the block bodies and finalized metadata
+named by the snapshot. Missing committed inputs are a typed local
+storage/dependency failure. The node does not substitute an empty closure,
+height zero, a main-parent-only view, or any node-local fallback.
+
 ## Reference reducer
 
 ```text
-function reduce(observations, canonical_rejection_records):
-    tombstoned_sources := exact source hashes from canonical rejection records
-    active := observations whose source hash is not tombstoned
-    active := sort active by descending height, then ascending block hash
+function recovery_decision(snapshot, deploy, validator):
+    observations := complete parent-closure occurrences of deploy
+    tombstones := exact source tombstones in the same closure
+    active := observations minus tombstones
 
-    if active contains more than one finalized occurrence for one deploy:
-        return DeployDispositionAmbiguity
-    if active contains one occurrence:
-        return Failed if its execution failed, otherwise Finalized
-    return Expired when its lifespan elapsed, otherwise Pending
+    if any required block body or finalized metadata is missing:
+        return LocalDependencyError
+    if active is not empty:
+        return Suppressed
+
+    next_block := snapshot.maximum_block_number + 1
+    if not (deploy.valid_after < next_block
+            and next_block < deploy.valid_after + snapshot.deploy_lifespan):
+        purge deploy from both local stores
+        return Expired
+
+    validators := sorted positive-bond validators from finalized state
+    leader := validators[snapshot.finalized_height mod length(validators)]
+    if validator is not leader:
+        return HeartbeatOnly
+    return RetryOnce
 ```
 
 ## Compatibility

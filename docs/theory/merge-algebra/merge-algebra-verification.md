@@ -45,6 +45,25 @@ could establish determinism of the modeled operator but could not establish that
 `StateChange` represented one execution. It also treated max-union idempotence as shared
 history deduplication, conflating causal identity with serialized content.
 
+### Why exact rejection still overreached after attribution was repaired
+
+The state-witness repair made one source block contain multiple independently
+attributed transitions. A later fallback still treated a rejected transition as
+if the entire source block and every descendant block were one indivisible
+effect. Once the corrected finalized floor retained one sibling `closeBlock`,
+availability filtering rejected only the stale sibling transition, but blanket
+block ancestry then also deleted merge and user effects that consumed the
+retained floor state or no rejected resource at all.
+
+The refinement boundary is now explicit. Exact effects are related by physical
+RSpace identity: a target removes the same ordinary datum or continuation that a
+source added under the same channel key. Rejection computes the least transitive
+closure of that directed relation. The branch grouping index stores the relation
+symmetrically only to form connected components; late rejection follows the
+directed predicate. Mergeable number channels remain governed by their typed
+algebra. Legacy blocks without exact witnesses retain conservative whole-block
+descendant expansion because they cannot provide the finer proof.
+
 ## 2. Correct two-level algebra
 
 An **execution identity** is `(source_block_hash, execution_index)`. An **exact delta** is
@@ -154,7 +173,23 @@ must accept `MergeAlgebra.MainTheorem`.
 
 `keep_one_total_order.py` continues to cross-check the survivor comparator abstraction.
 
-### 5.3 Rust tests
+### 5.3 Exact rejection closure
+
+`formal/rocq/finalized_floor/theories/EffectCausalClosure.v` defines physical
+datum and continuation dependencies, excludes mergeable materializations, and
+constructs causal rejection inductively from direct seeds. It proves the result
+is rejection-closed and is contained in every other closed rejection set: the
+least fixed point. It also proves that the retained-base merge effect and the
+independent user effect survive, while direct and transitive stale dependents do
+not. The capstone is axiom-free.
+
+`formal/tlaplus/deploy_recovery/EffectCausalClosure.tla` varies classification
+order nondeterministically. TLC exhausts the safe state graph, and Apalache checks
+the same invariants symbolically. A block-lineage negative control must delete
+independent effects; a direct-only negative control must accept a transitive
+dependent. Both tools reproduce both counterexamples.
+
+### 5.4 Rust tests
 
 | Test class | Required cases |
 |---|---|
@@ -164,6 +199,7 @@ must accept `MergeAlgebra.MainTheorem`.
 | replay | absent legacy pair accepted only as legacy; half-witness, pre-state gap, and post-state mismatch rejected |
 | cache | changing any user or system witness changes the replay payload hash |
 | block indexing | exact witnesses are contiguous, finish at the block post-state, and yield per-execution deltas |
+| exact rejection | physical datum and continuation identity induce dependency; mergeable channels do not; indexed dependency construction equals pairwise semantics and is input-order invariant; rejection is transitively closed; exact rejections do not seed the legacy block-lineage fallback |
 | integration | proposer and validator replay roots agree; multi-parent result is invariant under parent arrival order; restart/cache reconstruction retains exact effects |
 
 ## 6. Activation and compatibility
@@ -180,6 +216,19 @@ replay historical intermediate roots, because blocks below the finalized merge f
 eligible merge effects. Recent exact blocks must either have been replayed locally or carry
 intermediate roots materialized by replay before indexing.
 
+The activation rule distinguishes two versions that must not be conflated. The
+**active shard protocol** validates and creates the candidate block; the
+**historical floor version** only describes the already-materialized base block.
+Exact base-receipt dominance follows the active protocol, so the first exact
+block above a legacy floor cannot reapply a finalized effect. Every above-floor
+block in the merge scope must have the active version. Disposition encodings are
+validated from their containing headers: current records require causal
+provenance and a specified reason, while legacy records require the empty legacy
+representation. `ProtocolActivationCoherence.tla` and
+`ProtocolActivationCoherence.v` verify these rules and provide independent
+negative controls for floor-version selection, mixed scope, and malformed
+encoding.
+
 ## 7. Threat model and failure behavior
 
 | Threat | Required response |
@@ -191,7 +240,11 @@ intermediate roots materialized by replay before indexing.
 | repeated identity with altered delta | fail closed with merge error |
 | same bytes from independent contracts | retain both multiplicities |
 | integer number-channel overflow | checked combination rejects; never wraps |
+| integer contribution order changes an intermediate prefix | widened simultaneous total; accept exactly when the final stored value is in range |
+| survivor selection accepts a total that application computes differently | one aggregate operation feeds both phases; property tests compare permutations and the mathematical total |
 | activation mixture | reject the merge epoch |
+| exact rejection expanded by block ancestry | retain independent exact effects; expand only through physical causal dependencies |
+| one-hop rejection | iterate to the least fixed point so no accepted effect consumes transitively rejected state |
 
 ## 8. Verification commands
 
@@ -208,6 +261,16 @@ cargo test -p casper replay_payload_hash
 
 The repository-wide formal entry point remains `scripts/check-merge-algebra-ALL.sh`.
 
+The cost-accounting refinement adds two independent checks for R-NUMERIC.
+`MergeableChannelAccounting.v` proves permutation invariance of the widened
+integer total and equality of selection and application decisions.
+`MergeAggregateAgreement.tla` enumerates contribution orders and requires
+`SelectionApplicationAgree`, `AcceptanceIsPermutationInvariant`, and
+`FinalResultIsMathematicalTotal`. Its prefix-sensitive negative control must
+violate `AcceptanceIsPermutationInvariant`. The Rust proptest
+`integer_merge_acceptance_and_result_are_permutation_invariant` checks 512
+generated vectors against direct $`i128`$ arithmetic and reverse order.
+
 ## 9. Review conclusions
 
 The repair is principled with respect to Rholang's smart-contract semantics and independent
@@ -221,7 +284,9 @@ Formal verification did not previously prove the attribution boundary, so the fa
 missed rather than contradicted by a valid proof. The revised catalog makes attribution,
 causal deduplication, content projection, and activation separate obligations. Similar
 errors are searched for by tests that vary execution identity independently of serialized
-content and by the explicit negative model for replicated whole-block deltas.
+content, by the exact indexed-versus-pairwise dependency property, and by TLA⁺/Apalache
+negative models for replicated whole-block deltas, blanket block-lineage rejection, and
+one-hop-only rejection.
 
 ## 10. References
 

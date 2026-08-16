@@ -1,7 +1,4 @@
-' Reflection & Cost Pipeline — the runtime signature algebra reflects into an
-' intuitionistic-linear-logic formula, and BOTH projections (cost and
-' consumed-atoms) commute: the two paths to ℕ and to (list ℕ) agree, closed by
-' the Rocq bridge theorems. All three §5.6 bridges are shown.
+' Reflection, admission, and cost pipeline.
 '
 ' Source of truth for Figure 1 in docs/theory/cost-accounting-linear-logic.md.
 ' Palette:  Rust=salmon · Rocq-syntax=blue · Rocq-LL=mint · sinks(ℕ / list ℕ)=amber
@@ -29,10 +26,13 @@ skinparam component {
 }
 
 package "Wire / Rust runtime" <<rust>> {
-  component "Sig\n(Unit · Hash · And · Plus · With\nBang · WhyNot · Lolly · Threshold)" <<rust>> as SIG
+  component "DeployDataProto.sig_algebra\nSigCompound" <<rust>> as SIG
+  component "analyze_funding_algebra\nall-required Atom/Tensor\nor top-level atomic Threshold" <<rust>> as ANALYZE
+  component "Cosigned\nN-of-N or scalar k-of-N" <<rust>> as COSIGNED
 }
 package "Rocq · CostAccountedSyntax.v" <<syn>> {
   component "sig_algebra\n(9 constructors)" <<syn>> as SA
+  component "admission_sig_algebra_valid" <<syn>> as ADMIT
 }
 package "Rocq · LinearLogicResources.v" <<ll>> {
   component "ll_formula\n(LLUnit … LLLolly)" <<ll>> as LLF
@@ -40,15 +40,17 @@ package "Rocq · LinearLogicResources.v" <<ll>> {
 component "ℕ\nfuel cost" <<sink>> as COST
 component "list ℕ\nwitnesses spent" <<sink>> as SPENT
 
-note bottom of SIG #FFF8E1
-F-A: only {Unit, Ground, Quote(=Hash), And} are FUNDING formers
-— the funding key is funding_sig = Ground(pk) (§D2.9). The other six
-(Plus/With/Bang/WhyNot/Lolly/Threshold) are value/type-logic only.
-Canonical F-A picture: sig-funding-vs-capability.puml.
+note bottom of ANALYZE #FFF8E1
+Plus / With / Bang / WhyNot / Lolly are rejected.
+Threshold is admission-only and its direct members are atomic.
+Funding is re-derived from verified Ground atoms folded by And.
 end note
 
-SIG -[#1565C0]-> SA   : models (Rocq abstraction of)
-SIG .[#C62828].> COST : min_required_for (Rust)\nmirrors clause-for-clause
+SIG -[#1565C0]-> ANALYZE : single structural traversal
+ANALYZE -[#1565C0]-> COSIGNED : all_required / min_required
+SIG -[#1565C0]-> SA   : models
+SA -[#1565C0]-> ADMIT : executable subset predicate
+ADMIT .[#C62828].> ANALYZE : implementation refinement
 SA  -[#1565C0]-> LLF  : <b>ll_of_sig_algebra</b>\nreflection
 SA  -[#6A1B9A]-> COST  : sig_algebra_min_required
 LLF -[#6A1B9A]-> COST  : ll_required_units
@@ -66,7 +68,13 @@ note bottom of SPENT
   = sig_algebra_presented_atoms s
 end note
 note right of SA
-  <b>ll_sig_algebra_threshold_valid_bounds_bridge</b>
-  valid ASThreshold ⟹ 1 ≤ k ≤ |members|
+  <b>admission_sig_algebra_valid_sound</b>
+  admitted ⟹ broad-algebra valid
+
+  <b>admission_sig_algebra_scalar_policy_sound</b>
+  admitted ⟹ all-required tree ∨ top-level threshold
+
+  <b>admission_sig_algebra_quorum_sound</b>
+  admitted ⟹ 1 ≤ min_required ≤ atom_count
 end note
 @enduml

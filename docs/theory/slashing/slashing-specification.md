@@ -396,12 +396,12 @@ detectNeglected(v, s, b):
 
 Rocq mechanization in `EquivocationDetector.v`. TLA+ model in
 `EquivocationDetector.tla`. Theorems T-1 (soundness) and T-2
-(completeness) are proved here. A memory-efficient equivalence-preserving
-TLA+ rewrite `EquivocationDetectorEager.tla` is also provided; it
+(completeness) are proved here. A memory-efficient property-preserving
+TLA+ quotient `EquivocationDetectorEager.tla` is also provided; it
 combines signing and detection into one atomic step (collapsing
 classification interleavings) and converts the temporal property to a
 safety invariant. See `slashing-verification.md` §10.4 for the
-equivalence argument and the 10,896× state-space reduction.
+three-part local-exhaustion, product-locality, and eager-abstraction argument.
 
 #### 3.1.3 `MultiParentCasperImpl`
 
@@ -485,16 +485,18 @@ The block-construction module. The relevant method is
 `block_creator.rs:498-543`:
 
 ```
-if bonds_map[proposer] ≤ 0 then return []
+preState, recovered ← merge(parents)
+canonicalBonds     ← computeBonds(preState)
+if canonicalBonds[proposer] ≤ 0 then return []
 currentEpoch       ← epoch(nextBlockNumber)
 evidence           ← dag.invalid_blocks
 authorized         ← filter h ∈ evidence where
                        epoch(blockNumber(h)) = currentEpoch ∧
-                       bonds_map[sender(h)] > 0
+                       canonicalBonds[sender(h)] > 0
 deduped            ← minimum block hash per sender in canonical byte order
 slashingDeploys    ← map h → SlashDeploy(h, proposer, currentEpoch, ...)
-recovered          ← merge-rejected SlashDeploys from parent merge
-recoverable        ← recovered \ own-detected hashes, deduped by invalid hash
+recoverable        ← current, canonically bonded entries from recovered
+                     \ own-detected hashes, deduped by invalid hash
 slashingDeploys   += map recoverable h → SlashDeploy(h, proposer, currentEpoch, ...)
 return slashingDeploys
 ```
@@ -505,12 +507,50 @@ proposer generated wasted deploys that the PoS contract rejected at the
 auth-token check. The current implementation also rejects stale evidence
 and unknown or forged received slash deploys before replay.
 
-For received blocks, the positive-bond part of authorization is evaluated
-against the block's actual parent pre-state, not against the receiver's
-ambient snapshot. This matters during multi-parent merge recovery: the
-receiver may already know a sibling where the offender has been slashed,
-while the block being validated may correctly build on parents where the
-offender still had positive stake.
+For proposed and received blocks, the positive-bond part of authorization is
+evaluated against the exact canonical merged pre-state committed by
+`body.state.pre_state_hash`, not against the receiver's ambient snapshot or
+any individual-parent approximation. Checkpoint replay establishes that root
+before authorization. Consequently, every honest node derives the same bond
+predicate for a block regardless of parent arrival or local snapshot order.
+
+Every successful slash system deploy also contributes its
+`invalid_block_hash` to the receiving block's dependency set. Let
+`parents(b)`, `justifications(b)`, and `slashTargets(b)` denote the three
+hash projections. The dependency set is:
+
+```math
+D(b) = \operatorname{set}(parents(b)) \cup
+       \operatorname{set}(justifications(b)) \cup
+       \operatorname{set}(slashTargets(b)).
+```
+
+A missing slash target is an availability condition, not evidence that the
+proposer acted without authorization. The receiver buffers the slash-bearing
+block, requests the target, and resumes validation only after the target is
+available as block metadata. A hash appearing only in the equivocation
+tracker is not sufficient: the receive-side authorization predicate needs the
+target block's immutable sender, height, and invalid flag. Once those data are
+available, a target known to be valid is rejected objectively; a target still
+unavailable remains a dependency rather than becoming
+`UnauthorizedSlashDeploy`.
+
+The same separation governs ingress deduplication. A received block is
+already processed only when its hash is committed to the DAG or present in
+the active Casper buffer. Equivocation-tracker membership is a witness about
+an observed equivocation, not a block-admission commit record, and therefore
+must not suppress later receipt of the block whose immutable metadata the
+tracker entry names.
+
+```text
+for hash in slashTargets(block):
+    if blockMetadata(hash) is unavailable:
+        buffer(block)
+        request(hash)
+        return WaitingForDependencies
+validateCanonicalPreState(block)
+validateSlashAuthorization(block, blockMetadata, canonicalBonds)
+```
 
 #### 3.3.2 `SlashDeploy`
 
@@ -587,8 +627,9 @@ identical by construction. The contract:
    `(false, "transfer failed: ...")` deterministically.
 
 Bug fix #4 (T-9.4) addresses the missing error path on transfer failure.
-The zero-bond no-op branch is the implementation hook that makes
-merge-rejected slash reissuance idempotent.
+The zero-bond no-op branch is a defensive implementation safeguard. It is
+not an authorization path: candidate generation and received-block validation
+require a positive target bond in the canonical merged pre-state.
 
 #### 3.4.2 Bond map / Validator registry
 
@@ -2327,7 +2368,7 @@ For an invalid block hash `h`, offender `v`, and epoch `e`:
 authorized(h, v, e) ≜
   invalidEvidence[h] = (v, e, …)
   ∧ currentEpoch = e
-  ∧ parentPreStateBond(v) > 0
+  ∧ canonicalMergedPreStateBond(v) > 0
 ```
 
 A `SlashDeploy(h, issuer, e)` is valid in a block from proposer `p` iff:
@@ -2338,8 +2379,8 @@ issuer = p
 ∧ no other slash deploy in the same block targets (v, e)
 ```
 
-Unknown invalid hashes, stale epochs, issuer mismatch, non-positive
-parent-pre-state target bonds, and duplicate `(v, e)` slash targets are
+Unknown invalid hashes, stale epochs, issuer mismatch, non-positive canonical
+merged-pre-state target bonds, and duplicate `(v, e)` slash targets are
 invalid block conditions. They are classified as slashable proposer faults.
 
 ### 15.3 Candidate generation
@@ -2352,7 +2393,7 @@ currentEpoch ← epoch(nextBlockNumber)
 candidates   ← ∅
 for invalid block metadata m in invalidEvidence:
   e ← epoch(m.blockNumber)
-  if e = currentEpoch ∧ parentPreStateBond(m.sender) > 0:
+  if e = currentEpoch ∧ canonicalMergedPreStateBond(m.sender) > 0:
     candidates[m.sender] ← minHash(candidates[m.sender], m.blockHash)
 emit SlashDeploy(hash, self, currentEpoch, seed_fn(self, seqNum, hash))
   for each candidate in key order

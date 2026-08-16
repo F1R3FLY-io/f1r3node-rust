@@ -25,6 +25,14 @@ This branch validates the corrections developed on `fix/merge-recovery-finalizat
 | Integer arithmetic | Merge arithmetic rejects terminal overflow instead of laundering it through wrapping state | Integer-add overflow unit validation |
 | Deploy ordering | Distinct deploy chains never compare equal | Strict-total-order unit validation |
 | Recovery | Merge-rejected deploys remain observable, retryable, and cannot be double-applied | Rejected-buffer and deploy-status lifecycle tests |
+| Recovery authorization | A rejected source authorizes retry only after every visible source occurrence is tombstoned | Exact-source reducer examples, observation-order properties, and TLA⁺ negative control |
+| Recovery expiry | Rejected history never extends the ordinary deploy lifespan; expired records leave both local stores | Exact-boundary unit tests and TLA⁺ expiry-bypass counterexample |
+| Recovery leadership | Exactly one validator packages rejected-buffer work for each committed finalized-height view; concurrent retries across temporarily lagging views remain source-exact and bounded | Leader permutation/rotation tests and TLA⁺ independent-view concurrent-proposer model |
+| Recovery packaging | A retry selected by the exact-source reducer survives self-chain filtering while ordinary self-chain duplicates remain excluded | Unit partition test, D3 vault-conflict end-to-end test, and TLA⁺ packaging negative control |
+| Recovery liveness | Non-leader heartbeats rotate past an unavailable recovery leader | TLA⁺ temporal property and heartbeat system-integration scenario |
+| Approved-state bootstrap | A late node reconstructs every historical root from the immutable consensus context serialized by that block, never from its current approved tip or local shard configuration | `ApprovedStateReplay` safe/unsafe models, axiom-free `BootstrapReplayContext`, exact replay unit regressions, and the late-checkpoint epoch-change integration scenario |
+| Local validation faults | Storage, unavailable-root, and busy failures remain inconclusive local outcomes: the block leaves the ready queue, opens one bounded recovery path, never creates slash evidence, and does not release ordinary descendants | `LocalValidationRecovery` safe/unsafe models, axiom-free `LocalFaultDeferral`, ready-queue/transport-failure/descendant unit regressions, and forbidden-log assertions |
+| Consensus inputs | Missing parent bodies, visible disposition bodies, or finalized metadata stop local proposal processing instead of selecting a fallback disposition | Fail-closed reducer, ancestry, and leader tests |
 | Finalization cleanup | Included and rejected deploys are purged only when terminal; recoverable work remains available | Finalizer cleanup tests |
 | Finalizer effect | A finalized candidate ahead of the persisted LFB still invokes the finalization effect | Finalizer effect regression |
 | Counter deploys | Concurrent counter updates recover and finalization continues | Counter and map-cell integration scenarios |
@@ -78,3 +86,19 @@ The long-running job repeatedly executes the trusted, pinned system-integration 
 ## Exit criteria
 
 A correction is considered validated when its named test changes from red to green without weakening the assertion. The validation branch is complete when every matrix row has an executable assertion, CI invokes the complete suite, and the daily/weekend soak workflows can be manually dispatched and scheduled.
+
+For deploy recovery, completion additionally requires all validators and the
+read-only node to report the same exact source block hash for the deploy. The
+test must also observe continued LFB progress after a recovery leader is paused,
+zero `ContainsExpiredDeploy` proposal failures, bounded occurrence/tombstone
+cardinality for one deploy signature, and no host-protection breach. A timeout,
+an increased RSS ceiling, or agreement on status without agreement on source
+hash is not a passing substitute.
+
+For approved-state bootstrap, completion additionally requires a validator to
+join after the approved checkpoint has advanced beyond the funded epoch
+transition, reconstruct every declared root, enter `Running`, and continue to a
+later finalized block with zero `UnknownRootError`, `InvalidTransaction`,
+invalid-block recording, replay retry, or local-validation-fault entries. A
+recovery request that merely suppresses those logs without reconstructing the
+same roots is not a passing substitute.

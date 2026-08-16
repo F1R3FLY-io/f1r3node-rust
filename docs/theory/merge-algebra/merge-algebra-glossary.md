@@ -52,8 +52,8 @@ Mathematical expressions use GitHub MathJax delimiters.
 | **produce-only write** | A write (a produce landing in `ChannelChange.added`) that does **not** consume the base datum (`removed = ∅`). On a single-value NUMBER cell it leaves `kept + added > 1` values — the §3c over-fill the consume-then-produce conflict check (`svc_update = consumes ∧ produces`) is **vacuous** for, since it requires a consume. |
 | **§3c discriminator** | `check_single_value_cell_not_overfilled` (`rholang_merging_logic.rs:194`), wired on the **non-mergeable** else-path of the merge (`dag_merger.rs:1065`). Rejects a merge whose post-state single-value NUMBER cell would hold `result_len = multiset_diff(base, removed).len() + added.len() > 1`. Non-numeric bases (registry / `TreeHashMap` leaves) are exempt — they merge freely. It is the discriminator that separates a purse/cell (conflict) from a registry (merge) among **disjoint-consumed / produce-only** writes, which the consume-then-produce check cannot distinguish. |
 | **number / foldable channel** | A channel whose values fold (`MergeType::IntegerAdd`, `MergeType::BitmaskOr`), so concurrent updates never truly conflict; classified by `is_number_ch`; carried in `NumberChannelsDiff` (`merging_logic.rs:34`). |
-| **`EventLogIndex`** | The per-chain index of produce/consume events; `EventLogIndex::combine` — the `combine` associated function (`event_log_index.rs:343`) — is field-wise **set union**. |
-| **user / system split** | Deploys partitioned by `is_system_deploy_id` into a user and a system event-log index, then combined (`deploy_chain_index.rs:70-88`). |
+| **`EventLogIndex`** | The per-chain index of produce/consume events; `EventLogIndex::combine` — the `combine` associated function (`event_log_index.rs:403`) — is field-wise **set union**. |
+| **user / system split** | Deploys partitioned by `is_system_deploy_id` into a user and a system event-log index, then combined (`deploy_chain_index.rs:103-114`). |
 | **`v0.4.16`** | The deployed release (`origin/master`) whose 4-key comparator the fix extends **append-only**. |
 
 ### 1.3 The theorem catalog

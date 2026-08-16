@@ -10,6 +10,12 @@ bugs**; the implementation therefore conforms to the spec everywhere it dictates
 what the spec dictates are permitted only when they (1) do not conflict with the spec, (2) introduce no
 performance bottleneck, and (3) introduce no security vulnerability.
 
+The two governing papers assume familiarity with the existing F1R3node
+architecture. Later records therefore supersede early staging designs when a
+paper-level wallet, purse, supply channel, mint, or fee channel is refined by an
+existing native service. Historical decisions remain in this file to preserve
+the reasoning trail; the newest explicit superseding record is authoritative.
+
 This document records the load-bearing decisions taken while realizing the spec, each with its rationale,
 spec basis, and the alternatives considered (recorded for future reference). It complements
 [cost-accounting-migration.md](cost-accounting-migration.md),
@@ -114,7 +120,8 @@ does (it requires both inputs); would also raise consensus weight over time (con
 1. The blessed **`Exchange.rhox`** (registered at `rho:lang:exchange`) is the spec's conserving 1:1 swap as
    a persistent JOIN over ordinary **carrier** channels (`exchange_conserves_per_channel` /
    `exchange_total_conserved` / `exchange_requires_both_inputs` in `Exchange.v`). It is genesis-wired exactly
-   like `capabilities_registry` and is the acquisition mechanism #13 clients use.
+   like `capabilities_registry`; it cannot name or mutate native `Σ`, so client acquisition uses conserving
+   first-class stack transfer instead.
 2. The validator economic loop's fee→v conversion does NOT route through the blessed `Exchange` contract at
    runtime; it is the **Rust `supply::produce_balance` mirror** (`CloseBlockDeploy::post_eval`): the
    collected fee pool `F_v` is credited 1:1 into the gate pool `Σ⟦v⟧` (`Σ⟦v⟧ += f`, `F_v := 0`). Rationale:
@@ -376,7 +383,7 @@ was a fresh, genesis-absent channel and the wallet was never debited. §D2.9 (`3
 funding key to `funding_sig = Sig::Ground(pk)` (single) / the left-associated `Sig::And`-fold of
 `Sig::Ground(pkᵢ)` (multi), so `Σ⟦signer⟧ == Σ⟦Ground(pk)⟧ == Σ⟦wallet⟧`. This UNIFIES the user and validator
 pools under one keying (`from_sig(Ground(pk))`) and is what makes `client_fuel_allocations` (already
-pubkey-keyed at genesis) the binding seed for strict shards. The `deploy_id` continues to derive from
+pubkey-keyed at genesis) the binding seed for configured clients. The `deploy_id` continues to derive from
 `envelope_sig` (the wire signature) — on-chain identity, NOT a funding key — so it is byte-identical
 pre/post-§D2.9 (the decoupling). The unforgeability / balance-datum / disjointness decisions of this DR are
 otherwise unchanged. Threshold envelopes EXCLUDE empty-`sig` placeholder cosigners from `funding_sig` (only
@@ -496,7 +503,7 @@ binding. There is no newer `oqs` release to bump to, and no clean in-repo layout
 
 **Decision.** Per the project owner, removed the `oqs` dependency, `oqs_pq.rs`, and all five feature-gated
 touch-points, **keeping the `SignaturesAlg` trait and the classical backends** (Ed25519, secp256k1,
-secp256k1-eth, Schnorr, FROST). This is **spec-faithful**: §4.5's load-bearing requirement is the
+secp256k1:eth, Schnorr, FROST). This is **spec-faithful**: §4.5's load-bearing requirement is the
 *parametricity over G*, which the `SignaturesAlg` trait realizes (it abstracts the ground signature scheme);
 `G = OQS` is a *named example instantiation*, not a load-bearing requirement, so its removal preserves §4.5
 fidelity. The change is pure deletion (385 lines removed, 0 added — no new dependency); the default build and
@@ -639,6 +646,11 @@ and correctly excludes Burned (never active).
 ---
 
 ## DR-19 — Speculative execution-on-receipt (D2-perf, task #11) is NOT implemented: a data-driven, spec-minimal decision
+
+**DR-31 clarification.** The ingress-caching decision remains closed. Production
+now performs bounded dependent proof evaluation during block assembly; this is
+not execution-on-receipt, does not mutate committed state, and is consumed only
+after an opaque context-bound certificate has been produced.
 
 **Context.** Task #11 ("D2-perf: speculative execution-on-receipt + committed I/O gate") proposed pre-executing
 gate-passing deploys at ingress into a discardable soft-checkpoint, with a `committed` flag gating I/O sinks
@@ -1091,20 +1103,23 @@ degenerate `s₀`-collapse), **plus a typed-value `Pay(τ)`** layer (`TypedCurre
 *transfer* (rivalrous, contraction-rejected) while phlogiston meters *computation*. **Stake** is a distinct
 locked-token *role* (consensus weight, slashable; *"phlogiston is not drawn from stake — a separate resource"*,
 cost-accounted-rho.tex:3024). **CORRECTED by Greg's 2026-06-15 authoritative answers** (which OVERTURNED the pre-answer "off-model" verdict on
-REV / `wallets.txt`): **REV is NOT a separate species and NOT off-model** — it is one of several inconsistent NAMES
-(*token / Phlogiston / REV / Rock / F1r3caps*; avoid `F1r3caps`, collides with F1R3FLY.io *Capabilities*; canonical
-= **phlogiston**) for the ONE system token. **`wallets.txt` IS the genesis trust-root (Greg P12)** and the impl's
-**`client_fuel_allocations` IS its seeding mechanism** — both ON-model. The REV ledger UNIFIES with the `Σ` supply
-(one consumable, Greg P9); the legacy `SystemVault`/`MakeMint` value-transfer layer is a SEPARATE concern migrating
-to the one-token + `Pay(τ)`-TYPE model (Greg P13, deferred — blocked on OSLF). User-provided cons-notation tokens
-(signed) **desugar to system tokens**, the signature tracking origin. Minting drops the `sysAuthToken` MONOPOLY (the
-genuinely off-model part) → capability + (forward) type-gated; the unforgeability mechanism (DR-13) stays, only the
-system-monopoly half is superseded; protocol minting uniform. Genesis supply = `wallets.txt`.
+REV / `wallets.txt`): **REV is NOT a separate species and NOT off-model** — it is one of several inconsistent names
+(*token / Phlogiston / REV / Rock / F1r3caps*; avoid `F1r3caps`, which collides with F1R3FLY.io *Capabilities*;
+canonical = **phlogiston**) for the one system-token denomination. **`wallets.txt` is the platform genesis
+value-allocation trust root (Greg P12)**. The native cost ledger cannot consume it directly: `wallets.txt` is keyed
+by REV address while `Σ` is keyed by canonical public key. The implementation therefore commits an explicit,
+canonical `client_fuel_allocations: [(PublicKey, amount)]` payload. Test builders can derive that payload because
+they possess the test keypairs; a production node cannot invert an address to recover the key. The one-denomination
+decision requires an explicit conserving reallocation between `SystemVault` custody and `Σ`; it forbids treating
+both independently stored representations as spendable copies of the same allocation. User-provided cons-notation
+stacks retain their signature provenance. The `SystemVault`/`MakeMint` and `Pay(τ)` realization is a separate
+platform layer not specified by the two cost-calculus papers, while native cost-purse unforgeability remains the
+DR-13 safety boundary.
 
-**Remediation direction (docs now; code = W3 in the plan).** Retire the REV-as-distinct-token-ledger framing in the
-docs (keep STAKE as a role; value = purse + `Pay(τ)`); replace the `sysAuthToken` monopoly with capability+type-gated
-first-class minting that keeps protocol pools **unforgeable** (the unforgeability mechanism, not the monopoly, is
-the safety lever — DR-13's unforgeability half stays; its system-monopoly half is superseded here).
+**Realization boundary.** Retire the REV-as-a-different-denomination framing while retaining separate custody and
+cost-purse representations until a paired, replay-authenticated reallocation joins them. Keep stake as a role and
+native cost purses unforgeable. A transfer between SystemVault and `Σ` must debit one representation exactly when
+it credits the other; neither genesis configuration nor lollipop syntax is such a transfer.
 
 **Implementation divergences vs the calculus papers (cross-check 2026-06-15; tracked in pgmcp #481), with decided remediations:**
 - **F-A (CONSENSUS, EXTRA):** 6 LL signature connectives (`Threshold/Plus/With/Bang/WhyNot/Lolly`) ride the
@@ -1207,10 +1222,17 @@ admitted deploys still execute concurrently and unmetered-for-liveness. Lineariz
 over a finite resource is the required linear-logic semantics (no contraction), not an artificial serialization
 of compute (cf. the no-serialization mandate).
 
-**Migration.** No-op on a default shard (strict=false, empty `client_fuel_allocations` ⇒ all pools absent ⇒
-early-admit unenforced, no ledger draw, post-state byte-identical). R2 is a no-op on every current post-state
-(genesis seeds only per-pubkey wallets, so `Σ_compound = 0` always). Only a strict + client-funded shard with
-shared components changes behavior — exactly where the bug was LIVE.
+**DR-31 supersession.** The live residual ledger and no-weakening decision remain
+binding. The unmetered-execution statement does not: the retained bounded play
+and certificate-constrained replay use finite authority-derived capacity, and
+exhaustion cannot authorize a deployment.
+
+**Migration.** Funding is consensus-mandatory. Missing pools are zero and reject any
+positive cost-plus-fee reservation. Validators bootstrap through
+`initial_phlogiston`; explicitly configured clients bootstrap through
+`client_fuel_allocations`. R2 remains a no-op on post-states where
+`Σ_compound = 0`, but the shared-component residual rule applies uniformly as
+soon as compound authority exists.
 
 **Verification.** Rust: 31 acceptance lib tests (6 new cross-group) + `gate_decision_replay_determinism`,
 `multi_sig_funds_balanced`, `redeem_outcomes_and_multisig_gate`; `compound_debit_play_replay_byte_identical`
@@ -1219,8 +1241,7 @@ confirms the settlement refactor is byte-identical. Rocq (axiom-free): `cross_gr
 shared residual; `Inv_CrossGroupAdmissionBounded`, `Inv_SecondGroupDrawMatchesDemand`. Sage: 12,605-trace
 cross-group admission sweep, 0 sound + 0 necessity violations.
 
-**Cross-refs.** §D2.9 (the funding-key correction this extends), DR-9 (unmetered-for-liveness — the gate's
-soundness is load-bearing because there is no runtime backstop within a block; the precharge IS the gate),
+**Cross-refs.** §D2.9 (the funding-key correction this extends), DR-9 and DR-31 (per-COMM cost with a finite authority-derived runtime backstop),
 DR-11 (block-assembly gate), TM-CA-153 / TM-CA-164 (the over-admission lineage this completes), TM-CA-165 /
 TM-CA-166. Commits `eec6e323` (R2), `8575e7c0` (cross-group gate), `4d848faf` (formal verification).
 
@@ -1230,8 +1251,8 @@ TM-CA-166. Commits `eec6e323` (R2), `8575e7c0` (cross-group gate), `4d848faf` (f
 runtime and the Rocq model:
 
 1. **Overflow halt (item 2494 / TM-CA-167).** `close_block_deploy::dual_write_supply` credits supply pools with
-   `old.checked_add(amount).expect(..)` at five sites (the `Σ⟦v⟧` epoch mint, the fee-carve running total, the
-   `F_v` collection credit, the fee→`Σ⟦v⟧` convert, the genesis client `Σ⟦c⟧` seed). Near `i64::MAX` the `expect`
+   `old.checked_add(amount).expect(..)` at four close-block sites (the `Σ⟦v⟧` epoch mint, the fee-carve running total,
+   the `F_v` collection credit, and the fee→`Σ⟦v⟧` convert). Near `i64::MAX` the `expect`
    PANICS — non-deterministic across nodes (a validating node crashes on the block instead of rejecting it),
    halting the network. The UNDERFLOW side is already deterministic (`recompute_and_verify_admission` raises
    `ReplayAdmissionMismatch`); the overflow side was asymmetric.
@@ -1289,3 +1310,762 @@ Qed-closed.
 TM-CA-153 (the underflow admission gate this makes symmetric), DR-13 (Σ⟦s⟧ is reducer-unwritable), DR-28 (the
 settlement conservation this bounds). Verification-doc §4.4.1. The one-system-token model (canonical
 *phlogiston*) is untouched.
+
+## DR-30 — Genesis is the authenticated authority trust root; admission follows verified replay
+
+**Context.** Making the funding obligation mandatory exposed a circular bootstrap that the former
+absent-wallet bypass had hidden. Block assembly checked the signer pool before executing block 1, while validator
+`initial_phlogiston` and client `client_fuel_allocations` were credited only by the block-1 close hook. The first
+signed deployment therefore had to spend authority that did not exist until after that deployment was admitted.
+This manifested as `NoNewDeploys`, pending heartbeats, stalled finality, and downstream query failures. A second
+hazard was that historical genesis replay could depend on node-local configuration. Nodes with different local
+allocation lists could reconstruct different roots, and a replay cache that did not bind the allocation payload
+could conceal the mismatch.
+
+The paper's funding obligation requires available authority before execution: for every signer $`s`$, admission
+requires $`\Sigma\llbracket s\rrbracket \geq \Delta_s^{\max} + f_s`$. It does not authorize an implementation to
+manufacture that authority after the gate. The genesis transition is therefore the only non-circular trust root
+for initial validator and client authority.
+
+**Decision.**
+
+1. Genesis combines every bonded validator's `initial_phlogiston` and every configured client grant by public-key
+   bytes with checked `i64` addition. It omits zero totals and emits a strictly increasing, duplicate-free list of
+   positive allocations.
+2. The runtime writes those balances into $`\Sigma`$ before taking the final genesis checkpoint. The exact ordered
+   list is serialized in `F1r3flyState.genesis_supply`; it is block-hash input, not display metadata.
+3. Ceremony validators derive the same canonical list from their expected parameters and reject a candidate whose
+   commitment differs. Historical replay uses the authenticated block payload, never node-local allocation
+   configuration.
+4. Replay rejects empty public keys, non-positive amounts, duplicates, and non-increasing order before any cache
+   lookup. Non-genesis blocks must carry no genesis allocation payload. The replay-cache fingerprint binds the
+   exact ordered payload, and genesis bypasses the pre-state-only state-hash cache.
+5. Block 1 always installs the PoS `initialPhlogiston` draw in `@W_v`, including when `epoch_length = 1`. Rust does
+   not credit $`\Sigma\llbracket v\rrbracket`$ again because the matching authority is already in the genesis root.
+   Later epoch mints continue to update both the PoS draw state and $`\Sigma`$.
+6. Startup rejects a non-positive epoch length, a zero cosigner limit, negative initial or epoch phlogiston,
+   malformed or empty client keys, negative client grants, and duplicate-client addition overflow. Invalid economic
+   parameters do not reach Rholang execution.
+
+Configuration canonicalization and replay validation intentionally have different contracts. Configuration may
+contain repeated principals and zero grants; genesis combines or removes those semantic no-ops. Once committed,
+the payload must already be canonical. Replay never silently repairs authenticated bytes, because doing so would
+allow different block bodies to share state or cache identity.
+
+**Rejected alternatives.**
+
+- Restoring an absent-wallet or deployment-kind bypass was rejected: it violates the universal funding obligation,
+  treats absence as unbounded authority, and makes proposal differ from replay.
+- Crediting clients or validators during block-1 close was rejected: admission precedes close, so the dependency is
+  circular, and replay would still require node-local configuration.
+- Reading allocation files during historical replay was rejected: files are not authenticated consensus input.
+- Sorting or combining the payload inside replay was rejected: canonicalizing malformed authenticated input before
+  hashing can alias distinct bodies in replay caches.
+- Increasing timeouts or weakening integration assertions was rejected: those actions hide the stalled state
+  machine and do not repair the authority transition.
+
+**Invariants.**
+
+- `GenesisCommitIsExact`: the committed allocation map equals the canonical initial authority map.
+- `AdmissionRequiresGenesisAgreement`: no signed deployment is admitted before replay reconstructs the committed
+  genesis authority.
+- Every committed entry has a non-empty public key, positive amount, and a key strictly greater than its predecessor.
+- Genesis play and replay produce the same post-state root from the same authenticated body.
+- Block 1 changes the PoS draw state but does not increase the already-seeded validator supply pool.
+- Changing allocation bytes changes the block hash and replay-cache key; malformed ordering cannot hit a valid
+  replay entry.
+
+**Compatibility and migration.** `genesisSupply` is an additive protobuf field, so older decoders ignore it and an
+absent field decodes as an empty list. Its consensus meaning is activation-scoped: a shard enabling mandatory
+cost-accounted admission must create or migrate to a genesis/state root containing the required authority. Replaying
+a pre-activation genesis with an empty field remains byte-compatible, but it does not invent funding. Operators must
+coordinate the genesis block, client allocations, validator phlogiston parameters, and node binary as one protocol
+activation.
+
+**Verification.** Rocq proves allocation-total permutation invariance, duplicate combination, replay-preserved
+admission, admission only after verified genesis, and that the block-1 draw changes the wallet ledger without
+changing genesis supply in `EndToEndAuthority.v`. TLA+
+`EndToEndCostConsensus.tla` checks the safe genesis-to-finality path; the genesis-mismatch configuration must refute
+`AdmissionRequiresGenesisAgreement`, and the double-credit configuration must refute
+`InitialDrawDoesNotCreditSupply`. Rust tests bind allocation bytes into the block hash and replay-cache key,
+reject every non-canonical shape after a valid cache entry exists, reconstruct the genesis root, reject ceremony
+mismatches, and execute block 1 with `epoch_length = 1` and distinct initial/epoch amounts. The first-block Casper
+smoke and full Casper integration suite cover the original `NoNewDeploys` failure class.
+
+**Cross-refs.** RHO Definition 19 and Appendix B.1/B.3; DR-11 (admission), DR-13 (Rust-owned supply names), DR-28
+(exact settlement), TM-CA-168, UC-CA-154/162, CA-P-077, and
+`cost-accounting-impl/end-to-end-authority-settlement.md`.
+
+## DR-31 — State-bound dependent admission closes ambient-cost undercount and bounds every user evaluation
+
+**Context.** The branch made DR-11 funding mandatory and used
+`delta_sigma::demand` as the production certificate. That analyzer counts signed
+layers and submitted `COMM` syntax in the normalized deployment. A send into a
+persistent registry, vault, bridge, or system contract can awaken a continuation
+already stored in RSpace. Those ambient continuation events are absent from the
+submitted `Par`, so the structural result is a lower bound for that execution,
+not a conservative upper bound. Observed regressions included structural versus
+realized costs of 9 versus 123, 3 versus 258, 8 versus 113, and 108 versus 1008.
+Close settlement correctly rejected the excess, but by then the proposer had
+already built a block that validators could not reproduce as funded. Repeated
+invalid blocks produced liveness stalls, unknown-root cascades, unauthorized
+slash evidence, negative fault tolerance, and query failures.
+
+The same branch also replaced finite `phlo_limit` execution with
+`Cost::unsafe_max()` after structural admission. That made the incorrect bound
+load-bearing and removed the runtime's finite resource backstop. `dev` did not
+show this failure because it did not enforce this branch's new
+structural-certificate-plus-exact-settlement protocol. The regression was
+introduced by the incomplete composition of those branch changes, not by parent
+arrival order or the multi-parent consensus theorem.
+
+The earlier verification missed the defect because its abstraction assumed an
+already-valid `CostReservation` for each `ExecutionChoice`. It proved that a
+valid reservation conserves supply and that replay agrees with commit, but it
+did not model how the Rust implementation produced the reservation from a term
+plus resident RSpace state. Example tests concentrated on closed terms, where
+submitted structure contains every continuation. This was an assumption-to-code
+gap: the proof premise was true in the model and false for ambient contract
+invocation.
+
+**Decision.** Production uses the dependent-proof strategy permitted by
+`continued-gslt-cost-v2.tex` §Data-dependent interaction, while retaining the
+conservative structural and generic GSLT proof paths.
+
+1. Canonically sort the complete cosigned candidate sequence and bind all proof
+   evaluation to the merged pre-state, exact `BlockData`, and invalid-block map.
+2. Derive a finite evaluation capacity for each funding group from effective
+   supply after the fixed fee. Run proof evaluation in a spawned scratch runtime.
+   An out-of-phlogiston result is an exhausted proof, never an admissible
+   deployment.
+3. Record the exact cost and adjacent pre/post roots for every completed
+   candidate. Validate envelope identity and require the chain to begin at the
+   authenticated authority root.
+4. Apply exact cost-plus-fee funding against the live cross-group residual
+   ledger. Remove exhausted and underfunded candidates, then rerun the retained
+   sequence. The candidate set strictly shrinks on every nonterminal iteration,
+   so the process terminates in at most $`n+1`$ passes.
+5. Carry the result in an opaque `StateBoundAdmission` token bound to pre-state,
+   block context, invalid blocks, canonical envelopes, root chain, cost, debit,
+   and fee evidence. Checkpoint construction consumes that token without a
+   duplicate proof run. Other checkpoint entry points must construct the token
+   internally.
+6. Treat the final completed bounded execution as the committed user transition.
+   Preserve its exact top-level causal-event witness, continue system settlement
+   from its exact post-state root, and never perform a second unconstrained play.
+7. Replay reconstructs the complete cosigned envelope, derives the capacity
+   from authenticated state, rejects exhaustion, and checks the same evidence.
+   No proposer-supplied cost or settlement map is trusted.
+
+For a state-bound certificate the dependent proof is exact for the authenticated
+state and inputs, so $`B=\kappa`$ and unused reservation is zero. A conservative
+structural or external GSLT certificate still satisfies
+$`\kappa\leq B=\Delta^{\max}`$ and retains the paper's refund identity
+$`B-\kappa`$. Both are instances of the same finite-bound funding rule. Direct
+MeTTaIL integration remains the user-authorized exception; the GSLT traits and
+proof-checker boundary are the complete integration surface it will implement.
+
+**Rejected alternatives.** Increasing timeouts or memory ceilings does not
+repair an invalid certificate. Clamping realized cost to the structural count
+would make accounting dishonest. Charging only submitted sends would omit work
+performed by invoked contracts. Treating `unsafe_max` as a liveness feature
+admits unbounded resource consumption. Accepting an exhausted proof makes the
+verdict depend on scheduler progress. Trusting proposer-supplied evidence breaks
+independent validation. Serializing parent arrival does not address a
+deployment-local proof error and would contradict the multi-parent design.
+
+**Formal verification.** `StateBoundAdmission.tla` models bounded-play proof,
+retention of that play as the committed transition, certificate-constrained
+replay, capacity completion, schedule permutations, and settlement. TLC
+explores 162 distinct safe states. Three required negative controls
+independently violate the invariants when structural undercount,
+duplicate-unconstrained-play drift, or exhausted admission is enabled.
+`StateBoundValidatorConvergence.tla` explores three independent validators with
+different arrival orders, reducer schedules, local roots, and block contexts.
+The schedule set deliberately contains both reorderings of one trace and a
+different event set with a different cost. The model proves that every accepted
+validator uses the authenticated context, canonical order, and exact certified
+causal witness and that all accepted validators agree. Its context, order, and
+local-schedule controls produce counterexamples when any refinement check is
+removed. `EndToEndAuthority.v`
+proves exact capacity/funding equivalence,
+exhaustion non-certifiability, certificate-funded commit cost, root-chain
+continuity, admitted-list funding, and exact settlement conservation without
+added axioms. `settlement_model.sage` exhaustively checks the fixed point over
+three candidates, including termination, disjoint admitted/rejected sets,
+capacity completion, and cost-plus-fee funding.
+
+**Implementation verification.** Example tests cover resident ambient cost,
+root/envelope substitution, exact block-context binding, retained-play/replay
+witness equality, and the absence of a second unconstrained execution.
+Property tests cover the exact cost-plus-fee boundary.
+Registry, vault, bridge, replay, slashing, merge, and full Casper integration
+tests exercise the concrete path. The CI gate also runs workspace tests,
+all-target Clippy with warnings denied, formatting, TLA+ safe and negative
+controls, Rocq assumption checks, Sage enumeration, and the pgmcp bug gate.
+
+**Cross-refs.** Cost-Accounted Rho §§8.6–8.9; Continued Interactive GSLTs and
+the Cost Monad §Data-dependent interaction; DR-5, DR-9, DR-11, DR-13, DR-28,
+DR-30; TM-CA-169; CA-P-038, CA-P-039, CA-P-042, CA-P-184; UC-CA-167; and
+`cost-accounting-impl/end-to-end-authority-settlement.md`.
+
+## DR-32 — Atomic RSpace COMM is the sole native semantic cost event
+
+**Context.** Reducer-entry charging treated send and receive introductions as
+cost events. Whether a match was discovered by the producer or consumer path,
+whether an input remained unmatched, and how Tokio scheduled reducer tasks then
+changed the charged event multiset. The structural analyzer and closed examples
+repeated the same assumption, so play and replay could disagree even when they
+performed the same semantic Rho-calculus reductions.
+
+**Decision.** Native COMM accounting is observed exactly once at RSpace's locked
+complete-match boundary. The observer reserves one authority unit after match
+selection and before the COMM event log or tuplespace is mutated. Unmatched I/O
+costs zero. Binary COMM and N-way join each cost one. The stable identity uses
+the matched consume/produce hashes and persistence metadata; reducer source
+paths, redex identifiers, local indices, probe order, and trigger side are
+excluded. Observer rejection leaves cost, event history, and RSpace state
+unchanged. Play and replay install the same observer.
+
+`delta_sigma` remains a conservative count of potential communication
+introductions for closed, non-persistent submitted terms. It is not an exact
+runtime event trace. Persistent I/O and unresolved dequotation are structurally
+unprovable and use DR-31's finite state-bound evidence path.
+
+**Rejected alternatives.** Canonically sorting reducer attempts cannot turn
+non-semantic introductions into semantic reductions. Charging both endpoints
+double-counts one COMM. Charging only one syntactic endpoint remains
+trigger-dependent. Clamping play or replay cost hides a state-transition
+mismatch. Moving observation after mutation makes out-of-phlogiston rejection
+non-atomic.
+
+**Verification.** `AtomicCommAccounting.tla` checks unmatched-zero, exact
+successful-COMM cost, join-arity independence, trigger-order convergence,
+finite capacity, and replay equality. `AtomicCommRejection.tla` checks the
+zero-capacity rollback boundary. The introduction-charging configuration is a
+required counterexample to `ExactCommCost`. `AtomicCommAccounting.v` proves the
+same algebraic obligations without added axioms. RSpace tests exercise both
+trigger sides and join rollback; Loom exhaustively checks charge-once and
+rejection-before-mutation across both two-thread arrival orders; Rholang example and property tests connect
+structural bounds to exact runtime matches; DR-31 models authenticated
+state-bound admission through settlement and independent-validator replay.
+
+**Cross-refs.** RHO Rules 1–5 and transaction atomicity; MON
+data-dependent interaction; DR-9, DR-11, DR-28, DR-31; CA-P-185…188; and
+`cost-accounting-impl/end-to-end-authority-settlement.md`.
+
+## DR-33 — Recovery is exact-occurrence, expiry-bounded, and led from finalized state
+
+**Context.** Publication-aligned linear funding makes concurrent copies of one
+signed deploy contend for the same authority. Independent validators may place
+that deploy in distinct source blocks before either occurrence is finalized.
+The first occurrence repair serialized exact-source tombstones, but proposal
+admission still projected all rejection records to a signature-wide Boolean.
+One rejected source could therefore authorize another copy while a different
+source remained active. Recovery also bypassed the block-height lifespan, used
+leader signals derived from transient parent selection, and allowed non-leaders
+to suppress heartbeat-only blocks while waiting for the recovery leader.
+
+Those rules formed a feedback loop: multiple validators created repeated source
+occurrences, merge blocks recorded multiple exact tombstones for the same
+signature, and recovery kept admitting the signature until it crossed its
+lifespan. The first expired recovery proposal was objectively invalid, proposal
+failed on every validator, finality stopped, and later API and memory failures
+were consequences of the halted shard.
+
+**Decision.** A deploy retry is a transition over occurrence state, not a
+signature flag. Let $`O_d`$ be the source occurrences visible from the selected
+parent closure and $`T_d`$ its exact tombstones. The active set is
+$`A_d = O_d \setminus T_d`$. Recovery requires $`A_d = \varnothing`$ and the
+same strict lifespan interval as ordinary admission,
+$`v_d < n < v_d + L`$. At the boundary, both local stores purge the deploy.
+
+Exactly one validator packages rejected-buffer work for each committed
+finalized-height view. The on-chain active validators are sorted and
+deduplicated by public key; positive bonds are the compatibility fallback when
+that set is unavailable. The leader at last finalized height $`h`$ is the
+validator at index $`h \bmod |V_h|`$. Parent order, parent sender, arrival
+order, and local time are excluded. Asynchronous validators can temporarily
+hold different finalized views and therefore prepare distinct retries
+concurrently. That cross-view concurrency is bounded to one pending retry per
+observed view and per validator; exact occurrence identities keep it safe until
+view convergence. Proposal height, independently, closes the ordinary
+lifespan. Non-leaders continue ordinary heartbeat and finality-support
+proposals, allowing finalized height to rotate past an unavailable leader.
+Required parent, visible-source, and finalized-ancestry bodies and finalized
+metadata fail closed when missing.
+
+**Rejected alternatives.** A raw union of rejection signatures loses source
+identity. Selecting the main-parent sender or the first observed parent changes
+with DAG view. Allowing every validator on the same committed view to retry
+creates an unbounded duplicate-occurrence storm. Bounded retries from distinct
+lagging views are unavoidable under asynchronous observation and remain safe
+only with exact occurrence identities and eventual propagation.
+Extending the lifespan for retries lets invalid blocks be created after the
+validation boundary. Suppressing non-leader heartbeats deadlocks when the
+elected leader is offline. Longer timeouts or a larger memory ceiling only
+delay the cascade.
+
+**Formal verification.** `DeployRecovery.tla` composes exact-source reduction,
+strict proposal-height expiry, concurrent retry snapshots, independently
+lagging proposal/finalized views, delayed exact-source visibility,
+finalized-height leadership, offline leaders, and heartbeat progress. Its
+post-fix configuration proves `Inv_RetryRequiresNoActiveSource`,
+`Inv_NoExpiredRetry`, `Inv_OneRecoveryProposerPerFinalizedView`,
+`Inv_RecoveryLeaderIsCommittedViewDerived`, `Inv_CrossViewRetriesAreBounded`,
+`Inv_OnePendingRetryPerValidator`,
+`Inv_RecoveryHeightUsesCommittedDagView`, and `Live_RecoveryOrExpiry`. Four
+expected-refutation configurations independently
+recover the signature-wide, expiry-bypass, multi-leader, and heartbeat-deadlock
+counterexamples. Rocq proves the unbounded pure obligations
+`no_active_iff_all_sources_tombstoned`, `retry_requires_no_active_source`,
+`active_source_blocks_retry`, `expiry_closes_recovery`,
+`recovery_leader_in_validator_set`, and
+`recovery_authorization_unique_per_finalized_view` without added axioms.
+
+**Implementation verification.** Snapshot construction derives both canonical
+won and rejected signature sets from the same occurrence reducer. Rejected
+buffer probing and selection apply the same strict expiry predicate. Recovery
+leadership uses finalized DAG metadata and normalized on-chain validators. A
+leader does not repeat a buffered deploy already present in its self chain, while
+non-leaders remain free to propose heartbeat-only blocks. Unit and property
+tests cover surviving sources, all-source tombstones, observation order,
+missing-body failure across every recovery scan, exact expiry boundaries,
+per-view leader uniqueness, cross-view rotation, and per-block rejection
+counts. Multi-validator system tests retain exact block-hash
+agreement, finality, and resource-ceiling assertions.
+
+**Cross-refs.** Cost-Accounted Rho deployment atomicity and linear funding;
+DR-11, DR-28, DR-31, DR-32; TM-CA-171; O1–O14 in
+`deploy-occurrence-specification.md`; and
+`formal/tlaplus/deploy_recovery/README.md`.
+
+## DR-34 — Protocol 2 has one fresh-genesis version authority
+
+**Context.** DR-6 selected fresh-genesis deployment, and D3 removed and reserved
+the legacy deploy-cost wire fields. The implementation nevertheless left a
+protocol-1 literal in genesis candidate construction while configuring the
+running cost-accounted shard as protocol 2. Proposers emitted version-2 blocks,
+but peer-interest filtering compared them with the version-1 approved genesis.
+Honest validators discarded one another's blocks before validation and stopped
+converging.
+
+**Decision.** Protocol 2 is the only active protocol supported by this binary.
+The configured version flows through genesis candidate construction and
+approver checks. Approved-block validation rejects every noncurrent version
+before startup, then the approved version is adopted into the authoritative
+running shard configuration. Proposal, recovery, and peer reception all read
+that same running value. Protocol 1 remains a historical encoding identifier for
+defensive record validation and formal composition, not a runnable accounting-off
+mode. Migration is a fresh protocol-2 genesis; no block-height trigger, dual
+charging engine, feature flag, or mixed-version interval exists.
+
+**Rejected alternatives.** Accepting both versions would require retaining two
+wire schemas and two execution semantics even though D3 deliberately reserved
+the removed fields. Treating the approved header and local configuration as
+independent authorities recreates the disagreement. Rewriting an approved
+header at startup invalidates its signatures. Comparing peers with the approved
+genesis while proposing from local configuration preserves the split. A
+block-height switch contradicts DR-6 and makes historical replay depend on a
+legacy engine that was intentionally removed.
+
+**Formal verification.** `ProtocolVersionLifecycle.tla` covers ceremony,
+approval, fail-closed admission, adoption, proposal, and reception. Its current
+configuration passes end to end; legacy and unknown approved-block configurations
+pass by reaching the rejected state. Five unsafe controls reproduce stale
+ceremony, non-adoption, proposer bypass, the configured-v2/approved-v1 receiver
+split, and unsupported startup. `ProtocolVersionLifecycle.v` proves support-set
+exactness, mutation-free rejection, uniform adoption, receiver agreement, and
+current ceremony/recovery composition without added axioms. The capstone is
+`finalized_floor_protocol_lifecycle_correct`.
+
+**Implementation verification.** Example tests cover current adoption,
+mutation-free rejection of legacy and unknown versions, approver rejection of a
+mismatched candidate, approved-block validation, and receiver use of the running
+version. An arbitrary-`i64` property test proves that the support predicate is
+true exactly for version 2. The multi-node deploy-summary regression verifies
+that every node admits the same proposal version and converges on one deploy
+block.
+
+**Cross-refs.** DR-6, DR-30, DR-31, D3 in
+`cost-accounting-impl/d3-replace-phlo-with-tokens.md`,
+`finalized-floor-specification.md` §5.2, and
+`formal/tlaplus/deploy_recovery/README.md`.
+
+## DR-35 — Concurrent rejection causes use a canonical semilattice join
+
+**Context.** DR-33 made rejection authority exact-source-specific, but the
+formal occurrence model represented tombstones only as an unlabeled set. The
+wire record also carries a diagnostic reason. During validator-pause recovery,
+concurrent descendants legitimately recorded the same exact occurrence as both
+`duplicate_occurrence` and `collateral_chain_drop`: one closure saw the direct
+duplicate, while another first lost the containing dependent chain. State
+suppression agreed, yet `merge_occurrence_context` required byte-equal reasons
+and converted this valid refinement overlap into a proposal `BugError`.
+Heartbeat retries then backed off indefinitely and the finalized view stopped.
+
+**Decision.** Rejection reason is diagnostic; `(deploy signature, source block)`
+is the causal authority. Current reasons form the ordered join-semilattice
+
+```math
+r_{\bot} \prec r_{\mathrm{collateral}} \prec r_{\mathrm{merge}}
+\prec r_{\mathrm{duplicate}}.
+```
+
+Here `$`r_{\bot}`$` is `Unspecified`, the fold identity and an invalid reason in
+a current record. Every place that combines reasons for one exact occurrence
+uses the maximum under this protocol order. Duplicate occurrence is the
+strongest direct cause because it independently excludes that exact execution;
+merge conflict is the next direct cause; collateral chain drop applies only
+when no direct cause is known. The join is commutative, associative,
+idempotent, and monotone as causal evidence grows.
+
+**Rejected alternatives.** Rejecting reason disagreement confuses diagnostic
+refinement with contradictory causal authority and deadlocks on valid DAG
+concurrency. Last-writer replacement makes the block body depend on observation
+order. First-writer preservation is equally order-dependent. Dropping the reason
+field loses useful operator and API evidence. Encoding an unordered repeated
+reason set would be expressive but unnecessarily enlarges the protocol surface:
+the current classifications have a clear semantic specificity order, and all
+consensus consumers require one canonical diagnostic.
+
+**Formal verification.** `RejectionReasonConfluence.tla` explores every
+interleaving of collateral, merge-conflict, and duplicate observations at two
+validators. Its safe configuration proves that equal observation sets converge,
+that direct causes dominate collateral causes, and that duplicate dominates all
+other causes. The last-writer unsafe configuration reproduces
+`Inv_EqualObservationConverges`. `RejectionReasonConfluence.v` proves the three
+join laws, the precedence results, and arbitrary-list permutation invariance
+without added axioms. The capstone is
+`finalized_floor_rejection_reason_confluence_correct`.
+
+**Implementation verification.** The enum owns the single `canonical_join`
+operation. Both visible-tombstone reduction and final rejected-body assembly use
+it. Example tests pin the precedence. Property tests range over every enum value
+and prove commutativity, associativity, and idempotence. A causal sibling-block
+regression constructs the exact concurrent duplicate/collateral overlap that
+previously halted proposal. The validator-pause integration scenario verifies
+continued proposal, finality advancement, log cleanliness, and resource bounds.
+
+**Cross-refs.** DR-33, DR-34, TM-CA-172,
+`finalized-floor-specification.md` R-REASON-CONFLUENCE,
+`formal/tlaplus/deploy_recovery/README.md`, and
+`docs/casper/CONSENSUS_PROTOCOL.md` §6.
+
+## DR-36 — Paper resource roles refine the native SystemVault and RSpace architecture
+
+**Context.** The cost-accounting papers specify the semantic extension to rho
+calculus and illustrate it with small pure-rho processes. They intentionally do
+not restate the F1R3node vault, registry, PoS, RSpace, replay, merge, or genesis
+architecture. Early implementation stages interpreted each illustrated channel
+as a new consensus store. That produced a `W_v` draw mirror, a `Sigma` balance
+datum written from Rust, a separate `F_v` fee balance, close-block debit and
+conversion passes, and a `genesis_supply` wire payload. Those stores duplicated
+native responsibilities and created multiple sources of economic truth.
+
+**Decision.** Persistent REV custody and ownership use the existing
+`rho:vault:system` contract. Located linear execution authority uses native
+RSpace stack terms and unforgeable names. The paper abstractions refine these
+native roles as follows:
+
+| Paper role | Native realization |
+| --- | --- |
+| wallet or persistent purse | canonical SystemVault address selected from authenticated ownership |
+| available supply $`\Sigma`$ | reservable SystemVault custody plus authenticated prepaid located stacks |
+| located purse | ordered `CostStack` cells at an unforgeable RSpace name |
+| funding proof | a finite certificate bound to program, root, protocol, and authority presentation |
+| execution draw | causal `COMM` events allocated to the certified authority regions |
+| refund | unused SystemVault reservation or a located cell that was never popped |
+| protocol mint | authenticated `SystemVault.protocolMint` through genesis or PoS |
+| fee collection and conversion | one atomic conserving transfer from reserved payer purse to proposer vault |
+| slash removal | SystemVault quarantine plus the existing PoS stake quarantine |
+
+The invariant for authority $`a`$ is:
+
+```math
+\Sigma(a)=V(a)+L(a),
+```
+
+where $`V(a)`$ is currently reservable canonical vault custody and $`L(a)`$ is
+prepaid located authority available to the execution. A finite certificate gives
+bound $`B(a)`$ and deterministic fee allocation $`F(a)`$. Admission physically
+reserves the vault portion and pops the selected pre-state located cells only
+when:
+
+```math
+B(a)+F(a)\leq\Sigma(a).
+```
+
+The retained execution emits realized cost $`\kappa(a)`$ with
+$`0\leq\kappa(a)\leq B(a)`$. Settlement burns only realized execution cost,
+refunds the unused vault reservation, and transfers the fee to the proposer.
+It commits atomically with the retained execution state.
+
+**Fee linearization.** The worked example exposes fee collection at `F_v` and a
+later conversion because that makes ownership flow visible in pure rho. Native
+SystemVault settlement may linearize those two internal steps into one
+authenticated payer-to-proposer transfer because it proves payer debit equals
+proposer credit, no mint occurs, no intermediate fee state is observable, and
+replay derives the same owners and amount. The blessed Exchange remains the
+general two-sided swap for genuinely distinct assets or authority carriers; it
+is not a mandatory second fee ledger.
+
+**Minting and token construction.** Constructing or transferring an existing
+located execution stack is an ordinary Rholang operation. Creating new canonical
+REV custody remains protected by the native SystemVault protocol authority.
+Genesis includes canonical vault allocations in its blessed contract execution;
+there is no separate wire allocation payload or block-one mirror. PoS credits
+eligible validator vaults directly and records epoch idempotence.
+
+**Lollipop and delegation.** Lollipop $`D\multimap S`$ does not withdraw from a
+vault during reduction. It consumes the already-present source authority for the
+rendezvous and threads distinct continuation authority, in causal order, without
+rewrapping. A user first moves custody into an unforgeable located slot through
+an authenticated, conserving transfer. Passing that slot capability delegates a
+bounded purse without granting general vault access.
+
+**Replay and consensus.** The program, authenticated root, protocol version,
+authority presentation, physical reservation, exact causal witness, cost, fee,
+and adjacent root chain are consensus inputs. Replay independently reconstructs
+them. Settlement removals are merge-visible RSpace state changes. Proposer-only
+maps and scheduler-local execution traces are never authoritative.
+
+**Superseded mechanisms.** This record supersedes the persistence and settlement
+mechanisms of DR-13, DR-14, DR-27, and DR-30 wherever they prescribe
+`produce_balance`, `dual_write_supply`, distinct `W_v` or `F_v` ledgers,
+`convertedEpochs`, `genesis_supply`, or a block-one mirror. Their requirements
+for stable signer identity, authenticated minting, conservation, bounded
+arithmetic, idempotence, and replay determinism remain in force.
+
+**Formal verification.** Rocq proves address injectivity, bounded reservation,
+direct fee conservation, genesis idempotence, located-stack conservation,
+lollipop authority order, and replay agreement. TLA+ checks vault reservation,
+state-bound admission, physical stack settlement, mint/fee/slash interleavings,
+multi-validator convergence, and end-to-end genesis-to-finality behavior, with
+registered negative controls. Sage cross-checks the bounded arithmetic and
+economic state machines. Loom explores atomic reservation, settlement removal,
+join, and stack-frontier interleavings.
+
+**Implementation verification.** Unit and property tests cover every linear
+operator, signature algebra, reservation boundary, rollback, stack identity,
+and fee allocation. Integration tests cover same-deploy and cross-deploy stack
+funding, lollipop source/continuation charging, canonical genesis reconstruction,
+PoS minting, slash/redemption, state-bound retained execution, play/replay root
+identity, multi-parent settlement visibility, and multi-validator consensus.
+
+## DR-37 — Replay consumes authenticated supply snapshots, never live vault queries
+
+**Context.** Native cost admission obtains authority from the existing
+SystemVault and located RSpace stacks. Proposal may query those contracts while
+executing against ordinary RSpace. ReplayRSpace has a different architectural
+role: it is rigged with a committed causal event sequence and must consume that
+sequence exactly. Reusing the proposal-side supply reader during replay caused
+SystemVault registry and balance queries to enter ReplayRSpace even though those
+query events were absent from the committed `ProcessedDeploy.deploy_log`.
+
+A multi-deployment block adds a second constraint. Let $`R_0`$ be the block
+pre-state and let deployment $`d_i`$ record pre-state $`R_{i-1}`$ and
+post-state $`R_i`$. The proposer already owns every intermediate root because
+proposal execution created them. An independent validator initially owns only
+$`R_0`$. Eagerly querying every deployment before replay therefore makes block
+validity depend on node-local history: the proposer can read $`R_1`$, while the
+validator reports an unknown root before it has replayed $`d_1`$.
+
+**Decision.** Supply capture and trace replay proceed in one canonical
+deployment loop. For $`d_i`$, the validator first checks that its current root is
+$`R_{i-1}`$. A separate ordinary runtime resets to that already-materialized
+root and captures the complete purse inventory for every required authority
+lane. ReplayRuntimeOps consumes that immutable snapshot while replaying only
+$`d_i`$'s committed causal witness. Its checkpoint must equal $`R_i`$; that
+checkpoint materializes $`R_i`$ locally before the loop reads the snapshot for
+$`d_{i+1}`$. Missing, unexpected, or mismatched authority lanes fail closed.
+
+```text
+current := recorded block pre-state
+for deployment in canonical block order:
+    require deployment.pre_state = current
+    snapshot := read authority from ordinary RSpace at current
+    replay deployment's recorded causal witness using snapshot
+    current := checkpoint and require current = deployment.post_state
+```
+
+Reporting replay follows the same boundary. It first removes admission-rejected
+deployments and verifies state-bound admission at the block pre-state. It then
+performs the same ordinary-read, trace-replay, checkpoint sequence for every
+remaining deployment. Genesis continues to use multiplicative-unit execution
+authority and the canonical SystemVault state committed by its blessed deploys.
+
+**Trace selection.** A processed deployment contains user events followed by
+native reserve, located-stack, and settlement lifecycle events. Replay validates
+that every authority-bearing user event occurs in the committed combined trace
+in causal order. Lifecycle-only COMMs are replayed by their system operations and
+are not misclassified as user authority events. Any replayed user authority event
+absent from the committed trace remains an error.
+
+**Formal verification.** `ReplaySupplySnapshot.tla` proves authenticated
+per-deployment snapshots, replay supply conservation, exact recorded trace, and
+eventual completion. `ReplayRootMaterialization.tla` adds independent producer,
+validator, and reporter histories and proves that every snapshot root is locally
+materialized, every snapshot uses ordinary RSpace, accepted validators have the
+same terminal root, and every validator eventually decides. Its three negative
+controls refute eager future-root reads, producer-history-dependent validation,
+and ReplayRSpace authority queries. Rocq `ReplayRootMaterialization.v` proves the
+root-prefix induction and independent-validator post-state equality without
+axioms.
+
+**Implementation verification.** Ordinary Casper replay, reporting replay,
+checkpoint replay, genesis replay, and the lifecycle-trace subset regression
+exercise this boundary. The independent-validator and reporting regressions use
+isolated RSpace histories containing genesis but not the producer's intermediate
+root; both must materialize that root by replaying the first deployment before
+reading the second deployment's purse. The directed merge-dependency regression
+also confirms that sequential SystemVault settlement remains a real causal edge
+rather than being erased as an allegedly side-effect-free `Nil` deployment.
+
+**Cross-refs.** DR-31, DR-32, DR-36, TM-CA-173, CA-P-188, CA-P-191, and
+UC-CA-168.
+
+## DR-38 — Reserve and settle algebra refines to one native atomic application
+
+**Context.** The papers express conservative funding as maximum reservation,
+execution, exact charge, and refund. They assume the existing F1R3node
+architecture and specify observable resource behavior, not a new persistent
+ledger. The first native realization exposed those abstract phases as separate
+SystemVault calls joined by a singleton `reservationStore`. Every completed paid
+deploy consumed and rewrote that same RSpace datum. Multi-parent merge therefore
+classified independent sibling deploys as conflicting even when their only
+durable shared effect was a valid mergeable purse delta.
+
+**Decision.** Keep maximum reservation and refund as the proof decomposition,
+but refine them to one authenticated `SystemVault.applyCost` transition. The
+call receives the certificate identity, canonical maximum allocations, exact
+realized burn and fee allocations, and proposer address. It lexically splits
+the maximum from native purses, validates exact charges, transfers fees, burns
+cost, refunds the difference, and returns without publishing reservation state.
+Located-stack removals and the call are enclosed by the same node checkpoint;
+any failure restores the pre-deploy root.
+
+Reservation identity remains consensus evidence binding the certificate,
+system-deploy randomness, and replay. Native deploy-occurrence rules provide
+duplicate protection. There is no reservation idempotency table and no parallel
+economic ledger.
+
+Each source branch must pass its maximum-bound proof at its authenticated
+pre-state. Multi-parent merge then operates on completed, replay-verified durable
+deltas. Funded aggregate exact debits commute; aggregate overdraw cannot finalize
+as a partial mutation. This is distinct from admitting a new unexecuted parallel
+deployment from an optimistic estimate.
+
+**Formal verification.** `AtomicVaultSettlementRefinement.v` proves that the
+single native operation has the same visible result as abstract reserve followed
+by settle, preserves the pre-existing held balance, conserves value, rejects
+insufficient bounds and realized overdraw, and makes aggregate settlement order
+independent. `AtomicVaultSettlementRefinement.tla` checks branch admission,
+aggregate funding, visible-state refinement, conservation, no-effect rejection,
+and replay equality under both branch selection orders.
+`AtomicVaultSettlementRefinementGlobalCellUnsafe.cfg` restores the singleton cell
+and must refute `NoPersistentReservationState`.
+
+**Implementation verification.** The SystemVault example checks exact two-payer
+burn, proposer credit, refund, and partial-reserve rollback. Rust property tests
+exercise request permutation invariance and realized-overdraw rejection. The
+original `d3_same_key_benign_deploys_merge_without_precharge_conflict` consensus
+regression requires both same-payer sibling deploys to survive merge.
+
+**Cross-refs.** DR-31, DR-36, DR-37, TM-CA-174, CA-P-071, CA-P-086,
+CA-P-171, CA-P-172, CA-P-192, and UC-CA-169.
+
+## DR-39 — Certification uses the authenticated deploy normalizer environment
+
+**Context.** Execution normalizes each deployment with bindings derived from
+its verified envelope, including `rho:system:deployerId` and cosigner
+introspection. State-bound certification separately called the empty-environment
+compiler entry point before resolving lexical names. A funded deployment that
+queried its own SystemVault through `rho:system:deployerId` consequently failed
+capacity derivation even though the retained execution environment could resolve
+the reference. This violated the certificate-to-execution refinement and
+explained an ordinary-deployment failure class hidden by the later generic
+funding-rejection status.
+
+**Decision.** `canonical_program_for_deploy` constructs
+`normalizer_env_from_cosigned_deploy` from the same authenticated `Cosigned`
+envelope and passes it to `source_to_adt_with_normalizer_env`. The resulting term
+then follows the existing canonical funding and lexical-resolution pipeline.
+Certification, retained execution, replay admission, and replay execution all
+therefore derive system bindings from the identical verified envelope; no
+ambient node-local environment is consulted.
+
+State-bound rejection remains fail-closed and consensus-visible. Diagnostic
+tracing now distinguishes capacity derivation, non-expanding frontier,
+exhaustion without new authenticated authority, physical reservation, and
+atomic-vault rejection. Those diagnostics do not change the serialized
+admission result.
+
+**Formal verification.** `RuntimeBoundAuthority.v` proves that certification,
+execution, and replay normalization are equal under one authenticated
+environment and that an empty certification environment necessarily diverges
+on deployer identity. `NormalizerEnvironmentRefinement.tla` checks phase
+agreement, admission, execution dependency, replay equality, and eventual
+completion. Its empty-environment configuration must refute
+`CertificationExecutionReplayUseSameEnvironment`.
+
+**Implementation verification.** The funded
+`deployer_id_system_vault_query_should_replay_from_state_bound_checkpoint`
+regression exercises parsing, authenticated normalization, state-bound capacity,
+SystemVault execution, certificate settlement, checkpointing, and replay root
+identity. The exact CI Clippy command passes with warnings denied.
+
+**Cross-refs.** DR-31, DR-37, DR-38, TM-CA-175, CA-P-184, CA-P-191,
+CA-P-193, and UC-CA-170.
+
+## DR-40 — Physical settlement uses a canonical heap worklist
+
+**Context.** Exact physical settlement is a finite proof search over each
+realized authority event, the remaining atom multiset, native balances, located
+stack positions, and the already selected cells for the current event. The
+first implementation expressed that search as recursive Rust calls. A normal
+high-fanout Rholang deployment produced more than 500 nested search frames and
+overflowed the node's configured 8 MiB worker stack. Increasing that stack would
+only move an implicit availability limit: the event trace is authenticated
+consensus input, not a valid host-call-stack bound.
+
+**Decision.** Physical search uses an explicit last-in-first-out heap worklist.
+Each search node owns the complete immutable branch state. A persistent
+reference-counted draw chain records completed events without cloning the whole
+prefix for every branch. Canonically sorted candidates are pushed in reverse,
+so the next popped node is exactly the candidate the recursive specification
+would examine first. A failure marker is placed below all children and enters
+the same canonical state key into the memo only after every child fails. Born
+stack availability, one-pop-per-stack-per-event, compound-cell indivisibility,
+checked arithmetic, and final `verify_physical_settlement` validation are
+unchanged.
+
+For a finite candidate tree $`T`$, the worklist visits at most $`|T|`$ nodes and
+uses constant native recursion depth. Heap use is proportional to the live
+frontier, failed-state memo, and persistent successful-prefix chain. This is the
+native realization of the papers' decidable linear-proof-search boundary; it
+does not change which certificate is selected or any serialized evidence.
+
+**Formal verification.** `PhysicalSettlementWorklist.v` proves that complete
+worklist traversal returns the same ordered solution list and the same canonical
+first solution as recursive depth-first traversal. It separately proves success
+and failure refinement. `PhysicalSettlementWorklist.tla` explores two
+independent validators/deployments under every enabled interleaving, checks
+finite-tree bounds, reference-result equality, zero native recursion, and
+eventual completion. The recursive negative control must exceed a smaller
+native-stack bound before completing the same event sequence.
+
+**Implementation verification.** A 4,096-event example executes on the normal
+8 MiB test stack. Proptest generates mixed authority-event sequences up to 256
+events and checks exact total debit plus event-order preservation. The unchanged
+high-fanout `compute_state_should_just_work` play/replay test and the complete
+48-test runtime-manager suite pass at the normal stack size.
+
+**Cross-refs.** DR-31, DR-32, DR-39, TM-CA-176, CA-P-036, CA-P-048,
+CA-P-059, CA-P-194, and UC-CA-171.
+
+**Cross-refs.**
+[End-to-End Authority Settlement](cost-accounting-impl/end-to-end-authority-settlement.md),
+[Executable Conformance Matrix](cost-accounting-executable-conformance-matrix.md),
+`formal/rocq/cost_accounted_rho/PROOF_ARTIFACTS.md`, and
+`formal/tlaplus/cost_accounted_rho/README.md`.

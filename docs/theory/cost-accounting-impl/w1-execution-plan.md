@@ -1,5 +1,17 @@
 # W1 Execution Plan — Cost-Accounted Surface Syntax → Native Runtime
 
+> **Historical implementation plan:** reducer-side `eval_send`/`eval_receive`
+> billing described below has been superseded. The implemented consensus unit
+> is one successful atomic RSpace match; unmatched I/O costs zero, joins cost
+> one, and production exactness comes from state-bound evidence. See
+> [End-to-End Authority Settlement](end-to-end-authority-settlement.md).
+
+> **Representation correction:** this plan predates native `CostSignedTerm`,
+> `CostStack`, persisted `CostAuthority`, runtime-bound funding slots, and exact
+> physical settlement. Those features are now implemented. Any phase below that
+> calls wrappers or stacks validation-only, erased, diagnostic, or lowered to
+> ordinary `Par` is historical rather than an instruction for current code.
+
 Status: GRANULAR EXECUTION PLAN (implementation, not research). Branch:
 `feature/cost-accounted-rho`. Consensus-touching. Dev `[patch]` already wired
 (Phase 0 complete — the parser worktree builds).

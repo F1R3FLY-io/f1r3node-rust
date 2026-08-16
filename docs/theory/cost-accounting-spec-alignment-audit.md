@@ -1,5 +1,18 @@
 # Cost-Accounting Specification Alignment Audit
 
+> **Implementation-status correction.** This historical audit often classified
+> an obligation as covered when an abstract theorem or surface recognizer
+> existed. That is insufficient for consensus implementation conformance.
+> [The executable conformance matrix](./cost-accounting-executable-conformance-matrix.md)
+> is authoritative for completion status and requires wire, storage, runtime,
+> replay, settlement, and test evidence. Native `CostSignedTerm`, `CostStack`,
+> `CostAuthority`, certificate, and physical-draw representations now preserve
+> the formerly erased semantics. Gap statements below are retained as the
+> historical audit trail and must not be read as current implementation status.
+> The papers assume the existing F1R3node architecture; their wallet, purse,
+> mint, and fee notation is refined through SystemVault, RSpace, PoS, replay,
+> and merge rather than implemented as parallel stores.
+
 **Scope.** This document audits the alignment between the two governing cost-accounting
 specifications and the repository's formal specifications (Rocq / TLA+ / Sage / Lean) and
 Rust implementation. It maps every load-bearing **normative** claim of each specification to
@@ -91,7 +104,7 @@ decision record / the register · **C** = still-open scope-boundary.
 | §4.6 (`tex:1251/1273`) | Uniform-signing + linear-transfer `⊸` sugar | `SyntacticSugar.uniform_sugar_translation_equiv`, `lollipop_sugar_translation_equiv` | — | A |
 | §4.6 Rmk (`tex:1208`) | `⊸` is `∘`'s right adjoint (tensor–hom) — *"left to the sequel"* | **`LLIdentities.lolly_curry_isomorphism`** | — | A (exceeds) |
 | Def 4–6 (`tex:2002`) | Token demand Δ, supply Σ, funding obligation Σ≥Δ | `LinearLogicResources.{delta_s,sigma_s,funding_check_balance_sound}` | Sage `budget_admission_model` | A |
-| §4.6/§4.7 | **Per-actor pool keyed by the signer's pubkey** (`Σ⟦signer⟧ == Σ⟦wallet⟧`, §D2.9) — the model was already pubkey-keyed; the impl's wire-sig keying was the outlier | `WalletNaming.wallet_name_injective` (pubkey `@W_v := @(*walletTag, pk)` / `SGround`) | Rust `accounting::funding_sig` = `Ground(pk)`; `acceptance.rs::build_candidate_with_logic` (§D2.9) | A |
+| §4.6/§4.7 | **Per-actor authority keyed by the signer's public key** — the payer is stable across deploys and never keyed by the wire signature | `WalletNaming.system_vault_name_injective` | Rust `accounting::funding_sig`, `vault_payer`, and state-bound admission | A |
 | Thm 1 (`tex:2060`) | Funding check decidable (linear-time) | `LinearLogicResources.funding_decidable` (decidability; linear-time is an impl property) | Rust `admit_by_funding` | A |
 | Def 7 (`tex:2138`) | Conservative demand + refund | `Settlement.{charged_plus_refund_eq_escrow,refund_le_escrow}`; `evaluation_cannot_receive_refund_fuel` | Sage `settlement_model` | A (DR-5) |
 | §7.7 (`tex:2231`) | Deployment boundary = unit of financial atomicity | `LinearLogicResources.admit_prefix_maximal`/`reject_both_sound` | TLA+ D2 acceptance; Rust `admit_by_funding` | A (DR-11/13) |
@@ -144,15 +157,20 @@ decision record / the register · **C** = still-open scope-boundary.
 
 ### 3.2 (B) Resolved via a decision record or the ambiguity register
 
-The 28 decision records (`docs/theory/cost-accounting-decision-records.md`, DR-1…DR-28) and the 40-entry pgmcp ambiguity register (root id 87) record the
+The 33 decision records (`docs/theory/cost-accounting-decision-records.md`, DR-1…DR-33) and the pgmcp ambiguity register (root id 87) record the
 judgement calls. Load-bearing examples:
 
-- **DR-5** — runtime precharge/refund removed; deploys draw directly from `Σ⟦s⟧`. The §8 refund
-  identity is retained only at the **settlement boundary** (`Settlement.refund_*`), with
-  `evaluation_cannot_receive_refund_fuel` as the soundness witness of the removal. *Not a
-  contradiction* — DR-5 removes the runtime mechanism; the boundary identity is the residual.
+- **DR-5** — runtime precharge/refund messages are removed. Admission reserves a certified finite
+  upper bound without mutating supply; close-block settlement debits replay-checked realized cost.
+  The §8 refund is the unused reservation retained at the **settlement boundary**, with
+  `EndToEndAuthority.refund_is_unused_reservation` and
+  `evaluation_cannot_receive_refund_fuel` proving the boundary and no-mid-run-refund properties.
 - **DR-9** — cost unit = one token per COMM; per-operation gas is diagnostic only.
-- **DR-11/DR-13** — per-signature static linear-proof acceptance gate; supply on `Σ⟦s⟧ = from_sig(s)`.
+- **DR-32** — the Rust refinement linearizes that unit at the locked successful
+  RSpace match: unmatched I/O is free, binary and join matches each cost one,
+  trigger side cannot affect identity, and reservation failure precedes all
+  event-log and tuplespace mutation.
+- **DR-11/DR-13/DR-31** — per-signature linear-proof admission, state-bound dependent evidence for ambient continuations, and supply on `Σ⟦s⟧ = from_sig(s)`.
 - **DR-16** — OQS removed; §4.5 G-parametricity realized by the `SignaturesAlg` trait.
 - **DR-20/DR-21** — Rule-4/5 re-seal proved cost-benign (GAP-2 dissolved); native four-sort
   grammar executed; native SN conditional on the linearly-funded fragment.
@@ -168,7 +186,7 @@ judgement calls. Load-bearing examples:
 | **Full bicategorical coherence of Adjunction II** (interchange, both triangle 2-cell equalities, associator/unitor) | **CLOSED (DR-23).** Outside Rocq's axiom-free/no-funext fragment (a setoid bicategory's 2-cell coherence needs funext/UIP), so Rocq ships the 2-truncation — but the **full** coherence is now delivered in **core Lean** (`formal/lean/CostAccountedRho/SimulationBicategory.lean`, interchange/pentagon/triangle by definitional `Prop` proof-irrelevance, `#print axioms` = none), NOT Mathlib/AFP (both absent). The result is delivered, not bounded. |
 | **Coinductive graded HM completeness** (the gfp, not the approximant limit) | Provably needs the infinite-pigeonhole / fan principle, isolated as the **named** hypothesis `image_finite_stabilization` (`CAGradedLimit`); the reduction *to* it is mechanized and the principle is assumed nowhere, so the development stays axiom-free. A metamathematical ceiling, not a missing proof. |
 | **Full metered-translation strong bisimulation at force points** | Proven **FALSE** for the naive translation: `CAForceSeparation.ca_force_overgating_separation` (+ `_nonvacuous`). A force-faithful translation is a different translation; neither spec asserts this bisimulation. Settled negative result. |
-| **Higher-order dequotation "configurable safety margin"** (`tex:2075`) | Spec-delegated to the implementation; pinned to `min_phlo_price` by DR-11. Genuinely a deployment parameter. |
+| **Higher-order dequotation "configurable safety margin"** (`tex:2075`) | A finite margin over a lower bound cannot prove a worst-case bound. The structural analyzer returns `DemandBound::Unprovable`; production invokes the publication's dependent-proof alternative by binding exact finite evidence to authenticated state and inputs. A GSLT/MeTTaIL producer may instead supply a checked conservative upper bound through the same generic interface. `min_phlo_price` remains economic configuration, not a semantic proof. |
 | **Canonical-form `cf` serialization format** | Spec-silent (DR-2/16); an implementation/crypto-backend choice, modeled abstractly in Rocq. |
 
 ---
@@ -213,8 +231,10 @@ prover the document's own foundations do not fix:
 4. **Hash collision-resistance** is assumed but never specified as a cryptographic assumption —
    carried as Rocq Section hypotheses; a backend obligation (DR-16).
 5. **The "configurable safety margin"** for higher-order dequotation over-approximation
-   (`tex:2075`) and the **canonical-form `cf` serialization** are spec-delegated to the
-   implementation; recorded as deployment/backend parameters (DR-11, DR-2/16).
+   (`tex:2075`) is not a proof rule. DR-31 realizes the companion paper's dependent-proof
+   alternative with authenticated state-bound evidence and finite capacity. The
+   **canonical-form `cf` serialization** remains an implementation/backend parameter
+   (DR-2/16).
 
 ---
 
@@ -258,17 +278,16 @@ All gates are LOCAL-ONLY (never `.github/workflows`):
 The corrections that aligned the implementation with the calculus papers, each mapped spec →
 prover → Rust. All have landed.
 
-> **Caveat:** `publications/*.tex` is read-only and **not** in this working tree; the `.tex` clause
-> references below are the design pass's citations and are *unverified against the real paper* —
-> confirm before relying on them; do not edit any `.tex`.
+The crosswalk was checked directly against the read-only sources under `../publications/`,
+including `cost-accounting/cost-accounted-rho.tex` and `TypedCurrency/typed_value.tex`.
 
 | Correction | Normative basis | Rocq / formal anchor | Rust anchor | Status |
 |---|---|---|---|---|
-| **F-A** funding vs capability: the funding `Sig` grammar is `g \| #P \| s∘s`; the six LL connectives (`⊕`/`&`/`!`/`?`/`⊸`, and `Threshold` as an admission-quorum) are value/type-logic, **not** funding formers | signature grammar `g \| #P \| s∘s` | `is_funding_former` (`Sig`); `sig_algebra_valid` (`CostAccountedSyntax.v`) | ingress `reject_capability_connectives` (`casper_message.rs`); gate `is_funding_former` (`acceptance.rs`) | landed |
-| **F-B** margin only on `unknown`: Definition 19 is the bare `Σ ≥ Δ` for resolvable demand; the Theorem-20 margin rides ONLY the data-dependent (`unknown`) branch | Def 19 / Thm 20 | `funding_decidable` (`funds n d := d ≤ n`, no margin term) | `delta_sigma::is_funded` (`margin iff Δ.unknown`) | landed |
-| **F-C / F-D** supply-conserving FeeExtract: a FLAT one-token-per-admitted-deploy carve `Σ⟦c⟧ → F_v` (not an additive mint), and the epoch convert is BACKED by the carve | FeeExtract (`tex:3637`) | `fee_collect_conserves`, `fee_collect_then_convert_conserves`, `fee_collect_is_client_backed` (`TokenConservation.v` / `MintingInjection.v`) | `FlatFeeApportionment`; `close_block_deploy::dual_write_supply` carve | landed |
-| **REV → phlogiston**: REV is a legacy NAME for the one system token (phlogiston), not a separate species; `wallets.txt` is the genesis trust-root | DR-27 (Greg) | the `Σ` supply layer is a single-token balance datum | `Σ⟦s⟧` balance datum (DR-13); `client_fuel_allocations` / `wallets.txt` | landed (DR-27) |
-| **§D2.9** funding key = the signer's GROUND public key (`Σ⟦signer⟧ == Σ⟦wallet⟧`); was the wire-sig envelope — but the model was already pubkey-keyed | per-actor signature-indexed pools (§4.6/§4.7); `g` = a public key | `WalletNaming.wallet_name_injective` (the pubkey-keyed `@W_v` / `SGround`) | `accounting::funding_sig` = `Sig::Ground(pk)`; `acceptance.rs::build_candidate_with_logic` | landed (`3a4e03eb`) |
+| **F-A** funding vs capability: the funding `Sig` grammar is `g \| #P \| s∘s`; `⊕`/`&`/`!`/`?`/`⊸` are value/type-logic, while `Threshold` is an admission-only quorum; none is a funding former | signature grammar `g \| #P \| s∘s` | `is_funding_former` (`Sig`); `admission_sig_algebra_valid` and its soundness theorems (`CostAccountedSyntax.v`) | ingress `analyze_funding_algebra` (`casper_message.rs`); gate `is_funding_former` (`acceptance.rs`) | landed |
+| **F-B** certified-bound gate: Definition 19 is `Σ ≥ Δ` for a proved finite demand; unresolved structural demand cannot use a margin over a lower bound. Production supplies dependent state-bound evidence for authenticated ambient continuations; generic GSLT evidence may supply a conservative bound. | Def 19 / Thm 20 plus the dependent-or-conservative alternatives | `EndToEndAuthority.{certified_reservation,state_bound_certificate_funds_committed_cost,exhausted_execution_cannot_be_certified}`; `StateBoundAdmission.tla` | `DemandBound::{FiniteUpperBound,Unprovable,Exact}`; `RuntimeManager::certify_state_bound_admission`; finite-capacity commit/replay | landed (DR-31) |
+| **F-C / F-D** conserving FeeExtract: a flat one-token-per-admitted-deploy ownership transfer, never an additive mint | FeeExtract (`tex:3637`) plus the existing native vault architecture | `TokenConservation.fee_transfer_conserves`; `BoundedLedger.bounded_fee_transfer_conserved_or_rejected`; `AtomicVaultSettlementRefinement` | `FlatFeeApportionment`; `SystemVault.applyCost` | landed as native atomic transfer |
+| **REV / phlogiston denomination mapping**: canonical persistent custody is the existing SystemVault; located stacks are prepaid linear execution authority, not a second spendable balance | the scoped papers plus the assumed F1R3node architecture and Greg's confirmation | `WalletNaming`, `MintingInjection`, `VaultBackedCostLifecycle`, `AtomicVaultSettlementRefinement`, `EndToEndAuthority` | canonical genesis vault allocations; lexical `applyCost`; authenticated stack transfers | landed |
+| **Section D2.9** funding identity derives from verified signer public keys, never the wire-signature envelope | per-actor signature-indexed authority (§4.6/§4.7); `g` = a public key | `WalletNaming.system_vault_name_injective` | `accounting::funding_sig`; `vault_payer`; state-bound admission | landed (`3a4e03eb`, then native-vault refinement) |
 
 F-A is enforced by two independent guards — the load-bearing gRPC-ingress reject and the
 belt-and-suspenders funding-former gate predicate:
@@ -277,17 +296,12 @@ belt-and-suspenders funding-former gate predicate:
 
 (*Source: [`diagrams/f-a-ingress-gate-flow.puml`](diagrams/f-a-ingress-gate-flow.puml) — render with `plantuml -tsvg docs/theory/diagrams/f-a-ingress-gate-flow.puml`.*)
 
-The F-C/F-D fee is a FLAT, conserving transfer — distinct from the balanced (burned) cost split a
-multi-sig deploy pays:
-
-![FlatFee vs balanced split — the FeeExtract (F-C/F-D, left) is ONE client token per admitted deploy, drawn via FlatFeeApportionment from Σ⟦c⟧ and credited to the validator fee pool F_v (a conserving transfer, shown as a paired red-carve / green-credit), never doubled for a compound deploy. The multi-sig COST (P8, right) is the demand Δ debited EQUALLY across each cosigner's wallet Σ⟦Ground(pkᵢ)⟧ via DefaultApportionment (a burn). The divider note: FEE = transfer (conserving, flat-per-deploy); COST = burn (balanced-per-cosigner); cost ≠ fee, flat ≠ balanced.](diagrams/flatfee-vs-balanced-split.svg)
-
-(*Source: [`diagrams/flatfee-vs-balanced-split.puml`](diagrams/flatfee-vs-balanced-split.puml) — render with `plantuml -tsvg docs/theory/diagrams/flatfee-vs-balanced-split.puml`.*)
-
-Where the diagram above shows the *kinds* of token movement, the Sankey below shows
-the fee path's *conservation of mass* — `Σ⟦c⟧ → F_v → Σ⟦v⟧` is balanced
-left-to-right (Σ in = Σ out), exactly `fee_collect_then_convert_conserves`:
-
-![Fee conservation Sankey. For each admitted client deploy a flat one-token FeeExtract is carved from that client's supply pool (left: three representative clients c1, c2, c3, one token each) into the validator fee pool F_v — a conserving transfer, client debited equals F_v credited, never a mint. At the epoch boundary F_v (now 3) is converted 1:1, backed by the carve, into the validator pool v. The diagram is balanced left to right (3 in, 3 out), which is the conservation theorem; the flat fee is one token per admitted deploy regardless of arity.](diagrams/fee-conservation-sankey.svg)
-
-(*Source: [`diagrams/fee-conservation-sankey.mmd`](diagrams/fee-conservation-sankey.mmd) — render with `mmdc -i docs/theory/diagrams/fee-conservation-sankey.mmd -o docs/theory/diagrams/fee-conservation-sankey.svg -c docs/theory/diagrams/palette.mermaid.json` (or `./render.sh fee-conservation-sankey.mmd`). Node labels are ASCII (`c1`/`Fv`/`v` for `Σ⟦c⟧`/`F_v`/`Σ⟦v⟧`) because mermaid sankey-beta cannot tokenize Unicode.*)
+The F-C/F-D fee is a flat, conserving transfer distinct from the balanced
+execution-cost allocation of a multi-signature deploy. The native transaction
+reserves both obligations together, burns only realized execution cost, refunds
+unused cost reservation, and transfers the flat fee directly to the proposer.
+The payer debit equals the proposer credit; neither an intermediate `F_v` ledger
+nor an epoch conversion is observable. This linearizes the worked pure-rho trace
+while retaining the blessed Exchange for genuine two-sided swaps. The complete
+refinement and its invariants are documented in
+[End-to-End Authority Settlement](cost-accounting-impl/end-to-end-authority-settlement.md).

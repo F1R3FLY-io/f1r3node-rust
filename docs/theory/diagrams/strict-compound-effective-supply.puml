@@ -1,6 +1,6 @@
-' Strict-compound effective supply — why a strict multi-sig deploy funds from the
-' Split/Join effective supply (the component pair), and the §D2.9 fix: the replay
-' recompute keys its strict re-verification + settle-filter on EFFECTIVE supply,
+' Compound effective supply — why every multi-sig deploy funds from the
+' Split/Join effective supply (the component pair), and the §D2.9 fix: replay
+' keys its re-verification and settlement on EFFECTIVE supply,
 ' not the compound pool's RAW presence (which forked play vs replay).
 '
 ' Source of truth for cost-accounting-impl/d2-9-funding-flow.md (Figure G).
@@ -21,10 +21,10 @@ skinparam ActivityDiamondBackgroundColor #FFE082
 skinparam ActivityDiamondBorderColor     #333333
 skinparam NoteBackgroundColor            #FFF8E1
 skinparam NoteBorderColor                #666666
-title Strict compound deploy — fund from effectiveΣ, not raw compound presence (§D2.9)
+title Compound deploy — fund from effectiveΣ, not raw compound presence (§D2.9)
 
 start
-:a strict, compound (multi-sig) deploy\nfunding_sig = And(Ground(pk_l), Ground(pk_r)); <<#FFE0B2>>
+:a compound (multi-sig) deploy\nfunding_sig = And(Ground(pk_l), Ground(pk_r)); <<#FFE0B2>>
 :genesis seeds the cosigner wallets\nΣ⟦Ground(pk_l)⟧, Σ⟦Ground(pk_r)⟧ — but NOT\nthe combined Σ⟦And(…)⟧ pool; <<#C8E6C9>>
 :effectiveΣ = Σ_compound (absent ⇒ 0) + min(Σ_l, Σ_r)\n(the Split/Join fold); <<#B2DFDB>>
 
@@ -38,8 +38,8 @@ if (what does the recompute key on?) then (OLD — raw compound-pool presence)
   stop
 else (§D2.9 — EFFECTIVE supply)
   :effectiveΣ > 0 ⇒ ADMIT;\nsettle from the matched component pair\n(left −= k, right −= k — balanced, P8); <<#C8E6C9>>
-  :settle-filter keeps the group iff\n(strict ∨ present(own pool)) —\nmirrors the play-side early-admit exactly; <<#C8E6C9>>
-  :PLAY debit map == REPLAY recompute\n(byte-identical; non-strict unchanged); <<#C8E6C9>>
+  :proposal and replay reserve cost + fee\nthrough the same live residual ledger; <<#C8E6C9>>
+  :PLAY debit map == REPLAY recompute\n(byte-identical); <<#C8E6C9>>
   note right
     effective_supply_with(raw, decompositions)
     is the already-proven Split/Join algebra
@@ -51,7 +51,7 @@ endif
 
 legend left
 | Color | Meaning |
-| <#FFE0B2> orange | the strict compound deploy (input) |
+| <#FFE0B2> orange | the compound deploy (input) |
 | <#C8E6C9> mint | supply pools / admit / conserve |
 | <#B2DFDB> teal | the effectiveΣ fold |
 | <#FFE082> amber | decision (which key?) |

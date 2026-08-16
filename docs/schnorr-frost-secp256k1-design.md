@@ -5,7 +5,7 @@ This document describes an **experimental**, compile-gated signing family for:
 - `schnorr-secp256k1` (single-signer, BIP-340-style encoding),
 - `frost-secp256k1` (FROST-compatible threshold architecture producing final Schnorr signatures).
 
-This is additive to existing `secp256k1` and `secp256k1-eth` and does not replace them.
+This is additive to existing `secp256k1` and `secp256k1:eth` and does not replace them.
 
 Feature gate:
 - `schnorr_secp256k1_experimental`
@@ -13,7 +13,7 @@ Feature gate:
 ## Architecture map
 Current ECDSA flow:
 1. Deploy payload -> `Signed::signature_hash` (legacy hash branch).
-2. `SignaturesAlg` implementation signs/verifies (`secp256k1` or `secp256k1-eth`).
+2. `SignaturesAlg` implementation signs/verifies (`secp256k1` or `secp256k1:eth`).
 3. `SignaturesAlgFactory` resolves algorithm name during decode/validation.
 4. Node/Casper validation checks signature by algorithm name.
 

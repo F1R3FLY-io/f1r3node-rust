@@ -1,0 +1,47 @@
+@startuml 08-state-lineage-admission
+!theme plain
+
+skinparam backgroundColor #FFFFFF
+skinparam sequence {
+  ArrowColor #263238
+  LifeLineBorderColor #455A64
+  LifeLineBackgroundColor #ECEFF1
+  ParticipantBorderColor #37474F
+  ParticipantFontColor #102027
+}
+skinparam participant {
+  BackgroundColor<<snapshot>> #BBDEFB
+  BackgroundColor<<vote>> #FFE082
+  BackgroundColor<<lineage>> #C8E6C9
+  BackgroundColor<<commit>> #D1C4E9
+}
+skinparam note {
+  BackgroundColor #FFF8E1
+  BorderColor #F57F17
+}
+skinparam defaultFontName "monospace"
+skinparam defaultFontSize 10
+
+title Certified state-lineage admission preserves voting and committed state
+
+participant "Frozen latest-message\nsnapshot" as Snapshot <<snapshot>>
+participant "Exact clique oracle\n(unchanged votes)" as Clique <<vote>>
+participant "State-lineage\nadmission" as Lineage <<lineage>>
+participant "Last finalized\nblock" as LFB <<commit>>
+
+Snapshot -[#1565C0]> Clique : candidate S\nexact strict threshold
+Clique -[#2E7D32]> Lineage : certified(S) = true\ncertificate retained
+Lineage -[#C62828]> Lineage : main_ancestor(F,S) = true\nstate_ancestor(F,S) = false
+Lineage -[#C62828]> LFB : do not promote S\nLFB remains F
+
+note over Clique, LFB
+S remains a valid, clique-certified speculative block.
+No voter, stake, threshold, or clique edge is changed.
+end note
+
+Snapshot -[#1565C0]> Clique : rebased successor R\nexact strict threshold
+Clique -[#2E7D32]> Lineage : certified(R) = true
+Lineage -[#2E7D32]> Lineage : main_ancestor(F,R) = false\nstate_ancestor(F,R) = true
+Lineage -[#2E7D32]> LFB : promote R\ncommitted lineage preserved
+
+@enduml

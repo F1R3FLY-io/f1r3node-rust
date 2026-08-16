@@ -1951,7 +1951,7 @@ is the conjunction:
   issuer(deploy) = block_sender(deploy)
   ∧ evidence_hash(ev) ∈ local.invalid_blocks
   ∧ evidence_epoch(ev) = current_epoch       ← the relevant conjunct
-  ∧ parent_pre_state_bond(target(deploy)) > 0
+  ∧ canonical_bond(block.pre_state_hash, target(deploy)) > 0
   ∧ unique_target_per_epoch(deploy) .
 ```
 The third conjunct fails directly under the hypothesis
@@ -1978,7 +1978,7 @@ honest. Worked example: `design/11-worked-examples.md §11.13`.
 
 **Statement.** *(`unauthorized_unknown_execution_noop`,
 `BugFixSlashAuthorization.v:32`; also
-`main_T9_13_unknown_slash_evidence_noop` in `MainTheorem.v:280`.)*
+`main_T9_13_unknown_slash_evidence_noop` in `MainTheorem.v:273`.)*
 ```
   evidence_hash(ev) ∉ local.invalid_blocks
   ⟹  apply_slash_deploy(state, ev) = state .
@@ -1998,77 +1998,158 @@ the authorization-rejection branch has identity post-image on
 **TLA+ mirror.** `Inv_RejectedSlashWithoutEvidenceNoPending` in
 `MC_AuthorizedSlashFlow.cfg`.
 
-#### 9.13.2 Theorem 9.13′ (Parent-pre-state bond authorization)
+#### 9.13.2 Theorem 9.13′ (Canonical merged-pre-state authorization and origin parity)
 
-**Statement.** *(`positive_parent_bond_authorizes_matching_candidate`,
-`zero_parent_bond_not_authorized_candidate`; also
-`main_T9_13_positive_parent_bond_authorizes_matching_candidate` and
-`main_T9_13_zero_parent_bond_not_authorized`.)*
+**Statement.** *(`positive_canonical_bond_authorizes_matching_candidate`,
+`zero_canonical_bond_not_authorized_candidate`,
+`proposer_receiver_authorization_parity`, and
+`same_pre_state_root_same_authorization`; also the corresponding
+`main_T9_13_*` capstones.)*
 ```
   evidence_hash(deploy) = h
   ∧ local.invalid_blocks[h] = offender
   ∧ evidence_epoch(h) = target_epoch(deploy) = current_epoch(block)
-  ∧ parent_pre_state_bond(offender) > 0
+  ∧ canonical_bond(block.pre_state_hash, offender) > 0
   ⟹ authorized(deploy).
 
-  parent_pre_state_bond(offender) = 0
+  canonical_bond(block.pre_state_hash, offender) = 0
   ⟹ ¬ authorized(deploy).
+
+  proposer.pre_state_hash = receiver.pre_state_hash
+  ⟹ proposer.authorized(deploy) = receiver.authorized(deploy).
 ```
 
-**Proof.** The Rocq predicate uses the parent bond map as an explicit
+**Proof.** The Rocq predicate uses the canonical merged-pre-state bond map as an explicit
 argument to `authorized_slash_candidate`. The positive case reduces to
 `Nat.ltb_lt`; the zero-bond case reduces to the false right conjunct of
 the authorization conjunction. The strengthened wrapper
 `authorized_slash_candidate_with_ambient` makes the receiver's ambient
 snapshot an explicit but unused argument, proving that an already-zero
-ambient bond cannot reject a deploy authorized by the block's actual
-parent pre-state. ∎
+ambient bond cannot reject a deploy authorized by the canonical state.
+`authorized_slash_candidate_for_origin` gives proposer and receiver the
+same predicate, while `authorized_slash_candidate_at_root` models the
+content-addressed bond state; equal pre-state roots reduce to identical
+authorization verdicts. ∎
 
 **TLA+ mirror.** `Authorized` in `AuthorizedSlashFlow.tla` and
 `Inv_OnlyAuthorizedSlashCanBePending`,
-`Inv_AuthorizationUsesParentPreState`,
-`Inv_AmbientZeroDoesNotBlockParentPositiveAuth`, and
-`Inv_ParentZeroRejectsEvenAmbientPositive` in
-`MC_AuthorizedSlashFlow.cfg`.
+`Inv_AuthorizationUsesCanonicalPreState`,
+`Inv_AmbientZeroDoesNotBlockCanonicalPositiveAuth`,
+`Inv_CanonicalZeroRejectsEvenAmbientPositive`,
+`Inv_ProposerAuthorizationMatchesCanonical`,
+`Inv_ReceiverAuthorizationMatchesCanonical`, and
+`Inv_ProposerReceiverAuthorizationParity` in `MC_AuthorizedSlashFlow.cfg`.
+`MC_AuthorizedSlashFlow_receiver_ambient_unsafe.cfg` deliberately restores
+receiver dependence on ambient state and must violate parity.
 
-**Rust realization (why no `ambient ≠ parent` fixture is needed).** The Rocq
-`authorized_slash_candidate_with_ambient` takes both `ambient_bonds` and `parent_bonds`
-precisely so it can *prove* the ambient argument is unused. The Rust receive gate
-`validate_received_slash_deploys` (`slashing_authorization.rs`) is handed a **single**
-snapshot whose `bonds_map` **is** the block's parent pre-state — the ambient view is never
-a parameter — so ambient-independence is enforced *structurally by the function signature*,
-a strictly stronger guarantee than any runtime fixture could give. The two directions of the
-theorem are already covered by `current_epoch_received_slash_deploy_is_accepted`
-(parent-positive ⟹ authorize) and `received_slash_deploy_rejects_unbonded_target`
-(parent-zero ⟹ reject) in `casper/tests/slashing/slash_authorization_regressions.rs`
-(gate `[4/5]`). A discriminating `ambient ≠ parent` fixture therefore has no Rust seam to
-exercise — class **(F)** (a model-level distinction that the realization makes structurally
-impossible to violate).
+**Rust realization.** The proposer first obtains `pre_state` from
+`compute_parents_post_state`, computes PoS bonds at that exact root, and passes
+the resulting map explicitly to canonical complete-evidence candidate
+selection. The receiver first runs `validate_block_checkpoint`, then computes
+bonds from the verified `block.body.state.pre_state_hash` and passes that map
+explicitly to `validate_received_slash_deploys`. Self-created and received
+blocks share the same dispatcher path. The discriminating regressions
+`canonical_pre_state_zero_overrides_positive_snapshot_bond` and
+`canonical_pre_state_positive_overrides_zero_snapshot_bond` prove both
+directions and fail if ambient state leaks into either verdict.
 
-#### 9.13.3 Theorem 9.13″ (Merge-rejected slash recovery dedup)
+#### 9.13.3 Theorem 9.13″ (Slash evidence is a required dependency)
 
-**Statement.** *(`recoverable_rejected_slash_hashes_nodup`,
-`own_detected_hash_not_recovered`,
-`uncovered_rejected_hash_recovered`; also the corresponding
-`main_T9_13_*` wrappers.)*
+**Statement.** *(`every_slash_target_is_a_dependency`,
+`unavailable_declared_slash_waits_for_evidence`,
+`tracker_witness_does_not_satisfy_slash_evidence_dependency`; also the
+corresponding `main_T9_13_*` capstones.)*
+
+```math
+sd \in slashDeploys(b)
+\Longrightarrow targetHash(sd) \in D(b).
 ```
-  recoverable = current_evidence_filter(dedup_by_invalid_hash(rejected \ own_detected))
-  ⟹ NoDup(recoverable)
-     ∧ own_detected_hash ∉ recoverable
-     ∧ recovered hash has current invalid evidence
-     ∧ current uncovered rejected hash ∈ recoverable.
+
+```math
+targetHash(sd) \notin availableMetadata
+\Longrightarrow receive(sd) = WaitingForDependencies.
 ```
 
-**Proof.** Rocq projects rejected slash records to `invalid_block_hash`,
-filters hashes present in the proposer's own-detected set, and applies
-`nodup hash_eq_dec`. The current-evidence refinement then filters the
-survivors by the current invalid-evidence hash set. `NoDup_nodup`,
-`filter_In`, and the boolean membership lemma for `hash_member` establish
-the clauses. ∎
+The second conclusion is unchanged when the target hash is present in an
+equivocation-tracker witness set but its block metadata is absent.
 
-**TLA+ mirror.** `Inv_RecoveredSlashHasEvidence`,
-`Inv_RecoveredSlashCoveredByPendingOrExecuted`, and
-`Inv_PendingSlashHashUnique` in `MC_AuthorizedSlashFlow.cfg`.
+**Proof.** `slash_evidence_dependencies` is the duplicate-free image of
+`sd_target_hash` over the successful slash-deploy list. Membership follows
+from `in_map` and is preserved by `nodup`. The receive disposition first
+checks actual block-metadata availability. If absent, membership in the
+declared dependency set selects `SlashDependencyWaiting`; the local-absence
+rejection constructor is unreachable. The tracker-aware refinement ignores
+tracker witnesses for this decision because those witnesses do not contain
+the sender, block number, and invalidity data required by authorization. ∎
+
+**TLA+ mirror.** `SlashEvidenceDependency.tla` models submission, buffering,
+request, fetch, resume, and classification. The safe configuration checks
+`Inv_NoCanonicalEvidenceRejectedForLocalAbsence`, dependency tracking,
+classification disjointness, and the temporal property
+`Live_SubmittedSlashEventuallyClassified`. The omitted-dependency unsafe
+configuration reproduces receiver-local rejection. The tracker-only unsafe
+configuration reproduces the same fault when tracker membership incorrectly
+satisfies slash dependency readiness.
+
+**Rust realization.** `dependencies_hashes_of` unions parents,
+justifications, and successful slash target hashes. Both the direct block
+processor and buffered-block resolver require a slash target to resolve from
+the DAG or invalid-block index; equivocation-tracker membership alone is not
+accepted. The property test
+`dependencies_hashes_of_returns_exact_block_dependency_set` checks the exact
+set and deduplication, while
+`slash_evidence_is_fetched_before_block_validation` exercises tracker-only,
+missing, fetched, and invalid-index-ready states through the block processor.
+`tracker_witness_alone_does_not_suppress_block_admission` establishes the
+dual ingress property: tracker-only knowledge cannot masquerade as a DAG or
+buffer commit and discard the block before its metadata is admitted. Rocq
+capstones this separation as
+`main_T9_13_tracker_witness_not_processed_block`.
+
+#### 9.13.4 Theorem 9.13‴ (Canonical slash reconstruction)
+
+**Statement.** *(`merge_rejected_hint_subsumed_by_authorized_scan`,
+`zero_bond_candidate_not_selected`, `selected_target_keys_nodup`; also the
+corresponding `main_T9_13_*` wrappers.)*
+
+Let `C` be the canonical candidate list produced from the complete current
+invalid-evidence index, with unique `(offender, epoch)` keys, and let
+`select(C, B, e)` filter `C` by current epoch `e` and positive canonical
+merged-pre-state bond map `B`. Then:
+
+```math
+h \in rejectedHints \land h \in C \land authorized(B,e,h)
+\Longrightarrow h \in select(C,B,e),
+```
+
+```math
+B[offender(h)] = 0 \Longrightarrow h \notin select(C,B,e),
+```
+
+```math
+NoDup(map\ key\ C)
+\Longrightarrow NoDup(map\ key\ (select(C,B,e))).
+```
+
+The first implication deliberately does not use membership in
+`rejectedHints` to establish authority: the complete evidence scan already
+contains every independently authorized candidate. The second prevents a
+rejected hint from reviving a slash whose effect survived the merge. The third
+forbids two evidence hashes for one `(offender, epoch)` from becoming two
+system deploys.
+
+**Proof.** `selected_slash_candidates` is `filter candidate_authorized C`.
+The hint-subsumption theorem reduces to `filter_In`; the zero-bond theorem
+reduces `Nat.ltb 0 0` to contradiction; and
+`mapped_keys_of_filter_nodup` proves that filtering preserves key uniqueness.
+No merge-rejection record appears in the authorization predicate. ∎
+
+**TLA+ mirror.** `Inv_MergeRejectedSlashCoveredByCanonicalScan`,
+`Inv_MergeRejectedSlashCannotAuthorizeZeroBond`,
+`Inv_PendingSlashHashUnique`, and `Inv_PendingSlashTargetUnique` in
+`MC_AuthorizedSlashFlow.cfg`. `SlashFlow.tla` independently checks
+`Inv_PendingSlashTargetUnique` and `Inv_PendingSlashAuthorized` through the
+effect lifecycle.
 
 ### 9.14 T-9.14 — Checked sequence arithmetic
 
@@ -2219,7 +2300,7 @@ index*, closing the original Bug #14 liveness gap.
 
 **Statement.** *(`execute_invalid_auth_token_noop`,
 `SlashDeploy.v:142`; also
-`main_TAuth_invalid_token_noop` in `MainTheorem.v:375`.)*
+`main_TAuth_invalid_token_noop` in `MainTheorem.v:368`.)*
 ```
   auth_token(deploy) is invalid
   ⟹  apply_slash_deploy(state, deploy) = state .
@@ -2239,7 +2320,7 @@ on `state` follows. ∎
 
 **Statement.** *(`execute_valid_auth_token_equiv`,
 `SlashDeploy.v:149`; also
-`main_TAuth_valid_token_equiv` in `MainTheorem.v:380`.)*
+`main_TAuth_valid_token_equiv` in `MainTheorem.v:373`.)*
 ```
   auth_token(deploy) is valid
   ⟹  apply_slash_deploy(state, deploy)
@@ -2385,17 +2466,18 @@ The original `EquivocationDetector` spec completed 14.9M distinct
 *safety* states then OOMed during *liveness-graph construction* (the
 liveness graph itself reached ~120M distinct nodes before exhausting
 the 32 GB heap; see §10.5 for the breakdown). We provide an
-equivalence-preserving rewrite
+property-preserving quotient
 `EquivocationDetectorEager.tla` that combines three orthogonal
 optimizations:
 
 **1. Truly eager detection.** `SignAndDetect` atomically (a) signs the new
 block and (b) reclassifies *every existing sibling* at the same `(v, s)`.
 There is no reachable state where two siblings co-exist with inconsistent
-classifications. This is observationally equivalent to the original
-spec's eventual-classification semantics because no observable barb
-distinguishes "classification has happened" from "classification will
-happen on the next step".
+classifications. This matches the production admission step, which classifies
+an arrival before it becomes observable as admitted detector state. It is not
+claimed to preserve the original model's scheduler-visible pending states or
+its exact admissible-versus-ignorable history; those are checked exhaustively
+in the original local state machine.
 
 **2. Liveness as safety.** Under truly-eager detection, the temporal
 property `[](real-equivocation ~> non-valid)` reduces to the safety
@@ -2416,21 +2498,17 @@ space by validator permutations.
 | Configuration                               | Distinct states                                 | Time         | Liveness verified |
 |---------------------------------------------|-------------------------------------------------|--------------|-------------------|
 | Original safety + temporal at 2v×2s×2b      | Safety: 14.9M; liveness graph: ~120M before OOM | 65 min → OOM | ✗                 |
-| Original safety only at 2v×2s×2b            | 22,667,121                                      | 2 min 26 s   | n/a               |
-| **Eager + symmetry + Inv_LivenessAsSafety** | **2,080**                                       | **<1 s**     | ✅                |
+| Original local safety at 1v×2s×2b           | 53,824                                          | 1 s          | n/a               |
+| **Eager + symmetry + Inv_LivenessAsSafety** | **52,650**                                      | **1 s**      | ✅                |
 
-The state reduction is **22,667,121 / 2,080 ≈ 10,898×** (older
-drafts quoted 10,896×; the recomputed ratio rounds to 10,898 or,
-conservatively, ≈10,900×). The reduction is the product of:
-- Symmetry reduction: ~2×
-- Removed sibling-reclassification interleavings: ~80×
-- Removed dependency-flag interleavings (atomic): ~70×
+The verification does not rely on a bisimulation claim. It uses three
+independent obligations: TLC exhausts every local pending-state interleaving;
+Rocq `DetectorProduct.detector_product_steps_preserve_pointwise_invariant`
+lifts every locally preserved pointwise invariant through arbitrary
+interleavings of any validator product; and the eager multi-validator model
+checks the production-atomic abstraction, including completion as safety.
 
-The rewrite is observationally bisimilar to the original (every reachable
-state of the original maps to one in the rewrite via the natural
-projection that classifies pending blocks).
-
-### 10.5 Model-checking results (verified through 2026-05-22 run)
+### 10.5 Model-checking results (verified through 2026-08-12 run)
 
 Run command: `systemd-run --user --scope -p MemoryMax=32G tlc -workers 8 ...`;
 for the 2026-05-22 focused reruns, `MC_SlashFlow` and
@@ -2441,20 +2519,22 @@ for the 2026-05-22 focused reruns, `MC_SlashFlow` and
 | `MC_TwoLevelSlashing` (`EnforceClosureBound=TRUE`, weighted closure bound, quorum-intersection, fixed-point, epoch, visibility/report, evidence-view, carryover, retention, canonical-key, batch-projection, proposer-fairness, semantic-campaign, scheduler, assumption-classification, arithmetic-stress, and arithmetic-envelope invariants) | ✅ Exhausted, 0 violations on 2026-05-05 with `tlc -workers 1`                                             | 73,728 generated; **30,720 distinct**                                |
 | `MC_ConcurrentTracker` (Locked=TRUE)                                                                                    | ✅ Exhausted, 0 violations                                                                                 | **37 distinct**                                                      |
 | `MC_ConcurrentTracker` (Locked=FALSE)                                                                                   | ✅ **Correctly violates `Inv_RecordMonotone`** (counter-example for bug #2)                                | 90 generated, 71 distinct, terminating at depth 6                    |
-| `MC_SlashFlow` (full invariants incl. rejected-slash recovery, zero-bond no-transfer, slash-seed injectivity, `Inv_ForfeitedToCoopVault`, and `Inv_StakeConservation`) | ✅ Exhausted, 0 violations on 2026-05-22                                                                   | 1,591,417 generated; **238,328 distinct**; depth 28                  |
-| `MC_AuthorizedSlashFlow` (current evidence, parent-pre-state authorization, ambient-zero receiver state, and merge-rejected recovery) | ✅ Exhausted, 0 violations on 2026-05-22                                                                   | 141,058,049 generated; **4,943,872 distinct**; depth 21              |
+| `MC_SlashFlow` (positive-bond authorized pending candidates, one candidate per target, slash-seed injectivity, quarantine accounting, and `Inv_StakeConservation`) | ✅ Exhausted, 0 violations on 2026-08-12 with `tlc -workers 1`; the tiny redemption cross-check also passed | Full instance: 4,421,761 generated; **883,600 distinct**; depth 28. Tiny instance: 477 generated; **196 distinct**; depth 11 |
+| `MC_AuthorizedSlashFlow` (current evidence, canonical merged-pre-state authority, proposer/receiver parity, ambient divergence, complete-scan hint subsumption, zero-bond exclusion, and target uniqueness) | ✅ Exhausted, 0 violations on 2026-08-12 with `tlc -workers 1` | 80,740,353 generated; **2,850,816 distinct**; depth 19 |
+| `MC_SlashEvidenceDependency` (slash-target dependency projection, tracker separation, fair fetch and resume) | ✅ Exhausted, 0 violations on 2026-08-12; both unsafe controls reproduce local-evidence rejection | 639 generated; **121 distinct**; depth 13 |
 | `MC_EquivocationDetector` (combined safety + `Live_DetectionComplete`, 2v × 2s × 2b)                                    | ⚠️ JVM heap exhausted at 14.9M distinct states during liveness graph construction (after 65 min, 32 GB cap) | Liveness graph hit ~120M distinct states before OOM                  |
-| `MC_EquivocationDetector_safety` (full bounds, safety only)                                                             | ✅ Exhausted, 0 violations                                                                                 | **191,849,257 generated; 22,667,121 distinct**; depth 29; 2 min 26 s |
-| `MC_EquivocationDetector_liveness` (1v × 1s × 2b, safety + temporal)                                                    | ✅ Exhausted, 0 violations                                                                                 | 147 generated; **69 distinct**; depth 8                              |
+| `MC_EquivocationDetector_local_safety` (1v × 2s × 2b, all original safety interleavings)                              | ✅ Exhausted, 0 violations on 2026-08-12                                                                  | 317,377 generated; **53,824 distinct**; depth 19; 1 s                |
+| `MC_EquivocationDetector_liveness` (1v × 1s × 2b, safety + temporal)                                                    | ✅ Exhausted, 0 violations on 2026-08-12                                                                  | 685 generated; **232 distinct**; depth 10                            |
+| `MC_EquivocationDetectorEager` (2v × 2s × 2b, symmetry, completion-as-safety)                                          | ✅ Exhausted, 0 violations on 2026-08-12                                                                  | 351,001 generated; **52,650 distinct**; depth 25; 1 s                |
 
-The split between `MC_EquivocationDetector_safety` and
-`MC_EquivocationDetector_liveness` reflects the standard formal-
-verification practice: at full bounds the liveness-graph construction is
-exponential and exceeds heap capacity, so safety is verified
-exhaustively at full bounds (22.7M distinct states) and liveness is
-verified exhaustively at reduced bounds (69 distinct states). The
-universal liveness statement (T-2 `detection_complete`) is proven for
-all DAG sizes in the Rocq mechanization.
+The original transition system is a product of validator-local transitions,
+and every detector invariant is pointwise in the validator. TLC therefore
+exhausts the complete 2-sequence/2-block local machine rather than enumerating
+the redundant asynchronous Cartesian product. The axiom-free Rocq product
+theorem proves preservation under an arbitrary number and ordering of
+validator-local steps. The temporal liveness automaton is exhausted at its
+small bound, while the universal detection-completeness theorem
+`detection_complete` covers all pointer values and dependency flags.
 
 **Bug #2 is formally demonstrated** by the `Locked=FALSE` violation
 trace; the post-fix `Locked=TRUE` configuration removes the violation,
@@ -2472,7 +2552,6 @@ confirming the fix.
 | `Inv_DetectedHashDetects`                                                            | `fixed_detectable_detected_hash_true`                                     | yes            |
 | `Inv_RecordMonotone` (Locked=⊤)                                                      | `t_9_2_atomic_no_overwrite`                                               | yes            |
 | `Inv_BondsZeroAfterSlash`                                                            | `slash_zeros_bond`                                                        | yes            |
-| `Inv_ZeroBondSlashNoTransfer`                                                        | `slash_zero_bond_noop`                                                     | yes            |
 | `Inv_SlashedExcludedFromFC`                                                          | `fork_choice_exclusion`                                                   | yes            |
 | `Inv_LevelClosureTerminates`                                                         | `t_11_level_2_termination`                                                | yes            |
 | `Inv_ActiveStakeAboveWeightedQuorum`                                                 | `weighted_slash_iter_quorum_preservation`                                 | yes            |
@@ -2494,8 +2573,8 @@ confirming the fix.
 | `Inv_CanonicalRecordKeyInjective`                                                    | `canonical_key_pair_injective`                                            | yes            |
 | `Inv_BatchNoFailureOrderIndependent` / `Inv_PartialBatchFailureRequiresAtomicPolicy` | `bm_slash_many_order_independent` / `bm_slash_many_abort_order_dependent` | yes            |
 | `Inv_ProposerFairnessForBoundedLiveness`                                             | `proposer_fairness_boundary_requires_review`                              | yes            |
-| `Inv_AuthorizationUsesParentPreState` / `Inv_AmbientZeroDoesNotBlockParentPositiveAuth` / `Inv_ParentZeroRejectsEvenAmbientPositive` | `ambient_bonds_do_not_affect_authorization`; `parent_pre_state_authorizes_when_ambient_zero`; `parent_zero_rejects_even_if_ambient_positive` | yes |
-| `Inv_RecoveredSlashHasEvidence` / `Inv_RecoveredSlashCoveredByPendingOrExecuted`      | `recoverable_rejected_slash_requires_current_evidence`; `current_uncovered_rejected_hash_recovered` | yes |
+| `Inv_AuthorizationUsesCanonicalPreState` / `Inv_AmbientZeroDoesNotBlockCanonicalPositiveAuth` / `Inv_CanonicalZeroRejectsEvenAmbientPositive` / `Inv_ProposerReceiverAuthorizationParity` | `ambient_bonds_do_not_affect_authorization`; `canonical_pre_state_authorizes_when_ambient_zero`; `canonical_zero_rejects_even_if_ambient_positive`; `proposer_receiver_authorization_parity`; `same_pre_state_root_same_authorization` | yes |
+| `Inv_MergeRejectedSlashCoveredByCanonicalScan` / `Inv_MergeRejectedSlashCannotAuthorizeZeroBond` / `Inv_PendingSlashTargetUnique` | `merge_rejected_hint_subsumed_by_authorized_scan`; `zero_bond_candidate_not_selected`; `selected_target_keys_nodup` | yes |
 
 The table lists the safety invariants with the closest 1:1 Rocq
 counterparts. Additional TLA+ invariants —
@@ -2508,8 +2587,8 @@ record contains its witness hash),
 `Inv_ActiveSetAboveQuorum` (`TwoLevelSlashing.tla`, checked under
 `EnforceClosureBound=TRUE` and mirrored by T-12
 `t_12_bft_quorum_preservation`),
-`Inv_ForfeitedToCoopVault` (`SlashFlow.tla`, corollary of T-8
-`slash_transfers_stake`),
+`Inv_StakeInQuarantineAfterSlash` (`SlashFlow.tla`, corresponding to the
+Stage-C quarantine theorems),
 `Inv_StakeConservation` (`SlashFlow.tla`, corollary of T-7 + T-8),
 and `Inv_SlashedRemoved` (`SlashFlow.tla`, projection of T-7
 `slash_zeros_bond` onto the active-set difference) — are
@@ -2828,9 +2907,11 @@ combines `SignBlock + DetectArrival + ReclassifySibling` into one
 atomic `SignAndDetect` action. Under truly-eager classification, the
 temporal property `Live_DetectionComplete` reduces to the safety
 invariant `Inv_LivenessAsSafety`, eliminating the liveness-graph
-construction. Combined with `SYMMETRY Permutations(Validators)`, this
-yields a ≈10,898× state-space reduction (22,667,121 → 2,080) and runs
-in <1 s.
+construction. Combined with `SYMMETRY Permutations(Validators)`, the current
+2-validator eager instance exhausts 52,650 states in one second. The original
+pending-state machine is checked independently at its full 1-validator,
+2-sequence, 2-block local bound (53,824 states), and the Rocq product-locality
+theorem lifts pointwise safety through arbitrary validator interleavings.
 
 **Implication.** Liveness checking does not scale to even modest
 bounds for spec patterns with universally-quantified eventually-detect
@@ -2916,13 +2997,14 @@ formal/rocq/slashing/theories/                 (27 Rocq modules; cf. §1.3)
 ├── BugFixDuplicateJustifications.v   (T-9.15)
 └── MainTheorem.v                     (composition; main_slashing_algorithm_correct)
 
-formal/tlaplus/slashing/               (19 TLA+ specs + 13 MC configs; cf. §10.3)
+formal/tlaplus/slashing/               (28 TLA+ modules + 21 MC configs; cf. §10.3)
 ├── EquivocationDetector.tla, EquivocationDetectorEager.tla
 ├── ConcurrentTracker.tla
 ├── SlashFlow.tla
 ├── TwoLevelSlashing.tla
 ├── WithdrawFlow.tla
 ├── AuthorizedSlashFlow.tla
+├── SlashEvidenceDependency.tla
 └── JustificationProjection.tla
    (each paired with MC_*.tla + MC_*.cfg model-check harness)
 
@@ -3022,19 +3104,19 @@ hand) — additionally re-verifies the whole library through the trusted kernel:
 `coqchk -Q theories Slashing Slashing.MainTheorem` ⇒ *"Modules were successfully
 checked"*. The gate is **authoritative on Rocq** (it auto-generates a
 `Print Assumptions` for *every* `main_*` capstone in `MainTheorem.v` and asserts
-the count of *"Closed under the global context"* equals the capstone count — 70
+the count of *"Closed under the global context"* equals the capstone count — 78
 at this writing — so a newly-added theorem that is not axiom-free fails the gate),
-and **fail-soft on TLA⁺**: the fast concurrent-tracker, slash-flow, 1v
+and **mandatory on TLA⁺**: the fast concurrent-tracker, slash-flow, 1v
 detector-liveness (exercising all detector safety invariants plus
 `Live_DetectionComplete`), and — added in the P0–P3 coverage sweep — the **eager
 liveness-as-safety** model (**C8**, `MC_EquivocationDetectorEager.cfg`: folds
 liveness into the `Inv_LivenessAsSafety` invariant and quotients the 2v space by
 validator symmetry, exhausting fast at 52 650 states) must pass, the pre-fix
-tracker cfg must reproduce its race counterexample, and the heavy exhaustive 2v
-detector-safety run (§10.5, §12.4) is budgeted (`SL_DETECTOR_SAFETY_BUDGET`,
-default 300 s ⇒ skip-with-note; `0` ⇒ run to completion) since Rocq is
-authoritative for detection soundness (T-1/T-6) and that run is defense-in-depth.
-A further **fail-soft Apalache tier** (**C9**) proves `IndInv = TypeOK ∧
+tracker cfg must reproduce its race counterexample, and the local-safety model
+must exhaust the complete 2-sequence/2-block original state machine. Rocq
+`main_T2_detector_product_locality` lifts each locally preserved pointwise
+invariant through arbitrary validator-product interleavings.
+A further **mandatory Apalache tier** (**C9**) proves `IndInv = TypeOK ∧
 Inv_DetectionSound ∧ Inv_TaxonomyCorrect ∧ Inv_NeglectedHasDetectableView ∧
 Inv_RecordHasWitness ∧ Inv_LivenessAsSafety` **INDUCTIVE** (BASE `Init ⊨ IndInv` +
 STEP `Next` preserves `IndInv`) on `EquivocationDetectorEager_apalache.tla` at
@@ -3043,8 +3125,8 @@ strictly beyond the bounded TLC 2v/2s/2b, and certifying a 3-validator bound whe
 explicit TLC enumeration blows up; non-vacuous (breaking eager atomicity ⇒ STEP
 counterexample-to-induction). The `Canonical*`/`DetectorTraversal*` invariants are
 excluded from `IndInv` (state-independent pure-math over `RECURSIVE` helpers,
-unsupported by Apalache; TLC continues to validate them). SKIPs fail-soft if no
-`apalache-mc` on PATH. POLICY: this gate is **local-only** — it is never wired into
+unsupported by Apalache; TLC continues to validate them). Absence of
+`apalache-mc` fails the gate. POLICY: this gate is **local-only** — it is never wired into
 `.github/workflows/*` (an earlier formal-CI workflow was deliberately removed).
 
 The complete theorem set (after all eleven audit-gap closures plus the

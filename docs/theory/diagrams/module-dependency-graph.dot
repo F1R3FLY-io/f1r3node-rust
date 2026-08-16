@@ -1,5 +1,5 @@
 // ============================================================================
-// Module Dependency Graph — all 32 Rocq modules of the cost-accounted-rho
+// Module Dependency Graph — the foundational 32 Rocq modules of the cost-accounted-rho
 // formalization (formal/rocq/cost_accounted_rho/theories), organized into
 // seven dependency tiers. Supersedes the stale 18-module PlantUML trio
 // (module-dependency-graph{,-c4,-package}), which predated Layers 6–7 and the
@@ -26,7 +26,7 @@ digraph module_dependency_graph {
   ranksep=0.55;
   fontname="sans-serif";
   labelloc="t";
-  label=<<b>Cost-Accounted Rho — 32-module dependency graph (tred-reduced)</b>>;
+  label=<<b>Cost-Accounted Rho — foundational 32-module dependency graph (tred-reduced)</b>>;
   node [shape=box, style="rounded,filled", fontname="sans-serif", fontsize=11,
         penwidth=1.1, color="#333333", margin="0.12,0.06"];
   edge [color="#7A7A7A", arrowsize=0.7, penwidth=0.9];

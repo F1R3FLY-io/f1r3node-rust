@@ -7,6 +7,15 @@ Is Faithfully Encodable within Pure Rho Calculus**
 "Cost-Accounted Rho Calculus: A Spectral Decomposition of Phlogiston,"
 May 2026 [4].*
 
+> **Native-refinement notice.** The governing papers assume familiarity with
+> F1R3node. Their wallet, purse, supply, mint, fee, and stake notation specifies
+> semantic roles over the existing SystemVault, RSpace, PoS, replay, and merge
+> architecture. Early sections retained below describe historical channel-ledger
+> staging. The current executable refinement is
+> [End-to-End Authority Settlement](cost-accounting-impl/end-to-end-authority-settlement.md),
+> and DR-36 supersedes `produce_balance`, `dual_write_supply`, separate `W_v` or
+> `F_v` stores, `convertedEpochs`, and `genesis_supply` mechanisms.
+
 ---
 
 ## Abstract
@@ -23,9 +32,11 @@ become channels, tokens become messages on those channels, and signed
 processes must consume fuel before they can communicate.
 
 This article presents a machine-checked proof of that claim, mechanized
-in **Rocq 9.1.1** across 32 modules and 25,776 lines of development, and
-complements it with a **TLA+** finite-state model verified by TLC and
-selectively cross-checked by Apalache. The headline results include
+in **Rocq 9.1.1** across 87 modules and 35,267 lines of development, and
+complements it with a **TLA+** finite-state model verified by TLC. The required
+aggregate gate also cross-checks symbolic N-ary authority, the typed threat and
+search-frontier models, and replay-root materialization with Apalache. The
+headline results include
 contextual forward reachability
 (`translation_faithful`, with the precision boundary stated in
 Section 6.1), strong bisimulation
@@ -43,7 +54,7 @@ axiom-free forward weak-barb propagation from a replicated body to both
 the primitive replicator and Meredith's reflective replication encoding
 (`preplicate_bang_encoding_body_barbs_sound`,
 `replication_encoding_forward_barb_sound`).
-All 967 `Qed.`/`Defined.` proof terms are discharged without any
+All 1,143 `Qed.`/`Defined.` proof terms are discharged without any
 `Admitted`, `admit`, or `Axiom`; the trust base consists of the
 Rocq 9.1.1 kernel, the Rocq Stdlib, and one `hash_process`
 encoding parameter with three explicit section hypotheses (Section 12.1).
@@ -126,7 +137,7 @@ This article proves that claim. Concretely, we contribute:
    calculus, its compositional translation back into pure rho, and the
    infrastructure (`Split`, `Join`, persistent mediators) required to
    discharge the paper's five reduction rules (Section 5). The
-   development spans 32 modules and 25,776 lines, with 967 `Qed.` or
+   development spans 87 modules and 35,267 lines, with 1,143 `Qed.` or
    `Defined.` proof obligations and zero `Admitted` / `admit` /
    `Axiom` declarations.
 
@@ -153,8 +164,9 @@ This article proves that claim. Concretely, we contribute:
    fuel-event multiset determinism (`fuel_events_consumed_perm`).
 
 4. Independent **TLA+** finite-state correctness models (Section 10),
-   verified by TLC across 25 specifications and cross-checked through
-   Apalache for the typed threat/search-frontier models, plus the
+   verified by TLC and cross-checked through Apalache for symbolic N-ary
+   authority, the typed threat/search-frontier models, and bounded
+   independent-validator replay-root materialization, plus the
    validator behavioral contract proven deductively by TLAPS in
    `formal/tlaplus/validator/Validator.tla` (Section 10.7): the four core
    protocol/scheduling models up to 12,960 distinct states, plus
@@ -286,9 +298,9 @@ the proof context.
 
 | Metric                                           | Value                                                      |
 |--------------------------------------------------|------------------------------------------------------------|
-| Rocq source files                                | 32 modules                                                 |
-| Total lines of Rocq                              | 25,776                                                     |
-| Proven lemmas and theorems (`Qed.` / `Defined.`) | 967                                                        |
+| Rocq source files                                | 87 modules                                                 |
+| Total lines of Rocq                              | 35,267                                                     |
+| Proven lemmas and theorems (`Qed.` / `Defined.`) | 1,143                                                        |
 | `Admitted` / `admit`                             | **0**                                                      |
 | Named `Axiom` declarations                       | **0**                                                      |
 | Proof assistant                                  | Rocq (Coq) 9.1.1 (also typechecks under 9.1.0)             |
@@ -310,9 +322,9 @@ on any axiom from Section 12.2.1.
 
 ### 1.7 Module Dependency Graph
 
-The 32 Rocq modules of the formalization
-(`formal/rocq/cost_accounted_rho/theories`) organize into **seven dependency
-tiers**. Figure 1.7 renders the complete dependency graph, transitively reduced
+The foundational 32-module subgraph of the 87-module formalization
+(`formal/rocq/cost_accounted_rho/theories`) organizes into **seven dependency
+tiers**. Figure 1.7 renders that foundational subgraph, transitively reduced
 (`tred`) to its minimal skeleton: an edge `A → B` reads "module `B` imports
 module `A`," so every arrow points from a dependency to its dependent and the
 graph flows strictly downward across tiers (no upward references). A module's
@@ -320,9 +332,9 @@ tier is its depth in the import order; the tiers refine — and are colour-keyed
 cool→warm to match — the proof-layer narrative of
 [§7.1](#71-the-proof-layers).
 
-![Module dependency graph of the cost-accounted-rho formalization — all 32 Rocq modules arranged in seven cool-to-warm dependency tiers, transitively reduced. Tier 1 (lavender) is the syntactic foundation: RhoSyntax, StructEquivInversion, StructEquivHeads, RhoReduction. Tier 2 (blue) is the cost-accounting calculus, translation and signature algebra: CostAccountedSyntax, CostAccountedReduction, Translation, ChannelSeparation, SystemStructEquiv, SyntacticSugar, WalletNaming, LinearLogicResources, LLIdentities. Tier 3 (green) is conservation and determinism: TokenConservation, FuelEventDecomposition, StrongNormalization, Confluence, StepDeterminism. Tier 4 (amber) is faithfulness and bisimulation: TranslationFaithfulness, FuelGateSafety, Bisimulation. Tier 5 (orange) is settlement, minting and the economic layer: Settlement, SlashingComposition, MergeableChannelAccounting, MintingInjection, MintingHalt, Exchange. Tier 6 (pink) is the weak-barb and replication leaves, WeakBarbedEquiv and Replication, which nothing in Tiers 1 to 4 imports. Tier 7 (purple) is the runtime-budget refinement and use-case adequacy capstones: RuntimeBudgetRefinement, MultiSignerRefinement, UseCaseAdequacy. Every edge is an actual Require Import dependency extracted from the .v sources, with arrows flowing strictly downward.](diagrams/module-dependency-graph.svg)
+![Dependency graph of the foundational cost-accounted-rho proof subgraph. The 32 foundational Rocq modules are arranged in seven cool-to-warm dependency tiers and transitively reduced. The current 87-module catalog extends this subgraph with native syntax, GSLT seams, authority, settlement, admission, and additional refinement modules; the complete ordered module list is the repository's _CoqProject.](diagrams/module-dependency-graph.svg)
 
-(*Source: [`diagrams/module-dependency-graph.dot`](diagrams/module-dependency-graph.dot) — render with `tred docs/theory/diagrams/module-dependency-graph.dot | dot -Tsvg -o docs/theory/diagrams/module-dependency-graph.svg` (or `./render.sh module-dependency-graph.dot`). Edges are extracted verbatim from each module's `Require Import` statements; `tred` removes the transitively-redundant edges, leaving the minimal dependency skeleton. The full per-module table is [§11.1](#111-file-listing).*)
+(*Source: [`diagrams/module-dependency-graph.dot`](diagrams/module-dependency-graph.dot) — render with `tred docs/theory/diagrams/module-dependency-graph.dot | dot -Tsvg -o docs/theory/diagrams/module-dependency-graph.svg` (or `./render.sh module-dependency-graph.dot`). Edges are extracted from the foundational modules' `Require Import` statements; `tred` removes transitively redundant edges. The authoritative full ordered catalog is `formal/rocq/cost_accounted_rho/_CoqProject`.*)
 
 **Cost-determinism critical path.** The consensus-critical determinism result
 threads Tier 3: `TokenConservation → StrongNormalization → Confluence →
@@ -394,7 +406,7 @@ The three axioms:
 | `⤳*`      | Cost-accounted reachable | Reflexive-transitive closure of `⤳`                     |
 | `‖S‖`     | Token count              | `system_token_count(S)`: total fuel units in system *S* |
 | `Σ⟦s⟧`    | Supply pool              | Content-addressed fuel balance keyed by signature `s` (`from_sig(s)`); a ground signer's genesis-seeded wallet is `Σ⟦Ground(pk)⟧` (seeded from `wallets.txt` / `client_fuel_allocations`) |
-| `Δ`, `Δ_s`| Demand                   | Fuel a deploy (lane `s`) requires to run — the `known_lower_bound` of its source-token count |
+| `Δ`, `Δ_s`| Demand                   | Fuel a deploy (lane `s`) requires to run — the `certified_upper_bound` of its source-token count |
 | `Σ ≥ Δ`   | Funding obligation       | The acceptance-gate admission predicate (paper Definition 19): a deploy is admitted iff its supply covers its demand |
 | `funding_sig` | Funding key          | The signer's ground-pubkey signature `Sig::Ground(pk)` (single) / `And`-fold over cosigners (multi); keys the wallet the gate proves `Σ ≥ Δ` against, so `Σ⟦signer⟧ == Σ⟦wallet⟧` (§D2.9). The wire-sig digest `Sig::Quote(…)` is then only the `deploy_id` |
 | phlogiston | The one system token    | The single consumable: *phlogiston / token / REV* all name it (REV is a legacy name, not a separate token); `Pay(τ)` is a *type* on it, not a second token; stake is a locked-token role (DR-27, Greg 2026-06-15) |
@@ -883,28 +895,31 @@ Per-rule exact decreases:
 ### 4.4 Funding, Supply, and the Acceptance Gate
 
 Token conservation (§4.3) governs *reduction*; **admission** governs which deploys a
-validator runs at all. Each signature `s` keys a content-addressed **supply pool**
-`Σ⟦s⟧` — for a ground signer, the genesis-seeded wallet `Σ⟦Ground(pk)⟧`. At block
-assembly the **acceptance gate** (`admit_by_funding`) re-sorts the nondeterministic
-deploy set into canonical order, groups deploys by their funding key, and admits the
-largest canonical-order prefix per group whose cumulative demand `Δ` fits the supply
-— the funding obligation `Σ ≥ Δ` (paper Definition 19; the `min_phlo_price` margin
-rides only the data-dependent `unknown` branch, F-B).
+validator runs at all. The papers assume the existing F1R3node custody and tuplespace
+architecture. Their `Σ⟦s⟧` is therefore refined as the authority available to `s`:
+reservable canonical SystemVault custody `V_s` plus authenticated prepaid located-stack
+cells `L_s`. At block assembly the acceptance gate re-sorts all signed body deployments
+into canonical order, validates a finite demand certificate bound to the protocol
+version, canonical program hash, parent pre-state root, and reservation identifier,
+then physically reserves the selected vault amount and pops the selected pre-state
+stack cells. Native analysis rejects `Unprovable`; the generic GSLT evidence seam can
+accept a future checked MeTTaIL certificate. `min_phlo_price` is ingress economics, not
+proof evidence.
 
-**§D2.9 — the funding key (`Σ⟦signer⟧ == Σ⟦wallet⟧`).** A deploy's cost is debited
-from its *signer's own* wallet: the gate keys funding by `funding_sig = Sig::Ground(pk)`
-(single signer) / the `And`-fold of `Sig::Ground(pkᵢ)` over the non-placeholder
-cosigners (multi-sig), so the pool the gate proves `Σ ≥ Δ` against IS the signer's
-genesis wallet. The per-deploy wire-signature digest (`Sig::Quote(Blake2b256(…))`)
-survives only as the stable `deploy_id`. `WalletNaming.wallet_name_injective` proves
-distinct signers get distinct wallets, and `MintingInjection` proves only the system
-mint ever writes a supply balance (a user step never moves one) — the same pubkey
-keying that §12(iv) extends to user-deploy funding.
+**§D2.9 — the funding key.** A deploy's vault cost is debited from its verified
+signer's own SystemVault: `funding_sig = Sig::Ground(pk)` for a single signer and the
+`And`-fold over non-placeholder cosigners for multi-signature authority. The per-deploy
+wire-signature digest survives only as the stable `deploy_id`.
+`WalletNaming.system_vault_name_injective` proves distinct signer addresses select
+distinct canonical vaults. `MintingInjection` proves user cost-accounting steps cannot
+mint; only the system-authorized protocol-mint transition may increase native custody.
+Located funding is complementary rather than a second wallet: its unforgeable cell is
+consumed from the authenticated RSpace pre-state and replay verifies the same pop.
 
 **Cross-group cumulative demand (TM-CA-165).** Two distinct cosigner sets sharing a
-component wallet — `{A,s}` and `{B,s}` both drawing `Σ⟦Ground(s)⟧` — are admitted
-against a LIVE cross-group residual ledger drawn down in canonical `SigKey` order, so
-their combined draw on the shared wallet stays `≤ Σ⟦Ground(s)⟧` (linearity: no
+component purse — `{A,s}` and `{B,s}` both drawing `Σ⟦Ground(s)⟧` — are admitted
+against a live cross-group residual ledger drawn down in canonical `SigKey` order, so
+their combined draw on the shared purse stays `≤ Σ⟦Ground(s)⟧` (linearity: no
 contraction). `LinearLogicResources.cross_group_draw_le_supply` /
 `cross_group_admission_sound` discharge the bound axiom-free; TLA+
 `Inv_CrossGroupAdmissionBounded` and a 12,605-trace Sage sweep corroborate it.
@@ -915,34 +930,33 @@ demand by consuming a compound token `s₁∘s₂` — that would discard the `s
 proves `s₁∘s₂` carries strictly more atoms than `s₁`; the gate's effective supply
 credits a single component only with its own pool, never the compound.
 
-Replay re-runs the identical (margin-free) ledger and raises `ReplayAdmissionMismatch`
-on any over-admitted block, and the settlement debit is byte-identical on play and
-replay (reconstructing the verified cosigner set via `Cosigned::to_cosigned()` and
-re-deriving the same `funding_sig`). These funding-side additions are recorded in
+Replay reconstructs the identical certificate context and residual ledger and raises
+`ReplayAdmissionMismatch` for malformed, context-mismatched, or over-admitted block
+bodies. It verifies the realized authority witness satisfies `κ ≤ Δ^max` before the
+cost-plus-fee debit, which is byte-identical on proposal and replay. Client,
+validator-heartbeat, and validator-dummy deployments follow the same rule; absence is
+zero supply and never an execution bypass. These funding-side additions are recorded in
 [DR-28](cost-accounting-decision-records.md); their trust-base framing is §12(iv), and
 the implementation contract is
 [`cost-accounting-impl/wd-d2-acceptance-gate.md`](cost-accounting-impl/wd-d2-acceptance-gate.md)
 and [`cost-accounting-impl/d2-9-funding-flow.md`](cost-accounting-impl/d2-9-funding-flow.md).
 
-#### 4.4.1 Bounded-`i64` supply arithmetic — conserved or deterministically rejected
+#### 4.4.1 Bounded custody arithmetic — conserved or deterministically rejected
 
-The runtime holds each pool balance `Σ⟦s⟧` as a signed 64-bit integer in
-`[0, i64::MAX]` and mutates it with **checked** arithmetic. The **underflow** side of
-settlement is guarded at the gate boundary: `recompute_and_verify_admission`
-re-derives `Σ ≥ Δ` on replay and raises the deterministic `ReplayAdmissionMismatch`,
-so a settlement `checked_sub` never underflows on a valid block. The **credit** side is
-symmetric: every supply credit in `close_block_deploy::dual_write_supply` (the `Σ⟦v⟧`
-epoch mint, the fee-carve running total, the `F_v` collection credit, the
-fee→`Σ⟦v⟧` convert, and the genesis client `Σ⟦c⟧` seed) routes through the
-`checked_supply_credit` helper, which returns the deterministic
-`ReplayFailure::ReplaySupplyOverflow` rejection when `old + amount` would exceed
-`i64::MAX`, rather than `expect`-panicking. The `i64` bound **is** the supply cap —
-there is deliberately no economic `SUPPLY_MAX` constant (a technical machine bound,
-not a business parameter) — and the invariant is: *Σ operations use checked
-arithmetic that deterministically errors on overflow (never wraps, never panics).* A
-panic would be non-deterministic across nodes (a network halt near `i64::MAX`); a
-returned error is a pure function of the block plus its pre-state, so every node — the
-proposer (play) and every validator (replay) — rejects the same block identically.
+Rust represents cost reservations, realized charges, fee allocations, and genesis
+funding inputs as non-negative `i64` values. Canonical persistent balances reside in
+SystemVault rather than a second signature-channel ledger. Every Rust fold that
+constructs a vault reservation or settlement uses checked arithmetic before it
+creates the authenticated system deploy. Genesis coalescing does the same. Invalid,
+negative, underfunded, or overflowing inputs return deterministic errors; they never
+wrap or panic.
+
+The Rholang contract then validates the complete reservation and settlement shapes
+before moving any purse. Failed multi-payer reservation rolls every preceding draw
+back. Settlement accepts only a one-to-one address match whose burn plus fee does not
+exceed the reserved purse. Play and replay derive identical inputs from the
+certificate and retained causal witness, so malformed arithmetic cannot become a
+node-local outcome.
 
 `BoundedLedger.v` re-models the ledger quantity in `ℤ` bounded to the `i64`
 non-negative range, so **both** branches the runtime guards are representable and
@@ -950,8 +964,8 @@ proven, where the `nat` conservation of §4.3 and `MintingInjection` domain-*exc
 them (`nat` cannot overflow):
 
 - `checked_add_i64_conserved_or_rejected` and the fold headline
-  `supply_credit_conserved_or_rejected` — a credit (and a fold of credits, the exact
-  shape of the mint/convert/collect loop) **either** conserves the pool sum exactly
+  `vault_credit_conserved_or_rejected` — a credit or fold of credits **either**
+  preserves the exact mathematical addition
   (`checked_add_i64_never_wraps`: the result is `old + amount`, never a modular wrap)
   **or** is deterministically rejected on overflow.
 - `checked_sub_nonneg_conserved_or_rejected` and
@@ -961,14 +975,14 @@ them (`nat` cannot overflow):
 - `checked_add_i64_matches_nat` — the `nat` model is **exactly** the in-range
   restriction of the bounded model, so no existing conservation guarantee is
   weakened; the bounded layer strictly *adds* the adversarial branch.
-- `bounded_fee_convert_conserved_or_rejected` — the fee→`Σ⟦v⟧` convert
-  (MintingInjection `fb_convert`) preserves the `F_v + Σ⟦v⟧` holding on the in-range
-  branch and is rejected on overflow.
+- `bounded_fee_transfer_conserved_or_rejected` — an in-range payer-to-proposer
+  transfer preserves the combined holding exactly; underfunding or recipient
+  overflow is rejected without a partial mutation.
 
-The Rust guard is exercised by
-`close_block_deploy::tests::supply_credit_overflow_is_deterministic_error_not_panic`
-(a mint/convert at `i64::MAX` yields the deterministic error, not a panic). These are
-recorded in [DR-29](cost-accounting-decision-records.md).
+Rust tests exercise coalescing, non-positive allocations, malformed settlement
+shapes, arithmetic overflow, rollback, exact-bound settlement, and replay. These
+obligations are recorded in [DR-29](cost-accounting-decision-records.md) and
+[DR-36](cost-accounting-decision-records.md).
 
 ---
 
@@ -1431,7 +1445,7 @@ add weak-observation infrastructure and replication-encoding support;
 Layers 6 and 7 add runtime-budget refinement and use-case adequacy.
 No layer introduces theorem-level axioms.
 
-![Proof architecture as seven monotone UML-package layers, coloured cool to warm by depth, each package holding its principal modules with kernel-checked line and theorem counts. Layer 1 (lavender) Syntactic Foundation: RhoSyntax (855 lines, 31 thms), StructEquivInversion (253, 7), StructEquivHeads (1,470, 45), RhoReduction (442, 17). Layer 2 (blue) Cost-Accounting, Translation and Settlement: CostAccountedSyntax (231, 4), CostAccountedReduction (283, 5), Translation (580, 12), TokenConservation (234, 9), Settlement (140, 8), SlashingComposition (570, 30), MergeableChannelAccounting (274, 14). Layer 3 (amber) Faithfulness and Strong Bisimulation: TranslationFaithfulness (4,183, 84), FuelGateSafety (357, 6), Bisimulation (1,248, 36). Layer 4 (pink) Weak Barbed Observables: WeakBarbedEquiv (259, 17). Layer 5 (pink) Replication Encoding Support, a leaf: Replication (2,071, 56). Layer 6 (purple) Runtime Budget Refinement: RuntimeBudgetRefinement (2,084, 86). Layer 7 (purple) Use-Case Adequacy: UseCaseAdequacy (1,985, 88). Downward edges show the monotone dependency direction; a note records that Layers 4 and 5 are leaves that nothing in Layers 1 to 3 imports.](diagrams/proof-layers.svg)
+![Proof architecture as seven monotone UML-package layers, coloured cool to warm by depth, each package holding its principal modules with kernel-checked line and theorem counts. Layer 1 (lavender) Syntactic Foundation: RhoSyntax (855 lines, 31 thms), StructEquivInversion (253, 7), StructEquivHeads (1,470, 45), RhoReduction (442, 17). Layer 2 (blue) Cost-Accounting, Translation and Settlement: CostAccountedSyntax (231, 4), CostAccountedReduction (283, 5), Translation (580, 12), TokenConservation (234, 9), Settlement (140, 8), SlashingComposition (570, 30), MergeableChannelAccounting (347, 16). Layer 3 (amber) Faithfulness and Strong Bisimulation: TranslationFaithfulness (4,183, 84), FuelGateSafety (357, 6), Bisimulation (1,248, 36). Layer 4 (pink) Weak Barbed Observables: WeakBarbedEquiv (259, 17). Layer 5 (pink) Replication Encoding Support, a leaf: Replication (2,071, 56). Layer 6 (purple) Runtime Budget Refinement: RuntimeBudgetRefinement (2,084, 86). Layer 7 (purple) Use-Case Adequacy: UseCaseAdequacy (1,985, 88). Downward edges show the monotone dependency direction; a note records that Layers 4 and 5 are leaves that nothing in Layers 1 to 3 imports.](diagrams/proof-layers.svg)
 
 (*Source: [`diagrams/proof-layers.puml`](diagrams/proof-layers.puml) — render with `plantuml -tsvg docs/theory/diagrams/proof-layers.puml` (or `./render.sh proof-layers.puml`). Line/theorem counts are the kernel-checked (`Qed.`+`Defined.`) totals of [§11.1](#111-file-listing).*)
 
@@ -1449,7 +1463,7 @@ The principal modules of each layer, with kernel-checked counts (§11.1):
   - `TokenConservation` (234, 9) — `token_monotone_step`/`_reachable`, per-rule exact decreases.
   - `Settlement` (140, 8) — post-evaluation escrow/refund arithmetic; no mid-evaluation refund fuel.
   - `SlashingComposition` (570, 30) — slash-system effects preserve user fuel, settlement inputs, and settlement arithmetic.
-  - `MergeableChannelAccounting` (274, 14) — `IntegerAdd`/`BitmaskOr` round-trips, order-independent OR folding, cost-boundary isolation.
+  - `MergeableChannelAccounting` (347, 16) — `IntegerAdd`/`BitmaskOr` round-trips, widened order-independent integer aggregation, selection/application agreement, order-independent OR folding, and cost-boundary isolation.
 - **Layer 3 — Faithfulness & Strong Bisimulation.**
   - `TranslationFaithfulness` (4,183, 84) — per-rule simulation (all 5 × all signature shapes), per-step reverse, phased + recursive whole-system reflection, channel distinctness.
   - `FuelGateSafety` (357, 6) — `no_send_on` predicate, fuel-gate capability security.
@@ -3122,10 +3136,10 @@ The model now consists of eight TLA+ specifications under
 
 6. **`CostAccountingThreats.tla`** — Models replay tampering,
    activation downgrade attempts, unauthorized settlement, cost-invalid
-   evidence recording, settlement/fuel separation, recovered rejected
-   slashes, current evidence epochs, parent-pre-state slash
+   evidence recording, settlement/fuel separation, complete canonical slash
+   candidate scanning, current evidence epochs, parent-pre-state slash
    authorization, ambient-bond rejection, and zero-bond slash no-ops.
-   *(5,408 distinct states / 401,025 generated states.)*
+   *(7,696 distinct states / 1,056,225 generated states.)*
 
 7. **`CostAccountingSearchFrontier.tla`** — Models the witness
    classification rule used by the search horizon: generated witnesses
@@ -3572,8 +3586,10 @@ Lean and Rocq, and named by a `validator_contract_*` clause in
 S1–S4 originate in the CostAccountedRho development; P1/P2 originate in the
 Slashing development. The S2/S3 acceptance obligations (`Σ_s ≥ Δ_s`,
 reject-both on the first under-funded deploy) are the proof side of the
-per-signature static linear-proof acceptance gate decided at block
-assembly (**DR-11**). Every clause inherits "Closed under the global
+per-signature linear-proof admission decided at block assembly (**DR-11**).
+DR-31 supplies dependent state-bound evidence when resident continuations make
+submitted structure insufficient, while retaining the same funding and
+no-double-spend obligations. Every clause inherits "Closed under the global
 context" from its single underlying term, so `Print Assumptions
 validator_contract_X` reports exactly what the obligation reports
 (axiom-free for all seven); the proof gate (§12) re-queries each clause's
@@ -3598,6 +3614,12 @@ references.
 
 ### 11.1 File Listing
 
+The table below preserves the detailed foundational-module inventory. The
+authoritative complete catalog is `_CoqProject`, which currently lists 87
+modules. The Scale table in Section 1.6 is computed across that complete list;
+the subtotal at the bottom of this table applies only to the foundational
+inventory shown here.
+
 | Module                      | Lines      | Theorems | Purpose                                                                                                                                                                                                                                                                            |
 |-----------------------------|------------|----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `RhoSyntax.v`               | 855        | 31       | Syntax (incl. `PReplicate`), substitution, structural equivalence, lifting                                                                                                                                                                                                         |
@@ -3610,10 +3632,10 @@ references.
 | `ChannelSeparation.v`       | 219        | 7        | Signature-channel invariance under subst/lift; `N_tr_is_Quote`                                                                                                                                                                                                                     |
 | `TokenConservation.v`       | 234        | 9        | Fuel monotonicity (per-step and multi-step)                                                                                                                                                                                                                                        |
 | `Settlement.v`              | 140        | 8        | Post-evaluation fee settlement, escrow/refund arithmetic, and no mid-evaluation refund fuel                                                                                                                                                                                        |
-| `SlashingComposition.v`     | 570        | 30       | Composition boundary with the slashing protocol: cost-invalid evidence is observational for user cost, recovered rejected slashes require current evidence, parent pre-state authorization gates slash effects, and slash system effects preserve deploy fuel, settlement inputs, and settlement arithmetic |
-| `MergeableChannelAccounting.v` | 274     | 14       | Typed mergeable-channel accounting: `IntegerAdd` additive round trip, `BitmaskOr` diff/merge round trip, set-like OR folding, merge-type preservation, non-numeric fallback classification, and cost-boundary isolation |
+| `SlashingComposition.v`     | Mechanically counted by the proof gate | Mechanically counted by the proof gate | Composition boundary with the slashing protocol: cost-invalid evidence is observational for user cost, canonical slash candidates require present current evidence and positive canonical pre-state bond, parent pre-state authorization gates slash effects, and slash system effects preserve deploy fuel, settlement inputs, and settlement arithmetic |
+| `MergeableChannelAccounting.v` | 347     | 16       | Typed mergeable-channel accounting: `IntegerAdd` additive round trip and widened permutation-invariant total, selection/application agreement, `BitmaskOr` diff/merge round trip, set-like OR folding, merge-type preservation, non-numeric fallback classification, and cost-boundary isolation |
 | `RuntimeBudgetRefinement.v` | 2,084      | 86       | Bounded-memory runtime-budget refinement: consumed/remaining conservation, successful weighted reservation, batched reservations, out-of-phlo boundary commitment, reset-from-token trace clearing, finalization-read cost traces, post-activation trace evidence, zero-event commitments, block/cache authentication, canonical replay-trace equivalence, slash target activation epoch authentication, and replay-payload field sensitivity |
-| `UseCaseAdequacy.v`         | 1,985      | 88       | Proof-backed UC-CA traceability theorems over token conservation, unit-token expansion, settlement, slashing composition, recovered slash current-evidence authorization, typed mergeable channels, recursive reflection, runtime-budget refinement, finalization-read trace digests, replay payload equivalence, post-activation cost-trace requirements, block/cache authentication, zero-event commitments, and failed/control-path trace boundaries |
+| `UseCaseAdequacy.v`         | Mechanically counted by the proof gate | Mechanically counted by the proof gate | Proof-backed UC-CA traceability theorems over token conservation, unit-token expansion, settlement, slashing composition, canonical slash-candidate authorization, typed mergeable channels, recursive reflection, runtime-budget refinement, finalization-read trace digests, replay payload equivalence, post-activation cost-trace requirements, block/cache authentication, zero-event commitments, and failed/control-path trace boundaries |
 | `FuelEventDecomposition.v`  | 239        | 6        | Fuel event multiset determinism                                                                                                                                                                                                                                                    |
 | `StrongNormalization.v`     | 130        | 5        | Well-foundedness of `ca_step`; `ca_strongly_normalizing`                                                                                                                                                                                                                           |
 | `Confluence.v`              | 483        | 14       | Per-rule determinism, Newman's lemma, full confluence, cost determinism                                                                                                                                                                                                            |
@@ -3623,16 +3645,16 @@ references.
 | `Bisimulation.v`            | 1,248      | 36       | Coinductive bisim, multi-stuck bisim, generic bisim dispatcher                                                                                                                                                                                                                     |
 | `WeakBarbedEquiv.v`         | 259        | 17       | Weak barb predicates (`weak_barb_input`, `weak_barb_output`), reachability/≡ₙ-closure, `weak_barbed_equiv_except` hidden-channel equivalence, parallel-congruence lemmas (§6.5, §6.6)                                                                                               |
 | `Replication.v`             | 2,071      | 56       | Meredith's reflective encoding (`bang_encoding`, `D_encoding`); `bang_encoding_unfolds` (§6.5 Theorem 9.19); forward barb propagation `preplicate_bang_encoding_body_barbs_sound` (§6.5 Theorem 9.20); step inversion `step_PReplicate_inv_se`, `step_PPar_PReplicate_inv_se` (§8.7 Lemma 9.21); closed forward-boundary theorem `replication_encoding_forward_barb_sound` (§6.6 Theorem 9.23) |
-| `MintingInjection.v`        | 630        | 26       | Minting is exogenous token injection, never a `ca_step`; supply-pool balance layer (`Σ⟦v⟧` injectivity in pk, epoch-mint idempotency, user steps never move a supply balance — the same pubkey keying §D2.9 extends to user-deploy funding, §12(iv)) |
+| `MintingInjection.v`        | 630        | 26       | Authenticated protocol minting into canonical SystemVault custody, public-key address injectivity, epoch idempotence, direct fee backing, and exclusion of user-step minting |
 | `MintingHalt.v`             | 179        | 8        | A halted (slashed) validator is never minted and never gains supply; redemption is the only path back to funding (`halted_validator_not_minted`, `halted_validator_supply_not_increased`) |
 | `Exchange.v`                | 203        | 7        | The blessed conserving 1:1 token Exchange (Stage D): per-channel and total token conservation of the swap, requires-both-inputs join, and Exchange-is-a-`ca_step`-not-a-mint |
 | `SystemStructEquiv.v`       | 474        | 14       | System-level structural equivalence (`sys_equiv`): parallel-unit law `sse_par_unit`, Appendix-B token-stack decomposition `token_decomp`, and source-level free names `sig_free_names` (Def 3.3 axes; §3.5) |
 | `SyntacticSugar.v`          | 196        | 6        | Section 3.8 syntactic sugar at the translation level: uniform-signing and linear-transfer (⊸) defining equations as `proc`-level structural equivalences of the translated images (Option A; ⊸ desugars to nested plain-signature gate layers) |
-| `WalletNaming.v`            | 313        | 14       | Per-validator wallet `@W_v` naming (Stage A): injectivity in the validator public key and pairwise disjointness of the wallet / quarantine / funding-slot seed domains — the pubkey-keyed `@W_v`/`SGround` the §D2.9 user-deploy funding key `Sig::Ground(pk)` instantiates (§12(iv)) |
+| `WalletNaming.v`            | 313        | 14       | Canonical SystemVault address injectivity in public-key ownership and domain separation from quarantine and unforgeable funding-slot identities |
 | `MultiSignerRefinement.v`   | 530        | 31       | Phase 1.10 multi-signature deploy support: per-deployer Map-in-MVar PoS refinement, single-signer observable equivalence to the legacy contract, and canonical-order FIFO refund-drain conservation |
 | `LinearLogicResources.v`    | 979        | 45       | Publication-derived linear-resource calculus: mixed unrestricted/linear resource boundary, anti-contraction / anti-weakening, no-double-spend, funding decidability, the runtime `sig_algebra` bridge, and the **cross-group cumulative-demand bound** (`cross_group_draw_le_supply`, `cross_group_admission_sound` — TM-CA-165, the live-ledger generalization of `competing_funding_at_most_one_succeeds`/`admitted_prefix_fits`) |
 | `LLIdentities.v`            | 587        | 51       | Phase 2/3 ILLE algebraic identities: multiplicative (tensor/and), additive (plus/with), and exponential (bang/why-not) laws plus Phase 2 Threshold permutation invariance at the reflection layer |
-| **Total**                   | **25,776** | **967**  |                                                                                                                                                                                                                                                                                    |
+| **Foundational-table subtotal** | **25,776** | **967**  |                                                                                                                                                                                                                                                                                    |
 
 Theorem counts are `Qed.` + `Defined.` occurrences (the proofs that
 contribute kernel-checked terms). Earlier totals listed in this table
@@ -3704,6 +3726,8 @@ per large module.
 | post-merge implementation | `BitmaskOr` typed mergeable diff/merge | `bitmask_diff_merge_round_trip` | `MergeableChannelAccounting.v:147` |
 | post-merge implementation | `BitmaskOr` fold order independence | `mergeable_channel_bitmask_fold_permutation` | `MergeableChannelAccounting.v:201` |
 | post-merge implementation | `IntegerAdd` diff/merge round trip | `integer_add_diff_merge_round_trip` | `MergeableChannelAccounting.v:168` |
+| post-merge implementation | `IntegerAdd` widened total is permutation invariant | `integer_diff_total_permutation`, `integer_total_result_permutation` | `MergeableChannelAccounting.v` |
+| post-merge implementation | Numeric survivor selection and trie application agree | `integer_selection_application_agree` | `MergeableChannelAccounting.v` |
 | post-merge implementation | Merge type and non-numeric fallback | `mergeable_channel_delta_preserves_type`, `non_numeric_channel_not_mergeable_payload_match` | `MergeableChannelAccounting.v:230` |
 
 Rows tagged with "—" in the *Paper Section* column are not stated
@@ -3760,8 +3784,8 @@ the digest is consensus.
 | Canonical OOP boundary is schedule-independent | `fuel_events_consumed_perm`, `ca_cost_deterministic` | Mechanized multiset/cost basis; Rust records insufficient-fuel boundaries by canonical source-event descriptor |
 | Casper fee settlement uses token cost without reintroducing runtime metering | `refund_le_escrow`, `charged_plus_refund_eq_escrow`, `post_evaluation_settlement_no_mint` | Mechanized as post-evaluation arithmetic in `Settlement.v`; implemented with unmetered system deploys and wire-compatible settlement of `RuntimeBudget.total_cost() * phlo_price` |
 | Evaluation cannot receive Casper refund fuel mid-run | `evaluation_cannot_receive_refund_fuel`, `evaluation_step_cannot_mint_fuel` | Mechanized by importing token monotonicity into `Settlement.v`; runtime must not mutate deploy balance or copy a process with a larger remaining budget during evaluation |
-| Cost-invalid block evidence does not change user deploy cost | `replay_cost_mismatch_sound_for_evidence`, `cost_invalid_block_evidence_does_not_change_user_cost`, `current_cost_evidence_epoch_sound`, `recovered_rejected_slash_requires_current_cost_evidence` | Mechanized in `SlashingComposition.v`; replay-cost mismatch and related current cost-invalid evidence may feed slashing authorization, but recording the evidence preserves the settlement boundary |
-| Typed mergeable channels preserve strategy-specific semantics | `bitmask_diff_merge_round_trip`, `mergeable_channel_bitmask_fold_permutation`, `integer_add_diff_merge_round_trip`, `mergeable_channel_delta_preserves_type`, `non_numeric_channel_not_mergeable_payload_match`, `mergeable_channel_accounting_preserves_user_budget` | Mechanized in `MergeableChannelAccounting.v`; implemented by `MergeType::{IntegerAdd, BitmaskOr}`, `calculate_num_channel_diff`, `combine_mergeable_value`, `fold_bitmask_or` (with a strict single-value invariant for `IntegerAdd`), and non-numeric fallback to the conflict path |
+| Cost-invalid block evidence does not change user deploy cost | `replay_cost_mismatch_sound_for_evidence`, `cost_invalid_block_evidence_does_not_change_user_cost`, `current_cost_evidence_epoch_sound`, `canonical_slash_candidate_requires_current_cost_evidence` | Mechanized in `SlashingComposition.v`; replay-cost mismatch and related present current cost-invalid evidence may feed canonical slashing authorization, but recording the evidence preserves the settlement boundary |
+| Typed mergeable channels preserve strategy-specific semantics | `bitmask_diff_merge_round_trip`, `mergeable_channel_bitmask_fold_permutation`, `integer_add_diff_merge_round_trip`, `integer_total_result_permutation`, `integer_selection_application_agree`, `mergeable_channel_delta_preserves_type`, `non_numeric_channel_not_mergeable_payload_match`, `mergeable_channel_accounting_preserves_user_budget` | Mechanized in `MergeableChannelAccounting.v`; implemented by `MergeType::{IntegerAdd, BitmaskOr}`, one widened `aggregate_mergeable_contributions` operation shared by survivor selection and state application, `calculate_num_channel_diff`, `fold_bitmask_or` (with a strict single-value invariant for `IntegerAdd`), and non-numeric fallback to the conflict path |
 | Replay-cache fingerprints include replay-relevant event traces | `rb_replay_payload_user_trace_change_detected`, `rb_replay_payload_system_trace_change_detected`, `rb_cost_trace_change_detected`, `rb_full_replay_payload_user_cost_trace_change_detected`, `rb_full_replay_payload_user_cost_trace_event_count_change_detected`, `rb_full_replay_payload_user_cost_trace_present_change_detected`, `rb_full_replay_payload_missing_cost_trace_change_detected`, `rb_replay_cache_key_payload_change_detected`, `rb_trace_entry_deploy_change_detected`, `rb_trace_entry_source_path_change_detected`, `rb_trace_entry_redex_change_detected`, `rb_trace_entry_local_index_change_detected`, `rb_trace_entry_billable_kind_change_detected`, `rb_trace_entry_primitive_descriptor_change_detected`, `rb_trace_entry_weight_change_detected` | Mechanized in `RuntimeBudgetRefinement.v`; implemented by hashing canonicalized user deploy logs, system deploy logs, cost, status, and system deploy data. (Per TM-CA-151 the per-op cost-trace digest/presence/event-count are diagnostic and are NOT hashed into the consensus replay fingerprint; the listed `rb_full_replay_payload_*` lemmas describe a digest-inclusive diagnostic-refinement level.) The abstract trace entry names the concrete Rust digest inputs for that diagnostic level: deploy id, source path, redex id, local index, billable kind, primitive descriptor when the kind is primitive, and weight. |
 | Post-activation replay requires cost-trace evidence | `rb_post_activation_cost_trace_commitment_valid`, `rb_empty_cost_trace_commitment_can_be_valid`, `uc_ca_039_post_activation_cost_trace_required`, `uc_ca_046_zero_event_post_activation_trace_commitment` | Mechanized in `RuntimeBudgetRefinement.v` / `UseCaseAdequacy.v`; as a digest-inclusive diagnostic-refinement obligation. Per TM-CA-151 production replay does NOT reject on cost-trace digest presence (consensus = `total_cost` + status + post-state hash); the Rocq model retains "absent commitment ⇒ replay-invalid" and "present zero-event digest is valid" at the refinement level, with legacy non-cost-accounted replay quarantined |
 | Block-auth refinement detects cost-trace changes (diagnostic — TM-CA-151) | `rb_block_auth_payload_replay_payload_change_detected`, `uc_ca_047_block_authenticates_cost_trace_payload` | Mechanized in `RuntimeBudgetRefinement.v` / `UseCaseAdequacy.v` at the digest-inclusive diagnostic-refinement level; per TM-CA-151 the per-op cost-trace digest/count are NOT in the signed block-hash preimage — production block authentication covers `total_cost` + status + post-state hash + signature |
@@ -3772,6 +3796,7 @@ the digest is consensus.
 | Runtime fuel channels are unforgeable and user-disjoint | `Sig`, `SignatureChannel`, `SignedProcess`, `RuntimeBudget` in `f1r3node-rust` | Implemented with `GPrivate` signature channels; tests cover deploy isolation and canonical compound signatures |
 | Parallel scheduling preserves final cost | Rocq confluence plus TLA+ `EvalScheduling` | Mechanized/model-checked; Rust implementation must keep deterministic result aggregation |
 | Parallel scheduling preserves trace commitments | `uc_ca_051_parallel_trace_and_cost_determinism`, `ca_cost_deterministic`, `rb_cost_trace_event_count_success_and_oop` | Mechanized cost/count basis; Rust tests check repeatable digest commitments (diagnostic stability) under multi-threaded interpreter execution |
+| Deploy-envelope algebra cannot collapse capability policy into a scalar quorum | `admission_sig_algebra_valid`, `admission_sig_algebra_scalar_policy_sound`, `admission_sig_algebra_valid_sound`, `admission_sig_algebra_quorum_sound` | Mechanized admission subset; Rust `analyze_funding_algebra` accepts an all-required atom/tensor tree or one top-level atomic-member threshold, rejects capability connectives and all threshold composition, and ignores unused flat compatibility fields when `sig_algebra` is present |
 
 The implementation-facing use-case map is maintained in
 [*Cost-Accounted Rho Use-Case Coverage*](cost-accounting-use-cases.md).
@@ -3798,9 +3823,10 @@ back into an in-flight evaluation. `SlashingComposition.v` sits at the
 same boundary. It adopts the slashing-side interface proven in
 f1r3node-rust's `analysis/slashing` branch and proves only the
 cost-accounting composition facts: current cost-invalid evidence is
-observational for deploy cost, recovered rejected slashes require current
-evidence and target activation epochs, parent pre-state bond authorization
-preserves the cost boundary, and slash system effects preserve user fuel,
+observational for deploy cost; canonical candidate selection requires present
+current evidence, a current target activation epoch, and positive canonical
+pre-state bond; authorization preserves the cost boundary; and slash system
+effects preserve user fuel,
 fee settlement inputs, and settlement arithmetic. The authenticated trace
 obligation is therefore protocol-level: deploy signatures bind the phlo
 limit and price, and block signatures bind the processed deploy cost plus
@@ -3926,6 +3952,9 @@ Check well_reflected_backward_reflection.
 Check recursively_metered_backward_reflection.
 Check preplicate_bang_encoding_body_barbs_sound.
 Check replication_encoding_forward_barb_sound.
+Check admission_sig_algebra_valid_sound.
+Check admission_sig_algebra_scalar_policy_sound.
+Check admission_sig_algebra_quorum_sound.
 ```
 
 The hash-process assumptions in Section 12.1 remain visible as ordinary
@@ -4228,27 +4257,18 @@ DR-16). (ii) **Name equality** `≡_N` (§3.4): used in the communication rules 
 decide when a send and a receive share a channel, but never defined at its use
 site; the implementation realizes it as structural equality of the normalized
 quoted process — the runtime correspondence already recorded above
-(`normalize_preserves_struct_equiv`). (iii) **The per-signature supply-pool
-runtime representation** (§4.6/§4.7): the paper fixes the *behavior* (a token is a
-message resident on `Σ⟦s⟧`; supply is injective in the signature) and the
-mechanization fixes the *balance datum* (DR-13) and its disjointness
-(`lane_pool_disjoint`), but the concrete in-memory container (the runtime
-`DashMap<Sig, AtomicI64>`) is an implementation choice the paper does not
-constrain. (iv) **The funding-key instantiation** (§D2.9). The paper's funding
-signature `s` — the key of the per-actor pool `Σ⟦s⟧` (§4.6/§4.7) — is an
-*abstract parameter* over the backend `G` (Def 3, DR-2/16): the model fixes only
-that `Σ` is injective in `s` and that distinct principals get distinct pools. The
-Rocq model already commits the *validator* instance concretely — `WalletNaming.v`
-keys the draw wallet `@W_v := @(*walletTag, validatorPk)` by the **public key**
-(modeled `SGround : list bool → sig`), with `wallet_name_injective` proved
-axiom-free ("Closed under the global context"); **no formal artifact ties a pool
-to a *wire signature***. The implementation's §D2.9 correction therefore
-instantiates this abstract funding key as `Sig::Ground(pk)` for user deploys
-(`funding_sig`: single-sig `Ground(pk)`, multi-sig the left-associated `And`-fold
-of `Ground(pkᵢ)`) — exactly the pubkey naming `WalletNaming.v` already proves
-injective — so that `Σ⟦signer⟧ == Σ⟦wallet⟧`. The `deploy_id` continues to derive
-from the wire signature (`envelope_sig`); that is on-chain identity (which the
-model does not constrain), not a funding key. The strict-compound effective-supply
+(`normalize_preserves_struct_equiv`). (iii) **The native authority
+representation** (§4.6/§4.7): the paper fixes linear token behavior and signature
+identity, while production refines persistent custody through SystemVault and
+located authority through ordered RSpace stack cells. The mechanization proves
+their conservation and domain separation without prescribing an extra in-memory
+ledger. (iv) **The funding-key instantiation** (§D2.9). The paper's signature
+parameter is abstract over backend `G`, but distinct principals must remain
+distinct. `WalletNaming.v` proves canonical SystemVault address injectivity in
+the public key, and `funding_sig` preserves the corresponding semantic authority
+for located stacks. No formal artifact ties funding to a per-deploy wire
+signature. The `deploy_id` continues to derive from the wire signature; it is
+on-chain identity, not ownership or funding authority. The strict-compound effective-supply
 check the §D2.9 replay recompute performs,
 `effectiveΣ_{s₁∘s₂} = Σ_{s₁∘s₂} + min(Σ_{s₁}, Σ_{s₂})`, is the **already-proven
 Split/Join algebra** (the `Split`/`Join` mediators + `CAJoinConservation`, App. §4.8.4)
@@ -4312,170 +4332,306 @@ does fix. (See DR-20.)
 
 ---
 
-## Appendix A. Option E: Post-Hoc Canonical Reconciliation
+## Appendix A — Atomic COMM accounting refinement
 
-The `RuntimeBudget` Rust implementation uses lock-free CAS attempts
-against a shared `consumed_tokens` counter. Multiple concurrent
-parallel-reduction tasks race for the CAS; whichever wins gets the
-weight. The runtime's grant/oop decision is for *liveness* — once
-the budget is exhausted, no further branches do paid work.
+The consensus cost unit is one successful atomic RSpace COMM. A send or
+receive introduction that does not match costs zero. A binary match costs one,
+and a join costs one regardless of the join arity. This is the direct runtime
+realization of the token-gated COMM transition in the publication; reducer
+entry, task scheduling, and failed candidate probes are not semantic
+reductions and therefore cannot be cost units.
 
-**Consensus-surface scope (read first).** The single consensus cost
-quantity computed here is `total_cost` (clamped) — together with the
-deploy status and the post-state hash, those are the consensus cost
-integrity of a deploy. This is the **token-per-COMM** cost model of
-**DR-9**: consensus enforces the conserved token total, and the
-per-operation `cost_trace_digest` and `cost_trace_event_count` are
-diagnostic only — **not** consensus quantities. They are removed from
-the replay comparison and from the signed block-hash preimage, and are
-retained as **diagnostics/telemetry only** (see TM-CA-151 in
-[`cost-accounting-threat-model.md`](cost-accounting-threat-model.md), and
-**DR-9**/**DR-16** in
-[`cost-accounting-decision-records.md`](cost-accounting-decision-records.md)).
+### A.1 Refinement boundary
 
-![Option-E post-hoc canonical reconciliation, as a three-phase sequence. Phase 1 (schedule-dependent): the deploy caller spawns N parallel reducer tasks that each push an attempt record to a brief-locked `attempt_log` and race a lock-free CAS on the `consumed_tokens` atomic (red arrows; grant if it fits, Oop on overflow). Phase 2 (single-threaded, post-execution): at deploy join, `reconcile()` snapshot-clones the attempt log, sorts it by the canonical rank (deploy_id, source_path, redex_id, local_index, kind, weight), walks once accumulating weight until it would exceed the initial budget (the out-of-phlo boundary), and caches the result (green arrows). Phase 3 (schedule-independent): consensus reads only `total_cost` = consumed_units; the `cost_trace_digest`, event count and `last_oop_event` are diagnostic-only (TM-CA-151). Because the reconciliation is a pure function of (initial budget, multiset of attempts), play and replay yield a byte-identical consensus value regardless of which CAS race winners occurred.](diagrams/option-e-reconciliation.svg)
+RSpace calls the cost observer after it has selected and locked a complete
+match, but before it writes the COMM event log or mutates tuplespace state. The
+observer receives the complete consume and produce identities, repetition
+metadata, and deterministic match structure. It derives one stable COMM
+identity and reserves one unit from the deployment authority.
 
-(*Source: [`diagrams/option-e-reconciliation.puml`](diagrams/option-e-reconciliation.puml) — render with `plantuml -tsvg docs/theory/diagrams/option-e-reconciliation.puml` (or `./render.sh option-e-reconciliation.puml`).*)
-The post-hoc canonical reconciliation below is therefore the bounded-`K`
-machinery that computes the consensus `total_cost` and a *diagnostic*
-boundary (the multi-parent merge dispatcher this reconciliation feeds is
-retained per **DR-15**); it is no longer presented as the protector of a
-consensus digest.
+The transition has two outcomes:
 
-**Where determinism actually comes from.** The schedule-independence of
-the consensus quantity `total_cost` is *not* manufactured by the
-reconciliation, and it is *not* a per-fork-private ledger. It is a
-consequence of two structural invariants of the existing runtime, each
-guarded by a debug-assert/property test: (a) `eval_inner` forks *every*
-Par term — including single-term bodies — into its own metering child
-with a **fresh** `next_local_index` (it never charges on the shared
-parent counter, and continuations re-root through `eval_inner`, so no two
-concurrent scopes share a counter); and (b) RSpace selects match
-candidates by a **deterministic** candidate hash (no RNG). Together these
-make the billable multiset of a non-OOP deploy a function of the deploy
-and its initial budget alone; reconciliation then folds that multiset
-into `total_cost`. On out-of-phlogiston the committed multiset is
-schedule-dependent — which is exactly why the per-operation digest cannot
-be a consensus quantity — but `total_cost` is clamped to `initial` and is
-identical across schedules.
+- reservation succeeds, after which the one COMM is logged and applied;
+- reservation fails, in which case the event log, tuplespace root, cost
+  counter, and authority balance are unchanged.
 
-### A.1 Paper alignment
+The same observer contract is installed in play and replay. Runtime and replay
+therefore observe the same semantic event rather than attempting to reconstruct
+cost from reducer-local execution paths.
 
-Per §3 Rule 1 of `cost-accounted-rho.tex`: within a single deploy,
-all sub-processes share the deploy signature `σ_deploy`. The
-applicable rule is the shared-token form `(P)^σ | σ:T → P^σ | T`.
-The paper does NOT prescribe an ordering between sibling sub-processes
-that both consume from the shared `σ:T` — only that the final state
-is bisimilar across reductions.
+### A.2 Identity and concurrency contract
 
-Option E picks **the canonical-rank order** for the diagnostic trace and
-for computing `total_cost`: events sorted by `(deploy_id, source_path,
-redex_id, local_index, kind, weight)` (all program-structure-derived).
-For a non-OOP deploy, two runtime executions over the same deploy +
-initial budget produce identical canonical sequences regardless of Tokio
-scheduling (by the two invariants above), and therefore identical
-`total_cost`. The canonical order also fixes a deterministic *diagnostic*
-OOP boundary; that boundary's identity is not a consensus quantity.
+The stable COMM identity is derived from the matched consume and produce
+hashes, their persistent flags, and canonical match metadata. It excludes
+Tokio task order, reducer source paths, redex identifiers, probe order, and
+local indices. Producer-triggered and consumer-triggered discovery of the same
+match yield the same identity.
 
-This is a strict *refinement* of the paper: any property the paper
-proves about `(P)^σ | σ:T` reductions holds for the canonical order
-(as one specific schedule), and Option E adds `total_cost`
-schedule-invariance.
+RSpace's match lock is the linearization point. Exactly one observer call can
+authorize a particular state transition, and no post-hoc reconciliation is
+needed to manufacture agreement from schedule-dependent attempts. Persistent
+continuations may participate in more than one distinct COMM, but each
+successful contraction has its own stable state transition and costs exactly
+one.
 
-**Faithfulness to the paper.** The paper (`cost-accounted-rho.tex`)
-models cost as token-gated COMM with token conservation (Rules 1–5,
-§3.6) and faithfulness as operational bisimulation plus capability
-security (§4 and §5); it has **no per-operation cost-trace or digest
-concept.** The runtime correlate of the paper's cost is `total_cost`
-(the conserved token total, clamped on OOP), which remains
-consensus-checked, and the consensus-critical theorems of this document
-(`token_monotone_*`, `ca_cost_deterministic`, `ca_step_deterministic`,
-`fuel_events_consumed_perm`) do not reference the digest at all. The
-runtime's per-operation metering is a refinement *below* the paper's
-COMM-token granularity, so committing the digest to consensus would have
-bound consensus to a level of detail the paper does not model; dropping
-it returns the consensus surface to the paper's cost granularity.
+Diagnostic `RuntimeBudget` events remain available for non-COMM primitives and
+telemetry. Their scheduler-local fields are not consensus identity. Production
+COMM accounting enters that budget only through the atomic RSpace observer.
 
-### A.2 Implementation contract
+### A.3 Structural proof, exact evidence, and settlement
 
-- `attempt_log: Arc<Mutex<Vec<AttemptRecord>>>` — every reservation
-  ATTEMPT recorded (whether or not the runtime CAS race granted it),
-  briefly mutex-protected per push.
-- `consumed_tokens: Arc<AtomicI64>` — runtime liveness counter; CASed
-  by parallel workers. May NOT equal the canonical consumed value if
-  races occur.
-- `canonical_reconciliation: Arc<Mutex<Option<CanonicalReconciliation>>>`
-  — cached output of `reconcile()`; invalidated by `reset_from_token`.
-- `reconcile()` — a **bounded lowest-`K` commutative merge** with
-  `K = min(MAX_COST_TRACE_EVENTS, initial + 1)`. Because every billable
-  weight is ≥ 1, the canonical walk commits at most `initial` events plus
-  one OOP boundary, so it reads only the lowest-`K` events rather than
-  sorting the whole attempt list. It yields canonical
-  `(committed, oop, consumed_units)` and `total_cost`; it is a pure
-  function of `(initial, multiset of attempts)`, removing the global
-  O(N log N) sort over up to `MAX_COST_TRACE_EVENTS` elements and bounding
-  memory. `total_cost` and the diagnostic boundary are unchanged by the
-  switch from sort-truncate-walk to bounded-fold.
-- Reset is strictly between deploys (finalization is single-threaded), so
-  it is not serialized against in-flight batch reservations; the earlier
-  `reset_serializer` read/write lock is removed in favor of a
-  single-threaded-finalization debug-assert, and per-op
-  `deploy_id`/`initial`/`unmetered` are copied by value into scopes.
+`delta_sigma` counts potential communication introductions in the closed,
+non-persistent submitted term. That count is a conservative finite upper bound,
+not an event-for-event replay oracle. Persistent input/output and unresolved
+dequotation make the structural result unprovable because authenticated RSpace
+state can contribute additional matches.
 
-### A.3 Theorem chain
+Production admission therefore executes the canonical candidate sequence from
+the authenticated merged root under finite authority-derived capacities. The
+retained evidence binds the authority root, pre-state, post-state, complete
+cosigned envelope, exact successful-COMM cost, status, causal event log, and
+block context. Replay verifies that evidence from the same pre-state, and
+settlement debits the exact realized cost plus the deterministic fee.
 
-| Layer | Theorem | What it proves |
-|-------|---------|----------------|
-| Rocq | `rb_event_weight_sum_permutation_invariant` | Multiset weight is permutation-invariant. |
-| Rocq | `rb_reconcile_consumed_eq_min_initial_or_sum` | Canonical consumed = `min(initial, consumed_initial + Σ weights)`. |
-| Rocq | `rb_reconcile_consumed_invariant_under_permutation` | Two permutations agree on canonical consumed. |
-| Rocq | `rb_reconcile_oop_iff_sum_overflows` | OOP fires iff cumulative weight exceeds budget. |
-| Rocq | `rb_reconcile_oop_occurrence_invariant_under_permutation` | Two permutations agree on whether OOP fires. |
-| TLA+ | `RuntimeBudgetReplay.ConsumedAndVerdictScheduleIndependent` | `total_cost` (clamped) + OOP verdict are schedule-independent; the per-op digest is diagnostic, not a consensus quantity. |
-| TLA+ | `RuntimeBudgetReplay.ConsumedFollowsReconciliationContract` | Consumed at finalization matches reconciliation contract. |
-| Sage | `sage_concurrency_reconciliation_is_schedule_independent` | Sage scenario record cross-references all five layers. |
-| Loom | `loom_runtime_budget_reconciliation::reconcile_canonical_oop_is_higher_rank_event_under_any_schedule` | Two concurrent attempts produce same canonical OOP under every loom-explored schedule. |
-| Rust | `cost_accounting_spec::concurrent_runtime_budget_reservations_are_linearizable` | 16-thread concurrent reservation produces canonical-walk-derived `cost_trace_event_count` AND identical digest across two independent runs. |
+No user deployment runs with an effectively unbounded budget. Exhaustion is a
+normal non-certifiable candidate outcome and cannot commit partial RSpace state.
+Local inability to replay authenticated history is a local validation fault,
+not slash evidence against a remote validator.
 
-**How to read this table after TM-CA-151.** Now that the per-operation
-digest is a diagnostic rather than a consensus quantity, the
-digest-centric rows are read as **`total_cost`/verdict
-schedule-independence** properties (the consensus quantities that remain),
-not as proofs of a consensus digest:
+### A.4 Cross-layer proof obligations
 
-- `RuntimeBudgetReplay.ConsumedAndVerdictScheduleIndependent`
-  is the re-aimed `total_cost`/verdict schedule-independence invariant — that the
-  finalized **consensus** quantities (`total_cost`, OOP verdict) are a
-  pure function of the recorded multiset and `initial`. The
-  bounded-`K` `Merge` action it ranges over is unchanged; the
-  OOP-truncation action now demonstrates *why* the per-op digest was
-  removed from consensus (the committed set diverges across schedules)
-  rather than something the model must hold invariant.
-- The Loom and 16-thread Rust rows keep the non-OOP "identical across
-  schedules" property as a **`total_cost`-determinism** invariant, and
-  gain an OOP-truncation variant showing the recorded set legitimately
-  diverges across schedules (so it cannot be a consensus quantity). Any
-  "identical digest" assertion is retained only as a non-OOP diagnostic
-  stability check, not as a consensus check.
+| Layer | Artifact | Obligation |
+| --- | --- | --- |
+| TLA+ | `AtomicCommAccounting.tla` | unmatched introductions cost zero; binary and join COMMs each cost one; producer/consumer trigger order and validator schedule do not change exact cost |
+| TLA+ | `AtomicCommRejection.tla` | observer rejection preserves cost, event log, and state atomically |
+| TLA+ | `MCAtomicCommAccountingIntroductionUnsafe.tla` | charging introductions violates the expected semantic-cost invariant |
+| TLA+ | `AccountingScopeLifetime.tla` | accounting remains active while any overlapping evaluation owns a scope; the unsafe boolean control demonstrates premature deactivation |
+| TLA+ | `StateBoundAdmission.tla` | exact state-bound evidence, finite capacity, replay, and settlement agree |
+| TLA+ | `StateBoundValidatorConvergence.tla` | independent validators agree across arrival and reducer schedules |
+| Rocq | `AtomicCommAccounting.v` | atomic COMM cost is trigger-symmetric, join-arity independent, and rejection preserving |
+| Rocq | `RuntimeAuthorityScope.v` | Unit has zero demand, is neutral under nesting, and either overlapping-scope exit order retains the remaining owner |
+| Rocq | `EndToEndAuthority.v` | authority, evidence, replay, and exact settlement compose without minting or double debit |
+| Rust | `rspace++/tests/comm_observer_tests.rs` | observer placement, one-call behavior, stable identity, join charging, and rollback |
+| Rust | Rholang accounting suites | example and property tests connect syntax bounds to exact runtime matches |
 
-The Rocq rows (`rb_reconcile_*`) already speak to canonical `consumed`
-(i.e. `total_cost`) and OOP occurrence, which are precisely the consensus
-quantities; they are unaffected by the decision beyond the bounded-`K`
-refinement of `reconcile()` noted in A.2.
+The safe models and proofs are promotion gates. The introduction-charging model
+is retained as an expected-refutation control so the original validator-cost
+divergence cannot be normalized into the specification.
 
-### A.4 What this fix closes
+Accounting-scope presence is not protocol activation, a feature switch, or an
+A/B-testing artifact. It records whether the current reducer work belongs to a
+deploy evaluation whose payer authority must be attached to future RSpace
+participants. User play and replay always use that same path. Bootstrap and
+direct reducer construction have no deploy payer; absent authority there is the
+canonical erasure of `Unit`, whose demand and funding sets are empty. Explicit
+signed regions remain consensus-visible in every execution context. The scope
+lifetime is reference-counted because asynchronous evaluations may overlap;
+the TLA+ boolean negative control proves that a single shared boolean is
+incorrect when one owner exits before another.
 
-- **Direct**: `ReplayCostTraceMismatch` — closed because the
-  per-operation `cost_trace_digest`/`cost_trace_event_count` are
-  **removed from the replay comparison and the block-hash preimage**
-  (TM-CA-151), so their OOP schedule-dependence can no longer cause a
-  mismatch. (The bounded-`K` reconciliation still guarantees `total_cost`
-  is schedule-independent for the non-OOP case and clamped to `initial`
-  on OOP — that is the consensus quantity that remains checked.)
-- **Cascade-closed**: the secondary `Missing mergeable entry`
-  KvStoreError, `RootRepositoryDivergence` / `UnknownRootError`,
-  and `UnauthorizedSlashDeploy` entries that previously stemmed
-  from the digest mismatch (see `cost-accounting-threat-model.md`
-  TM-CA-144, superseded by TM-CA-151).
+### A.5 Failure cascade closed by this refinement
+
+The earlier producer/consumer cost mismatch caused honest validators to reject
+blocks after replay. Those rejections then produced missing merge entries,
+unknown roots, false invalid-transaction classifications, unauthorized slash
+deploys, negative fault tolerance, stalled finality, and eventually resource
+ceiling failures. Atomic COMM accounting removes the primary mismatch. Local
+replay faults remain explicitly non-slashable, so missing local history cannot
+create a second consensus cascade.
+
+## Appendix B — State-bound dependent admission refinement
+
+### B.1 The missing refinement premise
+
+The original end-to-end model represented `CostReservation` as an input that
+already bounded every `ExecutionChoice`. That is a valid theorem premise, but
+the Rust producer instantiated it with a structural count of the submitted
+`Par`. Persistent RSpace continuations are authenticated state, not submitted
+syntax. A registry send can therefore have structural count 9 and realized cost
+123 without contradicting any theorem in the old abstraction: the
+implementation had failed to establish the theorem's premise.
+
+DR-31 closes the abstraction boundary by modeling proof production itself. Let
+$`S_0`$ be the authenticated merged root, $`D_1,\ldots,D_n`$ the canonical
+deployment sequence, $`C_i`$ the authority-derived finite capacity, and
+$`S_i`$ the post-state after $`D_i`$. A state-bound certificate contains:
+
+```math
+E_i=(D_i,S_{i-1},S_i,\kappa_i),
+\qquad 0\leq\kappa_i\leq C_i.
+```
+
+The verifier requires $`S_0`$ to equal the authority pre-state, adjacent roots
+to agree, complete cosigned envelopes to match byte-for-byte, and every proof
+evaluation to complete without capacity exhaustion. Funding then requires the
+live residual ledger to cover $`\kappa_i+f_i`$. Removing a candidate changes
+later states, so evidence is recomputed until the retained set is unchanged.
+
+### B.2 Cross-tool proof obligations
+
+The local pgmcp formal-verification catalog identifies TLC, Rocq, and SageMath
+as installed complementary tools. They divide the obligations as follows:
+
+| Layer | Artifact | Obligation |
+| --- | --- | --- |
+| Protocol concurrency | `StateBoundAdmission.tla` | Completed bounded play before admission; finite-capacity funding; single-play evidence commitment; constrained replay equality; schedule-invariant cost; exact settlement; eventual done-or-rejected |
+| Independent-validator convergence | `StateBoundValidatorConvergence.tla` | Arrival-order normalization; certificate-constrained replay across reducer schedules; authenticated root/block-context binding; exact certificate reproduction; agreement of every accepted validator; eventual accept-or-reject |
+| Required counterexamples | `StateBoundAdmission{Structural,Drift,Exhaustion}Unsafe.cfg` | Structural ambient undercount, duplicate unconstrained play, and exhausted admission each violate the intended invariant |
+| Distributed required counterexamples | `StateBoundValidatorConvergence{Context,Order,Schedule}Unsafe.cfg` | Unbound certificate context, unchecked arrival order, and accepting a scheduler-local trace instead of the certified witness violate context integrity, canonical ordering, or exact reproduction |
+| Unbounded arithmetic and lists | `EndToEndAuthority.v` | Capacity iff funding, exhaustion non-certifiability, certificate-funded commit, root-chain continuity, funded admitted lists, exact settlement conservation |
+| Finite arithmetic cross-check | `settlement_model.sage` | Fixed-point termination in at most $`n+1`$ passes, admitted/rejected disjointness, capacity completion, exact cost-plus-fee funding |
+| Concrete refinement | Rust example, property, and integration tests | Resident-continuation cost, root/envelope substitution, exact boundary, commit/replay equality, registry/vault/bridge/slashing/merge behavior |
+
+The TLA+ safe instance explores 162 distinct states. The three negative controls
+must produce counterexamples; a clean exit without the named violation is a
+failed regression check. Rocq proof output must report `Closed under the global
+context` for every new headline theorem.
+
+### B.3 End-to-end invariants
+
+1. An exhausted proof cannot issue an admission token.
+2. An admission token is bound to the exact parent root, `BlockData`,
+   invalid-block set, canonical envelopes, and evidence chain.
+3. Every committed user execution and replay has finite authority-derived
+   capacity.
+4. The final bounded play is the committed witness; replayed cost, status,
+   canonical event log, and post-state root equal that witness.
+5. Exact settlement and fee debits are recomputed from authenticated execution;
+   proposer maps carry no authority.
+6. A nonterminal fixed-point iteration strictly shrinks the candidate set.
+7. Structural certificates authorize only the fragment for which structure is
+   an upper bound; ambient contract invocation uses dependent evidence.
+
+These invariants subsume the reported timeout, unknown-root,
+`UnauthorizedSlashDeploy`, negative-fault-tolerance, and resource-ceiling
+cascades at their common admission boundary. They do not weaken multi-parent
+consensus or serialize parent arrival.
+
+## Appendix C — Deploy-envelope admission algebra
+
+### C.1 Semantic boundary
+
+The broad `sig_algebra` models both funding and value/capability formulas. The
+deploy wire cannot preserve every formula in that algebra because `Cosigned`
+stores a canonical signer list and one scalar quorum. The executable admission
+subset is therefore explicit:
+
+- an atom contributes one candidate signer and requires one signature;
+- a tensor combines its children and adds their required signer counts;
+- `Threshold(k, members)` requires `1 ≤ k ≤ |members|` and every direct member
+  to be one atomic candidate signer;
+- `Plus`, `With`, `Bang`, `WhyNot`, and `Lolly` are rejected at deploy ingress.
+
+The atomic-member restriction is semantic, not syntactic conservatism. A
+scalar `k` over signer slots cannot represent `k` satisfied member formulas if
+one member is itself a tensor or quorum. Flattening such a member changes the
+authorization policy and can admit a signer combination the formula forbids.
+
+### C.2 Formal and executable correspondence
+
+`CostAccountedSyntax.v` defines `admission_sig_algebra_atom` and
+`admission_sig_algebra_valid`. It proves:
+
+1. `admission_sig_algebra_valid_sound`: every admitted term is valid in the
+   broad algebra;
+2. `admission_sig_algebra_scalar_policy_sound`: every admitted term is either
+   an all-required atom/tensor tree or one top-level atomic-member threshold;
+3. `admission_sig_algebra_quorum_sound`: every admitted term has
+   $`1 \leq min\_required \leq atom\_count`$;
+4. `admission_sig_algebra_atom_count`: an atomic threshold member contributes
+   exactly one signer slot.
+
+Rust realizes the same traversal in `DeployData::analyze_funding_algebra`. The
+traversal collects atoms, calculates the minimum with checked arithmetic, and
+determines all-required status in one pass. It then chooses N-of-N validation
+or scalar-threshold validation. When `sig_algebra` is present,
+`from_proto_cosigned` dispatches through this path before inspecting unused
+flat compatibility fields, so only one representation controls admission.
+
+### C.3 Verification matrix
+
+| Layer | Obligation |
+| --- | --- |
+| Rocq | Admission-subset validity, atomic-member cardinality, and nonzero bounded quorum are axiom-free and kernel-rechecked |
+| Rust examples | Atoms, all-required tensors, top-level thresholds, exact threshold bounds, malformed structures, every capability connective, and the policy-changing tensor-plus-threshold counterexample |
+| Rust properties | Canonical signer order and threshold outcomes are invariant under input permutations; duplicates, empty signer lists, and invalid presented signatures reject |
+| Wire boundary | Algebra-bearing envelopes ignore all unused flat fields; algebra-free legacy envelopes retain their original validation rules |
+| Coverage | `check-cost-accounted-rho-coverage.sh` reports branch-outcome evidence per consensus-critical source file from full release package tests |
+
+This admission refinement is orthogonal to GSLT integration. The GSLT traits
+remain the abstraction seam for the future MeTTaIL implementation; no
+MeTTaIL-specific assumption is needed for the envelope theorem.
+
+## Appendix D — Consensus-regression closure
+
+### D.1 Root causes and semantic repairs
+
+The integration failures exposed independent violations. Their common
+symptom was stalled finalization, but they sit at different refinement
+boundaries and therefore require separate repairs.
+
+| Boundary | Violated invariant | Consequence | Repair |
+| --- | --- | --- | --- |
+| RSpace checkpoint | A soft checkpoint returns the current causal trace segment and leaves the active segment empty. | Cloning the event log made later deploy indices contain earlier deploy events. The merger then treated sequential effects as sibling concurrency, manufactured conflicts, rejected valid blocks, and starved finalization. | Both play and replay spaces drain the event log and produce counter at checkpoint creation. Reversion restores the drained checkpoint exactly. |
+| Number-channel merge | Validity is a property of the simultaneous commutative total, and survivor selection equals state application. | An $`i64`$ prefix fold could overflow or become negative for one enumeration even when the final total was valid, making acceptance depend on container order. | `IntegerAdd` contributions are summed in $`i128`$ and range-checked only after the complete total is added to the base. `BitmaskOr` uses one complete $`u64`$ union. Both phases call the same aggregate operation. |
+| Genesis replay | Blessed genesis execution and replay use the multiplicative unit authority. | Play recorded `Unit`-scoped COMM identities while replay reconstructed deploy-funder authority, leaving the recorded COMMs unused and invalidating an otherwise correct genesis block. | `evaluate_genesis` selects `DefaultCostAuthority::Unit`, and the genesis replay branch calls that same evaluator. Ordinary paid deploys continue to use their authenticated funding allocation. |
+| Protocol-version lifecycle | Ceremony, approval, startup, proposal, and reception use one supported protocol version. | Genesis was approved as version 1 while proposers emitted configured version 2 and receivers compared against the version-1 approved header, so honest blocks were discarded before validation. | Genesis emits the configured version, approvers validate it, approved-block admission supports exactly version 2, startup adopts it, and both proposal and reception use the authoritative running version. Version 1 and unknown versions fail closed before Casper starts. |
+| Replay supply observation | Authority supply is observed from ordinary RSpace at each authenticated deployment pre-state; ReplayRSpace consumes only the committed causal trace. | Querying SystemVault from inside ReplayRSpace introduced communications absent from `ProcessedDeploy.deploy_log`, so replay failed before ordinary Casper, reporting, genesis, and merge tests could compare the committed transition. | Proposal and replay share the state-bound admission check. Replay then captures an immutable per-deployment purse snapshot through an ordinary runtime and passes it into trace replay. Missing, extra, or lane-mismatched snapshots fail closed; no live authority query enters ReplayRSpace. |
+| Native reservation visibility | Abstract maximum reservation is proof-local; consensus state contains only durable native custody changes. | A singleton `reservationStore` was consumed and rewritten by every paid branch. Multi-parent merge therefore found a nonmergeable global race and dropped an otherwise valid sibling even though the payer balance deltas were mergeable and funded. | `SystemVault.applyCost` performs maximum split, exact burn and fee transfer, and refund in one lexical continuation. No reservation cell survives. The encompassing node checkpoint rolls back located-stack and vault effects together on failure. |
+| Deploy normalizer environment | Certification, retained execution, and replay normalize with the same bindings derived from the verified deployment envelope. | State-bound certification used the empty-environment compiler entry point, while execution installed deployer/cosigner bindings. A funded SystemVault query using `rho:system:deployerId` was rejected during capacity derivation before it could produce a certificate. | `canonical_program_for_deploy` uses `source_to_adt_with_normalizer_env` and the same `normalizer_env_from_cosigned_deploy` construction as execution. The canonical program hash, authority plan, retained execution, and replay now share one authenticated environment. |
+| Physical settlement proof search | A finite authority trace may increase proof-search work but cannot increase native call-stack depth or change canonical witness selection. | Recursive allocation descended through every realized event and exhausted the configured 8 MiB worker stack on a valid high-fanout deployment after more than 500 nested frames. | The same deterministic depth-first search uses a heap worklist, reverse candidate insertion, delayed failure markers, and a persistent draw chain. Final physical verification and serialized evidence are unchanged. |
+| Certified-state promotion | Clique certification and committed-state admissibility are separate: a new LFB must state-descend the current LFB without modifying the certificate. | A multi-parent block could main-descend a finalized funding transition while replaying from an older floor; the unchanged clique oracle could certify it, and LFB promotion would then omit already committed cost-accounting state. | Blocks carry structural state-base lineage. Floor frontiers, inherited-floor selection, covering-parent fast paths, and LFB promotion all require lineage preservation. A stale block remains valid and certified; its successor rebases from the floor and restores progress. This is a node-consensus refinement, not an LFB rule stated in either cost-accounting paper. |
+
+The numeric algorithm is deliberately total-based. Let $`b`$ be the stored
+balance and let $`D`$ be the multiset of surviving integer contributions. The
+only acceptance question is:
+
+```math
+0 \leq b + \sum_{d \in D} d \leq 2^{63}-1.
+```
+
+The implementation follows this literate pseudocode:
+
+```text
+aggregate(contributions):
+    for each channel contribution:
+        reject if the channel's merge type disagrees with an earlier contribution
+        if IntegerAdd, add the signed value to the channel's widened total
+        if BitmaskOr, union its bits into the channel's unsigned total
+    return the canonical channel-ordered totals
+
+select(base, contributions):
+    totals := aggregate(contributions)
+    accept exactly when every base-plus-total lies in the stored domain
+
+apply(survivors):
+    totals := aggregate(the same causally deduplicated survivor effects)
+    construct trie actions from those totals
+```
+
+No timeout, retry, relaxed log filter, altered fault-tolerance threshold, or
+test-only consensus path is part of the repair.
+
+### D.2 Regression and proof matrix
+
+| Invariant | Example-based Rust evidence | Property or exhaustive evidence | Required negative control |
+| --- | --- | --- | --- |
+| Every checkpoint owns exactly one trace segment | `soft_checkpoint_segments_the_committed_trace`; `create_soft_checkpoint_should_clear_the_event_log` | Rocq `consecutive_soft_checkpoints_are_disjoint` and `checkpoint_segments_reconstruct_execution_trace`; TLA+ `DeployTraceSegmentation.cfg` | `DeployTraceSegmentationRetentionUnsafe.cfg` must violate `CheckpointContainsOnlyItsDeploy` |
+| Numeric merge is order independent and selection equals application | widened-cancellation, invalid-total, prefix-order, and selection/application parity examples in `conflict_set_merger` | 512-case proptest against direct $`i128`$ arithmetic; Rocq `integer_total_result_permutation` and `integer_selection_application_agree`; TLA+ `MergeAggregateAgreement.cfg` | `MergeAggregateAgreementPrefixUnsafe.cfg` must violate `AcceptanceIsPermutationInvariant` |
+| Genesis play and replay use identical unit authority and canonical vault funding | genesis-vault construction and replay regressions assert `Sig::Unit` for blessed execution and reproduce the SystemVault-funded post-state through direct and consensus entry points | Rocq `genesis_unit_execution_replay_agrees`, `genesis_system_vault_replay_agrees`; the complete `EndToEndCostConsensus.cfg` state machine | genesis-authority and genesis-funding mismatch controls must violate their named invariants |
+| Protocol 2 is authoritative from fresh genesis through peer reception | `approved_protocol_version_adoption_accepts_current`, `approved_block_rejects_noncurrent_protocol_versions`, `block_approver_protocol_should_reject_mismatched_protocol_version`, and `peer_admission_uses_the_running_protocol_version` | arbitrary-`i64` proptest for the exact supported set; Rocq `finalized_floor_protocol_lifecycle_correct`; the three safe `ProtocolVersionLifecycle` TLC configurations | ceremony, adoption, proposer, receiver, and unsupported-admission unsafe configurations must each violate their named lifecycle invariant |
+| Concurrent exact-tombstone explanations converge | `rejection_reason_join_uses_direct_cause_precedence` and `merge_context_canonically_joins_concurrent_rejection_reasons` | commutative, associative, and idempotent Rust proptests; Rocq `finalized_floor_rejection_reason_confluence_correct`; `RejectionReasonConfluence` safe TLC configuration | last-writer unsafe configuration must violate `Inv_EqualObservationConverges` |
+| Replay supply is state-authenticated, locally materialized, and absent from the causal trace | independent-validator and isolated-reporting multi-deployment regressions; ordinary Casper, checkpoint, and genesis replay regressions | TLA+ `ReplaySupplySnapshot.cfg` and `ReplayRootMaterialization.cfg`; Apalache `ReplayRootMaterializationApalache.cfg` through the complete two-validator/two-deployment eight-step horizon; Rocq `ReplayRootMaterialization.v`; exact authority-lane and adjacent-root validation in `ReplayRuntimeOps`; lifecycle-trace subset regression | live-query, eager-root, producer-history, and replay-query controls must violate their named trace, materialization, agreement, and runtime-separation invariants |
+| Native reserve→settle refinement is atomic and merge-local | SystemVault two-payer conservation/rollback example and same-key sibling merge regression | 512-case Rust permutation/overdraw properties; Rocq `AtomicVaultSettlementRefinement.v`; TLA+ `MCAtomicVaultSettlementRefinement.cfg` | `AtomicVaultSettlementRefinementGlobalCellUnsafe.cfg` must violate `NoPersistentReservationState` |
+| Native wallet funding composes with authenticated lollipop continuation authority, exact settlement, and replay | `wallet_funded_lollipop_slot_settles_across_deploys_and_replays` derives the public address from the retained slot, funds it from an authenticated sponsor wallet, proves an unauthorized public trigger cannot consume or debit the continuation, admits the configured gateway through `rho:system:deployerId`, charges the slot lane only for continuation cost, separates the gateway fee, and compares play/replay roots | Rocq `WalletFundedLollipop.v`; TLA+ `WalletFundedLollipop.cfg`; component models for runtime-bound authority, located settlement, and atomic vault settlement | Seven `WalletFundedLollipop*Unsafe.cfg` controls must respectively violate conservation, address/capability separation, gateway authentication, canonical payer attribution, outer-event staging, exact refund, or replay equality |
+| Certification and execution share authenticated system bindings | funded deployer-ID SystemVault checkpoint/replay regression | Rocq `certification_execution_replay_share_authenticated_environment`; TLA+ `NormalizerEnvironmentRefinement.cfg`; exact state-bound rejection diagnostics | `NormalizerEnvironmentRefinementEmptyUnsafe.cfg` must violate `CertificationExecutionReplayUseSameEnvironment` |
+| Physical allocation is stack-safe and semantically identical | 4,096-event allocator regression and unchanged high-fanout play/replay stress test | mixed-event exact-debit/order proptest; Rocq `worklist_solutions_refine_recursive` and canonical-first theorem; TLA+ independent allocator interleavings | `PhysicalSettlementWorklistRecursiveUnsafe.cfg` must violate `NativeStackBound` |
+| Certified promotion preserves every committed state transition without changing majority voting | `finalizer_rejects_dag_descendant_without_state_lineage` proves the stale candidate passes the exact clique decision before rejection; the real conflicting-deploy replay regression proves the successor uses the finalized value | state-frontier proptest; Rocq `finalized_floor_state_lineage_correct`; complete two-validator TLC state space; Apalache safe check through bound 8 | `MC_StateLineageFinality_unsafe.cfg` must promote the delivered stale block and violate `Inv_AllCommittedStatesRemainInLineage` |
+
+The aggregate proof gate compiles every Rocq theory, runs `rocqchk`, prints the
+assumptions of each headline theorem, and rejects admitted statements or
+incompletion markers. The TLA+ runner requires both the safe models and the
+named counterexamples; an unsafe configuration that unexpectedly passes is a
+failed verification run.
 
 *E Pluribus Potentia*

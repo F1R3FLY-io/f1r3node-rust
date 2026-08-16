@@ -53,7 +53,7 @@ package "Layer 2 — Cost-Accounting, Translation & Settlement" <<L2>> {
   component "TokenConservation\n234 lines · 9 thms\ntoken_monotone_step / _reachable"                         as TokCon
   component "Settlement\n140 lines · 8 thms\nescrow/refund; no mid-eval refund"                               as Settle
   component "SlashingComposition\n570 lines · 30 thms\nslash effects preserve user fuel\n+ settlement arith"   as Slash
-  component "MergeableChannelAccounting\n274 lines · 14 thms\nIntegerAdd / BitmaskOr round trips"              as MCA
+  component "MergeableChannelAccounting\n347 lines · 16 thms\nWidened IntegerAdd / BitmaskOr"                 as MCA
 }
 
 package "Layer 3 — Faithfulness & Strong Bisimulation" <<L3>> {

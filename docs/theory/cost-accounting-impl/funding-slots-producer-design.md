@@ -1,7 +1,21 @@
 # Funding-Slots Producer — Design (per-lane attribution under P8-balanced settlement)
 
-**Status:** RESOLVED — the producer is **not needed for settlement** (Greg,
-2026-06-16). This doc is retained for the reasoning + the diagnostic-only option.
+**Status:** Superseded historical decision record. Native consensus-visible
+regions, persistent `CostStack` resources, authenticated purse inventory, exact
+physical event draws, and stack-pop settlement are implemented. The current
+contract is [End-to-End Authority Settlement](end-to-end-authority-settlement.md),
+and current completion evidence is the
+[Executable Conformance Matrix](../cost-accounting-executable-conformance-matrix.md).
+Claims below that authority is diagnostic-only, that no producer exists, or
+that the runtime remains collapsed to an envelope describe an earlier design
+and are not current behavior.
+
+> **Atomic-COMM correction:** this historical producer study uses structural
+> send/receive introductions as a diagnostic projection. They are not native
+> runtime cost events. Production charges one successful RSpace match, including
+> one unit for an N-way join, and derives exact per-deploy evidence from the
+> authenticated state. Scheduler-local source paths and redex indices cannot
+> identify consensus events.
 
 > ## ★ RESOLUTION (Greg, 2026-06-16) — supersedes §6's deferred conflict
 >
@@ -91,10 +105,9 @@ cannot do post-normalization.
 - **Fidelity:** it is the STATIC per-lane demand (what each signature *would* fund
   per the program text). It does not reflect runtime parking/contention — but
   under recognition-only there is no in-program parking anyway (MAJOR-4), and the
-  static demand is exactly the `Δ_s` the paper's linear proof uses (§589 "the
-  static analysis checks token availability per located surface"). So for a
-  diagnostic it is the *right* quantity, and it agrees COMM-for-COMM with the total
-  `demand` when summed over lanes.
+  structural demand remains useful as a conservative closed-fragment diagnostic.
+  Its lane sum agrees with total structural `demand`; it does not equal the
+  realized atomic-COMM trace.
 - **Test plan:** (i) `demand_by_region` over the demo + the GATE-1 fixtures: sum
   over lanes == `demand` total; each `{% P %}[s]` region's COMMs land on lane `s`;
   (ii) a multi-signature program: per-lane counts match the hand-computed split;
@@ -112,12 +125,11 @@ to "funding slots" *given the P8-balanced decision*.
 reducer; the reducer attributes each *runtime* COMM to its region's lane (a
 runtime-accurate per-lane count), feeding `note_channel_lane`/`per_lane_demand`.
 
-- **The hard part:** the key. Recognition runs in the normalizer; the reducer
-  assigns `source_path`/`redex_id` at *runtime* (per fork, after substitution and
-  spawning), so the normalizer cannot pre-key the table by a runtime identity, and
-  the AST→runtime COMM mapping is not 1:1 (a `{% P %}[s]` under a persistent
-  receive fires many times). A stable key would itself have to be carried in the
-  `Par` — collapsing B1 into B2.
+- **The hard part:** the AST→runtime COMM mapping is not 1:1 because a signed
+  region under a persistent receive may fire many times. Scheduler-local reducer
+  paths are explicitly excluded from stable COMM identity. Runtime attribution
+  must therefore consume the complete matched RSpace event rather than pre-keying
+  a side table from normalized syntax.
 - **Blast radius:** the reducer's metering-context flow (a region-context stack
   pushed/popped as evaluation enters/leaves a recognized region) + a normalizer→
   install side channel. Touches `reduce.rs` eval paths and `metering.rs`.

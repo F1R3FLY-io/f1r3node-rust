@@ -8,8 +8,12 @@
 
 This document maps each construct of the monad paper to the artifact that realizes it in `f1r3node-rust`,
 across Rocq, Rust, TLA+, Sage, and Lean. It is the alignment record for "fully support
-`continued-gslt-cost-v2`." See [DR-21](cost-accounting-decision-records.md) (the executed native four-sort
-migration + the conditional-SN finding) and [DR-20](cost-accounting-decision-records.md) (the GAP enumeration).
+`continued-gslt-cost-v2`." Both papers assume familiarity with the existing F1R3node architecture: their
+wallet, purse, mint, fee-channel, tuplespace, and validator terms name semantic roles, not instructions to
+build parallel ledgers beside SystemVault, RSpace, PoS, replay, and Casper merge. The native refinement is
+specified in [*End-to-end cost authority and native RevVault settlement*](cost-accounting-impl/end-to-end-authority-settlement.md).
+See [DR-21](cost-accounting-decision-records.md) (the executed native four-sort migration + the conditional-SN
+finding) and [DR-20](cost-accounting-decision-records.md) (the GAP enumeration).
 
 The decisive enabling move is the **native four-sort grammar** (DR-21): `for`/`send` continuations are signed
 terms (the wrapped-term sort 𝕋), so "signed terms pervade the syntax" is native and "every redex sits inside a
@@ -64,13 +68,17 @@ The authoritative model:
   (collides with F1R3FLY.io *Capabilities*); canonical = **phlogiston**. So **REV is a NAME for the one token, NOT
   a separate species** (and NOT off-model). **`Pay(τ)`** (typed_value.tex) is a **TYPE on that one token, NOT a
   second token** (Greg P9/P13); **stake** is a distinct locked-token ROLE (slashable, same denomination).
-- **`wallets.txt` IS the genesis trust-root (Greg P12), NOT off-model.** One entry per wallet (balance = its
-  available system tokens); the seed source of the per-signer pools `Σ⟦s⟧`. The impl's `client_fuel_allocations`
-  IS that `wallets.txt` seeding mechanism (on-model). User-provided cons-notation tokens (signed) **desugar to
-  system tokens**, the signature tracking origin for cost attribution. The legacy `SystemVault`/`MakeMint`
-  value-transfer layer is a SEPARATE concern migrating to the one-token + `Pay(τ)`-type model (Greg P13, deferred —
-  blocked on OSLF). Minting drops the `sysAuthToken` MONOPOLY → capability + (forward) type-gated, uniform protocol
-  minting; genesis supply = `wallets.txt`.
+- **`wallets.txt` is the platform's genesis value-allocation trust root (Greg P12), not an automatically usable
+  public-key allocation.** Native cost purses are keyed by a canonical public key, whereas `wallets.txt` records
+  REV addresses. The node therefore commits an explicit `client_fuel_allocations: [(PublicKey, amount)]` payload;
+  test builders can derive it from `wallets.txt` only because they also hold the corresponding test keypairs.
+  Production configuration cannot invert a REV address to obtain a public key. DR-27's one-denomination decision
+  means the two representations must conserve the same resource when bridged; it does not justify crediting both
+  ledgers or silently copying balances. User-provided cons-notation stacks retain their signature provenance for
+  cost attribution. The concrete `SystemVault` and `MakeMint` contract APIs are existing F1R3node architecture;
+  the rho paper supplies their semantic wallet, purse, mint, epoch, fee, slash, and redemption obligations.
+  The `Pay(τ)` type layer remains distinct. None of these surfaces is an implicit source of native `Σ`
+  supply: every spendable unit must be present in canonical custody or in an authenticated prepaid located stack.
 - **`spacetime-functor.tex` is geometry, NOT storage.** It maps spent phlogiston to spacetime *volume*
   (Number = Volume); it does **not** model a storage/rent charge (the rent model is `rent_and_shard_splitting.tex`,
   rebased off the legacy `phloLimit×phloPrice` escrow per DR-27). Do not read it as the rent resolution.
@@ -82,16 +90,36 @@ The authoritative model:
 See [DR-26](cost-accounting-decision-records.md) (verification posture: shapes, not certificates) and
 [DR-27](cost-accounting-decision-records.md) (full findings + remediations).
 
-## Runtime correspondence (zero behavioral change)
+## Native architecture correspondence
 
-The native migration adds **no new runtime behavior** (verified); the existing runtime already realizes the
-monad-paper concepts:
+The cost endofunctor does not prescribe a second node architecture. The implementation refines its semantic
+objects through the existing native subsystems, and that refinement is consensus-visible behavior. In
+particular, production does not expose an accounting-off mode: the monadic unit and the paper's distinguished
+free signature are proof/refinement devices, while protocol user deployment and replay always use the active
+cost-authority path.
+
+The concrete paper's pure-rho compiler pass is its internalisation/simulation route for the older runtime, not
+the production architecture assumed by its later RSpace, Casper, validator-wallet, epoch, and slashing sections.
+The native implementation below realizes those sections directly and uses the compiler-pass semantics as a
+conformance oracle, not as a replacement for the node's existing state and consensus machinery.
 
 | Paper concept | Runtime artifact |
 |---|---|
-| Unit η(P) = {P}_∅ (cost-free fragment) | `accounting/mod.rs` `RuntimeBudget::unmetered` / s₀-collapse |
+| Unit η(P) = {P}_∅; distinguished free signature s₀ | Rocq translation/refinement boundary and payer-less bootstrap/test reducer calls; never a production user-deploy feature flag |
 | Lazy metering (charge when forced, not exposed) | per-COMM charge in `reduce.rs` / `metering.rs` (DR-9) |
-| Located purses / disjoint per-surface pools | `accounting/mod.rs` per-signature `DashMap<Sig,…>` lane pool |
+| Persistent wallet / RevVault custody | blessed `SystemVault` at `rho:vault:system`, addressed through the existing `VaultAddress` and mint/purse implementation |
+| Located purses / disjoint per-surface pools | first-class `CostStack` values on canonical signature channels in ordinary RSpace; `accounting/mod.rs` keeps only execution-local lane state |
+| Available supply Σ | authenticated union of a signer's SystemVault balance and causally available prepaid RSpace stack cells, allocated physically so one unit cannot satisfy two obligations |
+| Conservative bound, realized draw, refund | certificate-bound reservation and exact draw; `SystemVault.applyCost` performs reserve, cost burn, proposer-fee transfer, and residual return in one authenticated lexical transaction, while untouched stack tails remain in RSpace |
+| Wallet and funding-slot ownership | verified deploy signer → canonical vault address for general custody; unforgeable RSpace name possession for narrowly delegated persistent slots |
+| Lollipop `s₁ ⊸ s₂` | normalizer desugaring plus distinct rendezvous/continuation authority regions; physical settlement draws each forced region from its own native purse |
+| Minting | existing `MakeMint` substrate confined by `SystemVault.protocolMint` to authenticated genesis/PoS system execution; ordinary settlement and user Rholang cannot mint native supply |
+| Validator wallet and epoch replenishment | PoS `mintPhlogiston` invokes `SystemVault.protocolMint` under the system authority token and records epoch idempotency |
+| Slashing and redemption | PoS state plus `SystemVault.protocolQuarantineAll`, protocol burn/return/penalty transitions, replayed as authenticated system deploys |
+| Fee collection and conversion | direct conserving payer-to-proposer SystemVault transfer for the native fee; blessed `rho:lang:exchange` remains available for genuine swaps of already-existing carrier resources |
+| Transaction atomicity | RSpace match observer, deploy soft checkpoint, located-stack pops, and `SystemVault.applyCost` share one retained node lifecycle; failure restores the pre-state |
+| Validator acceptance and replay | state-bound authority certificate/witness derived independently from the authenticated block pre-state by proposal and replay |
+| Concurrent composition | Casper merge combines durable RSpace changes, located-stack removals, and exact SystemVault deltas; canonical aggregation rejects aggregate overdraw |
 | Graded transitions (step labelled by consumed signature) | `BillableTokenEvent.sig_hash` |
 | Generic GSLT/OSLF funding boundary | `accounting/resource_logic.rs` `GsltPresentation`, `ResourceSignature`, `OslfResourceLogic<G>`; native specialization `RhoGslt` |
 | Two monoids (spatial vs temporal) | spatial `Par` (unordered) vs temporal `SourcePath` (ordered) |
