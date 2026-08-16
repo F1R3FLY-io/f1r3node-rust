@@ -45,7 +45,7 @@ const DEPLOY_SIG_BYTES_ESTIMATE: f64 = 65.0;
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DeployBranchScore {
     deploy_sig_count: usize,
-    latest_deploy_block_number: i64,
+    earliest_deploy_block_number: i64,
     root_block_number: i64,
 }
 
@@ -53,21 +53,21 @@ fn better_deploy_branch_score(
     candidate: (&DeployBranchScore, &BlockHash),
     current: (&DeployBranchScore, &BlockHash),
 ) -> bool {
-    candidate
+    current
         .0
-        .deploy_sig_count
-        .cmp(&current.0.deploy_sig_count)
+        .earliest_deploy_block_number
+        .cmp(&candidate.0.earliest_deploy_block_number)
         .then_with(|| {
             candidate
                 .0
-                .latest_deploy_block_number
-                .cmp(&current.0.latest_deploy_block_number)
+                .deploy_sig_count
+                .cmp(&current.0.deploy_sig_count)
         })
         .then_with(|| {
-            candidate
+            current
                 .0
                 .root_block_number
-                .cmp(&current.0.root_block_number)
+                .cmp(&candidate.0.root_block_number)
         })
         .then_with(|| current.1.cmp(candidate.1))
         .is_gt()
@@ -87,7 +87,7 @@ fn branch_unfinalized_user_deploy_score(
     let mut stack = vec![root_hash.clone()];
     let mut seen: HashSet<BlockHash> = HashSet::new();
     let mut deploy_sigs: HashSet<Bytes> = HashSet::new();
-    let mut latest_deploy_block_number: Option<i64> = None;
+    let mut earliest_deploy_block_number: Option<i64> = None;
 
     while let Some(block_hash) = stack.pop() {
         if !seen.insert(block_hash.clone())
@@ -104,9 +104,9 @@ fn branch_unfinalized_user_deploy_score(
 
         if let Some(sigs) = block_store.deploy_sigs(&block_hash)? {
             if !sigs.is_empty() {
-                latest_deploy_block_number = Some(
-                    latest_deploy_block_number
-                        .map(|current| current.max(block_meta.block_number))
+                earliest_deploy_block_number = Some(
+                    earliest_deploy_block_number
+                        .map(|current| current.min(block_meta.block_number))
                         .unwrap_or(block_meta.block_number),
                 );
                 for sig in sigs {
@@ -118,11 +118,13 @@ fn branch_unfinalized_user_deploy_score(
         stack.extend(block_meta.parents.iter().cloned());
     }
 
-    Ok(latest_deploy_block_number.map(|latest| DeployBranchScore {
-        deploy_sig_count: deploy_sigs.len(),
-        latest_deploy_block_number: latest,
-        root_block_number: root_meta.block_number,
-    }))
+    Ok(
+        earliest_deploy_block_number.map(|earliest| DeployBranchScore {
+            deploy_sig_count: deploy_sigs.len(),
+            earliest_deploy_block_number: earliest,
+            root_block_number: root_meta.block_number,
+        }),
+    )
 }
 
 fn prefer_deploy_support_main_parent(
@@ -178,11 +180,11 @@ fn prefer_deploy_support_main_parent(
     reordered.insert(0, promoted_parent);
     tracing::info!(
         target: "f1r3fly.casper.deploy_support",
-        "Parent selection promoted deploy-carrying branch for canonical support: original_main={}, promoted_main={}, deploy_sigs={}, latest_deploy_block={}, promoted_root_block={}",
+        "Parent selection promoted deploy-carrying branch for canonical support: original_main={}, promoted_main={}, deploy_sigs={}, earliest_deploy_block={}, promoted_root_block={}",
         PrettyPrinter::build_string_bytes(&original_main),
         PrettyPrinter::build_string_bytes(&promoted),
         best_score.deploy_sig_count,
-        best_score.latest_deploy_block_number,
+        best_score.earliest_deploy_block_number,
         best_score.root_block_number
     );
     Ok(reordered)
@@ -1782,13 +1784,38 @@ mod tests {
     /// A `(DeployBranchScore, BlockHash)` over DELIBERATELY tiny domains, so ties at
     /// every lexicographic level — and hence the reversed hash tie-break at :68 — are
     /// hit constantly rather than vanishingly rarely.
+    #[test]
+    fn deploy_support_prioritizes_oldest_unfinalized_deploy() {
+        let older = DeployBranchScore {
+            deploy_sig_count: 1,
+            earliest_deploy_block_number: 1,
+            root_block_number: 3,
+        };
+        let newer = DeployBranchScore {
+            deploy_sig_count: 100,
+            earliest_deploy_block_number: 2,
+            root_block_number: 4,
+        };
+        let older_hash = prost::bytes::Bytes::from_static(b"older");
+        let newer_hash = prost::bytes::Bytes::from_static(b"newer");
+
+        assert!(better_deploy_branch_score(
+            (&older, &older_hash),
+            (&newer, &newer_hash)
+        ));
+        assert!(!better_deploy_branch_score(
+            (&newer, &newer_hash),
+            (&older, &older_hash)
+        ));
+    }
+
     fn arb_scored_branch() -> impl Strategy<Value = (DeployBranchScore, BlockHash)> {
         (0usize..3, 0i64..3, 0i64..3, 0u8..4).prop_map(
-            |(deploy_sig_count, latest_deploy_block_number, root_block_number, hash_byte)| {
+            |(deploy_sig_count, earliest_deploy_block_number, root_block_number, hash_byte)| {
                 (
                     DeployBranchScore {
                         deploy_sig_count,
-                        latest_deploy_block_number,
+                        earliest_deploy_block_number,
                         root_block_number,
                     },
                     prost::bytes::Bytes::from(vec![hash_byte]),
