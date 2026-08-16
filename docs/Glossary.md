@@ -29,6 +29,42 @@ correctness — proved, model-checked, and tested — is the organizing concern.
 
 ## Canonical Terms
 
+### Release candidate
+
+A release candidate is one immutable source commit with its tested artifacts and [release evidence](#release-evidence). Standard release gates evaluate this identity.
+
+**Preferred usage.** Use this term for the source, artifact, and evidence set. *Distinguish from* [Canary release](#canary-release): candidate identity versus candidate publication.
+
+### Canary release
+
+A canary release is the prerelease publication of a [release candidate](#release-candidate). Its Git tag, binaries, and versioned image tags are immutable.
+
+**Preferred usage.** Use this term for the published prerelease. *Distinguish from* a mutable channel alias and a [stable release](#stable-release).
+
+### Stable release
+
+A stable release is a [release candidate](#release-candidate) that passed all mandatory gates. It uses a final Semantic Versioning tag.
+
+**Preferred usage.** Use this term only after successful artifact promotion. *Distinguish from* [Canary release](#canary-release): final publication versus prerelease publication.
+
+### Release evidence
+
+Release evidence is the machine-readable record that binds gate results and artifact digests to one source SHA.
+
+**Preferred usage.** Use this term for commit-specific release records. *Distinguish from* a dashboard latest verdict, which does not identify one candidate.
+
+### Artifact promotion
+
+Artifact promotion copies verified candidate bytes and image digests to stable release names. Artifact promotion does not rebuild the source.
+
+**Preferred usage.** Use this term for canary-to-stable publication. *Avoid*: release build, when automation reuses candidate artifacts.
+
+### Deployment Train
+
+A Deployment Train is an independent release path that starts from a reviewed pull-request head SHA. A reviewed manifest controls each train.
+
+**Preferred usage.** Use this term for the complete independent release path. *Distinguish from* a CI job, workflow run, or branch.
+
 ### Peak node RSS
 
 Peak node resident set size (RSS) is the maximum combined memory use of all
