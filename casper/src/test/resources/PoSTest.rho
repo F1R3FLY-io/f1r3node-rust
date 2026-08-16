@@ -361,7 +361,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                 epochCh, setBlockData(`rho:test:block:data:set`), blockDataCh
             in {
               prepareUser!("cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd", *delegatorSetupCh) |
-              prepareUser!("dededededededededededededededededededededededededededededededededededededededededededededededededededededededededededededededededededede", *payerSetupCh) |
+              prepareUser!("dedededededededededededededededededededededededededededededededededededededededededededededededededededededededededededededededede", *payerSetupCh) |
               for (@delegatorPubKey, _, @delegatorVault, @delegatorDeployerId <- delegatorSetupCh &
                    _, _, _, @payerDeployerId <- payerSetupCh) {
                 @PoS!("getActiveValidators", *activeValidatorsCh) |
@@ -695,8 +695,10 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
             new setupCh, closeBlockCh, retCh0, retCh1, initialPosBalanceCh, finalPosBalanceCh,
                 initialUser1BalanceCh, finalUser1BalanceCh,
                 initialRewardsCh, finalRewardsCh,
-                computeDelta, deltaRewardsCh, deltaSumCh, sumDelta,
-                isPositive, allRewardsPositiveCh, initialBondsCh, initialActiveCh
+                initialDelegatorRewardsCh, finalDelegatorRewardsCh,
+                computeDelta, computeDelegatorDelta, deltaRewardsCh, deltaDelegatorRewardsCh,
+                validatorDeltaSumCh, delegatorDeltaSumCh, totalDeltaSumCh, sumDelta,
+                isNonNegative, allRewardsPositiveCh, initialBondsCh, initialActiveCh
             in {
               prepareUser!("4444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444", *setupCh) |
               for (@validatorPubKey, _, _, @validatorDeployerId <- setupCh) {
@@ -711,11 +713,13 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                         getPosBalance!(*initialPosBalanceCh) |
                         @userVault!("balance", *initialUser1BalanceCh) |
                         @PoS!("getRewards", *initialRewardsCh) |
+                        @PoS!("getDelegatorRewards", *initialDelegatorRewardsCh) |
                         @PoS!("getBonds", *initialBondsCh) |
                         @PoS!("getActiveValidators", *initialActiveCh) |
                         for (@initialPosBalance   <- initialPosBalanceCh &
                              @initialUser1Balance <- initialUser1BalanceCh &
                              @initialRewards      <- initialRewardsCh &
+                             @initialDelegatorRewards <- initialDelegatorRewardsCh &
                              @initialBonds        <- initialBondsCh &
                              @initialActives      <- initialActiveCh) {
                           stdlog!("info", ("bonding distribution and actives before precharge and refund", initialBonds, initialActives, initialRewards)) |
@@ -728,35 +732,45 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                               getPosBalance!(*finalPosBalanceCh) |
                               @userVault!("balance", *finalUser1BalanceCh) |
                               @PoS!("getRewards", *finalRewardsCh) |
+                              @PoS!("getDelegatorRewards", *finalDelegatorRewardsCh) |
                               for (@finalPosBalance   <- finalPosBalanceCh &
                                    @finalUser1Balance <- finalUser1BalanceCh &
-                                   @finalRewards      <- finalRewardsCh) {
+                                   @finalRewards      <- finalRewardsCh &
+                                   @finalDelegatorRewards <- finalDelegatorRewardsCh) {
                                 stdlog!("info", ("Final rewards", finalRewards)) |
                                 @ListOps!("fold", finalRewards.toList(), {}, *computeDelta, *deltaRewardsCh) |
+                                @ListOps!("fold", finalDelegatorRewards.toList(), {}, *computeDelegatorDelta, *deltaDelegatorRewardsCh) |
                                 contract computeDelta(@(pk, finalReward), @acc, resultCh) = {
                                   resultCh!(acc.set(pk, finalReward - initialRewards.getOrElse(pk, 0)))
                                 } |
-                                for (@deltaRewards <- deltaRewardsCh) {
-                                  @ListOps!("forall", deltaRewards, *isPositive, *allRewardsPositiveCh) |
-                                  contract isPositive(@n, resultCh) = {
-                                    resultCh!(n > 0)
+                                contract computeDelegatorDelta(@(pk, finalReward), @acc, resultCh) = {
+                                  resultCh!(acc.set(pk, finalReward - initialDelegatorRewards.getOrElse(pk, 0)))
+                                } |
+                                for (@deltaRewards <- deltaRewardsCh &
+                                     @deltaDelegatorRewards <- deltaDelegatorRewardsCh) {
+                                  @ListOps!("forall", deltaRewards, *isNonNegative, *allRewardsPositiveCh) |
+                                  contract isNonNegative(@n, resultCh) = {
+                                    resultCh!(n >= 0)
                                   } |
-                                  @ListOps!("fold", deltaRewards.toList(), 0, *sumDelta, *deltaSumCh) |
+                                  @ListOps!("fold", deltaRewards.toList(), 0, *sumDelta, *validatorDeltaSumCh) |
+                                  @ListOps!("fold", deltaDelegatorRewards.toList(), 0, *sumDelta, *delegatorDeltaSumCh) |
                                   contract sumDelta(@(_, delta), @acc, resultCh) = {
                                     resultCh!(acc + delta)
                                   } |
-                                  rhoSpec!("assertMany",
-                                    [
-                                      ((userCharge - userRefund, "==", initialUser1Balance - finalUser1Balance), "the user account decreases"),
-                                      ((userCharge - userRefund, "==", finalPosBalance - initialPosBalance), "the pos account increases"),
-                                      //TODO: active validator stake-weighted reward
-                                      ((19, "==", finalRewards.get(validatorPubKey)), "the validator's finalRewards is as expected"),
-                                      //TODO use arbitrary precision numbers instead of long ints
-                                      ((98, "== <-", *deltaSumCh), "the sum difference should equal the payment"),
-                                      ((true, "== <-", *allRewardsPositiveCh), "the rewards can only grow")
-                                    ],
-                                    *ackCh
-                                  )
+                                  for (@validatorDeltaSum <- validatorDeltaSumCh &
+                                       @delegatorDeltaSum <- delegatorDeltaSumCh) {
+                                    totalDeltaSumCh!(validatorDeltaSum + delegatorDeltaSum) |
+                                    rhoSpec!("assertMany",
+                                      [
+                                        ((userCharge - userRefund, "==", initialUser1Balance - finalUser1Balance), "the user account decreases"),
+                                        ((userCharge - userRefund, "==", finalPosBalance - initialPosBalance), "the pos account increases"),
+                                        ((true, "==", finalRewards.getOrElse(validatorPubKey, 0) > initialRewards.getOrElse(validatorPubKey, 0)), "the validator's finalRewards grows"),
+                                        ((98, "== <-", *totalDeltaSumCh), "the reward delta should equal the payment less rounding"),
+                                        ((true, "== <-", *allRewardsPositiveCh), "the rewards can only grow")
+                                      ],
+                                      *ackCh
+                                    )
+                                  }
                                 }
                               }
                             }
@@ -777,10 +791,12 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                 posBalanceCh,
                 userBalanceCh,
                 rewardsCh,
+                delegatorRewardsCh,
                 chargeDeployAck,
                 refundDeployAck,
-                computeDelta, deltaRewardsCh, deltaSumCh, sumDelta,
-                isPositive, allRewardsPositiveCh
+                computeDelta, computeDelegatorDelta, deltaRewardsCh, deltaDelegatorRewardsCh,
+                validatorDeltaSumCh, delegatorDeltaSumCh, totalDeltaSumCh, sumDelta,
+                isNonNegative, allRewardsPositiveCh
             in {
               prepareUser!("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", *prepareUserAck) |
               for (@validatorPubKey, _, _, @validatorDeployerId <- prepareUserAck) {
@@ -795,9 +811,11 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                         getPosBalance!(*posBalanceCh) |
                         @userVault!("balance", *userBalanceCh) |
                         @PoS!("getRewards", *rewardsCh) |
+                        @PoS!("getDelegatorRewards", *delegatorRewardsCh) |
                         for (@initialPosBalance  <- posBalanceCh &
                              @initialUserBalance <- userBalanceCh &
-                             @initialRewards     <- rewardsCh) {
+                             @initialRewards     <- rewardsCh &
+                             @initialDelegatorRewards <- delegatorRewardsCh) {
                           @PoS!("chargeDeploy", userDeployerId, userCharge, sysAuthToken, *chargeDeployAck) |
                           @PoS!("refundDeploy", userRefund, sysAuthToken, *refundDeployAck) |
                           for (@(true, _) <- chargeDeployAck &
@@ -807,34 +825,44 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                               getPosBalance!(*posBalanceCh) |
                               @userVault!("balance", *userBalanceCh) |
                               @PoS!("getRewards", *rewardsCh) |
+                              @PoS!("getDelegatorRewards", *delegatorRewardsCh) |
                               for (@finalPosBalance  <- posBalanceCh &
                                    @finalUserBalance <- userBalanceCh &
-                                   @finalRewards     <- rewardsCh) {
+                                   @finalRewards     <- rewardsCh &
+                                   @finalDelegatorRewards <- delegatorRewardsCh) {
                                 @ListOps!("fold", finalRewards.toList(), {}, *computeDelta, *deltaRewardsCh) |
+                                @ListOps!("fold", finalDelegatorRewards.toList(), {}, *computeDelegatorDelta, *deltaDelegatorRewardsCh) |
                                 contract computeDelta(@(pk, finalReward), @acc, resultCh) = {
                                   resultCh!(acc.set(pk, finalReward - initialRewards.getOrElse(pk, 0)))
                                 } |
-                                for (@deltaRewards <- deltaRewardsCh) {
-                                  @ListOps!("forall", deltaRewards, *isPositive, *allRewardsPositiveCh) |
-                                  contract isPositive(@n, resultCh) = {
-                                    resultCh!(n > 0)
+                                contract computeDelegatorDelta(@(pk, finalReward), @acc, resultCh) = {
+                                  resultCh!(acc.set(pk, finalReward - initialDelegatorRewards.getOrElse(pk, 0)))
+                                } |
+                                for (@deltaRewards <- deltaRewardsCh &
+                                     @deltaDelegatorRewards <- deltaDelegatorRewardsCh) {
+                                  @ListOps!("forall", deltaRewards, *isNonNegative, *allRewardsPositiveCh) |
+                                  contract isNonNegative(@n, resultCh) = {
+                                    resultCh!(n >= 0)
                                   } |
-                                  @ListOps!("fold", deltaRewards.toList(), 0, *sumDelta, *deltaSumCh) |
+                                  @ListOps!("fold", deltaRewards.toList(), 0, *sumDelta, *validatorDeltaSumCh) |
+                                  @ListOps!("fold", deltaDelegatorRewards.toList(), 0, *sumDelta, *delegatorDeltaSumCh) |
                                   contract sumDelta(@(_, delta), @acc, resultCh) = {
                                     resultCh!(acc + delta)
                                   } |
-                                  rhoSpec!("assertMany",
-                                    [
-                                      ((userCharge - userRefund, "==", initialUserBalance - finalUserBalance), "the user account decreases"),
-                                      ((userCharge - userRefund, "==", finalPosBalance - initialPosBalance), "the pos account increases"),
-                                      //TODO: active validator stake-weighted reward
-                                      ((8, "==", finalRewards.get(validatorPubKey)), "the validator's finalRewards is as expected"),
-                                      //TODO use arbitrary precision numbers instead of long ints
-                                      ((50, "== <-", *deltaSumCh), "the sum difference should equal the payment"),
-                                      ((true, "== <-", *allRewardsPositiveCh), "the rewards can only grow")
-                                    ],
-                                    *ackCh
-                                  )
+                                  for (@validatorDeltaSum <- validatorDeltaSumCh &
+                                       @delegatorDeltaSum <- delegatorDeltaSumCh) {
+                                    totalDeltaSumCh!(validatorDeltaSum + delegatorDeltaSum) |
+                                    rhoSpec!("assertMany",
+                                      [
+                                        ((userCharge - userRefund, "==", initialUserBalance - finalUserBalance), "the user account decreases"),
+                                        ((userCharge - userRefund, "==", finalPosBalance - initialPosBalance), "the pos account increases"),
+                                        ((true, "==", finalRewards.getOrElse(validatorPubKey, 0) > initialRewards.getOrElse(validatorPubKey, 0)), "the validator's finalRewards grows"),
+                                        ((50, "== <-", *totalDeltaSumCh), "the reward delta should equal the payment"),
+                                        ((true, "== <-", *allRewardsPositiveCh), "the rewards can only grow")
+                                      ],
+                                      *ackCh
+                                    )
+                                  }
                                 }
                               }
                             }
@@ -1043,69 +1071,59 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
           // reduced to 0 in the bond and committedRewards maps and that they are immediately moved to the withdrawers map.
           contract test_slashing_vaults_and_state(rhoSpec, _, ackCh) = {
             new setInvalidBlocks(`rho:test:casper:invalidBlocks:set`),
-                computeHash(`rho:crypto:keccak256Hash`), hashCh, invalidBlocksSetCh,
-                initialBondSumCh, chargeCh, refundCh, initialCoopBalanceCh, finalCoopBalanceCh,
-                setupCh, slashCh, activeValidatorsCh, withdrawersCh,
+                makeDeployerId(`rho:test:deployerId:make`),
+                computeHash(`rho:crypto:keccak256Hash`),
+                hashCh, invalidBlocksSetCh, slasherDeployerIdCh,
+                slashedValidatorCh, initialCoopBalanceCh, finalCoopBalanceCh,
+                slashCh,
                 initialPosBalanceCh, finalPosBalanceCh,
-                initialUserBalanceCh, finalUserBalanceCh,
-                initialRewardsCh, finalRewardsCh,
+                finalRewardsCh,
                 initialBondsCh, finalBondsCh
             in {
-              prepareUser!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", *setupCh) |
-              for (_, _, @userVault, @userDeployerId <- setupCh) {
-                @PoS!("getActiveValidators", *activeValidatorsCh) |
-                @PoS!("getBonds", *initialBondsCh) |
-                getCoopBalance!(*initialCoopBalanceCh) |
-                for (@activeValidators   <- activeValidatorsCh &
-                     @initialBonds       <- initialBondsCh &
-                     @initialCoopBalance <- initialCoopBalanceCh) {
-                  match (100, 0) {
-                    (chargeAmt, refundAmt) => {
-                      @PoS!("chargeDeploy", userDeployerId, chargeAmt, sysAuthToken, *chargeCh) |
-                      @PoS!("refundDeploy", refundAmt, sysAuthToken, *refundCh) |
-                      for (@(true, _) <- chargeCh &
-                           @(true, _) <- refundCh) {
-                        match activeValidators.toList().nth(3) {
-                          slashedValidator => {
-                            computeHash!(slashedValidator, *hashCh) |
-                            for (@hash <- hashCh) {
-                              getPosBalance!(*initialPosBalanceCh) |
-                              @PoS!("getRewards", *initialRewardsCh) |
-                              @userVault!("balance", *initialUserBalanceCh) |
-                              setInvalidBlocks!({hash : slashedValidator}, *invalidBlocksSetCh) |
-                              for (_                   <- invalidBlocksSetCh &
-                                   @initialUserBalance <- initialUserBalanceCh &
-                                   @initialRewards     <- initialRewardsCh &
-                                   @initialPosBalance  <- initialPosBalanceCh) {
-                                @PoS!("slash", userDeployerId, hash, sysAuthToken, *slashCh) |
-                                for (@(true, _) <- slashCh) {
-                                  @PoS!("getBonds", *finalBondsCh) |
-                                  getPosBalance!(*finalPosBalanceCh) |
-                                  @userVault!("balance", *finalUserBalanceCh) |
-                                  @PoS!("getRewards", *finalRewardsCh) |
-                                  @PoS!("getWithdrawers", *withdrawersCh) |
-                                  getCoopBalance!(*finalCoopBalanceCh) |
-                                  for (@finalPosBalance  <- finalPosBalanceCh &
-                                       @finalUserBalance <- finalUserBalanceCh &
-                                       @finalBonds       <- finalBondsCh &
-                                       @finalRewards     <- finalRewardsCh &
-                                       @withdrawers      <- withdrawersCh &
-                                       @finalCoopBalance <- finalCoopBalanceCh) {
-                                    stdlog!("info", (initialBonds, finalBonds,slashedValidator)) |
-                                    rhoSpec!("assertMany",
-                                      [
-                                        ((finalBonds, "==", initialBonds.set(slashedValidator, 0)), "Slashed validator's bond is reduced to 0"),
-                                        ((0, "==", finalRewards.get(slashedValidator)), "Slashed validator's rewards are reduced to 0"),
-                                        ((finalPosBalance, "==", initialPosBalance - initialBonds.get(slashedValidator)), "Slashed validator's funds are transferred out of the PoS vault"),
-                                        ((finalCoopBalance, "==", initialCoopBalance + initialBonds.get(slashedValidator)), "Slashed validator's funds are transferred to the Coop vault")
-                                      ],
-                                      *ackCh
-                                    )
-                                  }
-                                }
-                              }
-                            }
+              makeDeployerId!("deployerId", "bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc".hexToBytes(), *slasherDeployerIdCh) |
+              slashedValidatorCh!("1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111".hexToBytes()) |
+              @PoS!("getBonds", *initialBondsCh) |
+              getCoopBalance!(*initialCoopBalanceCh) |
+              for (@userDeployerId     <- slasherDeployerIdCh &
+                   @slashedValidator   <- slashedValidatorCh &
+                   @initialBonds       <- initialBondsCh &
+                   @initialCoopBalance <- initialCoopBalanceCh) {
+                computeHash!(slashedValidator, *hashCh) |
+                for (@hash <- hashCh) {
+                  getPosBalance!(*initialPosBalanceCh) |
+                  setInvalidBlocks!({hash : slashedValidator}, *invalidBlocksSetCh) |
+                  for (_                  <- invalidBlocksSetCh &
+                       @initialPosBalance <- initialPosBalanceCh) {
+                    @PoS!("slash", userDeployerId, hash, sysAuthToken, *slashCh) |
+                    for (@slashResult <- slashCh) {
+                      match slashResult {
+                        (true, _) => {
+                          @PoS!("getBonds", *finalBondsCh) |
+                          getPosBalance!(*finalPosBalanceCh) |
+                          @PoS!("getRewards", *finalRewardsCh) |
+                          getCoopBalance!(*finalCoopBalanceCh) |
+                          for (@finalPosBalance  <- finalPosBalanceCh &
+                               @finalBonds       <- finalBondsCh &
+                               @finalRewards     <- finalRewardsCh &
+                               @finalCoopBalance <- finalCoopBalanceCh) {
+                            rhoSpec!("assertMany",
+                              [
+                                ((finalBonds, "==", initialBonds.set(slashedValidator, 0)), "Slashed validator's bond is reduced to 0"),
+                                ((0, "==", finalRewards.getOrElse(slashedValidator, 0)), "Slashed validator's rewards are reduced to 0"),
+                                ((finalPosBalance, "==", initialPosBalance - initialBonds.getOrElse(slashedValidator, 0)), "Slashed validator's funds are transferred out of the PoS vault"),
+                                ((finalCoopBalance, "==", initialCoopBalance + initialBonds.getOrElse(slashedValidator, 0)), "Slashed validator's funds are transferred to the Coop vault")
+                              ],
+                              *ackCh
+                            )
                           }
+                        }
+                        _ => {
+                          rhoSpec!("assertMany",
+                            [
+                              ((true, "==", false), "slash should succeed")
+                            ],
+                            *ackCh
+                          )
                         }
                       }
                     }
@@ -1126,9 +1144,9 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                 epochCh, preSlashPosBalanceCh, postSlashPosBalanceCh,
                 preSlashCoopBalanceCh, postSlashCoopBalanceCh
             in {
-              prepareUser!("f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1", *validatorSetupCh) |
-              prepareUser!("f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2", *delegatorSetupCh) |
-              prepareUser!("f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3", *slasherSetupCh) |
+              prepareUser!("f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1", *validatorSetupCh) |
+              prepareUser!("f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2", *delegatorSetupCh) |
+              prepareUser!("f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3", *slasherSetupCh) |
               for (@validatorPubKey, _, _, @validatorDeployerId <- validatorSetupCh &
                    @delegatorPubKey, _, _, @delegatorDeployerId <- delegatorSetupCh &
                    _, _, _, @slasherDeployerId <- slasherSetupCh) {
@@ -1203,9 +1221,9 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                 preSlashCoopBalanceCh, postSlashCoopBalanceCh,
                 delegationsAfterCh, totalsAfterCh, pendingAfterCh
             in {
-              prepareUser!("f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4", *validatorSetupCh) |
-              prepareUser!("f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5", *delegatorSetupCh) |
-              prepareUser!("f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6", *slasherSetupCh) |
+              prepareUser!("f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4", *validatorSetupCh) |
+              prepareUser!("f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5", *delegatorSetupCh) |
+              prepareUser!("f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6", *slasherSetupCh) |
               for (@validatorPubKey, _, _, @validatorDeployerId <- validatorSetupCh &
                    @delegatorPubKey, _, _, @delegatorDeployerId <- delegatorSetupCh &
                    _, _, _, @slasherDeployerId <- slasherSetupCh) {
@@ -1283,10 +1301,10 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                 preSlashCoopBalanceCh, postSlashCoopBalanceCh,
                 delegationsAfterCh, totalsAfterCh, pendingAfterCh
             in {
-              prepareUser!("f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7", *validatorSetupCh) |
-              prepareUser!("f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8", *delegator1SetupCh) |
-              prepareUser!("e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1", *delegator2SetupCh) |
-              prepareUser!("e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2", *slasherSetupCh) |
+              prepareUser!("f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7", *validatorSetupCh) |
+              prepareUser!("f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8", *delegator1SetupCh) |
+              prepareUser!("e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1", *delegator2SetupCh) |
+              prepareUser!("e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2", *slasherSetupCh) |
               for (@validatorPubKey, _, _, @validatorDeployerId <- validatorSetupCh &
                    @delegator1PubKey, _, _, @delegator1DeployerId <- delegator1SetupCh &
                    @delegator2PubKey, _, _, @delegator2DeployerId <- delegator2SetupCh &
@@ -1357,10 +1375,10 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                 bond1Ch, bond2Ch, delegate1Ch, delegate2Ch, undelegateCh, slashCh,
                 delegationsAfterCh, totalsAfterCh, pendingAfterCh, effectiveAfterCh
             in {
-              prepareUser!("e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3", *validator1SetupCh) |
-              prepareUser!("e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4", *validator2SetupCh) |
-              prepareUser!("d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1", *delegatorSetupCh) |
-              prepareUser!("d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2", *slasherSetupCh) |
+              prepareUser!("e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3", *validator1SetupCh) |
+              prepareUser!("e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4", *validator2SetupCh) |
+              prepareUser!("d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1", *delegatorSetupCh) |
+              prepareUser!("d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2", *slasherSetupCh) |
               for (@validator1PubKey, _, _, @validator1DeployerId <- validator1SetupCh &
                    @validator2PubKey, _, _, @validator2DeployerId <- validator2SetupCh &
                    @delegatorPubKey, _, _, @delegatorDeployerId <- delegatorSetupCh &
@@ -1422,8 +1440,8 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                 maxBondCh, initialPosBalanceCh, finalPosBalanceCh,
                 delegationsCh, delegatedTotalsCh
             in {
-              prepareUser!("d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3", *validatorSetupCh) |
-              prepareUser!("d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4", *delegatorSetupCh) |
+              prepareUser!("d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3", *validatorSetupCh) |
+              prepareUser!("d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4", *delegatorSetupCh) |
               for (@validatorPubKey, _, _, @validatorDeployerId <- validatorSetupCh &
                    @delegatorPubKey, _, _, @delegatorDeployerId <- delegatorSetupCh) {
                 @PoS!("bond", validatorDeployerId, 100, *bondCh) |
@@ -1463,8 +1481,8 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                 bondCh, delegateCh, undelegateCh, closeBlockCh,
                 epochCh, activeLimitCh, effectiveBondsCh, activeValidatorsCh
             in {
-              prepareUser!("c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1", *validatorSetupCh) |
-              prepareUser!("c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2", *delegatorSetupCh) |
+              prepareUser!("c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1", *validatorSetupCh) |
+              prepareUser!("c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2", *delegatorSetupCh) |
               for (@validatorPubKey, _, _, @validatorDeployerId <- validatorSetupCh &
                    _, _, _, @delegatorDeployerId <- delegatorSetupCh) {
                 @PoS!("bond", validatorDeployerId, 100, *bondCh) |
