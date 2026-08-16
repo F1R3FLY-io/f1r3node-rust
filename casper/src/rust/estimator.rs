@@ -238,7 +238,17 @@ impl Estimator {
             if meta.block_number < last_finalized_block_number {
                 Ok(Vec::new())
             } else {
-                Ok(meta.parents)
+                // MAIN parent only. Crediting a validator's weight to every DAG
+                // ancestor saturates merged same-height siblings to equal scores
+                // permanently — every latest message descends from both once the
+                // race is merged — leaving the choice between them to a
+                // tie-break rather than to validator support. A block has
+                // exactly one main parent, so weight flows up exactly one chain
+                // and same-height siblings are mutually exclusive by
+                // construction, which is the exclusivity the clique theorem
+                // assumes. `main_parent` is `parents.first()`
+                // (block_metadata_store.rs:119).
+                Ok(meta.parents.into_iter().take(1).collect())
             }
         }
 
@@ -342,9 +352,14 @@ impl Estimator {
         }
     }
 
-    /// Only include children that have been scored,
-    /// this ensures that the search does not go beyond
-    /// the messages defined by blockDag.latestMessages
+    /// Only include children that have been scored, and only MAIN-parent
+    /// children: scores accumulate up main-parent chains, so the descent has to
+    /// follow the same structure or it compares a subtree's weight against a
+    /// child that never inherited it. A merge is a main-parent child of exactly
+    /// one of its parents and a secondary child of the rest.
+    ///
+    /// Scoring bounds the search as before — an unscored child is beyond the
+    /// latest messages.
     async fn replace_block_hash_with_children(
         b: &BlockHash,
         block_dag: &KeyValueDagRepresentation,
@@ -356,7 +371,9 @@ impl Estimator {
                     .iter()
                     .filter_map(|child| {
                         let child_hash = child.clone();
-                        if scores.contains_key(&child_hash) {
+                        if scores.contains_key(&child_hash)
+                            && block_dag.main_parent(&child_hash).as_ref() == Some(b)
+                        {
                             Some(child_hash)
                         } else {
                             None
