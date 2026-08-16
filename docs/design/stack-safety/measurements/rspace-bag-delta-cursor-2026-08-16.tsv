@@ -1,0 +1,18 @@
+# RSpace BagDelta exact-key mutation: root replay versus one moving PathMap write zipper.
+# Measured implementation: 87679597d. Adaptive production selection: 9a746f2bf (empty/singleton direct; multi-key cursor).
+# Host: AMD Ryzen Threadripper PRO 5975WX, 32 physical cores, SMT disabled; governor performance; amd-pstate-epp; pinned to CPUs 0-7. Immediate preflight sample was 74% aggregate idle.
+# Command: systemd-run --user --scope -p MemoryHigh=6G -p MemoryMax=8G -p MemorySwapMax=0 taskset -c 0-7 cargo bench -p rspace_plus_plus --bench bag -- bag_atomic_delta_batch_shared_prefix --sample-size 51 --warm-up-time 2 --measurement-time 5 --noplot
+# Fixture: 16,384 pre-existing shared-prefix keys. Each delta splits its cardinality between exact removals and new shared-prefix additions; odd cardinality assigns the extra operation to additions.
+# Criterion: one preregistered run, 51 regression samples per arm and cardinality, 2 s warm-up, 5 s requested measurement time. The enclosing scope was capped at 8 GiB with zero swap; a post-exit peak-RSS value was unavailable and is not inferred.
+# Primary decision (pgmcp experiment/hypothesis 219, delta cardinality 256): statistically ACCEPTED. Welch t=-5.3009697178, p=4.5845472558e-7, Cohen's d=-1.0497484283, mean-difference 95% CI [-608.7007813876,-276.5862932072] ns. Both arms departed from normality; robustness Cliff's delta=-0.4717416378 and Mann-Whitney p=4.0848091004e-5.
+# Engineering interpretation: the primary median improves 1.197% and does not meet the campaign's separate five-percent end-to-end selection threshold by itself. Singleton cursor setup regresses 8.289%; therefore 9a746f2bf retains the direct exact-key path for zero/one change and the cursor for multi-key deltas, where common prefixes can be reused.
+# Canonical pgmcp run digests for the primary: control sha256:883d2383b2a69f848b6e8910b02dc5e6ad568b03cef0eb81426f284b25b65e2a; treatment sha256:1e13bb5a4229a55cdf6210a6b0245b47c24b320bb692f7691302f65311dbdcd3.
+date	measured_commit	production_commit	experiment_id	workload	arm	delta_cardinality	samples	raw_median_ns	raw_mean_ns	raw_stddev_ns	median_improvement_percent	mean_improvement_percent	memory_max_mib	swap_max_mib	cpu_affinity	result
+2026-08-16	87679597d	9a746f2bf	219	atomic_delta_batch_shared_prefix	root_replay_control	1	51	262.149973643	262.056891594	1.508645957	0.000000	0.000000	8192	0	0-7	control
+2026-08-16	87679597d	9a746f2bf	219	atomic_delta_batch_shared_prefix	write_zipper_treatment	1	51	283.878465543	284.160884073	1.387917767	-8.288573	-8.434807	8192	0	0-7	rejected-for-singleton
+2026-08-16	87679597d	9a746f2bf	219	atomic_delta_batch_shared_prefix	root_replay_control	16	51	3165.532412178	3128.907993671	353.585120095	0.000000	0.000000	8192	0	0-7	control
+2026-08-16	87679597d	9a746f2bf	219	atomic_delta_batch_shared_prefix	write_zipper_treatment	16	51	2847.142000810	2876.322248827	304.196131948	10.058037	8.072649	8192	0	0-7	multi-key-benefit
+2026-08-16	87679597d	9a746f2bf	219	atomic_delta_batch_shared_prefix	root_replay_control	256	51	22924.652353967	22941.084645374	315.977585866	0.000000	0.000000	8192	0	0-7	control
+2026-08-16	87679597d	9a746f2bf	219	atomic_delta_batch_shared_prefix	write_zipper_treatment	256	51	22650.136454582	22498.441108077	505.730268940	1.197470	1.929480	8192	0	0-7	statistically-accepted-primary
+2026-08-16	87679597d	9a746f2bf	219	atomic_delta_batch_shared_prefix	root_replay_control	4096	51	392602.276190476	393127.709557851	4861.736851639	0.000000	0.000000	8192	0	0-7	control
+2026-08-16	87679597d	9a746f2bf	219	atomic_delta_batch_shared_prefix	write_zipper_treatment	4096	51	360518.724941725	359352.595500518	7374.118863481	8.172024	8.591385	8192	0	0-7	multi-key-benefit

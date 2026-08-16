@@ -6,7 +6,7 @@ Campaign: `campaign-4131-rspace-pathmap-integration`
 
 Experiment: `rspace-pathmap-end-to-end-layout-2026-08-15`
 Last updated: 2026-08-16
-Current implementation checkpoint: `21ece399d`
+Current implementation checkpoint: `9a746f2bf`
 
 ## Purpose and scope
 
@@ -49,12 +49,12 @@ The layout experiment remains open until the preregistered A/B/C comparison sele
 
 | Stage | Commit | Current evidence | Disposition |
 |---|---|---|---|
-| Lawful `Bag` over `PathMap<Multiplicity>` | `a82288ae0`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `7b3254573`, `8e4938ec6`, `cd01ea721`, `21ece399d` | exact multiplicity laws, normalized reversible transaction deltas, direct canonical ACTree03 byte images, malformed-image refusal, a 200,000-byte compressed-key gate on a 256 KiB stack, 22 legacy/differential laws, multiplicity-independent construction allocation, clean comparative microbenchmarks, kernel-checked Rocq/Verus proofs, atomic live accepted-match commits, exhaustive schedule invariants, and branching-bisimulation evidence | implemented as the datum authority and accepted-match transition carrier; end-to-end allocation/RSS comparison and final RSpace layout selection remain open |
+| Lawful `Bag` over `PathMap<Multiplicity>` | `a82288ae0`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `7b3254573`, `8e4938ec6`, `cd01ea721`, `21ece399d`, `0f9beb5f0`, `87679597d`, `9a746f2bf` | exact multiplicity laws, normalized reversible transaction deltas, direct canonical ACTree03 byte images, malformed-image refusal, a 200,000-byte compressed-key gate on a 256 KiB stack, 23 legacy/differential laws, multiplicity-independent construction allocation, clean comparative microbenchmarks, kernel-checked Rocq/Verus proofs, atomic live accepted-match commits, exhaustive schedule invariants, branching-bisimulation evidence, one-root publication, and adaptive direct/cursor delta traversal selected from preregistered measurements | implemented as the datum authority and accepted-match transition carrier; end-to-end allocation/RSS comparison and final RSpace layout selection remain open |
 | Canonical framed `RhoPathV1` | `651f278aa` | exact-channel isolation, structural-prefix pruning, malformed-key refusal | implemented |
 | Multiplicity-aware datum index | `5d4c5eca9` | one trie key per identical complete record; one decode per distinct key | implemented |
 | Authoritative hot-store datum trie | `ccec9b730`, `bd55758e4` | history fill, loaded-empty state, snapshots, indexed compatibility removal, and package tests | implemented |
 | Multiplicity-native matching pools | `5329b27a3` | exact-path firing; reversible Bag reservations; fresh-datum addressing; repeated-channel duplicate tests | implemented |
-| Atomic accepted-match commit | `cd01ea721`, `21ece399d` | play and replay normalize every nonpersistent stored identity into one exact-key `BagDelta`; repeated identities become multiplicity; one hot-store write lock publishes one PathMap COW root; underflow and malformed-path controls leave the complete data store unchanged; 22/22 Bag, 18/18 data-index, 17/17 guarded play/replay, and 146/146 broad RSpace tests pass; Rocq proves the candidate-to-delta projection and atomic publication equations, TLC checks 2,628 reachable states, and mCRL2 proves branching bisimulation plus unreachability of partial publication | implemented for datum consumption; join removal remains the unchanged subsequent operation and the complete generated schedule/post-state campaign remains open |
+| Atomic accepted-match commit | `cd01ea721`, `21ece399d`, `0f9beb5f0`, `87679597d`, `9a746f2bf` | play and replay normalize every nonpersistent stored identity into one exact-key `BagDelta`; repeated identities become multiplicity; one hot-store write lock delegates the sole private COW root to `BagDelta` and publishes only after validation; multi-key deltas reuse one moving write-zipper focus while singleton deltas avoid its setup cost; underflow and malformed-path controls leave the complete data store unchanged; 23/23 Bag, 18/18 data-index, 17/17 guarded play/replay, and 146/146 broad RSpace tests pass; Rocq proves the candidate-to-delta projection and atomic publication equations, TLC checks 2,628 reachable states, and mCRL2 proves branching bisimulation plus unreachability of partial publication; pgmcp experiments 218 and 219 characterize root-fork and cursor costs | implemented for datum consumption; join removal remains the unchanged subsequent operation and the complete generated schedule/post-state campaign remains open |
 | Shared canonical candidate catalogs | `2eb0d3871` | one canonical order and one lazy decode cell per distinct record across channel-pool snapshots; multiplicity-only updates do not rebuild the catalog | implemented |
 | Single-lookup hot-store reads | `d50b1183d` | one encoded prefix and one loaded-store read lock per hot pool/data lookup; final performance verdict remains pending | implemented |
 | Retained receive automaton, ordered query slice | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `e1a587c9f`, `697db373b`; benchmark `7bc5c6994`; pgmcp `rspace-retained-set-automaton` | one `PathMap<TerminalId>` transition segment per bind position; supported queries reside at their longest exact structural prefix and residual wildcard/capture instructions run on canonical datum bytes; fixed-width terminal/candidate identifiers; root fallback terminals; group-local versioning; no trie clone on cache hits; 4/4 automaton, 2/2 lifecycle, 11/11 Rholang query, 41/41 RSpace action, 9/9 dual-direction pruning, and 61/61 complete matcher tests pass; the ordered datum-first differential reduces spatial calls from 256 to 1 with identical COMM/trace/state; earlier exact-ground treatment is 18.8–30.8% lower latency | ordered query prefilter implemented; full generated automaton, resource measurement, and equivalence campaign open |
@@ -435,6 +435,81 @@ that multiplicities 1 and `u64::MAX` have the same construction allocation shape
 confidence intervals, resource bounds, and the excluded interrupted-run declaration are recorded in
 [`pathmap-bag-microbench-2026-08-16.tsv`](../stack-safety/measurements/pathmap-bag-microbench-2026-08-16.tsv).
 
+Checkpoint `0f9beb5f0` then removes a second, redundant PathMap root clone from the live accepted-match
+commit. `RSpaceDataStore::apply_delta` first validates every RhoPath without mutation and delegates
+the transition directly to `BagDelta`, whose one private copy-on-write root remains the atomic
+publication boundary. It derives catalog transitions from the post-count and delta rather than
+copying marker and relative paths into a second transition vector. This is not an in-place partial
+update: a late underflow, overflow, or malformed path still leaves the authoritative root unchanged.
+
+Pgmcp experiment 218 compared that implementation with a faithful two-root predecessor in one
+preregistered, CPU-pinned release run. Each arm had 82 raw samples. At one key, the median fell from
+245.370 ns to 231.454 ns, a **5.671%** improvement; Welch's test reports
+`p = 1.1743230270934331e-138` and Cohen's `d = -15.668`. Median improvements at 16, 256, 4,096, and
+16,384 keys were **3.008%**, **0.977%**, **1.436%**, and **0.950%**, so none violated the
+preregistered five-percent regression guard. The process peaked at 570,124 KiB RSS under an 8 GiB
+cap with zero swap; that scope-wide high-water mark is not a per-operation allocation comparison.
+Raw estimates, sealed sample digests, and resource metadata are recorded in
+[`rspace-bag-single-root-commit-2026-08-16.tsv`](../stack-safety/measurements/rspace-bag-single-root-commit-2026-08-16.tsv).
+
+Experiment 219 then tested whether a multi-key `BagDelta` should replay every exact path from the
+root or retain one PathMap write zipper and move it between lexicographically ordered paths. Commit
+`87679597d` is the exact cursor-only treatment. Its private COW root, multiplicity metrics, and
+publication-last rule are unchanged; `move_to_path` merely reuses the longest common prefix of
+successive keys. Deleting a leaf uses `remove_val(false)` followed by `prune_ascend`, so no
+value-free terminal remains in the Bag image and the next move starts at the surviving prefix.
+
+The one preregistered, CPU-pinned run had 51 samples per arm and cardinality. At the primary
+256-change fixture, the raw median fell from 22,924.652 ns to 22,650.136 ns (**1.197%**) and the mean
+fell **1.929%**. Pgmcp accepts its locked statistical criterion: Welch `t = -5.301`,
+`p = 4.5845472558e-7`, Cohen's `d = -1.050`, and a mean-difference 95% confidence interval of
+[-608.701, -276.586] ns. Robustness analysis also favors the treatment, with Cliff's
+`delta = -0.472` and Mann-Whitney `p = 4.0848091004e-5`. However, a singleton has no adjacent key
+whose prefix it can reuse and regressed **8.289%** at the median. Cardinalities 16 and 4,096 improved
+**10.058%** and **8.172%**; the primary improvement is statistically clear but below the campaign's
+separate five-percent end-to-end selection threshold.
+
+Checkpoint `9a746f2bf` therefore encodes the causal crossover rather than applying the cursor
+dogmatically: empty deltas return without forking; singleton deltas retain the lower-overhead direct
+exact-key path; multi-key deltas retain the moving cursor. All 23 Bag tests pass, including the
+randomized legacy/BTreeMap oracles, late underflow/overflow rollback, deep/wide stack gates, and an
+explicit exact-prefix-overlap test that deletes a leaf between adjacent updates. The complete
+measurement ledger is
+[`rspace-bag-delta-cursor-2026-08-16.tsv`](../stack-safety/measurements/rspace-bag-delta-cursor-2026-08-16.tsv).
+
+### Cross-project PathMap implementation review
+
+A read-only review of libdictenstein commits `ba004a4`, `86e658c`, and `0abeae4` identified four
+techniques that apply to the remaining matcher work. Libdictenstein atomically publishes a coherent
+immutable PathMap root and exact cardinality; captures an owned `TrieRef` at query start in O(1);
+carries focus-local handles so descent does not replay a path from the root; and evaluates an edge
+predicate before cloning or constructing the accepted child handle. Its node interface also offers
+a fused finality-plus-edge visit so boundary-backed dictionaries need not observe the same focus
+twice.
+
+The review yields the following campaign decisions:
+
+1. **Adopt now for Bag batches.** The moving write-zipper treatment is implemented by `87679597d`
+   and selected adaptively by `9a746f2bf`, with experiment 219 preserving the negative singleton
+   result rather than hiding it.
+2. **Experiment for matching.** Child experiment `rspace-trieref-fused-query-traversal` is reachable
+   through `rspace-pattern-over-pathmap` and the campaign epic. It compares borrowed and owned
+   query-start `TrieRef` views, predicate-first child projection, fused focus observations, and their
+   principled compositions against the current synchronized read-zipper baseline.
+3. **Preserve one semantic revision.** A query snapshot may bind a Bag root and its exact metrics,
+   but decoded catalogs or other derived state join that revision only if they are proved coherent
+   with it. Memoizing an immutable view by revision is an experiment, not an assumed win, because a
+   retained snapshot can extend memory lifetime.
+4. **Do not transplant writer CAS blindly.** Libdictenstein can rerun a pure PathMap mutation after a
+   losing compare-and-swap. RSpace matching, continuations, random-state evolution, and event
+   publication are not retryable effects. Any future CAS-published datum lane must remain inside the
+   existing selected-match linearization boundary and first prove schedule, replay, and post-state
+   equivalence.
+5. **Keep exact-key Bag algebra distinct from prefix algebra.** PathMap's native generic lattice is
+   intentionally prefix-aware, whereas Bag join, meet, and subtraction are pointwise finite-support
+   operations. Native zippers and product traversals are welcome; substituting prefix lattice
+   semantics is not.
+
 The implementation evidence available at this checkpoint is:
 
 | Gate | Result | Interpretation |
@@ -456,9 +531,11 @@ The implementation evidence available at this checkpoint is:
 | generated structural match path | 3/3 encoder gates plus 4/4 models RSpace-path and 11/11 Rholang compiler gates | exhaustive-corpus determinism and adjacent-term distinction; canonical EPathMap digest golden; insertion-order independence; set/map separation; deliberate map-value false-positive lane; snapshot remains cold; 20,000-deep/wide encoding on 256 KiB; exact, whole-term, and ordered nested query behavior preserved |
 | nested RMP1 instruction PDA | 9/9 framing/query cases plus the 8/8 product suite | one- and two-layer escaping agree; every tested shallow token truncation fails closed; a 20,000-level nested value matches on a 128 KiB worker stack; a zero-heavy 256-candidate production differential preserves the result with 256-to-1 spatial pruning |
 | AC element candidate Bag | 53/53 matcher-library tests plus 22/22 affected RSpace suites at the candidate-cut checkpoint; 17/17 focused matcher-library and 10/10 RhoPath after `2d91c4394`; 18/18 focused matcher-library and strict production lint after `bbe91b90f`; duplicate/permutation and semantic-oracle controls after `3a70ddc58`; adjacent-identity controls after `ad5d37a59`; 12/12 spatial differential and 81/81 matcher integrations after `26b72b096` | exact diagonal, ordered nested ESet, and generalized unordered-Send controls each require 128 successful edges at width 128 and agree with the recursive oracle; one run of 64 byte-identical targets requires one exact identity encoding; the width-128 remainder control evaluates one term edge and captures 127 residual sends; exact target identity follows framed RMP1 structure in an authoritative Bag, residuals use native Bag subtraction, and byte-identical search visitation uses multiplicities; all 651 bounded binary target/pattern cases agree with the recursive oracle; the unchanged 51-sample adversarial displacement gate remains exhaustive at 16,257 treatment edges versus 699,263 nominal calls; contended earlier runs invalidate comparative debug durations, so no post-Bag throughput or RSS claim is made |
-| standalone Bag algebra and compact image | 22/22 Bag integration tests; 1/1 isolated allocation gate; 183/183 EPathMap codec and representation tests; strict `-D warnings` lint for the affected RSpace and models libraries | reversible normalized deltas apply and revert atomically; exact-key join/meet/subtraction agree with randomized `BTreeMap` and legacy `HashMultiSet` oracles even when one key prefixes another; raw ACTree03 and bincode byte images round-trip canonically; malformed, noncanonical, zero-valued, and dangling-terminal images are refused; a 200,000-byte compressed key round-trips on a 256 KiB stack; multiplicity 1 and `u64::MAX` allocate one trie entry with the same construction-allocation count; the shared reader leaves EPathMap behavior unchanged |
+| standalone Bag algebra and compact image | 23/23 Bag integration tests; 1/1 isolated allocation gate; 183/183 EPathMap codec and representation tests; strict `-D warnings` lint for the affected RSpace and models libraries | reversible normalized deltas apply and revert atomically; exact-key join/meet/subtraction agree with randomized `BTreeMap` and legacy `HashMultiSet` oracles even when one key prefixes another; raw ACTree03 and bincode byte images round-trip canonically; malformed, noncanonical, zero-valued, and dangling-terminal images are refused; a 200,000-byte compressed key round-trips on a 256 KiB stack; multiplicity 1 and `u64::MAX` allocate one trie entry with the same construction-allocation count; adjacent exact-prefix deletion verifies cursor pruning and subsequent navigation; the shared reader leaves EPathMap behavior unchanged |
 | Bag algebra and live-commit formal laws | complete bounded formal bundle | Rocq proves exact-key independence, sum monoid, distributive max/min lattice, subtraction conservation, normalized/canonical delta apply/revert, nonpersistent-Stored candidate projection, permutation-invariant play/replay deltas, and atomic publication; Verus `--no-cheating` proves the executable `u64` boundary; TLC checks 2,628 live-commit states in addition to the PDA and matcher models; mCRL2 proves branching bisimulation with the atomic reference contract and that partial publication is unreachable |
 | standalone Bag microbenchmark | 15/15 comparative treatment pairs plus 6 logical-multiplicity points | construction wins at every tested cardinality; the full exact-lookup sweep wins or is operationally neutral; clone/update wins from 16 keys but regresses at one; one-key construction time is flat through `u64::MAX`; 39,912 KiB aggregate process RSS is recorded but is not a comparative memory claim |
+| live Bag single-root publication experiment | pgmcp experiment 218 accepted; 82 samples per arm and cardinality | removing the redundant outer root clone lowers singleton median latency 5.671%; all four secondary cardinalities also improve; the one `BagDelta`-owned private root preserves all-or-nothing publication |
+| BagDelta moving-cursor experiment | pgmcp experiment 219 statistically accepted; 51 samples per arm and cardinality | the 256-change primary mean improves 1.929% and median 1.197%; 16 and 4,096 changes improve 10.058% and 8.172% at the median, but one change regresses 8.289%; production therefore uses direct exact-key mutation for zero/one change and one moving zipper for multi-key deltas |
 | encoded structural-path validation | 3/3 byte-cursor gates plus 4/4 generated-schema gates | all 58 message programs use one-based constant-time type dispatch; child type IDs and every oneof arm/payload are descriptor-derived; malformed token/length/UTF-8/boolean/field/nesting/type/oneof/PathMap cases fail closed; exhaustive subtrees validate; a 20,000-level path validates and navigates on a 256 KiB stack |
 | waiting-receive COMM throughput | 6/6 treatment pairs pass | 51 samples per arm at 99% confidence; 23.2–44.6% more completed COMMs/s; intervals are disjoint |
 | resting-data COMM throughput | 8/8 treatment pairs do not regress after repair | at 16/256/4,096 distinct entries, throughput improves 48.7–25,589.8%; the one-entry base case is 2.2% faster on diverse input and statistically neutral at a +0.6% point estimate on shared input |
@@ -554,7 +631,17 @@ play and replay: fresh and persistent candidates contribute no removal, repeated
 contribute multiplicity, and one hot-store write lock publishes one PathMap copy-on-write root only
 after the whole transition and every RhoPath have validated. Candidate catalogs advance from exact
 before/after counts and invalidate only when a delta introduces an identity absent from the retained
-catalog. End-to-end comparative allocation/RSS and the concrete Rust-to-formal correspondence beyond
+catalog. Checkpoint `0f9beb5f0` removes the redundant enclosing RSpaceDataStore root clone while
+retaining `BagDelta`'s private atomic root; experiment 218 accepts the preregistered singleton
+latency hypothesis and observes no secondary-cardinality regression. Checkpoints `87679597d` and
+`9a746f2bf` then measure and encode an adaptive delta traversal: a direct exact-key update for a
+singleton, and one moving write zipper for multi-key deltas where adjacent sorted paths can reuse
+their longest common prefix. Experiment 219 accepts its locked statistical criterion but records
+the smaller 1.197% primary median gain and the 8.289% singleton loss explicitly; the production
+choice follows that causal crossover. The libdictenstein review contributes a separate, reachable
+query-scoped `TrieRef`/fused-observation experiment rather than an unmeasured production claim.
+End-to-end comparative
+allocation/RSS and the concrete Rust-to-formal correspondence beyond
 the reviewed transition abstraction remain open. `21ece399d` proves the live candidate projection,
 permutation-invariant play/replay delta, and atomic publication equations in Rocq; exhaustively checks
 2,628 reachable commit states in TLA+; and proves branching bisimulation plus no reachable partial

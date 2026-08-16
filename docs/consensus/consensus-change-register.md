@@ -594,7 +594,7 @@ is a *future* fork, not a present one).
 | [CBR-042](#cbr-042) | N | …and on the **bincode** wire too — `U(m)` verbatim and contiguous, then the values (FORM ②), so the reader never decodes a trie key | `3a32cf07` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-043](#cbr-043) | N | …but of **the entries that surface WRITES**. FORM ② keyed lf-blanked values by the *unblanked* entries, putting an entry's `locally_free` on the event hash | `8cf0b770` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-044](#cbr-044) | N | EPathMap becomes a homogeneous PathMap set/map and both codecs carry one versioned EPM1 trie snapshot; generated protobuf PDAs remove the read ceiling | `26876b65` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
-| [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`; benchmarks `7bc5c6994`, `7b3254573` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
+| [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`, `0f9beb5f0`, `87679597d`, `9a746f2bf`; benchmarks `7bc5c6994`, `7b3254573` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
 | [CBR-L07](#cbr-l07) | L | `List.last()` in MeTTaIL's Rholang | `bbceb6d9`, `6e543c01` | · | · | · | · | · | ● | · | PERMISSIVE | **W** |
 | [CBR-L08](#cbr-l08) | L | The kv element-category gate — a Name in a kv slot is refused, not silently dropped | *in flight* | ● | ● | ● | ● | ● | ● | ○ | REGRESSIVE | **W** |
 | [CBR-L10](#cbr-l10) | L | A pathmap's entries come from a projection, not a field | `832d510f` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
@@ -2322,7 +2322,7 @@ Legacy protobuf fields are read-only migration inputs; removing them is a later 
 
 | | |
 |---|---|
-| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`; benchmarks `7bc5c6994`, `7b3254573` |
+| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`, `0f9beb5f0`, `87679597d`, `9a746f2bf`; benchmarks `7bc5c6994`, `7b3254573` |
 | Status | LANDED ON CAMPAIGN BRANCH; VERIFICATION OPEN |
 | Direction | UNVERIFIED |
 | Evidence grade | UNVERIFIED |
@@ -2453,6 +2453,27 @@ partial-key publication is unreachable. These proofs close the abstract accepted
 obligation. They do not establish the concrete generated-query superset premises or every complete
 RSpace schedule and post-state, so CBR-053 remains `UNVERIFIED`.
 
+Checkpoint `0f9beb5f0` removes a redundant outer copy-on-write root from the same transition. It
+validates every RhoPath first and leaves `BagDelta` as the sole owner of the private root that is
+published after complete success. The accepted state transition, rejection state, ordering,
+serialized lanes, and matcher authority are unchanged; only a duplicate structural fork and copied
+transition paths are removed. Pgmcp experiment 218 measures a 5.671% singleton median-latency
+reduction with no regression at 16, 256, 4,096, or 16,384 keys. This strengthens implementation and
+performance evidence but does not prove the generated-query superset law or every complete RSpace
+schedule/post-state, so CBR-053 remains `UNVERIFIED`.
+
+Checkpoints `87679597d` and `9a746f2bf` change only how that already-normalized `BagDelta` traverses
+its one private PathMap root. The measured treatment retains one write zipper across sorted exact
+paths; the selected implementation uses it for multi-key deltas and retains direct exact-key
+mutation for zero or one operation. Pgmcp experiment 219 records a 1.197% primary median improvement
+at 256 changes, 10.058% and 8.172% improvements at 16 and 4,096 changes, and an 8.289% singleton
+regression that caused the adaptive selection. Exact multiplicities, accepted and rejected states,
+candidate order, whole-root publication, matcher authority, Lane B, and Lane P are unchanged. The
+23/23 Bag suite includes exact-prefix deletion/pruning and subsequent cursor navigation. These
+checkpoints strengthen physical-traversal and failure-atomicity evidence; they do not prove the
+generated-query superset law or every complete RSpace schedule/post-state, so CBR-053 remains
+`UNVERIFIED`.
+
 Checkpoint `1560f4371` gives a standalone Bag a
 direct canonical `ACTree03(PathMap<Multiplicity>)` byte image through the iterative trie reader
 shared with EPathMap. This image is not yet used by an RSpace persistence or network boundary, so it
@@ -2477,7 +2498,7 @@ harness `7b3254573` records standalone construction, lookup, copy-on-write updat
 multiplicity behavior; it does not alter a consensus lane. These checkpoints strengthen the Bag
 representation and transition evidence, but the standalone image is still not an RSpace wire or
 persistence format. Checkpoint `cd01ea721` activates the already-normalized exact-key transition
-carrier without activating that image at a wire or persistence boundary. The 22 Bag tests, 18
+carrier without activating that image at a wire or persistence boundary. The 23 Bag tests, 18
 data-index tests, 17 guarded play/replay tests, and 146 broad RSpace integration tests pass; the
 broad process used 489,848 KiB peak RSS and zero swap under a 12 GiB cap. This strengthens atomic
 post-selection transition evidence but does not prove generated-query soundness or complete

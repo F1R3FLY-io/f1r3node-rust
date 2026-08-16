@@ -14,8 +14,9 @@
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
 **Report date** 2026-07-29, revised through 2026-08-16
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
-**Living closure head** `f1r3node-rust-mettail@250e96c80` (PathMap-pruned ordered elements inside the
-stack-safe associative-commutative matcher, following generated ordered-expression datum-first/receive-first
+**Living closure head** `f1r3node-rust-mettail@9a746f2bf` (adaptive exact-key/moving-zipper Bag
+deltas over one privately forked PathMap root, following atomic accepted-match Bag publication,
+PathMap-pruned ordered elements inside the stack-safe associative-commutative matcher, and generated ordered-expression datum-first/receive-first
 RhoPath queries in retained PathMap automata and the Bag/position product, following sparse relational-row reuse in the
 production spatial-matcher pushdown automaton (PDA), complete-message protobuf ingress bounds, `InterpreterError`
 lifecycle machine, reducer method-replay machine, exact recursion census, production lint gate,
@@ -3503,6 +3504,36 @@ partial-key publication is unreachable. The full bounded proof script passes Roc
 zero swap**. This closes the abstract live-commit transition obligation; concrete generated-query
 soundness and full RSpace schedule/post-state equivalence remain open consensus obligations.
 
+Checkpoint `0f9beb5f0` removes the redundant enclosing `RSpaceDataStore` root clone without weakening
+that publication model. The store validates every delta path before mutation, then `BagDelta` owns
+the one private copy-on-write root and publishes it only after the complete normalized transition
+succeeds. Late underflow, overflow, and malformed-path controls include an earlier valid operation
+and still observe the complete pre-state. Pgmcp experiment 218 accepts the preregistered singleton
+latency hypothesis: 245.370 ns control median versus 231.454 ns treatment median (**5.671% lower**),
+82 raw samples per arm, Welch `p = 1.1743230270934331e-138`, and Cohen's `d = -15.668`. The four
+secondary cardinalities improve by 0.950–3.008% rather than regressing. This microbenchmark closes
+the duplicate-root cost it isolates; it is not an end-to-end RSpace allocation or RSS result.
+
+Checkpoint `87679597d` next measures one moving PathMap write zipper across the sorted exact-key
+operations of a `BagDelta`. The zipper moves through each successive longest common prefix rather
+than replaying every path from the root; leaf deletion prunes value-free structure before the next
+move. Experiment 219's preregistered 256-change primary has 51 samples per arm: median latency falls
+from 22,924.652 ns to 22,650.136 ns (**1.197%**) and mean latency falls **1.929%**. Welch's
+`p = 4.5845472558e-7`, Cohen's `d = -1.050`, Cliff's `delta = -0.472`, and Mann-Whitney
+`p = 4.0848091004e-5` support the direction, but the primary effect does not clear the campaign's
+separate five-percent end-to-end selection threshold. More importantly, the singleton treatment
+regresses **8.289%** at the median because there is no adjacent prefix to reuse, while cardinalities
+16 and 4,096 improve **10.058%** and **8.172%**.
+
+Checkpoint `9a746f2bf` therefore makes the mechanism adaptive: an empty delta returns without a COW
+fork, a singleton uses the lower-overhead direct exact-key mutation, and a multi-key delta uses the
+moving zipper. All **23/23** Bag tests pass, including randomized legacy and `BTreeMap` oracles,
+late-failure rollback, the deep/wide small-stack gates, and an exact-prefix case that deletes a leaf
+between adjacent updates. The change alters physical traversal only: exact counts, publication,
+failure atomicity, ordering, and byte images are unchanged. It is not an end-to-end memory result;
+the enclosing scope was capped at 8 GiB with zero swap, but a post-exit RSS high-water mark was not
+available and is not inferred.
+
 ##### 5.16.5.4 Results
 
 The original SS-A11 depth measurements ran under a user systemd scope with **3 GiB `MemoryHigh`, 4
@@ -3532,8 +3563,8 @@ swap, and two-core CPU quota**. **MEASURED:**
 | datum-first retained structural queries | root fallback for every non-ground pattern | **9/9 combined production pruning cases** | identical COMM result/event trace/post-state map and 256-to-1 spatial calls for a canonically last waiting receive; unsupported patterns remain root fallbacks |
 | retained-filter formal composition | no theorem connecting both prefilters to canonical selection | **Rocq theorem plus complete bounded formal bundle** | exact-prefix and residual-query superset premises imply no false negatives and preservation of the first canonical spatial success; Rocq, Verus 6/6, Z3, all three exhaustive TLC models, and the live-commit mCRL2 checks pass; concrete compiler premises remain open |
 | AC element candidate Bag | full unordered target scan | **8,256 to 128 exact diagonal spatial edges; 128 ordered-nested ESet edges; 128 generalized Send edges from 16,384 possible pairs; one real edge for a width-128 remainder; 16,257 exhaustive displacement edges in each of 51 samples** | the initial fixed-width candidate cut passed 53/53 matcher and 22/22 RSpace tests; `2d91c4394` makes exact multiplicity and residual subtraction Bag-authoritative; `bbe91b90f` extends exact stack-safe keys/queries to every unordered `Par` field root and passes 18/18 focused matcher plus strict lint; `3a70ddc58` uses Bag visitation only for true duplicates; `ad5d37a59` encodes one identity for 64 adjacent duplicates without merging metadata-distinct values; `26b72b096` quotient-compresses universal remainder vertices, passes all 651 bounded recursive-oracle cases, 12/12 spatial differential tests, and 81/81 matcher integrations; isolated pre-Bag counter process was 56.90 s and 100.8 MiB RSS under 4 GiB/zero swap; competing processes invalidate post-Bag durations, so no new throughput or RSS claim is inferred |
-| standalone Bag delta and compact-trie codec | no direct Bag codec or normalized reversible transition carrier | **200,000-byte compressed key round-trips on 256 KiB; 22/22 Bag tests; 1/1 allocation gate; 183/183 affected EPathMap tests** | `0d7a6a3f8` adds atomic exact-key delta apply/revert; `1560f4371` uses raw canonical ACTree03 with native `u64` value slots and a shared iterative reader; `46aaa6472` adds legacy parity, prefix, algebra, delta, deep/wide, Merkle-image, and multiplicity-allocation evidence; malformed/noncanonical/zero/dangling images fail closed and strict lint passes |
-| live accepted-match Bag transaction | per-selected-datum hot-store lock and removal | **22/22 Bag; 18/18 data index; 17/17 guarded play/replay; 146/146 broad RSpace integration; Rocq/TLC/mCRL2 live-commit proof** | `cd01ea721` normalizes exact selected identities, commits one COW root under one lock, preserves fresh/persistent candidates, and rejects underflow or malformed paths without mutation; `21ece399d` proves candidate projection, play/replay delta equality, atomic publication, all seven invariants over 2,628 TLC states, branching bisimulation, and no partial-publication reachability; broad gate 3 min 6.13 s, 489,848 KiB peak RSS, zero swap under 12 GiB `MemoryMax` and four-core quota; affected strict Clippy passes, while the intentionally broader all-test Clippy reaches unrelated pre-existing warnings and is not claimed |
+| standalone Bag delta and compact-trie codec | no direct Bag codec or normalized reversible transition carrier | **200,000-byte compressed key round-trips on 256 KiB; 23/23 Bag tests; 1/1 allocation gate; 183/183 affected EPathMap tests** | `0d7a6a3f8` adds atomic exact-key delta apply/revert; `1560f4371` uses raw canonical ACTree03 with native `u64` value slots and a shared iterative reader; `46aaa6472` adds legacy parity, prefix, algebra, delta, deep/wide, Merkle-image, and multiplicity-allocation evidence; `87679597d` adds the exact-prefix cursor/pruning regression; malformed/noncanonical/zero/dangling images fail closed and strict lint passes |
+| live accepted-match Bag transaction | per-selected-datum hot-store lock and removal | **23/23 Bag; 18/18 data index; 17/17 guarded play/replay; 146/146 broad RSpace integration; Rocq/TLC/mCRL2 live-commit proof; experiments 218 and 219 accepted under their locked statistical criteria** | `cd01ea721` normalizes exact selected identities, commits one COW root under one lock, preserves fresh/persistent candidates, and rejects underflow or malformed paths without mutation; `21ece399d` proves candidate projection, play/replay delta equality, atomic publication, all seven invariants over 2,628 TLC states, branching bisimulation, and no partial-publication reachability; `0f9beb5f0` removes the redundant outer root clone while retaining the `BagDelta`-owned atomic root, lowering singleton median latency 5.671% with no secondary-cardinality regression; `87679597d` measures one moving write zipper and `9a746f2bf` selects it only for multi-key deltas after the singleton regressed 8.289%; broad gate 3 min 6.13 s, 489,848 KiB peak RSS, zero swap under 12 GiB `MemoryMax` and four-core quota; affected strict Clippy passes, while the intentionally broader all-test Clippy reaches unrelated pre-existing warnings and is not claimed |
 | Bag formal laws | informal implementation equations | **Rocq and Verus `--no-cheating` plus TLC and mCRL2 pass inside the complete bounded bundle** | `8e4938ec6` proves exact-key multiplicity algebra and normalized/canonical deltas in Rocq, plus executable checked-`u64` apply/revert in Verus; `21ece399d` adds the live-commit Rocq bridge, a 2,628-state TLC model, branching bisimulation, and no-partial-publication proof; the earlier focused Rocq/Verus proofs used 351,028 KiB and 261,824 KiB peak RSS respectively with zero swap; Z3 and all three TLC models pass |
 | standalone Bag microbenchmark | legacy `HashMultiSet` controls | **15/15 comparative pairs plus 6 logical-multiplicity points** | construction improves 20.5–54.6%; the full exact-lookup sweep improves except for an operationally neutral 0.236% loss at 4,096; copy-on-write clone/update improves from 16 keys but loses 65.9% at one; one-key construction remains approximately 76 ns through `u64::MAX`; aggregate benchmark-process RSS is 39,912 KiB, not a comparative per-operation memory result |
 | retained waiting-receive throughput | full canonical candidate scan | **23.2–44.6% more COMMs/s** | six treatment pairs; 51 samples/arm; 99% confidence; 16/256/4,096 receives; diverse/shared prefixes |
@@ -3615,6 +3646,28 @@ allocator gate that occurrences are not expanded. The 39,912 KiB figure covers t
 benchmark process and is not a comparative heap or per-operation RSS measurement. Raw estimates
 and resource metadata are
 [`measurements/pathmap-bag-microbench-2026-08-16.tsv`](measurements/pathmap-bag-microbench-2026-08-16.tsv).
+
+The live publication experiment is separate from that standalone HashMultiSet comparison. It asks
+whether `RSpaceDataStore` needs an outer COW clone around `BagDelta`'s already-private atomic root.
+The 32-core, SMT-disabled host was 59–64% idle immediately before the one accepted run; the process
+was pinned to CPUs 0–7 in one shared-L3 CCD with the performance governor. It completed in 53.53 s,
+peaked at 570,124 KiB RSS under an 8 GiB cap, and used zero swap. Each arm and cardinality has 82
+samples. The singleton median improves **5.671%** (245.370 ns to 231.454 ns), satisfying both the
+five-percent effect threshold and the locked Welch/effect-size criterion. Cardinalities 16, 256,
+4,096, and 16,384 improve **3.008%**, **0.977%**, **1.436%**, and **0.950%**. Raw measurements and
+sealed pgmcp digests are
+[`measurements/rspace-bag-single-root-commit-2026-08-16.tsv`](measurements/rspace-bag-single-root-commit-2026-08-16.tsv).
+
+The follow-on cursor experiment isolates whether a delta with sorted shared-prefix keys should
+restart each exact mutation at the root or preserve one moving PathMap write-zipper focus. The one
+accepted run began with 74% aggregate idle CPU on the same 32-core, SMT-disabled host, no competing
+Cargo or rustc process, and CPUs 0–7 pinned under an 8 GiB cap with zero swap. Each arm and
+cardinality has 51 samples. The primary 256-change median improves **1.197%**, while the 16- and
+4,096-change medians improve **10.058%** and **8.172%**; the singleton median regresses **8.289%**.
+The selected implementation consequently uses direct mutation for zero/one operation and the
+cursor for multi-key deltas. No peak RSS is claimed because the enclosing scope's post-exit
+high-water mark was unavailable. Raw measurements, full statistics, and sealed pgmcp digests are
+[`measurements/rspace-bag-delta-cursor-2026-08-16.tsv`](measurements/rspace-bag-delta-cursor-2026-08-16.tsv).
 
 ##### 5.16.5.5 What it cost
 
@@ -7799,6 +7852,9 @@ done
 | `mettail-rust/docs/benchmarks/data/sa-vs-naive/2026-08-10-post-d-e5-r3-r2/` | SS-G47/experiment-174 authenticated SA-versus-persistent-R3 samples, corrected derived decision, exact resource protocol, and production-promotion evidence (§5.24) |
 | [`measurements/flt-retained-candidate-matcher-2026-08-11.tsv`](measurements/flt-retained-candidate-matcher-2026-08-11.tsv) | SS-G49 paired retained-versus-spatial timings, shared-state counts, bounded-stack differential, capped resource envelopes, and formal gates (§5.26) |
 | [`measurements/rspace-retained-pathmap-prefilter-2026-08-15.tsv`](measurements/rspace-retained-pathmap-prefilter-2026-08-15.tsv) | SS-A11 produce-driven control/PathMap COMM timings for 16, 256, and 4,096 persistent waiting receives under diverse/shared prefixes (§5.16.5) |
+| [`measurements/pathmap-bag-microbench-2026-08-16.tsv`](measurements/pathmap-bag-microbench-2026-08-16.tsv) | standalone `HashMultiSet`/PathMap Bag construction, exact lookup, COW update, logical-multiplicity, allocation-shape, and bounded-resource observations (§5.16.5) |
+| [`measurements/rspace-bag-single-root-commit-2026-08-16.tsv`](measurements/rspace-bag-single-root-commit-2026-08-16.tsv) | experiment 218's redundant-two-root/single-root Bag publication samples, statistics, resource bound, and sealed pgmcp digests (§5.16.5) |
+| [`measurements/rspace-bag-delta-cursor-2026-08-16.tsv`](measurements/rspace-bag-delta-cursor-2026-08-16.tsv) | experiment 219's root-replay/moving-write-zipper samples, adaptive selection, resource bound, and sealed pgmcp digests (§5.16.5) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of
