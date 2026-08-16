@@ -205,7 +205,12 @@ env:
   # resolver's canonical deploy block instead of an orphaned first inclusion.
   # Verified that 735a7b95 is the immutable PR head, the local bonding suite
   # passed, and the local repin helper and workflow security invariants pass.
-  SYSTEM_INTEGRATION_REF: 735a7b95a3af74677f9519a6f01049cbc004bca4
+  #
+  # 2026-08-15: bumped to the SI PR #119 main merge. Observer LFS coverage now
+  # runs in a dedicated shard and requires exact finalized multi-parent block
+  # metadata before observer attachment. Verified that 28b24d9c is the local
+  # and remote main tip, and the workflow security invariants pass.
+  SYSTEM_INTEGRATION_REF: 28b24d9c314e2183c0b903352c25e34e532c4ca5
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
