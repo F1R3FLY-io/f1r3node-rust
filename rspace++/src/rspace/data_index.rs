@@ -4,9 +4,9 @@ use std::marker::PhantomData;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use pathmap::PathMap;
-use pathmap::utils::{BitMask, ByteMask, ByteMaskIter};
+use pathmap::utils::{ByteMask, ByteMaskIter};
 use pathmap::zipper::{
-    TrieRefBorrowed, Zipper, ZipperReadOnlySubtries, ZipperReadOnlyValues, ZipperSubtries,
+    ReadZipperUntracked, Zipper, ZipperMoving, ZipperReadOnlyValues, ZipperSubtries,
 };
 use serde::Serialize;
 
@@ -216,44 +216,36 @@ pub struct CandidatePool<A: Clone> {
 }
 
 #[derive(Clone)]
-struct CandidateProductFocus<'a> {
-    availability: TrieRefBorrowed<'a, Multiplicity>,
-    positions: TrieRefBorrowed<'a, CandidatePosition>,
+struct CandidateProductCursor<'a> {
+    availability: ReadZipperUntracked<'a, 'static, Multiplicity>,
+    positions: ReadZipperUntracked<'a, 'static, CandidatePosition>,
 }
 
-impl<'a> CandidateProductFocus<'a> {
+impl<'a> CandidateProductCursor<'a> {
     fn new(
         availability: &'a PathMap<Multiplicity>,
         positions: &'a PathMap<CandidatePosition>,
     ) -> Self {
         Self {
-            availability: availability.trie_ref_at_path(&[]),
-            positions: positions.trie_ref_at_path(&[]),
+            availability: availability.read_zipper(),
+            positions: positions.read_zipper(),
         }
     }
 
-    /// Descend from this focus without replaying the path from either trie
-    /// root.
-    ///
-    /// Both handles borrow one immutable `CandidatePool` revision for the
-    /// complete query. A failed descent is represented by PathMap's invalid
-    /// TrieRef sentinel and is discarded before it can enter the PDA.
-    fn descendant(&self, path: &[u8]) -> Option<Self> {
-        let availability = self.availability.trie_ref_at_path(path);
-        let positions = self.positions.trie_ref_at_path(path);
-        (availability.path_exists() && positions.path_exists()).then_some(Self {
-            availability,
-            positions,
-        })
+    fn descend_to_existing(&mut self, path: &[u8]) -> bool {
+        self.availability.descend_to_existing(path) == path.len() &&
+            self.positions.descend_to_existing(path) == path.len()
     }
 
-    /// Construct a child only after the intersected child mask accepted its
-    /// label. This keeps rejected labels from allocating/copying traversal
-    /// state and makes every branch a focus-local TrieRef descent.
-    fn child(&self, byte: u8) -> Self {
-        debug_assert!(self.child_mask().test_bit(byte));
-        self.descendant(&[byte])
-            .expect("the intersected child mask proves both child paths exist")
+    fn descend_to_byte(&mut self, byte: u8) {
+        self.availability.descend_to_byte(byte);
+        self.positions.descend_to_byte(byte);
+    }
+
+    fn ascend_byte(&mut self) {
+        let availability_ascended = self.availability.ascend_byte();
+        let positions_ascended = self.positions.ascend_byte();
+        debug_assert_eq!(availability_ascended, positions_ascended);
     }
 
     fn child_mask(&self) -> ByteMask {
@@ -267,67 +259,52 @@ impl<'a> CandidateProductFocus<'a> {
 }
 
 struct CandidateQueryState<'a> {
-    focus: CandidateProductFocus<'a>,
+    cursor: CandidateProductCursor<'a>,
     atom_index: usize,
     captures: PathMap<Arc<[u8]>>,
 }
 
-struct SequenceVisitLevel<'a> {
-    focus: CandidateProductFocus<'a>,
-    children: ByteMaskIter,
-    scanner: StoredSequenceFrameScanner,
-}
-
 fn visit_sequence_frames<'a>(
-    focus: CandidateProductFocus<'a>,
-    mut visitor: impl FnMut(CandidateProductFocus<'a>, &[u8]),
+    cursor: CandidateProductCursor<'a>,
+    mut visitor: impl FnMut(CandidateProductCursor<'a>, &[u8]),
 ) {
-    visit_sequence_frames_with_prefix(focus, &[], &mut visitor);
+    visit_sequence_frames_with_prefix(cursor, &[], &mut visitor);
 }
 
 fn visit_sequence_frames_with_prefix<'a>(
-    focus: CandidateProductFocus<'a>,
+    mut cursor: CandidateProductCursor<'a>,
     prefix: &[u8],
-    mut visitor: impl FnMut(CandidateProductFocus<'a>, &[u8]),
+    mut visitor: impl FnMut(CandidateProductCursor<'a>, &[u8]),
 ) {
-    let Some(focus) = focus.descendant(prefix) else {
+    if !cursor.descend_to_existing(prefix) {
         return;
-    };
+    }
     let mut scanner = StoredSequenceFrameScanner::default();
     for byte in prefix {
         if scanner.feed(*byte) != StoredSequenceFrameStep::NeedMore {
             return;
         }
     }
-    let mut levels = vec![SequenceVisitLevel {
-        children: focus.child_mask().iter(),
-        focus,
-        scanner,
-    }];
+    let mut levels: Vec<(ByteMaskIter, StoredSequenceFrameScanner)> =
+        vec![(cursor.child_mask().iter(), scanner)];
     let mut frame = prefix.to_vec();
     let base_len = frame.len();
-    while let Some(level) = levels.last_mut() {
-        match level.children.next() {
+    while let Some((children, scanner_base)) = levels.last_mut() {
+        match children.next() {
             Some(byte) => {
-                let mut scanner = level.scanner;
-                // Preserve predicate/scanner acceptance before child-handle
-                // construction while replacing cursor ancestry with local
-                // immutable focuses.
+                let mut scanner = *scanner_base;
                 match scanner.feed(byte) {
                     StoredSequenceFrameStep::NeedMore => {
-                        let focus = level.focus.child(byte);
+                        cursor.descend_to_byte(byte);
                         frame.push(byte);
-                        levels.push(SequenceVisitLevel {
-                            children: focus.child_mask().iter(),
-                            focus,
-                            scanner,
-                        });
+                        levels.push((cursor.child_mask().iter(), scanner));
                     }
                     StoredSequenceFrameStep::Complete => {
-                        let focus = level.focus.child(byte);
+                        cursor.descend_to_byte(byte);
                         frame.push(byte);
-                        visitor(focus, &frame);
+                        visitor(cursor.clone(), &frame);
                         frame.pop();
+                        cursor.ascend_byte();
                     }
                     StoredSequenceFrameStep::Invalid => {}
                 }
@@ -336,6 +313,7 @@ fn visit_sequence_frames_with_prefix<'a>(
                 levels.pop();
                 if frame.len() > base_len {
                     frame.pop();
+                    cursor.ascend_byte();
                 }
             }
         }
@@ -343,24 +321,27 @@ fn visit_sequence_frames_with_prefix<'a>(
 }
 
 fn visit_product_values(
-    focus: CandidateProductFocus<'_>,
+    mut cursor: CandidateProductCursor<'_>,
     mut visitor: impl FnMut(CandidatePosition),
 ) {
-    if let Some(position) = focus.position() {
+    if let Some(position) = cursor.position() {
         visitor(position);
     }
-    let mut levels = vec![(focus.clone(), focus.child_mask().iter())];
-    while let Some((focus, children)) = levels.last_mut() {
+    let mut levels = vec![cursor.child_mask().iter()];
+    while let Some(children) = levels.last_mut() {
         match children.next() {
             Some(byte) => {
-                let child = focus.child(byte);
-                if let Some(position) = child.position() {
+                cursor.descend_to_byte(byte);
+                if let Some(position) = cursor.position() {
                     visitor(position);
                 }
-                levels.push((child.clone(), child.child_mask().iter()));
+                levels.push(cursor.child_mask().iter());
             }
             None => {
                 levels.pop();
+                if !levels.is_empty() {
+                    cursor.ascend_byte();
+                }
             }
         }
     }
@@ -438,12 +419,12 @@ impl<A: Clone> CandidatePool<A> {
             result.push(0);
         }
         let stored_offset = usize::from(self.fresh.is_some());
-        let root = CandidateProductFocus::new(self.availability.as_pathmap(), &self.positions);
-        let Some(root) = root.descendant(&[1]) else {
+        let mut root = CandidateProductCursor::new(self.availability.as_pathmap(), &self.positions);
+        if !root.descend_to_existing(&[1]) {
             return result;
-        };
+        }
         let mut work = vec![CandidateQueryState {
-            focus: root,
+            cursor: root,
             atom_index: 0,
             captures: PathMap::new(),
         }];
@@ -451,9 +432,10 @@ impl<A: Clone> CandidatePool<A> {
             if let Some(atom) = query.atoms().get(state.atom_index) {
                 match atom {
                     CompiledRhoPathQueryAtom::Exact { stored_frame, .. } => {
-                        if let Some(focus) = state.focus.descendant(stored_frame) {
+                        let mut cursor = state.cursor;
+                        if cursor.descend_to_existing(stored_frame) {
                             work.push(CandidateQueryState {
-                                focus,
+                                cursor,
                                 atom_index: state.atom_index + 1,
                                 captures: state.captures,
                             });
@@ -462,19 +444,20 @@ impl<A: Clone> CandidatePool<A> {
                     CompiledRhoPathQueryAtom::Capture(id) => {
                         let capture_path = id.path();
                         if let Some(frame) = state.captures.get(capture_path) {
-                            if let Some(focus) = state.focus.descendant(frame.as_ref()) {
+                            let mut cursor = state.cursor;
+                            if cursor.descend_to_existing(frame.as_ref()) {
                                 work.push(CandidateQueryState {
-                                    focus,
+                                    cursor,
                                     atom_index: state.atom_index + 1,
                                     captures: state.captures,
                                 });
                             }
                         } else {
-                            visit_sequence_frames(state.focus, |focus, frame| {
+                            visit_sequence_frames(state.cursor, |cursor, frame| {
                                 let mut captures = state.captures.clone();
                                 captures.insert(capture_path, Arc::from(frame));
                                 work.push(CandidateQueryState {
-                                    focus,
+                                    cursor,
                                     atom_index: state.atom_index + 1,
                                     captures,
                                 });
@@ -482,9 +465,9 @@ impl<A: Clone> CandidatePool<A> {
                         }
                     }
                     CompiledRhoPathQueryAtom::Wildcard => {
-                        visit_sequence_frames(state.focus, |focus, _| {
+                        visit_sequence_frames(state.cursor, |cursor, _| {
                             work.push(CandidateQueryState {
-                                focus,
+                                cursor,
                                 atom_index: state.atom_index + 1,
                                 captures: state.captures.clone(),
                             });
@@ -492,12 +475,12 @@ impl<A: Clone> CandidatePool<A> {
                     }
                     CompiledRhoPathQueryAtom::Match(query) => {
                         visit_sequence_frames_with_prefix(
-                            state.focus,
+                            state.cursor,
                             query.product_prefix(),
-                            |focus, frame| {
+                            |cursor, frame| {
                                 if query.matches_product_frame(frame) {
                                     work.push(CandidateQueryState {
-                                        focus,
+                                        cursor,
                                         atom_index: state.atom_index + 1,
                                         captures: state.captures.clone(),
                                     });
@@ -509,15 +492,16 @@ impl<A: Clone> CandidatePool<A> {
                 continue;
             }
 
-            if let Some(end) = state.focus.descendant(&[0, 0]) {
+            let mut end = state.cursor.clone();
+            if end.descend_to_existing(&[0, 0]) {
                 visit_product_values(end, |position| {
                     result.push(position.index() + stored_offset);
                 });
             }
             if query.accepts_remainder() {
-                visit_sequence_frames(state.focus, |focus, _| {
+                visit_sequence_frames(state.cursor, |cursor, _| {
                     work.push(CandidateQueryState {
-                        focus,
+                        cursor,
                         atom_index: state.atom_index,
                         captures: state.captures.clone(),
                     });
