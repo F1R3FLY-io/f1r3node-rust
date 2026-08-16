@@ -1,5 +1,10 @@
+use std::collections::BTreeMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
+
 use pathmap::ring::{AlgebraicResult, DistributiveLattice, Lattice, SELF_IDENT};
-use rspace_plus_plus::rspace::bag::{Bag, BagError, Multiplicity};
+use proptest::collection::vec;
+use proptest::prelude::*;
+use rspace_plus_plus::rspace::bag::{Bag, BagDelta, BagError, Multiplicity};
 
 fn bag(entries: &[(&[u8], u64)]) -> Bag {
     let mut result = Bag::new();
@@ -26,6 +31,15 @@ fn multiplicity_rejects_zero_and_detects_overflow() {
         })
     );
     assert_eq!(value.count(b"x"), u64::MAX);
+    assert_eq!(
+        Multiplicity::new(2)
+            .unwrap()
+            .checked_sub(Multiplicity::new(3).unwrap()),
+        Err(BagError::InsufficientMultiplicity {
+            available: 2,
+            requested: 3,
+        })
+    );
 }
 
 #[test]
@@ -53,6 +67,88 @@ fn insert_remove_and_metadata_preserve_the_absent_zero_invariant() {
     assert!(!value.contains(b"alpha"));
     assert_eq!(value.distinct_len(), 1);
     assert_eq!(value.cardinality(), 1);
+}
+
+#[test]
+fn exact_removal_is_atomic_on_insufficient_multiplicity() {
+    let mut value = bag(&[(b"alpha", 2), (b"beta", 1)]);
+    let before = value.clone();
+    assert_eq!(
+        value.try_remove_many(b"alpha", Multiplicity::new(3).unwrap()),
+        Err(BagError::InsufficientMultiplicity {
+            available: 2,
+            requested: 3,
+        })
+    );
+    assert_eq!(value, before);
+    assert_eq!(
+        value.try_remove_many(b"missing", Multiplicity::ONE),
+        Err(BagError::InsufficientMultiplicity {
+            available: 0,
+            requested: 1,
+        })
+    );
+    assert_eq!(value, before);
+}
+
+#[test]
+fn normalized_transaction_delta_applies_and_reverts_exactly() {
+    let original = bag(&[(b"alpha", 5), (b"beta", 1)]);
+    let mut delta = BagDelta::new();
+    delta
+        .record_removal(b"alpha", Multiplicity::new(4).unwrap())
+        .unwrap();
+    delta.record_addition(b"alpha", Multiplicity::ONE).unwrap();
+    delta
+        .record_addition(b"beta", Multiplicity::new(2).unwrap())
+        .unwrap();
+    delta
+        .record_addition(b"gamma", Multiplicity::new(3).unwrap())
+        .unwrap();
+    delta.record_removal(b"gamma", Multiplicity::ONE).unwrap();
+
+    assert_eq!(delta.removals(), &bag(&[(b"alpha", 3)]));
+    assert_eq!(delta.additions(), &bag(&[(b"beta", 2), (b"gamma", 2)]));
+
+    let mut changed = original.clone();
+    delta.apply_to(&mut changed).unwrap();
+    assert_eq!(changed, bag(&[(b"alpha", 2), (b"beta", 3), (b"gamma", 2)]));
+    delta.revert_from(&mut changed).unwrap();
+    assert_eq!(changed, original);
+    assert_eq!(delta.inverse().inverse(), delta);
+}
+
+#[test]
+fn transaction_delta_application_is_atomic_on_underflow_and_overflow() {
+    let mut underflow_target = bag(&[(b"alpha", 2)]);
+    let underflow_before = underflow_target.clone();
+    let mut underflow = BagDelta::new();
+    underflow
+        .record_removal(b"alpha", Multiplicity::new(3).unwrap())
+        .unwrap();
+    assert_eq!(
+        underflow.apply_to(&mut underflow_target),
+        Err(BagError::InsufficientMultiplicity {
+            available: 2,
+            requested: 3,
+        })
+    );
+    assert_eq!(underflow_target, underflow_before);
+
+    let mut overflow_target = bag(&[(b"omega", u64::MAX)]);
+    let overflow_before = overflow_target.clone();
+    let mut overflow = BagDelta::new();
+    overflow
+        .record_addition(b"omega", Multiplicity::ONE)
+        .unwrap();
+    assert_eq!(
+        overflow.apply_to(&mut overflow_target),
+        Err(BagError::MultiplicityOverflow {
+            current: u64::MAX,
+            added: 1,
+        })
+    );
+    assert_eq!(overflow_target, overflow_before);
 }
 
 #[test]
@@ -156,4 +252,116 @@ fn trait_algebra_agrees_with_inherent_algebra() {
     assert!(
         matches!(left.pmeet(&right), AlgebraicResult::Element(value) if value == left.meet(&right))
     );
+}
+
+#[test]
+fn equality_order_hash_and_debug_share_one_canonical_entry_observation() {
+    let left = bag(&[(b"z", 1), (b"a", 2), (b"middle", 3)]);
+    let right = bag(&[(b"middle", 3), (b"z", 1), (b"a", 2)]);
+    assert_eq!(left, right);
+    assert_eq!(left.cmp(&right), std::cmp::Ordering::Equal);
+
+    let mut left_hash = DefaultHasher::new();
+    left.hash(&mut left_hash);
+    let mut right_hash = DefaultHasher::new();
+    right.hash(&mut right_hash);
+    assert_eq!(left_hash.finish(), right_hash.finish());
+
+    assert!(bag(&[(b"a", 1)]) < bag(&[(b"a", 2)]));
+    let rendered = format!("{left:?}");
+    assert!(rendered.contains("distinct_len: 3"));
+    assert!(rendered.contains("cardinality: 6"));
+}
+
+fn oracle(entries: &[(Vec<u8>, u8)]) -> BTreeMap<Vec<u8>, u64> {
+    let mut result = BTreeMap::new();
+    for (path, count) in entries {
+        *result.entry(path.clone()).or_default() += u64::from(*count);
+    }
+    result
+}
+
+fn from_oracle(entries: &BTreeMap<Vec<u8>, u64>) -> Bag {
+    let mut result = Bag::new();
+    for (path, count) in entries {
+        result
+            .insert_many(path, Multiplicity::new(*count).unwrap())
+            .unwrap();
+    }
+    result
+}
+
+fn entry_strategy() -> impl Strategy<Value = Vec<(Vec<u8>, u8)>> {
+    vec((vec(any::<u8>(), 0..8), 1u8..=16), 0..40)
+}
+
+proptest! {
+    #[test]
+    fn bag_algebra_matches_a_btreemap_multiplicity_oracle(
+        left_entries in entry_strategy(),
+        right_entries in entry_strategy(),
+    ) {
+        let left_oracle = oracle(&left_entries);
+        let right_oracle = oracle(&right_entries);
+        let left = from_oracle(&left_oracle);
+        let right = from_oracle(&right_oracle);
+
+        let keys = left_oracle
+            .keys()
+            .chain(right_oracle.keys())
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected_sum = keys
+            .iter()
+            .filter_map(|key| {
+                let count = left_oracle.get(key).copied().unwrap_or(0) +
+                    right_oracle.get(key).copied().unwrap_or(0);
+                (count != 0).then(|| (key.clone(), count))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let expected_join = keys
+            .iter()
+            .filter_map(|key| {
+                let count = left_oracle
+                    .get(key)
+                    .copied()
+                    .unwrap_or(0)
+                    .max(right_oracle.get(key).copied().unwrap_or(0));
+                (count != 0).then(|| (key.clone(), count))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let expected_meet = keys
+            .iter()
+            .filter_map(|key| {
+                let count = left_oracle
+                    .get(key)
+                    .copied()
+                    .unwrap_or(0)
+                    .min(right_oracle.get(key).copied().unwrap_or(0));
+                (count != 0).then(|| (key.clone(), count))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let expected_difference = keys
+            .iter()
+            .filter_map(|key| {
+                let count = left_oracle
+                    .get(key)
+                    .copied()
+                    .unwrap_or(0)
+                    .saturating_sub(right_oracle.get(key).copied().unwrap_or(0));
+                (count != 0).then(|| (key.clone(), count))
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        prop_assert_eq!(left.sum(&right).unwrap(), from_oracle(&expected_sum));
+        prop_assert_eq!(left.join(&right), from_oracle(&expected_join));
+        prop_assert_eq!(left.meet(&right), from_oracle(&expected_meet));
+        prop_assert_eq!(left.subtract(&right), from_oracle(&expected_difference));
+        prop_assert_eq!(
+            left.is_subbag_of(&right),
+            left_oracle.iter().all(|(path, count)| {
+                right_oracle.get(path).copied().unwrap_or(0) >= *count
+            })
+        );
+    }
 }

@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 
 use pathmap::PathMap;
 use pathmap::merkleization::MerkleizeResult;
@@ -10,6 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub enum BagError {
     ZeroMultiplicity,
     MultiplicityOverflow { current: u64, added: u64 },
+    InsufficientMultiplicity { available: u64, requested: u64 },
 }
 
 impl fmt::Display for BagError {
@@ -19,6 +21,13 @@ impl fmt::Display for BagError {
             Self::MultiplicityOverflow { current, added } => {
                 write!(f, "bag multiplicity overflow: {current} + {added}")
             }
+            Self::InsufficientMultiplicity {
+                available,
+                requested,
+            } => write!(
+                f,
+                "insufficient bag multiplicity: requested {requested}, available {available}"
+            ),
         }
     }
 }
@@ -50,6 +59,17 @@ impl Multiplicity {
                 current: self.0,
                 added: other.0,
             })
+    }
+
+    pub fn checked_sub(self, other: Self) -> Result<Option<Self>, BagError> {
+        match self.0.cmp(&other.0) {
+            Ordering::Less => Err(BagError::InsufficientMultiplicity {
+                available: self.0,
+                requested: other.0,
+            }),
+            Ordering::Equal => Ok(None),
+            Ordering::Greater => Ok(Some(Self(self.0 - other.0))),
+        }
     }
 }
 
@@ -198,6 +218,36 @@ impl Bag {
         }
     }
 
+    /// Remove exactly `amount`, leaving `self` unchanged when the requested
+    /// multiplicity is unavailable.
+    pub fn try_remove_many(
+        &mut self,
+        path: &[u8],
+        amount: Multiplicity,
+    ) -> Result<Option<Multiplicity>, BagError> {
+        let current =
+            self.entries
+                .get(path)
+                .copied()
+                .ok_or(BagError::InsufficientMultiplicity {
+                    available: 0,
+                    requested: amount.get(),
+                })?;
+        let next = current.checked_sub(amount)?;
+        self.cardinality -= u128::from(amount.get());
+        match next {
+            Some(next) => {
+                self.entries.insert(path, next);
+                Ok(Some(next))
+            }
+            None => {
+                self.entries.remove(path);
+                self.distinct_len -= 1;
+                Ok(None)
+            }
+        }
+    }
+
     pub fn remove_prefix(&mut self, prefix: &[u8]) -> (usize, u128) {
         let mut removed_distinct = 0usize;
         let mut removed_cardinality = 0u128;
@@ -305,6 +355,100 @@ impl Bag {
     pub fn merkleize(&mut self) -> MerkleizeResult { self.entries.merkleize() }
 }
 
+/// Net, reversible multiplicity changes represented by two disjoint Bags.
+///
+/// Recording an addition cancels an existing removal of the same path first,
+/// and recording a removal cancels an existing addition first. Consequently a
+/// path is present in at most one side and application performs one atomic
+/// PathMap copy-on-write replacement: either every exact removal and checked
+/// addition succeeds, or the target Bag is unchanged.
+#[derive(Clone, Default, Eq, PartialEq)]
+pub struct BagDelta {
+    additions: Bag,
+    removals: Bag,
+}
+
+impl BagDelta {
+    pub fn new() -> Self { Self::default() }
+
+    pub fn is_empty(&self) -> bool { self.additions.is_empty() && self.removals.is_empty() }
+
+    pub fn additions(&self) -> &Bag { &self.additions }
+
+    pub fn removals(&self) -> &Bag { &self.removals }
+
+    pub fn record_addition(&mut self, path: &[u8], amount: Multiplicity) -> Result<(), BagError> {
+        Self::record_change(&mut self.additions, &mut self.removals, path, amount)
+    }
+
+    pub fn record_removal(&mut self, path: &[u8], amount: Multiplicity) -> Result<(), BagError> {
+        Self::record_change(&mut self.removals, &mut self.additions, path, amount)
+    }
+
+    pub fn inverse(&self) -> Self {
+        Self {
+            additions: self.removals.clone(),
+            removals: self.additions.clone(),
+        }
+    }
+
+    pub fn apply_to(&self, target: &mut Bag) -> Result<(), BagError> {
+        Self::apply_parts(target, &self.additions, &self.removals)
+    }
+
+    pub fn revert_from(&self, target: &mut Bag) -> Result<(), BagError> {
+        Self::apply_parts(target, &self.removals, &self.additions)
+    }
+
+    fn record_change(
+        destination: &mut Bag,
+        cancellation: &mut Bag,
+        path: &[u8],
+        amount: Multiplicity,
+    ) -> Result<(), BagError> {
+        let cancelled = cancellation.count(path).min(amount.get());
+        if cancelled != 0 {
+            let remaining = amount.get() - cancelled;
+            if remaining != 0 {
+                let addition =
+                    Multiplicity::new(remaining).expect("a positive remainder is a multiplicity");
+                if let Some(current) = destination.entries.get(path).copied() {
+                    current.checked_add(addition)?;
+                }
+            }
+            cancellation.try_remove_many(
+                path,
+                Multiplicity::new(cancelled).expect("a positive cancellation is a multiplicity"),
+            )?;
+            if remaining != 0 {
+                destination.insert_many(
+                    path,
+                    Multiplicity::new(remaining).expect("a positive remainder is a multiplicity"),
+                )?;
+            }
+        } else {
+            destination.insert_many(path, amount)?;
+        }
+        Ok(())
+    }
+
+    fn apply_parts(target: &mut Bag, additions: &Bag, removals: &Bag) -> Result<(), BagError> {
+        for (path, requested) in removals.iter() {
+            let available = target.count(&path);
+            if available < requested.get() {
+                return Err(BagError::InsufficientMultiplicity {
+                    available,
+                    requested: requested.get(),
+                });
+            }
+        }
+        let reduced = target.subtract(removals);
+        let updated = reduced.sum(additions)?;
+        *target = updated;
+        Ok(())
+    }
+}
+
 impl PartialEq for Bag {
     fn eq(&self, other: &Self) -> bool {
         self.distinct_len == other.distinct_len &&
@@ -317,12 +461,47 @@ impl PartialEq for Bag {
 
 impl Eq for Bag {}
 
+impl PartialOrd for Bag {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+}
+
+impl Ord for Bag {
+    fn cmp(&self, other: &Self) -> Ordering { self.iter().cmp(other.iter()) }
+}
+
+impl Hash for Bag {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.distinct_len.hash(state);
+        self.cardinality.hash(state);
+        for entry in self.iter() {
+            entry.hash(state);
+        }
+    }
+}
+
+struct DebugEntries<'a>(&'a Bag);
+
+impl fmt::Debug for DebugEntries<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_map().entries(self.0.iter()).finish()
+    }
+}
+
 impl fmt::Debug for Bag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Bag")
             .field("distinct_len", &self.distinct_len)
             .field("cardinality", &self.cardinality)
-            .field("entries", &self.iter().collect::<Vec<_>>())
+            .field("entries", &DebugEntries(self))
+            .finish()
+    }
+}
+
+impl fmt::Debug for BagDelta {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BagDelta")
+            .field("additions", &self.additions)
+            .field("removals", &self.removals)
             .finish()
     }
 }
