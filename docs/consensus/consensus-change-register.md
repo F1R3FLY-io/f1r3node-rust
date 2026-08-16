@@ -10,7 +10,7 @@
 | **Companion surface** | `mettail-rust`, branch `feature/rho-native-set-automata`. |
 | **Companion reports** | the [stack-safety report](../design/stack-safety/stack-safety-report-2026-07-29.md) and the [PathMap report](../design/pathmap/pathmap-report-2026-08-03.md), which carry the equivalence evidence this register's retirements cite. |
 | **Audience** | F1r3node consensus reviewers deciding whether to accept the fork risk of a coordinated protocol-version bump. |
-| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-15 |
+| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-16 |
 | **Maintenance** | [§7](#7-maintenance). Adding an entry is filling the form in [Appendix A](#appendix-a--the-entry-template). |
 
 ---
@@ -2321,11 +2321,11 @@ Legacy protobuf fields are read-only migration inputs; removing them is a later 
 
 | | |
 |---|---|
-| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`; benchmark `7bc5c6994` |
+| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`; benchmark `7bc5c6994` |
 | Status | LANDED ON CAMPAIGN BRANCH; VERIFICATION OPEN |
 | Direction | UNVERIFIED |
 | Evidence grade | UNVERIFIED |
-| Files | `rspace++/src/rspace/{data_index.rs,match.rs,hot_store.rs,retained_set_automaton.rs,rho_path.rs,rspace.rs,space_matcher.rs}`, `rholang/src/rust/interpreter/matcher/match.rs` |
+| Files | `rspace++/src/rspace/{data_index.rs,match.rs,hot_store.rs,retained_set_automaton.rs,rho_path.rs,rspace.rs,space_matcher.rs}`, `models/src/rust/rholang/{match_path.rs,match_schema.rs}`, `rholang/src/rust/interpreter/matcher/match.rs` |
 
 #### (a) The issue
 
@@ -2361,9 +2361,17 @@ product between borrowed zippers on the authoritative Bag and the derived candid
 Exact transitions descend both tries together, wildcard transitions intersect child masks, and a
 terminal is returned only when both tries carry a value. Iterative framed scanning covers exact
 whole terms, whole-term wildcard/free-variable capture, repeated-capture equality, and ordered list
-remainder. Unsupported nested schema patterns still use the full canonical scan. The Bag remains
+remainder. The Bag remains
 the sole membership authority and the spatial matcher remains the verdict authority. This product
 does not satisfy or stand in for the separate retained-automaton/Bag product.
+
+Checkpoint `b6b53d1b3` adds ordered nested EList/ETuple holes. The compiler divides the generated
+RMP1 event stream into exact byte runs and whole-`Par` wildcard/capture instructions. The first exact
+run descends both synchronized tries; a stack-safe byte PDA then skips one self-delimiting nested
+value per hole without decoding `Par`. In-memory frames and stored product frames use explicit one-
+and two-layer escape modes. Unsupported unordered, associative-commutative, remainder-bearing,
+connective, and other schema shapes still use the full canonical scan. The spatial matcher remains
+the final verdict authority.
 
 #### (b) How it may break consensus
 
@@ -2398,7 +2406,7 @@ subsets before any datum decode or spatial-match state allocation. A flat `Vec`,
 `BTreeMap` transition authority would lose that shared-prefix property and is not the selected
 design.
 
-The current containment argument has eight independently checked parts:
+The current containment argument has ten independently checked parts:
 
 1. exact-ground `BindPattern` and matching `ListParWithRandom` values use the same canonical
    structural sequence;
@@ -2409,11 +2417,13 @@ The current containment argument has eight independently checked parts:
 5. continuation-group revisions invalidate only the mutated group, while state replacement and
    clear invalidate every derived automaton;
 6. resting prefix positions are sorted into the predecessor's canonical order before matching;
-7. Bag availability, rather than the derived position trie, remains the membership authority; and
+7. Bag availability, rather than the derived position trie, remains the membership authority;
 8. unsupported matchers fail closed to the full scan while structural false positives still reach
-   and can be rejected by the spatial oracle; and
+   and can be rejected by the spatial oracle;
 9. the synchronized product emits a position only at a terminal present in both the authoritative
-   Bag and derived position trie, while repeated captures compare their canonical framed bytes.
+   Bag and derived position trie, while repeated captures compare their canonical framed bytes; and
+10. nested instructions use the same generated event encoder as datum paths, distinguish one- and
+    two-layer framing explicitly, and decline every shape outside the supported ordered fragment.
 
 Cache-counter saturation returns `None` and recompiles instead of accepting a stale trie. Cache hits
 borrow the trie under a sharded map guard and perform no `PathMap` clone. Empty groups remove their
@@ -2430,18 +2440,25 @@ the verdict axis.
   binding/connective fallback checks. **MEASURED.**
 - `storage_actions_test` with path indexing enabled: **41/41**, covering single and joined receives,
   repeated channels, persistence, checkpoint, reset, and soft-revert. **MEASURED.**
-- `candidate_path_pruning_spec`: **7/7**, including a 256-candidate 256-to-1 spatial-call witness,
-  exact/wildcard/repeated-capture/ordered-remainder product traversal, embedded-zero framing, and a
-  structural false positive rejected by the spatial oracle. **MEASURED.**
-- `rho_path_spec`: **7/7**, including malformed framing, embedded double-zero escapes, capture
-  equality, and a million-byte iterative scan on a 128 KiB worker stack. **MEASURED.**
-- `retained_path_index_test`: **5/5** after whole-term and ordered-remainder query compilation;
-  supported queries agree with the spatial oracle and unsupported nested shapes fall back.
+- `candidate_path_pruning_spec`: **8/8**, including flat and nested 256-candidate 256-to-1
+  spatial-call witnesses, exact/wildcard/repeated-capture/ordered-remainder/nested product
+  traversal, embedded-zero/double-escape framing, and a structural false positive rejected by the
+  spatial oracle. **MEASURED.**
+- `rho_path_spec`: **9/9**, including malformed framing, embedded double-zero escapes, capture
+  equality, every proper shallow truncation, a 20,000-level nested query on a 128 KiB worker stack,
+  and a million-byte iterative scan on the same stack size. **MEASURED.**
+- `retained_path_index_test`: **7/7** after whole-term, ordered-remainder, and ordered nested query
+  compilation; supported queries agree with the spatial oracle and unordered or otherwise
+  unsupported shapes fall back.
   **MEASURED.**
 - generated resting-data differential: **64 corpora** with identical selected result, RSpace event
   trace, and post-state maps under full and indexed scans. **MEASURED.**
 - both changed libraries plus all tests and benchmark targets compile under a **5 GiB** resident-set
   cap and one-core quota; focused strict lint passes. **MEASURED.**
+- at `b6b53d1b3`, focused `rspace_plus_plus`/`models` strict lint and production `rholang` library
+  strict lint pass. Aggregate Rholang `mod`-target strict lint stops on 70 pre-existing
+  `useless_vec` findings in unrelated legacy tests; no warning from this checkpoint is reported.
+  **MEASURED.**
 - the corrected produce-driven benchmark passes all six exact-ground treatment pairs: **18.8–30.8%
   lower latency** and **23.2–44.6% higher throughput**, 51 samples per arm at 99% confidence.
   **MEASURED.** This is performance evidence only; it cannot discharge the verdict/post-state axes.
@@ -4164,8 +4181,16 @@ nesting, child-type, oneof, and EPathMap-mode inputs; validated subtree extents 
 decoding. The exhaustive descriptor corpus and a 20,000-level / 256 KiB stack gate pass. Because
 the cursor consumes only reconstructible index bytes and neither selects nor accepts a candidate,
 this checkpoint retains the `BYTE_NEUTRAL_MEASURED` classification. Exhaustive end-to-end replay,
-cross-platform evidence, nested matching, and formal correspondence remain campaign gates before
-the optimization can be called complete.
+cross-platform evidence, nested matching, and formal correspondence remained campaign gates before
+the optimization could be called complete at that checkpoint.
+
+`f1r3node-rust-mettail@b6b53d1b3` then activates ordered nested EList/ETuple instructions in the
+receive-first product. This later checkpoint is not retired merely because its byte stream is
+derived: a false-negative instruction can hide a COMM. It is therefore governed by active CBR-053's
+`UNVERIFIED` verdict/post-state axes until the formal superset and generated replay gates close. Its
+focused control/index witness returns the same canonically last nested datum while reducing spatial
+calls from 256 to 1; malformed and 20,000-level small-stack gates are green. Those measurements
+establish implementation and anti-vacuity evidence, not consensus equivalence.
 
 ### B.2 The original commit-level exemptions
 

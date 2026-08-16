@@ -12,9 +12,10 @@
 
 **Repository** `f1r3node-rust-mettail`, branch `feature/mettail`
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
-**Report date** 2026-07-29, revised through 2026-08-11
+**Report date** 2026-07-29, revised through 2026-08-16
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
-**Living closure head** `f1r3node-rust-mettail@40650664` (sparse relational-row reuse in the
+**Living closure head** `f1r3node-rust-mettail@b6b53d1b3` (ordered nested RMP1 query PDA and
+direct Bag/position PathMap prefix product, following sparse relational-row reuse in the
 production spatial-matcher pushdown automaton (PDA), complete-message protobuf ingress bounds, `InterpreterError`
 lifecycle machine, reducer method-replay machine, exact recursion census, production lint gate,
 prior matcher/PathMap closure, D-E4 evidence reconciliation, and positional AC-remainder repair)
@@ -3282,10 +3283,10 @@ both zippers together; wildcard transitions enumerate the intersection of their 
 candidate position is emitted only when both terminal values exist. The iterative query scanner
 validates both framing layers and escaped zeros, and a `PathMap` capture environment enforces
 repeated-variable equality without a hash-table or expanded-term authority. The compiled fragment
-now includes exact whole terms, whole-term wildcard/free-variable captures, repeated captures, and
-ordered list remainder. Unsupported nested schema arms still take the canonical full scan and are
-therefore not counted as converted. This is a Bag/position-index product for receive-first lookup,
-not the separately required retained-automaton/Bag product for datum-first lookup.
+at that checkpoint included exact whole terms, whole-term wildcard/free-variable captures, repeated
+captures, and ordered list remainder. Unsupported nested schema arms still took the canonical full
+scan. This is a Bag/position-index product for receive-first lookup, not the separately required
+retained-automaton/Bag product for datum-first lookup.
 
 Checkpoint `71d378e73` supplies the generated schema traversal boundary for the next conversion.
 The existing descriptor pass now emits one ascending-tag `RhoMatchProgram` and exhaustive
@@ -3320,6 +3321,25 @@ includes validation and deepest-subtree navigation through a 20,000-level term o
 stack. These are test-harness elapsed times under a 5 GiB zero-swap cap, not standalone RSS
 measurements.
 
+Checkpoint `b6b53d1b3` activates an ordered nested-query PDA without decoding `Par`. The compiler
+reuses the generated event encoder to divide an EList or ETuple pattern into exact RMP1 byte runs and
+whole-`Par` capture or wildcard instructions. Unsupported unordered, associative-commutative,
+remainder-bearing, connective, or otherwise unrecognized shapes fail closed to the existing spatial
+scan. At execution, the first exact instruction run is escaped twice and descended directly through
+the synchronized Bag/position PathMap product. Wildcards and captures use an explicit heap closer
+stack to consume one self-delimiting RMP1 subvalue; repeated captures compare canonical escaped
+slices. The same machine handles once-escaped in-memory structure frames and twice-escaped stored
+product frames through explicit modes rather than format guessing.
+
+The focused framing suite passes **9/9**, including rejection of every tested shallow token
+truncation and a
+20,000-level nested value on a 128 KiB worker stack. The production product suite passes **8/8**; a
+zero-heavy 256-candidate nested differential preserves the control result while reducing calls into
+the spatial matcher from 256 to 1. Focused `rspace_plus_plus` and `models` strict lint and the
+production `rholang` library strict lint pass. The aggregate Rholang `mod` test lint remains blocked
+by 70 pre-existing `useless_vec` findings in unrelated legacy tests. No standalone RSS or comparative
+latency result is inferred from these executable gates.
+
 ##### 5.16.5.4 Results
 
 The original SS-A11 depth measurements ran under a user systemd scope with **3 GiB `MemoryHigh`, 4
@@ -3339,12 +3359,13 @@ swap, and two-core CPU quota**. **MEASURED:**
 | continuation-version lifecycle | no compiled automaton cache | **2/2** | group-local insert/remove invalidation plus generation invalidation on replace/clear |
 | Rholang structural-path contract | no retained path hook | **3/3** | exact-ground equality/inequality and binding/connective fallback |
 | RSpace actions with retained indexing enabled | same 41-case semantic corpus | **41/41** | consume/produce, joins, persistence, checkpoint, reset, and soft-revert |
-| receive-first Bag/query product | full canonical scan | **7/7 query/product cases plus 64 generated corpora** | 256-to-1 spatial-call witness, exact/wildcard/repeated-capture/ordered-remainder traversal, embedded-zero framing, structural false-positive oracle check, singleton zero-query base case, and identical result/event/post-state maps |
+| receive-first Bag/query product | full canonical scan | **8/8 query/product cases plus 64 generated corpora** | flat and nested 256-to-1 spatial-call witnesses, exact/wildcard/repeated-capture/ordered-remainder/nested ordered traversal, embedded-zero and double-escape framing, structural false-positive oracle check, singleton zero-query base case, and identical result/event/post-state maps |
 | framed-query native stack | recursive framing not admitted | **one million encoded bytes on a 128 KiB worker stack** | iterative double-frame scanner; no recursion, depth/width cap, `RUST_MIN_STACK`, or `stacker` |
-| Rholang query compiler | spatial oracle only | **5/5 focused matcher cases** | supported compiled fragment agrees with the spatial oracle and unsupported nested shapes fall back |
+| Rholang query compiler | spatial oracle only | **7/7 focused matcher cases** | supported whole-term, ordered-remainder, and nested EList/ETuple fragments agree with the spatial oracle; unordered ESet and other unsupported shapes fall back |
 | generated Rholang matching cursor | no schema-complete cursor | **4/4 cursor cases plus 21/21 schema/exhaustiveness/registration cases** | all 58 descriptor messages and five oneofs are generated from one pass; a 20,000-deep EList spine and a 20,000-wide term traverse on 256 KiB; EPathMap yields one native-trie delegation event without forcing its snapshot |
-| generated Rholang structural match path | canonical-path exact terms only | **3/3 encoder cases; 4/4 models RSpace-path cases; 5/5 Rholang compiler cases** | complete-schema deterministic tokens; canonical EPathMap digest golden and insertion-order witness; deliberate value-insensitive false-positive lane; 20,000-deep/wide encoding on 256 KiB; exact/whole-term production query paths agree with the spatial oracle |
+| generated Rholang structural match path | canonical-path exact terms only | **3/3 encoder cases; 4/4 models RSpace-path cases; 7/7 Rholang compiler cases** | complete-schema deterministic tokens; canonical EPathMap digest golden and insertion-order witness; deliberate value-insensitive false-positive lane; 20,000-deep/wide encoding on 256 KiB; exact/whole-term/ordered-nested production query paths agree with the spatial oracle |
 | encoded `RMP1` validation/navigation | no byte-side schema validator | **3/3 byte-cursor cases plus 4/4 generated-schema cases** | descriptor-exact fields, child types, and oneof payloads; malformed classes fail closed; all exhaustive-corpus node subtrees validate; 20,000-level validation and deepest-subtree extent discovery complete on 256 KiB |
+| nested `RMP1` instruction PDA | unpruned nested spatial scan | **9/9 framing/query cases plus the 8/8 product suite** | one- and two-layer escaping; every small truncation rejected; 20,000 levels on 128 KiB; zero-heavy 256-candidate result equivalence with 256-to-1 spatial pruning |
 | retained waiting-receive throughput | full canonical candidate scan | **23.2–44.6% more COMMs/s** | six treatment pairs; 51 samples/arm; 99% confidence; 16/256/4,096 receives; diverse/shared prefixes |
 | resting-data prefix throughput | full canonical candidate scan | **48.7–53.4% more COMMs/s at 16; 12.22–13.01× at 256; 238.8–256.9× at 4,096** | post-repair eight-pair matrix; 51 samples/arm; 99% confidence; singleton arms are non-regressing because zero/one physical candidates use the direct scan |
 | singleton repair package gate | pre-repair indexed singleton | **392 passed / 0 failed** | full `rspace_plus_plus` package under 5 GiB, zero swap; focused pruning suite is 5/5 |
@@ -3428,8 +3449,11 @@ zipper and query machine are iterative. Product traversal visits only byte edges
 tries and never materializes their Cartesian product. The admitted curve shows that the original
 prefix collection/sort decisively wins once the pool has 16 entries in the tested worst-order
 workloads. The proof-derived zero/one-candidate base case removes the known fixed-cost loss without
-choosing an empirical cutoff. Nested schema instructions, the retained-automaton/Bag product, and
-allocation-per-COMM remeasurement remain open measured questions rather than settled claims.
+choosing an empirical cutoff. Ordered nested instructions now descend their first exact byte run
+before enumerating a complete frame; their explicit closer and capture maps use heap space linear in
+the live nested frontier and repeated-capture count, while native-stack use remains constant. The
+associative-commutative schema instructions, retained-automaton/Bag product, and allocation-per-COMM
+remeasurement remain open measured questions rather than settled claims.
 
 ##### 5.16.5.6 What is still recursive
 
@@ -3471,6 +3495,13 @@ embedded zero rejects delimiter-based prefix shortcuts. A deliberate prefix fals
 still be rejected by the spatial oracle. Finally, 64 generated corpora compare the full and indexed
 selector result, RSpace event trace, and post-state maps, so a vacuous empty scan, reordered scan, or
 unchecked derived membership fails observably.
+
+The nested refinement adds independent framing and traversal witnesses. Its RMP1 corpus contains
+zeros that differ after one and two escaping layers; using the in-memory matcher on a stored product
+frame therefore fails the production differential. The selected nested target is canonically last,
+so the control must make 256 spatial calls while the product makes one and returns the same result.
+Every proper truncation of a shallow token stream is rejected, and the 20,000-level/128 KiB test
+fails if native recursion or a fixed traversal cap is reintroduced.
 
 #### 5.16.6 Sparse relational-row reuse inside the production PDA [SS-A10 refinement]
 
