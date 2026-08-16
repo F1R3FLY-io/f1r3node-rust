@@ -176,3 +176,80 @@ Theorem owned_singleton_path_move_preserves_match_semantics :
 Proof. reflexivity. Qed.
 
 End SingletonPathMap.
+
+(** The retained PathMap indexes are conservative prefilters.  Their exact
+    prefix test and residual byte query may both admit false positives, since
+    the spatial matcher remains authoritative.  They must never reject a
+    spatial success.  This section proves that the local no-false-negative
+    obligations are sufficient to preserve the first admissible candidate in
+    the predecessor's canonical list order. *)
+Section RetainedPathQuery.
+
+Context {Pattern Datum : Type}.
+Variable spatial_accepts : Pattern -> Datum -> bool.
+Variable query_eligible : Pattern -> bool.
+Variable retained_prefix_accepts : Pattern -> Datum -> bool.
+Variable residual_query_accepts : Pattern -> Datum -> bool.
+
+Hypothesis successful_match_has_retained_prefix :
+  forall pattern datum,
+    query_eligible pattern = true ->
+    spatial_accepts pattern datum = true ->
+    retained_prefix_accepts pattern datum = true.
+
+Hypothesis successful_match_passes_residual_query :
+  forall pattern datum,
+    query_eligible pattern = true ->
+    spatial_accepts pattern datum = true ->
+    residual_query_accepts pattern datum = true.
+
+Definition retained_candidate (pattern : Pattern) (datum : Datum) : bool :=
+  if query_eligible pattern
+  then retained_prefix_accepts pattern datum && residual_query_accepts pattern datum
+  else true.
+
+Theorem retained_candidate_has_no_false_negative :
+  forall pattern datum,
+    spatial_accepts pattern datum = true ->
+    retained_candidate pattern datum = true.
+Proof.
+  intros pattern datum spatial.
+  unfold retained_candidate.
+  destruct (query_eligible pattern) eqn:eligible; [|reflexivity].
+  rewrite (@successful_match_has_retained_prefix pattern datum eligible spatial).
+  rewrite (@successful_match_passes_residual_query pattern datum eligible spatial).
+  reflexivity.
+Qed.
+
+Fixpoint first_spatial_match
+    (candidates : list Pattern) (datum : Datum) : option Pattern :=
+  match candidates with
+  | [] => None
+  | pattern :: rest =>
+      if spatial_accepts pattern datum
+      then Some pattern
+      else first_spatial_match rest datum
+  end.
+
+Definition retained_candidates
+    (candidates : list Pattern) (datum : Datum) : list Pattern :=
+  filter (fun pattern => retained_candidate pattern datum) candidates.
+
+Theorem retained_filter_preserves_first_spatial_match :
+  forall candidates datum,
+    first_spatial_match (retained_candidates candidates datum) datum =
+    first_spatial_match candidates datum.
+Proof.
+  induction candidates as [|pattern rest IH]; intros datum; [reflexivity|].
+  unfold retained_candidates in *; simpl.
+  destruct (retained_candidate pattern datum) eqn:retained.
+  - simpl. destruct (spatial_accepts pattern datum) eqn:spatial.
+    + reflexivity.
+    + exact (IH datum).
+  - destruct (spatial_accepts pattern datum) eqn:spatial.
+    + pose proof (@retained_candidate_has_no_false_negative pattern datum spatial) as keep.
+      rewrite keep in retained. discriminate.
+    + exact (IH datum).
+Qed.
+
+End RetainedPathQuery.
