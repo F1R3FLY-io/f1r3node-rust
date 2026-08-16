@@ -3,6 +3,7 @@ pub mod grpc_client;
 pub mod implicits;
 pub mod match_schema;
 pub mod match_path;
+pub mod match_path_cursor;
 pub mod par_children;
 pub mod pooled_stack;
 pub mod bincode_decoder;

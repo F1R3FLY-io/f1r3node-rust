@@ -20,28 +20,28 @@ use crate::rust::rhoapi_ext::EPathMap;
 
 pub const RHO_MATCH_PATH_VERSION: [u8; 4] = *b"RMP\x01";
 
-const NODE_START: u8 = 0x01;
-const NODE_END: u8 = 0x02;
-const FIELD_START: u8 = 0x03;
-const FIELD_END: u8 = 0x04;
-const BOOL: u8 = 0x10;
-const I32: u8 = 0x11;
-const U32: u8 = 0x12;
-const I64: u8 = 0x13;
-const U64: u8 = 0x14;
-const BYTES: u8 = 0x15;
-const STRING: u8 = 0x16;
-const STRING_SEQUENCE: u8 = 0x17;
-const BYTES_SEQUENCE: u8 = 0x18;
-const ABSENT: u8 = 0x20;
-const SEQUENCE_START: u8 = 0x21;
-const SEQUENCE_END: u8 = 0x22;
-const MAP_START: u8 = 0x23;
-const MAP_KEY: u8 = 0x24;
-const MAP_END: u8 = 0x25;
-const ONEOF_START: u8 = 0x26;
-const ONEOF_END: u8 = 0x27;
-const PATHMAP: u8 = 0x28;
+pub(super) const NODE_START: u8 = 0x01;
+pub(super) const NODE_END: u8 = 0x02;
+pub(super) const FIELD_START: u8 = 0x03;
+pub(super) const FIELD_END: u8 = 0x04;
+pub(super) const BOOL: u8 = 0x10;
+pub(super) const I32: u8 = 0x11;
+pub(super) const U32: u8 = 0x12;
+pub(super) const I64: u8 = 0x13;
+pub(super) const U64: u8 = 0x14;
+pub(super) const BYTES: u8 = 0x15;
+pub(super) const STRING: u8 = 0x16;
+pub(super) const STRING_SEQUENCE: u8 = 0x17;
+pub(super) const BYTES_SEQUENCE: u8 = 0x18;
+pub(super) const ABSENT: u8 = 0x20;
+pub(super) const SEQUENCE_START: u8 = 0x21;
+pub(super) const SEQUENCE_END: u8 = 0x22;
+pub(super) const MAP_START: u8 = 0x23;
+pub(super) const MAP_KEY: u8 = 0x24;
+pub(super) const MAP_END: u8 = 0x25;
+pub(super) const ONEOF_START: u8 = 0x26;
+pub(super) const ONEOF_END: u8 = 0x27;
+pub(super) const PATHMAP: u8 = 0x28;
 
 /// Encode one `Par` as a complete-schema structural RSpace search path.
 pub fn encode_par_match_path(value: &Par) -> Vec<u8> { encode_match_path(ParCursor::from(value)) }

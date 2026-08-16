@@ -15,11 +15,30 @@ pub enum RhoMatchFieldKind {
     String,
     StringSequence,
     BytesSequence,
-    OptionalMessage,
-    MessageSequence,
-    StringMessageMap,
-    Oneof,
+    OptionalMessage(u16),
+    MessageSequence(u16),
+    StringMessageMap(u16),
+    Oneof(&'static [RhoMatchOneofVariant]),
     PathMap,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RhoMatchPayloadKind {
+    Bool,
+    I32,
+    U32,
+    I64,
+    U64,
+    Bytes,
+    String,
+    Message(u16),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RhoMatchOneofVariant {
+    pub tag: u32,
+    pub name: &'static str,
+    pub payload: RhoMatchPayloadKind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

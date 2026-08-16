@@ -8577,7 +8577,8 @@ fn emit_match_schema_source(
          \n\
          use crate::rust::rholang::match_schema::{\n\
              RhoMatchField, RhoMatchFieldKind, RhoMatchProgram, RhoMatchValue,\n\
-             RhoOneofCursor, RhoOneofPayload, RhoScalarRef,\n\
+             RhoMatchOneofVariant, RhoMatchPayloadKind, RhoOneofCursor,\n\
+             RhoOneofPayload, RhoScalarRef,\n\
          };\n\
          \n",
     );
@@ -8585,6 +8586,21 @@ fn emit_match_schema_source(
     let fields_by_message: BTreeMap<&str, &[Field]> = resolved
         .iter()
         .map(|(index, fields)| (messages[*index].leaf_name(), fields.as_slice()))
+        .collect();
+    let type_ids: BTreeMap<&str, u16> = messages
+        .iter()
+        .enumerate()
+        .map(|(index, message)| {
+            (
+                message.leaf_name(),
+                u16::try_from(index + 1)
+                    .expect("schema: too many messages for matching type identifiers"),
+            )
+        })
+        .collect();
+    let oneof_by_field: BTreeMap<String, &Oneof> = oneofs
+        .iter()
+        .map(|oneof| (oneof_key(messages, oneof), oneof))
         .collect();
 
     for (message_index, message) in messages.iter().enumerate() {
@@ -8604,12 +8620,13 @@ fn emit_match_schema_source(
                 leaf, "EPathMap",
                 "schema: matching cursor has no native program for external `{leaf}`"
             );
+            let var_type_id = type_ids["Var"];
             writeln!(
                 src,
                 "pub static {fields_ident}: &[RhoMatchField] = &[\n\
                  \x20   RhoMatchField {{ tag: 3, name: \"locally_free\", kind: RhoMatchFieldKind::Bytes }},\n\
                  \x20   RhoMatchField {{ tag: 4, name: \"connective_used\", kind: RhoMatchFieldKind::Bool }},\n\
-                 \x20   RhoMatchField {{ tag: 5, name: \"remainder\", kind: RhoMatchFieldKind::OptionalMessage }},\n\
+                 \x20   RhoMatchField {{ tag: 5, name: \"remainder\", kind: RhoMatchFieldKind::OptionalMessage({var_type_id}) }},\n\
                  \x20   RhoMatchField {{ tag: 9, name: \"entries\", kind: RhoMatchFieldKind::PathMap }},\n\
                  ];\n\
                  pub static {program_ident}: RhoMatchProgram = RhoMatchProgram {{\n\
@@ -8624,15 +8641,41 @@ fn emit_match_schema_source(
         let fields = fields_by_message[leaf];
         let mut order = (0..fields.len()).collect::<Vec<_>>();
         order.sort_by_key(|index| fields[*index].min_tag());
+        for index in &order {
+            let field = &fields[*index];
+            if !matches!(field.shape, Shape::Oneof) {
+                continue;
+            }
+            let key = format!("{leaf}::{}", field.rust_name);
+            let oneof = oneof_by_field
+                .get(&key)
+                .unwrap_or_else(|| panic!("schema: matching field has no oneof: {key}"));
+            let variants_ident = match_oneof_variants_ident(message, field);
+            writeln!(
+                src,
+                "pub static {variants_ident}: &[RhoMatchOneofVariant] = &["
+            )
+            .expect("write");
+            for variant in &oneof.variants {
+                let payload = match_payload_kind_expr(variant, &type_ids);
+                writeln!(
+                    src,
+                    "    RhoMatchOneofVariant {{ tag: {}, name: \"{}\", payload: {payload} }},",
+                    variant.tag, variant.rust_ident
+                )
+                .expect("write");
+            }
+            src.push_str("];\n");
+        }
         writeln!(src, "pub static {fields_ident}: &[RhoMatchField] = &[").expect("write");
         for index in &order {
             let field = &fields[*index];
+            let kind = match_field_kind_expr(message, field, &type_ids);
             writeln!(
                 src,
-                "    RhoMatchField {{ tag: {}, name: \"{}\", kind: RhoMatchFieldKind::{} }},",
+                "    RhoMatchField {{ tag: {}, name: \"{}\", kind: {kind} }},",
                 field.min_tag(),
-                field.rust_name.trim_start_matches("r#"),
-                match_field_kind(&field.shape)
+                field.rust_name.trim_start_matches("r#")
             )
             .expect("write");
         }
@@ -8828,23 +8871,70 @@ fn emit_match_schema_source(
     src
 }
 
-fn match_field_kind(shape: &Shape) -> &'static str {
-    match shape {
-        Shape::Scalar(Type::Bool) => "Bool",
-        Shape::Scalar(Type::Int32 | Type::Sint32 | Type::Sfixed32) => "I32",
-        Shape::Scalar(Type::Uint32 | Type::Fixed32) => "U32",
-        Shape::Scalar(Type::Int64 | Type::Sint64 | Type::Sfixed64) => "I64",
-        Shape::Scalar(Type::Uint64 | Type::Fixed64) => "U64",
-        Shape::Scalar(Type::Bytes) | Shape::EmptyBytes => "Bytes",
-        Shape::Scalar(Type::String) => "String",
-        Shape::RepeatedString => "StringSequence",
-        Shape::RepeatedBytes => "BytesSequence",
-        Shape::Message { .. } => "OptionalMessage",
-        Shape::RepeatedMessage { .. } => "MessageSequence",
-        Shape::Map { .. } => "StringMessageMap",
-        Shape::Oneof => "Oneof",
+fn match_oneof_variants_ident(message: &Message<'_>, field: &Field) -> String {
+    format!(
+        "{}_{}_RHO_MATCH_ONEOF_VARIANTS",
+        message.program_ident().trim_end_matches("_PROGRAM"),
+        field
+            .rust_name
+            .trim_start_matches("r#")
+            .to_ascii_uppercase()
+    )
+}
+
+fn match_type_id(type_ids: &BTreeMap<&str, u16>, leaf: &str) -> u16 {
+    *type_ids
+        .get(leaf)
+        .unwrap_or_else(|| panic!("schema: matching child has no stable type id: {leaf}"))
+}
+
+fn match_field_kind_expr(
+    message: &Message<'_>,
+    field: &Field,
+    type_ids: &BTreeMap<&str, u16>,
+) -> String {
+    let kind = match &field.shape {
+        Shape::Scalar(Type::Bool) => "Bool".to_string(),
+        Shape::Scalar(Type::Int32 | Type::Sint32 | Type::Sfixed32) => "I32".to_string(),
+        Shape::Scalar(Type::Uint32 | Type::Fixed32) => "U32".to_string(),
+        Shape::Scalar(Type::Int64 | Type::Sint64 | Type::Sfixed64) => "I64".to_string(),
+        Shape::Scalar(Type::Uint64 | Type::Fixed64) => "U64".to_string(),
+        Shape::Scalar(Type::Bytes) | Shape::EmptyBytes => "Bytes".to_string(),
+        Shape::Scalar(Type::String) => "String".to_string(),
+        Shape::RepeatedString => "StringSequence".to_string(),
+        Shape::RepeatedBytes => "BytesSequence".to_string(),
+        Shape::Message { leaf } => format!("OptionalMessage({})", match_type_id(type_ids, leaf)),
+        Shape::RepeatedMessage { leaf } => {
+            format!("MessageSequence({})", match_type_id(type_ids, leaf))
+        }
+        Shape::Map { value_leaf, .. } => {
+            format!("StringMessageMap({})", match_type_id(type_ids, value_leaf))
+        }
+        Shape::Oneof => format!("Oneof({})", match_oneof_variants_ident(message, field)),
         Shape::Scalar(other) => panic!("schema: matching cursor has no scalar arm for {other:?}"),
-    }
+    };
+    format!("RhoMatchFieldKind::{kind}")
+}
+
+fn match_payload_kind_expr(variant: &Variant, type_ids: &BTreeMap<&str, u16>) -> String {
+    let kind = match variant.ty {
+        Type::Bool => "Bool".to_string(),
+        Type::Int32 | Type::Sint32 | Type::Sfixed32 => "I32".to_string(),
+        Type::Uint32 | Type::Fixed32 => "U32".to_string(),
+        Type::Int64 | Type::Sint64 | Type::Sfixed64 => "I64".to_string(),
+        Type::Uint64 | Type::Fixed64 => "U64".to_string(),
+        Type::Bytes => "Bytes".to_string(),
+        Type::String => "String".to_string(),
+        Type::Message => {
+            let leaf = variant
+                .message_leaf
+                .as_deref()
+                .expect("message oneof matching arm must carry its leaf");
+            format!("Message({})", match_type_id(type_ids, leaf))
+        }
+        other => panic!("schema: matching oneof has no payload arm for {other:?}"),
+    };
+    format!("RhoMatchPayloadKind::{kind}")
 }
 
 fn match_scalar_expr(ty: Type, value: &str, borrowed: bool) -> String {

@@ -7,7 +7,9 @@ use models::rust::rholang::bincode_schema_tables::{
     CONNECTIVE_INSTANCE_VARIANTS, EXPR_INSTANCE_VARIANTS, TAGGED_CONT_VARIANTS,
     UNF_INSTANCE_VARIANTS, VAR_INSTANCE_VARIANTS,
 };
-use models::rust::rholang::match_schema::{RhoPathCursor, RhoPathEvent};
+use models::rust::rholang::match_schema::{
+    RhoMatchFieldKind, RhoMatchPayloadKind, RhoPathCursor, RhoPathEvent,
+};
 use models::rust::rholang::match_schema_tables::{ParCursor, RHO_MATCH_REGISTRY};
 use models::rust::rholang::schema_meta_tables::SCHEMA_CHILDREN;
 
@@ -34,11 +36,13 @@ fn generated_program_registry_covers_the_descriptor_closure() {
     let mut type_ids = BTreeSet::new();
     let registry = RHO_MATCH_REGISTRY
         .iter()
-        .map(|(name, program)| {
+        .enumerate()
+        .map(|(index, (name, program))| {
             assert_eq!(*name, program.type_name);
-            assert_ne!(
-                program.type_id, 0,
-                "{name}: type identifier zero is reserved"
+            assert_eq!(
+                usize::from(program.type_id),
+                index + 1,
+                "{name}: type identifiers must be one-based registry indices"
             );
             assert!(
                 type_ids.insert(program.type_id),
@@ -57,6 +61,37 @@ fn generated_program_registry_covers_the_descriptor_closure() {
                     "{name}: duplicate field {}",
                     field.name
                 );
+                let assert_type_id = |type_id: u16| {
+                    let (_, child) = RHO_MATCH_REGISTRY
+                        .get(usize::from(type_id) - 1)
+                        .unwrap_or_else(|| {
+                            panic!("{name}.{}: invalid child id {type_id}", field.name)
+                        });
+                    assert_eq!(child.type_id, type_id);
+                };
+                match field.kind {
+                    RhoMatchFieldKind::OptionalMessage(type_id)
+                    | RhoMatchFieldKind::MessageSequence(type_id)
+                    | RhoMatchFieldKind::StringMessageMap(type_id) => assert_type_id(type_id),
+                    RhoMatchFieldKind::Oneof(variants) => {
+                        assert!(!variants.is_empty(), "{name}.{}: empty oneof", field.name);
+                        assert_eq!(
+                            field.tag,
+                            variants.iter().map(|variant| variant.tag).min().unwrap(),
+                            "{name}.{}: field tag must be the minimum arm tag",
+                            field.name
+                        );
+                        let mut tags = BTreeSet::new();
+                        for variant in variants {
+                            assert!(tags.insert(variant.tag));
+                            assert!(!variant.name.is_empty());
+                            if let RhoMatchPayloadKind::Message(type_id) = variant.payload {
+                                assert_type_id(type_id);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
                 previous = field.tag;
             }
             *name

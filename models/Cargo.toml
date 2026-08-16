@@ -237,6 +237,10 @@ name = "match_path_structure"
 path = "tests/match_path_structure.rs"
 
 [[test]]
+name = "match_path_cursor"
+path = "tests/match_path_cursor.rs"
+
+[[test]]
 name = "serializer_par_byte_goldens"
 path = "tests/serializer_par_byte_goldens.rs"
 
