@@ -216,7 +216,7 @@ fn bench_atomic_delta_batch(criterion: &mut Criterion) {
             },
         );
         group.bench_function(
-            BenchmarkId::new("write_zipper_treatment", delta_cardinality),
+            BenchmarkId::new("adaptive_cursor_treatment", delta_cardinality),
             |bencher| {
                 bencher.iter_batched(
                     || pathmap.clone(),

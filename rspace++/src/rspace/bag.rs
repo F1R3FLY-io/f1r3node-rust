@@ -573,6 +573,27 @@ impl BagDelta {
     }
 
     fn apply_parts(target: &mut Bag, additions: &Bag, removals: &Bag) -> Result<(), BagError> {
+        // There is no inter-key prefix to reuse for an empty or singleton
+        // delta. Avoid constructing a moving zipper in that case: experiment
+        // 219 measured the cursor's fixed setup cost as an 8.3% singleton
+        // regression, while the direct exact-key path is already atomic behind
+        // this private COW root.
+        match additions.distinct_len.saturating_add(removals.distinct_len) {
+            0 => return Ok(()),
+            1 => {
+                let mut updated = target.clone();
+                for (path, amount) in removals.iter() {
+                    updated.try_remove_many(&path, amount)?;
+                }
+                for (path, amount) in additions.iter() {
+                    updated.insert_many(&path, amount)?;
+                }
+                *target = updated;
+                return Ok(());
+            }
+            _ => {}
+        }
+
         // Fork exactly one private COW root and retain one write zipper across
         // the delta's lexicographically ordered paths. `move_to_path` ascends
         // only to each consecutive pair's longest common prefix, avoiding a
