@@ -4155,8 +4155,17 @@ Map values are deliberately absent from the pruning digest, so equal key topolog
 positive; the unchanged native EPathMap/spatial matcher remains the acceptance authority. Channel
 identity, canonical candidate identity, COMM ordering, bindings, charges, and replay semantics are
 unchanged in the focused gates. This is therefore a `BYTE_NEUTRAL_MEASURED` optimization within the
-retired CBR-023 living set, not an active may-change-consensus entry. Exhaustive end-to-end replay
-and cross-platform closure remain campaign gates before the optimization can be called complete.
+retired CBR-023 living set, not an active may-change-consensus entry.
+
+`f1r3node-rust-mettail@edd166671` adds the zero-copy byte consumer for this derived stream.
+Descriptor-generated metadata now states exact child message identifiers and every legal oneof
+tag/payload shape. An explicit-frame validator rejects malformed token, length, scalar, field,
+nesting, child-type, oneof, and EPathMap-mode inputs; validated subtree extents are located without
+decoding. The exhaustive descriptor corpus and a 20,000-level / 256 KiB stack gate pass. Because
+the cursor consumes only reconstructible index bytes and neither selects nor accepts a candidate,
+this checkpoint retains the `BYTE_NEUTRAL_MEASURED` classification. Exhaustive end-to-end replay,
+cross-platform evidence, nested matching, and formal correspondence remain campaign gates before
+the optimization can be called complete.
 
 ### B.2 The original commit-level exemptions
 

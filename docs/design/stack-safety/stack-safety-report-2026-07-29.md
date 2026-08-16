@@ -3305,8 +3305,20 @@ computed by an iterative read-zipper depth-first walk. That walk visits each log
 stores only the heap traversal frontier, does not include map values, and never forces
 `trie_snapshot()`. Omitting values is conservative because this digest can only prune candidates;
 the native EPathMap/spatial matcher decides acceptance. The architecture-dependent
-`PathMap::hash` is not used. Exact and whole-term query paths are live; encoded skip/validation,
-nested binding instructions, and associative-commutative residual execution remain open.
+`PathMap::hash` is not used. Exact and whole-term query paths are live; nested binding instructions
+and associative-commutative residual execution remain open.
+
+Checkpoint `edd166671` adds a zero-copy `RMP1` token cursor and descriptor-exact validator. Message
+dispatch indexes the generated registry in constant time; generated field metadata carries child
+type identifiers and complete oneof tag/payload schemas. Validation is a single forward token pass
+whose nested control resides in a heap `Vec<ValidationFrame>`. Subtree extent discovery is a second
+iterative scan from a validated token boundary with a heap closer stack. Neither path recursively
+calls itself, reconstructs `Par`, forces an EPathMap snapshot, sets `RUST_MIN_STACK`, uses
+`stacker`, or imposes an input depth/width cap. The focused byte-cursor suite passes **3/3** in
+**0.67 seconds** and the generated-schema suite passes **4/4** in **0.28 seconds**; the former
+includes validation and deepest-subtree navigation through a 20,000-level term on a 256 KiB worker
+stack. These are test-harness elapsed times under a 5 GiB zero-swap cap, not standalone RSS
+measurements.
 
 ##### 5.16.5.4 Results
 
@@ -3332,6 +3344,7 @@ swap, and two-core CPU quota**. **MEASURED:**
 | Rholang query compiler | spatial oracle only | **5/5 focused matcher cases** | supported compiled fragment agrees with the spatial oracle and unsupported nested shapes fall back |
 | generated Rholang matching cursor | no schema-complete cursor | **4/4 cursor cases plus 21/21 schema/exhaustiveness/registration cases** | all 58 descriptor messages and five oneofs are generated from one pass; a 20,000-deep EList spine and a 20,000-wide term traverse on 256 KiB; EPathMap yields one native-trie delegation event without forcing its snapshot |
 | generated Rholang structural match path | canonical-path exact terms only | **3/3 encoder cases; 4/4 models RSpace-path cases; 5/5 Rholang compiler cases** | complete-schema deterministic tokens; canonical EPathMap digest golden and insertion-order witness; deliberate value-insensitive false-positive lane; 20,000-deep/wide encoding on 256 KiB; exact/whole-term production query paths agree with the spatial oracle |
+| encoded `RMP1` validation/navigation | no byte-side schema validator | **3/3 byte-cursor cases plus 4/4 generated-schema cases** | descriptor-exact fields, child types, and oneof payloads; malformed classes fail closed; all exhaustive-corpus node subtrees validate; 20,000-level validation and deepest-subtree extent discovery complete on 256 KiB |
 | retained waiting-receive throughput | full canonical candidate scan | **23.2–44.6% more COMMs/s** | six treatment pairs; 51 samples/arm; 99% confidence; 16/256/4,096 receives; diverse/shared prefixes |
 | resting-data prefix throughput | full canonical candidate scan | **48.7–53.4% more COMMs/s at 16; 12.22–13.01× at 256; 238.8–256.9× at 4,096** | post-repair eight-pair matrix; 51 samples/arm; 99% confidence; singleton arms are non-regressing because zero/one physical candidates use the direct scan |
 | singleton repair package gate | pre-repair indexed singleton | **392 passed / 0 failed** | full `rspace_plus_plus` package under 5 GiB, zero swap; focused pruning suite is 5/5 |
