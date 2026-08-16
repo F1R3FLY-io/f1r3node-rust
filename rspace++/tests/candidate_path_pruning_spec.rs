@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use proptest::prelude::*;
 use rspace_plus_plus::rspace::candidate_order::deterministic_candidate_hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
-use rspace_plus_plus::rspace::internal::Datum;
+use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::rho_path::{
     RHO_MATCH_FIELD_END, RHO_MATCH_FIELD_START, RHO_MATCH_I64, RHO_MATCH_NODE_END,
@@ -482,6 +482,80 @@ async fn nested_match_product_preserves_results_while_avoiding_spatial_false_can
     assert_eq!(indexed_result, control_result);
     assert_eq!(control_calls.load(Ordering::Relaxed), values.len());
     assert_eq!(indexed_calls.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn datum_first_retained_queries_filter_waiting_continuations_before_spatial_match() {
+    let channel = "candidate-retained-query-automaton".to_string();
+    let channels = vec![channel.clone()];
+    let mut receives = (0..256)
+        .map(|index| {
+            let first = format!("record/{index:08x}");
+            let second = format!("class/{index:08x}").into_bytes();
+            let value = sequence_value(first.as_bytes(), &second);
+            let pattern = Pattern::SequenceSecond {
+                expected: value.clone(),
+                second,
+            };
+            let continuation = format!("continuation/{index:08x}");
+            let patterns = vec![pattern.clone()];
+            let waiting = WaitingContinuation::create(
+                &channels,
+                &patterns,
+                &continuation,
+                true,
+                BTreeSet::new(),
+            );
+            (deterministic_candidate_hash(&waiting), index, value, pattern, continuation)
+        })
+        .collect::<Vec<_>>();
+    let target = receives
+        .iter()
+        .max_by_key(|(hash, index, ..)| (hash.clone(), *index))
+        .expect("nonempty corpus")
+        .2
+        .clone();
+
+    let (control, control_calls, _) = space(false).await;
+    let (indexed, indexed_calls, _) = space(true).await;
+    for (_, _, _, pattern, continuation) in receives.drain(..) {
+        for space in [&control, &indexed] {
+            assert!(
+                space
+                    .consume(
+                        channels.clone(),
+                        vec![pattern.clone()],
+                        continuation.clone(),
+                        true,
+                        BTreeSet::new(),
+                    )
+                    .await
+                    .expect("consume")
+                    .is_none()
+            );
+        }
+    }
+    drop(control.take_event_log().await);
+    drop(indexed.take_event_log().await);
+    control_calls.store(0, Ordering::Relaxed);
+    indexed_calls.store(0, Ordering::Relaxed);
+
+    let control_result = control
+        .produce(channel.clone(), target.clone(), false)
+        .await
+        .expect("control produce")
+        .expect("control COMM");
+    let indexed_result = indexed
+        .produce(channel, target, false)
+        .await
+        .expect("indexed produce")
+        .expect("indexed COMM");
+
+    assert_eq!(indexed_result, control_result);
+    assert_eq!(control_calls.load(Ordering::Relaxed), 256);
+    assert_eq!(indexed_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(indexed.take_event_log().await, control.take_event_log().await);
+    assert_eq!(indexed.to_map().await, control.to_map().await);
 }
 
 proptest! {

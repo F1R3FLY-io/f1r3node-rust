@@ -159,6 +159,21 @@ impl RhoMatchQuery {
         }
     }
 
+    fn inner_prefix(&self) -> &[u8] {
+        match self.parts.first() {
+            Some(CompiledRhoMatchQueryPart::Exact { inner_frame, .. }) => inner_frame,
+            Some(CompiledRhoMatchQueryPart::Capture(_) | CompiledRhoMatchQueryPart::Wildcard) |
+            None => &[],
+        }
+    }
+
+    fn is_exact(&self) -> bool {
+        !self.parts.is_empty() &&
+            self.parts
+                .iter()
+                .all(|part| matches!(part, CompiledRhoMatchQueryPart::Exact { .. }))
+    }
+
     fn matches_frame(&self, frame: &[u8], escape_layers: u8) -> bool {
         let mut cursor = 0usize;
         let mut captures: PathMap<(usize, usize)> = PathMap::new();
@@ -317,6 +332,32 @@ impl RhoPathQuery {
     pub(crate) fn atoms(&self) -> &[CompiledRhoPathQueryAtom] { &self.atoms }
 
     pub(crate) const fn accepts_remainder(&self) -> bool { self.accepts_remainder }
+
+    /// Longest exact byte prefix usable by a retained query trie.
+    ///
+    /// The returned bytes are in the unframed datum-structure representation
+    /// consumed by [`Self::matches_structure`]. A nested match contributes its
+    /// exact RMP1 prefix without closing the surrounding structural frame.
+    pub(crate) fn retained_prefix(&self) -> Vec<u8> {
+        let mut prefix = vec![1];
+        for atom in &self.atoms {
+            match atom {
+                CompiledRhoPathQueryAtom::Exact { inner_frame, .. } => {
+                    prefix.extend_from_slice(inner_frame);
+                }
+                CompiledRhoPathQueryAtom::Match(query) => {
+                    prefix.extend_from_slice(query.inner_prefix());
+                    if query.is_exact() {
+                        prefix.extend_from_slice(&[ESCAPE, FRAME_END]);
+                    } else {
+                        break;
+                    }
+                }
+                CompiledRhoPathQueryAtom::Capture(_) | CompiledRhoPathQueryAtom::Wildcard => break,
+            }
+        }
+        prefix
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

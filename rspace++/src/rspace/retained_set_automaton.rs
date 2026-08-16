@@ -5,6 +5,7 @@ use pathmap::zipper::{ZipperMoving, ZipperReadOnlyValues};
 
 use super::internal::WaitingContinuation;
 use super::r#match::Match;
+use super::rho_path::RhoPathQuery;
 
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
@@ -33,6 +34,7 @@ impl TerminalId {
 struct Terminal {
     candidate: CandidateId,
     previous: Option<TerminalId>,
+    query: Option<RhoPathQuery>,
 }
 
 #[derive(Debug)]
@@ -62,8 +64,21 @@ impl RetainedSetAutomaton {
                     .expect("a Rust Vec candidate index always fits in a u64"),
             );
             for (segment, pattern) in candidate.patterns.iter().enumerate() {
-                let path = matcher.retained_pattern_path(pattern).unwrap_or_default();
-                insert_terminal(&mut segments[segment], &mut terminals, &path, candidate_id);
+                let (path, query) = if matcher.supports_rho_path_candidate_pruning() {
+                    match matcher
+                        .rho_path_query(pattern)
+                        .filter(RhoPathQuery::is_selective)
+                    {
+                        Some(query) => {
+                            let path = query.retained_prefix();
+                            (path, Some(query))
+                        }
+                        None => (matcher.retained_pattern_path(pattern).unwrap_or_default(), None),
+                    }
+                } else {
+                    (matcher.retained_pattern_path(pattern).unwrap_or_default(), None)
+                };
+                insert_terminal(&mut segments[segment], &mut terminals, &path, candidate_id, query);
             }
         }
         Self {
@@ -92,11 +107,13 @@ fn insert_terminal(
     terminals: &mut Vec<Terminal>,
     path: &[u8],
     candidate: CandidateId,
+    query: Option<RhoPathQuery>,
 ) {
     let terminal = TerminalId::from_index(terminals.len());
     terminals.push(Terminal {
         candidate,
         previous: segment.get(path).copied(),
+        query,
     });
     segment.insert(path, terminal);
 }
@@ -108,24 +125,35 @@ fn collect_prefix_terminals(
     selected: &mut [bool],
 ) {
     let mut zipper = segment.read_zipper();
-    mark(zipper.get_val().copied(), terminals, selected);
+    mark(zipper.get_val().copied(), terminals, datum_path, selected);
     for byte in datum_path {
         if !zipper.descend_to_existing_byte(*byte) {
             break;
         }
-        mark(zipper.get_val().copied(), terminals, selected);
+        mark(zipper.get_val().copied(), terminals, datum_path, selected);
     }
 }
 
-fn mark(mut terminal: Option<TerminalId>, terminals: &[Terminal], selected: &mut [bool]) {
+fn mark(
+    mut terminal: Option<TerminalId>,
+    terminals: &[Terminal],
+    datum_path: &[u8],
+    selected: &mut [bool],
+) {
     while let Some(terminal_id) = terminal {
         let node = terminals
             .get(terminal_id.index())
             .expect("a compiled terminal identifier always addresses its arena");
         let candidate_index = usize::try_from(node.candidate.0)
             .expect("a compiled candidate identifier always fits in usize");
-        if let Some(slot) = selected.get_mut(candidate_index) {
-            *slot = true;
+        if node
+            .query
+            .as_ref()
+            .is_none_or(|query| query.matches_structure(datum_path))
+        {
+            if let Some(slot) = selected.get_mut(candidate_index) {
+                *slot = true;
+            }
         }
         terminal = node.previous;
     }

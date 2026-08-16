@@ -3,12 +3,23 @@ use std::sync::Arc;
 use rspace_plus_plus::rspace::internal::WaitingContinuation;
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::retained_set_automaton::RetainedSetAutomaton;
+use rspace_plus_plus::rspace::rho_path::{
+    RhoPathQuery, RhoPathQueryAtom, encode_structural_sequence,
+};
 
 #[derive(Clone, Default)]
 enum Pattern {
     #[default]
     Any,
     Exact(Vec<u8>),
+    SequenceFirst {
+        expected: Vec<u8>,
+        first: Vec<u8>,
+    },
+    SequenceSecond {
+        expected: Vec<u8>,
+        second: Vec<u8>,
+    },
 }
 
 struct Matcher;
@@ -18,7 +29,14 @@ impl Match<Pattern, Vec<u8>, ()> for Matcher {
         match pattern {
             Pattern::Any => Some(datum.clone()),
             Pattern::Exact(expected) if expected == datum => Some(datum.clone()),
-            Pattern::Exact(_) => None,
+            Pattern::SequenceFirst { expected, .. } | Pattern::SequenceSecond { expected, .. }
+                if expected == datum =>
+            {
+                Some(datum.clone())
+            }
+            Pattern::Exact(_) | Pattern::SequenceFirst { .. } | Pattern::SequenceSecond { .. } => {
+                None
+            }
         }
     }
 
@@ -26,10 +44,27 @@ impl Match<Pattern, Vec<u8>, ()> for Matcher {
         match pattern {
             Pattern::Any => None,
             Pattern::Exact(path) => Some(path.clone()),
+            Pattern::SequenceFirst { .. } | Pattern::SequenceSecond { .. } => None,
         }
     }
 
     fn retained_datum_path(&self, datum: &Vec<u8>) -> Option<Vec<u8>> { Some(datum.clone()) }
+
+    fn rho_path_query(&self, pattern: &Pattern) -> Option<RhoPathQuery> {
+        match pattern {
+            Pattern::SequenceFirst { first, .. } => Some(RhoPathQuery::structural_sequence(
+                [RhoPathQueryAtom::Exact(first.clone()), RhoPathQueryAtom::Wildcard],
+                false,
+            )),
+            Pattern::SequenceSecond { second, .. } => Some(RhoPathQuery::structural_sequence(
+                [RhoPathQueryAtom::Wildcard, RhoPathQueryAtom::Exact(second.clone())],
+                false,
+            )),
+            Pattern::Any | Pattern::Exact(_) => None,
+        }
+    }
+
+    fn supports_rho_path_candidate_pruning(&self) -> bool { true }
 }
 
 fn waiting(patterns: Vec<Pattern>) -> WaitingContinuation<Pattern, ()> {
@@ -92,4 +127,40 @@ fn every_candidate_in_a_large_shared_terminal_chain_is_selected() {
 
     assert_eq!(selected.len(), candidates.len());
     assert!(selected.into_iter().all(|candidate| candidate));
+}
+
+#[test]
+fn structural_queries_use_exact_trie_prefixes_and_filter_after_wildcards() {
+    let first_patterns = (0..256)
+        .map(|index| {
+            let first = format!("record/{index:08x}").into_bytes();
+            let expected = encode_structural_sequence([first.as_slice(), b"tail"]);
+            waiting(vec![Pattern::SequenceFirst { expected, first }])
+        })
+        .collect::<Vec<_>>();
+    let second_patterns = (0..256)
+        .map(|index| {
+            let second = format!("class/{index:08x}").into_bytes();
+            let expected = encode_structural_sequence([b"head", second.as_slice()]);
+            waiting(vec![Pattern::SequenceSecond { expected, second }])
+        })
+        .collect::<Vec<_>>();
+    let mut candidates = first_patterns;
+    candidates.extend(second_patterns);
+    candidates.push(waiting(vec![Pattern::Any]));
+    let automaton = RetainedSetAutomaton::compile(&Matcher, &candidates);
+
+    let target_first =
+        encode_structural_sequence([b"record/000000a5".as_slice(), b"tail".as_slice()]);
+    let selected_first = automaton.matching_candidates(&target_first, &[0]);
+    assert_eq!(selected_first.iter().filter(|selected| **selected).count(), 2);
+    assert!(selected_first[0xA5]);
+    assert!(selected_first[candidates.len() - 1]);
+
+    let target_second =
+        encode_structural_sequence([b"head".as_slice(), b"class/0000005a".as_slice()]);
+    let selected_second = automaton.matching_candidates(&target_second, &[0]);
+    assert_eq!(selected_second.iter().filter(|selected| **selected).count(), 2);
+    assert!(selected_second[256 + 0x5A]);
+    assert!(selected_second[candidates.len() - 1]);
 }

@@ -30,15 +30,17 @@ pub trait Match<P, A, K>: Send + Sync {
 
     fn rho_path_query(&self, _pattern: &P) -> Option<RhoPathQuery> { None }
 
-    /// Opt in to pruning a resting-data candidate pool by the PathMap paths
-    /// returned from `retained_pattern_path` and `retained_datum_path`.
+    /// Opt in to pruning resting data and waiting continuations by the PathMap
+    /// paths and structural queries returned by this matcher.
     ///
-    /// Returning `true` is a soundness assertion with two obligations:
+    /// Returning `true` is a soundness assertion with three obligations:
     ///
     /// 1. every datum path is exactly the unframed byte sequence returned by
     ///    `RhoPathEncode::rho_path_structure` for that datum; and
     /// 2. whenever `get(pattern, datum)` succeeds and the pattern supplies a
-    ///    retained path, the datum path starts with the pattern path.
+    ///    retained path, the datum path starts with the pattern path; and
+    /// 3. whenever `get(pattern, datum)` succeeds and the pattern supplies a
+    ///    `rho_path_query`, that query accepts the datum path.
     ///
     /// A false positive merely reaches the spatial matcher. A false negative
     /// would hide an enabled COMM, so the conservative default is `false`.
