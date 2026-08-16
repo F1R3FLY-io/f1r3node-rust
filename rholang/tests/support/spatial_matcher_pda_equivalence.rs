@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use models::rhoapi::connective::ConnectiveInstance::{ConnAndBody, ConnNotBody, ConnOrBody};
+use models::rhoapi::connective::ConnectiveInstance::{
+    ConnAndBody, ConnInt, ConnNotBody, ConnOrBody,
+};
 use models::rhoapi::expr::ExprInstance::EPathmapBody;
 use models::rhoapi::{
     Connective, ConnectiveBody, EPathMap, ETuple, Expr, KeyValuePair, New, Par, Receive,
@@ -528,6 +530,7 @@ fn production_list_pda_relational_counters_meet_preregistered_controls() {
         match_par_list_with_stats(&mut diagonal_context, integers(), diagonal_patterns);
     assert!(diagonal_verdict);
     assert!(diagonal_result.is_some());
+    assert_eq!(diagonal_stats.target_index_builds, 1);
     assert_eq!(diagonal_stats.edge_evaluations, WIDTH);
     assert!(diagonal_stats.edge_evaluations < diagonal_control);
     assert_eq!(diagonal_stats.relation_row_reuses, 0);
@@ -585,6 +588,22 @@ fn production_list_pda_relational_counters_meet_preregistered_controls() {
 }
 
 #[test]
+fn production_list_pda_does_not_build_an_unusable_target_index() {
+    const WIDTH: usize = 4;
+    let targets = (0..WIDTH)
+        .map(|value| new_gint_par(value as i64, Vec::new(), false))
+        .collect::<Vec<_>>();
+    let patterns = (0..WIDTH)
+        .map(|_| connective(ConnInt(true)))
+        .collect::<Vec<_>>();
+
+    let mut context = SpatialMatcherContext::new();
+    let (result, stats) = match_par_list_with_stats(&mut context, targets, patterns);
+    assert!(result.is_some());
+    assert_eq!(stats.target_index_builds, 0);
+}
+
+#[test]
 fn production_list_pda_pathmap_index_prunes_ordered_nested_ac_elements() {
     const WIDTH: usize = 128;
     let targets = (0..WIDTH)
@@ -615,6 +634,7 @@ fn production_list_pda_pathmap_index_prunes_ordered_nested_ac_elements() {
     let (result, stats) =
         match_par_list_with_stats(&mut context, targets.clone(), patterns.clone());
     assert!(result.is_some());
+    assert_eq!(stats.target_index_builds, 1);
     assert_eq!(stats.edge_evaluations, WIDTH);
     assert_eq!(stats.successful_edge_evaluations, WIDTH);
     assert_eq!(context.free_map.len(), WIDTH);
@@ -659,6 +679,7 @@ fn production_list_pda_pathmap_bag_prunes_unordered_send_fields() {
     let (result, stats) =
         match_send_list_with_stats(&mut context, targets.clone(), patterns.clone());
     assert!(result.is_some());
+    assert_eq!(stats.target_index_builds, 1);
     assert_eq!(stats.edge_evaluations, WIDTH);
     assert_eq!(stats.successful_edge_evaluations, WIDTH);
     assert_eq!(context.free_map.len(), WIDTH);

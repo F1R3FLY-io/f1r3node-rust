@@ -1705,20 +1705,38 @@ fn init_list(
         patterns.extend((0..remainder_count).map(|_| ListPattern::Remainder));
     }
     patterns.extend(request.patterns.into_iter().map(ListPattern::Term));
-    let target_index = ListTargetIndex::from_targets(&request.targets);
     let mut captures = PathMap::new();
-    let candidate_domains = patterns
+    let queries = patterns
         .iter()
         .map(|pattern| {
             let ListPattern::Term(pattern) = pattern else {
-                return ListCandidateDomain::All;
+                return None;
             };
-            let Some(query) = pattern.rho_path_query(context, &mut captures) else {
-                return ListCandidateDomain::All;
-            };
-            target_index
+            pattern.rho_path_query(context, &mut captures)
+        })
+        .collect::<Box<[_]>>();
+    let needs_target_index = request.remainder.is_some()
+        || queries
+            .iter()
+            .flatten()
+            .any(|query| query.retained_prefix().len() > 1);
+    #[cfg(test)]
+    if needs_target_index {
+        update_list_relation_stats(|stats| stats.target_index_builds += 1);
+    }
+    let target_index = needs_target_index
+        .then(|| ListTargetIndex::from_targets(&request.targets))
+        .flatten();
+    let candidate_domains = queries
+        .iter()
+        .map(|query| {
+            query
                 .as_ref()
-                .and_then(|index| index.positions_matching(&query))
+                .and_then(|query| {
+                    target_index
+                        .as_ref()
+                        .and_then(|index| index.positions_matching(query))
+                })
                 .map_or(ListCandidateDomain::All, ListCandidateDomain::Indexed)
         })
         .collect::<Box<[_]>>();

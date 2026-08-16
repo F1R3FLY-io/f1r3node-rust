@@ -13,6 +13,7 @@ use std::rc::Rc;
 /// accounting.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RelationalMatchStats {
+    pub target_index_builds: usize,
     pub edge_evaluations: usize,
     pub successful_edge_evaluations: usize,
     pub cached_edge_visits: usize,
