@@ -1561,6 +1561,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn funding_certificate_id_matches_python_client_golden_vector() {
+        let certificate = FundingCertificate {
+            protocol_version: AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
+            program_hash: [b'm'; 32],
+            pre_state_root: [b'p'; 32],
+            reservation_id: [b'r'; 32],
+            demand: DemandBound::Exact(ResourceMultiset::singleton([b's'; 32], 2)),
+            allocation: ResourceMultiset::singleton([b's'; 32], 2),
+            stack_reservations: BTreeMap::from([([b'k'; 32], 1)]),
+            fee_allocation: ResourceMultiset::singleton([b'g'; 32], 1),
+            fee_recipient: b"proposer".to_vec(),
+        };
+
+        assert_eq!(
+            hex::encode(certificate.certificate_id()),
+            "88ecd40f4d389fa44d6f5464bf4e704cc67f1a487894d1242bd303e0a6d02096"
+        );
+    }
+
     fn ground(bytes: &[u8]) -> CostSignature {
         CostSignature {
             value: Some(CostSignatureValue::Ground(bytes.to_vec())),
