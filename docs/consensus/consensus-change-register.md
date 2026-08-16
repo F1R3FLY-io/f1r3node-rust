@@ -593,7 +593,7 @@ is a *future* fork, not a present one).
 | [CBR-042](#cbr-042) | N | …and on the **bincode** wire too — `U(m)` verbatim and contiguous, then the values (FORM ②), so the reader never decodes a trie key | `3a32cf07` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-043](#cbr-043) | N | …but of **the entries that surface WRITES**. FORM ② keyed lf-blanked values by the *unblanked* entries, putting an entry's `locally_free` on the event hash | `8cf0b770` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-044](#cbr-044) | N | EPathMap becomes a homogeneous PathMap set/map and both codecs carry one versioned EPM1 trie snapshot; generated protobuf PDAs remove the read ceiling | `26876b65` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
-| [CBR-053](#cbr-053) | N | Retained PathMap prefix indexes skip waiting receives or resting data that cannot match an exact-ground counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`; benchmark `7bc5c6994` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
+| [CBR-053](#cbr-053) | N | Retained PathMap indexes and a synchronized receive-first Bag/query product skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`; benchmark `7bc5c6994` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
 | [CBR-L07](#cbr-l07) | L | `List.last()` in MeTTaIL's Rholang | `bbceb6d9`, `6e543c01` | · | · | · | · | · | ● | · | PERMISSIVE | **W** |
 | [CBR-L08](#cbr-l08) | L | The kv element-category gate — a Name in a kv slot is refused, not silently dropped | *in flight* | ● | ● | ● | ● | ● | ● | ○ | REGRESSIVE | **W** |
 | [CBR-L10](#cbr-l10) | L | A pathmap's entries come from a projection, not a field | `832d510f` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
@@ -2317,11 +2317,11 @@ Legacy protobuf fields are read-only migration inputs; removing them is a later 
 
 ### CBR-053
 
-**Retained PathMap prefix indexes skip waiting receives or resting data that cannot match an exact-ground counterpart.**
+**Retained PathMap indexes and a synchronized receive-first Bag/query product skip candidates that cannot match a compiled counterpart.**
 
 | | |
 |---|---|
-| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`; benchmark `7bc5c6994` |
+| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`; benchmark `7bc5c6994` |
 | Status | LANDED ON CAMPAIGN BRANCH; VERIFICATION OPEN |
 | Direction | UNVERIFIED |
 | Evidence grade | UNVERIFIED |
@@ -2355,6 +2355,15 @@ through its retained path; and the spatial matcher remains the acceptance oracle
 use the full scan unless they explicitly assert that successful matches imply the same RhoPath
 prefix relation. This is an exact-ground candidate cut, not yet the direct retained-automaton/Bag
 zipper product.
+
+Checkpoint `f43858ec2` advances the receive-first path from a one-sided prefix cut to a synchronized
+product between borrowed zippers on the authoritative Bag and the derived candidate-position trie.
+Exact transitions descend both tries together, wildcard transitions intersect child masks, and a
+terminal is returned only when both tries carry a value. Iterative framed scanning covers exact
+whole terms, whole-term wildcard/free-variable capture, repeated-capture equality, and ordered list
+remainder. Unsupported nested schema patterns still use the full canonical scan. The Bag remains
+the sole membership authority and the spatial matcher remains the verdict authority. This product
+does not satisfy or stand in for the separate retained-automaton/Bag product.
 
 #### (b) How it may break consensus
 
@@ -2401,8 +2410,10 @@ The current containment argument has eight independently checked parts:
    clear invalidate every derived automaton;
 6. resting prefix positions are sorted into the predecessor's canonical order before matching;
 7. Bag availability, rather than the derived position trie, remains the membership authority; and
-8. unsupported matchers fail closed to the full scan while prefix false positives still reach and
-   can be rejected by the spatial oracle.
+8. unsupported matchers fail closed to the full scan while structural false positives still reach
+   and can be rejected by the spatial oracle; and
+9. the synchronized product emits a position only at a terminal present in both the authoritative
+   Bag and derived position trie, while repeated captures compare their canonical framed bytes.
 
 Cache-counter saturation returns `None` and recompiles instead of accepting a stale trie. Cache hits
 borrow the trie under a sharded map guard and perform no `PathMap` clone. Empty groups remove their
@@ -2419,8 +2430,14 @@ the verdict axis.
   binding/connective fallback checks. **MEASURED.**
 - `storage_actions_test` with path indexing enabled: **41/41**, covering single and joined receives,
   repeated channels, persistence, checkpoint, reset, and soft-revert. **MEASURED.**
-- `candidate_path_pruning_spec`: **4/4**, including a 256-candidate 256-to-1 spatial-call witness,
-  embedded-zero framing, and a prefix false positive rejected by the spatial oracle. **MEASURED.**
+- `candidate_path_pruning_spec`: **7/7**, including a 256-candidate 256-to-1 spatial-call witness,
+  exact/wildcard/repeated-capture/ordered-remainder product traversal, embedded-zero framing, and a
+  structural false positive rejected by the spatial oracle. **MEASURED.**
+- `rho_path_spec`: **7/7**, including malformed framing, embedded double-zero escapes, capture
+  equality, and a million-byte iterative scan on a 128 KiB worker stack. **MEASURED.**
+- `retained_path_index_test`: **5/5** after whole-term and ordered-remainder query compilation;
+  supported queries agree with the spatial oracle and unsupported nested shapes fall back.
+  **MEASURED.**
 - generated resting-data differential: **64 corpora** with identical selected result, RSpace event
   trace, and post-state maps under full and indexed scans. **MEASURED.**
 - both changed libraries plus all tests and benchmark targets compile under a **5 GiB** resident-set

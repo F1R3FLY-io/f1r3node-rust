@@ -6,7 +6,7 @@ Campaign: `campaign-4131-rspace-pathmap-integration`
 
 Experiment: `rspace-pathmap-end-to-end-layout-2026-08-15`
 Last updated: 2026-08-15
-Current implementation checkpoint: `564dac0b4`
+Current implementation checkpoint: `f43858ec2`
 
 ## Purpose and scope
 
@@ -53,11 +53,11 @@ The layout experiment remains open until the preregistered A/B/C comparison sele
 | Shared canonical candidate catalogs | `2eb0d3871` | one canonical order and one lazy decode cell per distinct record across channel-pool snapshots; multiplicity-only updates do not rebuild the catalog | implemented |
 | Single-lookup hot-store reads | `d50b1183d` | one encoded prefix and one loaded-store read lock per hot pool/data lookup; final performance verdict remains pending | implemented |
 | Retained receive automaton, exact-ground slice | `a89cbc294`, `f149cef2b`, `ea8c39f92`; benchmark `7bc5c6994`; pgmcp `rspace-retained-set-automaton` | one `PathMap<TerminalId>` transition segment per bind position; fixed-width terminal/candidate identifiers; root fallback terminals; group-local versioning; no trie clone on cache hits; 3/3 automaton, 2/2 lifecycle, 3/3 Rholang path, and 41/41 RSpace action tests; valid end-to-end treatment is 18.8–30.8% lower latency | implemented, equivalence campaign open |
-| Resting-datum structural-prefix pruning | `564dac0b4`, `0b601ce67`; pgmcp `rspace-pattern-over-pathmap` | one fixed-width `PathMap<CandidatePosition>` catalog index; native zipper prefix cuts before decode; canonical order restored before the spatial oracle; 5/5 focused and 64 generated differential corpora pass; a structural zero/one-candidate base case removes the measured singleton regression without an empirical cutoff; post-repair throughput improves 48.7–53.4% at 16 entries and 239–257× at 4,096 | implemented exact-ground slice; full product/equivalence campaign open |
-| Direct automaton/Bag product walk | pgmcp `rspace-pattern-over-pathmap` | the fresh-datum path uses an iterative automaton zipper and the resting path now cuts one indexed structural-prefix subtrie; a direct retained-automaton/authoritative-Bag zipper product is not yet implemented | next implementation stage |
+| Receive-first Bag/query product | `564dac0b4`, `0b601ce67`, `f43858ec2`; pgmcp `rspace-pattern-over-pathmap` | synchronized borrowed zippers over the authoritative `PathMap<Multiplicity>` Bag and derived fixed-width `PathMap<CandidatePosition>` index; exact terms, whole-term wildcard/free-variable captures, repeated-capture equality, and ordered list remainder; canonical order restored before the spatial oracle; 7/7 query/product cases and 64 generated differential corpora pass; a structural zero/one-candidate base case removes the measured singleton regression without an empirical cutoff; post-repair throughput improves 48.7–53.4% at 16 entries and 239–257× at 4,096 | product foundation implemented; nested schema coverage and equivalence campaign open |
+| Retained-automaton/Bag product walk | pgmcp `rspace-retained-set-automaton` | the fresh-datum path uses an iterative retained-automaton zipper, but it does not yet synchronize that automaton directly with the authoritative Bag; `f43858ec2` is a receive-first Bag/position-index product and is not evidence for this distinct datum-first product | next implementation stage |
 | Layout selection and performance verdict | pgmcp experiment 208 | retained-receive slice passes its preregistered five-percent throughput threshold at 99% confidence; resting-data pruning is non-regressing at one entry after the structural base-case repair and passes from 16 through 4,096; direct product, full workload matrix, allocations, and final layout selection remain open | partial measurement accepted |
 
-At `564dac0b4`, each exact channel produces a `CandidatePool`. Its semantic residual is a
+At `f43858ec2`, each exact channel produces a `CandidatePool`. Its semantic residual is a
 channel-local `Bag`, obtained as a copy-on-write PathMap subtrie through a read zipper. Pools share a
 derived `CandidateCatalog`: its `Arc` order table contains one lazy decode cell per distinct trie
 key, not one record per occurrence. A single `PathMap<CandidatePosition>` maps the complete relative
@@ -72,14 +72,18 @@ An accepted stored candidate carries its complete trie path; an arriving produce
 separate `Fresh` address. Firing therefore removes by exact path and cannot suffer positional-index
 shifts.
 
-For an exact-ground resting-data bind, one borrowed read zipper descends the catalog position trie
-to the framed RhoPathV1 structural prefix. Only values in that subtrie become scan positions. The
-fixed-width positions are sorted before scanning, so prefix pruning removes candidates without
-changing the predecessor's canonical order. A fresh datum is tested through its retained path, and
-the Bag is checked again before every reservation; neither the catalog nor the position trie can
-invent membership. The optimization is fail-closed for generic matchers: only a matcher that
-explicitly asserts the RhoPath prefix-superset contract may request the indexed scan. The existing
-spatial matcher remains the final acceptance oracle, including for prefix false positives.
+For a compiled receive-first query, `CandidateProductCursor` keeps one borrowed read zipper on the
+authoritative Bag and one on the position trie. Exact bytes descend both cursors together; wildcard
+steps enumerate only the intersection of their child masks; a terminal position is emitted only
+when both cursors carry a value. The query scanner validates the two framing layers iteratively,
+including escaped zero bytes, and maintains repeated-capture equality in a `PathMap`. The supported
+fragment comprises exact whole terms, whole-term wildcard/free-variable captures, repeated
+captures, and ordered list remainder. Fixed-width positions are sorted before scanning, so product
+pruning removes candidates without changing the predecessor's canonical order. A fresh datum is
+tested through its retained path, and the Bag is checked again before every reservation; neither the
+catalog nor the position trie can invent membership. The optimization is fail-closed for generic
+matchers and unsupported nested patterns. The existing spatial matcher remains the final acceptance
+oracle, including for structural false positives.
 
 The first retained receive automaton slice is also live. Each bind position owns a
 prefix-compressed `PathMap<TerminalId>`. `TerminalId` and `CandidateId` are fixed-width `u64`
@@ -171,12 +175,13 @@ The optimized path is staged and directional:
 Production matching is directional: receive patterns match produced data. Symmetric Martelli-Montanari unification is an experiment for contexts that genuinely require variables on both sides; it is not silently substituted for receive semantics. Ordered children use linear PDA traversal. Associative-commutative collections use multiplicity-aware residual Bags rather than expanded vectors.
 
 The current checkpoint implements the multiplicity-aware reservation and exact-path commit portions
-of steps 4 and 6 over the existing spatial matcher, plus exact-ground slices of steps 1–3. The
+of steps 4 and 6 over the existing spatial matcher, plus conservative slices of steps 1–3. The
 fresh-datum query traverses a retained PathMap segment iteratively and preserves every non-indexable
-candidate through its root fallback. A resting-data query now descends the derived position trie at
-the exact-ground structural prefix and constructs that PDA frame's resumable indexed scan once;
-unsupported patterns retain the full canonical scan. The direct product of a retained automaton
-zipper with the authoritative resting-data Bag zipper remains the next production optimization;
+candidate through its root fallback. A resting-data query now synchronizes the authoritative Bag
+zipper with the derived position-trie zipper while executing exact, wildcard/capture,
+coreferential-capture, and ordered-remainder instructions; unsupported nested patterns retain the
+full canonical scan. The separate direct product of a retained automaton zipper with the
+authoritative Bag zipper remains the next datum-first production optimization;
 catalog construction still visits each distinct resting channel record. Datum decoding is lazy and
 shared across all pools derived from that catalog. Multiplicity-only changes update derived
 cardinalities in constant time, and a hot pool lookup encodes the channel prefix once and reads the
@@ -262,7 +267,9 @@ The implementation evidence available at this checkpoint is:
 | continuation-version lifecycle | 2/2 | unrelated groups remain valid; insert/remove, state replacement, and clear invalidate exactly the required derived cache |
 | Rholang retained-path contract | 3/3 | matching exact-ground pattern/data paths agree; unequal ground values differ; bind/connective patterns fall back |
 | RSpace action suite with indexing enabled | 41/41 | consume/produce, joins, repeated channels, persistence, checkpoint, reset, and soft-revert behavior remain unchanged |
-| resting-datum prefix pruning | 5/5 plus 64 generated corpora | worst-order 256-candidate witness reduces spatial calls from 256 to 1; embedded-zero framing and prefix false positives are accepted correctly; singleton pools perform one spatial match and zero retained-path queries; full-scan and indexed result, event trace, and post-state maps agree |
+| receive-first Bag/query product | 7/7 query/product cases plus 64 generated corpora | worst-order 256-candidate witness reduces spatial calls from 256 to 1; exact, wildcard, repeated capture, ordered remainder, embedded-zero framing, structural false positives, and singleton base case pass; full-scan and indexed result, event trace, and post-state maps agree |
+| framed-query stack gate | 1/1 | a million-byte structural sequence scans on a 128 KiB worker stack without native recursion or an artificial depth/width cap |
+| Rholang query compilation | 5/5 | compiled queries and the spatial oracle agree for the supported whole-term and ordered-remainder fragment; unsupported nested shapes fall back |
 | waiting-receive COMM throughput | 6/6 treatment pairs pass | 51 samples per arm at 99% confidence; 23.2–44.6% more completed COMMs/s; intervals are disjoint |
 | resting-data COMM throughput | 8/8 treatment pairs do not regress after repair | at 16/256/4,096 distinct entries, throughput improves 48.7–25,589.8%; the one-entry base case is 2.2% faster on diverse input and statistically neutral at a +0.6% point estimate on shared input |
 | current `rspace_plus_plus` package | 392 passed / 0 failed | the complete package passes after the singleton repair under a 5 GiB no-swap cap |
@@ -328,10 +335,11 @@ than native recursion.
 
 The migration order is lawful Bag, RhoPathV1 codec, authoritative index, multiplicity-native
 reservation PDA, retained automaton, direct pattern-over-trie traversal, replay/cold-store
-integration, and final removal of compatibility materializations. Through `564dac0b4`, the first
+integration, and final removal of compatibility materializations. Through `f43858ec2`, the first
 four steps, the live play/replay exact-path flow, and the conservative exact-ground retained-
-automaton slice are implemented. The first resting-data structural-prefix cut is also implemented,
-without claiming the still-open direct automaton/Bag product. Broader pattern compilation,
+automaton slice are implemented. The first receive-first synchronized Bag/query product is also
+implemented for exact, wildcard/capture, repeated-capture, and ordered-remainder instructions,
+without claiming the still-open retained-automaton/Bag product. Schema-derived nested pattern compilation,
 experiment selection, formal closure, and legacy-boundary retirement remain open and visible in the
 pgmcp subtree. Set, Map, and merkleization experiments are independent treatments and cannot be
 promoted merely because the Bag treatment succeeds.

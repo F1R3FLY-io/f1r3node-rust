@@ -3275,6 +3275,18 @@ Unsupported matchers and patterns use `CandidateScan::All`. The Bag is checked b
 fresh data is checked through its retained path, and the spatial matcher remains the final oracle;
 therefore a prefix false positive costs work but cannot become an accepted match.
 
+Checkpoint `f43858ec2` replaces the one-sided prefix cut with a synchronized receive-first product
+cursor. One borrowed read zipper remains on the authoritative `PathMap<Multiplicity>` Bag while a
+second remains on the derived `PathMap<CandidatePosition>` structural index. Exact transitions move
+both zippers together; wildcard transitions enumerate the intersection of their child masks; a
+candidate position is emitted only when both terminal values exist. The iterative query scanner
+validates both framing layers and escaped zeros, and a `PathMap` capture environment enforces
+repeated-variable equality without a hash-table or expanded-term authority. The compiled fragment
+now includes exact whole terms, whole-term wildcard/free-variable captures, repeated captures, and
+ordered list remainder. Unsupported nested schema arms still take the canonical full scan and are
+therefore not counted as converted. This is a Bag/position-index product for receive-first lookup,
+not the separately required retained-automaton/Bag product for datum-first lookup.
+
 ##### 5.16.5.4 Results
 
 The original SS-A11 depth measurements ran under a user systemd scope with **3 GiB `MemoryHigh`, 4
@@ -3294,7 +3306,9 @@ swap, and two-core CPU quota**. **MEASURED:**
 | continuation-version lifecycle | no compiled automaton cache | **2/2** | group-local insert/remove invalidation plus generation invalidation on replace/clear |
 | Rholang structural-path contract | no retained path hook | **3/3** | exact-ground equality/inequality and binding/connective fallback |
 | RSpace actions with retained indexing enabled | same 41-case semantic corpus | **41/41** | consume/produce, joins, persistence, checkpoint, reset, and soft-revert |
-| resting-datum structural-prefix pruning | full canonical scan | **5/5 plus 64 generated corpora** | 256-to-1 spatial-call witness, embedded-zero framing, prefix false-positive oracle check, singleton zero-query base case, and identical result/event/post-state maps |
+| receive-first Bag/query product | full canonical scan | **7/7 query/product cases plus 64 generated corpora** | 256-to-1 spatial-call witness, exact/wildcard/repeated-capture/ordered-remainder traversal, embedded-zero framing, structural false-positive oracle check, singleton zero-query base case, and identical result/event/post-state maps |
+| framed-query native stack | recursive framing not admitted | **one million encoded bytes on a 128 KiB worker stack** | iterative double-frame scanner; no recursion, depth/width cap, `RUST_MIN_STACK`, or `stacker` |
+| Rholang query compiler | spatial oracle only | **5/5 focused matcher cases** | supported compiled fragment agrees with the spatial oracle and unsupported nested shapes fall back |
 | retained waiting-receive throughput | full canonical candidate scan | **23.2–44.6% more COMMs/s** | six treatment pairs; 51 samples/arm; 99% confidence; 16/256/4,096 receives; diverse/shared prefixes |
 | resting-data prefix throughput | full canonical candidate scan | **48.7–53.4% more COMMs/s at 16; 12.22–13.01× at 256; 238.8–256.9× at 4,096** | post-repair eight-pair matrix; 51 samples/arm; 99% confidence; singleton arms are non-regressing because zero/one physical candidates use the direct scan |
 | singleton repair package gate | pre-repair indexed singleton | **392 passed / 0 failed** | full `rspace_plus_plus` package under 5 GiB, zero swap; focused pruning suite is 5/5 |
@@ -3370,15 +3384,16 @@ waiting continuations. Cache hits perform no trie clone. The exact-ground slice 
 datum path, so its native stack remains $`O(1)`$; direct automaton/Bag zipper-product traversal is a
 separate, still-open campaign stage and is not claimed by this checkpoint.
 
-For a resting exact-ground pattern, the indexed scan allocates one heap vector containing only the
-matching prefix's fixed-width catalog positions and sorts it in $`O(m \log m)`$, where $`m`$ is the
-number of prefix candidates, before the final spatial checks. The full-scan control is $`O(n)`$ in
-distinct channel records. Native-stack use remains $`O(1)`$ in both cases because the zipper and PDA
-are iterative. The admitted curve shows that this collection/sort decisively wins once the pool has
-16 entries in the tested worst-order workloads. The proof-derived zero/one-candidate base case
-removes the known fixed-cost loss without choosing an empirical cutoff. Whether a direct ordered
-zipper product further improves the general crossover remains an open measured question, not a
-settled optimization claim.
+For a supported receive-first pattern, the synchronized product scan allocates one heap vector
+containing only the matching fixed-width catalog positions and sorts it in $`O(m \log m)`$, where
+$`m`$ is the number of surviving candidates, before the final spatial checks. The full-scan control
+is $`O(n)`$ in distinct channel records. Native-stack use remains $`O(1)`$ in both cases because the
+zipper and query machine are iterative. Product traversal visits only byte edges present in both
+tries and never materializes their Cartesian product. The admitted curve shows that the original
+prefix collection/sort decisively wins once the pool has 16 entries in the tested worst-order
+workloads. The proof-derived zero/one-candidate base case removes the known fixed-cost loss without
+choosing an empirical cutoff. Nested schema instructions, the retained-automaton/Bag product, and
+allocation-per-COMM remeasurement remain open measured questions rather than settled claims.
 
 ##### 5.16.5.6 What is still recursive
 
