@@ -910,48 +910,60 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
 
     /// Atomically apply exact datum-identity multiplicity changes.
     ///
-    /// The authoritative Bag is cloned once through PathMap's copy-on-write
-    /// representation. Every changed path is validated before that replacement
-    /// is published, and already-built candidate catalogs are advanced by the
-    /// same before/after multiplicities rather than rebuilt speculatively.
+    /// Every changed path is validated before one BagDelta-owned PathMap COW
+    /// root is published under the hot-store write lock. The data store does
+    /// not wrap that atomic replacement in a redundant second root clone, and
+    /// already-built candidate catalogs are advanced from the same exact
+    /// before/after multiplicities rather than rebuilt speculatively.
     pub fn apply_delta(&mut self, delta: &BagDelta) -> Result<(), DataIndexError> {
         if delta.is_empty() {
             return Ok(());
         }
 
-        let mut updated = self.index.bag.clone();
-        delta.apply_to(&mut updated)?;
-
-        let mut transitions = Vec::new();
-        for (is_addition, changes) in [(true, delta.additions()), (false, delta.removals())] {
-            for (path, _) in changes.iter() {
-                let view = RhoPathV1::parse_datum(&path)?;
-                let marker = path[..view.channel_prefix_len()].to_vec();
-                let relative_path = path[view.channel_prefix_len()..].to_vec();
-                let previous = Multiplicity::new(self.index.bag.count(&path)).ok();
-                let current = Multiplicity::new(updated.count(&path)).ok();
-                transitions.push((marker, relative_path, previous, current, is_addition));
-            }
+        for changes in [delta.additions(), delta.removals()] {
+            changes.try_visit_prefix(b"", |path, _| {
+                RhoPathV1::parse_datum(path)?;
+                Ok::<(), DataIndexError>(())
+            })?;
         }
 
-        self.index.bag = updated;
-        for (marker, _, _, _, is_addition) in &transitions {
-            if *is_addition && self.loaded_channels.insert(marker, ()).is_none() {
-                self.loaded_channel_count += 1;
-            }
-        }
-
+        delta.apply_to(&mut self.index.bag)?;
+        let bag = &self.index.bag;
+        let loaded_channels = &mut self.loaded_channels;
+        let loaded_channel_count = &mut self.loaded_channel_count;
         let catalogs = self
             .candidate_catalogs
             .get_mut()
             .expect("candidate catalog write lock");
-        for (marker, relative_path, previous, current, _) in transitions {
-            let invalidate = catalogs.get_mut(&marker).is_some_and(|catalog| {
-                !Arc::make_mut(catalog).record_transition(&relative_path, previous, current)
+        for (is_addition, changes) in [(true, delta.additions()), (false, delta.removals())] {
+            changes.visit_prefix(b"", |path, amount| {
+                let view = RhoPathV1::parse_datum(path)
+                    .expect("a BagDelta datum path was validated before mutation");
+                let marker = &path[..view.channel_prefix_len()];
+                let relative_path = &path[view.channel_prefix_len()..];
+                let current_count = bag.count(path);
+                let previous_count = if is_addition {
+                    current_count
+                        .checked_sub(amount.get())
+                        .expect("a committed addition contains its exact amount")
+                } else {
+                    current_count
+                        .checked_add(amount.get())
+                        .expect("a committed removal had a valid predecessor")
+                };
+                let previous = Multiplicity::new(previous_count).ok();
+                let current = Multiplicity::new(current_count).ok();
+
+                if is_addition && loaded_channels.insert(marker, ()).is_none() {
+                    *loaded_channel_count += 1;
+                }
+                let invalidate = catalogs.get_mut(marker).is_some_and(|catalog| {
+                    !Arc::make_mut(catalog).record_transition(relative_path, previous, current)
+                });
+                if invalidate {
+                    catalogs.remove(marker);
+                }
             });
-            if invalidate {
-                catalogs.remove(&marker);
-            }
         }
         Ok(())
     }

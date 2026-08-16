@@ -123,24 +123,34 @@ fn normalized_transaction_delta_applies_and_reverts_exactly() {
 
 #[test]
 fn transaction_delta_application_is_atomic_on_underflow_and_overflow() {
+    // `alpha` is visited before the absent `zeta`. A one-pass mutation would
+    // therefore decrement it before discovering the late underflow.
     let mut underflow_target = bag(&[(b"alpha", 2)]);
     let underflow_before = underflow_target.clone();
     let mut underflow = BagDelta::new();
     underflow
-        .record_removal(b"alpha", Multiplicity::new(3).unwrap())
+        .record_removal(b"alpha", Multiplicity::ONE)
+        .unwrap();
+    underflow
+        .record_removal(b"zeta", Multiplicity::new(3).unwrap())
         .unwrap();
     assert_eq!(
         underflow.apply_to(&mut underflow_target),
         Err(BagError::InsufficientMultiplicity {
-            available: 2,
+            available: 0,
             requested: 3,
         })
     );
     assert_eq!(underflow_target, underflow_before);
 
+    // Likewise, inserting `alpha` must not become visible when the later
+    // `omega` addition overflows.
     let mut overflow_target = bag(&[(b"omega", u64::MAX)]);
     let overflow_before = overflow_target.clone();
     let mut overflow = BagDelta::new();
+    overflow
+        .record_addition(b"alpha", Multiplicity::ONE)
+        .unwrap();
     overflow
         .record_addition(b"omega", Multiplicity::ONE)
         .unwrap();

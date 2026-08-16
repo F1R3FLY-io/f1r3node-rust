@@ -8,9 +8,11 @@
 
 use std::time::Duration;
 
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{
+    BatchSize, BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
+};
 use multiset::HashMultiSet;
-use rspace_plus_plus::rspace::bag::{Bag, Multiplicity};
+use rspace_plus_plus::rspace::bag::{Bag, BagDelta, Multiplicity};
 
 const CARDINALITIES: [usize; 5] = [1, 16, 256, 4_096, 16_384];
 
@@ -117,6 +119,55 @@ fn bench_copy_on_write_update(criterion: &mut Criterion) {
     group.finish();
 }
 
+fn apply_with_redundant_outer_clone(delta: &BagDelta, target: &mut Bag) {
+    // Frozen predecessor shape from RSpaceDataStore::apply_delta: the store
+    // cloned its Bag, then BagDelta cloned that temporary root again before
+    // publishing it. Keep this benchmark-only control so the removed work is
+    // measured without reviving it in production.
+    let mut updated = target.clone();
+    delta.apply_to(&mut updated).unwrap();
+    *target = updated;
+}
+
+fn bench_atomic_delta_remove(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("bag_atomic_delta_remove_shared_prefix");
+    for cardinality in CARDINALITIES {
+        let keys = shared_prefix_keys(cardinality);
+        let pathmap = pathmap_bag(&keys);
+        let removed_path = keys.first().expect("cardinality is positive");
+        let mut delta = BagDelta::new();
+        delta
+            .record_removal(removed_path, Multiplicity::ONE)
+            .unwrap();
+
+        group.throughput(Throughput::Elements(1));
+        group.bench_function(
+            BenchmarkId::new("redundant_two_root_predecessor", cardinality),
+            |bencher| {
+                bencher.iter_batched(
+                    || pathmap.clone(),
+                    |mut fork| {
+                        apply_with_redundant_outer_clone(black_box(&delta), &mut fork);
+                        black_box(fork)
+                    },
+                    BatchSize::SmallInput,
+                )
+            },
+        );
+        group.bench_function(BenchmarkId::new("single_root", cardinality), |bencher| {
+            bencher.iter_batched(
+                || pathmap.clone(),
+                |mut fork| {
+                    black_box(&delta).apply_to(&mut fork).unwrap();
+                    black_box(fork)
+                },
+                BatchSize::SmallInput,
+            )
+        });
+    }
+    group.finish();
+}
+
 fn bench_logical_multiplicity(criterion: &mut Criterion) {
     let mut group = criterion.benchmark_group("bag_logical_multiplicity");
     let path = b"rho-path-v1/shared/channel/identical-record";
@@ -149,6 +200,7 @@ criterion_group! {
         bench_construction,
         bench_exact_lookup,
         bench_copy_on_write_update,
+        bench_atomic_delta_remove,
         bench_logical_multiplicity
 }
 criterion_main!(benches);
