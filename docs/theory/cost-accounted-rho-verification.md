@@ -32,7 +32,7 @@ become channels, tokens become messages on those channels, and signed
 processes must consume fuel before they can communicate.
 
 This article presents a machine-checked proof of that claim, mechanized
-in **Rocq 9.1.1** across 87 modules and 35,267 lines of development, and
+in **Rocq 9.1.1** across 106 modules and 38,636 lines of development, and
 complements it with a **TLA+** finite-state model verified by TLC. The required
 aggregate gate also cross-checks symbolic N-ary authority, the typed threat and
 search-frontier models, and replay-root materialization with Apalache. The
@@ -54,7 +54,7 @@ axiom-free forward weak-barb propagation from a replicated body to both
 the primitive replicator and Meredith's reflective replication encoding
 (`preplicate_bang_encoding_body_barbs_sound`,
 `replication_encoding_forward_barb_sound`).
-All 1,143 `Qed.`/`Defined.` proof terms are discharged without any
+All 1,325 `Qed.`/`Defined.` proof terms are discharged without any
 `Admitted`, `admit`, or `Axiom`; the trust base consists of the
 Rocq 9.1.1 kernel, the Rocq Stdlib, and one `hash_process`
 encoding parameter with three explicit section hypotheses (Section 12.1).
@@ -137,7 +137,7 @@ This article proves that claim. Concretely, we contribute:
    calculus, its compositional translation back into pure rho, and the
    infrastructure (`Split`, `Join`, persistent mediators) required to
    discharge the paper's five reduction rules (Section 5). The
-   development spans 87 modules and 35,267 lines, with 1,143 `Qed.` or
+   development spans 106 modules and 38,636 lines, with 1,325 `Qed.` or
    `Defined.` proof obligations and zero `Admitted` / `admit` /
    `Axiom` declarations.
 
@@ -166,7 +166,11 @@ This article proves that claim. Concretely, we contribute:
 4. Independent **TLA+** finite-state correctness models (Section 10),
    verified by TLC and cross-checked through Apalache for symbolic N-ary
    authority, the typed threat/search-frontier models, and bounded
-   independent-validator replay-root materialization, plus the
+   independent-validator replay-root materialization. The finite located OSLF
+   model additionally checks spatial separation, exact modal post-state,
+   conservative-evidence soundness, and five required counterexamples for
+   contraction, weakening, surface aliasing, false modal evidence, and
+   candidate-created supply. The suite also includes the
    validator behavioral contract proven deductively by TLAPS in
    `formal/tlaplus/validator/Validator.tla` (Section 10.7): the four core
    protocol/scheduling models up to 12,960 distinct states, plus
@@ -298,9 +302,9 @@ the proof context.
 
 | Metric                                           | Value                                                      |
 |--------------------------------------------------|------------------------------------------------------------|
-| Rocq source files                                | 87 modules                                                 |
-| Total lines of Rocq                              | 35,267                                                     |
-| Proven lemmas and theorems (`Qed.` / `Defined.`) | 1,143                                                        |
+| Rocq source files                                | 106 modules                                                |
+| Total lines of Rocq                              | 38,636                                                     |
+| Proven lemmas and theorems (`Qed.` / `Defined.`) | 1,325                                                      |
 | `Admitted` / `admit`                             | **0**                                                      |
 | Named `Axiom` declarations                       | **0**                                                      |
 | Proof assistant                                  | Rocq (Coq) 9.1.1 (also typechecks under 9.1.0)             |
@@ -322,7 +326,7 @@ on any axiom from Section 12.2.1.
 
 ### 1.7 Module Dependency Graph
 
-The foundational 32-module subgraph of the 87-module formalization
+The foundational 32-module subgraph of the 106-module formalization
 (`formal/rocq/cost_accounted_rho/theories`) organizes into **seven dependency
 tiers**. Figure 1.7 renders that foundational subgraph, transitively reduced
 (`tred`) to its minimal skeleton: an edge `A → B` reads "module `B` imports
@@ -332,7 +336,7 @@ tier is its depth in the import order; the tiers refine — and are colour-keyed
 cool→warm to match — the proof-layer narrative of
 [§7.1](#71-the-proof-layers).
 
-![Dependency graph of the foundational cost-accounted-rho proof subgraph. The 32 foundational Rocq modules are arranged in seven cool-to-warm dependency tiers and transitively reduced. The current 87-module catalog extends this subgraph with native syntax, GSLT seams, authority, settlement, admission, and additional refinement modules; the complete ordered module list is the repository's _CoqProject.](diagrams/module-dependency-graph.svg)
+![Dependency graph of the foundational cost-accounted-rho proof subgraph. The 32 foundational Rocq modules are arranged in seven cool-to-warm dependency tiers and transitively reduced. The current 106-module catalog extends this subgraph with native syntax, GSLT seams, authority, settlement, admission, spatial/modal checking, and additional refinement modules; the complete ordered module list is the repository's _CoqProject.](diagrams/module-dependency-graph.svg)
 
 (*Source: [`diagrams/module-dependency-graph.dot`](diagrams/module-dependency-graph.dot) — render with `tred docs/theory/diagrams/module-dependency-graph.dot | dot -Tsvg -o docs/theory/diagrams/module-dependency-graph.svg` (or `./render.sh module-dependency-graph.dot`). Edges are extracted from the foundational modules' `Require Import` statements; `tred` removes transitively redundant edges. The authoritative full ordered catalog is `formal/rocq/cost_accounted_rho/_CoqProject`.*)
 
@@ -3097,8 +3101,11 @@ exhausted by TLC, and accepted by Apalache's independent type checker and
 bounded checker is, in practice, very unlikely to have been stated
 incorrectly.
 
-The model now consists of eight TLA+ specifications under
-`formal/tlaplus/cost_accounted_rho/`, each adding a layer of generality:
+The original core consists of the eight TLA+ specifications listed below. The
+current directory contains 82 specifications spanning the subsequent native
+authority, settlement, replay, merge, and OSLF refinements; its authoritative
+safe/unsafe catalog is
+[`formal/tlaplus/cost_accounted_rho/README.md`](../../formal/tlaplus/cost_accounted_rho/README.md).
 
 1. **`CostAccountedRho.tla`** — The atomic fuel-gate protocol:
    processes with atomic signatures acquire fuel tokens via COMM events
@@ -4408,11 +4415,13 @@ not slash evidence against a remote validator.
 | TLA+ | `AccountingScopeLifetime.tla` | accounting remains active while any overlapping evaluation owns a scope; the unsafe boolean control demonstrates premature deactivation |
 | TLA+ | `StateBoundAdmission.tla` | exact state-bound evidence, finite capacity, replay, and settlement agree |
 | TLA+ | `StateBoundValidatorConvergence.tla` | independent validators agree across arrival and reducer schedules |
+| TLA+ / Apalache | `OslfLocatedTyping.tla` plus five unsafe configurations | separating surfaces, exact modal spend/post-state, local sufficiency, and authenticated funding hold; contraction, weakening, aliasing, upper-bound-as-exact, and candidate-credit alternatives each violate their named invariant |
 | Rocq | `AtomicCommAccounting.v` | atomic COMM cost is trigger-symmetric, join-arity independent, and rejection preserving |
 | Rocq | `RuntimeAuthorityScope.v` | Unit has zero demand, is neutral under nesting, and either overlapping-scope exit order retains the remaining owner |
 | Rocq | `EndToEndAuthority.v` | authority, evidence, replay, and exact settlement compose without minting or double debit |
+| Rocq | `CAOSLFSpatialModal.v` and `GSLTOSLFCapstone.v` | finite located formulas are decidable; exact use and post-state are sound; linearity forbids weakening/contraction; conservative sufficiency is sound; local proofs compose |
 | Rust | `rspace++/tests/comm_observer_tests.rs` | observer placement, one-call behavior, stable identity, join charging, and rollback |
-| Rust | Rholang accounting suites | example and property tests connect syntax bounds to exact runtime matches |
+| Rust | `accounting/oslf.rs` plus Rholang accounting suites | example and property tests connect generic formulas, native structural bounds, authenticated supply, exact runtime matches, and disjoint surface composition |
 
 The safe models and proofs are promotion gates. The introduction-charging model
 is retained as an expected-refutation control so the original validator-cost
@@ -4469,8 +4478,11 @@ later states, so evidence is recomputed until the retained set is unchanged.
 
 ### B.2 Cross-tool proof obligations
 
-The local pgmcp formal-verification catalog identifies TLC, Rocq, and SageMath
-as installed complementary tools. They divide the obligations as follows:
+The local pgmcp formal-verification catalog identifies TLC, Apalache, Rocq, and
+SageMath as installed complementary tools. TLC exhausts bounded interleavings;
+Apalache independently type-checks and symbolically searches selected safe and
+unsafe models; Rocq proves unbounded algebraic laws; SageMath cross-checks finite
+arithmetic. They divide the obligations as follows:
 
 | Layer | Artifact | Obligation |
 | --- | --- | --- |
@@ -4627,6 +4639,7 @@ test-only consensus path is part of the repair.
 | Certification and execution share authenticated system bindings | funded deployer-ID SystemVault checkpoint/replay regression | Rocq `certification_execution_replay_share_authenticated_environment`; TLA+ `NormalizerEnvironmentRefinement.cfg`; exact state-bound rejection diagnostics | `NormalizerEnvironmentRefinementEmptyUnsafe.cfg` must violate `CertificationExecutionReplayUseSameEnvironment` |
 | Physical allocation is stack-safe and semantically identical | 4,096-event allocator regression and unchanged high-fanout play/replay stress test | mixed-event exact-debit/order proptest; Rocq `worklist_solutions_refine_recursive` and canonical-first theorem; TLA+ independent allocator interleavings | `PhysicalSettlementWorklistRecursiveUnsafe.cfg` must violate `NativeStackBound` |
 | Certified promotion preserves every committed state transition without changing majority voting | `finalizer_rejects_dag_descendant_without_state_lineage` proves the stale candidate passes the exact clique decision before rejection; the real conflicting-deploy replay regression proves the successor uses the finalized value | state-frontier proptest; Rocq `finalized_floor_state_lineage_correct`; complete two-validator TLC state space; Apalache safe check through bound 8 | `MC_StateLineageFinality_unsafe.cfg` must promote the delivered stale block and violate `Inv_AllCommittedStatesRemainInLineage` |
+| Finite located OSLF checking preserves the evidence boundary | `accounting/oslf.rs` examples and disjoint-surface property test; generic `OslfResourceLogic<G>` conformance; native Rho candidate-supply regression | Rocq `CAOSLFSpatialModal.v` and extended `GSLTOSLFCapstone.v`; TLC safe model; Apalache safe check through both independent spends | five unsafe configurations must violate linear no-contraction, linear no-weakening, location isolation, modal-evidence soundness, or authenticated-funding-only respectively |
 
 The aggregate proof gate compiles every Rocq theory, runs `rocqchk`, prints the
 assumptions of each headline theorem, and rejects admitted statements or

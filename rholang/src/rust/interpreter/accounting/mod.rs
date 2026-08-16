@@ -35,6 +35,7 @@ pub mod costs;
 pub mod delta_sigma;
 pub mod has_cost;
 pub mod lexical;
+pub mod oslf;
 pub mod resource_logic;
 pub mod authority;
 

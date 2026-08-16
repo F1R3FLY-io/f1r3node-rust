@@ -10,6 +10,9 @@
 //! proof checker for the funding judgment `Σ_s ≥ Δ_s`: it computes a certified
 //! finite upper bound `Δ_s` for a desugared deploy body and admits iff the
 //! effective supply `Σ_s` funds that reservation. Unprovable demand is rejected.
+//! The same interface exposes the finite located spatial/modal checker in
+//! [`super::oslf`]. Exact evidence can prove graded use and post-state claims;
+//! conservative evidence can prove sufficiency without inventing a transition.
 //!
 //! This trait is the contract surface for that obligation. The built-in
 //! [`DefaultResourceLogic`] delegates to the already-verified pure analyzer
@@ -21,12 +24,15 @@
 //! the judgment is the resource inequality, it is decidable, a funded demand is
 //! accepted and an underfunded one rejected (soundness), and supply is monotone
 //! (no contraction — more supply never un-funds a demand, the operational image
-//! of `ll_linear_no_contraction`, Remark 21 "≤1 competitor wins").
+//! of `ll_linear_no_contraction`, Remark 21 "≤1 competitor wins"). The native
+//! formula laws are proved in `CAOSLFSpatialModal.v` and checked concurrently in
+//! `OslfLocatedTyping.tla`.
 
 use models::rhoapi::Par;
 
 use super::authority::{DemandBound, ResourceMultiset, UnprovableDemand};
 use super::delta_sigma::{self, DemandEntry};
+use super::oslf::{self, CheckError, Formula, ResourceObservation};
 use super::Sig;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,6 +104,38 @@ pub trait OslfResourceLogic<G: GsltPresentation> {
     }
 
     fn is_funded(&self, analysis: &DemandEntry, effective_supply_s: i64) -> bool;
+
+    fn resource_observation(
+        &self,
+        canonical: &G::CanonicalProgram,
+        deploy_sig: &G::Signature,
+        authenticated_supply: &ResourceMultiset<<G::Signature as ResourceSignature>::Key>,
+    ) -> Result<ResourceObservation<<G::Signature as ResourceSignature>::Key>, CheckError> {
+        match self.demand_bound(canonical, deploy_sig) {
+            DemandBound::Exact(demand) => Ok(ResourceObservation::exact(
+                authenticated_supply.clone(),
+                demand,
+            )),
+            DemandBound::FiniteUpperBound { bound, .. } => Ok(ResourceObservation::upper_bound(
+                authenticated_supply.clone(),
+                bound,
+            )),
+            DemandBound::Unprovable(reason) => Err(CheckError::Unprovable(reason)),
+        }
+    }
+
+    fn check_formula(
+        &self,
+        canonical: &G::CanonicalProgram,
+        deploy_sig: &G::Signature,
+        authenticated_supply: &ResourceMultiset<<G::Signature as ResourceSignature>::Key>,
+        formula: &Formula<<G::Signature as ResourceSignature>::Key>,
+    ) -> Result<(), CheckError> {
+        oslf::check(
+            &self.resource_observation(canonical, deploy_sig, authenticated_supply)?,
+            formula,
+        )
+    }
 }
 
 /// The Rholang specialization kept for existing validator integrations.
@@ -187,6 +225,15 @@ impl OslfResourceLogic<RhoGslt> for DefaultResourceLogic {
     #[inline]
     fn is_funded(&self, analysis: &DemandEntry, effective_supply_s: i64) -> bool {
         delta_sigma::is_funded(analysis, effective_supply_s)
+    }
+
+    fn resource_observation(
+        &self,
+        canonical: &Par,
+        deploy_sig: &Sig,
+        authenticated_supply: &ResourceMultiset<delta_sigma::SigKey>,
+    ) -> Result<ResourceObservation<delta_sigma::SigKey>, CheckError> {
+        oslf::rho_observation(canonical, deploy_sig, authenticated_supply)
     }
 }
 
@@ -587,6 +634,17 @@ mod resource_logic_conformance {
         assert_eq!(demand.certified_upper_bound, 17);
         assert!(logic.is_funded(&demand, 17));
         assert!(!logic.is_funded(&demand, 16));
+        logic
+            .check_formula(
+                &canonical,
+                &sig,
+                &ResourceMultiset::singleton(3, 17),
+                &Formula::Located {
+                    surface: 3,
+                    body: Box::new(Formula::Sufficient { surface: 3 }),
+                },
+            )
+            .unwrap();
         assert_eq!(decompositions, vec![ResourceDecomposition {
             compound: 3,
             left: 2,

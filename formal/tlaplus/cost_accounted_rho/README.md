@@ -77,6 +77,8 @@ Common TLC jar locations:
 | `ReplayRootMaterialization.tla` | Independent producer, validator, and reporter histories replay a three-deployment root chain by alternating ordinary-RSpace purse capture with trace replay and checkpoint materialization | Safe instance explored by `ReplayRootMaterialization.cfg` | SnapshotsFollowCanonicalChain, SnapshotReadsMaterializedRoot, SnapshotsUseOrdinaryRuntime, CursorMatchesReplayPrefix, AcceptedMaterializedPostState, CompletedValidatorsAgree; liveness: EventuallyAllComplete |
 | `ReplayRootMaterializationApalache.cfg` | SMT-bounded two-validator, two-deployment instance of the replay-root model | Safe executions through the complete eight-transition horizon | The seven replay-root safety invariants; liveness remains a TLC obligation |
 | `ReplayRootMaterialization*Unsafe.cfg` | Expected-refutation controls for eager future-root reads, producer-local-history-dependent validation, and ReplayRSpace purse queries | Counterexample required for each configuration | Refutes SnapshotReadsMaterializedRoot, CompletedValidatorsAgree, or SnapshotsUseOrdinaryRuntime |
+| `OslfLocatedTyping.tla` | Finite located OSLF resource checking with exact and conservative observations plus two independent purse spends | Safe instance explored by `OslfLocatedTyping.cfg` and symbolically through length 3 by Apalache | LinearNoContraction, LinearNoWeakening, ModalEvidenceSound, AuthenticatedFundingOnly, LocationIsolation, ModalPoststateExact, LocalSufficiencyComposes, DisjointSpatialSettlement |
+| `OslfLocatedTyping*Unsafe.cfg` | Required-refutation controls for contraction, weakening, cross-surface debit aliasing, upper-bound-as-exact modal evidence, and candidate-created funding credit | TLC and Apalache counterexample required for each configuration | Refutes the exact named invariant excluding the enabled defect |
 | `AtomicVaultSettlementRefinement.tla` | One native externally atomic SystemVault application refining maximum reserve, exact burn and fee transfer, and refund without persistent transient reservation state | Safe instance explored by `MCAtomicVaultSettlementRefinement.cfg` | NoPersistentReservationState, EverySelectedBranchWasStateBoundFunded, FinalizedAggregateIsFunded, AtomicVisibleRefinement, CanonicalValueConserved, FeeCreditIsAConservingTransfer, RejectedAggregateHasNoEffect, ReplayMatchesFinalizedState |
 | `AtomicVaultSettlementRefinementGlobalCellUnsafe.cfg` | Expected-refutation control restoring a consensus-visible singleton reservation cell shared by independent branches | Counterexample required | Violates NoPersistentReservationState |
 | `NormalizerEnvironmentRefinement.tla` | Certification, retained execution, and replay use one authenticated deployer/cosigner normalizer environment | Safe instance explored by `NormalizerEnvironmentRefinement.cfg` | CertificationExecutionReplayUseSameEnvironment, AuthenticatedProgramIsAdmitted, ExecutionRequiresAdmission, ReplayMatchesExecution; liveness: EventuallyReplayCompletes |
@@ -272,7 +274,8 @@ Its controls demonstrate that eager reads access absent roots, make acceptance
 depend on producer-local history, or cross the ordinary/replay runtime boundary.
 
 The aggregate formal gate runs Apalache over symbolic N-ary join authority,
-the threat and search-frontier models, and the bounded replay-root model:
+the threat and search-frontier models, the bounded replay-root model, and the
+finite located OSLF safe model plus all five required counterexamples:
 
 ```bash
 bash scripts/check-cost-accounted-rho-apalache.sh
@@ -284,7 +287,10 @@ materialize both post-state roots. It checks the seven safety invariants with an
 SMT-backed state encoding. TLC separately exhausts the three-node,
 three-deployment state space, proves the liveness property under weak fairness,
 and requires the three unsafe configurations to exhibit their named defects.
-Every Apalache leg must report `The outcome is: NoError`.
+The OSLF cross-check covers admission plus both orders of the two disjoint purse
+spends. Its safe leg must report `NoError`; each unsafe leg must report the
+configured invariant violation. This prevents a vacuous safe model from passing
+after a safeguard or counterexample path is accidentally removed.
 
 ## Verified Properties
 
@@ -318,6 +324,22 @@ Every Apalache leg must report `The outcome is: NoError`.
 - **LocalFaultNeverCreatesSlashEvidence**: missing local history and other local validation faults never become invalid-block evidence.
 - **FinalityUsesDAGAncestry**: parent-array permutation cannot change DAG-based finality advancement.
 - **EventuallyDoneOrRejected**: under weak fairness, the finite valid path completes after at most one recoverable local fault; an unprovable or underfunded admission terminates as rejected.
+
+### OslfLocatedTyping
+
+- **LinearNoContraction / LinearNoWeakening**: an accepted linear assertion has
+  exactly one live demand; the unsafe controls independently admit multiplicity
+  or absence and must refute the corresponding invariant.
+- **ModalEvidenceSound / ModalPoststateExact**: a modal spend is never inferred
+  from a conservative upper bound, and an exact spend removes one unit from the
+  matching supply and demand maps.
+- **AuthenticatedFundingOnly**: admission supply is the authenticated pre-state;
+  candidate-created supply cannot satisfy its own reservation.
+- **LocationIsolation / DisjointSpatialSettlement**: a spend changes only its
+  named surface, and completing both independent branches produces the exact
+  component-wise residual regardless of their order.
+- **LocalSufficiencyComposes**: each realized local spend stays within its purse,
+  so the disjoint conjunction is globally funded.
 
 ### CostAccountedRho (atomic signatures)
 
@@ -554,6 +576,7 @@ These TLA+ specifications complement the Rocq mechanization at `formal/rocq/cost
 | `AtomicVaultSettlementRefinement.tla` | two independently selected paid branches, including a shared payer and a distinct located payer | — | 0 | three purses, two certified maxima, exact burn and fee vectors | model-checker count recorded by the bounded runner |
 | `NormalizerEnvironmentRefinement.tla` | certification, execution, and replay phases over authenticated versus empty environments | — | 0 | one deployer-ID-dependent program | model-checker count recorded by the bounded runner |
 | `PhysicalSettlementWorklist.tla` | two independently scheduled physical allocators exploring a canonical finite candidate tree | — | 0 | event depth 3, binary candidates, native-stack bound 2 | model-checker count recorded by the bounded runner |
+| `OslfLocatedTyping.tla` | one proof-check phase followed by two independently ordered located spends | 2 work surfaces / 6 observed surfaces | 0 | finite exact/upper-bound maps; one spend per work surface | model-checker count recorded by the bounded runner; Apalache length 3 covers the complete safe transition horizon |
 
 Running on larger bounds has not been attempted — doubly-compound depth-2 already exercises the cascading-Split + Join interactions and is the deepest scenario anticipated by the design.
 

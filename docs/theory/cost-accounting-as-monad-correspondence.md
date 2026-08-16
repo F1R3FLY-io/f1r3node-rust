@@ -38,6 +38,10 @@ wrapper" is a sorting invariant — the paper's *wrapping by construction*. The 
 | **Stack consumption is the modulus** | `CAModulus.v` — `funded_run_bounded` (run length ≤ consumed stack) | **TLA+** `LocatedPurse` `Inv_Conservation`; **Sage** modulus rows |
 | Strong normalization (conditional on funding) | `CAStrongNormalization.v` — `ca_SN_funded`; the divergence witness `st_total_fuel_can_increase_off_funded` (SN is genuinely conditional) | DR-21 (c) |
 | Located resource stacks / purses; nearness `near(I,J)` | `ChannelSeparation.v` `lane_pool_disjoint` (disjoint per-signature pools); `near` = name-equality `≡_N` (DR-20 (ii)) | **TLA+** `LocatedPurse` (`Inv_NoUnderflow`, `Inv_LocalSufficiencyComposes`); runtime `DashMap<Sig,…>` lane pool |
+| OSLF spatial type `K(φ₁,φ₂)` over the AC Rho resource quotient | `CAOSLFSpatialModal.v` — `spatial_requires_disjoint_locations`, `spatial_is_commutative`, `spatial_local_sufficiency_composes` | **Rust** `oslf::Formula::Spatial/Located`; **TLA+/Apalache** `OslfLocatedTyping` location and settlement invariants plus aliasing control |
+| OSLF graded spend and post-state | `CAOSLFSpatialModal.v` — `exact_spend_check_sound_complete`, `modal_poststate_is_exact`, `modal_spend_preserves_other_surface` | **Rust** `Formula::Spend`; **TLA+/Apalache** `ModalEvidenceSound`, `ModalPoststateExact`, upper-bound control |
+| Opt-in linear / copyable / relevant usage | `CAOSLFSpatialModal.v` — exact linear soundness/completeness, no contraction/weakening, copyable/relevant theorems | **Rust** `UsageDiscipline`; **TLA+/Apalache** contraction and weakening controls; property/example tests |
+| Conservative data-dependent proof | `CAOSLFSpatialModal.v` — `conservative_sufficiency_is_sound`, `upper_bound_cannot_assert_modal_spend` | **Rust** `DemandKnowledge::UpperBound` preserves `Indeterminate`; candidate-credit regression; **TLA+/Apalache** upper-modal and candidate-credit controls |
 | The calculus IS a continued interactive GSLT with the cost structure | **`ContinuedGSLTCapstone.v` `continued_gslt_cost_capstone`** (axiom-free, "Closed under the global context") | — |
 
 ### Categorical-structure figures
@@ -121,13 +125,18 @@ conformance oracle, not as a replacement for the node's existing state and conse
 | Validator acceptance and replay | state-bound authority certificate/witness derived independently from the authenticated block pre-state by proposal and replay |
 | Concurrent composition | Casper merge combines durable RSpace changes, located-stack removals, and exact SystemVault deltas; canonical aggregation rejects aggregate overdraw |
 | Graded transitions (step labelled by consumed signature) | `BillableTokenEvent.sig_hash` |
-| Generic GSLT/OSLF funding boundary | `accounting/resource_logic.rs` `GsltPresentation`, `ResourceSignature`, `OslfResourceLogic<G>`; native specialization `RhoGslt` |
+| Generic GSLT/OSLF funding and formula boundary | `accounting/resource_logic.rs` `GsltPresentation`, `ResourceSignature`, `OslfResourceLogic<G>::resource_observation/check_formula`; `accounting/oslf.rs` finite located formula evaluator; native specialization `RhoGslt` excludes candidate-created supply |
 | Two monoids (spatial vs temporal) | spatial `Par` (unordered) vs temporal `SourcePath` (ordered) |
 
-MeTTaIL is not a Rust runtime dependency in this design. When `mettail-rust` is ready, integration should be
-an adapter that implements the generic `GsltPresentation`/`ResourceSignature`/`OslfResourceLogic<G>` surface
-and plugs into the injected acceptance/replay entry points. The native node remains coupled to the
-specification-level GSLT/OSLF interface, not to a specific MeTTaIL implementation.
+MeTTaIL is not a Rust runtime dependency in this design. When `mettail-rust` is
+ready, integration is an adapter that implements the generic
+`GsltPresentation`/`ResourceSignature`/`OslfResourceLogic<G>` surface. It must
+reproduce the native three-valued evidence semantics: conservative bounds may
+prove sufficiency but never a spend; exact evidence determines the modal
+post-state; spatial branches see disjoint located surfaces; candidate-created
+supply is never authenticated pre-state capacity. The native node remains
+coupled to this specification-level conformance target, not to a particular
+MeTTaIL representation.
 
 ## Honestly Rocq-primary (now mechanized)
 

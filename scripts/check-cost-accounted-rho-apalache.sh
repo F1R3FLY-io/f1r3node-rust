@@ -30,6 +30,26 @@ run_check() {
   return 1
 }
 
+run_expected_violation() {
+  local name="$1"
+  local detail="$2"
+  local invariant="$3"
+  shift 3
+  local output rc
+  output="$(cd "$MODEL_ROOT" && timeout 300 apalache-mc --out-dir="$outdir/$name" check "$@" 2>&1)"
+  rc=$?
+  if [ "$rc" -ne 0 ] \
+     && grep -q "found INVARIANTS: $invariant" <<<"$output" \
+     && grep -qE 'state invariant [0-9]+ violated' <<<"$output" \
+     && grep -q 'The outcome is: Error' <<<"$output"; then
+    echo "  PASS $name: $detail"
+    return 0
+  fi
+  echo "  FAIL $name" >&2
+  grep -iE 'error|violat|outcome|EXITCODE|INVARIANTS' <<<"$output" | tail -20 >&2
+  return 1
+}
+
 echo "Checking cost-accounted rho with Apalache 0.58.3+..."
 
 overall=0
@@ -45,6 +65,29 @@ run_check search-frontier \
 run_check replay-root \
   "two-validator, two-deploy root materialization and replay agreement through length 8" \
   --config=ReplayRootMaterializationApalache.cfg --length=8 ReplayRootMaterialization.tla || overall=1
+run_check oslf-located \
+  "finite located spatial/modal checking through both independent spends" \
+  --config=OslfLocatedTyping.cfg --length=3 OslfLocatedTyping.tla || overall=1
+run_expected_violation oslf-contraction-unsafe \
+  "linear contraction is independently refuted" \
+  LinearNoContraction \
+  --config=OslfLocatedTypingContractionUnsafe.cfg --length=0 OslfLocatedTyping.tla || overall=1
+run_expected_violation oslf-weakening-unsafe \
+  "linear weakening is independently refuted" \
+  LinearNoWeakening \
+  --config=OslfLocatedTypingWeakeningUnsafe.cfg --length=0 OslfLocatedTyping.tla || overall=1
+run_expected_violation oslf-alias-unsafe \
+  "cross-surface debit aliasing is independently refuted" \
+  LocationIsolation \
+  --config=OslfLocatedTypingAliasUnsafe.cfg --length=2 OslfLocatedTyping.tla || overall=1
+run_expected_violation oslf-upper-modal-unsafe \
+  "treating a conservative upper bound as exact modal evidence is independently refuted" \
+  ModalEvidenceSound \
+  --config=OslfLocatedTypingUpperModalUnsafe.cfg --length=1 OslfLocatedTyping.tla || overall=1
+run_expected_violation oslf-candidate-credit-unsafe \
+  "crediting candidate-created supply during authenticated funding is independently refuted" \
+  AuthenticatedFundingOnly \
+  --config=OslfLocatedTypingCandidateCreditUnsafe.cfg --length=1 OslfLocatedTyping.tla || overall=1
 
 if [ "$overall" -ne 0 ]; then
   exit 1

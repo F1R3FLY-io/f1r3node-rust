@@ -7,7 +7,7 @@
 # Source: cost-accounted-rho.pdf (Meredith)
 # Companion doc: docs/theory/cost-accounted-rho-verification.md
 #
-# 87 modules with kernel-checked theorem bodies. The development is
+# 106 modules with kernel-checked theorem bodies. The development is
 # parameterized over a single
 # hash_process function and 3 structural/cryptographic hypotheses on
 # it; all consensus-critical results (ca_cost_deterministic,
@@ -381,6 +381,7 @@ theories/CAAdjunctions.v
 # whynot + the threshold quorum. Carrier-independent (LinearLogicResources holds
 # for native verbatim); re-exported here under native names.
 theories/CATypeDiscipline.v
+theories/CAOSLFSpatialModal.v
 
 # CL6 foundation — image-finiteness of the graded LTS: an explicit successor
 # enumeration graded_succ with graded_step S g S' <-> In S' (graded_succ S g).

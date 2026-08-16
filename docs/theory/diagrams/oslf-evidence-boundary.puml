@@ -1,0 +1,59 @@
+' Native finite located OSLF evidence boundary. Admission uses authenticated
+' pre-state supply plus a conservative external reservation. Exact runtime and
+' replay evidence alone may witness a graded spend and its post-state.
+'
+' Source of truth: accounting/oslf.rs, CAOSLFSpatialModal.v,
+'                  OslfLocatedTyping.tla.
+' Palette: authenticated/exact=mint #C8E6C9 · conservative=amber #FFE082
+'          forbidden=red #EF9A9A · formula/check=blue #BBDEFB
+' Render: plantuml -tsvg docs/theory/diagrams/oslf-evidence-boundary.puml
+
+@startuml oslf-evidence-boundary
+!theme plain
+skinparam defaultFontName "sans-serif"
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam ArrowColor #444444
+skinparam ActivityBorderColor #333333
+skinparam ActivityDiamondBackgroundColor #BBDEFB
+skinparam ActivityDiamondBorderColor #333333
+skinparam NoteBackgroundColor #FFF8E1
+skinparam NoteBorderColor #666666
+title Located OSLF evidence boundary — safety from bounds, modal truth from exact replay
+
+start
+:authenticated pre-state supply Σ_I; <<#C8E6C9>>
+:native structural analysis computes\nexternal reservation Δ_I^max; <<#FFE082>>
+note right
+  Candidate-created stacks are excluded.
+  Only already-authenticated custody is Σ_I.
+end note
+if (formula kind?) then (Sufficient)
+  if (Σ_I >= Δ_I^max ?) then (yes)
+    :Satisfied\nbecause Δ_I^actual <= Δ_I^max; <<#C8E6C9>>
+  else (no)
+    :Unsatisfied; <<#EF9A9A>>
+  endif
+else (Required / Spend)
+  :Indeterminate — a maximum is not\nevidence that a COMM occurred; <<#FFE082>>
+endif
+
+:bounded execution records exact\ncausal authority events; <<#BBDEFB>>
+:independent replay authenticates\nΔ_I^actual and event order; <<#C8E6C9>>
+if (exact grade available in\nboth Σ_I and Δ_I^actual ?) then (yes)
+  :consume grade from supply and demand; <<#C8E6C9>>
+  :check continuation against the\nexact post-spend observation; <<#C8E6C9>>
+else (no)
+  :Unsatisfied; <<#EF9A9A>>
+endif
+stop
+
+legend bottom
+  |= color |= meaning |
+  |<#C8E6C9>| authenticated or exact evidence |
+  |<#FFE082>| conservative bound / indeterminate result |
+  |<#BBDEFB>| formula decision or replay observation |
+  |<#EF9A9A>| rejected or disproved claim |
+endlegend
+
+@enduml

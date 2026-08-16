@@ -3,7 +3,7 @@
 Rocq proof certificates are build products for the cost-accounted rho formal model and are intentionally not tracked. The verification script regenerates them from source before checking headline theorem closure.
 
 - Source commit used for the migration: `d9dd1b8c335e73b386b6b56768587d8e384f6403`
-- Rocq version used during migration: `9.1.0`
+- Rocq version used for the current proof gate: `9.1.1`
 - Logical namespace: `-Q theories CostAccountedRho`
 - Proof entry point: `CostAccountedRho.UseCaseAdequacy`
 - Native architecture refinement: paper-level purse and supply notation maps to the existing canonical `SystemVault`; prepaid located stacks remain RSpace authority; PoS genesis/epoch mint calls the authenticated vault mint path; fees transfer directly from payer vault to proposer vault; quarantine resolution is the only slashing path that restores or burns quarantined custody. `WalletNaming`, `MintingInjection`, `TokenConservation`, `BoundedLedger`, and `EndToEndAuthority` prove the corresponding injectivity, mint idempotence, conservation, bounded arithmetic, genesis, and replay obligations without a parallel ledger.
@@ -17,5 +17,6 @@ Rocq proof certificates are build products for the cost-accounted rho formal mod
 - Authenticated normalizer-environment refinement: `CostAccountedRho.RuntimeBoundAuthority`, whose additional headline theorems prove certification/execution/replay equality under one verified deploy environment and exhibit the deployer-identity divergence caused by empty-environment certification
 - Stack-safe physical-search refinement: `CostAccountedRho.PhysicalSettlementWorklist`, whose headline theorems prove complete ordered-solution equivalence, canonical-first-solution equality, and success/failure agreement between recursive depth-first proof search and the explicit heap-worklist traversal
 - Sequential replay-root refinement: `CostAccountedRho.ReplayRootMaterialization`, whose headline theorems prove that every deployment pre-state is materialized before its authority snapshot, every snapshot uses ordinary RSpace, independent validators reach the same terminal root, eager reads cannot obtain the second pre-state from genesis alone, and ReplayRSpace is not an authority-snapshot source
+- Native finite located OSLF refinement: `CostAccountedRho.CAOSLFSpatialModal`, whose headline theorems prove exact linear use, no contraction or weakening, copyable/relevant discipline behavior, exact graded post-state, surface isolation, spatial commutativity, compositional local sufficiency, conservative-bound soundness, refusal to treat an upper bound as a modal event, and exclusion of candidate-created funding. `GSLTOSLFCapstone.oslf_spatial_modal_logic_sound` connects these results to the existing GSLT and funding capstone.
 
 Run `scripts/check-cost-accounted-rho-proofs.sh` from the repository root to rebuild the local certificates, run `rocqchk`, and query the assumptions of the headline theorems. Local `*.vo`, `*.vos`, `*.vok`, `.aux`, `.glob`, dependency, and cache files remain ignored.
