@@ -1,0 +1,14 @@
+% Observable model of cd01ea721. Candidate scanning, exact-key aggregation,
+% PathMap COW mutation, and root publication are internal tau steps. The only
+% visible outcome is one complete play/replay commit or rejection; the declared
+% partial_remove action is deliberately unreachable.
+act select, play_commit, play_reject, replay_commit, replay_reject, partial_remove;
+
+proc Impl =
+  select .
+    (tau . tau . play_commit . tau . replay_commit . delta
+    +tau . tau . replay_commit . tau . play_commit . delta
+    +tau . tau . play_reject . tau . replay_reject . delta
+    +tau . tau . replay_reject . tau . play_reject . delta);
+
+init Impl;

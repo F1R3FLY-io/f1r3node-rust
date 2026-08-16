@@ -1,0 +1,14 @@
+% Atomic reference contract. The first tau chooses the deterministic outcome
+% of the selected (abstracted-away) input. Play and replay may linearize in
+% either order, but they must publish the same accepted/rejected outcome and
+% expose no intermediate per-key removal.
+act select, play_commit, play_reject, replay_commit, replay_reject, partial_remove;
+
+proc Spec =
+  select .
+    (tau . play_commit . replay_commit . delta
+    +tau . replay_commit . play_commit . delta
+    +tau . play_reject . replay_reject . delta
+    +tau . replay_reject . play_reject . delta);
+
+init Spec;

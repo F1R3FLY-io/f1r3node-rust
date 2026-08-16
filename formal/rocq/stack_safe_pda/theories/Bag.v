@@ -1,6 +1,8 @@
 From Stdlib Require Import Arith PeanoNat Lia FunctionalExtensionality.
+From Stdlib Require Import Lists.List Sorting.Permutation.
 
 Set Implicit Arguments.
+Import ListNotations.
 
 (** An exact-key Bag is a finite-support function in the implementation.  The
     algebraic laws do not depend on the concrete finite-support carrier, so the
@@ -238,5 +240,108 @@ Proof.
   - apply canonical_delta_is_normalized.
   - apply canonical_delta_is_applicable.
 Qed.
+
+(** The live RSpace commit boundary projects accepted matcher candidates into
+    one normalized removal Bag before it publishes a new PathMap root.  This
+    model deliberately retains only the fields that decide datum consumption:
+    a candidate is stored or fresh, and persistent or nonpersistent. *)
+Inductive selected_candidate : Type :=
+| StoredCandidate : Key -> bool -> selected_candidate
+| FreshCandidate : bool -> selected_candidate.
+
+Definition candidate_removal (candidate : selected_candidate) : bag :=
+  match candidate with
+  | StoredCandidate key false => set_count key 1 empty
+  | _ => empty
+  end.
+
+Fixpoint selected_removals (candidates : list selected_candidate) : bag :=
+  match candidates with
+  | [] => empty
+  | candidate :: rest => sum (candidate_removal candidate) (selected_removals rest)
+  end.
+
+Theorem nonpersistent_stored_candidate_removes_one :
+  forall key, candidate_removal (StoredCandidate key false) key = 1.
+Proof.
+  intro key. unfold candidate_removal, set_count.
+  destruct (key_eq_dec key key); congruence.
+Qed.
+
+Theorem nonpersistent_stored_candidate_is_exact :
+  forall selected other,
+    other <> selected ->
+    candidate_removal (StoredCandidate selected false) other = 0.
+Proof.
+  intros selected other different.
+  unfold candidate_removal, set_count, empty.
+  destruct (key_eq_dec other selected); congruence.
+Qed.
+
+Theorem persistent_stored_candidate_is_not_removed :
+  forall key, candidate_removal (StoredCandidate key true) = empty.
+Proof. reflexivity. Qed.
+
+Theorem fresh_candidate_is_not_removed :
+  forall persistent, candidate_removal (FreshCandidate persistent) = empty.
+Proof. destruct persistent; reflexivity. Qed.
+
+(** Candidate order is consensus-visible to matching, but once a COMM has been
+    accepted its removal transaction is a multiset.  Any play/replay
+    permutation of the same accepted candidates therefore produces the same
+    exact-key delta. *)
+Theorem selected_removals_permutation_invariant :
+  forall play replay,
+    Permutation play replay -> selected_removals play = selected_removals replay.
+Proof.
+  intros play replay permutation.
+  induction permutation as
+      [|candidate left right permutation IH
+       |first second rest
+       |left middle right first_permutation first_IH second_permutation second_IH].
+  - reflexivity.
+  - simpl. rewrite IH. reflexivity.
+  - simpl. apply functional_extensionality. intro key.
+    unfold sum. lia.
+  - rewrite first_IH. exact second_IH.
+Qed.
+
+Definition selected_commit (subject : bag) (candidates : list selected_candidate) : bag :=
+  subtract subject (selected_removals candidates).
+
+Theorem selected_commit_exact_count :
+  forall subject candidates key,
+    selected_commit subject candidates key =
+      subject key - selected_removals candidates key.
+Proof. reflexivity. Qed.
+
+Theorem permuted_play_replay_commits_equal :
+  forall subject play replay,
+    Permutation play replay ->
+    delta_applicable subject (selected_removals play) ->
+    selected_commit subject play = selected_commit subject replay.
+Proof.
+  intros subject play replay permutation _.
+  unfold selected_commit.
+  rewrite (selected_removals_permutation_invariant permutation).
+  reflexivity.
+Qed.
+
+(** `BagDelta::apply_to` works on a private COW root.  The public store is
+    replaced only on `Some`; a rejected transition returns `None`, so this
+    publication function exposes the original Bag and never a partial prefix. *)
+Definition publish_atomic (subject : bag) (proposal : option bag) : bag :=
+  match proposal with
+  | Some committed => committed
+  | None => subject
+  end.
+
+Theorem rejected_commit_publishes_no_partial_state :
+  forall subject, publish_atomic subject None = subject.
+Proof. reflexivity. Qed.
+
+Theorem accepted_commit_publishes_exact_proposal :
+  forall subject committed, publish_atomic subject (Some committed) = committed.
+Proof. reflexivity. Qed.
 
 End ExactKeyBag.

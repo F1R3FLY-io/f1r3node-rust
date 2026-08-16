@@ -1,0 +1,2 @@
+% No observable execution can expose one key removal from the private COW root.
+[ true* . partial_remove ] false

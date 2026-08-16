@@ -46,6 +46,46 @@ tla_metadir="$(tlc_metadir stack-safe-pda-equivalence)"
 pushd "$tla_root" >/dev/null
 tlc_run "$tla_metadir" PDAEquivalence.cfg PDAEquivalence.tla -cleanup
 tlc_run "$tla_metadir" SpatialMatcherEquivalence.cfg SpatialMatcherEquivalence.tla -cleanup
+tlc_run "$tla_metadir" RSpaceBagCommit.cfg RSpaceBagCommit.tla -cleanup
 popd >/dev/null
 
-echo "stack-safe-pda: Rocq, Verus, Z3, and TLC verification passed"
+mcrl2_root="$repo_root/formal/mcrl2/stack_safe_pda"
+for tool in mcrl22lps lps2lts ltscompare lps2pbes pbes2bool; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "stack-safe-pda: required mCRL2 tool not found on PATH: $tool" >&2
+    exit 3
+  fi
+done
+
+mkdir -p "$repo_root/target"
+mcrl2_tmp="$(mktemp -d "$repo_root/target/rspace-bag-mcrl2.XXXXXX")"
+cleanup_mcrl2() {
+  rm -rf -- "$mcrl2_tmp"
+}
+trap cleanup_mcrl2 EXIT
+
+tlc_bounded mcrl22lps \
+  "$mcrl2_root/rspace_bag_commit_impl.mcrl2" "$mcrl2_tmp/impl.lps"
+tlc_bounded mcrl22lps \
+  "$mcrl2_root/rspace_bag_commit_spec.mcrl2" "$mcrl2_tmp/spec.lps"
+tlc_bounded lps2lts "$mcrl2_tmp/impl.lps" "$mcrl2_tmp/impl.lts"
+tlc_bounded lps2lts "$mcrl2_tmp/spec.lps" "$mcrl2_tmp/spec.lts"
+
+bisimulation="$(
+  tlc_bounded ltscompare --equivalence=branching-bisim \
+    "$mcrl2_tmp/impl.lts" "$mcrl2_tmp/spec.lts" 2>&1 | tail -n 1
+)"
+if [[ "$bisimulation" != "true" ]]; then
+  echo "stack-safe-pda: expected RSpace Bag branching bisimulation; got: $bisimulation" >&2
+  exit 1
+fi
+
+tlc_bounded lps2pbes -f "$mcrl2_root/rspace_bag_no_partial.mcf" \
+  "$mcrl2_tmp/impl.lps" "$mcrl2_tmp/no-partial.pbes"
+no_partial="$(tlc_bounded pbes2bool "$mcrl2_tmp/no-partial.pbes" 2>&1 | tail -n 1)"
+if [[ "$no_partial" != "true" ]]; then
+  echo "stack-safe-pda: expected no partial RSpace Bag publication; got: $no_partial" >&2
+  exit 1
+fi
+
+echo "stack-safe-pda: Rocq, Verus, Z3, TLC, and mCRL2 verification passed"
