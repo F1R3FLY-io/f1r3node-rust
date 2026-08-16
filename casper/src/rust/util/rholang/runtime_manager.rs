@@ -117,6 +117,79 @@ impl ExploratoryDeployConfig {
     }
 }
 
+pub struct ReplayLock {
+    semaphore: Arc<Semaphore>,
+    consensus_waiters: std::sync::atomic::AtomicUsize,
+    consensus_ready: tokio::sync::Notify,
+}
+
+struct ConsensusReplayWaiter<'a>(&'a ReplayLock);
+
+impl Drop for ConsensusReplayWaiter<'_> {
+    fn drop(&mut self) {
+        self.0
+            .consensus_waiters
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        self.0.consensus_ready.notify_waiters();
+    }
+}
+
+impl ReplayLock {
+    pub fn new() -> Self {
+        Self {
+            semaphore: Arc::new(Semaphore::new(1)),
+            consensus_waiters: std::sync::atomic::AtomicUsize::new(0),
+            consensus_ready: tokio::sync::Notify::new(),
+        }
+    }
+
+    pub async fn acquire_consensus(
+        &self,
+    ) -> Result<OwnedSemaphorePermit, tokio::sync::AcquireError> {
+        self.consensus_waiters
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let waiter = ConsensusReplayWaiter(self);
+        let permit = self.semaphore.clone().acquire_owned().await;
+        drop(waiter);
+        permit
+    }
+
+    pub async fn acquire_reporting(
+        &self,
+    ) -> Result<OwnedSemaphorePermit, tokio::sync::AcquireError> {
+        loop {
+            while self
+                .consensus_waiters
+                .load(std::sync::atomic::Ordering::Acquire)
+                > 0
+            {
+                let ready = self.consensus_ready.notified();
+                if self
+                    .consensus_waiters
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    > 0
+                {
+                    ready.await;
+                }
+            }
+            let permit = self.semaphore.clone().acquire_owned().await?;
+            if self
+                .consensus_waiters
+                .load(std::sync::atomic::Ordering::Acquire)
+                == 0
+            {
+                return Ok(permit);
+            }
+            drop(permit);
+            tokio::task::yield_now().await;
+        }
+    }
+}
+
+impl Default for ReplayLock {
+    fn default() -> Self { Self::new() }
+}
+
 #[derive(Clone)]
 pub struct RuntimeManager {
     pub space: RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
@@ -140,6 +213,7 @@ pub struct RuntimeManager {
     pub replay_cache: Option<Arc<InMemoryReplayCache>>,
     /// Optional state hash cache for skipping known replays
     pub state_hash_cache: Option<Arc<StateHashCache>>,
+    replay_lock: Arc<ReplayLock>,
     exploratory_deploy_semaphore: Arc<Semaphore>,
     exploratory_deploy_phlo_limit: i64,
     exploratory_deploy_execution_timeout: Duration,
@@ -331,6 +405,8 @@ impl RuntimeManager {
     pub fn try_acquire_exploratory_deploy_permit(&self) -> Option<OwnedSemaphorePermit> {
         Self::try_acquire_exploratory_deploy_permit_with(self.exploratory_deploy_semaphore.clone())
     }
+
+    pub fn replay_lock(&self) -> Arc<ReplayLock> { self.replay_lock.clone() }
 
     pub fn exploratory_deploy_execution_timeout_value(&self) -> Duration {
         self.exploratory_deploy_execution_timeout
@@ -754,6 +830,11 @@ impl RuntimeManager {
         }
 
         // Step 3: Full replay (cache miss)
+        let _replay_permit = self
+            .replay_lock
+            .acquire_consensus()
+            .await
+            .map_err(|error| CasperError::Other(format!("Replay semaphore closed: {}", error)))?;
         let invalid_blocks = invalid_blocks.unwrap_or_default();
         let replay_runtime = self.spawn_replay_runtime().await;
         let runtime_ops = RuntimeOps::new(replay_runtime);
@@ -1372,6 +1453,7 @@ impl RuntimeManager {
             }),
             state_hash_cache: (state_hash_cache_size > 0)
                 .then(|| Arc::new(StateHashCache::new(state_hash_cache_size))),
+            replay_lock: Arc::new(ReplayLock::new()),
             exploratory_deploy_semaphore: Arc::new(Semaphore::new(
                 exploratory_deploy_config.max_concurrent,
             )),
@@ -1473,7 +1555,7 @@ mod tests {
 
     use tokio::sync::Semaphore;
 
-    use super::{ExploratoryDeployConfig, RuntimeManager};
+    use super::{ExploratoryDeployConfig, ReplayLock, RuntimeManager};
 
     #[test]
     fn exploratory_deploy_config_rejects_non_positive_values() {
@@ -1487,6 +1569,59 @@ mod tests {
         assert_eq!(valid.max_concurrent, 2);
         assert_eq!(valid.phlo_limit, 42);
         assert_eq!(valid.execution_timeout, Duration::from_millis(500));
+    }
+
+    #[tokio::test]
+    async fn consensus_replay_has_priority_over_queued_reporting() {
+        let lock = Arc::new(ReplayLock::new());
+        let first_consensus = lock.acquire_consensus().await.expect("Replay lock closed");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let reporting_lock = lock.clone();
+        let reporting_tx = tx.clone();
+        let reporting = tokio::spawn(async move {
+            let _permit = reporting_lock
+                .acquire_reporting()
+                .await
+                .expect("Replay lock closed");
+            reporting_tx.send("reporting").expect("Receiver closed");
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        let consensus_lock = lock.clone();
+        let consensus = tokio::spawn(async move {
+            let _permit = consensus_lock
+                .acquire_consensus()
+                .await
+                .expect("Replay lock closed");
+            tx.send("consensus").expect("Receiver closed");
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        drop(first_consensus);
+
+        assert_eq!(rx.recv().await, Some("consensus"));
+        assert_eq!(rx.recv().await, Some("reporting"));
+        consensus.await.expect("Consensus task failed");
+        reporting.await.expect("Reporting task failed");
+    }
+
+    #[tokio::test]
+    async fn cancelled_consensus_waiter_releases_reporting() {
+        let lock = Arc::new(ReplayLock::new());
+        let reporting_permit = lock.acquire_reporting().await.expect("Replay lock closed");
+        let consensus_lock = lock.clone();
+        let consensus = tokio::spawn(async move { consensus_lock.acquire_consensus().await });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        consensus.abort();
+        consensus
+            .await
+            .expect_err("Consensus task was not cancelled");
+        drop(reporting_permit);
+
+        let _permit = tokio::time::timeout(Duration::from_secs(1), lock.acquire_reporting())
+            .await
+            .expect("Reporting remained blocked")
+            .expect("Replay lock closed");
     }
 
     #[test]
