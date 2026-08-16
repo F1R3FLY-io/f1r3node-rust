@@ -210,7 +210,13 @@ env:
   # runs in a dedicated shard and requires exact finalized multi-parent block
   # metadata before observer attachment. Verified that 28b24d9c is the local
   # and remote main tip, and the workflow security invariants pass.
-  SYSTEM_INTEGRATION_REF: 28b24d9c314e2183c0b903352c25e34e532c4ca5
+  #
+  # 2026-08-16: bumped to the SI PR #120 main merge. The harness uses common
+  # finalized anchors and repairs active-set, epoch-boundary, port-reuse,
+  # lifecycle-tracker, and bridge-read behavior from the failed preflight.
+  # Verified that 22121713 is the immutable GitHub merge commit. The focused
+  # concurrency suite and workflow security invariants pass.
+  SYSTEM_INTEGRATION_REF: 22121713d8874ac84f94f4b3ddb30dda78fa7f88
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
