@@ -56,6 +56,18 @@ impl CandidateScan {
     where
         A: Clone,
     {
+        // A pool with at most one physical candidate cannot be pruned: the
+        // only sound outcomes are to test that candidate or find no available
+        // candidate. Avoid retained-path construction, a zipper descent, and
+        // the indexed position allocation/sort in this structural base case.
+        // This is not an empirical cardinality threshold; it follows directly
+        // from the candidate-set partition and remains valid if the sole
+        // catalog entry is temporarily unavailable.
+        if data.len() <= 1 {
+            return Self::All {
+                next_position: start,
+            };
+        }
         if !matcher.supports_rho_path_candidate_pruning() {
             return Self::All {
                 next_position: start,

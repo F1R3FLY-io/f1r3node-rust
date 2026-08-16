@@ -35,6 +35,7 @@ impl ColdStoreDecode for Pattern {
 struct CountingMatcher {
     pruning: bool,
     calls: Arc<AtomicUsize>,
+    path_queries: Arc<AtomicUsize>,
 }
 
 impl Match<Pattern, String, String> for CountingMatcher {
@@ -48,6 +49,7 @@ impl Match<Pattern, String, String> for CountingMatcher {
     }
 
     fn retained_pattern_path(&self, pattern: &Pattern) -> Option<Vec<u8>> {
+        self.path_queries.fetch_add(1, Ordering::Relaxed);
         match pattern {
             Pattern::Wildcard => None,
             Pattern::Exact(value) => Some(value.as_bytes().to_vec()),
@@ -55,6 +57,7 @@ impl Match<Pattern, String, String> for CountingMatcher {
     }
 
     fn retained_datum_path(&self, datum: &String) -> Option<Vec<u8>> {
+        self.path_queries.fetch_add(1, Ordering::Relaxed);
         Some(datum.as_bytes().to_vec())
     }
 
@@ -63,16 +66,18 @@ impl Match<Pattern, String, String> for CountingMatcher {
 
 type TestSpace = RSpace<String, Pattern, String, String>;
 
-async fn space(pruning: bool) -> (TestSpace, Arc<AtomicUsize>) {
+async fn space(pruning: bool) -> (TestSpace, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     let mut manager = InMemoryStoreManager::new();
     let stores = manager.r_space_stores().await.expect("in-memory stores");
     let calls = Arc::new(AtomicUsize::new(0));
+    let path_queries = Arc::new(AtomicUsize::new(0));
     let matcher = CountingMatcher {
         pruning,
         calls: Arc::clone(&calls),
+        path_queries: Arc::clone(&path_queries),
     };
     let space = RSpace::create(stores, Arc::new(Box::new(matcher))).expect("RSpace");
-    (space, calls)
+    (space, calls, path_queries)
 }
 
 fn last_canonical_value(channel: &str, values: &[String]) -> String {
@@ -126,12 +131,12 @@ async fn pathmap_prefix_prunes_before_decode_and_spatial_match() {
         .collect::<Vec<_>>();
     let target = last_canonical_value(channel, &values);
 
-    let (control, control_calls) = space(false).await;
+    let (control, control_calls, _) = space(false).await;
     populate(&control, channel, &values).await;
     control_calls.store(0, Ordering::Relaxed);
     assert_eq!(consume_exact(&control, channel, &target).await, target);
 
-    let (indexed, indexed_calls) = space(true).await;
+    let (indexed, indexed_calls, _) = space(true).await;
     populate(&indexed, channel, &values).await;
     indexed_calls.store(0, Ordering::Relaxed);
     assert_eq!(consume_exact(&indexed, channel, &target).await, target);
@@ -142,7 +147,7 @@ async fn pathmap_prefix_prunes_before_decode_and_spatial_match() {
 
 #[tokio::test]
 async fn fresh_zero_byte_path_survives_the_same_prefix_contract() {
-    let (space, calls) = space(true).await;
+    let (space, calls, _) = space(true).await;
     let channel = "fresh-path".to_string();
     let target = "fresh\0datum".to_string();
     assert!(
@@ -170,13 +175,31 @@ async fn fresh_zero_byte_path_survives_the_same_prefix_contract() {
 
 #[tokio::test]
 async fn prefix_false_positives_preserve_the_spatial_oracle() {
-    let (space, calls) = space(true).await;
+    let (space, calls, _) = space(true).await;
     let channel = "prefix-false-positive";
     let values = vec!["ab-suffix".to_string(), "ab".to_string()];
     populate(&space, channel, &values).await;
     calls.store(0, Ordering::Relaxed);
     assert_eq!(consume_exact(&space, channel, "ab").await, "ab");
     assert!((1..=2).contains(&calls.load(Ordering::Relaxed)));
+}
+
+#[tokio::test]
+async fn singleton_pool_uses_the_unprunable_direct_scan() {
+    let (space, calls, path_queries) = space(true).await;
+    let channel = "singleton-direct-scan";
+    let target = "only-candidate";
+    populate(&space, channel, &[target.to_string()]).await;
+    calls.store(0, Ordering::Relaxed);
+    path_queries.store(0, Ordering::Relaxed);
+
+    assert_eq!(consume_exact(&space, channel, target).await, target);
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        path_queries.load(Ordering::Relaxed),
+        0,
+        "a singleton pool cannot benefit from a retained-path query"
+    );
 }
 
 proptest! {
@@ -193,8 +216,8 @@ proptest! {
             .expect("Tokio runtime");
         runtime.block_on(async {
             let channel = "generated-differential";
-            let (control, _) = space(false).await;
-            let (indexed, _) = space(true).await;
+            let (control, _, _) = space(false).await;
+            let (indexed, _, _) = space(true).await;
             populate(&control, channel, &values).await;
             populate(&indexed, channel, &values).await;
 
