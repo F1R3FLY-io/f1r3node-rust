@@ -9,6 +9,27 @@ use prost::bytes::Bytes;
 /// Convenience alias matching `BlockAPI`'s error type.
 type ApiErr<T> = eyre::Result<T>;
 
+const MAX_DEPLOY_STATUS_SCAN_BLOCKS: usize = 4096;
+
+struct ScanBudget {
+    remaining: usize,
+}
+
+impl ScanBudget {
+    fn new(limit: usize) -> Self { Self { remaining: limit } }
+
+    fn consume(&mut self) -> ApiErr<()> {
+        if self.remaining == 0 {
+            return Err(eyre::eyre!(
+                "deploy_finalization_status: scan exceeded {} block reads",
+                MAX_DEPLOY_STATUS_SCAN_BLOCKS
+            ));
+        }
+        self.remaining -= 1;
+        Ok(())
+    }
+}
+
 /// Sentinel error for the deploy-index inconsistency case (a sig is
 /// indexed at a block whose body does not list it). Propagated as an
 /// `Err` so `repeat_deploy` falls back to its conservative-fail branch
@@ -241,6 +262,7 @@ fn bfs_finalized_window(
     block_store: &KeyValueBlockStore,
     deploy_lifespan: i64,
     per_sig: &mut HashMap<Bytes, ResolverState>,
+    scan_budget: &mut ScanBudget,
 ) -> ApiErr<HashSet<BlockHash>> {
     if per_sig.is_empty() {
         return Ok(HashSet::new());
@@ -286,6 +308,7 @@ fn bfs_finalized_window(
         if height < scan_floor {
             continue;
         }
+        scan_budget.consume()?;
         let candidate_block = match block_store.get(&candidate_hash) {
             Ok(Some(b)) => b,
             Ok(None) => {
@@ -386,6 +409,7 @@ fn scan_visible_unfinalized_rejections(
     deploy_lifespan: i64,
     finalized_window: &HashSet<BlockHash>,
     per_sig: &mut HashMap<Bytes, ResolverState>,
+    scan_budget: &mut ScanBudget,
 ) -> ApiErr<()> {
     if per_sig.is_empty() {
         return Ok(());
@@ -420,6 +444,7 @@ fn scan_visible_unfinalized_rejections(
         if height < scan_floor || finalized_window.contains(&candidate_hash) {
             continue;
         }
+        scan_budget.consume()?;
         let Some(candidate_block) = block_store.get(&candidate_hash)? else {
             continue;
         };
@@ -671,13 +696,21 @@ fn resolve_from_state(
 ) -> ApiErr<DeployFinalizationStatus> {
     let mut per_sig: HashMap<Bytes, ResolverState> = HashMap::new();
     per_sig.insert(state.sig_bytes.clone(), state);
-    let finalized_window = bfs_finalized_window(dag, block_store, deploy_lifespan, &mut per_sig)?;
+    let mut scan_budget = ScanBudget::new(MAX_DEPLOY_STATUS_SCAN_BLOCKS);
+    let finalized_window = bfs_finalized_window(
+        dag,
+        block_store,
+        deploy_lifespan,
+        &mut per_sig,
+        &mut scan_budget,
+    )?;
     scan_visible_unfinalized_rejections(
         dag,
         block_store,
         deploy_lifespan,
         &finalized_window,
         &mut per_sig,
+        &mut scan_budget,
     )?;
     let (_, state) = per_sig
         .into_iter()
@@ -718,6 +751,14 @@ mod tests {
         assert_eq!(s.state, DeployFinalizationState::Pending);
         assert_eq!(s.rejection_count, 0);
         assert!(s.latest_block_hash.is_none());
+    }
+
+    #[test]
+    fn scan_budget_rejects_work_past_limit() {
+        let mut budget = ScanBudget::new(2);
+        assert!(budget.consume().is_ok());
+        assert!(budget.consume().is_ok());
+        assert!(budget.consume().is_err());
     }
 
     #[test]
