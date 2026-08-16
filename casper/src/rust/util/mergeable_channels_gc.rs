@@ -30,7 +30,7 @@ pub async fn collect_garbage(
 
     // The deletion anchor, derived ONCE per pass: the floor of the last
     // finalized block. Deletion is irreversible and the data serves merges,
-    // whose base is the floor — see `is_safe_to_delete`.
+    // whose scope is bounded below by the floor — see `is_safe_to_delete`.
     let floor = floor_of_block(
         dag,
         block_store,
@@ -93,15 +93,15 @@ fn is_safe_to_delete(
     }
 
     // 2. Depth is measured from the FLOOR, not from the tip. The data being
-    //    deleted is what merges need to compute number-channel diffs, and a
-    //    merge reads it for the blocks above its BASE — which is the floor, not
-    //    the tip. The floor trails the tip by the time mutual citation takes
-    //    (~3 blocks healthy, >100 during the observed pacification stall), so a
-    //    tip-anchored bound put the whole span between the floor and
-    //    `tip - max_allowed_depth` inside the deletable set while floor-based
-    //    merges still needed it. Anchoring on the floor is strictly more
-    //    conservative: the floor never leads the tip, so this can only delete
-    //    less than before, never more.
+    //    deleted is what merges need to compute number-channel diffs, and the
+    //    floor is what bounds how deep a merge reaches: the base's own lineage
+    //    walk stops at it, and a base never sits below it. The floor trails the
+    //    tip by the time mutual citation takes (~3 blocks healthy, >100 during
+    //    the observed pacification stall), so a tip-anchored bound put the
+    //    whole span between the floor and `tip - max_allowed_depth` inside the
+    //    deletable set while merges still needed it. Anchoring on the floor is
+    //    strictly more conservative: the floor never leads the tip, so this can
+    //    only delete less than before, never more.
     let block_meta = dag.lookup_unsafe(block_hash)?;
     let depth_from_floor = floor.block_number - block_meta.block_number;
     let max_allowed_depth = (casper_shard_conf.max_parent_depth as i64)

@@ -196,9 +196,10 @@ message BodyProto {
   // and consensus-checked alongside rejectedDeploys.
   repeated bytes appliedFromScope                   = 6;
   // The block whose committed state this block's pre-state derives from:
-  // the floor block for merged blocks, the covering parent for the
-  // fast path, empty where the header derives it (single-parent and
-  // genesis). Recording it makes state-membership a walk over recorded
+  // for a merged block its main parent, or the floor block when that
+  // parent's state does not hold the floor's settled content; the covering
+  // parent for the fast path; empty where the header derives it
+  // (single-parent and genesis). Recording it makes state-membership a walk over recorded
   // pointers instead of a per-block re-derivation:
   // state(B) = state(mergeBase) + appliedFromScope + deploys.
   bytes mergeBase                                   = 7;

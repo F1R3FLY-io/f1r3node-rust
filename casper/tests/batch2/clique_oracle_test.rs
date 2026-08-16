@@ -1135,6 +1135,12 @@ async fn conflicting_same_height_siblings_cannot_both_certify() {
 /// freeze on. This pin documents the oracle-level fact; the cure is that
 /// honest fork choice must never mint the flip messages once a
 /// certificate is visible (spine follows certification at GHOST ties).
+///
+/// The live shard reached the score tie because GHOST credited a
+/// validator's weight to every DAG ancestor, so merged siblings tied
+/// permanently. Scoring follows the main-parent chain now and that
+/// standing tie is gone — but the oracle-level fact this stages does not
+/// depend on how the tie arose, so it remains the pin.
 #[tokio::test]
 async fn sound_certificates_form_on_both_fork_sides_across_time() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
@@ -1708,14 +1714,22 @@ fn stage_spine_state_divergence(
 /// floors (#536 on two validators, #537 on two, #539 on one) and every propose
 /// was refused thereafter.
 ///
-/// The geometry is staged DIRECTLY here because a merge can no longer build
-/// it: `conflict_resolution_never_rejects_main_parent_content`
-/// (dag_merger.rs) pins the main parent's chains against rejection, and a
-/// block whose rejection set disagrees with the validator's recomputation is
-/// `invalid_rejected_deploy`. So this is a standing pin on the ORACLE's
-/// precondition, not a live defect — if the merge rule is ever weakened, the
-/// oracle silently goes back to certifying blocks nothing holds, and the
-/// failure resurfaces here rather than on a wedged shard.
+/// The geometry is staged DIRECTLY here because the ordinary merge path can
+/// no longer build it: a merge bases on its main parent, so that parent's
+/// content is in the base rather than in the conflict set, and there is no
+/// rejection decision to make about it. (It is NOT pinning that holds this —
+/// `pinned` is empty in production and the option filter it feeds is dead
+/// code.) So this is a standing pin on the ORACLE's precondition, not a live
+/// defect: if the base rule is ever weakened, the oracle silently goes back to
+/// certifying blocks nothing holds, and the failure resurfaces here rather
+/// than on a wedged shard.
+///
+/// The precondition is CONDITIONAL, not structural. When the main parent's
+/// state does not hold the floor's settled content the base falls back to the
+/// floor, which puts the parent's content back in scope where cost-optimal
+/// resolution can drop it — this geometry's shape. Whether that path can
+/// actually produce it is open; it requires finality lag, which no suite here
+/// generates.
 #[tokio::test]
 async fn spine_agreement_is_sound_only_because_merges_keep_main_parent_content() {
     with_storage(|mut block_store, mut block_dag_storage| async move {

@@ -19,19 +19,18 @@
 //! The stall is now prevented at its SOURCE rather than repaired
 //! downstream. Step two above is what starts it, and it is the same move
 //! that froze `bc35a3ad`: a merge adjudicating away content carried by its
-//! own MAIN PARENT. Conflict resolution pins the main parent's chains
-//! (`conflict_resolution_never_rejects_main_parent_content`), so the
-//! stale-based merge keeps the settling block's effect and no descendant
-//! ever inherits a state its own spine ancestor contradicts.
+//! own MAIN PARENT. A merge bases on its main parent, so that parent's
+//! content is in the base and is not something the merge decides about —
+//! the stale-based merge keeps the settling block's effect and no
+//! descendant ever inherits a state its own spine ancestor contradicts.
 //!
 //! This spec therefore now asserts the closure end-to-end through the real
 //! pipeline: the merge keeps the content, every extension of it carries
-//! the floor-settled effect, and the floor advances. The single-parent
-//! re-base onto the floor stays implemented as the general repair for a
-//! floor that a parent's lineage genuinely never held — it is simply no
-//! longer reachable by this route, so the assertions below pin the
-//! invariant (the effect is present) rather than the repair (a recorded
-//! `merge_base`).
+//! the floor-settled effect, and the floor advances. Falling back to the
+//! floor stays implemented as the general repair for a floor that a
+//! parent's lineage genuinely never held — it is simply not reachable by
+//! this route, so the assertions below pin the invariant (the effect is
+//! present) rather than the repair (a recorded `merge_base`).
 
 use std::collections::HashMap;
 

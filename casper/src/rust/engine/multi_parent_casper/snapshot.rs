@@ -38,13 +38,17 @@ const DEPLOY_SIG_BYTES_ESTIMATE: f64 = 65.0;
 
 /// Among tips whose LMD-GHOST score TIES the head's, the spine FOLLOWS
 /// CERTIFICATION: prefer the tip whose spine carries the highest
-/// witnessed frontier. Once every latest message has merged a sibling
-/// race, GHOST scores saturate equal on both branches permanently
-/// (scoring counts DAG descent), and any input-sensitive tie-break is
-/// free to flip the spine BETWEEN two sound certificates — each side
-/// certifies at a different instant with full mutual knowledge and zero
-/// faults, and the finalized read surface forks (the ucc ca7197d8
-/// freeze). A certificate is exactly what makes a branch's frontier
+/// witnessed frontier. An input-sensitive tie-break is free to flip the
+/// spine BETWEEN two sound certificates — each side certifies at a
+/// different instant with full mutual knowledge and zero faults, and the
+/// finalized read surface forks (the ucc ca7197d8 freeze).
+///
+/// The tie this guards is now a genuine one — equal support on both
+/// branches — rather than the permanent saturation that used to follow
+/// from scoring every DAG ancestor. Scoring walks the main-parent chain,
+/// so merged same-height siblings are mutually exclusive and a validator's
+/// weight reaches only one of them; ties are no longer the standing state
+/// of every merged race. A certificate is exactly what makes a branch's frontier
 /// rise; frontiers are monotone per branch and a pure function of the
 /// view, so following the highest frontier is convergent across nodes
 /// and stable across time: any two certifying cliques intersect, and the

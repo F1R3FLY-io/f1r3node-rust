@@ -132,6 +132,10 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     // block's state fail to contain its own spine ancestor's, which is exactly
     // how a finalized candidate ends up with no live state holding it. Empty
     // means "nothing pinned" and the selection is unconstrained.
+    //
+    // Both production call sites pass empty — the merge bases on the main
+    // parent, so its chains never enter the conflict set to begin with. This
+    // is exercised only by unit tests.
     pinned: &HashSet<R>,
 ) -> Result<ResolvedConflicts<R>, HistoryError> {
     tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.ENTER",
@@ -277,6 +281,15 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     // unconstrained selection (see below). Guaranteeing the invariant instead
     // would mean refusing to build the block, and a certain propose wedge is
     // the worse failure of the two.
+    //
+    // UNREACHABLE in production, including its error path: `pinned` is empty
+    // on both production call sites because the merge now bases on the main
+    // parent, which puts its chains in the base instead of the conflict set.
+    // A zero count of the `merge.incoherence` line THIS block emits is
+    // therefore vacuous. (The same target also carries `explain_merge_failure`,
+    // which IS live — read the message, not just the target.) The block is
+    // retained pending the decision to remove it; the tests below are its only
+    // remaining exercise.
     let rejection_options_with_overflow = if pinned.is_empty() {
         rejection_options_with_overflow
     } else {
@@ -757,7 +770,8 @@ pub fn merge<
         // This wrapper has no main parent to speak of — it merges a bare chain
         // set with no block context — so nothing is pinned. The node's merge
         // path (`dag_merger::merge`) calls `resolve_conflicts` directly and
-        // supplies the real set.
+        // passes an empty set too, for its own reason: its base IS the main
+        // parent, so that parent's chains are never candidates for rejection.
         &HashSet::new(),
     )?;
     let new_state = compute_merged_state(

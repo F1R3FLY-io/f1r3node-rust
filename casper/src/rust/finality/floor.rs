@@ -435,15 +435,15 @@ async fn derive_floor(
     let main_parent_frontier = frontiers[0].clone();
     candidates.extend(frontiers);
 
-    // The floor is the merge base the block being created re-bases every parent
-    // onto — AND the position settled truth advances to — so a candidate is
-    // sound only when choosing it cannot regress settled state. What
-    // monotonicity protects is the INHERITED floors: positions some parent's
-    // chain actually held. Frontier candidates are merely witnessed
-    // (orphan-safe) blocks — a witnessed carrier whose chain lost a merge is
-    // adjudicated by the record and re-landed by recovery, not owed
-    // containment — so soundness quantifies over the inherited floors only.
-    // Candidates are considered from the top down; `cand` is sound when
+    // The floor is the position settled truth advances to — and the base of
+    // last resort when the block's main parent does not hold that truth — so
+    // a candidate is sound only when choosing it cannot regress settled
+    // state. What monotonicity protects is the INHERITED floors: positions
+    // some parent's chain actually held. Frontier candidates are merely
+    // witnessed (orphan-safe) blocks — a witnessed carrier whose chain lost
+    // a merge is adjudicated by the record and re-landed by recovery, not
+    // owed containment — so soundness quantifies over the inherited floors
+    // only. Candidates are considered from the top down; `cand` is sound when
     // every inherited floor `x` satisfies one of:
     //
     //   A. `cand`'s state CONTAINS `x`'s settled effects (`state_contains`):
@@ -455,14 +455,24 @@ async fn derive_floor(
     //      positive facts cannot be absent without the block being invalid.
     //
     //   B. `x` re-enters THIS merge as diffs: `x` is NOT in `cand`'s DAG
-    //      past, so the scope filter provably retains its chains and the
-    //      merge over base `cand` re-collects them — sound only for a PURE
-    //      CUT (`cand` introduces no sigs of its own above its meet with
-    //      `x`; a competing branch's own content must never become the
-    //      settled position). Covers the co-finalized-sibling descend
-    //      (test_trim_state / run 28135973777); the merge-time
-    //      settled-rejection tripwire guards this arm: a re-collected
-    //      settled chain must land, never be keep-one'd out.
+    //      past — sound only for a PURE CUT (`cand` introduces no sigs of
+    //      its own above its meet with `x`; a competing branch's own
+    //      content must never become the settled position). Covers the
+    //      co-finalized-sibling descend (test_trim_state / run
+    //      28135973777); the merge-time settled-rejection tripwire guards
+    //      this arm: a re-collected settled chain must land, never be
+    //      keep-one'd out.
+    //
+    //      CAVEAT: the re-collection this arm relies on was derived when
+    //      the merge based on the FLOOR, where "not in `cand`'s DAG past"
+    //      did imply "retained by the scope filter". The merge now bases on
+    //      its main parent and the filter is relative to THAT base, so the
+    //      implication no longer follows — an `x` that is a DAG ancestor of
+    //      `parents[0]` whose chains that parent's merge rejected is in
+    //      neither the base nor the scope. Whether the arm admits such a
+    //      candidate is open; `base_holds_floor` checks containment against
+    //      the floor, not against each inherited `x`, so it would not catch
+    //      it. Not observed; not disproven.
     //
     // The highest candidate satisfying neither is skipped; if NO candidate is
     // sound (no finalized cut common to all parents), that is a genuinely
@@ -485,10 +495,11 @@ async fn derive_floor(
             let sound_with_other = if state_contains(dag, block_store, cand, other, &mut memo)? {
                 true
             } else if !dag.is_dag_ancestor(&other.hash, &cand.hash)? {
-                // `other` is NOT in `cand`'s DAG past, so the scope filter
-                // provably retains its chains: the merge based on `cand`
-                // re-collects them, and the merge-time settled-rejection
-                // tripwire guards the re-application. Sound ONLY when
+                // `other` is NOT in `cand`'s DAG past, so its chains are
+                // expected back as this merge's diffs, with the merge-time
+                // settled-rejection tripwire guarding the re-application.
+                // (That expectation is weaker than it reads since the base
+                // became the main parent — see the CAVEAT above.) Sound ONLY when
                 // `cand` is a pure cut — it introduces no sigs of its own
                 // relative to its meet with `other`. A competing branch
                 // with content of its own must never become the settled
