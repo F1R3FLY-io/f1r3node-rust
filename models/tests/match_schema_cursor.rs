@@ -31,10 +31,20 @@ fn record(
 
 #[test]
 fn generated_program_registry_covers_the_descriptor_closure() {
+    let mut type_ids = BTreeSet::new();
     let registry = RHO_MATCH_REGISTRY
         .iter()
         .map(|(name, program)| {
             assert_eq!(*name, program.type_name);
+            assert_ne!(
+                program.type_id, 0,
+                "{name}: type identifier zero is reserved"
+            );
+            assert!(
+                type_ids.insert(program.type_id),
+                "{name}: duplicate type identifier {}",
+                program.type_id
+            );
             let mut previous = 0;
             let mut names = BTreeSet::new();
             for field in program.fields {

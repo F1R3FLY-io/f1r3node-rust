@@ -233,6 +233,10 @@ name = "match_schema_cursor"
 path = "tests/match_schema_cursor.rs"
 
 [[test]]
+name = "match_path_structure"
+path = "tests/match_path_structure.rs"
+
+[[test]]
 name = "serializer_par_byte_goldens"
 path = "tests/serializer_par_byte_goldens.rs"
 

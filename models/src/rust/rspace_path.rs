@@ -1,7 +1,8 @@
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
-use rspace_plus_plus::rspace::rho_path::{encode_structural_sequence, RhoPathEncode};
+use rspace_plus_plus::rspace::rho_path::{RhoPathEncode, StructuralSequenceEncoder};
 
 use super::canonical_path::encode_trie_path;
+use super::rholang::match_path::encode_par_match_path;
 use crate::rhoapi::{ListParWithRandom, Par};
 
 impl RhoPathEncode for Par {
@@ -12,8 +13,11 @@ impl RhoPathEncode for Par {
 
 impl RhoPathEncode for ListParWithRandom {
     fn rho_path_structure(&self) -> Vec<u8> {
-        let paths = self.pars.iter().map(encode_trie_path).collect::<Vec<_>>();
-        encode_structural_sequence(paths.iter().map(Vec::as_slice))
+        let mut output = StructuralSequenceEncoder::with_capacity(self.pars.len());
+        for par in &self.pars {
+            output.push(&encode_par_match_path(par));
+        }
+        output.finish()
     }
 
     fn rho_path_identity(&self) -> Vec<u8> { self.stable_hash_bytes() }

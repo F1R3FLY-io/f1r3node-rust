@@ -1,12 +1,12 @@
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance::{FreeVar, Wildcard};
-use models::rust::canonical_path::encode_trie_path;
 use models::rust::rholang::implicits::vector_par;
+use models::rust::rholang::match_path::encode_par_match_path;
 use models::rust::utils::{new_elist_expr, to_vec};
 use rho_pure_eval::{Env as PureEnv, EvalError, SpatialMatch};
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::rho_path::{
-    encode_structural_sequence, RhoPathCaptureId, RhoPathEncode, RhoPathQuery, RhoPathQueryAtom,
+    RhoPathCaptureId, RhoPathEncode, RhoPathQuery, RhoPathQueryAtom, StructuralSequenceEncoder,
 };
 
 use super::exports::*;
@@ -77,12 +77,11 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
         {
             return None;
         }
-        let paths = pattern
-            .patterns
-            .iter()
-            .map(encode_trie_path)
-            .collect::<Vec<_>>();
-        Some(encode_structural_sequence(paths.iter().map(Vec::as_slice)))
+        let mut output = StructuralSequenceEncoder::with_capacity(pattern.patterns.len());
+        for par in &pattern.patterns {
+            output.push(&encode_par_match_path(par));
+        }
+        Some(output.finish())
     }
 
     fn retained_datum_path(&self, datum: &ListParWithRandom) -> Option<Vec<u8>> {
@@ -158,7 +157,7 @@ fn rho_path_query_atom(pattern: &Par) -> Option<RhoPathQueryAtom> {
         }
     }
     (!pattern.connective_used && pattern.locally_free.is_empty())
-        .then(|| RhoPathQueryAtom::Exact(encode_trie_path(pattern)))
+        .then(|| RhoPathQueryAtom::Exact(encode_par_match_path(pattern)))
 }
 
 fn is_empty_par(par: &Par) -> bool { par == &Par::default() }

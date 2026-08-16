@@ -8587,7 +8587,9 @@ fn emit_match_schema_source(
         .map(|(index, fields)| (messages[*index].leaf_name(), fields.as_slice()))
         .collect();
 
-    for message in messages {
+    for (message_index, message) in messages.iter().enumerate() {
+        let type_id = u16::try_from(message_index + 1)
+            .expect("schema: too many messages for matching type identifiers");
         let leaf = message.leaf_name();
         let fields_ident = format!(
             "{}_RHO_MATCH_FIELDS",
@@ -8611,6 +8613,7 @@ fn emit_match_schema_source(
                  \x20   RhoMatchField {{ tag: 9, name: \"entries\", kind: RhoMatchFieldKind::PathMap }},\n\
                  ];\n\
                  pub static {program_ident}: RhoMatchProgram = RhoMatchProgram {{\n\
+                 \x20   type_id: {type_id},\n\
                  \x20   type_name: \"EPathMap\",\n\
                  \x20   fields: {fields_ident},\n\
                  }};\n"
@@ -8637,6 +8640,7 @@ fn emit_match_schema_source(
             src,
             "];\n\
              pub static {program_ident}: RhoMatchProgram = RhoMatchProgram {{\n\
+             \x20   type_id: {type_id},\n\
              \x20   type_name: \"{}\",\n\
              \x20   fields: {fields_ident},\n\
              }};\n",

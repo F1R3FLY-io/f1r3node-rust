@@ -2,6 +2,7 @@ pub mod drive;
 pub mod grpc_client;
 pub mod implicits;
 pub mod match_schema;
+pub mod match_path;
 pub mod par_children;
 pub mod pooled_stack;
 pub mod bincode_decoder;

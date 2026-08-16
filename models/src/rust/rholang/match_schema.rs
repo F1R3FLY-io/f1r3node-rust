@@ -31,6 +31,7 @@ pub struct RhoMatchField {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RhoMatchProgram {
+    pub type_id: u16,
     pub type_name: &'static str,
     pub fields: &'static [RhoMatchField],
 }

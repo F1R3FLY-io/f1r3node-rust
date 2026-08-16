@@ -354,12 +354,36 @@ fn parse_channel(path: &[u8]) -> Result<(ChannelPathView<'_>, usize), RhoPathErr
 pub fn encode_structural_sequence<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> Vec<u8> {
     let parts = parts.into_iter();
     let (lower, _) = parts.size_hint();
-    let mut output = Vec::with_capacity(1 + lower * 2);
-    output.push(1);
+    let mut output = StructuralSequenceEncoder::with_capacity(lower);
     for part in parts {
-        append_frame(&mut output, part);
+        output.push(part);
     }
-    output
+    output.finish()
+}
+
+/// Incremental structural-sequence framing for callers that produce one
+/// encoded term at a time. This avoids retaining a `Vec<Vec<u8>>` merely to
+/// borrow every completed element for [`encode_structural_sequence`].
+pub struct StructuralSequenceEncoder {
+    output: Vec<u8>,
+}
+
+impl StructuralSequenceEncoder {
+    pub fn new() -> Self { Self::with_capacity(0) }
+
+    pub fn with_capacity(part_count: usize) -> Self {
+        let mut output = Vec::with_capacity(1 + part_count.saturating_mul(2));
+        output.push(1);
+        Self { output }
+    }
+
+    pub fn push(&mut self, part: &[u8]) { append_frame(&mut self.output, part); }
+
+    pub fn finish(self) -> Vec<u8> { self.output }
+}
+
+impl Default for StructuralSequenceEncoder {
+    fn default() -> Self { Self::new() }
 }
 
 fn append_frame(output: &mut Vec<u8>, bytes: &[u8]) {
