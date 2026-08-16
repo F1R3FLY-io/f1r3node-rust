@@ -505,7 +505,8 @@ fn production_list_pda_relational_counters_meet_preregistered_controls() {
         match_par_list_with_stats(&mut diagonal_context, integers(), diagonal_patterns);
     assert!(diagonal_verdict);
     assert!(diagonal_result.is_some());
-    assert_eq!(diagonal_stats.edge_evaluations, diagonal_control);
+    assert_eq!(diagonal_stats.edge_evaluations, WIDTH);
+    assert!(diagonal_stats.edge_evaluations < diagonal_control);
     assert_eq!(diagonal_stats.relation_row_reuses, 0);
     assert_eq!(diagonal_stats.cached_edge_visits, 0);
 
@@ -541,11 +542,12 @@ fn production_list_pda_relational_counters_meet_preregistered_controls() {
 
     let mut control_samples = Vec::with_capacity(SAMPLES);
     let mut treatment_samples = Vec::with_capacity(SAMPLES);
+    let indexed_chain_evaluations = WIDTH * WIDTH - (WIDTH - 1);
     for _ in 0..SAMPLES {
         let mut context = SpatialMatcherContext::new();
         let (result, stats) = match_par_list_with_stats(&mut context, integers(), chain_patterns());
         assert!(result.is_none());
-        assert_eq!(stats.edge_evaluations, WIDTH * WIDTH);
+        assert_eq!(stats.edge_evaluations, indexed_chain_evaluations);
         assert!(stats.relation_row_reuses > 0);
         assert!(stats.cached_edge_visits > 0);
         assert!(stats.successful_edge_evaluations <= 2 * WIDTH);
@@ -556,6 +558,54 @@ fn production_list_pda_relational_counters_meet_preregistered_controls() {
 
     println!(
         "D_E4_PRODUCTION_COUNTERS width={WIDTH} control={control_samples:?} treatment={treatment_samples:?} invariant={diagonal_control}"
+    );
+}
+
+#[test]
+fn production_list_pda_pathmap_index_prunes_ordered_nested_ac_elements() {
+    const WIDTH: usize = 128;
+    let targets = (0..WIDTH)
+        .map(|index| {
+            list(
+                vec![
+                    new_gint_par(index as i64, Vec::new(), false),
+                    new_gint_par((1_000 + index) as i64, Vec::new(), false),
+                ],
+                false,
+            )
+        })
+        .collect::<Vec<_>>();
+    let patterns = (0..WIDTH)
+        .rev()
+        .map(|index| {
+            list(
+                vec![
+                    new_gint_par(index as i64, Vec::new(), false),
+                    new_freevar_par(index as i32, Vec::new()),
+                ],
+                true,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let mut context = SpatialMatcherContext::new();
+    let (result, stats) =
+        match_par_list_with_stats(&mut context, targets.clone(), patterns.clone());
+    assert!(result.is_some());
+    assert_eq!(stats.edge_evaluations, WIDTH);
+    assert_eq!(stats.successful_edge_evaluations, WIDTH);
+    assert_eq!(context.free_map.len(), WIDTH);
+    for index in 0..WIDTH {
+        assert_eq!(
+            context.free_map.get(&(index as i32)),
+            Some(&new_gint_par((1_000 + index) as i64, Vec::new(), false))
+        );
+    }
+
+    compare(
+        "PathMap-pruned ordered elements preserve ESet AC semantics",
+        new_eset_par(targets, Vec::new(), false, None, Vec::new(), false),
+        new_eset_par(patterns, Vec::new(), true, None, Vec::new(), true),
     );
 }
 

@@ -138,7 +138,10 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
     }
 }
 
-fn rho_path_query_atom(pattern: &Par, captures: &mut PathMap<()>) -> Option<RhoPathQueryAtom> {
+pub(super) fn rho_path_query_atom(
+    pattern: &Par,
+    captures: &mut PathMap<()>,
+) -> Option<RhoPathQueryAtom> {
     if let Some(hole) = rho_match_hole(pattern) {
         if !record_linear_capture(captures, &hole) {
             return None;

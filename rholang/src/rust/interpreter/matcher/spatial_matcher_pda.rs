@@ -10,6 +10,7 @@
 #[cfg(test)]
 use std::cell::Cell;
 use std::cmp::Ordering;
+use std::num::NonZeroU64;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -20,7 +21,10 @@ use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rhoapi_ext::OwnedEPathMapEntry;
 use models::rust::rholang::implicits::{single_expr, vector_par};
+use models::rust::rholang::match_path::encode_par_match_path;
 use models::rust::utils::*;
+use pathmap::PathMap;
+use rspace_plus_plus::rspace::rho_path::{RhoPathQuery, StructuralSequenceEncoder};
 
 use super::exports::*;
 use super::has_locally_free::HasLocallyFree;
@@ -30,6 +34,7 @@ use super::lazy_relation::{EdgeResult, LazyRelation, RelationCursor};
 use super::list_match::aggregate_updates;
 use super::match_pars::match_pars;
 use super::par_count::ParCount;
+use super::r#match::rho_path_query_atom;
 use super::spatial_matcher::SpatialMatcherContext;
 use super::sub_pars::sub_pars;
 
@@ -1069,6 +1074,35 @@ enum MatchValue {
 }
 
 impl MatchValue {
+    fn rho_path_structure(&self) -> Option<Vec<u8>> {
+        let mut output = StructuralSequenceEncoder::with_capacity(match self {
+            Self::Par(_) => 1,
+            Self::ParPair(_) => 2,
+            _ => return None,
+        });
+        match self {
+            Self::Par(value) => output.push(&encode_par_match_path(value)),
+            Self::ParPair((key, value)) => {
+                output.push(&encode_par_match_path(key));
+                output.push(&encode_par_match_path(value));
+            }
+            _ => unreachable!("the supported variants were checked above"),
+        }
+        Some(output.finish())
+    }
+
+    fn rho_path_query(&self, captures: &mut PathMap<()>) -> Option<RhoPathQuery> {
+        let atoms = match self {
+            Self::Par(value) => vec![rho_path_query_atom(value, captures)?],
+            Self::ParPair((key, value)) => vec![
+                rho_path_query_atom(key, captures)?,
+                rho_path_query_atom(value, captures)?,
+            ],
+            _ => return None,
+        };
+        Some(RhoPathQuery::structural_sequence(atoms, false))
+    }
+
     fn connective_used(&self, _context: &SpatialMatcherContext) -> bool {
         match self {
             MatchValue::Par(value) => value.connective_used,
@@ -1278,6 +1312,97 @@ enum ListPattern {
     Remainder,
 }
 
+enum ListCandidateDomain {
+    All,
+    Indexed(Box<[u64]>),
+}
+
+impl ListCandidateDomain {
+    fn len(&self, target_count: usize) -> usize {
+        match self {
+            Self::All => target_count,
+            Self::Indexed(positions) => positions.len(),
+        }
+    }
+
+    fn target_at(&self, candidate_index: usize) -> usize {
+        match self {
+            Self::All => candidate_index,
+            Self::Indexed(positions) => usize::try_from(positions[candidate_index])
+                .expect("a list target position originated as usize"),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ListTargetId(NonZeroU64);
+
+struct ListTargetNode {
+    position: u64,
+    previous: Option<ListTargetId>,
+}
+
+/// Derived prefix-compressed target catalog for one unordered list match.
+///
+/// A fixed-width trie payload names the head of a flat linked arena. Multiple
+/// structurally identical or deliberately collision-equivalent values share
+/// one trie path without storing a reference-counted primitive or a vector in
+/// every node.
+/// Original target positions remain the ordering authority; query results are
+/// sorted by those positions before the existing augmenting-path PDA sees
+/// them.
+struct ListTargetIndex {
+    heads: PathMap<ListTargetId>,
+    nodes: Vec<ListTargetNode>,
+}
+
+impl ListTargetIndex {
+    fn from_targets(targets: &[MatchValue]) -> Option<Self> {
+        let mut heads = PathMap::new();
+        let mut nodes = Vec::with_capacity(targets.len());
+        for (position, target) in targets.iter().enumerate() {
+            let structure = target.rho_path_structure()?;
+            let previous = heads.get(&structure).copied();
+            let raw_id = u64::try_from(nodes.len()).ok()?.checked_add(1)?;
+            let id = ListTargetId(NonZeroU64::new(raw_id)?);
+            nodes.push(ListTargetNode {
+                position: u64::try_from(position).ok()?,
+                previous,
+            });
+            heads.insert(structure, id);
+        }
+        Some(Self { heads, nodes })
+    }
+
+    fn positions_matching(&self, query: &RhoPathQuery) -> Option<Box<[u64]>> {
+        let prefix = query.retained_prefix();
+        if prefix.len() <= 1 {
+            return None;
+        }
+        let mut result = Vec::new();
+        let mut structure = Vec::new();
+        for (relative, head) in self.heads.read_zipper_at_borrowed_path(&prefix) {
+            structure.clear();
+            structure.reserve(prefix.len() + relative.len());
+            structure.extend_from_slice(&prefix);
+            structure.extend_from_slice(&relative);
+            if !query.matches_structure(&structure) {
+                continue;
+            }
+            let mut next = Some(*head);
+            while let Some(id) = next {
+                let node_index = usize::try_from(id.0.get() - 1)
+                    .expect("a ListTargetId was created from an addressable Vec index");
+                let node = &self.nodes[node_index];
+                result.push(node.position);
+                next = node.previous;
+            }
+        }
+        result.sort_unstable();
+        Some(result.into_boxed_slice())
+    }
+}
+
 struct ListAssignment {
     pattern_index: usize,
     free_map: EdgeResult<FreeMap>,
@@ -1285,7 +1410,7 @@ struct ListAssignment {
 
 struct ListSearchFrame {
     pattern_index: usize,
-    next_target: usize,
+    next_candidate: usize,
     relation_cursor: RelationCursor,
     pending: Option<(usize, EdgeResult<FreeMap>)>,
 }
@@ -1293,6 +1418,7 @@ struct ListSearchFrame {
 struct ListMachine {
     targets: Arc<[MatchValue]>,
     patterns: Arc<[ListPattern]>,
+    candidate_domains: Box<[ListCandidateDomain]>,
     assignments: Vec<Option<ListAssignment>>,
     root_pattern: usize,
     seen_targets: Vec<bool>,
@@ -1366,6 +1492,23 @@ fn init_list(
         patterns.extend((0..remainder_count).map(|_| ListPattern::Remainder));
     }
     patterns.extend(request.patterns.into_iter().map(ListPattern::Term));
+    let target_index = ListTargetIndex::from_targets(&request.targets);
+    let mut captures = PathMap::new();
+    let candidate_domains = patterns
+        .iter()
+        .map(|pattern| {
+            let ListPattern::Term(pattern) = pattern else {
+                return ListCandidateDomain::All;
+            };
+            let Some(query) = pattern.rho_path_query(&mut captures) else {
+                return ListCandidateDomain::All;
+            };
+            target_index
+                .as_ref()
+                .and_then(|index| index.positions_matching(&query))
+                .map_or(ListCandidateDomain::All, ListCandidateDomain::Indexed)
+        })
+        .collect::<Box<[_]>>();
     let relation = LazyRelation::new(
         patterns
             .iter()
@@ -1376,6 +1519,7 @@ fn init_list(
         targets: request.targets.into(),
         assignments: (0..target_len).map(|_| None).collect(),
         patterns: patterns.into(),
+        candidate_domains,
         root_pattern: 0,
         seen_targets: vec![false; target_len],
         search: Vec::new(),
@@ -1402,7 +1546,7 @@ impl ListMachine {
         });
         self.search.push(ListSearchFrame {
             pattern_index,
-            next_target: 0,
+            next_candidate: 0,
             relation_cursor: self.relation.cursor(pattern_index),
             pending: None,
         });
@@ -1493,9 +1637,10 @@ fn step_list(
                 }
             }
 
-            let Some(target_index) = machine
+            let candidate_domain = &machine.candidate_domains[pattern_index];
+            let Some(candidate_index) = machine
                 .relation
-                .next_unscanned(pattern_index, machine.targets.len())
+                .next_unscanned(pattern_index, candidate_domain.len(machine.targets.len()))
             else {
                 machine.search.pop();
                 if let Some(parent) = machine.search.last_mut() {
@@ -1504,13 +1649,14 @@ fn step_list(
                 }
                 return Job::Return(false);
             };
-            target_index
+            candidate_domain.target_at(candidate_index)
         } else {
             let frame = machine
                 .search
                 .last_mut()
                 .expect("the non-cacheable list row has a search frame");
-            if frame.next_target == machine.targets.len() {
+            let candidate_domain = &machine.candidate_domains[pattern_index];
+            if frame.next_candidate == candidate_domain.len(machine.targets.len()) {
                 machine.search.pop();
                 if let Some(parent) = machine.search.last_mut() {
                     parent.pending = None;
@@ -1518,8 +1664,8 @@ fn step_list(
                 }
                 return Job::Return(false);
             }
-            let target_index = frame.next_target;
-            frame.next_target += 1;
+            let target_index = candidate_domain.target_at(frame.next_candidate);
+            frame.next_candidate += 1;
             if machine.seen_targets[target_index] {
                 continue;
             }

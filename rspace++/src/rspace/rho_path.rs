@@ -338,7 +338,7 @@ impl RhoPathQuery {
     /// The returned bytes are in the unframed datum-structure representation
     /// consumed by [`Self::matches_structure`]. A nested match contributes its
     /// exact RMP1 prefix without closing the surrounding structural frame.
-    pub(crate) fn retained_prefix(&self) -> Vec<u8> {
+    pub fn retained_prefix(&self) -> Vec<u8> {
         let mut prefix = vec![1];
         for atom in &self.atoms {
             match atom {
