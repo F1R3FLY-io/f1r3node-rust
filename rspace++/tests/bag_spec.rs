@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
+use multiset::HashMultiSet;
 use pathmap::PathMap;
 use pathmap::arena_compact::ArenaCompactTree;
 use pathmap::ring::{AlgebraicResult, DistributiveLattice, Lattice, SELF_IDENT};
@@ -230,8 +231,10 @@ fn clone_is_copy_on_write_and_merkleization_preserves_semantics() {
     fork.insert(b"shared/new").unwrap();
     assert_eq!(original.count(b"shared/new"), 0);
     let before = fork.clone();
+    let compact_before = fork.compact_bytes();
     fork.merkleize();
     assert_eq!(fork, before);
+    assert_eq!(fork.compact_bytes(), compact_before);
 }
 
 #[test]
@@ -347,6 +350,30 @@ fn compact_byte_image_round_trip_is_stack_safe_for_a_deep_compressed_key() {
         .unwrap();
 }
 
+#[test]
+fn compact_byte_image_round_trip_is_stack_safe_for_a_wide_shared_prefix() {
+    std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(|| {
+            let mut value = Bag::new();
+            for ordinal in 0..20_000u32 {
+                let mut path = b"shared/wide/".to_vec();
+                path.extend_from_slice(&ordinal.to_be_bytes());
+                value
+                    .insert_many(&path, Multiplicity::new(u64::from(ordinal % 17 + 1)).unwrap())
+                    .unwrap();
+            }
+            let image = value.compact_bytes();
+            let decoded = Bag::from_compact_bytes(&image).unwrap();
+            assert_eq!(decoded, value);
+            assert_eq!(decoded.distinct_len(), 20_000);
+            assert_eq!(decoded.compact_bytes(), image);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
 fn oracle(entries: &[(Vec<u8>, u8)]) -> BTreeMap<Vec<u8>, u64> {
     let mut result = BTreeMap::new();
     for (path, count) in entries {
@@ -369,16 +396,93 @@ fn entry_strategy() -> impl Strategy<Value = Vec<(Vec<u8>, u8)>> {
     vec((vec(any::<u8>(), 0..8), 1u8..=16), 0..40)
 }
 
+#[derive(Clone, Debug)]
+enum BagOperation {
+    Insert(Vec<u8>, u8),
+    Remove(Vec<u8>, u8),
+    RemovePrefix(Vec<u8>),
+}
+
+fn operation_strategy() -> impl Strategy<Value = BagOperation> {
+    prop_oneof![
+        5 => (vec(any::<u8>(), 0..8), 1u8..=16)
+            .prop_map(|(path, amount)| BagOperation::Insert(path, amount)),
+        4 => (vec(any::<u8>(), 0..8), 1u8..=16)
+            .prop_map(|(path, amount)| BagOperation::Remove(path, amount)),
+        1 => vec(any::<u8>(), 0..5).prop_map(BagOperation::RemovePrefix),
+    ]
+}
+
+fn hash_multiset_snapshot(oracle: &HashMultiSet<Vec<u8>>) -> BTreeMap<Vec<u8>, u64> {
+    oracle
+        .distinct_elements()
+        .map(|path| (path.clone(), oracle.count_of(path) as u64))
+        .collect()
+}
+
 proptest! {
+    #[test]
+    fn bag_mutations_match_the_legacy_hash_multiset_oracle(
+        operations in vec(operation_strategy(), 0..160),
+    ) {
+        let mut value = Bag::new();
+        let mut legacy = HashMultiSet::new();
+
+        for operation in operations {
+            match operation {
+                BagOperation::Insert(path, amount) => {
+                    value
+                        .insert_many(&path, Multiplicity::new(u64::from(amount)).unwrap())
+                        .unwrap();
+                    legacy.insert_times(path, usize::from(amount));
+                }
+                BagOperation::Remove(path, amount) => {
+                    let removed = legacy.remove_times(&path, usize::from(amount));
+                    value.remove_many(&path, Multiplicity::new(u64::from(amount)).unwrap());
+                    prop_assert_eq!(value.count(&path), legacy.count_of(&path) as u64);
+                    prop_assert!(removed <= usize::from(amount));
+                }
+                BagOperation::RemovePrefix(prefix) => {
+                    let keys = legacy
+                        .distinct_elements()
+                        .filter(|path| path.starts_with(&prefix))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let expected_distinct = keys.len();
+                    let expected_cardinality = keys
+                        .iter()
+                        .map(|path| legacy.count_of(path))
+                        .sum::<usize>();
+                    for path in keys {
+                        let count = legacy.count_of(&path);
+                        legacy.remove_times(&path, count);
+                    }
+                    prop_assert_eq!(
+                        value.remove_prefix(&prefix),
+                        (expected_distinct, expected_cardinality as u128),
+                    );
+                }
+            }
+
+            let snapshot = hash_multiset_snapshot(&legacy);
+            let expected = from_oracle(&snapshot);
+            prop_assert_eq!(&value, &expected);
+            prop_assert_eq!(value.distinct_len(), snapshot.len());
+            prop_assert_eq!(value.cardinality(), legacy.len() as u128);
+        }
+    }
+
     #[test]
     fn bag_algebra_matches_a_btreemap_multiplicity_oracle(
         left_entries in entry_strategy(),
         right_entries in entry_strategy(),
+        third_entries in entry_strategy(),
     ) {
         let left_oracle = oracle(&left_entries);
         let right_oracle = oracle(&right_entries);
         let left = from_oracle(&left_oracle);
         let right = from_oracle(&right_oracle);
+        let third = from_oracle(&oracle(&third_entries));
 
         let keys = left_oracle
             .keys()
@@ -439,6 +543,42 @@ proptest! {
         );
         let compact = left.compact_bytes();
         prop_assert_eq!(Bag::from_compact_bytes(&compact).unwrap(), left.clone());
-        prop_assert_eq!(bincode::deserialize::<Bag>(&bincode::serialize(&left).unwrap()).unwrap(), left);
+        let bincode_round_trip =
+            bincode::deserialize::<Bag>(&bincode::serialize(&left).unwrap()).unwrap();
+        prop_assert_eq!(&bincode_round_trip, &left);
+
+        prop_assert_eq!(left.join(&right), right.join(&left));
+        prop_assert_eq!(left.meet(&right), right.meet(&left));
+        prop_assert_eq!(left.join(&left), left.clone());
+        prop_assert_eq!(left.meet(&left), left.clone());
+        prop_assert_eq!(left.join(&right).join(&third), left.join(&right.join(&third)));
+        prop_assert_eq!(left.meet(&right).meet(&third), left.meet(&right.meet(&third)));
+        prop_assert_eq!(left.join(&left.meet(&right)), left.clone());
+        prop_assert_eq!(left.meet(&left.join(&right)), left.clone());
+        prop_assert_eq!(
+            left.meet(&right.join(&third)),
+            left.meet(&right).join(&left.meet(&third)),
+        );
+        prop_assert_eq!(
+            left.join(&right.meet(&third)),
+            left.join(&right).meet(&left.join(&third)),
+        );
+        prop_assert_eq!(
+            left.subtract(&right).sum(&left.meet(&right)).unwrap(),
+            left.clone(),
+        );
+
+        let mut delta = BagDelta::new();
+        for (path, amount) in left.subtract(&right).iter() {
+            delta.record_removal(&path, amount).unwrap();
+        }
+        for (path, amount) in right.subtract(&left).iter() {
+            delta.record_addition(&path, amount).unwrap();
+        }
+        let mut transformed = left.clone();
+        delta.apply_to(&mut transformed).unwrap();
+        prop_assert_eq!(&transformed, &right);
+        delta.revert_from(&mut transformed).unwrap();
+        prop_assert_eq!(transformed, left);
     }
 }
