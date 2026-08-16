@@ -1,6 +1,8 @@
 //! Validated, stack-safe navigation of `RMP1` structural matching paths.
 
+use std::cmp::Ordering;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 
 use super::match_path::{
     ABSENT, BOOL, BYTES, BYTES_SEQUENCE, FIELD_END, FIELD_START, I32, I64, MAP_END, MAP_KEY,
@@ -186,6 +188,7 @@ pub struct SpannedRhoMatchPathToken<'a> {
     pub token: RhoMatchPathToken<'a>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EncodedRhoMatchPathCursor<'a> {
     input: &'a [u8],
     offset: usize,
@@ -418,6 +421,26 @@ impl<'a> ValidatedRhoMatchPath<'a> {
 
     pub const fn root_program(self) -> &'static RhoMatchProgram { self.root_program }
 
+    /// Re-emit the canonical bytes represented by this validated token stream.
+    ///
+    /// `RMP1` is intentionally a structural search image rather than a second
+    /// `Par` serialization: an `EPathMap` token carries a key-topology digest,
+    /// so reconstructing the original term would be lossy by design. This is
+    /// therefore the codec's lossless round trip. It decodes every token and
+    /// re-encodes its typed value with fixed-width integers, without allocating
+    /// a recursive rhoapi object graph.
+    pub fn to_canonical_bytes(self) -> Vec<u8> {
+        let mut output = Vec::with_capacity(self.bytes.len());
+        output.extend_from_slice(&RHO_MATCH_PATH_VERSION);
+        let cursor = EncodedRhoMatchPathCursor::new(self.bytes)
+            .expect("validated RMP1 bytes retain their version");
+        for token in cursor {
+            let token = token.expect("validated RMP1 bytes retain their token grammar");
+            append_canonical_token(&mut output, token.token);
+        }
+        output
+    }
+
     /// Return the encoded extent of a value beginning at a token boundary.
     pub fn value(self, start: usize) -> Result<&'a [u8], RhoMatchPathError> {
         let mut boundary_cursor = EncodedRhoMatchPathCursor::new(self.bytes)?;
@@ -442,6 +465,112 @@ impl<'a> ValidatedRhoMatchPath<'a> {
         let end = value_end(self.bytes, first)?;
         Ok(&self.bytes[start..end])
     }
+}
+
+impl PartialEq for ValidatedRhoMatchPath<'_> {
+    fn eq(&self, other: &Self) -> bool { self.bytes == other.bytes }
+}
+
+impl Eq for ValidatedRhoMatchPath<'_> {}
+
+impl PartialOrd for ValidatedRhoMatchPath<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+}
+
+impl Ord for ValidatedRhoMatchPath<'_> {
+    fn cmp(&self, other: &Self) -> Ordering { self.bytes.cmp(other.bytes) }
+}
+
+impl Hash for ValidatedRhoMatchPath<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) { self.bytes.hash(state); }
+}
+
+fn append_canonical_token(output: &mut Vec<u8>, token: RhoMatchPathToken<'_>) {
+    match token {
+        RhoMatchPathToken::NodeStart { program } => {
+            output.push(NODE_START);
+            output.extend_from_slice(&program.type_id.to_be_bytes());
+        }
+        RhoMatchPathToken::NodeEnd => output.push(NODE_END),
+        RhoMatchPathToken::FieldStart(tag) => {
+            output.push(FIELD_START);
+            output.extend_from_slice(&tag.to_be_bytes());
+        }
+        RhoMatchPathToken::FieldEnd => output.push(FIELD_END),
+        RhoMatchPathToken::Scalar(value) => append_canonical_scalar(output, value),
+        RhoMatchPathToken::Absent => output.push(ABSENT),
+        RhoMatchPathToken::SequenceStart(len) => {
+            output.push(SEQUENCE_START);
+            output.extend_from_slice(&len.to_be_bytes());
+        }
+        RhoMatchPathToken::SequenceEnd => output.push(SEQUENCE_END),
+        RhoMatchPathToken::MapStart(len) => {
+            output.push(MAP_START);
+            output.extend_from_slice(&len.to_be_bytes());
+        }
+        RhoMatchPathToken::MapKey(key) => {
+            output.push(MAP_KEY);
+            append_canonical_bytes(output, key.as_bytes());
+        }
+        RhoMatchPathToken::MapEnd => output.push(MAP_END),
+        RhoMatchPathToken::OneofStart(tag) => {
+            output.push(ONEOF_START);
+            output.extend_from_slice(&tag.to_be_bytes());
+        }
+        RhoMatchPathToken::OneofEnd => output.push(ONEOF_END),
+        RhoMatchPathToken::PathMap { mode, len, digest } => {
+            output.push(PATHMAP);
+            output.push(mode as u8);
+            output.extend_from_slice(&len.to_be_bytes());
+            output.extend_from_slice(digest);
+        }
+    }
+}
+
+fn append_canonical_scalar(output: &mut Vec<u8>, value: RhoMatchPathScalar<'_>) {
+    match value {
+        RhoMatchPathScalar::Bool(value) => output.extend_from_slice(&[BOOL, u8::from(value)]),
+        RhoMatchPathScalar::I32(value) => {
+            output.push(I32);
+            output.extend_from_slice(&value.to_be_bytes());
+        }
+        RhoMatchPathScalar::U32(value) => {
+            output.push(U32);
+            output.extend_from_slice(&value.to_be_bytes());
+        }
+        RhoMatchPathScalar::I64(value) => {
+            output.push(I64);
+            output.extend_from_slice(&value.to_be_bytes());
+        }
+        RhoMatchPathScalar::U64(value) => {
+            output.push(U64);
+            output.extend_from_slice(&value.to_be_bytes());
+        }
+        RhoMatchPathScalar::Bytes(value) => {
+            output.push(BYTES);
+            append_canonical_bytes(output, value);
+        }
+        RhoMatchPathScalar::String(value) => {
+            output.push(STRING);
+            append_canonical_bytes(output, value.as_bytes());
+        }
+        RhoMatchPathScalar::StringSequence { count, encoded } => {
+            output.push(STRING_SEQUENCE);
+            output.extend_from_slice(&count.to_be_bytes());
+            output.extend_from_slice(encoded);
+        }
+        RhoMatchPathScalar::BytesSequence { count, encoded } => {
+            output.push(BYTES_SEQUENCE);
+            output.extend_from_slice(&count.to_be_bytes());
+            output.extend_from_slice(encoded);
+        }
+    }
+}
+
+fn append_canonical_bytes(output: &mut Vec<u8>, value: &[u8]) {
+    let len = u64::try_from(value.len()).expect("an allocated RMP1 field length fits in u64");
+    output.extend_from_slice(&len.to_be_bytes());
+    output.extend_from_slice(value);
 }
 
 pub fn validate_match_path(bytes: &[u8]) -> Result<ValidatedRhoMatchPath<'_>, RhoMatchPathError> {

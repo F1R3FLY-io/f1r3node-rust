@@ -1,9 +1,29 @@
 mod par_corpus;
 
+use std::fmt::Write as _;
+use std::hash::{Hash, Hasher};
+
+use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rust::rholang::match_path::{encode_par_match_path, RHO_MATCH_PATH_VERSION};
 use models::rust::rholang::match_path_cursor::{
     validate_match_path, EncodedRhoMatchPathCursor, RhoMatchPathScalar, RhoMatchPathToken,
 };
+
+fn corpus_golden_manifest() -> String {
+    let mut output = String::from("# RMP1 corpus v1: name\tencoded-bytes\tblake2b-256\n");
+    for (name, par) in par_corpus::par_corpus() {
+        let encoded = encode_par_match_path(&par);
+        let digest = Blake2b256::hash(encoded.clone());
+        writeln!(output, "{name}\t{}\t{}", encoded.len(), hex::encode(digest)).unwrap();
+    }
+    output
+}
+
+fn std_hash(value: &impl Hash) -> u64 {
+    let mut state = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut state);
+    state.finish()
+}
 
 #[test]
 fn exhaustive_corpus_is_schema_valid_and_navigable() {
@@ -33,6 +53,52 @@ fn exhaustive_corpus_is_schema_valid_and_navigable() {
         assert!(token_count > 0, "{name}");
         assert!(node_count > 0, "{name}");
     }
+}
+
+#[test]
+fn decoded_tokens_canonically_reencode_every_schema_shape() {
+    for (name, par) in par_corpus::par_corpus() {
+        let encoded = encode_par_match_path(&par);
+        let validated =
+            validate_match_path(&encoded).unwrap_or_else(|error| panic!("{name}: {error}"));
+        assert_eq!(
+            validated.to_canonical_bytes(),
+            encoded,
+            "{name}: decoded tokens changed their canonical bytes"
+        );
+    }
+}
+
+#[test]
+fn canonical_corpus_matches_the_platform_independent_golden_manifest() {
+    let expected = include_str!("fixtures/goldens/rmp1-corpus-v1.tsv");
+    let actual = corpus_golden_manifest();
+    assert_eq!(
+        actual, expected,
+        "RMP1 bytes drifted; review the schema/codec change and update the committed golden only \
+         when a new format version is intentional"
+    );
+}
+
+#[test]
+fn validated_paths_compare_and_hash_by_canonical_bytes() {
+    let left_bytes = encode_par_match_path(&par_corpus::gint(7));
+    let equal_bytes = encode_par_match_path(&par_corpus::gint(7));
+    let right_bytes = encode_par_match_path(&par_corpus::gint(8));
+    let left = validate_match_path(&left_bytes).unwrap();
+    let equal = validate_match_path(&equal_bytes).unwrap();
+    let right = validate_match_path(&right_bytes).unwrap();
+
+    assert_eq!(left, equal);
+    assert_ne!(left, right);
+    assert_eq!(left.cmp(&right), left_bytes.cmp(&right_bytes));
+
+    assert_eq!(std_hash(&left), std_hash(&left_bytes.as_slice()));
+
+    let mut original = EncodedRhoMatchPathCursor::new(&left_bytes).unwrap();
+    let mut cloned = original.clone();
+    assert_eq!(original.next(), cloned.next());
+    assert_eq!(original, cloned);
 }
 
 #[test]
@@ -142,6 +208,7 @@ fn validation_and_subtree_navigation_fit_a_small_native_stack() {
             let encoded = encode_par_match_path(&par_corpus::deep_par(20_000));
             let validated = validate_match_path(&encoded).expect("validate deep RMP1 path");
             assert_eq!(validated.bytes(), encoded);
+            assert_eq!(validated.to_canonical_bytes(), encoded);
 
             let deepest = EncodedRhoMatchPathCursor::new(&encoded)
                 .unwrap()
