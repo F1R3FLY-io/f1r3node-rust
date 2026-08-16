@@ -3297,6 +3297,17 @@ delegation, and a cold snapshot remains cold before and after the walk. No RSpac
 cursor yet, so the checkpoint changes no match verdict or COMM and does not close the still-open
 nested-instruction or retained-automaton/Bag-product obligations.
 
+Checkpoints `155ecdf54` and `d858058d4` activate the generated cursor as the datum-side and exact
+receive-pattern structural encoder. `RMP1` is emitted in one pass from the heap worklist; an
+incremental outer framer consumes each completed top-level term immediately instead of retaining a
+`Vec<Vec<u8>>`. EPathMap contributes mode, cardinality, and a domain-separated BLAKE2b-256 digest
+computed by an iterative read-zipper depth-first walk. That walk visits each logical trie edge once,
+stores only the heap traversal frontier, does not include map values, and never forces
+`trie_snapshot()`. Omitting values is conservative because this digest can only prune candidates;
+the native EPathMap/spatial matcher decides acceptance. The architecture-dependent
+`PathMap::hash` is not used. Exact and whole-term query paths are live; encoded skip/validation,
+nested binding instructions, and associative-commutative residual execution remain open.
+
 ##### 5.16.5.4 Results
 
 The original SS-A11 depth measurements ran under a user systemd scope with **3 GiB `MemoryHigh`, 4
@@ -3320,6 +3331,7 @@ swap, and two-core CPU quota**. **MEASURED:**
 | framed-query native stack | recursive framing not admitted | **one million encoded bytes on a 128 KiB worker stack** | iterative double-frame scanner; no recursion, depth/width cap, `RUST_MIN_STACK`, or `stacker` |
 | Rholang query compiler | spatial oracle only | **5/5 focused matcher cases** | supported compiled fragment agrees with the spatial oracle and unsupported nested shapes fall back |
 | generated Rholang matching cursor | no schema-complete cursor | **4/4 cursor cases plus 21/21 schema/exhaustiveness/registration cases** | all 58 descriptor messages and five oneofs are generated from one pass; a 20,000-deep EList spine and a 20,000-wide term traverse on 256 KiB; EPathMap yields one native-trie delegation event without forcing its snapshot |
+| generated Rholang structural match path | canonical-path exact terms only | **3/3 encoder cases; 4/4 models RSpace-path cases; 5/5 Rholang compiler cases** | complete-schema deterministic tokens; canonical EPathMap digest golden and insertion-order witness; deliberate value-insensitive false-positive lane; 20,000-deep/wide encoding on 256 KiB; exact/whole-term production query paths agree with the spatial oracle |
 | retained waiting-receive throughput | full canonical candidate scan | **23.2–44.6% more COMMs/s** | six treatment pairs; 51 samples/arm; 99% confidence; 16/256/4,096 receives; diverse/shared prefixes |
 | resting-data prefix throughput | full canonical candidate scan | **48.7–53.4% more COMMs/s at 16; 12.22–13.01× at 256; 238.8–256.9× at 4,096** | post-repair eight-pair matrix; 51 samples/arm; 99% confidence; singleton arms are non-regressing because zero/one physical candidates use the direct scan |
 | singleton repair package gate | pre-repair indexed singleton | **392 passed / 0 failed** | full `rspace_plus_plus` package under 5 GiB, zero swap; focused pruning suite is 5/5 |

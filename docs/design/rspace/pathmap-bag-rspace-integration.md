@@ -6,7 +6,7 @@ Campaign: `campaign-4131-rspace-pathmap-integration`
 
 Experiment: `rspace-pathmap-end-to-end-layout-2026-08-15`
 Last updated: 2026-08-15
-Current implementation checkpoint: `71d378e73`
+Current implementation checkpoint: `d858058d4`
 
 ## Purpose and scope
 
@@ -55,6 +55,7 @@ The layout experiment remains open until the preregistered A/B/C comparison sele
 | Retained receive automaton, exact-ground slice | `a89cbc294`, `f149cef2b`, `ea8c39f92`; benchmark `7bc5c6994`; pgmcp `rspace-retained-set-automaton` | one `PathMap<TerminalId>` transition segment per bind position; fixed-width terminal/candidate identifiers; root fallback terminals; group-local versioning; no trie clone on cache hits; 3/3 automaton, 2/2 lifecycle, 3/3 Rholang path, and 41/41 RSpace action tests; valid end-to-end treatment is 18.8–30.8% lower latency | implemented, equivalence campaign open |
 | Receive-first Bag/query product | `564dac0b4`, `0b601ce67`, `f43858ec2`; pgmcp `rspace-pattern-over-pathmap` | synchronized borrowed zippers over the authoritative `PathMap<Multiplicity>` Bag and derived fixed-width `PathMap<CandidatePosition>` index; exact terms, whole-term wildcard/free-variable captures, repeated-capture equality, and ordered list remainder; canonical order restored before the spatial oracle; 7/7 query/product cases and 64 generated differential corpora pass; a structural zero/one-candidate base case removes the measured singleton regression without an empirical cutoff; post-repair throughput improves 48.7–53.4% at 16 entries and 239–257× at 4,096 | product foundation implemented; nested schema coverage and equivalence campaign open |
 | Generated full-schema cursor | `71d378e73`; pgmcp `rspace-shared-match-pda` | the shared descriptor pass emits tag-ordered `RhoMatchProgram` tables plus exhaustive `ParCursor` accessors for all 58 messages and five oneofs; `RhoPathCursor` traverses optional, sequence, map, scalar, and oneof shapes with a heap worklist; EPathMap is a native trie delegation event and does not force `trie_snapshot()` | schema traversal foundation implemented; matching instructions, failure checkpoints, and RSpace product integration open |
+| Generated structural match path | `155ecdf54`, `d858058d4`; pgmcp `rhopath-v1-codec`, `rspace-shared-match-pda` | stable generated type IDs and field/oneof tags drive a self-delimiting `RMP1` token stream; datum and exact receive-pattern indexing now use it; EPathMap contributes mode, cardinality, and a domain-separated BLAKE2b-256 digest streamed by a native logical zipper DFS; map values deliberately remain a conservative oracle-checked lane | live for exact and whole-term query atoms; encoded skip/validate and nested pattern instructions remain open |
 | Retained-automaton/Bag product walk | pgmcp `rspace-retained-set-automaton` | the fresh-datum path uses an iterative retained-automaton zipper, but it does not yet synchronize that automaton directly with the authoritative Bag; `f43858ec2` is a receive-first Bag/position-index product and is not evidence for this distinct datum-first product | next implementation stage |
 | Layout selection and performance verdict | pgmcp experiment 208 | retained-receive slice passes its preregistered five-percent throughput threshold at 99% confidence; resting-data pruning is non-regressing at one entry after the structural base-case repair and passes from 16 through 4,096; direct product, full workload matrix, allocations, and final layout selection remain open | partial measurement accepted |
 
@@ -154,7 +155,21 @@ RSpace needs structural prefixes for trie-pruned matching and a reversible ident
 RhoPathV1 := version || structural-length || structural-path || identity-bytes
 ```
 
-The structural region is compiled from the existing canonical Rholang PathMap grammar. The identity region is the exact canonical record encoding required to reconstruct a `Datum`, including payload, persistence, and source. Pattern automata operate only on the structural region; exact membership and decoding use the complete key.
+Channel structure remains on the existing reversible canonical Rholang trie-key grammar. Datum
+structure is a framed sequence whose elements are `RMP1` streams generated from the complete rhoapi
+schema. Each stream uses fixed-width generated message identifiers, protobuf field and oneof tags,
+explicit node/field/sequence/map delimiters, and length-prefixed scalar payloads. The identity region
+remains the exact canonical record encoding required to reconstruct a `Datum`, including payload,
+persistence, and source. Pattern automata operate only on the structural region; exact membership
+and decoding use the complete key.
+
+An EPathMap token never calls `trie_snapshot()` and never enumerates into a `Vec<Par>`. A read zipper
+streams a canonical depth-first description of logical key topology into domain-separated
+BLAKE2b-256 in $`O(e)`$ time for $`e`$ logical trie edges and $`O(d)`$ heap frontier for maximum key
+depth $`d`$. The token also carries the EPathMap mode and distinct cardinality. Map values are not
+folded into this pruning digest: equal key topology may therefore admit an extra candidate, but the
+native EPathMap/spatial matcher remains the sole acceptance authority. PathMap's built-in
+architecture-dependent hash is not used.
 
 Identical records share one trie value whose `Multiplicity` counts occurrences. No tie breaker can distinguish identical record bytes semantically: choosing and removing any occurrence leaves the same record and decremented multiplicity. Unequal candidates retain the existing ordering by the Blake2b-256 digest of canonical candidate bytes, with the complete trie path providing a deterministic collision tie breaker. The vector candidate hot path is retired at `5329b27a3`; the bounded duplicate, exact-removal, and play/replay witnesses pass, while the campaign's exhaustive generated differential and formal quotient proof remain required before closure.
 
@@ -199,6 +214,14 @@ native `PathMap` delegation event. It neither enumerates entries nor calls the s
 authority for that associative-commutative node. This is infrastructure rather than a selection
 change: no RSpace production caller consumes the cursor at this checkpoint, and nested match
 instructions, binding rollback, and direct trie-product execution remain open.
+
+Checkpoints `155ecdf54` and `d858058d4` activate that cursor for the derived RSpace datum structure
+and exact receive-pattern paths. The encoder writes each top-level term directly into incremental
+sequence framing, so it no longer retains a `Vec<Vec<u8>>` of completed term encodings. The same
+bytes feed exact query atoms, preserving exact-pattern/data equality. Channel encoding, datum
+identity bytes, cold-store records, event hashes, and protobuf/bincode encodings are unchanged. The
+activation does not yet compile nested variables or associative-commutative residual instructions;
+those patterns still execute the unpruned spatial oracle.
 
 ## Native PathMap operations
 
@@ -284,6 +307,7 @@ The implementation evidence available at this checkpoint is:
 | framed-query stack gate | 1/1 | a million-byte structural sequence scans on a 128 KiB worker stack without native recursion or an artificial depth/width cap |
 | Rholang query compilation | 5/5 | compiled queries and the spatial oracle agree for the supported whole-term and ordered-remainder fragment; unsupported nested shapes fall back |
 | generated full-schema cursor | 4/4 plus 21/21 related gates | registry equals the 58-message descriptor closure; every arm of all five oneofs is observed; EPathMap remains a borrowed native trie with a cold snapshot; 20,000-deep and 20,000-wide walks complete on a 256 KiB worker stack |
+| generated structural match path | 3/3 encoder gates plus 4/4 models RSpace-path and 5/5 Rholang compiler gates | exhaustive-corpus determinism and adjacent-term distinction; canonical EPathMap digest golden; insertion-order independence; set/map separation; deliberate map-value false-positive lane; snapshot remains cold; 20,000-deep/wide encoding on 256 KiB; exact and whole-term query behavior preserved |
 | waiting-receive COMM throughput | 6/6 treatment pairs pass | 51 samples per arm at 99% confidence; 23.2–44.6% more completed COMMs/s; intervals are disjoint |
 | resting-data COMM throughput | 8/8 treatment pairs do not regress after repair | at 16/256/4,096 distinct entries, throughput improves 48.7–25,589.8%; the one-entry base case is 2.2% faster on diverse input and statistically neutral at a +0.6% point estimate on shared input |
 | current `rspace_plus_plus` package | 392 passed / 0 failed | the complete package passes after the singleton repair under a 5 GiB no-swap cap |

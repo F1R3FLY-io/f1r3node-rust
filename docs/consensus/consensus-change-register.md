@@ -4139,6 +4139,25 @@ equivalence: nested match-instruction compilation, rollback/failure checkpoints,
 product execution, and old/new end-to-end equivalence remain open campaign obligations. The
 PathMap crate and every EPathMap wire/data-model decision are untouched.
 
+**Derived RSpace match-path activation (2026-08-15; pgmcp `rhopath-v1-codec`,
+`rspace-shared-match-pda`).** `f1r3node-rust-mettail@155ecdf54` assigns deterministic generated
+type identifiers and emits a complete-schema `RMP1` structural stream from the cursor. RSpace datum
+structure and exact receive-pattern queries now consume that derived stream, while channel paths
+remain on the reversible canonical codec. `f1r3node-rust-mettail@d858058d4` replaces the initially
+used architecture-dependent `PathMap::hash` token before campaign closure with a
+domain-separated BLAKE2b-256 digest streamed over logical trie edges by a read zipper. A canonical
+golden and insertion-order witness pin the digest; EPathMap mode distinguishes set and map, and the
+serialization snapshot remains cold.
+
+These bytes are confined to the reconstructible in-memory RSpace candidate index. They are not
+protobuf, bincode, EPM1, cold-store record, event-hash, post-state, signature, or network bytes.
+Map values are deliberately absent from the pruning digest, so equal key topology may cause a false
+positive; the unchanged native EPathMap/spatial matcher remains the acceptance authority. Channel
+identity, canonical candidate identity, COMM ordering, bindings, charges, and replay semantics are
+unchanged in the focused gates. This is therefore a `BYTE_NEUTRAL_MEASURED` optimization within the
+retired CBR-023 living set, not an active may-change-consensus entry. Exhaustive end-to-end replay
+and cross-platform closure remain campaign gates before the optimization can be called complete.
+
 ### B.2 The original commit-level exemptions
 
 Every commit in `7293d57c..dc383ed1` touching the consensus-critical path set, that is **not** a
