@@ -65,6 +65,7 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
             None,
             None,
             None,
+            None,
         );
         BlockMetadata::from_block(&block, false, None, None)
     }
@@ -89,6 +90,7 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
             None,
             None,
             Some(seq_num),
+            None,
             None,
         );
         BlockMetadata::from_block(&block, false, None, None)
@@ -321,6 +323,7 @@ async fn uncommon_ancestors_should_be_computed_properly() {
             None,
             None,
             None,
+            None,
         );
 
         let b2 = create_block(
@@ -328,6 +331,7 @@ async fn uncommon_ancestors_should_be_computed_properly() {
             &mut block_dag_storage,
             vec![genesis.block_hash.clone()],
             &genesis,
+            None,
             None,
             None,
             None,
@@ -353,6 +357,7 @@ async fn uncommon_ancestors_should_be_computed_properly() {
             None,
             None,
             None,
+            None,
         );
 
         let b4 = create_block(
@@ -360,6 +365,7 @@ async fn uncommon_ancestors_should_be_computed_properly() {
             &mut block_dag_storage,
             vec![b3.block_hash.clone()],
             &genesis,
+            None,
             None,
             None,
             None,
@@ -385,6 +391,7 @@ async fn uncommon_ancestors_should_be_computed_properly() {
             None,
             None,
             None,
+            None,
         );
 
         let b6 = create_block(
@@ -401,6 +408,7 @@ async fn uncommon_ancestors_should_be_computed_properly() {
             None,
             None,
             None,
+            None,
         );
 
         let b7 = create_block(
@@ -408,6 +416,7 @@ async fn uncommon_ancestors_should_be_computed_properly() {
             &mut block_dag_storage,
             vec![b2.block_hash.clone(), b5.block_hash.clone()],
             &genesis,
+            None,
             None,
             None,
             None,

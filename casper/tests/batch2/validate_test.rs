@@ -72,6 +72,7 @@ fn create_chain(
             None,
             None,
             None,
+            None,
         )
     });
 
@@ -116,6 +117,7 @@ fn create_chain_with_round_robin_validators(
                 Some(creator.clone()),
                 None,
                 Some(latest_messages.clone()),
+                None,
                 None,
                 None,
                 None,
@@ -977,6 +979,7 @@ async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deplo
             None,
             None,
             None,
+            None,
         );
 
         let dag = block_dag_storage
@@ -1056,6 +1059,7 @@ async fn repeat_deploy_rejects_premature_retry_of_a_live_rejection() {
             None,
             None,
             None,
+            None,
         );
 
         // block_m is the merge that rejected the deploy: its on-chain
@@ -1067,6 +1071,7 @@ async fn repeat_deploy_rejects_premature_retry_of_a_live_rejection() {
             &mut block_dag_storage,
             vec![block_x.block_hash.clone()],
             &genesis,
+            None,
             None,
             None,
             None,
@@ -1101,6 +1106,7 @@ async fn repeat_deploy_rejects_premature_retry_of_a_live_rejection() {
             None,
             None,
             Some(vec![deploy]),
+            None,
             None,
             None,
             None,
@@ -1196,6 +1202,7 @@ async fn repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in
             None,
             None,
             Some(vec![deploy]),
+            None,
             None,
             None,
             None,
@@ -1357,6 +1364,7 @@ async fn parent_validation_should_allow_empty_block_when_new_parents_exist() {
             None,
             Some(1),
             None,
+            None,
         );
 
         // v1 creates a block (inserted into DAG - represents a block v0 receives)
@@ -1373,6 +1381,7 @@ async fn parent_validation_should_allow_empty_block_when_new_parents_exist() {
             None,
             None,
             Some(1),
+            None,
             None,
         );
 
@@ -1459,6 +1468,7 @@ async fn parent_validation_progress_verdict_is_independent_of_finality_markers()
             None,
             Some(1),
             None,
+            None,
         );
         let b2 = create_block(
             &mut block_store,
@@ -1474,6 +1484,7 @@ async fn parent_validation_progress_verdict_is_independent_of_finality_markers()
             None,
             Some(2),
             None,
+            None,
         );
         let b3 = create_block(
             &mut block_store,
@@ -1488,6 +1499,7 @@ async fn parent_validation_progress_verdict_is_independent_of_finality_markers()
             None,
             None,
             Some(3),
+            None,
             None,
         );
         let _ = &b3;
@@ -1586,6 +1598,7 @@ async fn parent_validation_should_reject_empty_block_when_no_new_parents_exist()
             None,
             Some(1),
             None,
+            None,
         );
 
         let now = std::time::SystemTime::now()
@@ -1658,6 +1671,7 @@ async fn parent_validation_should_allow_block_with_user_deploys_regardless_of_pa
             None,
             None,
             Some(1),
+            None,
             None,
         );
 
@@ -1797,6 +1811,7 @@ async fn parent_validation_should_enforce_max_number_of_parents_constraint() {
             None,
             Some(1),
             None,
+            None,
         );
 
         let b2 = create_block(
@@ -1813,6 +1828,7 @@ async fn parent_validation_should_enforce_max_number_of_parents_constraint() {
             None,
             Some(1),
             None,
+            None,
         );
 
         let b3 = create_block(
@@ -1828,6 +1844,7 @@ async fn parent_validation_should_enforce_max_number_of_parents_constraint() {
             None,
             None,
             Some(1),
+            None,
             None,
         );
 
@@ -1979,6 +1996,7 @@ async fn justification_follow_validation_should_return_valid_for_proper_justific
             None,
             None,
             None,
+            None,
         );
 
         let b3 = create_block(
@@ -1992,6 +2010,7 @@ async fn justification_follow_validation_should_return_valid_for_proper_justific
                 (v1.clone(), genesis.block_hash.clone()),
                 (v2.clone(), genesis.block_hash.clone()),
             ])),
+            None,
             None,
             None,
             None,
@@ -2017,6 +2036,7 @@ async fn justification_follow_validation_should_return_valid_for_proper_justific
             None,
             None,
             None,
+            None,
         );
 
         let b5 = create_block(
@@ -2030,6 +2050,7 @@ async fn justification_follow_validation_should_return_valid_for_proper_justific
                 (v1.clone(), b3.block_hash.clone()),
                 (v2.clone(), b2.block_hash.clone()),
             ])),
+            None,
             None,
             None,
             None,
@@ -2055,6 +2076,7 @@ async fn justification_follow_validation_should_return_valid_for_proper_justific
             None,
             None,
             None,
+            None,
         );
 
         let b7 = create_block(
@@ -2074,6 +2096,7 @@ async fn justification_follow_validation_should_return_valid_for_proper_justific
             None,
             None,
             None,
+            None,
         );
 
         let _b8 = create_block(
@@ -2087,6 +2110,7 @@ async fn justification_follow_validation_should_return_valid_for_proper_justific
                 (v1.clone(), b7.block_hash.clone()),
                 (v2.clone(), b4.block_hash.clone()),
             ])),
+            None,
             None,
             None,
             None,
@@ -2642,6 +2666,7 @@ fn build_linear_chain(
             None,
             Some(i as i32),
             None,
+            None,
         );
         chain.push(block);
     }
@@ -3046,16 +3071,19 @@ async fn parent_validation_enforces_max_parent_depth_horizon() {
             &mut block_store, &mut block_dag_storage, vec![genesis.block_hash.clone()],
             &genesis, Some(v0.clone()), Some(bonds.clone()),
             None, None, None, None, None, Some(1), None,
+            None,
         );
         let b2 = create_block(
             &mut block_store, &mut block_dag_storage, vec![b1.block_hash.clone()],
             &genesis, Some(v0.clone()), Some(bonds.clone()),
             None, None, None, None, None, Some(2), None,
+            None,
         );
         let b3 = create_block(
             &mut block_store, &mut block_dag_storage, vec![b2.block_hash.clone()],
             &genesis, Some(v0.clone()), Some(bonds.clone()),
             None, None, None, None, None, Some(3), None,
+            None,
         );
 
         let now = std::time::SystemTime::now()
@@ -3193,6 +3221,7 @@ async fn bonds_cache_from_floor_uses_floor_state_for_child_block_bonds() {
             None,
             Some(floor_bonds),
             Some(justifications),
+            None,
             None,
             None,
             None,

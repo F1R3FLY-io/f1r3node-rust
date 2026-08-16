@@ -102,6 +102,7 @@ impl TestFixture {
             None,
             None,
             None,
+            None,
         );
 
         // Create unified dependencies

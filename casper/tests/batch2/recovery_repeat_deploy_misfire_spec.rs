@@ -132,6 +132,7 @@ async fn repeat_deploy_gates_retry_on_a_live_parent_rejection_record() {
             None,
             None,
             None,
+            None,
         );
         block_n.body.rejected_deploys = vec![RejectedDeploy {
             sig: deploy_sig.clone(),
@@ -152,6 +153,7 @@ async fn repeat_deploy_gates_retry_on_a_live_parent_rejection_record() {
             None,
             None,
             Some(vec![deploy]),
+            None,
             None,
             None,
             None,
@@ -349,12 +351,14 @@ async fn repeat_deploy_verdict_is_identical_across_divergent_local_views() {
             None,
             None,
             None,
+            None,
         );
         let mut block_m = create_block(
             &mut block_store,
             &mut block_dag_storage,
             vec![block_x.block_hash.clone()],
             &genesis,
+            None,
             None,
             None,
             None,
@@ -382,6 +386,7 @@ async fn repeat_deploy_verdict_is_identical_across_divergent_local_views() {
             None,
             None,
             Some(vec![deploy]),
+            None,
             None,
             None,
             None,

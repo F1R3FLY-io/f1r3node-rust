@@ -1062,6 +1062,7 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
                 Some(pre_state_hash),
                 None,
                 None,
+                None,
             );
 
             let dag2 = block_dag_storage
@@ -1186,6 +1187,7 @@ contract @"recursionTest"(@list) = {
                 Some(computed_ts_hash.clone()),
                 None,
                 Some(pre_state_hash),
+                None,
                 None,
                 None,
             );
@@ -1318,6 +1320,7 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
                 Some(pre_state_hash),
                 None,
                 None,
+                None,
             );
 
             let dag2 = block_dag_storage
@@ -1444,6 +1447,7 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
                 Some(pre_state_hash),
                 None,
                 None,
+                None,
             );
 
             let dag2 = block_dag_storage
@@ -1561,6 +1565,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     None,
                     Some(pre_state_hash),
                     Some(i + 1),
+                    None,
                     None,
                 );
 
@@ -1686,6 +1691,7 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                 Some(pre_state_hash),
                 None,
                 None,
+                None,
             );
 
             let dag2 = block_dag_storage
@@ -1809,6 +1815,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     None,
                     Some(pre_state_hash),
                     Some(i + 1),
+                    None,
                     None,
                 );
 

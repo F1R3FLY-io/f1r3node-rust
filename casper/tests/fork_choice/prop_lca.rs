@@ -131,6 +131,7 @@ async fn build_random_dag(
             None,
             None,
             None,
+            None,
         );
         hashes.push(block.block_hash.clone());
     }
@@ -171,6 +172,7 @@ async fn build_random_tree(
             block_dag_storage,
             vec![hashes[parent].clone()],
             &genesis,
+            None,
             None,
             None,
             None,

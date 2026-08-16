@@ -49,6 +49,7 @@ fn create_test_block(
         None,
         None,
         None,
+        None,
     )
 }
 

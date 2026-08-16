@@ -8,7 +8,7 @@ use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage
 use casper::rust::safety::clique_oracle::CliqueOracle;
 use casper::rust::safety_oracle::{CliqueOracleImpl, SafetyOracle};
 use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
+use models::rust::casper::protocol::casper_message::{BlockMessage, Bond, ProcessedDeploy};
 use models::rust::validator::Validator;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
@@ -42,6 +42,7 @@ fn create_block<'a>(
             Some(creator.clone()),
             Some(bonds.to_vec()),
             Some(justifications_map),
+            None,
             None,
             None,
             None,
@@ -980,6 +981,7 @@ async fn conflicting_same_height_siblings_cannot_both_certify() {
                 None,
                 None,
                 None,
+                None,
             )
         };
 
@@ -1421,6 +1423,375 @@ async fn a_coincidence_never_mutually_seen_must_not_certify() {
             certified_at_mutual,
             "mutually-known agreement must certify — the mutual-knowledge \
              requirement must not over-restrict a settled clique"
+        );
+    })
+    .await
+}
+
+/// Where the merge `B` records its STATE parent: the floor (the specimen —
+/// `B` re-based past its own main parent and rejected that parent's
+/// content) or its main parent (the ordinary merge that keeps it).
+#[derive(Clone, Copy)]
+enum StateParentOfMerge {
+    Floor,
+    MainParent,
+}
+
+struct SpineStateDivergence {
+    dag: block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
+    snapshot: std::collections::BTreeMap<Validator, BlockHash>,
+    a: BlockHash,
+    c: BlockHash,
+}
+
+/// Stages the live ucc specimen's geometry (session `bc35a3ad`, blocks
+/// #534/#536/#537, five nodes wedged at #544):
+///
+/// ```text
+///   genesis <- F                    the floor
+///              |\
+///              A S                  A(v1) carries x, S(v3) carries z
+///              |/
+///              B                    parents [A, S] — MAIN PARENT A
+///              |
+///              C                    C(v1)
+///              |
+///              D                    D(v3)
+/// ```
+///
+/// `B` is a merge, so its state parent is its recorded `merge_base`, not
+/// `parents[0]`. With [`StateParentOfMerge::Floor`] it re-bases onto `F`
+/// and rejects `A`'s deploy `x`, applying only `S`'s `z` from scope —
+/// exactly what the live #537 records against #536. Every block above `B`
+/// inherits that state, so `x` is in no live state while `A` sits on every
+/// latest message's main-parent spine.
+///
+/// The latest-message snapshot is `{v1: C, v2: B, v3: D}`, mirroring the
+/// specimen's certifying snapshot (one validator still at the merge, two on
+/// its descendants). `v3`'s self-justification chain leaves `A`'s spine at
+/// `S`, so the `(v1,v3)` and `(v2,v3)` clique edges are refused and the
+/// maximum clique is 200 of 300 — the FT 0.33333334 the live #536 carries.
+fn stage_spine_state_divergence(
+    block_store: &mut KeyValueBlockStore,
+    block_dag_storage: &mut IndexedBlockDagStorage,
+    state_parent_of_b: StateParentOfMerge,
+) -> SpineStateDivergence {
+    use casper::rust::util::construct_deploy::basic_processed_deploy;
+    use models::rust::casper::protocol::casper_message::RejectedDeploy;
+
+    use crate::helper::block_generator::MergeFacts;
+
+    let v1 = generate_validator(Some("State Finality V1"));
+    let v2 = generate_validator(Some("State Finality V2"));
+    let v3 = generate_validator(Some("State Finality V3"));
+    let bonds: Vec<Bond> = [&v1, &v2, &v3]
+        .iter()
+        .map(|v| Bond {
+            validator: (*v).clone(),
+            stake: 100,
+        })
+        .collect();
+
+    let genesis = create_genesis_block(
+        block_store,
+        block_dag_storage,
+        None,
+        Some(bonds.clone()),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+
+    let mk = |creator: &Validator,
+              parents: Vec<BlockHash>,
+              justs: HashMap<Validator, BlockHash>,
+              deploys: Option<Vec<ProcessedDeploy>>,
+              merge_facts: Option<MergeFacts>,
+              block_store: &mut KeyValueBlockStore,
+              block_dag_storage: &mut IndexedBlockDagStorage| {
+        crate::helper::block_generator::create_block(
+            block_store,
+            block_dag_storage,
+            parents,
+            &genesis,
+            Some(creator.clone()),
+            Some(bonds.clone()),
+            Some(justs),
+            deploys,
+            None,
+            None,
+            None,
+            None,
+            None,
+            merge_facts,
+        )
+    };
+
+    let g = genesis.block_hash.clone();
+    let gj: HashMap<Validator, BlockHash> = [&v1, &v2, &v3]
+        .iter()
+        .map(|v| ((*v).clone(), g.clone()))
+        .collect();
+
+    let f = mk(
+        &v1,
+        vec![g.clone()],
+        gj.clone(),
+        None,
+        None,
+        block_store,
+        block_dag_storage,
+    );
+
+    let fj: HashMap<Validator, BlockHash> = [&v1, &v2, &v3]
+        .iter()
+        .map(|v| ((*v).clone(), f.block_hash.clone()))
+        .collect();
+
+    // The two branches off the floor: A carries the content that goes
+    // missing, S carries the content B's merge keeps.
+    let x = basic_processed_deploy(1, Some("root".to_string())).expect("deploy x");
+    let z = basic_processed_deploy(2, Some("root".to_string())).expect("deploy z");
+    let x_sig = x.deploy.sig.clone();
+    let z_sig = z.deploy.sig.clone();
+
+    let a = mk(
+        &v1,
+        vec![f.block_hash.clone()],
+        fj.clone(),
+        Some(vec![x]),
+        None,
+        block_store,
+        block_dag_storage,
+    );
+    let s = mk(
+        &v3,
+        vec![f.block_hash.clone()],
+        fj.clone(),
+        Some(vec![z]),
+        None,
+        block_store,
+        block_dag_storage,
+    );
+
+    let b_merge_base = match state_parent_of_b {
+        StateParentOfMerge::Floor => f.block_hash.clone(),
+        StateParentOfMerge::MainParent => a.block_hash.clone(),
+    };
+    // Re-based onto the floor, A's chain is rejected and only S's z is
+    // applied; re-based onto A, nothing is rejected and A's x survives in
+    // the state B inherits.
+    let b_rejected = match state_parent_of_b {
+        StateParentOfMerge::Floor => vec![RejectedDeploy {
+            sig: x_sig.clone(),
+            duplicate: false,
+            carrier: a.block_hash.clone(),
+        }],
+        StateParentOfMerge::MainParent => Vec::new(),
+    };
+    let b = mk(
+        &v2,
+        vec![a.block_hash.clone(), s.block_hash.clone()],
+        HashMap::from([
+            (v1.clone(), a.block_hash.clone()),
+            (v2.clone(), f.block_hash.clone()),
+            (v3.clone(), s.block_hash.clone()),
+        ]),
+        None,
+        Some(MergeFacts {
+            merge_base: Some(b_merge_base.clone()),
+            applied_from_scope: vec![z_sig.clone()],
+            rejected_deploys: b_rejected,
+        }),
+        block_store,
+        block_dag_storage,
+    );
+
+    let c = mk(
+        &v1,
+        vec![b.block_hash.clone()],
+        HashMap::from([
+            (v1.clone(), a.block_hash.clone()),
+            (v2.clone(), b.block_hash.clone()),
+            (v3.clone(), s.block_hash.clone()),
+        ]),
+        None,
+        None,
+        block_store,
+        block_dag_storage,
+    );
+    let d = mk(
+        &v3,
+        vec![c.block_hash.clone()],
+        HashMap::from([
+            (v1.clone(), c.block_hash.clone()),
+            (v2.clone(), b.block_hash.clone()),
+            (v3.clone(), s.block_hash.clone()),
+        ]),
+        None,
+        None,
+        block_store,
+        block_dag_storage,
+    );
+
+    // Staging integrity: the whole point of the fixture is what the BODIES
+    // record, and a silently-empty merge base would make the geometry
+    // ordinary without failing any assertion below.
+    let stored_a = block_store
+        .get(&a.block_hash)
+        .expect("read A")
+        .expect("A is stored");
+    assert!(
+        stored_a
+            .body
+            .deploys
+            .iter()
+            .any(|pd| pd.deploy.sig == x_sig && !pd.is_failed),
+        "staging: A must carry x as a non-failed deploy — it is the settled \
+         content whose absence downstream is the whole specimen"
+    );
+    let stored_b = block_store
+        .get(&b.block_hash)
+        .expect("read B")
+        .expect("B is stored");
+    assert_eq!(
+        stored_b.body.merge_base, b_merge_base,
+        "staging: B must record the intended state parent"
+    );
+    assert_eq!(
+        stored_b.header.parents_hash_list.first(),
+        Some(&a.block_hash),
+        "staging: A must be B's MAIN parent — spine agreement is what makes \
+         A certify today"
+    );
+    assert!(
+        stored_b.body.applied_from_scope.contains(&z_sig),
+        "staging: B must apply S's z from scope"
+    );
+
+    let dag = block_dag_storage
+        .get_representation()
+        .expect("dag representation");
+    let snapshot: std::collections::BTreeMap<Validator, BlockHash> = [
+        (v1, c.block_hash.clone()),
+        (v2, b.block_hash.clone()),
+        (v3, d.block_hash.clone()),
+    ]
+    .into_iter()
+    .collect();
+
+    SpineStateDivergence {
+        dag,
+        snapshot,
+        a: a.block_hash,
+        c: c.block_hash,
+    }
+}
+
+/// WHY the oracle may read agreement off the MAIN-PARENT SPINE alone.
+///
+/// `agree` asks only `dag.is_in_main_chain(target, latest_message)`. That is
+/// sound exactly while every merge keeps its main parent's content, because
+/// then spine descent implies state containment. It is NOT sound on its own:
+/// this test stages the one geometry where the two part company — `A` carrying
+/// a deploy, `B` with `parents[0] = A` but `merge_base` = the floor below `A`
+/// and `A`'s deploy rejected — and shows the oracle certifying `A` at
+/// FT 0.33333334 with all 300 stake agreeing, while no state on the DAG holds
+/// `A`'s content.
+///
+/// 0.33333334 is not a chosen number: it is the fault tolerance the live #536
+/// carries on shard `bc35a3ad`, reproduced here from 300 agreeing and a 200
+/// clique. On that shard five nodes finalized three mutually non-contained
+/// floors (#536 on two validators, #537 on two, #539 on one) and every propose
+/// was refused thereafter.
+///
+/// The geometry is staged DIRECTLY here because a merge can no longer build
+/// it: `conflict_resolution_never_rejects_main_parent_content`
+/// (dag_merger.rs) pins the main parent's chains against rejection, and a
+/// block whose rejection set disagrees with the validator's recomputation is
+/// `invalid_rejected_deploy`. So this is a standing pin on the ORACLE's
+/// precondition, not a live defect — if the merge rule is ever weakened, the
+/// oracle silently goes back to certifying blocks nothing holds, and the
+/// failure resurfaces here rather than on a wedged shard.
+#[tokio::test]
+async fn spine_agreement_is_sound_only_because_merges_keep_main_parent_content() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        use casper::rust::safety::clique_oracle::FtThreshold;
+
+        let staged = stage_spine_state_divergence(
+            &mut block_store,
+            &mut block_dag_storage,
+            StateParentOfMerge::Floor,
+        );
+        let thr = FtThreshold::from_f32_lossy(0.1);
+
+        assert!(
+            staged
+                .dag
+                .is_in_main_chain(&staged.a, &staged.c)
+                .expect("main-chain membership"),
+            "staging: A must be on the spine of the latest messages"
+        );
+
+        let ft = CliqueOracle::ft_witnessed(&staged.a, &staged.dag, &staged.snapshot)
+            .await
+            .expect("ft_witnessed(A)");
+        assert_eq!(
+            ft, 0.33333334,
+            "the oracle reads full agreement off the spine — 300 agreeing, a 200 \
+             clique — with no regard for whether any state holds A's content. This \
+             is the live #536's own recorded fault tolerance"
+        );
+
+        let decision =
+            CliqueOracle::ft_witnessed_exact(&staged.a, &staged.dag, &staged.snapshot, thr, false)
+                .await
+                .expect("ft_witnessed_exact(A)");
+        assert!(
+            decision,
+            "A certifies on spine agreement alone. Nothing in the oracle prevents \
+             this — only the merge rule that keeps A's content in every descendant's \
+             state makes spine agreement equal state agreement"
+        );
+    })
+    .await
+}
+
+/// The paired pin for
+/// [`spine_agreement_is_sound_only_because_merges_keep_main_parent_content`]:
+/// the same DAG with `B` built as an ordinary merge — `merge_base = A`,
+/// nothing rejected — certifies `A` too.
+///
+/// The pair together is the actual point. Both geometries produce the SAME
+/// oracle verdict, so the oracle cannot distinguish the state that holds `A`
+/// from the state that dropped it. Whether a certified block's content
+/// survives is settled entirely by the merge rule, never by finality — which
+/// is why the rule is enforced where content is chosen (conflict resolution)
+/// rather than where agreement is counted.
+#[tokio::test]
+async fn an_ordinary_merge_still_certifies_the_main_parent_it_kept() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        use casper::rust::safety::clique_oracle::FtThreshold;
+
+        let staged = stage_spine_state_divergence(
+            &mut block_store,
+            &mut block_dag_storage,
+            StateParentOfMerge::MainParent,
+        );
+        let thr = FtThreshold::from_f32_lossy(0.1);
+
+        let decision =
+            CliqueOracle::ft_witnessed_exact(&staged.a, &staged.dag, &staged.snapshot, thr, false)
+                .await
+                .expect("ft_witnessed_exact(A)");
+        assert!(
+            decision,
+            "an ordinary merge keeps its main parent's content and A finalizes — \
+             the same verdict the divergent geometry gets, which is why the merge \
+             rule and not the oracle is what makes certification meaningful"
         );
     })
     .await
