@@ -412,7 +412,19 @@ in {
                     for (@currentEpochReward <- currentEpochRewardCh) {
                       @ListOps!("fold", currentEpochReward.toList(), state.get("committedRewards"), *accumulateReward, *returnCh) |
                       contract accumulateReward(@(pk, reward), @acc, outCh) = {
-                        outCh!(acc.set(pk, acc.getOrElse(pk, 0) + reward))
+                        match state.get("allBonds").getOrElse(pk, 0) {
+                          selfBond => {
+                            match selfBond + state.get("delegatedTotals").getOrElse(pk, 0) {
+                              effectiveBond => {
+                                if (effectiveBond > 0) {
+                                  outCh!(acc.set(pk, acc.getOrElse(pk, 0) + reward * selfBond / effectiveBond))
+                                } else {
+                                  outCh!(acc)
+                                }
+                              }
+                            }
+                          }
+                        }
                       }
                     }
                   }
@@ -894,14 +906,14 @@ in {
                                   if (invalidBlocks.contains(blockHash)) {
                                     toBeSlashed!(invalidBlocks.get(blockHash)) |
                                     for (@validator <- toBeSlashed) {
-                                      valBondCh!(state.get("allBonds").get(validator)) |
+                                      valBondCh!(state.get("allBonds").getOrElse(validator, 0)) |
                                       valDelegatedCh!(state.get("delegatedTotals").getOrElse(validator, 0)) |
                                       removeDelegationsForValidator!(state.get("delegations"), validator, *cleanedDelegationsCh) |
                                       stripPendingUndelegationsForValidator!(state.get("pendingUndelegations"), validator, *strippedPendingCh) |
                                       for (@valBond <- valBondCh &
                                            @valDelegated <- valDelegatedCh &
                                            @cleanedDelegations <- cleanedDelegationsCh &
-                                           @updatedPendingUndelegations, @slashedPending <- strippedPendingCh) {
+                                           @(updatedPendingUndelegations, slashedPending) <- strippedPendingCh) {
                                         if (valBond + valDelegated + slashedPending <= 0) {
                                           stateUpdateCh!(state, (true, Nil))
                                         } else {
