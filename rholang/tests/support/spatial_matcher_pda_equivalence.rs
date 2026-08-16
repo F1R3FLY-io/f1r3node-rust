@@ -1,20 +1,29 @@
 //! Differential between the production PDA and the exact pre-PDA matcher.
 
-use std::collections::BTreeMap;
+#[path = "../../../models/tests/par_corpus/mod.rs"]
+mod par_corpus;
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use models::rhoapi::connective::ConnectiveInstance::{
     ConnAndBody, ConnInt, ConnNotBody, ConnOrBody,
 };
 use models::rhoapi::expr::ExprInstance::EPathmapBody;
 use models::rhoapi::{
-    Connective, ConnectiveBody, EPathMap, ETuple, Expr, KeyValuePair, New, Par, Receive,
-    ReceiveBind, Send,
+    Connective, ConnectiveBody, DeployId, DeployerId, EPathMap, ETuple, Expr, KeyValuePair, New,
+    PCost, Par, Receive, ReceiveBind, Send,
 };
+use models::rust::rholang::match_path::{encode_match_path, encode_par_match_path};
+use models::rust::rholang::match_schema::{RhoPathCursor, RhoPathEvent};
+use models::rust::rholang::match_schema_tables::{ParCursor, RHO_MATCH_REGISTRY};
 use models::rust::utils::{
     new_elist_par, new_emap_par, new_eset_par, new_etuple_par, new_freevar_expr, new_freevar_par,
     new_gint_par, new_gstring_par, new_wildcard_par,
 };
+use pathmap::PathMap;
+use rspace_plus_plus::rspace::rho_path::{encode_structural_sequence, RhoPathQuery};
 
+use super::r#match::{rho_path_query_atom, rho_path_query_cursor_atom};
 use super::recursive_oracle::spatial_matcher::{
     SpatialMatcher as RecursiveSpatialMatcher, SpatialMatcherContext as RecursiveContext,
 };
@@ -31,10 +40,158 @@ fn compare(label: &str, target: Par, pattern: Par) {
         .is_some();
     let recursive_map = recursive.free_map;
 
+    if recursive_verdict {
+        let mut captures = PathMap::new();
+        if let Some(atom) = rho_path_query_atom(&pattern, &mut captures) {
+            let encoded_target = encode_par_match_path(&target);
+            let target_structure = encode_structural_sequence([encoded_target.as_slice()]);
+            let query = RhoPathQuery::structural_sequence([atom], false);
+            assert!(
+                query.matches_structure(&target_structure),
+                "{label}: a compiled RhoPath query rejected a recursive-oracle success"
+            );
+        }
+    }
+
     let mut pda = SpatialMatcherContext::new();
     let pda_verdict = pda.spatial_match(target, pattern).is_some();
     assert_eq!(pda_verdict, recursive_verdict, "{label}: verdict");
     assert_eq!(pda.free_map, recursive_map, "{label}: FreeMap");
+}
+
+fn cover_generated_query_root(
+    case: &str,
+    root: ParCursor<'_>,
+    observed: &mut BTreeSet<&'static str>,
+    compiled: &mut usize,
+) {
+    for event in RhoPathCursor::new(root) {
+        let RhoPathEvent::EnterNode { cursor, program } = event else {
+            continue;
+        };
+        observed.insert(program.type_name);
+        let encoded = encode_match_path(cursor);
+        let structure = encode_structural_sequence([encoded.as_slice()]);
+        let mut captures = PathMap::new();
+        let atom = rho_path_query_cursor_atom(cursor, true, &mut captures)
+            .unwrap_or_else(|| panic!("{case}/{}: exact cursor query", program.type_name));
+        let query = RhoPathQuery::structural_sequence([atom], false);
+        assert!(
+            query.matches_structure(&structure),
+            "{case}/{}: exact generated cursor identity",
+            program.type_name
+        );
+        *compiled += 1;
+    }
+}
+
+#[test]
+fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
+    let expected = RHO_MATCH_REGISTRY
+        .iter()
+        .map(|(_, program)| program.type_name)
+        .collect::<BTreeSet<_>>();
+    let mut observed = BTreeSet::new();
+    let mut compiled = 0usize;
+
+    for (case, par) in par_corpus::par_corpus() {
+        cover_generated_query_root(
+            &format!("Par/{case}"),
+            ParCursor::from(&par),
+            &mut observed,
+            &mut compiled,
+        );
+    }
+    for (case, root) in par_corpus::list_par_with_random_corpus() {
+        cover_generated_query_root(
+            &format!("ListParWithRandom/{case}"),
+            ParCursor::from(&root),
+            &mut observed,
+            &mut compiled,
+        );
+    }
+    for (case, root) in par_corpus::bind_pattern_corpus() {
+        cover_generated_query_root(
+            &format!("BindPattern/{case}"),
+            ParCursor::from(&root),
+            &mut observed,
+            &mut compiled,
+        );
+    }
+    for (case, root) in par_corpus::tagged_continuation_corpus() {
+        cover_generated_query_root(
+            &format!("TaggedContinuation/{case}"),
+            ParCursor::from(&root),
+            &mut observed,
+            &mut compiled,
+        );
+    }
+    for (case, root) in par_corpus::par_with_random_corpus() {
+        cover_generated_query_root(
+            &format!("ParWithRandom/{case}"),
+            ParCursor::from(&root),
+            &mut observed,
+            &mut compiled,
+        );
+    }
+    for (case, root) in par_corpus::list_bind_patterns_corpus() {
+        cover_generated_query_root(
+            &format!("ListBindPatterns/{case}"),
+            ParCursor::from(&root),
+            &mut observed,
+            &mut compiled,
+        );
+    }
+
+    let cost = PCost::default();
+    cover_generated_query_root(
+        "PCost/default",
+        ParCursor::from(&cost),
+        &mut observed,
+        &mut compiled,
+    );
+    let deploy_id = DeployId::default();
+    cover_generated_query_root(
+        "DeployId/default",
+        ParCursor::from(&deploy_id),
+        &mut observed,
+        &mut compiled,
+    );
+    let deployer_id = DeployerId::default();
+    cover_generated_query_root(
+        "DeployerId/default",
+        ParCursor::from(&deployer_id),
+        &mut observed,
+        &mut compiled,
+    );
+
+    assert_eq!(
+        observed, expected,
+        "the query-compiler corpus must cover every generated schema program"
+    );
+    assert!(
+        compiled > expected.len(),
+        "the compiler differential must exercise repeated nested programs"
+    );
+
+    compare(
+        "formal bridge: ordered nested capture",
+        list(vec![new_gint_par(11, Vec::new(), false)], false),
+        list(vec![new_freevar_par(0, Vec::new())], true),
+    );
+    compare(
+        "formal bridge: generated Send capture",
+        send(
+            new_gint_par(7, Vec::new(), false),
+            vec![new_gint_par(11, Vec::new(), false)],
+            false,
+        ),
+        send(
+            new_freevar_par(0, Vec::new()),
+            vec![new_freevar_par(1, Vec::new())],
+            true,
+        ),
+    );
 }
 
 fn list(ps: Vec<Par>, connective_used: bool) -> Par {

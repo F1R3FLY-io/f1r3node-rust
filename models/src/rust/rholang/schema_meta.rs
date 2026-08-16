@@ -346,6 +346,25 @@ pub static BOUNDARY_PDA_EQUIVALENCE_EVIDENCE: &[BoundaryEquivalenceEvidence] = &
         executable_file: "rholang/tests/epathmap_spatial_match.rs",
         executable_marker: "map_match_subtracts_exact_pairs_and_binds_key_and_value",
     },
+    BoundaryEquivalenceEvidence {
+        surface: "models::RMP1 generated cursor encoder",
+        production_file: "models/src/rust/rholang/match_path.rs",
+        production_marker: "for event in RhoPathCursor::new(root)",
+        proof_file: PDA_PROOF,
+        theorem: "pda_fold_equivalent_to_recursive_fold",
+        executable_file: "models/tests/match_path_cursor.rs",
+        executable_marker: "decoded_tokens_canonically_reencode_every_schema_shape",
+    },
+    BoundaryEquivalenceEvidence {
+        surface: "rholang::RMP1 ordered query compiler",
+        production_file: "rholang/src/rust/interpreter/matcher/match.rs",
+        production_marker: "fn compile_ordered_nested_query(",
+        proof_file: "formal/rocq/stack_safe_pda/theories/SpatialMatcher.v",
+        theorem: "compiled_rho_path_query_preserves_spatial_success",
+        executable_file: "rholang/tests/support/spatial_matcher_pda_equivalence.rs",
+        executable_marker:
+            "compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success",
+    },
 ];
 
 /// A concrete EPathMap law proved in Rocq and exercised against the PathMap

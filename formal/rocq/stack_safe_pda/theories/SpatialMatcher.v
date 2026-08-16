@@ -253,3 +253,135 @@ Proof.
 Qed.
 
 End RetainedPathQuery.
+
+(** Concrete semantic bridge for the generated ordered RhoPath compiler.
+
+    [rho_value] abstracts one descriptor node after canonical RMP1 encoding.
+    Its [identity] is the complete canonical byte identity, [label] is the
+    generated message/variant tag, and [children] are the ordered descriptor
+    children.  Exact instructions compare identities, holes accept one complete
+    node, and ordered instructions recursively compare the generated label and
+    children.  Associative-commutative or otherwise unsupported patterns have
+    no compile derivation, which models the production fallback to the spatial
+    PDA.
+
+    The earlier retained-filter theorem consumes a no-false-negative premise.
+    The theorem below discharges that premise for every successfully compiled
+    exact/hole/ordered program.  The generic PDA fold theorem supplies the
+    separate recursive-to-iterative control equivalence. *)
+Section GeneratedRhoPathQueryCompiler.
+
+Inductive rho_value : Type :=
+| RhoValue : nat -> nat -> list rho_value -> rho_value.
+
+Inductive rho_pattern : Type :=
+| RhoExact : nat -> rho_pattern
+| RhoHole : rho_pattern
+| RhoOrdered : nat -> list rho_pattern -> rho_pattern
+| RhoUnsupported : rho_pattern.
+
+Inductive rho_query : Type :=
+| QueryExact : nat -> rho_query
+| QueryHole : rho_query
+| QueryOrdered : nat -> list rho_query -> rho_query.
+
+Inductive rho_query_compiles : rho_pattern -> rho_query -> Prop :=
+| CompileExact :
+    forall identity,
+      rho_query_compiles (RhoExact identity) (QueryExact identity)
+| CompileHole :
+    rho_query_compiles RhoHole QueryHole
+| CompileOrdered :
+    forall label patterns queries,
+      rho_queries_compile patterns queries ->
+      rho_query_compiles
+        (RhoOrdered label patterns)
+        (QueryOrdered label queries)
+with rho_queries_compile : list rho_pattern -> list rho_query -> Prop :=
+| CompileNil : rho_queries_compile [] []
+| CompileCons :
+    forall pattern query patterns queries,
+      rho_query_compiles pattern query ->
+      rho_queries_compile patterns queries ->
+      rho_queries_compile (pattern :: patterns) (query :: queries).
+
+Inductive spatial_rho_accepts : rho_pattern -> rho_value -> Prop :=
+| SpatialExact :
+    forall identity label children,
+      spatial_rho_accepts
+        (RhoExact identity)
+        (RhoValue identity label children)
+| SpatialHole :
+    forall identity label children,
+      spatial_rho_accepts RhoHole (RhoValue identity label children)
+| SpatialOrdered :
+    forall identity label patterns values,
+      spatial_rho_accepts_list patterns values ->
+      spatial_rho_accepts
+        (RhoOrdered label patterns)
+        (RhoValue identity label values)
+with spatial_rho_accepts_list : list rho_pattern -> list rho_value -> Prop :=
+| SpatialNil : spatial_rho_accepts_list [] []
+| SpatialCons :
+    forall pattern value patterns values,
+      spatial_rho_accepts pattern value ->
+      spatial_rho_accepts_list patterns values ->
+      spatial_rho_accepts_list (pattern :: patterns) (value :: values).
+
+Inductive rho_query_accepts : rho_query -> rho_value -> Prop :=
+| QueryAcceptsExact :
+    forall identity label children,
+      rho_query_accepts
+        (QueryExact identity)
+        (RhoValue identity label children)
+| QueryAcceptsHole :
+    forall identity label children,
+      rho_query_accepts QueryHole (RhoValue identity label children)
+| QueryAcceptsOrdered :
+    forall identity label queries values,
+      rho_query_accepts_list queries values ->
+      rho_query_accepts
+        (QueryOrdered label queries)
+        (RhoValue identity label values)
+with rho_query_accepts_list : list rho_query -> list rho_value -> Prop :=
+| QueryAcceptsNil : rho_query_accepts_list [] []
+| QueryAcceptsCons :
+    forall query value queries values,
+      rho_query_accepts query value ->
+      rho_query_accepts_list queries values ->
+      rho_query_accepts_list (query :: queries) (value :: values).
+
+Theorem compiled_rho_path_query_preserves_spatial_success :
+  forall pattern query,
+    rho_query_compiles pattern query ->
+    forall value,
+      spatial_rho_accepts pattern value ->
+      rho_query_accepts query value
+with compiled_rho_path_queries_preserve_spatial_success :
+  forall patterns queries,
+    rho_queries_compile patterns queries ->
+    forall values,
+      spatial_rho_accepts_list patterns values ->
+      rho_query_accepts_list queries values.
+Proof.
+  - intros pattern query compiled.
+    destruct compiled.
+    + intros value accepted. inversion accepted; subst. constructor.
+    + intros value accepted. inversion accepted; subst. constructor.
+    + intros value accepted. inversion accepted; subst.
+      constructor.
+      eapply compiled_rho_path_queries_preserve_spatial_success; eauto.
+  - intros patterns queries compiled.
+    destruct compiled.
+    + intros values accepted. inversion accepted; subst. constructor.
+    + intros values accepted. inversion accepted; subst.
+      constructor.
+      * eapply compiled_rho_path_query_preserves_spatial_success; eauto.
+      * eapply compiled_rho_path_queries_preserve_spatial_success; eauto.
+Qed.
+
+Theorem unsupported_rho_path_patterns_fail_closed :
+  forall query, ~ rho_query_compiles RhoUnsupported query.
+Proof. intros query compiled. inversion compiled. Qed.
+
+End GeneratedRhoPathQueryCompiler.
