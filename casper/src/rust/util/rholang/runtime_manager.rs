@@ -164,6 +164,8 @@ impl ReplayLock {
                 > 0
             {
                 let ready = self.consensus_ready.notified();
+                tokio::pin!(ready);
+                ready.as_mut().enable();
                 if self
                     .consensus_waiters
                     .load(std::sync::atomic::Ordering::Acquire)
