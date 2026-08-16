@@ -716,13 +716,11 @@ pub fn merge(
     // base where scope-level dedup cannot see it, and without the seed the
     // scope copy re-applies and doubles the deploy's cells.
     sig_settled_in_base: &dyn Fn(&Bytes) -> Result<bool, CasperError>,
-    // True iff the sig's effect is already in the MAIN PARENT's committed
-    // state. Such chains are pinned: conflict resolution may not adjudicate
-    // them away, because a block whose state drops content its own main parent
-    // holds breaks the containment that makes block finality imply state
-    // finality — the spine says the content is settled while the state says it
-    // is gone (the bc35a3ad fork).
-    sig_in_main_parent_state: &dyn Fn(&Bytes) -> Result<bool, CasperError>,
+    // Blocks on the BASE's own lineage that at least one other parent has not
+    // seen — the base's contribution since the parents diverged. Bounded by
+    // branch divergence, not by finality lag. Empty for a single-parent block,
+    // which has nothing to merge against.
+    base_lineage_blocks: &HashSet<BlockHash>,
 ) -> Result<
     (
         Blake2b256Hash,
@@ -1111,33 +1109,47 @@ pub fn merge(
     let actual_seq_all = actual_set_vec;
     let late_seq_all = late_set_vec;
 
-    // Chains the MAIN PARENT's state already holds. These are in scope (they
-    // sit above the floor, so the base does not carry them) and are re-applied
-    // by this merge — but they must never be rejected by it. The main parent is
-    // the block's spine ancestor, so dropping its content is what lets a
-    // certified candidate end up in no live state.
-    #[allow(clippy::mutable_key_type)]
-    let mut pinned: HashSet<DeployChainIndex> = HashSet::new();
-    for chain in &actual_seq_all {
-        for deploy in &chain.deploys_with_cost.0 {
-            if is_system_deploy_id(&deploy.deploy_id) {
-                continue;
-            }
-            if sig_in_main_parent_state(&deploy.deploy_id)? {
-                pinned.insert(chain.clone());
-                break;
-            }
+    // The base's OWN contribution since the parents diverged, as one combined
+    // event log. `conflicts` compares two chains' event logs, and the base is
+    // not one of them — so once the base carries content of its own, nothing
+    // in conflict resolution can see it. An incoming chain's log was computed
+    // against a state that work is not in, so its surviving produce and the
+    // base's matching consume can land side by side un-COMM'd: a state no
+    // sequential execution reaches, and one that a later deploy can observe.
+    //
+    // A scope chain conflicting with the base loses by construction. The base
+    // is committed — it cannot be adjudicated away — so this is a decision, not
+    // a preference, and it needs no fallback.
+    let mut base_event_log =
+        rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::empty();
+    let mut base_lineage_sorted: Vec<&BlockHash> = base_lineage_blocks.iter().collect();
+    base_lineage_sorted.sort();
+    for block_hash in base_lineage_sorted {
+        for chain in index(block_hash)? {
+            base_event_log =
+                rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::combine(
+                    &base_event_log,
+                    &chain.event_log_index,
+                )
+                .map_err(CasperError::HistoryError)?;
         }
     }
-    if !pinned.is_empty() {
+    let (actual_seq_all, base_conflicting): (Vec<DeployChainIndex>, Vec<DeployChainIndex>) =
+        actual_seq_all.into_iter().partition(|chain| {
+            !merging_logic::are_conflicting(&chain.event_log_index, &base_event_log)
+        });
+    if !base_conflicting.is_empty() {
         tracing::debug!(
             target: "f1r3fly.merge.cpps",
-            step = "merge.pinned_main_parent_chains",
-            n_pinned = pinned.len(),
-            n_actual = actual_seq_all.len(),
-            "chains already committed in the main parent's state; not rejectable"
+            step = "merge.reject_conflicts_with_base",
+            n_rejected = base_conflicting.len(),
+            n_base_blocks = base_lineage_blocks.len(),
+            "scope chains conflicting with the base's own committed content"
         );
     }
+
+    #[allow(clippy::mutable_key_type)]
+    let pinned: HashSet<DeployChainIndex> = HashSet::new();
 
     struct BranchDerived {
         user_deploy_ids: HashSet<Bytes>,
@@ -1565,6 +1577,13 @@ pub fn merge(
         &split_unavailable,
     )
     .map_err(CasperError::HistoryError)?;
+
+    // Chains the base's own content precluded. Folded in here so they travel
+    // the ordinary rejection path — record, buffer, recovery — like any other
+    // adjudicated loser.
+    for chain in base_conflicting {
+        resolved.rejected.0.insert(chain);
+    }
 
     if unavailable_rejected_count > 0 {
         tracing::debug!(

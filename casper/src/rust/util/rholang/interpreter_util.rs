@@ -56,17 +56,27 @@ pub fn canonical_won_sigs(
     canonical_disposition_sigs(block_store, parents, earliest_block_number, true)
 }
 
-fn block_in_floor_merge_scope(
+/// True iff `hash`'s content is NOT already represented in the merge base's
+/// committed state, so this merge has to collect it.
+///
+/// The base is the block's MAIN PARENT. Its own history is in the base by
+/// construction; content it merged in from elsewhere sits in its state but not
+/// on its ancestry, and the settled-sig dedup drops those copies. The base
+/// itself is never in its own scope.
+fn block_in_base_merge_scope(
     dag: &KeyValueDagRepresentation,
     hash: &BlockHash,
-    floor_hash: &BlockHash,
-    floor_block_number: i64,
+    base_hash: &BlockHash,
+    base_block_number: i64,
 ) -> Result<bool, CasperError> {
+    if hash == base_hash {
+        return Ok(false);
+    }
     let meta = dag.lookup_unsafe(hash)?;
-    if meta.block_number > floor_block_number {
+    if meta.block_number > base_block_number {
         return Ok(true);
     }
-    Ok(!dag.is_dag_ancestor(hash, floor_hash)?)
+    Ok(!dag.is_dag_ancestor(hash, base_hash)?)
 }
 
 /// Per-sig canonical disposition facts over one operation's parent cone.
@@ -1321,9 +1331,114 @@ pub async fn compute_parents_post_state(
             };
             let floor_derive_ms = floor_derive_started.elapsed().as_millis();
 
+            // The merge base is the MAIN PARENT, not the floor. A block extends
+            // its main parent on the spine, so building its state from anywhere
+            // else is what lets the two come apart: the spine says the parent's
+            // content is there and the state says it is gone. Basing on the
+            // parent makes `state(B) >= state(parents[0])` hold by construction
+            // rather than by preference, and bounds the merge to the branches
+            // that actually diverged instead of replaying everything since
+            // finality.
+            //
+            // The floor is still derived — it is the finality clock, the bonds
+            // committee, and the validity-window key — it is just no longer the
+            // base.
+            let main_parent_hash = parent_hashes[0].clone();
+            let main_parent_block = block_store.get(&main_parent_hash)?.ok_or_else(|| {
+                CasperError::RuntimeError(format!(
+                    "main parent {} not in block store (DAG/store desync)",
+                    hex::encode(&main_parent_hash[..8.min(main_parent_hash.len())])
+                ))
+            })?;
+            let base_block_number = main_parent_block.body.state.block_number;
+
+            // Basing on the main parent inherits whatever the parent's state
+            // holds — including what it does NOT hold. A merge may legally
+            // reject a chain that is not yet settled in its own view; once that
+            // chain settles, a descendant basing on it would carry the omission
+            // forever, because the parent's own ancestry is out of scope.
+            //
+            // So the scope anchors at the main parent only while the parent's
+            // state actually contains the floor's settled content. When it does
+            // not, the anchor drops to the floor and the settled-sig dedup
+            // re-collects exactly what the base is missing — the repair the old
+            // floor-wide rebase performed on every merge, now paid for only
+            // when it is needed.
+            let mut containment_memo = crate::rust::finality::floor::IntroducedSigsMemo::new();
+            let base_holds_floor = crate::rust::finality::floor::state_contains(
+                &s.dag,
+                block_store,
+                &crate::rust::finality::floor::Floor {
+                    hash: main_parent_hash.clone(),
+                    block_number: base_block_number,
+                },
+                &crate::rust::finality::floor::Floor {
+                    hash: floor_hash.clone(),
+                    block_number: floor_block_number,
+                },
+                &mut containment_memo,
+            )?;
+            // The BASE moves with the anchor, not just the scope. Widening the
+            // scope alone is not enough: the base's own content cannot be
+            // adjudicated away, so a settled chain re-collected into scope would
+            // still lose to the very parent that wrongly dropped it. Settled
+            // content has to outrank the base, and the only way for that to hold
+            // is for the base not to be that parent.
+            let (scope_anchor_hash, scope_anchor_number) = if base_holds_floor {
+                (main_parent_hash.clone(), base_block_number)
+            } else {
+                tracing::debug!(
+                    target: "f1r3fly.merge.cpps",
+                    step = "compute_parents_post_state.BASE_FALLS_BACK_TO_FLOOR",
+                    main_parent = %hex::encode(&main_parent_hash[..8.min(main_parent_hash.len())]),
+                    floor = %hex::encode(&floor_hash[..8.min(floor_hash.len())]),
+                    "main parent's state lacks settled content; basing on the floor instead"
+                );
+                (floor_hash.clone(), floor_block_number)
+            };
+            // The base's own work since the parents diverged: blocks on its
+            // main-parent chain that at least one other parent has not seen.
+            // Bounded BELOW by the floor — anything at or under it is in every
+            // base by definition, so it can never be the base's distinct
+            // contribution. Without that bound a genesis co-parent (one bonded
+            // validator that has not spoken) makes "seen by every other parent"
+            // unsatisfiable and the walk runs to genesis.
+            let mut base_lineage_blocks: HashSet<BlockHash> = HashSet::new();
+            let mut cursor = Some(scope_anchor_hash.clone());
+            while let Some(hash) = cursor {
+                let number = s
+                    .dag
+                    .block_number_unsafe(&hash)
+                    .map_err(CasperError::KvStoreError)?;
+                if number <= floor_block_number {
+                    break;
+                }
+                let mut seen_by_every_other_parent = true;
+                for other in parent_hashes.iter().skip(1) {
+                    if !s.dag.is_dag_ancestor(&hash, other)? {
+                        seen_by_every_other_parent = false;
+                        break;
+                    }
+                }
+                if seen_by_every_other_parent {
+                    break;
+                }
+                base_lineage_blocks.insert(hash.clone());
+                cursor = s.dag.main_parent(&hash);
+            }
+
+            let anchor_block = block_store.get(&scope_anchor_hash)?.ok_or_else(|| {
+                CasperError::RuntimeError(format!(
+                    "merge base {} not in block store (DAG/store desync)",
+                    hex::encode(&scope_anchor_hash[..8.min(scope_anchor_hash.len())])
+                ))
+            })?;
+            let base_state =
+                Blake2b256Hash::from_bytes_prost(&anchor_block.body.state.post_state_hash);
+
             let include_visible_ancestor =
                 |hash: &BlockHash, dag: &KeyValueDagRepresentation| -> bool {
-                    block_in_floor_merge_scope(dag, hash, &floor_hash, floor_block_number)
+                    block_in_base_merge_scope(dag, hash, &scope_anchor_hash, scope_anchor_number)
                         .unwrap_or(false)
                 };
             // Get all ancestors of all parents (including the parents themselves)
@@ -1357,7 +1472,7 @@ pub async fn compute_parents_post_state(
                 None
             };
             visible_blocks.retain(|bh| {
-                block_in_floor_merge_scope(&s.dag, bh, &floor_hash, floor_block_number)
+                block_in_base_merge_scope(&s.dag, bh, &scope_anchor_hash, scope_anchor_number)
                     .unwrap_or(true)
             });
             if tracing::enabled!(target: "f1r3fly.merge.cpps", tracing::Level::DEBUG) {
@@ -1481,8 +1596,21 @@ pub async fn compute_parents_post_state(
                 scope_blocks = visible_blocks_len,
                 "merge.cpps: ensure_scope_mergeable_present begin"
             );
-            ensure_scope_mergeable_present(block_store, runtime_manager, &s.dag, &visible_blocks)
-                .await?;
+            // The base's own lineage blocks are indexed too — the merge builds
+            // their combined event log to see what the base already holds — but
+            // they are not in `visible_blocks`, so they need the same guarantee.
+            let mergeable_required: HashSet<BlockHash> = visible_blocks
+                .iter()
+                .chain(base_lineage_blocks.iter())
+                .cloned()
+                .collect();
+            ensure_scope_mergeable_present(
+                block_store,
+                runtime_manager,
+                &s.dag,
+                &mergeable_required,
+            )
+            .await?;
             tracing::debug!(
                 target: "f1r3fly.merge.cpps",
                 step = "compute_parents_post_state.ENSURE_MERGEABLE_POST",
@@ -1510,38 +1638,25 @@ pub async fn compute_parents_post_state(
             // its execution, so nothing deeper can hold its effect.
             let settled_walk_bound =
                 floor_block_number - s.on_chain_state.shard_conf.deploy_lifespan;
+            // The base is the main parent, so "already settled in the base"
+            // asks about the MAIN PARENT's state. This is what drops scope
+            // copies of content the parent merged in from elsewhere: those
+            // blocks are not on its ancestry, so the scope filter keeps them,
+            // but their effects are already in the base and re-applying would
+            // double them. The floor context's memo is keyed on the floor and
+            // cannot answer this question.
             let sig_settled_in_base = |sig: &Bytes| -> Result<bool, CasperError> {
-                match floor_ctx {
-                    Some(ctx) => ctx.effect_settled_in_floor(block_store, settled_walk_bound, sig),
-                    None => crate::rust::finality::deploy_lifecycle::effect_in_state_of(
-                        block_store,
-                        &floor_hash,
-                        sig,
-                        settled_walk_bound,
-                    ),
-                }
-            };
-            // The main parent's committed state pins its own chains against
-            // rejection. `parent_hashes[0]` is the spine ancestor this block
-            // extends, and `effect_in_state_of` walks its recorded state
-            // lineage — the same membership the floor probe above uses, asked
-            // of the main parent instead of the floor.
-            let main_parent_hash = parent_hashes.first().cloned();
-            let sig_in_main_parent_state = |sig: &Bytes| -> Result<bool, CasperError> {
-                match &main_parent_hash {
-                    Some(hash) => crate::rust::finality::deploy_lifecycle::effect_in_state_of(
-                        block_store,
-                        hash,
-                        sig,
-                        settled_walk_bound,
-                    ),
-                    None => Ok(false),
-                }
+                crate::rust::finality::deploy_lifecycle::effect_in_state_of(
+                    block_store,
+                    &main_parent_hash,
+                    sig,
+                    settled_walk_bound,
+                )
             };
             let merger_result = dag_merger::merge(
                 &s.dag,
-                &floor_hash,
-                &floor_state,
+                &scope_anchor_hash,
+                &base_state,
                 |hash: &BlockHash| -> Result<Vec<DeployChainIndex>, CasperError> {
                     let block_index = block_index_f(hash)?;
                     Ok(block_index.deploy_chains)
@@ -1553,7 +1668,7 @@ pub async fn compute_parents_post_state(
                 floor_block_number,
                 s.on_chain_state.shard_conf.deploy_lifespan,
                 &sig_settled_in_base,
-                &sig_in_main_parent_state,
+                &base_lineage_blocks,
             )?;
             let merge_ms = merge_started.elapsed().as_millis();
 
@@ -1785,7 +1900,7 @@ pub async fn compute_parents_post_state(
                 rejected_user: rejected_user_records,
                 rejected_slashes,
                 applied_from_scope: applied_user_sigs,
-                merge_base: Some(floor_hash.clone()),
+                merge_base: Some(scope_anchor_hash.clone()),
             };
             // The floor is a deterministic function of the block's justifications,
             // so the merged state is always cacheable (no snapshot-LFB fallback).
@@ -1885,7 +2000,7 @@ mod backstop_tests {
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::{
-        block_in_floor_merge_scope, canonical_dispositions, canonical_won_sigs,
+        block_in_base_merge_scope, canonical_dispositions, canonical_won_sigs,
         merge_scope_backstop_exceeded, rejected_sig_has_visible_non_source_win,
         retain_recoverable_rejected_deploys_for_buffer, suppress_already_recorded_rejections,
         MAX_FLOOR_DISTANCE_BLOCKS,
@@ -2254,7 +2369,7 @@ mod backstop_tests {
         .into_iter()
         .collect();
         visible_blocks.retain(|hash| {
-            block_in_floor_merge_scope(&dag, hash, &floor.block_hash, floor_block_number)
+            block_in_base_merge_scope(&dag, hash, &floor.block_hash, floor_block_number)
                 .expect("scope predicate")
         });
 

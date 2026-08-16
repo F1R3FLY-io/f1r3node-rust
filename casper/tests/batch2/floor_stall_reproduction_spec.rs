@@ -187,6 +187,22 @@ async fn a_stale_based_merge_keeps_its_main_parents_settled_content() {
     // C is M's MAIN parent: the settling block sits on M's spine while
     // M's state (based below C) drops its content.
     let m = mint_on_parents(&mut nodes[2], vec![c.clone(), e.clone()], "M").await;
+
+    // A block's STATE parent is what it records as its merge base, and it must
+    // be its MAIN parent. Basing below the main parent is what separates the
+    // spine from the state lineage in the first place: the block then extends
+    // C on the chain while building its state from somewhere C is not, and
+    // every guarantee that reads one and enforces the other comes apart.
+    // Keeping the main parent's CONTENT is a preference applied at some of the
+    // places content is chosen; making the main parent the BASE removes the
+    // question.
+    assert_eq!(
+        m.body.merge_base,
+        c.block_hash,
+        "M's recorded state parent is not its main parent C (got {:?})",
+        (!m.body.merge_base.is_empty()).then(|| hex::encode(&m.body.merge_base[..8])),
+    );
+
     let m_rejected = rejected_sigs(&m);
     assert!(
         !m_rejected.contains(&contender_x.sig),
