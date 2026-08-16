@@ -20,7 +20,8 @@ use super::recursive_oracle::spatial_matcher::{
 };
 use super::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
 use super::spatial_matcher_pda::{
-    match_par_list_with_stats, match_send_list_with_stats, send_target_index_shape,
+    match_par_list_with_stats, match_send_list_with_remainder_stats, match_send_list_with_stats,
+    send_target_index_shape,
 };
 
 fn compare(label: &str, target: Par, pattern: Par) {
@@ -644,6 +645,121 @@ fn production_list_pda_reuses_adjacent_duplicate_bag_identity() {
     assert_ne!(first.cmp(&second), std::cmp::Ordering::Equal);
 
     assert_eq!(send_target_index_shape(vec![first, second]), (2, 2));
+}
+
+#[test]
+fn production_list_pda_computes_remainder_as_bag_difference_without_filler_edges() {
+    const WIDTH: usize = 128;
+    let targets = (0..WIDTH)
+        .map(|index| {
+            send_value(
+                new_gint_par(index as i64, Vec::new(), false),
+                vec![new_gint_par((10_000 + index) as i64, Vec::new(), false)],
+                false,
+            )
+        })
+        .collect::<Vec<_>>();
+    let selected = targets[WIDTH - 1].clone();
+
+    let mut context = SpatialMatcherContext::new();
+    let (result, stats) = match_send_list_with_remainder_stats(
+        &mut context,
+        targets.clone(),
+        vec![selected.clone()],
+        0,
+    );
+
+    assert!(result.is_some());
+    assert_eq!(stats.target_index_builds, 1);
+    assert_eq!(stats.edge_evaluations, 1);
+    assert_eq!(stats.successful_edge_evaluations, 1);
+    assert_eq!(
+        context.free_map.get(&0),
+        Some(&models::par_from_default! {
+            sends: targets[..WIDTH - 1].to_vec(),
+            ..Default::default()
+        })
+    );
+
+    compare(
+        "Bag-difference remainder preserves the recursive oracle",
+        models::par_from_default! {
+            sends: targets,
+            ..Default::default()
+        },
+        models::par_from_default! {
+            sends: vec![selected],
+            exprs: vec![new_freevar_expr(0)],
+            connective_used: true,
+            ..Default::default()
+        },
+    );
+}
+
+#[test]
+fn production_list_pda_bag_residual_is_exhaustively_equivalent_at_small_width() {
+    let send_for = |value: usize| {
+        send_value(
+            new_gint_par(value as i64, Vec::new(), false),
+            vec![new_gint_par((100 + value) as i64, Vec::new(), false)],
+            false,
+        )
+    };
+    let sequence = |width: usize, bits: usize| {
+        (0..width)
+            .map(|position| send_for((bits >> position) & 1))
+            .collect::<Vec<_>>()
+    };
+
+    let mut cases = 0usize;
+    for target_width in 0..=4 {
+        for target_bits in 0..(1usize << target_width) {
+            for pattern_width in 0..=target_width {
+                for pattern_bits in 0..(1usize << pattern_width) {
+                    let targets = sequence(target_width, target_bits);
+                    let patterns = sequence(pattern_width, pattern_bits);
+                    compare(
+                        &format!(
+                            "Bag residual exhaustive target_width={target_width} target_bits={target_bits:#x} pattern_width={pattern_width} pattern_bits={pattern_bits:#x}"
+                        ),
+                        models::par_from_default! {
+                            sends: targets,
+                            ..Default::default()
+                        },
+                        models::par_from_default! {
+                            sends: patterns,
+                            exprs: vec![new_freevar_expr(0)],
+                            connective_used: true,
+                            ..Default::default()
+                        },
+                    );
+                    cases += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 651, "the bounded model must remain non-vacuous");
+
+    let ground = send_value(
+        new_gint_par(7, Vec::new(), false),
+        vec![new_gint_par(11, Vec::new(), false)],
+        false,
+    );
+    let open = send_value(new_freevar_par(9, Vec::new()), Vec::new(), true);
+    compare(
+        "Bag residual retains the predecessor's locally-free refusal",
+        models::par_from_default! {
+            sends: vec![ground.clone(), open],
+            connective_used: true,
+            ..Default::default()
+        },
+        models::par_from_default! {
+            sends: vec![ground],
+            exprs: vec![new_freevar_expr(0)],
+            connective_used: true,
+            ..Default::default()
+        },
+    );
 }
 
 #[test]

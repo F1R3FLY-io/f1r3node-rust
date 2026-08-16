@@ -103,6 +103,26 @@ pub(super) fn match_send_list_with_stats(
 }
 
 #[cfg(test)]
+pub(super) fn match_send_list_with_remainder_stats(
+    context: &mut SpatialMatcherContext,
+    targets: Vec<Send>,
+    patterns: Vec<Send>,
+    remainder: i32,
+) -> (Option<()>, RelationalMatchStats) {
+    LIST_RELATION_STATS.with(|stats| stats.set(RelationalMatchStats::default()));
+    let request = ListRequest::new(
+        targets.into_iter().map(MatchValue::Send).collect(),
+        patterns.into_iter().map(MatchValue::Send).collect(),
+        Merger::ParSends,
+        Some(remainder),
+        false,
+    );
+    let result = drive_job(context, Job::ListInit(request));
+    let stats = LIST_RELATION_STATS.with(Cell::get);
+    (result, stats)
+}
+
+#[cfg(test)]
 pub(super) fn send_target_index_shape(targets: Vec<Send>) -> (u128, usize) {
     let targets = targets
         .into_iter()
@@ -332,11 +352,17 @@ fn resume(
                 update_list_relation_stats(|stats| {
                     stats.successful_edge_evaluations += 1;
                 });
-                let pattern_index = machine
+                let pattern_index = match &machine
                     .search
                     .last()
                     .expect("a suspended list edge has a search frame")
-                    .pattern_index;
+                    .cursor
+                {
+                    ListSearchCursor::Term { pattern_index, .. } => *pattern_index,
+                    ListSearchCursor::Remainder { .. } => {
+                        unreachable!("a remainder edge never suspends in the spatial matcher")
+                    }
+                };
                 // The final fold already owns the attempt baseline. Retain
                 // only writes that differ from it instead of duplicating the
                 // complete FreeMap once per successful relation edge.
@@ -355,7 +381,7 @@ fn resume(
                 if candidate_was_seen {
                     Job::List(machine)
                 } else {
-                    (*machine).accept_edge(target_index, EdgeResult::Shared(produced))
+                    (*machine).accept_term_edge(target_index, EdgeResult::Shared(produced))
                 }
             } else {
                 Job::List(machine)
@@ -1420,12 +1446,6 @@ impl ListRequest {
     }
 }
 
-#[derive(Clone)]
-enum ListPattern {
-    Term(MatchValue),
-    Remainder,
-}
-
 enum ListCandidateDomain {
     All,
     Indexed(Box<[u64]>),
@@ -1573,16 +1593,42 @@ impl ListTargetIndex {
     }
 }
 
-struct ListAssignment {
-    pattern_index: usize,
-    free_map: EdgeResult<FreeMap>,
+enum ListAssignment {
+    Term {
+        pattern_index: usize,
+        free_map: EdgeResult<FreeMap>,
+    },
+    Remainder,
+}
+
+#[derive(Clone, Copy)]
+enum ListSearchPattern {
+    Term(usize),
+    Remainder,
+}
+
+enum ListSearchCursor {
+    Term {
+        pattern_index: usize,
+        relation_cursor: RelationCursor,
+    },
+    Remainder {
+        next_target: usize,
+    },
 }
 
 struct ListSearchFrame {
-    pattern_index: usize,
-    next_candidate: usize,
-    relation_cursor: RelationCursor,
-    pending: Option<(usize, EdgeResult<FreeMap>)>,
+    cursor: ListSearchCursor,
+    pending: Option<(usize, ListAssignment)>,
+}
+
+impl ListSearchFrame {
+    fn pattern(&self) -> ListSearchPattern {
+        match self.cursor {
+            ListSearchCursor::Term { pattern_index, .. } => ListSearchPattern::Term(pattern_index),
+            ListSearchCursor::Remainder { .. } => ListSearchPattern::Remainder,
+        }
+    }
 }
 
 /// Per-augmenting-search visitation state.
@@ -1667,7 +1713,7 @@ impl ListSeenTargets {
 struct ListMachine {
     targets: Arc<[MatchValue]>,
     target_index: Option<ListTargetIndex>,
-    patterns: Arc<[ListPattern]>,
+    patterns: Arc<[MatchValue]>,
     candidate_domains: Box<[ListCandidateDomain]>,
     assignments: Vec<Option<ListAssignment>>,
     root_pattern: usize,
@@ -1732,25 +1778,20 @@ fn init_list(
         }
     }
 
-    let remainder_count = request
-        .remainder
-        .map(|_| target_len - pattern_len)
-        .unwrap_or(0);
-    let mut patterns = Vec::with_capacity(remainder_count + pattern_len);
-    if let Some(level) = request.remainder {
-        let _ = level;
-        patterns.extend((0..remainder_count).map(|_| ListPattern::Remainder));
-    }
-    patterns.extend(request.patterns.into_iter().map(ListPattern::Term));
+    // Remainders are the Bag difference after the structural obligations have
+    // matched. Representing each residual occurrence as a universal filler
+    // vertex creates a dense artificial relation and Θ((T-P)·T) initial work.
+    // Quotient those indistinguishable filler vertices into `Remainder`
+    // occupancy: seed the same first locally-free positions that predecessor
+    // Kuhn traversal selected, and use one generic heap-PDA search state when
+    // a term displaces an occupant. `finish_list` then computes authoritative
+    // residual multiplicities with Bag subtraction while original positions
+    // remain only the deterministic ordering witness.
+    let patterns = request.patterns;
     let mut captures = PathMap::new();
     let queries = patterns
         .iter()
-        .map(|pattern| {
-            let ListPattern::Term(pattern) = pattern else {
-                return None;
-            };
-            pattern.rho_path_query(context, &mut captures)
-        })
+        .map(|pattern| pattern.rho_path_query(context, &mut captures))
         .collect::<Box<[_]>>();
     let needs_target_index = request.remainder.is_some()
         || queries
@@ -1777,17 +1818,29 @@ fn init_list(
                 .map_or(ListCandidateDomain::All, ListCandidateDomain::Indexed)
         })
         .collect::<Box<[_]>>();
-    let relation = LazyRelation::new(
-        patterns
-            .iter()
-            .map(|pattern| matches!(pattern, ListPattern::Term(_))),
-    );
+    let relation = LazyRelation::new(std::iter::repeat_n(true, patterns.len()));
 
     let seen_targets = ListSeenTargets::new(target_index.as_ref(), target_len);
+    let mut assignments = (0..target_len).map(|_| None).collect::<Vec<_>>();
+    if request.remainder.is_some() {
+        let mut remaining = target_len - pattern_len;
+        for (target, assignment) in request.targets.iter().zip(assignments.iter_mut()) {
+            if remaining == 0 {
+                break;
+            }
+            if target.locally_free_is_empty(context) {
+                *assignment = Some(ListAssignment::Remainder);
+                remaining -= 1;
+            }
+        }
+        if remaining != 0 {
+            return Job::Return(false);
+        }
+    }
     let mut machine = ListMachine {
         targets: request.targets.into(),
         target_index,
-        assignments: (0..target_len).map(|_| None).collect(),
+        assignments,
         patterns: patterns.into(),
         candidate_domains,
         root_pattern: 0,
@@ -1804,20 +1857,25 @@ fn init_list(
 }
 
 impl ListMachine {
-    fn push_search(&mut self, pattern_index: usize) {
+    fn push_search(&mut self, pattern: ListSearchPattern) {
         #[cfg(test)]
         update_list_relation_stats(|stats| {
             stats.augmenting_frames += 1;
-            if self.relation.is_cacheable(pattern_index)
-                && self.relation.has_scanned_targets(pattern_index)
-            {
-                stats.relation_row_reuses += 1;
+            if let ListSearchPattern::Term(pattern_index) = pattern {
+                if self.relation.has_scanned_targets(pattern_index) {
+                    stats.relation_row_reuses += 1;
+                }
             }
         });
+        let cursor = match pattern {
+            ListSearchPattern::Term(pattern_index) => ListSearchCursor::Term {
+                pattern_index,
+                relation_cursor: self.relation.cursor(pattern_index),
+            },
+            ListSearchPattern::Remainder => ListSearchCursor::Remainder { next_target: 0 },
+        };
         self.search.push(ListSearchFrame {
-            pattern_index,
-            next_candidate: 0,
-            relation_cursor: self.relation.cursor(pattern_index),
+            cursor,
             pending: None,
         });
     }
@@ -1825,41 +1883,60 @@ impl ListMachine {
     fn start_next_root(&mut self) {
         if self.root_pattern < self.patterns.len() {
             self.seen_targets.reset();
-            self.push_search(self.root_pattern);
+            self.push_search(ListSearchPattern::Term(self.root_pattern));
         }
     }
 
-    fn accept_edge(mut self, target_index: usize, free_map: EdgeResult<FreeMap>) -> Job {
+    fn accept_term_edge(self, target_index: usize, free_map: EdgeResult<FreeMap>) -> Job {
+        let ListSearchPattern::Term(pattern_index) = self
+            .search
+            .last()
+            .expect("an accepted term edge has a search frame")
+            .pattern()
+        else {
+            unreachable!("a remainder frame cannot accept a term edge")
+        };
+        self.accept_edge(target_index, ListAssignment::Term {
+            pattern_index,
+            free_map,
+        })
+    }
+
+    fn accept_remainder_edge(self, target_index: usize) -> Job {
+        self.accept_edge(target_index, ListAssignment::Remainder)
+    }
+
+    fn accept_edge(mut self, target_index: usize, assignment: ListAssignment) -> Job {
         self.seen_targets
             .insert(self.target_index.as_ref(), target_index);
-        let frame = self
-            .search
-            .last_mut()
-            .expect("an accepted list edge has a search frame");
-        match self.assignments[target_index].as_ref() {
+        let displaced = self.assignments[target_index]
+            .as_ref()
+            .map(|previous| match previous {
+                ListAssignment::Term { pattern_index, .. } => {
+                    ListSearchPattern::Term(*pattern_index)
+                }
+                ListAssignment::Remainder => ListSearchPattern::Remainder,
+            });
+        match displaced {
             None => {
-                self.assignments[target_index] = Some(ListAssignment {
-                    pattern_index: frame.pattern_index,
-                    free_map,
-                });
+                self.assignments[target_index] = Some(assignment);
                 self.search.pop();
                 while let Some(mut parent) = self.search.pop() {
-                    let (parent_target, parent_map) = parent
+                    let (parent_target, parent_assignment) = parent
                         .pending
                         .take()
                         .expect("an augmenting list parent has one displaced edge");
-                    self.assignments[parent_target] = Some(ListAssignment {
-                        pattern_index: parent.pattern_index,
-                        free_map: parent_map,
-                    });
+                    self.assignments[parent_target] = Some(parent_assignment);
                 }
                 self.root_pattern += 1;
                 self.start_next_root();
                 Job::List(Box::new(self))
             }
-            Some(previous) => {
-                let displaced = previous.pattern_index;
-                frame.pending = Some((target_index, free_map));
+            Some(displaced) => {
+                self.search
+                    .last_mut()
+                    .expect("an accepted list edge has a search frame")
+                    .pending = Some((target_index, assignment));
                 self.push_search(displaced);
                 Job::List(Box::new(self))
             }
@@ -1877,127 +1954,145 @@ fn step_list(
     }
 
     loop {
-        let Some(pattern_index) = machine.search.last().map(|frame| frame.pattern_index) else {
+        let Some(search_pattern) = machine.search.last().map(ListSearchFrame::pattern) else {
             return Job::Return(false);
         };
 
-        let cacheable = machine.relation.is_cacheable(pattern_index);
-        let target_index = if cacheable {
-            loop {
-                let cached = {
+        if matches!(search_pattern, ListSearchPattern::Remainder) {
+            let target_index = loop {
+                let next = {
                     let frame = machine
                         .search
                         .last_mut()
-                        .expect("the relational list row has a search frame");
-                    machine
-                        .relation
-                        .next_cached(pattern_index, &mut frame.relation_cursor)
+                        .expect("the remainder search has a frame");
+                    let ListSearchCursor::Remainder { next_target } = &mut frame.cursor else {
+                        unreachable!("a remainder search has a remainder cursor")
+                    };
+                    if *next_target == machine.targets.len() {
+                        None
+                    } else {
+                        let current = *next_target;
+                        *next_target += 1;
+                        Some(current)
+                    }
                 };
-                match cached {
-                    Some((target_index, produced))
-                        if !machine
-                            .seen_targets
-                            .contains(machine.target_index.as_ref(), target_index) =>
-                    {
-                        #[cfg(test)]
-                        update_list_relation_stats(|stats| stats.cached_edge_visits += 1);
-                        return machine.accept_edge(target_index, EdgeResult::Shared(produced));
-                    }
-                    Some(_) => {
-                        #[cfg(test)]
-                        update_list_relation_stats(|stats| stats.cached_edge_visits += 1);
-                        continue;
-                    }
-                    None => break,
-                }
-            }
-
-            let candidate_domain = &machine.candidate_domains[pattern_index];
-            let Some(candidate_index) = machine
-                .relation
-                .next_unscanned(pattern_index, candidate_domain.len(machine.targets.len()))
-            else {
-                machine.search.pop();
-                if let Some(parent) = machine.search.last_mut() {
-                    parent.pending = None;
+                let Some(target_index) = next else {
+                    break None;
+                };
+                if machine
+                    .seen_targets
+                    .contains(machine.target_index.as_ref(), target_index)
+                {
                     continue;
                 }
-                return Job::Return(false);
+                #[cfg(test)]
+                update_list_relation_stats(|stats| stats.edge_evaluations += 1);
+                if machine.targets[target_index].locally_free_is_empty(context) {
+                    #[cfg(test)]
+                    update_list_relation_stats(|stats| {
+                        stats.successful_edge_evaluations += 1;
+                    });
+                    break Some(target_index);
+                }
             };
-            candidate_domain.target_at(candidate_index)
-        } else {
-            let frame = machine
-                .search
-                .last_mut()
-                .expect("the non-cacheable list row has a search frame");
-            let candidate_domain = &machine.candidate_domains[pattern_index];
-            if frame.next_candidate == candidate_domain.len(machine.targets.len()) {
-                machine.search.pop();
-                if let Some(parent) = machine.search.last_mut() {
-                    parent.pending = None;
-                    continue;
-                }
-                return Job::Return(false);
+            if let Some(target_index) = target_index {
+                return machine.accept_remainder_edge(target_index);
             }
-            let target_index = candidate_domain.target_at(frame.next_candidate);
-            frame.next_candidate += 1;
-            if machine
-                .seen_targets
-                .contains(machine.target_index.as_ref(), target_index)
-            {
+            machine.search.pop();
+            if let Some(parent) = machine.search.last_mut() {
+                parent.pending = None;
                 continue;
             }
-            target_index
+            return Job::Return(false);
+        }
+
+        let ListSearchPattern::Term(pattern_index) = search_pattern else {
+            unreachable!("the remainder search returned above")
         };
+
+        loop {
+            let cached = {
+                let frame = machine
+                    .search
+                    .last_mut()
+                    .expect("the relational list row has a search frame");
+                let ListSearchCursor::Term {
+                    relation_cursor, ..
+                } = &mut frame.cursor
+                else {
+                    unreachable!("a term search has a relational cursor")
+                };
+                machine.relation.next_cached(pattern_index, relation_cursor)
+            };
+            match cached {
+                Some((target_index, produced))
+                    if !machine
+                        .seen_targets
+                        .contains(machine.target_index.as_ref(), target_index) =>
+                {
+                    #[cfg(test)]
+                    update_list_relation_stats(|stats| stats.cached_edge_visits += 1);
+                    return machine.accept_term_edge(target_index, EdgeResult::Shared(produced));
+                }
+                Some(_) => {
+                    #[cfg(test)]
+                    update_list_relation_stats(|stats| stats.cached_edge_visits += 1);
+                    continue;
+                }
+                None => break,
+            }
+        }
+
+        let candidate_domain = &machine.candidate_domains[pattern_index];
+        let Some(candidate_index) = machine
+            .relation
+            .next_unscanned(pattern_index, candidate_domain.len(machine.targets.len()))
+        else {
+            machine.search.pop();
+            if let Some(parent) = machine.search.last_mut() {
+                parent.pending = None;
+                continue;
+            }
+            return Job::Return(false);
+        };
+        let target_index = candidate_domain.target_at(candidate_index);
 
         let candidate_was_seen = machine
             .seen_targets
             .contains(machine.target_index.as_ref(), target_index);
         #[cfg(test)]
         update_list_relation_stats(|stats| stats.edge_evaluations += 1);
-        match &machine.patterns[pattern_index] {
-            ListPattern::Remainder => {
-                if machine.targets[target_index].locally_free_is_empty(context) {
-                    #[cfg(test)]
-                    update_list_relation_stats(|stats| {
-                        stats.successful_edge_evaluations += 1;
-                    });
-                    let produced = new_free_map();
-                    return machine.accept_edge(target_index, EdgeResult::Owned(produced));
-                }
-            }
-            ListPattern::Term(pattern) if !pattern.connective_used(context) => {
-                if &machine.targets[target_index] == pattern {
-                    #[cfg(test)]
-                    update_list_relation_stats(|stats| {
-                        stats.successful_edge_evaluations += 1;
-                    });
-                    let produced = machine.relation.record_shared_success(
-                        pattern_index,
-                        target_index,
-                        Rc::clone(&machine.empty_delta),
-                    );
-                    if !candidate_was_seen {
-                        return machine.accept_edge(target_index, EdgeResult::Shared(produced));
-                    }
-                }
-            }
-            ListPattern::Term(pattern) => {
-                let Some(pair) = machine.targets[target_index]
-                    .clone()
-                    .into_pair(pattern.clone())
-                else {
-                    continue;
-                };
-                let snapshot = context.free_map.clone();
-                frames.push(Frame::ListEdge {
-                    machine: Box::new(machine),
-                    target_index,
-                    candidate_was_seen,
-                    snapshot,
+        let pattern = &machine.patterns[pattern_index];
+        if !pattern.connective_used(context) {
+            if &machine.targets[target_index] == pattern {
+                #[cfg(test)]
+                update_list_relation_stats(|stats| {
+                    stats.successful_edge_evaluations += 1;
                 });
-                return match_job(pair);
+                let produced = machine.relation.record_shared_success(
+                    pattern_index,
+                    target_index,
+                    Rc::clone(&machine.empty_delta),
+                );
+                if !candidate_was_seen {
+                    return machine.accept_term_edge(target_index, EdgeResult::Shared(produced));
+                }
             }
+        } else {
+            let Some(pair) = machine.targets[target_index]
+                .clone()
+                .into_pair(pattern.clone())
+            else {
+                continue;
+            };
+            let snapshot = context.free_map.clone();
+            frames.push(Frame::ListEdge {
+                machine: Box::new(machine),
+                target_index,
+                candidate_was_seen,
+                snapshot,
+            });
+            return match_job(pair);
         }
     }
 }
@@ -2006,7 +2101,6 @@ fn finish_list(context: &mut SpatialMatcherContext, machine: ListMachine) -> Job
     let ListMachine {
         targets,
         target_index,
-        patterns,
         assignments,
         mut relation,
         merger,
@@ -2020,47 +2114,40 @@ fn finish_list(context: &mut SpatialMatcherContext, machine: ListMachine) -> Job
         target_index.as_ref().map(|target_index| {
             let mut consumed = Bag::new();
             for (target_position, assignment) in assignments.iter().enumerate() {
-                let Some(assignment) = assignment else {
+                if !matches!(assignment, Some(ListAssignment::Term { .. })) {
                     continue;
-                };
-                if matches!(patterns[assignment.pattern_index], ListPattern::Term(_)) {
-                    consumed
-                        .insert(&target_index.group_at_position(target_position).key)
-                        .expect("a successful assignment cannot exceed target multiplicity");
                 }
+                consumed
+                    .insert(&target_index.group_at_position(target_position).key)
+                    .expect("a successful assignment cannot exceed target multiplicity");
             }
             debug_assert!(consumed.is_subbag_of(&target_index.bag));
             target_index.bag.subtract(&consumed)
         })
     });
 
-    let mut ordered: Vec<_> = assignments
-        .into_iter()
-        .enumerate()
-        .filter_map(|(target_index, assignment)| {
-            assignment.map(|assignment| (target_index, assignment))
-        })
-        .collect();
-    ordered.sort_by(|(left_index, _), (right_index, _)| {
-        match targets[*left_index].cmp(&targets[*right_index]) {
-            Ordering::Equal => left_index.cmp(right_index),
-            order => order,
-        }
-    });
     let mut remainder_target_indices = vec![false; targets.len()];
     if let (Some(mut residual), Some(target_index)) = (bag_remainder, target_index.as_ref()) {
-        for (position, is_remainder) in remainder_target_indices.iter_mut().enumerate() {
-            let key = &target_index.group_at_position(position).key;
-            if residual.contains(key) {
+        for (position, (assignment, is_remainder)) in assignments
+            .iter()
+            .zip(remainder_target_indices.iter_mut())
+            .enumerate()
+        {
+            if matches!(assignment, Some(ListAssignment::Remainder)) {
+                let key = &target_index.group_at_position(position).key;
+                assert!(
+                    residual.contains(key),
+                    "an unassigned position must remain in the authoritative Bag residual"
+                );
                 let _ = residual.remove(key);
                 *is_remainder = true;
             }
         }
         debug_assert!(residual.is_empty());
     } else {
-        for (target_index, assignment) in &ordered {
-            if matches!(patterns[assignment.pattern_index], ListPattern::Remainder) {
-                remainder_target_indices[*target_index] = true;
+        for (target_index, assignment) in assignments.iter().enumerate() {
+            if matches!(assignment, Some(ListAssignment::Remainder)) {
+                remainder_target_indices[target_index] = true;
             }
         }
     }
@@ -2071,9 +2158,30 @@ fn finish_list(context: &mut SpatialMatcherContext, machine: ListMachine) -> Job
         .map(|(_, target)| target)
         .cloned()
         .collect::<Vec<_>>();
+    if remainder.is_some()
+        && !remainder_sorted
+            .iter()
+            .all(|target| target.locally_free_is_empty(context))
+    {
+        return Job::Return(false);
+    }
+    let mut ordered: Vec<_> = assignments
+        .into_iter()
+        .enumerate()
+        .filter_map(|(target_index, assignment)| match assignment {
+            Some(ListAssignment::Term { free_map, .. }) => Some((target_index, free_map)),
+            Some(ListAssignment::Remainder) | None => None,
+        })
+        .collect();
+    ordered.sort_by(|(left_index, _), (right_index, _)| {
+        match targets[*left_index].cmp(&targets[*right_index]) {
+            Ordering::Equal => left_index.cmp(right_index),
+            order => order,
+        }
+    });
     let maps = ordered
         .into_iter()
-        .map(|(_, assignment)| assignment.free_map.into_owned())
+        .map(|(_, free_map)| free_map.into_owned())
         .collect::<Vec<_>>();
     let Some(updated) = aggregate_updates(context.free_map.clone(), maps) else {
         return Job::Return(false);
