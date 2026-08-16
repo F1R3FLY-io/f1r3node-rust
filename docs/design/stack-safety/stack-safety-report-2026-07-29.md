@@ -14,8 +14,8 @@
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
 **Report date** 2026-07-29, revised through 2026-08-16
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
-**Living closure head** `f1r3node-rust-mettail@b6b53d1b3` (ordered nested RMP1 query PDA and
-direct Bag/position PathMap prefix product, following sparse relational-row reuse in the
+**Living closure head** `f1r3node-rust-mettail@e1a587c9f` (shared datum-first/receive-first
+RhoPath queries in retained PathMap automata and the Bag/position product, following sparse relational-row reuse in the
 production spatial-matcher pushdown automaton (PDA), complete-message protobuf ingress bounds, `InterpreterError`
 lifecycle machine, reducer method-replay machine, exact recursion census, production lint gate,
 prior matcher/PathMap closure, D-E4 evidence reconciliation, and positional AC-remainder repair)
@@ -3340,6 +3340,16 @@ production `rholang` library strict lint pass. The aggregate Rholang `mod` test 
 by 70 pre-existing `useless_vec` findings in unrelated legacy tests. No standalone RSS or comparative
 latency result is inferred from these executable gates.
 
+Checkpoint `e1a587c9f` reuses that stack-safe query machine in the datum-first retained automaton.
+Each waiting pattern is stored at its longest exact structural prefix in the existing
+`PathMap<TerminalId>` segment. The iterative zipper walk reaches only terminals on the fresh datum's
+prefix chain; a residual query then validates wildcard/capture structure on borrowed canonical bytes
+before the spatial matcher. Unsupported patterns remain root terminals. There is no fresh-datum Bag,
+query-trie clone, recursive traversal, or decoded `Par` projection. The combined production pruning
+suite passes **9/9**; its canonically last 256-receive witness preserves the COMM result, event trace,
+and post-state map while reducing spatial calls from 256 to 1. Focused strict lint passes. Resource
+slopes and the expanded benchmark matrix remain open and are not inferred from test elapsed time.
+
 ##### 5.16.5.4 Results
 
 The original SS-A11 depth measurements ran under a user systemd scope with **3 GiB `MemoryHigh`, 4
@@ -3355,7 +3365,7 @@ swap, and two-core CPU quota**. **MEASURED:**
 | enabled-rendezvous suite | same semantic corpus | **10/10** | adds one multiset-distinct rendezvous for indistinguishable duplicate occurrences |
 | data-index suite | pre-PathMap candidate pool absent | **15/15** | subtrie multiplicity, exact addresses, reversible Fresh reservation, cross-pool lazy-decode reuse, persistent reactivation, and permanent removal |
 | complete `rspace_plus_plus` package checkpoint | n/a — acceptance total | **372 passed / 0 failed** | all package test binaries at the shared-catalog and hot-lookup checkpoint |
-| retained PathMap automaton selection | no production prefilter | **3/3** | exact terminals, root fallbacks, repeated positions, direct-match-superset gate, and 4,096-candidate shared-terminal chain |
+| retained PathMap automaton selection | no production prefilter | **4/4** | exact terminals, longest-exact query prefixes, post-wildcard residual filters, root fallbacks, repeated positions, direct-match-superset gate, and 4,096-candidate shared-terminal chain |
 | continuation-version lifecycle | no compiled automaton cache | **2/2** | group-local insert/remove invalidation plus generation invalidation on replace/clear |
 | Rholang structural-path contract | no retained path hook | **3/3** | exact-ground equality/inequality and binding/connective fallback |
 | RSpace actions with retained indexing enabled | same 41-case semantic corpus | **41/41** | consume/produce, joins, persistence, checkpoint, reset, and soft-revert |
@@ -3365,7 +3375,8 @@ swap, and two-core CPU quota**. **MEASURED:**
 | generated Rholang matching cursor | no schema-complete cursor | **4/4 cursor cases plus 21/21 schema/exhaustiveness/registration cases** | all 58 descriptor messages and five oneofs are generated from one pass; a 20,000-deep EList spine and a 20,000-wide term traverse on 256 KiB; EPathMap yields one native-trie delegation event without forcing its snapshot |
 | generated Rholang structural match path | canonical-path exact terms only | **3/3 encoder cases; 4/4 models RSpace-path cases; 7/7 Rholang compiler cases** | complete-schema deterministic tokens; canonical EPathMap digest golden and insertion-order witness; deliberate value-insensitive false-positive lane; 20,000-deep/wide encoding on 256 KiB; exact/whole-term/ordered-nested production query paths agree with the spatial oracle |
 | encoded `RMP1` validation/navigation | no byte-side schema validator | **3/3 byte-cursor cases plus 4/4 generated-schema cases** | descriptor-exact fields, child types, and oneof payloads; malformed classes fail closed; all exhaustive-corpus node subtrees validate; 20,000-level validation and deepest-subtree extent discovery complete on 256 KiB |
-| nested `RMP1` instruction PDA | unpruned nested spatial scan | **9/9 framing/query cases plus the 8/8 product suite** | one- and two-layer escaping; every small truncation rejected; 20,000 levels on 128 KiB; zero-heavy 256-candidate result equivalence with 256-to-1 spatial pruning |
+| nested `RMP1` instruction PDA | unpruned nested spatial scan | **9/9 framing/query cases plus the 8/8 product suite** | one- and two-layer escaping; every tested shallow token truncation rejected; 20,000 levels on 128 KiB; zero-heavy 256-candidate result equivalence with 256-to-1 spatial pruning |
+| datum-first retained structural queries | root fallback for every non-ground pattern | **9/9 combined production pruning cases** | identical COMM result/event trace/post-state map and 256-to-1 spatial calls for a canonically last waiting receive; unsupported patterns remain root fallbacks |
 | retained waiting-receive throughput | full canonical candidate scan | **23.2–44.6% more COMMs/s** | six treatment pairs; 51 samples/arm; 99% confidence; 16/256/4,096 receives; diverse/shared prefixes |
 | resting-data prefix throughput | full canonical candidate scan | **48.7–53.4% more COMMs/s at 16; 12.22–13.01× at 256; 238.8–256.9× at 4,096** | post-repair eight-pair matrix; 51 samples/arm; 99% confidence; singleton arms are non-regressing because zero/one physical candidates use the direct scan |
 | singleton repair package gate | pre-repair indexed singleton | **392 passed / 0 failed** | full `rspace_plus_plus` package under 5 GiB, zero swap; focused pruning suite is 5/5 |
@@ -3502,6 +3513,13 @@ frame therefore fails the production differential. The selected nested target is
 so the control must make 256 spatial calls while the product makes one and returns the same result.
 Every proper truncation of a shallow token stream is rejected, and the 20,000-level/128 KiB test
 fails if native recursion or a fixed traversal cap is reintroduced.
+
+The datum-first refinement uses the same canonically-last construction against 256 persistent
+waiting receives. The control arm must visit all 256; the retained-query arm must visit one; both
+must return the same COMM and leave byte-equivalent event and state projections. A residual exact
+term after a wildcard separately forces the terminal query to run rather than treating its retained
+prefix as a complete verdict. Root fallback and the 4,096-terminal chain prevent unsupported or
+shared-root candidates from being pruned vacuously.
 
 #### 5.16.6 Sparse relational-row reuse inside the production PDA [SS-A10 refinement]
 

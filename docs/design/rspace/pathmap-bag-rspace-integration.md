@@ -6,7 +6,7 @@ Campaign: `campaign-4131-rspace-pathmap-integration`
 
 Experiment: `rspace-pathmap-end-to-end-layout-2026-08-15`
 Last updated: 2026-08-16
-Current implementation checkpoint: `b6b53d1b3`
+Current implementation checkpoint: `e1a587c9f`
 
 ## Purpose and scope
 
@@ -52,7 +52,7 @@ The layout experiment remains open until the preregistered A/B/C comparison sele
 | Multiplicity-native matching pools | `5329b27a3` | exact-path firing; reversible Bag reservations; fresh-datum addressing; repeated-channel duplicate tests | implemented |
 | Shared canonical candidate catalogs | `2eb0d3871` | one canonical order and one lazy decode cell per distinct record across channel-pool snapshots; multiplicity-only updates do not rebuild the catalog | implemented |
 | Single-lookup hot-store reads | `d50b1183d` | one encoded prefix and one loaded-store read lock per hot pool/data lookup; final performance verdict remains pending | implemented |
-| Retained receive automaton, exact-ground slice | `a89cbc294`, `f149cef2b`, `ea8c39f92`; benchmark `7bc5c6994`; pgmcp `rspace-retained-set-automaton` | one `PathMap<TerminalId>` transition segment per bind position; fixed-width terminal/candidate identifiers; root fallback terminals; group-local versioning; no trie clone on cache hits; 3/3 automaton, 2/2 lifecycle, 3/3 Rholang path, and 41/41 RSpace action tests; valid end-to-end treatment is 18.8–30.8% lower latency | implemented, equivalence campaign open |
+| Retained receive automaton, ordered query slice | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `e1a587c9f`; benchmark `7bc5c6994`; pgmcp `rspace-retained-set-automaton` | one `PathMap<TerminalId>` transition segment per bind position; supported queries reside at their longest exact structural prefix and residual wildcard/capture instructions run on canonical datum bytes; fixed-width terminal/candidate identifiers; root fallback terminals; group-local versioning; no trie clone on cache hits; 4/4 automaton, 2/2 lifecycle, 7/7 Rholang query, 41/41 RSpace action, and 9/9 dual-direction pruning tests; the ordered datum-first differential reduces spatial calls 256→1 with identical COMM/trace/state; earlier exact-ground treatment is 18.8–30.8% lower latency | ordered query prefilter implemented; full generated automaton, resource measurement, and equivalence campaign open |
 | Receive-first Bag/query product | `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`; pgmcp `rspace-pattern-over-pathmap` | synchronized borrowed zippers over the authoritative `PathMap<Multiplicity>` Bag and derived fixed-width `PathMap<CandidatePosition>` index; exact terms, whole-term wildcard/free-variable captures, repeated-capture equality, ordered list remainder, and nested variables in the ordered EList/ETuple fragment; exact nested instruction prefixes descend the trie before a stack-safe byte PDA skips subvalues; canonical order is restored before the spatial oracle; 8/8 query/product cases and 64 generated differential corpora pass; a structural zero/one-candidate base case removes the measured singleton regression without an empirical cutoff; post-repair throughput improves 48.7–53.4% at 16 entries and 239–257× at 4,096 | ordered nested product implemented; associative-commutative schema coverage and equivalence campaign open |
 | Generated full-schema cursor | `71d378e73`; pgmcp `rspace-shared-match-pda` | the shared descriptor pass emits tag-ordered `RhoMatchProgram` tables plus exhaustive `ParCursor` accessors for all 58 messages and five oneofs; `RhoPathCursor` traverses optional, sequence, map, scalar, and oneof shapes with a heap worklist; EPathMap is a native trie delegation event and does not force `trie_snapshot()` | schema traversal foundation implemented and consumed by the ordered nested slice; remaining schema instructions and formal failure checkpoints open |
 | Generated structural match path | `155ecdf54`, `d858058d4`, `edd166671`, `b6b53d1b3`; pgmcp `rhopath-v1-codec`, `rspace-shared-match-pda` | stable generated type IDs and field/oneof tags drive a self-delimiting `RMP1` token stream; datum, exact receive-pattern, and ordered nested-query literal runs use one event encoder; EPathMap contributes mode, cardinality, and a domain-separated BLAKE2b-256 digest streamed by a native logical zipper DFS; the zero-copy byte cursor validates descriptor-exact child types and oneof payloads and locates a subtree extent iteratively; nested query execution distinguishes one-layer in-memory frames from two-layer stored PathMap frames; map values deliberately remain a conservative oracle-checked lane | exact, whole-term, and ordered EList/ETuple nested instructions live; associative-commutative instructions remain open |
@@ -96,9 +96,11 @@ newtypes. A compact append-only terminal arena links candidates that share a pat
 payload storage, not a second transition authority, and neither candidate nor terminal identifiers
 are reference-counted. `TerminalId` uses a nonzero one-based encoding so its optional predecessor is
 one 64-bit word; each arena node is therefore two fixed-width words. Exact-ground `BindPattern`
-values use the same canonical structural path as
-`ListParWithRandom` data. Every binding, remainder, connective, or otherwise non-indexable pattern
-is installed at the segment root as a universal fallback. A produce may consult the filter only
+values and supported `RhoPathQuery` prefixes use the same canonical structural path as
+`ListParWithRandom` data. A supported non-ground pattern is installed at its longest exact prefix;
+its residual query must accept the datum's canonical bytes before its terminal is selected. Every
+unsupported remainder, connective, associative-commutative shape, or otherwise non-indexable
+pattern is installed at the segment root as a universal fallback. A produce may consult the filter only
 when the target channel had no resting datum before the fresh produce was prepended. This condition
 is necessary because a legacy-compatible RSpace can otherwise fire a COMM entirely from resting
 data while retaining the fresh produce. The PathMap selection is therefore a conservative
@@ -110,6 +112,15 @@ store generation and that group's independent continuation revision. An unrelate
 invalidate the group. State replacement and clear advance the generation; counter saturation
 disables caching rather than accepting a stale automaton. Cache hits borrow the trie during the
 iterative zipper query and never clone it. Empty groups remove their cache entry.
+
+Checkpoint `e1a587c9f` makes the retained automaton consume the same query contract as the
+receive-first product. It does not create a redundant Bag for the one fresh datum: the authoritative
+waiting-pattern transition relation remains the existing prefix-compressed PathMap segment. Exact
+prefixes perform trie cuts; residual wildcard and capture instructions inspect the already available
+canonical datum bytes; unsupported patterns stay at the root. A 256-waiting-receive control/index
+differential preserves the fired COMM, event trace, and post-state map while reducing calls to the
+spatial matcher from 256 to 1. This is executable superset evidence, not the final formal proof or
+the preregistered expanded workload/resource verdict.
 
 Identical complete records are indistinguishable Bag occurrences. A repeated-channel receive may
 reserve the same trie key repeatedly while its multiplicity remains positive, but exhaustive
@@ -328,11 +339,12 @@ The implementation evidence available at this checkpoint is:
 | `guarded_matching_tests` | 17/17 | selector rollback, repeated channels, 20,000-bind stack gate, and production PathMap ordering pass |
 | `enabled_rendezvous_spec` | 10/10 | play/replay enumeration and duplicate-occurrence normalization pass |
 | complete `rspace_plus_plus` package checkpoint | 372 passed / 0 failed | no package-level behavioral regression at the shared-catalog and hot-lookup checkpoint |
-| retained automaton selection | 3/3 | exact terminals, root fallbacks, repeated bind positions, the direct-match-superset law, and a 4,096-candidate shared-terminal chain pass from `tests/` sources |
+| retained automaton selection | 4/4 | exact terminals, longest-exact query prefixes, post-wildcard residual filtering, root fallbacks, repeated bind positions, the direct-match-superset law, and a 4,096-candidate shared-terminal chain pass from `tests/` sources |
 | continuation-version lifecycle | 2/2 | unrelated groups remain valid; insert/remove, state replacement, and clear invalidate exactly the required derived cache |
 | Rholang retained-path contract | 3/3 | matching exact-ground pattern/data paths agree; unequal ground values differ; bind/connective patterns fall back |
 | RSpace action suite with indexing enabled | 41/41 | consume/produce, joins, repeated channels, persistence, checkpoint, reset, and soft-revert behavior remain unchanged |
 | receive-first Bag/query product | 8/8 query/product cases plus 64 generated corpora | worst-order flat and nested 256-candidate witnesses reduce spatial calls from 256 to 1; exact, wildcard, repeated capture, ordered remainder, nested ordered holes, embedded-zero/double-escape framing, structural false positives, and singleton base case pass; full-scan and indexed result, event trace, and post-state maps agree |
+| datum-first retained query automaton | 9/9 combined production pruning cases | a canonically last 256-waiting-receive witness reduces spatial calls from 256 to 1 while the COMM result, event trace, and post-state map agree; the same suite retains all receive-first and fallback witnesses |
 | framed-query stack gate | 1/1 | a million-byte structural sequence scans on a 128 KiB worker stack without native recursion or an artificial depth/width cap |
 | Rholang query compilation | 7/7 | compiled queries and the spatial oracle agree for the supported whole-term, ordered-remainder, and nested EList/ETuple fragment; unordered ESet and other unsupported shapes fall back |
 | generated full-schema cursor | 4/4 plus 21/21 related gates | registry equals the 58-message descriptor closure; every arm of all five oneofs is observed; EPathMap remains a borrowed native trie with a cold snapshot; 20,000-deep and 20,000-wide walks complete on a 256 KiB worker stack |
@@ -345,8 +357,9 @@ The implementation evidence available at this checkpoint is:
 | modified production libraries and focused rspace/models targets strict lint | pass | focused `-D warnings` lint passes; the aggregate Rholang `mod` test target remains blocked by 70 pre-existing `useless_vec` findings in unrelated legacy tests, including `substitute_test.rs`; no warning from the nested-query change was reported |
 | formatter and all changed test/benchmark target compilation | pass | both libraries, their tests, and their benchmark targets compile after the retained-automaton integration |
 
-These gates establish the exact-ground retained-receive slice and the correctness and measured
-scaling behavior of the first resting-datum prefix cut, but they do not select the final end-to-end
+These gates establish the measured exact-ground retained-receive slice, executable evidence for the
+ordered retained-query extension, and the correctness and measured scaling behavior of the first
+resting-datum prefix cut, but they do not select the final end-to-end
 RSpace layout. The resting-data matrix measured 51 samples per arm at 99% confidence. PathMap
 throughput was 43.9–55.0% higher at 16 entries, 12.39–13.30 times control at 256, and 239–259 times
 control at 4,096. The first one-entry measurement was instead 7.1–11.4% slower, correctly falsifying
@@ -404,12 +417,13 @@ than native recursion.
 
 The migration order is lawful Bag, RhoPathV1 codec, authoritative index, multiplicity-native
 reservation PDA, retained automaton, direct pattern-over-trie traversal, replay/cold-store
-integration, and final removal of compatibility materializations. Through `b6b53d1b3`, the first
-four steps, the live play/replay exact-path flow, the conservative exact-ground retained-
+integration, and final removal of compatibility materializations. Through `e1a587c9f`, the first
+four steps, the live play/replay exact-path flow, and the conservative ordered retained-query
 automaton slice are implemented. The first receive-first synchronized Bag/query product is also
 implemented for exact, wildcard/capture, repeated-capture, ordered-remainder, and ordered nested
 EList/ETuple instructions, without claiming the still-open retained-automaton/Bag product.
-Schema-derived cursor generation and the first nested byte-PDA slice are implemented, while
+Schema-derived cursor generation, the first nested byte-PDA slice, and reuse of its queries in the
+datum-first retained PathMap automaton are implemented, while
 associative-commutative instruction execution, experiment selection, formal closure, and legacy-
 boundary retirement remain open and visible in the pgmcp subtree. Set, Map, and
 merkleization experiments are independent treatments and cannot be promoted merely because the Bag

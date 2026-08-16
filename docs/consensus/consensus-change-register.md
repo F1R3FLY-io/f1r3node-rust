@@ -2321,7 +2321,7 @@ Legacy protobuf fields are read-only migration inputs; removing them is a later 
 
 | | |
 |---|---|
-| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`; benchmark `7bc5c6994` |
+| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`; benchmark `7bc5c6994` |
 | Status | LANDED ON CAMPAIGN BRANCH; VERIFICATION OPEN |
 | Direction | UNVERIFIED |
 | Evidence grade | UNVERIFIED |
@@ -2373,6 +2373,14 @@ and two-layer escape modes. Unsupported unordered, associative-commutative, rema
 connective, and other schema shapes still use the full canonical scan. The spatial matcher remains
 the final verdict authority.
 
+Checkpoint `e1a587c9f` applies that same structural-query contract to datum-first lookup. A supported
+waiting pattern is retained at its longest exact prefix in the existing
+`PathMap<TerminalId>` segment; a residual query must accept the fresh datum bytes before the terminal
+can enter canonical spatial selection. Unsupported patterns remain root terminals. This does not
+invent a Bag for one fresh datum or make the derived automaton authoritative. The 256-receive
+control/index witness returns the same COMM, event trace, and post-state map with 256 versus 1 spatial
+calls.
+
 #### (b) How it may break consensus
 
 | Axis | Verdict |
@@ -2406,7 +2414,7 @@ subsets before any datum decode or spatial-match state allocation. A flat `Vec`,
 `BTreeMap` transition authority would lose that shared-prefix property and is not the selected
 design.
 
-The current containment argument has ten independently checked parts:
+The current containment argument has eleven independently checked parts:
 
 1. exact-ground `BindPattern` and matching `ListParWithRandom` values use the same canonical
    structural sequence;
@@ -2423,7 +2431,10 @@ The current containment argument has ten independently checked parts:
 9. the synchronized product emits a position only at a terminal present in both the authoritative
    Bag and derived position trie, while repeated captures compare their canonical framed bytes; and
 10. nested instructions use the same generated event encoder as datum paths, distinguish one- and
-    two-layer framing explicitly, and decline every shape outside the supported ordered fragment.
+    two-layer framing explicitly, and decline every shape outside the supported ordered fragment;
+    and
+11. datum-first query terminals share that contract, retain unsupported patterns at the root, and
+    preserve canonical candidate order after filtering.
 
 Cache-counter saturation returns `None` and recompiles instead of accepting a stale trie. Cache hits
 borrow the trie under a sharded map guard and perform no `PathMap` clone. Empty groups remove their
@@ -2432,18 +2443,19 @@ the verdict axis.
 
 #### Evidence and retirement gate
 
-- `retained_set_automaton_spec`: **3/3** exact-terminal, root-fallback, repeated-position,
-  direct-match-superset, and 4,096-candidate shared-terminal checks. **MEASURED.**
+- `retained_set_automaton_spec`: **4/4** exact-terminal, longest-exact-query-prefix,
+  post-wildcard residual-filter, root-fallback, repeated-position, direct-match-superset, and
+  4,096-candidate shared-terminal checks. **MEASURED.**
 - continuation-version lifecycle: **2/2** group-local and whole-state invalidation checks.
   **MEASURED.**
 - `retained_path_index_test`: **3/3** Rholang exact-ground agreement, unequal-ground separation, and
   binding/connective fallback checks. **MEASURED.**
 - `storage_actions_test` with path indexing enabled: **41/41**, covering single and joined receives,
   repeated channels, persistence, checkpoint, reset, and soft-revert. **MEASURED.**
-- `candidate_path_pruning_spec`: **8/8**, including flat and nested 256-candidate 256-to-1
-  spatial-call witnesses, exact/wildcard/repeated-capture/ordered-remainder/nested product
-  traversal, embedded-zero/double-escape framing, and a structural false positive rejected by the
-  spatial oracle. **MEASURED.**
+- `candidate_path_pruning_spec`: **9/9**, including receive-first flat/nested and datum-first waiting-
+  continuation 256-to-1 spatial-call witnesses, exact/wildcard/repeated-capture/ordered-remainder/
+  nested product traversal, embedded-zero/double-escape framing, identical COMM/event/state
+  projections, and a structural false positive rejected by the spatial oracle. **MEASURED.**
 - `rho_path_spec`: **9/9**, including malformed framing, embedded double-zero escapes, capture
   equality, every proper shallow truncation, a 20,000-level nested query on a 128 KiB worker stack,
   and a million-byte iterative scan on the same stack size. **MEASURED.**
@@ -4191,6 +4203,12 @@ derived: a false-negative instruction can hide a COMM. It is therefore governed 
 focused control/index witness returns the same canonically last nested datum while reducing spatial
 calls from 256 to 1; malformed and 20,000-level small-stack gates are green. Those measurements
 establish implementation and anti-vacuity evidence, not consensus equivalence.
+
+`f1r3node-rust-mettail@e1a587c9f` reuses those queries in the datum-first retained PathMap
+automaton. Its 256-receive differential pins the same COMM, event trace, and post-state map while
+reducing spatial calls to one, and unsupported patterns remain root fallbacks. This is additional
+CBR-053 evidence, not retirement: generated schedule/replay and the formal no-false-negative theorem
+still govern the `UNVERIFIED` axes.
 
 ### B.2 The original commit-level exemptions
 
