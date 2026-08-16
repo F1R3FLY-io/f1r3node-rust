@@ -129,6 +129,19 @@ fn apply_with_redundant_outer_clone(delta: &BagDelta, target: &mut Bag) {
     *target = updated;
 }
 
+fn apply_with_root_replay(delta: &BagDelta, target: &mut Bag) {
+    // Frozen production shape immediately before the cursor treatment: one COW
+    // root, but each public exact-key operation starts again from the root.
+    let mut updated = target.clone();
+    for (path, amount) in delta.removals().iter() {
+        updated.try_remove_many(&path, amount).unwrap();
+    }
+    for (path, amount) in delta.additions().iter() {
+        updated.insert_many(&path, amount).unwrap();
+    }
+    *target = updated;
+}
+
 fn bench_atomic_delta_remove(criterion: &mut Criterion) {
     let mut group = criterion.benchmark_group("bag_atomic_delta_remove_shared_prefix");
     for cardinality in CARDINALITIES {
@@ -168,6 +181,57 @@ fn bench_atomic_delta_remove(criterion: &mut Criterion) {
     group.finish();
 }
 
+fn bench_atomic_delta_batch(criterion: &mut Criterion) {
+    const BASE_CARDINALITY: usize = 16_384;
+    const DELTA_CARDINALITIES: [usize; 4] = [1, 16, 256, 4_096];
+
+    let keys = shared_prefix_keys(BASE_CARDINALITY);
+    let pathmap = pathmap_bag(&keys);
+    let mut group = criterion.benchmark_group("bag_atomic_delta_batch_shared_prefix");
+    for delta_cardinality in DELTA_CARDINALITIES {
+        let removals = delta_cardinality / 2;
+        let additions = delta_cardinality - removals;
+        let mut delta = BagDelta::new();
+        for path in keys.iter().take(removals) {
+            delta.record_removal(path, Multiplicity::ONE).unwrap();
+        }
+        for ordinal in 0..additions {
+            let mut path = b"rho-path-v1/shared/channel/record/new/".to_vec();
+            path.extend_from_slice(&(ordinal as u64).to_be_bytes());
+            delta.record_addition(&path, Multiplicity::ONE).unwrap();
+        }
+
+        group.throughput(Throughput::Elements(delta_cardinality as u64));
+        group.bench_function(
+            BenchmarkId::new("root_replay_control", delta_cardinality),
+            |bencher| {
+                bencher.iter_batched(
+                    || pathmap.clone(),
+                    |mut fork| {
+                        apply_with_root_replay(black_box(&delta), &mut fork);
+                        black_box(fork)
+                    },
+                    BatchSize::SmallInput,
+                )
+            },
+        );
+        group.bench_function(
+            BenchmarkId::new("write_zipper_treatment", delta_cardinality),
+            |bencher| {
+                bencher.iter_batched(
+                    || pathmap.clone(),
+                    |mut fork| {
+                        black_box(&delta).apply_to(&mut fork).unwrap();
+                        black_box(fork)
+                    },
+                    BatchSize::SmallInput,
+                )
+            },
+        );
+    }
+    group.finish();
+}
+
 fn bench_logical_multiplicity(criterion: &mut Criterion) {
     let mut group = criterion.benchmark_group("bag_logical_multiplicity");
     let path = b"rho-path-v1/shared/channel/identical-record";
@@ -201,6 +265,7 @@ criterion_group! {
         bench_exact_lookup,
         bench_copy_on_write_update,
         bench_atomic_delta_remove,
+        bench_atomic_delta_batch,
         bench_logical_multiplicity
 }
 criterion_main!(benches);

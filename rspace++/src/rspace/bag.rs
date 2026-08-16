@@ -6,6 +6,7 @@ use pathmap::PathMap;
 use pathmap::arena_compact::ArenaCompactTree;
 use pathmap::merkleization::MerkleizeResult;
 use pathmap::ring::{AlgebraicResult, COUNTER_IDENT, DistributiveLattice, Lattice, SELF_IDENT};
+use pathmap::zipper::{ZipperMoving, ZipperValues, ZipperWriting};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::pathmap_codec::{CompactTrie, CompactTrieError};
@@ -572,18 +573,55 @@ impl BagDelta {
     }
 
     fn apply_parts(target: &mut Bag, additions: &Bag, removals: &Bag) -> Result<(), BagError> {
-        // Clone the root once, then mutate only the paths named by the delta.
-        // PathMap's copy-on-write nodes keep this proportional to the changed
-        // trie frontier; committing the replacement last makes both a failed
-        // removal and a failed checked addition atomic to the caller.
-        let mut updated = target.clone();
-        for (path, amount) in removals.iter() {
-            updated.try_remove_many(&path, amount)?;
+        // Fork exactly one private COW root and retain one write zipper across
+        // the delta's lexicographically ordered paths. `move_to_path` ascends
+        // only to each consecutive pair's longest common prefix, avoiding a
+        // root-to-key replay for every exact update. A deleted leaf is pruned
+        // and the zipper ascends to the surviving prefix before continuing.
+        //
+        // Metrics remain local until the trie update succeeds. Consequently an
+        // underflow or overflow discards the private root and leaves `target`
+        // byte-for-byte unchanged.
+        let mut entries = target.entries.clone();
+        let mut distinct_len = target.distinct_len;
+        let mut cardinality = target.cardinality;
+        {
+            let mut cursor = entries.write_zipper();
+            for (path, amount) in removals.iter() {
+                cursor.move_to_path(&path);
+                let current = cursor
+                    .val()
+                    .copied()
+                    .ok_or(BagError::InsufficientMultiplicity {
+                        available: 0,
+                        requested: amount.get(),
+                    })?;
+                match current.checked_sub(amount)? {
+                    Some(next) => {
+                        cursor.set_val(next);
+                    }
+                    None => {
+                        cursor.remove_val(false);
+                        cursor.prune_ascend();
+                        distinct_len -= 1;
+                    }
+                }
+                cardinality -= u128::from(amount.get());
+            }
+            for (path, amount) in additions.iter() {
+                cursor.move_to_path(&path);
+                let next = match cursor.val().copied() {
+                    Some(current) => current.checked_add(amount)?,
+                    None => {
+                        distinct_len += 1;
+                        amount
+                    }
+                };
+                cursor.set_val(next);
+                cardinality += u128::from(amount.get());
+            }
         }
-        for (path, amount) in additions.iter() {
-            updated.insert_many(&path, amount)?;
-        }
-        *target = updated;
+        *target = Bag::from_pathmap_with_metrics(entries, distinct_len, cardinality);
         Ok(())
     }
 }

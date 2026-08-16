@@ -122,6 +122,50 @@ fn normalized_transaction_delta_applies_and_reverts_exactly() {
 }
 
 #[test]
+fn transaction_cursor_preserves_exact_prefix_overlaps_and_prunes_deleted_leaves() {
+    let original = bag(&[
+        (b"shared", 2),
+        (b"shared/a", 1),
+        (b"shared/a/deep", 3),
+        (b"shared/b", 4),
+        (b"unrelated", 5),
+    ]);
+    let mut delta = BagDelta::new();
+    delta.record_removal(b"shared", Multiplicity::ONE).unwrap();
+    delta
+        .record_removal(b"shared/a", Multiplicity::ONE)
+        .unwrap();
+    delta
+        .record_removal(b"shared/a/deep", Multiplicity::new(2).unwrap())
+        .unwrap();
+    delta
+        .record_addition(b"shared/aa", Multiplicity::new(7).unwrap())
+        .unwrap();
+    delta
+        .record_addition(b"shared/b", Multiplicity::new(2).unwrap())
+        .unwrap();
+
+    let mut changed = original.clone();
+    delta.apply_to(&mut changed).unwrap();
+    assert_eq!(
+        changed,
+        bag(&[
+            (b"shared", 1),
+            (b"shared/a/deep", 1),
+            (b"shared/aa", 7),
+            (b"shared/b", 6),
+            (b"unrelated", 5),
+        ])
+    );
+    assert_eq!(changed.distinct_len(), 5);
+    assert_eq!(changed.cardinality(), 20);
+    assert_eq!(Bag::from_compact_bytes(&changed.compact_bytes()).unwrap(), changed);
+
+    delta.revert_from(&mut changed).unwrap();
+    assert_eq!(changed, original);
+}
+
+#[test]
 fn transaction_delta_application_is_atomic_on_underflow_and_overflow() {
     // `alpha` is visited before the absent `zeta`. A one-pass mutation would
     // therefore decrement it before discovering the late underflow.
