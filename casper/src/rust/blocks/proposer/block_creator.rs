@@ -1791,15 +1791,9 @@ fn current_proposal_validators(casper_snapshot: &CasperSnapshot) -> Vec<Validato
 }
 
 fn recovered_deploy_leader(casper_snapshot: &CasperSnapshot) -> Option<Validator> {
-    let validators = current_proposal_validators(casper_snapshot);
-    if let Some(parent) = casper_snapshot.parents.first() {
-        if !parent.sender.is_empty()
-            && (validators.is_empty() || validators.iter().any(|v| v == &parent.sender))
-        {
-            return Some(parent.sender.clone());
-        }
-    }
-    validators.first().cloned()
+    current_proposal_validators(casper_snapshot)
+        .first()
+        .cloned()
 }
 
 fn is_recovered_deploy_leader(
@@ -2634,34 +2628,8 @@ pub async fn create(
         let finality_work_in_flight = parent_frontier_extends_lfb(casper_snapshot, block_store)?;
         let self_chain_deploy_sigs =
             collect_self_chain_deploy_sigs(casper_snapshot, validator_identity, block_store)?;
-        let self_chain_rejected_buffered = if self_chain_deploy_sigs.is_empty() {
-            false
-        } else {
-            let buffer_guard = rejected_deploy_buffer
-                .lock()
-                .map_err(|e| CasperError::LockError(e.to_string()))?;
-            let mut found = false;
-            for sig in &self_chain_deploy_sigs {
-                if casper_snapshot.rejected_in_scope.contains(sig)
-                    && buffer_guard
-                        .contains_sig(sig)
-                        .map_err(CasperError::KvStoreError)?
-                {
-                    found = true;
-                    break;
-                }
-            }
-            found
-        };
-        // Self-chain recovery exemption: a validator may always replay its OWN
-        // merge-rejected work (sigs from its self-chain sitting in the rejected
-        // buffer) without waiting to become the validator-set recovered-deploy
-        // leader. Owner replay is deterministic and duplicate-safe — if another
-        // validator re-proposes the same sig, the merge's keep-one dedup picks
-        // exactly one copy by (block_number, hash).
         let allow_recovered_deploys =
-            is_recovered_deploy_leader(casper_snapshot, validator_identity)
-                || self_chain_rejected_buffered;
+            is_recovered_deploy_leader(casper_snapshot, validator_identity);
         let inclusion_progress = deploy_inclusion_progress(casper_snapshot, block_store)?;
         let allow_deploy_inclusion = inclusion_progress
             .leader
@@ -2722,13 +2690,6 @@ pub async fn create(
             inclusion_staleness,
             finality_lag_stats,
         );
-        if self_chain_rejected_buffered && !allow_recovered_deploys {
-            tracing::debug!(
-                target: "f1r3fly.casper.recovery",
-                "Recovered deploy selection deferred to validator-set leader for block #{}",
-                next_block_num
-            );
-        }
         if user_work_in_flight && !allow_deploy_inclusion && !admission_policy.allow_ordinary {
             tracing::info!(
                 target: "f1r3fly.casper.recovery",
@@ -3767,7 +3728,7 @@ mod tests {
     }
 
     #[test]
-    fn recovered_deploy_leader_prefers_main_parent_sender() {
+    fn recovered_deploy_leader_uses_stable_validator_order() {
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
         snapshot.on_chain_state.active_validators = vec![validator(3), validator(1), validator(2)];
@@ -3779,7 +3740,7 @@ mod tests {
             Vec::new(),
         )];
 
-        assert!(!is_recovered_deploy_leader(
+        assert!(is_recovered_deploy_leader(
             &snapshot,
             &validator_identity(1)
         ));
@@ -3787,7 +3748,7 @@ mod tests {
             &snapshot,
             &validator_identity(2)
         ));
-        assert!(is_recovered_deploy_leader(
+        assert!(!is_recovered_deploy_leader(
             &snapshot,
             &validator_identity(3)
         ));
