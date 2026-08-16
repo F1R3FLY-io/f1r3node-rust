@@ -17,7 +17,7 @@ use super::recursive_oracle::spatial_matcher::{
     SpatialMatcher as RecursiveSpatialMatcher, SpatialMatcherContext as RecursiveContext,
 };
 use super::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
-use super::spatial_matcher_pda::match_par_list_with_stats;
+use super::spatial_matcher_pda::{match_par_list_with_stats, match_send_list_with_stats};
 
 fn compare(label: &str, target: Par, pattern: Par) {
     let mut recursive = RecursiveContext::new();
@@ -157,15 +157,19 @@ fn nominal_edge_evaluations(
     (true, evaluations)
 }
 
+fn send_value(chan: Par, data: Vec<Par>, connective_used: bool) -> Send {
+    Send {
+        chan: Some(chan),
+        data,
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used,
+    }
+}
+
 fn send(chan: Par, data: Vec<Par>, connective_used: bool) -> Par {
     models::par_from_default! {
-        sends: vec![Send {
-            chan: Some(chan),
-            data,
-            persistent: false,
-            locally_free: Vec::new(),
-            connective_used,
-        }],
+        sends: vec![send_value(chan, data, connective_used)],
         connective_used,
         ..Default::default()
     }
@@ -625,6 +629,57 @@ fn production_list_pda_pathmap_index_prunes_ordered_nested_ac_elements() {
         "PathMap-pruned ordered elements preserve ESet AC semantics",
         new_eset_par(targets, Vec::new(), false, None, Vec::new(), false),
         new_eset_par(patterns, Vec::new(), true, None, Vec::new(), true),
+    );
+}
+
+#[test]
+fn production_list_pda_pathmap_bag_prunes_unordered_send_fields() {
+    const WIDTH: usize = 128;
+    let targets = (0..WIDTH)
+        .map(|index| {
+            send_value(
+                new_gint_par(index as i64, Vec::new(), false),
+                vec![new_gint_par((10_000 + index) as i64, Vec::new(), false)],
+                false,
+            )
+        })
+        .collect::<Vec<_>>();
+    let patterns = (0..WIDTH)
+        .rev()
+        .map(|index| {
+            send_value(
+                new_gint_par(index as i64, Vec::new(), false),
+                vec![new_freevar_par(index as i32, Vec::new())],
+                true,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let mut context = SpatialMatcherContext::new();
+    let (result, stats) =
+        match_send_list_with_stats(&mut context, targets.clone(), patterns.clone());
+    assert!(result.is_some());
+    assert_eq!(stats.edge_evaluations, WIDTH);
+    assert_eq!(stats.successful_edge_evaluations, WIDTH);
+    assert_eq!(context.free_map.len(), WIDTH);
+    for index in 0..WIDTH {
+        assert_eq!(
+            context.free_map.get(&(index as i32)),
+            Some(&new_gint_par((10_000 + index) as i64, Vec::new(), false))
+        );
+    }
+
+    compare(
+        "PathMap Bag-pruned sends preserve unordered Par semantics",
+        models::par_from_default! {
+            sends: targets,
+            ..Default::default()
+        },
+        models::par_from_default! {
+            sends: patterns,
+            connective_used: true,
+            ..Default::default()
+        },
     );
 }
 

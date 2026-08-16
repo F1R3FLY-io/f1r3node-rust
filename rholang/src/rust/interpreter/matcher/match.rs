@@ -2,7 +2,7 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance::{FreeVar, Wildcard};
 use models::rust::rholang::implicits::vector_par;
 use models::rust::rholang::match_path::{
-    append_match_path_event, encode_par_match_path, RHO_MATCH_PATH_VERSION,
+    append_match_path_event, encode_match_path, encode_par_match_path, RHO_MATCH_PATH_VERSION,
 };
 use models::rust::rholang::match_schema::{RhoPathCursor, RhoPathEvent};
 use models::rust::rholang::match_schema_tables::ParCursor;
@@ -142,31 +142,64 @@ pub(super) fn rho_path_query_atom(
     pattern: &Par,
     captures: &mut PathMap<()>,
 ) -> Option<RhoPathQueryAtom> {
-    if let Some(hole) = rho_match_hole(pattern) {
-        if !record_linear_capture(captures, &hole) {
-            return None;
+    rho_path_query_cursor_atom(
+        ParCursor::from(pattern),
+        !pattern.connective_used && pattern.locally_free.is_empty(),
+        captures,
+    )
+}
+
+/// Compile one generated rhoapi cursor into a conservative RMP1 candidate
+/// query. `exact` is true only when the caller's authoritative matcher would
+/// compare this whole value by equality; otherwise this routine must find and
+/// encode every dynamic `Par` hole or decline indexing.
+///
+/// The generated cursor lets the AC target Bag use one stack-safe query
+/// compiler for `Par`, `Send`, `New`, `Expr`, `Match`, `ReceiveBind`, and the
+/// other unordered `Par` field types. The spatial PDA remains the verdict
+/// authority: this query may admit false positives, but never reject a value
+/// that the PDA could match.
+pub(super) fn rho_path_query_cursor_atom(
+    root: ParCursor<'_>,
+    exact: bool,
+    captures: &mut PathMap<()>,
+) -> Option<RhoPathQueryAtom> {
+    if let ParCursor::Par(pattern) = root {
+        if let Some(hole) = rho_match_hole(pattern) {
+            if !record_linear_capture(captures, &hole) {
+                return None;
+            }
+            return Some(match hole {
+                RhoMatchQueryPart::Capture(id) => RhoPathQueryAtom::Capture(id),
+                RhoMatchQueryPart::Wildcard => RhoPathQueryAtom::Wildcard,
+                RhoMatchQueryPart::Exact(_) => unreachable!("a pattern hole is never exact"),
+            });
         }
-        return Some(match hole {
-            RhoMatchQueryPart::Capture(id) => RhoPathQueryAtom::Capture(id),
-            RhoMatchQueryPart::Wildcard => RhoPathQueryAtom::Wildcard,
-            RhoMatchQueryPart::Exact(_) => unreachable!("a pattern hole is never exact"),
-        });
     }
-    if let Some(query) = compile_ordered_nested_query(pattern, captures) {
+    if let Some(query) = compile_ordered_nested_query(root, captures) {
         return Some(RhoPathQueryAtom::Match(query));
     }
-    (!pattern.connective_used && pattern.locally_free.is_empty())
-        .then(|| RhoPathQueryAtom::Exact(encode_par_match_path(pattern)))
+    exact.then(|| RhoPathQueryAtom::Exact(encode_match_path(root)))
 }
 
 fn compile_ordered_nested_query(
-    pattern: &Par,
+    root: ParCursor<'_>,
     captures: &mut PathMap<()>,
 ) -> Option<RhoMatchQuery> {
-    if !single_expr_carrier(pattern) {
+    // A receive's `binds` are matched by the unordered list PDA. RMP1 encodes
+    // their protobuf sequence order, so an ordered cursor program would be an
+    // unsound (false-negative) filter for a dynamic receive. Ground receives
+    // still use the exact-equality lane in `rho_path_query_cursor_atom`.
+    if matches!(root, ParCursor::Receive(_)) {
         return None;
     }
-    pattern.exprs[0].expr_instance.as_ref()?;
+
+    if let ParCursor::Par(pattern) = root {
+        if !single_expr_carrier(pattern) {
+            return None;
+        }
+        pattern.exprs[0].expr_instance.as_ref()?;
+    }
 
     let mut parts = Vec::new();
     let mut exact = Vec::with_capacity(256);
@@ -175,7 +208,7 @@ fn compile_ordered_nested_query(
     let mut skip_metadata_scalar = false;
     let mut saw_hole = false;
 
-    for event in RhoPathCursor::par(pattern) {
+    for event in RhoPathCursor::new(root) {
         if suppressed_nodes != 0 {
             match event {
                 RhoPathEvent::EnterNode { .. } => suppressed_nodes += 1,
@@ -207,8 +240,7 @@ fn compile_ordered_nested_query(
                     // These carriers have associative-commutative matching
                     // semantics. Their dynamic children belong to the AC
                     // query machine, not this ordered cursor program. Ground
-                    // instances still take the exact structural-path lane in
-                    // `rho_path_query_atom`.
+                    // instances still take the exact structural-path lane.
                     ParCursor::ESet(_)
                     | ParCursor::EMap(_)
                     | ParCursor::EPathMap(_)

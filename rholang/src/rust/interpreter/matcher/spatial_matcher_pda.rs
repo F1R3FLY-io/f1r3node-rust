@@ -20,12 +20,13 @@ use models::rust::epathmap_trie_codec::EPathMapMode;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rhoapi_ext::OwnedEPathMapEntry;
+use models::rust::rholang::bincode_encoder;
 use models::rust::rholang::implicits::{single_expr, vector_par};
-use models::rust::rholang::match_path::encode_par_match_path;
+use models::rust::rholang::match_path::encode_match_path;
+use models::rust::rholang::match_schema_tables::ParCursor;
 use models::rust::utils::*;
 use pathmap::PathMap;
 use rspace_plus_plus::rspace::bag::Bag;
-use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use rspace_plus_plus::rspace::rho_path::{RhoPathQuery, RhoPathV1, StructuralSequenceEncoder};
 
 use super::exports::*;
@@ -36,7 +37,7 @@ use super::lazy_relation::{EdgeResult, LazyRelation, RelationCursor};
 use super::list_match::aggregate_updates;
 use super::match_pars::match_pars;
 use super::par_count::ParCount;
-use super::r#match::rho_path_query_atom;
+use super::r#match::{rho_path_query_atom, rho_path_query_cursor_atom};
 use super::spatial_matcher::SpatialMatcherContext;
 use super::sub_pars::sub_pars;
 
@@ -73,6 +74,25 @@ pub(super) fn match_par_list_with_stats(
     let request = ListRequest::new(
         targets.into_iter().map(MatchValue::Par).collect(),
         patterns.into_iter().map(MatchValue::Par).collect(),
+        Merger::Identity,
+        None,
+        false,
+    );
+    let result = drive_job(context, Job::ListInit(request));
+    let stats = LIST_RELATION_STATS.with(Cell::get);
+    (result, stats)
+}
+
+#[cfg(test)]
+pub(super) fn match_send_list_with_stats(
+    context: &mut SpatialMatcherContext,
+    targets: Vec<Send>,
+    patterns: Vec<Send>,
+) -> (Option<()>, RelationalMatchStats) {
+    LIST_RELATION_STATS.with(|stats| stats.set(RelationalMatchStats::default()));
+    let request = ListRequest::new(
+        targets.into_iter().map(MatchValue::Send).collect(),
+        patterns.into_iter().map(MatchValue::Send).collect(),
         Merger::Identity,
         None,
         false,
@@ -1076,51 +1096,112 @@ enum MatchValue {
 }
 
 impl MatchValue {
-    fn rho_path_structure(&self) -> Option<Vec<u8>> {
+    fn rho_path_structure(&self) -> Vec<u8> {
         let mut output = StructuralSequenceEncoder::with_capacity(match self {
-            Self::Par(_) => 1,
             Self::ParPair(_) => 2,
-            _ => return None,
+            _ => 1,
         });
         match self {
-            Self::Par(value) => output.push(&encode_par_match_path(value)),
+            Self::Par(value) => output.push(&encode_match_path(ParCursor::from(value))),
             Self::ParPair((key, value)) => {
-                output.push(&encode_par_match_path(key));
-                output.push(&encode_par_match_path(value));
+                output.push(&encode_match_path(ParCursor::from(key)));
+                output.push(&encode_match_path(ParCursor::from(value)));
             }
-            _ => unreachable!("the supported variants were checked above"),
+            Self::Send(value) => output.push(&encode_match_path(ParCursor::from(value))),
+            Self::Receive(value) => output.push(&encode_match_path(ParCursor::from(value))),
+            Self::New(value) => output.push(&encode_match_path(ParCursor::from(value))),
+            Self::Expr(value) => output.push(&encode_match_path(ParCursor::from(value))),
+            Self::Match(value) => output.push(&encode_match_path(ParCursor::from(value))),
+            Self::Bundle(value) => output.push(&encode_match_path(ParCursor::from(value))),
+            Self::Unforgeable(value) => output.push(&encode_match_path(ParCursor::from(value))),
+            Self::ReceiveBind(value) => output.push(&encode_match_path(ParCursor::from(value))),
         }
-        Some(output.finish())
+        output.finish()
     }
 
-    /// Collision-free identity for the variants accepted by the generated
-    /// RhoPath query compiler. Each `Par` leg uses the stack-safe canonical
-    /// bincode emitter and the same injective sequence framing as structure.
-    fn rho_path_identity(&self) -> Option<Vec<u8>> {
+    /// Collision-free identity for every unordered `Par` field type. Each
+    /// generated-schema root uses the one-walk, stack-safe canonical bincode
+    /// emitter and the same injective sequence framing as structure.
+    fn rho_path_identity(&self) -> Vec<u8> {
         let mut output = StructuralSequenceEncoder::with_capacity(match self {
-            Self::Par(_) => 1,
             Self::ParPair(_) => 2,
-            _ => return None,
+            _ => 1,
         });
-        match self {
-            Self::Par(value) => output.push(&value.stable_hash_bytes()),
-            Self::ParPair((key, value)) => {
-                output.push(&key.stable_hash_bytes());
-                output.push(&value.stable_hash_bytes());
-            }
-            _ => unreachable!("the supported variants were checked above"),
+        macro_rules! push_identity {
+            ($value:expr) => {
+                bincode_encoder::with_encoded($value, |encoded| output.push(encoded))
+            };
         }
-        Some(output.finish())
+        match self {
+            Self::Par(value) => push_identity!(value),
+            Self::ParPair((key, value)) => {
+                push_identity!(key);
+                push_identity!(value);
+            }
+            Self::Send(value) => push_identity!(value),
+            Self::Receive(value) => push_identity!(value),
+            Self::New(value) => push_identity!(value),
+            Self::Expr(value) => push_identity!(value),
+            Self::Match(value) => push_identity!(value),
+            Self::Bundle(value) => push_identity!(value),
+            Self::Unforgeable(value) => push_identity!(value),
+            Self::ReceiveBind(value) => push_identity!(value),
+        }
+        output.finish()
     }
 
-    fn rho_path_query(&self, captures: &mut PathMap<()>) -> Option<RhoPathQuery> {
+    fn rho_path_query(
+        &self,
+        context: &SpatialMatcherContext,
+        captures: &mut PathMap<()>,
+    ) -> Option<RhoPathQuery> {
+        let exact = !self.connective_used(context) && self.locally_free_is_empty(context);
         let atoms = match self {
             Self::Par(value) => vec![rho_path_query_atom(value, captures)?],
             Self::ParPair((key, value)) => vec![
                 rho_path_query_atom(key, captures)?,
                 rho_path_query_atom(value, captures)?,
             ],
-            _ => return None,
+            Self::Send(value) => vec![rho_path_query_cursor_atom(
+                ParCursor::from(value),
+                exact,
+                captures,
+            )?],
+            Self::Receive(value) => vec![rho_path_query_cursor_atom(
+                ParCursor::from(value),
+                exact,
+                captures,
+            )?],
+            Self::New(value) => vec![rho_path_query_cursor_atom(
+                ParCursor::from(value),
+                exact,
+                captures,
+            )?],
+            Self::Expr(value) => vec![rho_path_query_cursor_atom(
+                ParCursor::from(value),
+                exact,
+                captures,
+            )?],
+            Self::Match(value) => vec![rho_path_query_cursor_atom(
+                ParCursor::from(value),
+                exact,
+                captures,
+            )?],
+            Self::Bundle(value) => vec![rho_path_query_cursor_atom(
+                ParCursor::from(value),
+                exact,
+                captures,
+            )?],
+            Self::Unforgeable(value) => vec![rho_path_query_cursor_atom(
+                ParCursor::from(value),
+                exact,
+                captures,
+            )?],
+            Self::ReceiveBind(value) => vec![rho_path_query_cursor_atom(
+                ParCursor::from(value),
+                exact,
+                captures,
+            )?],
         };
         Some(RhoPathQuery::structural_sequence(atoms, false))
     }
@@ -1388,8 +1469,8 @@ impl ListTargetIndex {
         let mut groups: Vec<ListTargetGroup> = Vec::new();
         let mut position_groups = Vec::with_capacity(targets.len());
         for (position, target) in targets.iter().enumerate() {
-            let structure = target.rho_path_structure()?;
-            let identity = target.rho_path_identity()?;
+            let structure = target.rho_path_structure();
+            let identity = target.rho_path_identity();
             let key = RhoPathV1::relative_datum_key(&structure, &identity);
             let position = u64::try_from(position).ok()?;
             bag.insert(&key).ok()?;
@@ -1553,7 +1634,7 @@ fn init_list(
             let ListPattern::Term(pattern) = pattern else {
                 return ListCandidateDomain::All;
             };
-            let Some(query) = pattern.rho_path_query(&mut captures) else {
+            let Some(query) = pattern.rho_path_query(context, &mut captures) else {
                 return ListCandidateDomain::All;
             };
             target_index
