@@ -1393,21 +1393,20 @@ pub async fn compute_parents_post_state(
                             sig,
                             src_block,
                         )?;
-                        if floor_won_sig || visible_non_source_win {
+                        if floor_won_sig {
                             tracing::info!(
                                 target: "f1r3fly.casper.deploy_lifecycle",
                                 event = "buffer_suppressed",
                                 deploy_sig = %hex::encode(sig),
                                 carrier = %hex::encode(src_block),
-                                reason = "existing_win",
-                                floor_won = floor_won_sig,
+                                reason = "floor_win",
                                 visible_non_source_win,
                                 floor_block = floor_block_number,
                                 "deploy lifecycle"
                             );
                             tracing::debug!(
                                 target: "f1r3fly.casper.recovery",
-                                "RejectedDeployBuffer populate: skipped already-won sig {} from {}",
+                                "RejectedDeployBuffer populate: skipped floor-won sig {} from {}",
                                 PrettyPrinter::build_string_bytes(sig),
                                 PrettyPrinter::build_string_bytes(src_block)
                             );
@@ -1759,7 +1758,7 @@ mod backstop_tests {
     }
 
     #[tokio::test]
-    async fn visible_non_source_win_in_lower_block_still_blocks_recovery_admission() {
+    async fn visible_non_source_win_in_lower_block_is_detected() {
         let mut kvm = InMemoryStoreManager::new();
         let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
             .await
