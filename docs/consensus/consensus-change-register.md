@@ -4124,6 +4124,21 @@ schedule, charge, EPathMap mode, EPM1 snapshot, PathMap topology, or zipper/alge
 The PathMap crate is untouched. Stack-safety report §5.16.6, its durable TSV, and the committed
 scientific ledger retain the experiment and closure evidence.
 
+**Dormant RSpace matching-cursor foundation (2026-08-15; pgmcp `rspace-shared-match-pda`).**
+`f1r3node-rust-mettail@71d378e73` extends the existing descriptor pass with exhaustive,
+ascending-tag `RhoMatchProgram` tables, typed `ParCursor` accessors, and the heap-worklist
+`RhoPathCursor`. The generated registry covers all 58 messages and all five oneofs. EPathMap is a
+borrowed native-trie delegation event; the cursor neither enumerates entries nor constructs the
+EPM1 serialization snapshot. A 20,000-deep and 20,000-wide gate completes on a 256 KiB worker
+stack.
+
+The checkpoint has no RSpace production caller. It therefore changes no computed value, match
+verdict, binding, accepted program, protobuf or bincode byte, post-state or event hash, COMM
+schedule, or charge. It is recorded here so later activation cannot be mistaken for already-proven
+equivalence: nested match-instruction compilation, rollback/failure checkpoints, direct PathMap
+product execution, and old/new end-to-end equivalence remain open campaign obligations. The
+PathMap crate and every EPathMap wire/data-model decision are untouched.
+
 ### B.2 The original commit-level exemptions
 
 Every commit in `7293d57c..dc383ed1` touching the consensus-critical path set, that is **not** a

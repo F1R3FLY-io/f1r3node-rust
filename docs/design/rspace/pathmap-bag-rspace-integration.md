@@ -6,7 +6,7 @@ Campaign: `campaign-4131-rspace-pathmap-integration`
 
 Experiment: `rspace-pathmap-end-to-end-layout-2026-08-15`
 Last updated: 2026-08-15
-Current implementation checkpoint: `f43858ec2`
+Current implementation checkpoint: `71d378e73`
 
 ## Purpose and scope
 
@@ -54,6 +54,7 @@ The layout experiment remains open until the preregistered A/B/C comparison sele
 | Single-lookup hot-store reads | `d50b1183d` | one encoded prefix and one loaded-store read lock per hot pool/data lookup; final performance verdict remains pending | implemented |
 | Retained receive automaton, exact-ground slice | `a89cbc294`, `f149cef2b`, `ea8c39f92`; benchmark `7bc5c6994`; pgmcp `rspace-retained-set-automaton` | one `PathMap<TerminalId>` transition segment per bind position; fixed-width terminal/candidate identifiers; root fallback terminals; group-local versioning; no trie clone on cache hits; 3/3 automaton, 2/2 lifecycle, 3/3 Rholang path, and 41/41 RSpace action tests; valid end-to-end treatment is 18.8–30.8% lower latency | implemented, equivalence campaign open |
 | Receive-first Bag/query product | `564dac0b4`, `0b601ce67`, `f43858ec2`; pgmcp `rspace-pattern-over-pathmap` | synchronized borrowed zippers over the authoritative `PathMap<Multiplicity>` Bag and derived fixed-width `PathMap<CandidatePosition>` index; exact terms, whole-term wildcard/free-variable captures, repeated-capture equality, and ordered list remainder; canonical order restored before the spatial oracle; 7/7 query/product cases and 64 generated differential corpora pass; a structural zero/one-candidate base case removes the measured singleton regression without an empirical cutoff; post-repair throughput improves 48.7–53.4% at 16 entries and 239–257× at 4,096 | product foundation implemented; nested schema coverage and equivalence campaign open |
+| Generated full-schema cursor | `71d378e73`; pgmcp `rspace-shared-match-pda` | the shared descriptor pass emits tag-ordered `RhoMatchProgram` tables plus exhaustive `ParCursor` accessors for all 58 messages and five oneofs; `RhoPathCursor` traverses optional, sequence, map, scalar, and oneof shapes with a heap worklist; EPathMap is a native trie delegation event and does not force `trie_snapshot()` | schema traversal foundation implemented; matching instructions, failure checkpoints, and RSpace product integration open |
 | Retained-automaton/Bag product walk | pgmcp `rspace-retained-set-automaton` | the fresh-datum path uses an iterative retained-automaton zipper, but it does not yet synchronize that automaton directly with the authoritative Bag; `f43858ec2` is a receive-first Bag/position-index product and is not evidence for this distinct datum-first product | next implementation stage |
 | Layout selection and performance verdict | pgmcp experiment 208 | retained-receive slice passes its preregistered five-percent throughput threshold at 99% confidence; resting-data pruning is non-regressing at one entry after the structural base-case repair and passes from 16 through 4,096; direct product, full workload matrix, allocations, and final layout selection remain open | partial measurement accepted |
 
@@ -187,6 +188,18 @@ shared across all pools derived from that catalog. Multiplicity-only changes upd
 cardinalities in constant time, and a hot pool lookup encodes the channel prefix once and reads the
 loaded store under one outer lock.
 
+Checkpoint `71d378e73` adds the schema-complete read-only traversal boundary required to replace the
+supported-fragment compiler without hand-maintaining sixty type arms. The build script resolves the
+descriptor once and emits a flat, ascending-tag `RhoMatchProgram` for every message, exhaustive
+oneof accessors without wildcard match arms, typed sequence and map cursors, and a `ParCursor`
+variant for every descriptor node. The format-neutral `RhoPathCursor` is an explicit heap-worklist
+PDA: native stack use is independent of term depth and width. It deliberately yields EPathMap as a
+native `PathMap` delegation event. It neither enumerates entries nor calls the serialization-only
+`trie_snapshot()` accessor, so the existing EPathMap zipper/algebra/matcher PDA remains the semantic
+authority for that associative-commutative node. This is infrastructure rather than a selection
+change: no RSpace production caller consumes the cursor at this checkpoint, and nested match
+instructions, binding rollback, and direct trie-product execution remain open.
+
 ## Native PathMap operations
 
 | Need | Native mechanism |
@@ -270,6 +283,7 @@ The implementation evidence available at this checkpoint is:
 | receive-first Bag/query product | 7/7 query/product cases plus 64 generated corpora | worst-order 256-candidate witness reduces spatial calls from 256 to 1; exact, wildcard, repeated capture, ordered remainder, embedded-zero framing, structural false positives, and singleton base case pass; full-scan and indexed result, event trace, and post-state maps agree |
 | framed-query stack gate | 1/1 | a million-byte structural sequence scans on a 128 KiB worker stack without native recursion or an artificial depth/width cap |
 | Rholang query compilation | 5/5 | compiled queries and the spatial oracle agree for the supported whole-term and ordered-remainder fragment; unsupported nested shapes fall back |
+| generated full-schema cursor | 4/4 plus 21/21 related gates | registry equals the 58-message descriptor closure; every arm of all five oneofs is observed; EPathMap remains a borrowed native trie with a cold snapshot; 20,000-deep and 20,000-wide walks complete on a 256 KiB worker stack |
 | waiting-receive COMM throughput | 6/6 treatment pairs pass | 51 samples per arm at 99% confidence; 23.2–44.6% more completed COMMs/s; intervals are disjoint |
 | resting-data COMM throughput | 8/8 treatment pairs do not regress after repair | at 16/256/4,096 distinct entries, throughput improves 48.7–25,589.8%; the one-entry base case is 2.2% faster on diverse input and statistically neutral at a +0.6% point estimate on shared input |
 | current `rspace_plus_plus` package | 392 passed / 0 failed | the complete package passes after the singleton repair under a 5 GiB no-swap cap |
@@ -339,9 +353,10 @@ integration, and final removal of compatibility materializations. Through `f4385
 four steps, the live play/replay exact-path flow, and the conservative exact-ground retained-
 automaton slice are implemented. The first receive-first synchronized Bag/query product is also
 implemented for exact, wildcard/capture, repeated-capture, and ordered-remainder instructions,
-without claiming the still-open retained-automaton/Bag product. Schema-derived nested pattern compilation,
-experiment selection, formal closure, and legacy-boundary retirement remain open and visible in the
-pgmcp subtree. Set, Map, and merkleization experiments are independent treatments and cannot be
-promoted merely because the Bag treatment succeeds.
+without claiming the still-open retained-automaton/Bag product. Schema-derived cursor generation is
+implemented, while nested pattern instruction compilation, experiment selection, formal closure,
+and legacy-boundary retirement remain open and visible in the pgmcp subtree. Set, Map, and
+merkleization experiments are independent treatments and cannot be promoted merely because the Bag
+treatment succeeds.
 
 The campaign completes only when the selected implementation is active end to end, old-path references are removed or test-only, every reachable pgmcp task has trusted evidence, the stack-safety report contains final profiles, the consensus register records the exact wire and state disposition, and the release workspace suite passes under a bounded resident-memory scope without `RUST_MIN_STACK`, `stacker`, or traversal caps.

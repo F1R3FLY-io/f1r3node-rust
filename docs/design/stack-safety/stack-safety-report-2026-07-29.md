@@ -3287,6 +3287,16 @@ ordered list remainder. Unsupported nested schema arms still take the canonical 
 therefore not counted as converted. This is a Bag/position-index product for receive-first lookup,
 not the separately required retained-automaton/Bag product for datum-first lookup.
 
+Checkpoint `71d378e73` supplies the generated schema traversal boundary for the next conversion.
+The existing descriptor pass now emits one ascending-tag `RhoMatchProgram` and exhaustive
+`ParCursor` accessor per message, with typed scalar, optional, sequence, map, and oneof values.
+`RhoPathCursor` advances those values with an explicit heap worklist. The small-stack gate traverses
+20,000 nested EList nodes and 20,000 siblings on a 256 KiB worker stack. EPathMap is not interpreted
+as a message sequence: the cursor yields the borrowed EPathMap once for native PathMap zipper/PDA
+delegation, and a cold snapshot remains cold before and after the walk. No RSpace caller uses this
+cursor yet, so the checkpoint changes no match verdict or COMM and does not close the still-open
+nested-instruction or retained-automaton/Bag-product obligations.
+
 ##### 5.16.5.4 Results
 
 The original SS-A11 depth measurements ran under a user systemd scope with **3 GiB `MemoryHigh`, 4
@@ -3309,6 +3319,7 @@ swap, and two-core CPU quota**. **MEASURED:**
 | receive-first Bag/query product | full canonical scan | **7/7 query/product cases plus 64 generated corpora** | 256-to-1 spatial-call witness, exact/wildcard/repeated-capture/ordered-remainder traversal, embedded-zero framing, structural false-positive oracle check, singleton zero-query base case, and identical result/event/post-state maps |
 | framed-query native stack | recursive framing not admitted | **one million encoded bytes on a 128 KiB worker stack** | iterative double-frame scanner; no recursion, depth/width cap, `RUST_MIN_STACK`, or `stacker` |
 | Rholang query compiler | spatial oracle only | **5/5 focused matcher cases** | supported compiled fragment agrees with the spatial oracle and unsupported nested shapes fall back |
+| generated Rholang matching cursor | no schema-complete cursor | **4/4 cursor cases plus 21/21 schema/exhaustiveness/registration cases** | all 58 descriptor messages and five oneofs are generated from one pass; a 20,000-deep EList spine and a 20,000-wide term traverse on 256 KiB; EPathMap yields one native-trie delegation event without forcing its snapshot |
 | retained waiting-receive throughput | full canonical candidate scan | **23.2–44.6% more COMMs/s** | six treatment pairs; 51 samples/arm; 99% confidence; 16/256/4,096 receives; diverse/shared prefixes |
 | resting-data prefix throughput | full canonical candidate scan | **48.7–53.4% more COMMs/s at 16; 12.22–13.01× at 256; 238.8–256.9× at 4,096** | post-repair eight-pair matrix; 51 samples/arm; 99% confidence; singleton arms are non-regressing because zero/one physical candidates use the direct scan |
 | singleton repair package gate | pre-repair indexed singleton | **392 passed / 0 failed** | full `rspace_plus_plus` package under 5 GiB, zero swap; focused pruning suite is 5/5 |
