@@ -593,7 +593,7 @@ is a *future* fork, not a present one).
 | [CBR-042](#cbr-042) | N | …and on the **bincode** wire too — `U(m)` verbatim and contiguous, then the values (FORM ②), so the reader never decodes a trie key | `3a32cf07` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-043](#cbr-043) | N | …but of **the entries that surface WRITES**. FORM ② keyed lf-blanked values by the *unblanked* entries, putting an entry's `locally_free` on the event hash | `8cf0b770` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-044](#cbr-044) | N | EPathMap becomes a homogeneous PathMap set/map and both codecs carry one versioned EPM1 trie snapshot; generated protobuf PDAs remove the read ceiling | `26876b65` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
-| [CBR-053](#cbr-053) | N | Retained PathMap indexes and a synchronized receive-first Bag/query product skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`; benchmark `7bc5c6994` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
+| [CBR-053](#cbr-053) | N | Retained PathMap indexes and a synchronized receive-first Bag/query product skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`; benchmark `7bc5c6994` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
 | [CBR-L07](#cbr-l07) | L | `List.last()` in MeTTaIL's Rholang | `bbceb6d9`, `6e543c01` | · | · | · | · | · | ● | · | PERMISSIVE | **W** |
 | [CBR-L08](#cbr-l08) | L | The kv element-category gate — a Name in a kv slot is refused, not silently dropped | *in flight* | ● | ● | ● | ● | ● | ● | ○ | REGRESSIVE | **W** |
 | [CBR-L10](#cbr-l10) | L | A pathmap's entries come from a projection, not a field | `832d510f` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
@@ -2321,7 +2321,7 @@ Legacy protobuf fields are read-only migration inputs; removing them is a later 
 
 | | |
 |---|---|
-| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`; benchmark `7bc5c6994` |
+| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`; benchmark `7bc5c6994` |
 | Status | LANDED ON CAMPAIGN BRANCH; VERIFICATION OPEN |
 | Direction | UNVERIFIED |
 | Evidence grade | UNVERIFIED |
@@ -2414,7 +2414,7 @@ subsets before any datum decode or spatial-match state allocation. A flat `Vec`,
 `BTreeMap` transition authority would lose that shared-prefix property and is not the selected
 design.
 
-The current containment argument has eleven independently checked parts:
+The current containment argument has twelve independently checked parts:
 
 1. exact-ground `BindPattern` and matching `ListParWithRandom` values use the same canonical
    structural sequence;
@@ -2434,7 +2434,10 @@ The current containment argument has eleven independently checked parts:
     two-layer framing explicitly, and decline every shape outside the supported ordered fragment;
     and
 11. datum-first query terminals share that contract, retain unsupported patterns at the root, and
-    preserve canonical candidate order after filtering.
+    preserve canonical candidate order after filtering; and
+12. Rocq proves that if the exact-prefix and residual-query predicates are each supersets of the
+    authoritative spatial relation, their conjunction cannot remove a spatial success and filtering
+    preserves the first spatially accepted candidate in canonical order.
 
 Cache-counter saturation returns `None` and recompiles instead of accepting a stale trie. Cache hits
 borrow the trie under a sharded map guard and perform no `PathMap` clone. Empty groups remove their
@@ -2483,11 +2486,18 @@ the verdict axis.
   matrix is non-regressing at one entry and retains **48.7–53.4%**, **12.22–13.01×**, and
   **238.8–256.9×** treatment throughput at 16/256/4,096. **MEASURED.** This repairs the resource
   regression but does not discharge verdict or post-state equivalence.
+- checkpoint `5a56376b4` proves the abstract retained-filter composition law in Rocq. The complete
+  bounded formal bundle passes: Rocq, Verus `--no-cheating` (**6/6**), Z3, PDA TLC (**2,816 distinct
+  states**), and spatial-matcher TLC (**478 distinct states**). **PROVEN, CONDITIONALLY.** The
+  theorem reduces the remaining semantic obligation to the concrete generated Rust compiler's two
+  superset premises; it does not assume or establish those premises for schema families that are not
+  yet generated, including associative-commutative matching.
 
-This entry retires as `OPTIMIZATION_MEASURED_NEUTRAL` only after the campaign's generated
+The abstract filter-composition clause of the retirement gate is now proved. This entry retires as
+`OPTIMIZATION_MEASURED_NEUTRAL` only after the campaign's generated
 old-selector/new-selector differential covers every eligible and fallback `BindPattern` family,
 play/replay traces and post-state roots agree over generated schedules, and the formal superset
-obligation proves that filtering cannot remove the first admissible candidate. The retained-receive
+premises are discharged for the concrete generated compiler over that same complete family. The retained-receive
 throughput pair has passed; the resting-data curve is non-regressing at one entry after the
 proof-derived base-case repair and passes from 16 through 4,096 entries. Timing cannot close a
 consensus obligation in either direction.

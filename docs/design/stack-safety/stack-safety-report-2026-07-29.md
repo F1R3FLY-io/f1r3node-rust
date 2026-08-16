@@ -3350,6 +3350,19 @@ suite passes **9/9**; its canonically last 256-receive witness preserves the COM
 and post-state map while reducing spatial calls from 256 to 1. Focused strict lint passes. Resource
 slopes and the expanded benchmark matrix remain open and are not inferred from test elapsed time.
 
+Checkpoint `5a56376b4` adds the retained-filter composition proof to `SpatialMatcher.v`. It models
+the production filter as the conjunction of an exact-prefix predicate and a residual-query
+predicate for eligible patterns, with root fallback represented by unconditional retention. From
+the two local superset obligations—every successful spatial match accepts both predicates—it proves
+that filtering has no false negatives and preserves the first spatially accepted candidate in the
+predecessor's canonical list order. The complete bounded proof bundle passes: all four Rocq
+theories, Verus `--no-cheating` (**6/6**), Z3, the PDA TLC model (**3,238 generated / 2,816 distinct
+states**), and the spatial-matcher TLC model (**607 generated / 478 distinct states**). This closes
+the abstract composition law only. The generated Rust compiler must still discharge both premises
+over every eligible schema family; unordered/multiplicity-aware matching and generated schedule
+replay remain open. Consequently, no consensus-equivalence or final resource conclusion is inferred
+from the theorem alone.
+
 ##### 5.16.5.4 Results
 
 The original SS-A11 depth measurements ran under a user systemd scope with **3 GiB `MemoryHigh`, 4
@@ -3377,6 +3390,7 @@ swap, and two-core CPU quota**. **MEASURED:**
 | encoded `RMP1` validation/navigation | no byte-side schema validator | **3/3 byte-cursor cases plus 4/4 generated-schema cases** | descriptor-exact fields, child types, and oneof payloads; malformed classes fail closed; all exhaustive-corpus node subtrees validate; 20,000-level validation and deepest-subtree extent discovery complete on 256 KiB |
 | nested `RMP1` instruction PDA | unpruned nested spatial scan | **9/9 framing/query cases plus the 8/8 product suite** | one- and two-layer escaping; every tested shallow token truncation rejected; 20,000 levels on 128 KiB; zero-heavy 256-candidate result equivalence with 256-to-1 spatial pruning |
 | datum-first retained structural queries | root fallback for every non-ground pattern | **9/9 combined production pruning cases** | identical COMM result/event trace/post-state map and 256-to-1 spatial calls for a canonically last waiting receive; unsupported patterns remain root fallbacks |
+| retained-filter formal composition | no theorem connecting both prefilters to canonical selection | **Rocq theorem plus complete bounded formal bundle** | exact-prefix and residual-query superset premises imply no false negatives and preservation of the first canonical spatial success; Rocq, Verus 6/6, Z3, and both exhaustive TLC models pass; concrete compiler premises remain open |
 | retained waiting-receive throughput | full canonical candidate scan | **23.2–44.6% more COMMs/s** | six treatment pairs; 51 samples/arm; 99% confidence; 16/256/4,096 receives; diverse/shared prefixes |
 | resting-data prefix throughput | full canonical candidate scan | **48.7–53.4% more COMMs/s at 16; 12.22–13.01× at 256; 238.8–256.9× at 4,096** | post-repair eight-pair matrix; 51 samples/arm; 99% confidence; singleton arms are non-regressing because zero/one physical candidates use the direct scan |
 | singleton repair package gate | pre-repair indexed singleton | **392 passed / 0 failed** | full `rspace_plus_plus` package under 5 GiB, zero swap; focused pruning suite is 5/5 |

@@ -345,6 +345,7 @@ The implementation evidence available at this checkpoint is:
 | RSpace action suite with indexing enabled | 41/41 | consume/produce, joins, repeated channels, persistence, checkpoint, reset, and soft-revert behavior remain unchanged |
 | receive-first Bag/query product | 8/8 query/product cases plus 64 generated corpora | worst-order flat and nested 256-candidate witnesses reduce spatial calls from 256 to 1; exact, wildcard, repeated capture, ordered remainder, nested ordered holes, embedded-zero/double-escape framing, structural false positives, and singleton base case pass; full-scan and indexed result, event trace, and post-state maps agree |
 | datum-first retained query automaton | 9/9 combined production pruning cases | a canonically last 256-waiting-receive witness reduces spatial calls from 256 to 1 while the COMM result, event trace, and post-state map agree; the same suite retains all receive-first and fallback witnesses |
+| retained-filter formal composition | Rocq plus the complete bounded formal bundle | `5a56376b4` factors soundness into exact-prefix and residual-query superset obligations, proves their conjunction cannot remove a spatial success, and proves filtering preserves the first spatially accepted candidate in canonical order; Rocq, Verus `--no-cheating` 6/6, Z3, TLC PDA equivalence (2,816 states), and TLC spatial-matcher equivalence (478 states) pass; concrete generated Rust compiler soundness remains open |
 | framed-query stack gate | 1/1 | a million-byte structural sequence scans on a 128 KiB worker stack without native recursion or an artificial depth/width cap |
 | Rholang query compilation | 7/7 | compiled queries and the spatial oracle agree for the supported whole-term, ordered-remainder, and nested EList/ETuple fragment; unordered ESet and other unsupported shapes fall back |
 | generated full-schema cursor | 4/4 plus 21/21 related gates | registry equals the 58-message descriptor closure; every arm of all five oneofs is observed; EPathMap remains a borrowed native trie with a cold snapshot; 20,000-deep and 20,000-wide walks complete on a 256 KiB worker stack |
@@ -424,7 +425,9 @@ implemented for exact, wildcard/capture, repeated-capture, ordered-remainder, an
 EList/ETuple instructions, without claiming the still-open retained-automaton/Bag product.
 Schema-derived cursor generation, the first nested byte-PDA slice, and reuse of its queries in the
 datum-first retained PathMap automaton are implemented, while
-associative-commutative instruction execution, experiment selection, formal closure, and legacy-
+the abstract retained-filter composition theorem is machine checked. Associative-commutative
+instruction execution, concrete generated-compiler soundness, schedule/replay equivalence,
+experiment selection, full formal closure, and legacy-
 boundary retirement remain open and visible in the pgmcp subtree. Set, Map, and
 merkleization experiments are independent treatments and cannot be promoted merely because the Bag
 treatment succeeds.
