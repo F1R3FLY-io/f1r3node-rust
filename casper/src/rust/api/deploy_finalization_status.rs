@@ -568,12 +568,33 @@ fn finalize_sig_state(
         DeployFinalizationState::Pending
     };
 
-    let _ = state.sig_bytes; // no longer needed past finalize
+    let latest_block_hash = latest_event.map(|(_, hash)| hash);
+    if state.rejection_count > 0 || !matches!(&final_state, DeployFinalizationState::Pending) {
+        tracing::info!(
+            target: "f1r3fly.casper.deploy_lifecycle",
+            event = "status_resolved",
+            deploy_sig = %hex::encode(&state.sig_bytes),
+            resolved_state = ?final_state,
+            rejection_count = state.rejection_count,
+            valid_after_block = state.valid_after_block_number,
+            lfb_hash = %hex::encode(&lfb_hash),
+            lfb_height,
+            clean_height = ?clean_canonical.as_ref().map(|(height, _)| *height),
+            clean_block = ?clean_canonical.as_ref().map(|(_, hash)| hex::encode(hash)),
+            failed_height = ?failed_canonical.as_ref().map(|(height, _)| *height),
+            failed_block = ?failed_canonical.as_ref().map(|(_, hash)| hex::encode(hash)),
+            rejected_height = ?state.latest_rejected_event.as_ref().map(|(height, _)| *height),
+            rejected_block = ?state.latest_rejected_event.as_ref().map(|(_, hash)| hex::encode(hash)),
+            latest_block = ?latest_block_hash.as_ref().map(hex::encode),
+            expired,
+            "deploy lifecycle"
+        );
+    }
 
     Ok(DeployFinalizationStatus {
         state: final_state,
         rejection_count: state.rejection_count,
-        latest_block_hash: latest_event.map(|(_, h)| h),
+        latest_block_hash,
     })
 }
 
