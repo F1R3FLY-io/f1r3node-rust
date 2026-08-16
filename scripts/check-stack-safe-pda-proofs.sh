@@ -20,6 +20,7 @@ fi
 pushd "$rocq_root" >/dev/null
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPathMap.v
+tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/Bag.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPM1.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/SpatialMatcher.v
 popd >/dev/null
@@ -31,6 +32,8 @@ if [[ -z "$verus_bin" || ! -x "$verus_bin" ]]; then
 fi
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/epathmap_canonical_worklist.rs"
+tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
+  "$repo_root/formal/verus/bag_checked_delta.rs"
 
 z3_output="$(tlc_bounded z3 "$repo_root/formal/smt/stack_safe_pda_modes.smt2")"
 if [[ "$z3_output" != "unsat" ]]; then
