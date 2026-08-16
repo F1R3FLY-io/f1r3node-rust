@@ -391,6 +391,8 @@ fn split_unavailable_resolved_branches(
 /// reconciled by the number-channel fold and must not be rejected here;
 /// registry / TreeHashMap nodes are non-numeric and exempt. The kept writer is
 /// the lowest-ordered `DeployChainIndex`, so the choice is node-deterministic.
+// False positive on `pinned`: DeployChainIndex's Hash/Eq use only immutable fields.
+#[allow(clippy::mutable_key_type)]
 fn split_overfilled_single_value_cells(
     resolved: &mut conflict_set_merger::ResolvedConflicts<DeployChainIndex>,
     depends: &impl Fn(&DeployChainIndex, &DeployChainIndex) -> bool,
@@ -404,6 +406,9 @@ fn split_overfilled_single_value_cells(
     base_binary: &impl Fn(
         &Blake2b256Hash,
     ) -> Result<Vec<Vec<u8>>, rspace_plus_plus::rspace::errors::HistoryError>,
+    // Chains already committed in the main parent's state; preferred as the
+    // survivor when a single-value cell has to keep exactly one writer.
+    pinned: &HashSet<DeployChainIndex>,
 ) -> Result<HashableSet<DeployChainIndex>, rspace_plus_plus::rspace::errors::HistoryError> {
     let mut all_chains: Vec<DeployChainIndex> = resolved
         .to_merge
@@ -470,8 +475,20 @@ fn split_overfilled_single_value_cells(
         }
         if kept.len() + chg.added.len() > 1 {
             if let Some(prod) = producers.get(ch) {
-                for loser in prod.iter().skip(1) {
-                    rejected_seed.insert(loser.clone());
+                // Keep-one picks by chain order, which knows nothing about
+                // provenance — so it can drop the writer whose effect the MAIN
+                // PARENT already committed, leaving this block's state missing
+                // content its own spine ancestor holds. Order pinned producers
+                // first. `sort_by_key` is stable, so this only moves pinned
+                // chains ahead of unpinned ones and leaves the existing
+                // deterministic order intact within each group. It is a
+                // preference inside an existing keep-one, never a veto: if
+                // every producer is pinned, one still loses and the merge
+                // stays live.
+                let mut ordered: Vec<&DeployChainIndex> = prod.iter().collect();
+                ordered.sort_by_key(|chain| !pinned.contains(*chain));
+                for loser in ordered.iter().skip(1) {
+                    rejected_seed.insert((*loser).clone());
                 }
             }
         }
@@ -504,6 +521,96 @@ fn split_overfilled_single_value_cells(
         }
     }
     Ok(rejected)
+}
+
+/// Attribute a merge failure to the chains that could have caused it, and log
+/// it as ONE error line carrying the merge context.
+///
+/// Reports, for the channel the error names: every surviving chain that
+/// removes on it (the candidates for the offending removal) with its source
+/// block and deploy sigs, every rejected chain that ADDS on it (a rejected
+/// producer is how a survivor's removal loses its backing), and the merge
+/// coordinates — floor, base state, scope size, survivor/rejected counts.
+///
+/// Best-effort by construction: it runs only when the merge already failed, so
+/// a probe that cannot answer degrades the report rather than the error.
+fn explain_merge_failure(
+    err: &rspace_plus_plus::rspace::errors::HistoryError,
+    resolved: &conflict_set_merger::ResolvedConflicts<DeployChainIndex>,
+    lfb: &BlockHash,
+    lfb_post_state: &Blake2b256Hash,
+    floor_block_number: i64,
+    scope: &Option<HashSet<BlockHash>>,
+) {
+    let message = err.to_string();
+    // The channel is the one datum the error always carries; use it to select
+    // the chains worth naming instead of dumping the whole survivor set.
+    let channel_hex: Option<String> = message
+        .split("channel ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .map(|s| s.trim_end_matches(':').to_string());
+
+    let describe = |chain: &DeployChainIndex| -> String {
+        let sigs: Vec<String> = chain
+            .deploys_with_cost
+            .0
+            .iter()
+            .map(|d| hex::encode(&d.deploy_id[..8.min(d.deploy_id.len())]))
+            .collect();
+        format!(
+            "src={}#{} sigs={:?}",
+            hex::encode(&chain.source_block_hash[..8.min(chain.source_block_hash.len())]),
+            chain.source_block_number,
+            sigs
+        )
+    };
+    let touches = |chain: &DeployChainIndex, want_added: bool| -> bool {
+        let Some(ref ch) = channel_hex else {
+            return false;
+        };
+        chain.state_changes.datums_changes.iter().any(|entry| {
+            hex::encode(entry.key().clone().bytes()) == *ch
+                && if want_added {
+                    !entry.value().added.is_empty()
+                } else {
+                    !entry.value().removed.is_empty()
+                }
+        })
+    };
+
+    let surviving_removers: Vec<String> = resolved
+        .to_merge
+        .iter()
+        .flat_map(|b| b.0.iter())
+        .filter(|c| touches(c, false))
+        .take(8)
+        .map(describe)
+        .collect();
+    let rejected_producers: Vec<String> = resolved
+        .rejected
+        .0
+        .iter()
+        .filter(|c| touches(c, true))
+        .take(8)
+        .map(describe)
+        .collect();
+
+    tracing::error!(
+        target: "f1r3fly.merge.incoherence",
+        error = %message,
+        channel = channel_hex.as_deref().unwrap_or("unparsed"),
+        floor_block = floor_block_number,
+        lfb = %hex::encode(&lfb[..8.min(lfb.len())]),
+        base_state = %hex::encode(&lfb_post_state.clone().bytes()[..8]),
+        scope_blocks = scope.as_ref().map(|s| s.len()).unwrap_or(0),
+        surviving_chains = resolved.to_merge.iter().map(|b| b.0.len()).sum::<usize>(),
+        rejected_chains = resolved.rejected.0.len(),
+        surviving_removers_on_channel = ?surviving_removers,
+        rejected_producers_on_channel = ?rejected_producers,
+        "merge failed: applied diffs incoherent with the base — every propose over \
+         this scope will fail identically until the scope or the floor changes"
+    );
 }
 
 fn resolve_conflicts_with_unavailable_retry(
@@ -609,6 +716,13 @@ pub fn merge(
     // base where scope-level dedup cannot see it, and without the seed the
     // scope copy re-applies and doubles the deploy's cells.
     sig_settled_in_base: &dyn Fn(&Bytes) -> Result<bool, CasperError>,
+    // True iff the sig's effect is already in the MAIN PARENT's committed
+    // state. Such chains are pinned: conflict resolution may not adjudicate
+    // them away, because a block whose state drops content its own main parent
+    // holds breaks the containment that makes block finality imply state
+    // finality — the spine says the content is settled while the state says it
+    // is gone (the bc35a3ad fork).
+    sig_in_main_parent_state: &dyn Fn(&Bytes) -> Result<bool, CasperError>,
 ) -> Result<
     (
         Blake2b256Hash,
@@ -997,6 +1111,34 @@ pub fn merge(
     let actual_seq_all = actual_set_vec;
     let late_seq_all = late_set_vec;
 
+    // Chains the MAIN PARENT's state already holds. These are in scope (they
+    // sit above the floor, so the base does not carry them) and are re-applied
+    // by this merge — but they must never be rejected by it. The main parent is
+    // the block's spine ancestor, so dropping its content is what lets a
+    // certified candidate end up in no live state.
+    #[allow(clippy::mutable_key_type)]
+    let mut pinned: HashSet<DeployChainIndex> = HashSet::new();
+    for chain in &actual_seq_all {
+        for deploy in &chain.deploys_with_cost.0 {
+            if is_system_deploy_id(&deploy.deploy_id) {
+                continue;
+            }
+            if sig_in_main_parent_state(&deploy.deploy_id)? {
+                pinned.insert(chain.clone());
+                break;
+            }
+        }
+    }
+    if !pinned.is_empty() {
+        tracing::debug!(
+            target: "f1r3fly.merge.cpps",
+            step = "merge.pinned_main_parent_chains",
+            n_pinned = pinned.len(),
+            n_actual = actual_seq_all.len(),
+            "chains already committed in the main parent's state; not rejectable"
+        );
+    }
+
     struct BranchDerived {
         user_deploy_ids: HashSet<Bytes>,
         combined_all_event_log: rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex,
@@ -1380,6 +1522,7 @@ pub fn merge(
             &get_data_fn,
             &compute_branches_fn,
             &compute_conflict_map_fn,
+            &pinned,
         )
     };
 
@@ -1407,6 +1550,7 @@ pub fn merge(
                 &mergeable_channels_fn,
                 &|channel| history_reader.get_data(channel),
                 &|channel| history_reader.get_data_proj_binary(channel),
+                &pinned,
             )?;
             for chain in overfilled.0 {
                 rejected.0.insert(chain);
@@ -1616,7 +1760,24 @@ pub fn merge(
         &compute_trie_actions_fn,
         &apply_trie_actions_fn,
     )
-    .map_err(|e| CasperError::HistoryError(e))?;
+    .map_err(|e| {
+        // A failure here is applied-diff incoherence: it repeats on every
+        // propose over the same scope, so the shard stops producing blocks.
+        // The error names a channel; everything needed to act on it — which
+        // surviving chain carries the offending removal, where that chain came
+        // from, and what the merge context was — is in scope RIGHT HERE and
+        // was previously recoverable only by re-running under a debug stream
+        // that produces gigabytes per minute. Emit it once, on the error path.
+        explain_merge_failure(
+            &e,
+            &resolved,
+            lfb,
+            lfb_post_state,
+            floor_block_number,
+            &scope,
+        );
+        CasperError::HistoryError(e)
+    })?;
 
     let rejected = resolved.rejected;
 
@@ -2095,6 +2256,7 @@ mod tests {
             &|_| BTreeMap::new(),
             &|_| Ok(Vec::new()),
             &|_| Ok(Vec::new()),
+            &HashSet::new(),
         )
         .expect("split overfilled cells");
 
@@ -2174,6 +2336,7 @@ mod tests {
             &|chain| chain.event_log_index.number_channels_data.clone(),
             &|_| Ok(Vec::new()),
             &|_| Ok(Vec::new()),
+            &HashSet::new(),
         )
         .expect("split mixed folded cells");
 
@@ -2284,6 +2447,241 @@ mod tests {
         assert!(rejected.0.contains(&dependent));
     }
 
+    /// A merge must never adjudicate away content its own MAIN PARENT already
+    /// holds. Cost-optimal rejection is a phlo sum with no notion of
+    /// provenance, so whenever a main-parent chain is the cheaper side of a
+    /// conflict it is the one dropped — which is exactly what block #537 did to
+    /// #536's deploy `304402206624dd87` on shard `bc35a3ad`, while #536 was
+    /// #537's own `parents[0]`. The result is a block whose state omits its
+    /// spine ancestor's content: the oracle certifies #536 because every latest
+    /// message descends from it, and no live state holds it.
+    ///
+    /// Here the main parent's chain is deliberately the CHEAPER side, so an
+    /// unpinned selection rejects it.
+    #[test]
+    fn conflict_resolution_never_rejects_main_parent_content() {
+        let channel = Blake2b256Hash::from_bytes(vec![0x55; 32]);
+        // Already committed in the main parent's state; cheap.
+        let main_parent_chain = chain(
+            1,
+            5,
+            1,
+            datum_change(channel.clone(), vec![vec![0x01; 32]], vec![vec![0x02; 32]]),
+        );
+        // A rival from another parent; expensive, so cost prefers to keep it.
+        let rival = chain(
+            2,
+            500,
+            1,
+            datum_change(channel.clone(), vec![vec![0x01; 32]], vec![vec![0x03; 32]]),
+        );
+
+        let compute_branches = |merge_set: &HashableSet<DeployChainIndex>| {
+            HashableSet(
+                merge_set
+                    .0
+                    .iter()
+                    .map(|chain| HashableSet(HashSet::from([chain.clone()])))
+                    .collect(),
+            )
+        };
+        // The two branches conflict: both consume the same base datum.
+        let compute_conflict_map = |branches: &HashableSet<HashableSet<DeployChainIndex>>| {
+            #[allow(clippy::mutable_key_type)]
+            let mut map = HashMap::new();
+            let all: Vec<HashableSet<DeployChainIndex>> = branches.0.iter().cloned().collect();
+            for branch in &all {
+                #[allow(clippy::mutable_key_type)]
+                let others: HashSet<HashableSet<DeployChainIndex>> = all
+                    .iter()
+                    .filter(|other| *other != branch)
+                    .cloned()
+                    .collect();
+                map.insert(branch.clone(), HashableSet(others));
+            }
+            Ok(map)
+        };
+
+        #[allow(clippy::mutable_key_type)]
+        let pinned: HashSet<DeployChainIndex> = HashSet::from([main_parent_chain.clone()]);
+
+        let resolved = conflict_set_merger::resolve_conflicts(
+            vec![main_parent_chain.clone(), rival.clone()],
+            Vec::new(),
+            &|_, _| false,
+            &cost_optimal_rejection_alg(),
+            &|_| BTreeMap::new(),
+            &|_| Ok(Vec::new()),
+            &compute_branches,
+            &compute_conflict_map,
+            &pinned,
+        )
+        .expect("conflict resolution");
+
+        assert!(
+            !resolved.rejected.0.contains(&main_parent_chain),
+            "the main parent's own chain was rejected — its content is committed in \
+             the state this block extends, so dropping it makes the block's state fail \
+             to contain its spine ancestor's (the bc35a3ad fork)"
+        );
+        assert!(
+            resolved.rejected.0.contains(&rival),
+            "the conflict must still be resolved, by rejecting the side the main \
+             parent does not already hold"
+        );
+    }
+
+    /// Pinning must never cost liveness. Two chains the main parent applied in
+    /// SEQUENCE can read as conflicting when a later merge re-applies them side
+    /// by side from the floor: `conflicts` check #2 pairs a surviving produce
+    /// against a surviving consume on the same channel without comparing
+    /// patterns, so a pair that never actually COMM'd in the main parent's own
+    /// history still registers. Both are pinned, so every rejection option
+    /// touches pinned content.
+    ///
+    /// Refusing the merge there would convert a rare state-containment residual
+    /// into a certain propose wedge — strictly the worse failure, and the one
+    /// class this whole effort exists to remove. Resolution must therefore
+    /// complete, logging the fallback, and leave the floor's containment guard
+    /// to catch the residual loudly.
+    #[test]
+    fn pinning_falls_back_rather_than_wedging_when_pinned_chains_conflict() {
+        let channel = Blake2b256Hash::from_bytes(vec![0x66; 32]);
+        let first = chain(
+            1,
+            5,
+            1,
+            datum_change(channel.clone(), vec![vec![0x01; 32]], vec![vec![0x02; 32]]),
+        );
+        let second = chain(
+            2,
+            7,
+            1,
+            datum_change(channel.clone(), vec![vec![0x01; 32]], vec![vec![0x03; 32]]),
+        );
+
+        let compute_branches = |merge_set: &HashableSet<DeployChainIndex>| {
+            HashableSet(
+                merge_set
+                    .0
+                    .iter()
+                    .map(|chain| HashableSet(HashSet::from([chain.clone()])))
+                    .collect(),
+            )
+        };
+        let compute_conflict_map = |branches: &HashableSet<HashableSet<DeployChainIndex>>| {
+            #[allow(clippy::mutable_key_type)]
+            let mut map = HashMap::new();
+            let all: Vec<HashableSet<DeployChainIndex>> = branches.0.iter().cloned().collect();
+            for branch in &all {
+                #[allow(clippy::mutable_key_type)]
+                let others: HashSet<HashableSet<DeployChainIndex>> = all
+                    .iter()
+                    .filter(|other| *other != branch)
+                    .cloned()
+                    .collect();
+                map.insert(branch.clone(), HashableSet(others));
+            }
+            Ok(map)
+        };
+
+        // BOTH sides pinned: no rejection option leaves the pinned set intact.
+        #[allow(clippy::mutable_key_type)]
+        let pinned: HashSet<DeployChainIndex> = HashSet::from([first.clone(), second.clone()]);
+
+        let resolved = conflict_set_merger::resolve_conflicts(
+            vec![first.clone(), second.clone()],
+            Vec::new(),
+            &|_, _| false,
+            &cost_optimal_rejection_alg(),
+            &|_| BTreeMap::new(),
+            &|_| Ok(Vec::new()),
+            &compute_branches,
+            &compute_conflict_map,
+            &pinned,
+        )
+        .expect("resolution must still succeed — refusing here is a propose wedge");
+
+        assert_eq!(
+            resolved.rejected.0.len(),
+            1,
+            "the conflict is still resolved by rejecting exactly one side; pinning \
+             expresses a preference, never a veto that can strand the proposer"
+        );
+    }
+
+    /// Conflict resolution is not the only place main-parent content can be
+    /// dropped: §3c keep-one picks the survivor for an over-filled single-value
+    /// cell by CHAIN ORDER, which knows nothing about provenance. Two
+    /// validators racing an RMW on one cell is the ucc suite's core shape, so
+    /// a main-parent writer landing later in the order is ordinary, not exotic
+    /// — and dropping it leaves the block's state missing content its own
+    /// spine ancestor holds, the same defect by a different route.
+    #[test]
+    fn overfill_keep_one_prefers_main_parent_content() {
+        let counter = Blake2b256Hash::from_bytes(vec![0x71; 32]);
+        // Sorts FIRST, so unpinned keep-one would retain this one.
+        let rival = chain(
+            0,
+            10,
+            1,
+            datum_change(counter.clone(), Vec::new(), vec![encoded_number(
+                &counter, 3,
+            )]),
+        );
+        // Sorts LAST, but its effect is already committed in the main parent.
+        let main_parent_chain = chain(
+            9,
+            10,
+            1,
+            datum_change(counter.clone(), Vec::new(), vec![encoded_number(
+                &counter, 4,
+            )]),
+        );
+
+        let mut resolved = conflict_set_merger::ResolvedConflicts {
+            to_merge: vec![
+                HashableSet(HashSet::from([rival.clone()])),
+                HashableSet(HashSet::from([main_parent_chain.clone()])),
+            ],
+            rejected: HashableSet(HashSet::new()),
+            late_set_size: 0,
+            actual_set_size: 2,
+            branches_count: 2,
+            rejected_as_dependents_count: 0,
+            optimal_rejection_count: 0,
+            conflict_map_conflicts_count: 0,
+            rejection_options_count: 0,
+            branches_time: std::time::Duration::ZERO,
+            conflicts_map_time: std::time::Duration::ZERO,
+            rejection_options_time: std::time::Duration::ZERO,
+        };
+
+        #[allow(clippy::mutable_key_type)]
+        let pinned: HashSet<DeployChainIndex> = HashSet::from([main_parent_chain.clone()]);
+
+        let rejected = split_overfilled_single_value_cells(
+            &mut resolved,
+            &|_, _| false,
+            &|_| BTreeMap::new(),
+            &|_| Ok(Vec::new()),
+            &|_| Ok(Vec::new()),
+            &pinned,
+        )
+        .expect("overfill split");
+
+        assert!(
+            !rejected.0.contains(&main_parent_chain),
+            "keep-one dropped the writer whose effect the main parent already \
+             committed, purely because it sorts later"
+        );
+        assert!(
+            rejected.0.contains(&rival),
+            "the cell must still keep exactly one writer — the preference \
+             reorders the choice, it does not suppress the keep-one"
+        );
+    }
+
     #[test]
     fn unavailable_retry_reconsiders_conflicts_after_winning_branch_is_removed() {
         let channel = Blake2b256Hash::from_bytes(vec![0x44; 32]);
@@ -2343,6 +2741,7 @@ mod tests {
                 &|_| Ok(Vec::new()),
                 &compute_branches,
                 &compute_conflict_map,
+                &HashSet::new(),
             )
         };
         let split_unavailable =
@@ -2372,6 +2771,340 @@ mod tests {
             .to_merge
             .iter()
             .any(|branch| branch.0.contains(&rescued_branch)));
+    }
+
+    /// The stranded-consumer hazard — a chain reaching the fold with a datum
+    /// removal the base cannot match, which `make_trie_action` hard-errors on
+    /// (the propose-wedge signature seen on shard `ad584769`) — is NOT
+    /// reachable through `merge`'s resolution pipeline. Stranding needs a
+    /// producer and its consumer inside ONE branch with the producer
+    /// droppable on its own, and the pipeline forecloses both halves:
+    ///
+    /// - **No event-log dependency** ⇒ the two chains are DIFFERENT branches
+    ///   (`compute_branches` groups by `depends`), and availability walks
+    ///   branches separately carrying base plus that branch's own accepted
+    ///   adds — so the consumer's unbacked removal is rejected on the first
+    ///   pass, before §3c runs at all.
+    /// - **With the dependency** ⇒ they share a branch and both pass
+    ///   availability, but §3c's rejection of the producer re-enters
+    ///   `resolve_conflicts_with_unavailable_retry`, which puts the producer
+    ///   in the LATE set; `resolve_conflicts` then drops the consumer as its
+    ///   dependent before the fold sees it.
+    ///
+    /// Both arms assert the same end state: whatever survives the loop passes
+    /// the availability check that `make_trie_action` would otherwise fail.
+    #[test]
+    fn the_resolution_pipeline_converges_on_an_availability_coherent_set() {
+        let cell = Blake2b256Hash::from_bytes(vec![0x91; 32]);
+        let counter = Blake2b256Hash::from_bytes(vec![0x92; 32]);
+        let base_value: Vec<u8> = vec![0x01; 32];
+        let produced: Vec<u8> = vec![0x02; 32];
+        let final_value: Vec<u8> = vec![0x03; 32];
+
+        // The produce the consumer consumes — present only in the dependent
+        // arm, which is what puts the two chains in one branch.
+        let carried = Produce {
+            channel_hash: cell.clone(),
+            hash: Blake2b256Hash::from_bytes(vec![0xaa; 32]),
+            persistent: false,
+            is_deterministic: true,
+            output_value: vec![],
+            failed: false,
+        };
+
+        let run = |dependent: bool| -> Vec<DeployChainIndex> {
+            // Producer: RMWs the cell (base -> produced) AND writes the counter.
+            let producer_changes = datum_change(cell.clone(), vec![base_value.clone()], vec![
+                produced.clone(),
+            ]);
+            producer_changes
+                .datums_changes
+                .insert(counter.clone(), ChannelChange {
+                    added: vec![encoded_number(&counter, 7)],
+                    removed: Vec::new(),
+                });
+            let (producer_log, consumer_log) = if dependent {
+                let mut p = EventLogIndex::empty();
+                p.produces_linear = HashableSet(HashSet::from([carried.clone()]));
+                let mut c = EventLogIndex::empty();
+                c.produces_consumed = HashableSet(HashSet::from([carried.clone()]));
+                (p, c)
+            } else {
+                (EventLogIndex::empty(), EventLogIndex::empty())
+            };
+            let producer = chain_with_event_log(1, 10, 1, producer_changes, producer_log);
+            // Consumer: computed against the producer's post-state — removes
+            // `produced`, which the BASE does not hold.
+            let consumer = chain_with_event_log(
+                2,
+                10,
+                1,
+                datum_change(cell.clone(), vec![produced.clone()], vec![
+                    final_value.clone()
+                ]),
+                consumer_log,
+            );
+            // A second, lower-ordered writer to the same counter. Neither
+            // chain overfills the counter on its own.
+            let rival = chain(
+                0,
+                10,
+                1,
+                datum_change(counter.clone(), Vec::new(), vec![encoded_number(
+                    &counter, 9,
+                )]),
+            );
+
+            let base_data = |ch: &Blake2b256Hash| {
+                Ok(if *ch == cell {
+                    vec![base_value.clone()]
+                } else {
+                    Vec::new()
+                })
+            };
+            let depends_fn = |a: &DeployChainIndex, b: &DeployChainIndex| {
+                merging_logic::depends(&a.event_log_index, &b.event_log_index)
+            };
+            let mergeable_fn =
+                |c: &DeployChainIndex| c.event_log_index.number_channels_data.clone();
+            let compute_branches = |merge_set: &HashableSet<DeployChainIndex>| {
+                let chains_vec: Vec<DeployChainIndex> = merge_set.0.iter().cloned().collect();
+                let event_logs: Vec<&EventLogIndex> =
+                    chains_vec.iter().map(|c| &c.event_log_index).collect();
+                #[allow(clippy::mutable_key_type)]
+                let depends_map =
+                    merging_logic::compute_depends_map_event_indexed(&chains_vec, &event_logs);
+                merging_logic::gather_related_sets(&depends_map)
+            };
+            let compute_conflict_map = |branches: &HashableSet<HashableSet<DeployChainIndex>>| {
+                #[allow(clippy::mutable_key_type)]
+                let mut map = HashMap::new();
+                for branch in branches.0.iter() {
+                    map.insert(branch.clone(), HashableSet(HashSet::new()));
+                }
+                Ok(map)
+            };
+            let resolve_once = |actual_seq: Vec<DeployChainIndex>,
+                                late_seq: Vec<DeployChainIndex>| {
+                conflict_set_merger::resolve_conflicts(
+                    actual_seq,
+                    late_seq,
+                    &depends_fn,
+                    &cost_optimal_rejection_alg(),
+                    &mergeable_fn,
+                    &|_| Ok(Vec::new()),
+                    &compute_branches,
+                    &compute_conflict_map,
+                    &HashSet::new(),
+                )
+            };
+            // Exactly what `merge` runs per iteration: availability, then §3c,
+            // unioned into one rejection set that feeds the retry.
+            let split_unavailable =
+                |resolved: &mut conflict_set_merger::ResolvedConflicts<DeployChainIndex>| {
+                    let mut rejected = split_unavailable_resolved_branches(
+                        resolved,
+                        &depends_fn,
+                        &|c| Ok(c.state_changes.clone()),
+                        &mergeable_fn,
+                        &base_data,
+                        &|_| Ok(Vec::new()),
+                    )?;
+                    let overfilled = split_overfilled_single_value_cells(
+                        resolved,
+                        &depends_fn,
+                        &mergeable_fn,
+                        &|_| Ok(Vec::new()),
+                        &base_data,
+                        &HashSet::new(),
+                    )?;
+                    for chain in overfilled.0 {
+                        rejected.0.insert(chain);
+                    }
+                    Ok(rejected)
+                };
+
+            let (resolved, _) = resolve_conflicts_with_unavailable_retry(
+                &[producer, consumer, rival],
+                &[],
+                &resolve_once,
+                &split_unavailable,
+            )
+            .expect("resolution pipeline");
+
+            let survivors: Vec<DeployChainIndex> = resolved
+                .to_merge
+                .iter()
+                .flat_map(|b| b.0.iter().cloned())
+                .collect();
+
+            // The property under test: what reaches the fold must pass the
+            // availability check `make_trie_action` implicitly relies on.
+            for chain in &survivors {
+                let (kept, rejected) = split_unavailable_branch_consumes(
+                    HashableSet(HashSet::from([chain.clone()])),
+                    &depends_fn,
+                    &|c| Ok(c.state_changes.clone()),
+                    &mergeable_fn,
+                    &base_data,
+                    &|_| Ok(Vec::new()),
+                )
+                .expect("availability re-check");
+                assert!(
+                    kept.is_some() && rejected.0.is_empty(),
+                    "a survivor carries a removal the base cannot match — this is the \
+                     unbacked-removal state that hard-errors in make_trie_action"
+                );
+            }
+            survivors
+        };
+
+        // Arm 1 — independent chains: availability rejects the consumer on the
+        // first pass, because it is alone in its branch with an unbacked removal.
+        let consumer_id = Bytes::from(vec![2u8]);
+        let independent = run(false);
+        assert!(
+            !independent.iter().any(|c| c
+                .deploys_with_cost
+                .0
+                .iter()
+                .any(|d| d.deploy_id == consumer_id)),
+            "the consumer must not survive: its removal is unbacked at the base and \
+             nothing in its own branch produces it"
+        );
+
+        // Arm 2 — genuinely dependent chains: both pass availability together,
+        // §3c drops the producer, and the retry drops the consumer as its
+        // dependent. Convergence is asserted by the per-survivor check above.
+        let dependent = run(true);
+        assert!(
+            dependent.len() < 3,
+            "the producer's §3c rejection must carry its dependent consumer out too"
+        );
+    }
+
+    /// Availability verdicts are RELATIVE TO THE SURVIVOR SET they were
+    /// computed on. The splitter walks a branch in dependency order carrying
+    /// base plus the adds of chains accepted before it, so a chain's removal
+    /// can be available ONLY because an earlier accepted chain produced that
+    /// datum — remove that producer and the same chain is unavailable.
+    ///
+    /// This pins the invariant, not a live defect: `merge` does reject further
+    /// chains after the splitters run (the stale-diff lineage expansion) and
+    /// re-validates nothing, so any future rejection pass that can drop a
+    /// producer while keeping its consumer would hand an unbacked removal to
+    /// `make_trie_action`. The expansion itself does not: it rejects whole
+    /// DAG-descendant lineages, and event-log dependency covers same-block
+    /// pairs.
+    #[test]
+    fn availability_verdicts_are_relative_to_the_survivor_set() {
+        let channel = Blake2b256Hash::from_bytes(vec![0x77; 32]);
+        let base_datum: Vec<u8> = vec![0x01; 32];
+        let produced: Vec<u8> = vec![0x02; 32];
+        let final_datum: Vec<u8> = vec![0x03; 32];
+
+        // Producer consumes the base datum and writes `produced`.
+        let producer = chain(
+            1,
+            10,
+            1,
+            datum_change(channel.clone(), vec![base_datum.clone()], vec![
+                produced.clone()
+            ]),
+        );
+        // Consumer was computed against the producer's post-state: it removes
+        // `produced`, a datum the BASE does not hold.
+        let consumer = chain(
+            2,
+            10,
+            2,
+            datum_change(channel.clone(), vec![produced.clone()], vec![final_datum]),
+        );
+
+        let base_data = |ch: &Blake2b256Hash| {
+            Ok(if *ch == channel {
+                vec![base_datum.clone()]
+            } else {
+                Vec::new()
+            })
+        };
+        let state_changes_fn = |c: &DeployChainIndex| Ok(c.state_changes.clone());
+        let no_mergeable = |_: &DeployChainIndex| BTreeMap::new();
+        let no_continuations = |_: &Vec<Blake2b256Hash>| Ok(Vec::new());
+        let one_branch = |merge_set: &HashableSet<DeployChainIndex>| {
+            HashableSet(HashSet::from([HashableSet(merge_set.0.clone())]))
+        };
+        let no_conflicts = |branches: &HashableSet<HashableSet<DeployChainIndex>>| {
+            Ok(branches
+                .0
+                .iter()
+                .map(|branch| (branch.clone(), HashableSet(HashSet::new())))
+                .collect())
+        };
+        let resolve = |chains: Vec<DeployChainIndex>| {
+            conflict_set_merger::resolve_conflicts(
+                chains,
+                Vec::new(),
+                &|_: &DeployChainIndex, _: &DeployChainIndex| false,
+                &cost_optimal_rejection_alg(),
+                &no_mergeable,
+                &|_| Ok(Vec::new()),
+                &one_branch,
+                &no_conflicts,
+                &HashSet::new(),
+            )
+            .expect("conflict resolution should succeed")
+        };
+
+        // Together, both chains pass availability: the consumer's removal is
+        // backed by the producer accepted immediately before it.
+        let mut together = resolve(vec![producer.clone(), consumer.clone()]);
+        split_unavailable_resolved_branches(
+            &mut together,
+            &|_, _| false,
+            &state_changes_fn,
+            &no_mergeable,
+            &base_data,
+            &no_continuations,
+        )
+        .expect("availability split should succeed");
+        assert!(
+            together.rejected.0.is_empty(),
+            "both chains must pass availability together — the consumer's removal is \
+             backed by the producer's add (rejected={})",
+            together.rejected.0.len()
+        );
+
+        // The lineage expansion now drops the producer (its source block
+        // DAG-descends from a rejected chain's source block). Re-running the
+        // SAME availability check on what survives shows the survivor set is no
+        // longer valid: the consumer's removal is unbacked at the base.
+        let mut after_expansion = resolve(vec![consumer.clone()]);
+        split_unavailable_resolved_branches(
+            &mut after_expansion,
+            &|_, _| false,
+            &state_changes_fn,
+            &no_mergeable,
+            &base_data,
+            &no_continuations,
+        )
+        .expect("availability split should succeed");
+        assert!(
+            after_expansion.rejected.0.contains(&consumer),
+            "the consumer must be unavailable once the producer is gone — if it is not, \
+             this reproduction no longer stages the post-expansion hazard"
+        );
+
+        // The defect: `merge` hands the post-expansion set to the fold without
+        // repeating that check, so this unbacked removal reaches
+        // `make_trie_action`.
+        assert!(
+            together
+                .to_merge
+                .iter()
+                .any(|branch| branch.0.contains(&consumer)),
+            "the consumer survives the pre-expansion split and is carried into the fold"
+        );
     }
 
     #[test]
@@ -2441,6 +3174,7 @@ mod tests {
                 &|_| Ok(Vec::new()),
                 &compute_branches,
                 &compute_conflict_map,
+                &HashSet::new(),
             )
         };
         let split_unavailable =

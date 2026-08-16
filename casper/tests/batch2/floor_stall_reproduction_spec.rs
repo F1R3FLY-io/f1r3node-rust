@@ -16,13 +16,22 @@
 //!   sig), the floor freezes, unfinalized width piles up, and the
 //!   backpressure cap turns the stall into a permanent halt.
 //!
-//! The design law is "merge = f(floor state, above-floor diffs); base is
-//! the floor block's committed post-state, ALWAYS." A single-parent block
-//! whose derived floor is NOT on its parent's state lineage must re-base
-//! onto the floor — recording `merge_base` and re-collecting the parent
-//! chain's diffs — exactly as a multi-parent merge over the same
-//! geometry does. The assertions below state that behavior; on the
-//! verbatim fast path they fail at the first post-certification mint.
+//! The stall is now prevented at its SOURCE rather than repaired
+//! downstream. Step two above is what starts it, and it is the same move
+//! that froze `bc35a3ad`: a merge adjudicating away content carried by its
+//! own MAIN PARENT. Conflict resolution pins the main parent's chains
+//! (`conflict_resolution_never_rejects_main_parent_content`), so the
+//! stale-based merge keeps the settling block's effect and no descendant
+//! ever inherits a state its own spine ancestor contradicts.
+//!
+//! This spec therefore now asserts the closure end-to-end through the real
+//! pipeline: the merge keeps the content, every extension of it carries
+//! the floor-settled effect, and the floor advances. The single-parent
+//! re-base onto the floor stays implemented as the general repair for a
+//! floor that a parent's lineage genuinely never held — it is simply no
+//! longer reachable by this route, so the assertions below pin the
+//! invariant (the effect is present) rather than the repair (a recorded
+//! `merge_base`).
 
 use std::collections::HashMap;
 
@@ -94,7 +103,7 @@ async fn string_datums(node: &TestNode, state_hash: &Bytes, name: &str) -> Vec<S
 use super::staging::mint_on_parents;
 
 #[tokio::test]
-async fn a_single_parent_block_re_bases_onto_a_floor_its_parent_never_held() {
+async fn a_stale_based_merge_keeps_its_main_parents_settled_content() {
     shared::rust::tracing_init::init_for_tests();
     let (mut nodes, shard_id, _genesis_block) = equal_three_node_network().await;
 
@@ -180,19 +189,23 @@ async fn a_single_parent_block_re_bases_onto_a_floor_its_parent_never_held() {
     let m = mint_on_parents(&mut nodes[2], vec![c.clone(), e.clone()], "M").await;
     let m_rejected = rejected_sigs(&m);
     assert!(
-        m_rejected.contains(&contender_x.sig) && !m_rejected.contains(&contender_y.sig),
-        "staging: the cost-optimal merge must reject the CHEAP chain \
-         (rejected {:?})",
+        !m_rejected.contains(&contender_x.sig),
+        "M rejected the chain carried by its OWN MAIN PARENT C. Cost-optimal \
+         selection prefers the cheap chain and X is cheaper, so only the \
+         main-parent pin stops this — and this is where the stall starts: M's \
+         state drops content that sits on M's spine, so every descendant \
+         inherits a state its own spine ancestor contradicts (rejected {:?})",
         m_rejected
             .iter()
             .map(|s| hex::encode(&s[..6]))
             .collect::<Vec<_>>(),
     );
     assert!(
-        string_datums(&nodes[2], &m.body.state.post_state_hash, "XA")
+        !string_datums(&nodes[2], &m.body.state.post_state_hash, "XA")
             .await
             .is_empty(),
-        "staging: M's state must not carry the rejected effect"
+        "M's state must carry its main parent's settled effect @\"XA\" — the \
+         rejection that used to erase it is what this spec reproduced"
     );
 
     // Close the witnessing clique over C: v1 cites M (so its next block's
@@ -229,20 +242,21 @@ async fn a_single_parent_block_re_bases_onto_a_floor_its_parent_never_held() {
             frozen.block_number,
         );
     }
-    assert_eq!(
-        t.body.merge_base,
-        c.block_hash,
-        "T's state must be REBASED onto its derived floor C — a recorded \
-         merge base — not inherited verbatim from a parent whose lineage \
-         never held the floor (recorded base: {:?})",
-        (!t.body.merge_base.is_empty()).then(|| hex::encode(&t.body.merge_base[..8])),
-    );
+    // What must hold is the PROPERTY — T's state carries the floor's settled
+    // content — not the mechanism that delivers it. Re-basing onto the floor
+    // was the only route while a merge could drop its main parent's chain,
+    // because M's state then genuinely lacked C's effect. Now that M keeps it,
+    // T inherits a state that already contains the floor's content and records
+    // no base of its own. Asserting `merge_base == C` here would pin the
+    // repair rather than the invariant, and would fail precisely because the
+    // damage it repaired no longer happens.
     assert!(
         !string_datums(&nodes[2], &t.body.state.post_state_hash, "XA")
             .await
             .is_empty(),
-        "T's post-state must carry the floor-settled effect @\"XA\" — \
-         inheriting the stale merge's state re-erases settled content"
+        "T's post-state must carry the floor-settled effect @\"XA\" — a block \
+         whose state omits its own derived floor's content is refused by \
+         containment forever, which is the 3cd723b6 freeze"
     );
 
     // Liveness: deliver the branch everywhere and run mutual rounds — the

@@ -1521,6 +1521,23 @@ pub async fn compute_parents_post_state(
                     ),
                 }
             };
+            // The main parent's committed state pins its own chains against
+            // rejection. `parent_hashes[0]` is the spine ancestor this block
+            // extends, and `effect_in_state_of` walks its recorded state
+            // lineage — the same membership the floor probe above uses, asked
+            // of the main parent instead of the floor.
+            let main_parent_hash = parent_hashes.first().cloned();
+            let sig_in_main_parent_state = |sig: &Bytes| -> Result<bool, CasperError> {
+                match &main_parent_hash {
+                    Some(hash) => crate::rust::finality::deploy_lifecycle::effect_in_state_of(
+                        block_store,
+                        hash,
+                        sig,
+                        settled_walk_bound,
+                    ),
+                    None => Ok(false),
+                }
+            };
             let merger_result = dag_merger::merge(
                 &s.dag,
                 &floor_hash,
@@ -1536,6 +1553,7 @@ pub async fn compute_parents_post_state(
                 floor_block_number,
                 s.on_chain_state.shard_conf.deploy_lifespan,
                 &sig_settled_in_base,
+                &sig_in_main_parent_state,
             )?;
             let merge_ms = merge_started.elapsed().as_millis();
 
