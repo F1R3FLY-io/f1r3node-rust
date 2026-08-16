@@ -78,7 +78,7 @@ fn branch_unfinalized_user_deploy_score(
     block_store: &KeyValueBlockStore,
     root_hash: &BlockHash,
     last_finalized_block: &BlockHash,
-) -> Result<Option<DeployBranchScore>, CasperError> {
+) -> Result<Option<(DeployBranchScore, Vec<Bytes>)>, CasperError> {
     let last_finalized_number = dag
         .lookup(last_finalized_block)?
         .map(|meta| meta.block_number)
@@ -118,13 +118,19 @@ fn branch_unfinalized_user_deploy_score(
         stack.extend(block_meta.parents.iter().cloned());
     }
 
-    Ok(
-        earliest_deploy_block_number.map(|earliest| DeployBranchScore {
-            deploy_sig_count: deploy_sigs.len(),
-            earliest_deploy_block_number: earliest,
-            root_block_number: root_meta.block_number,
-        }),
-    )
+    let deploy_sig_count = deploy_sigs.len();
+    let mut deploy_sigs: Vec<Bytes> = deploy_sigs.into_iter().collect();
+    deploy_sigs.sort();
+    Ok(earliest_deploy_block_number.map(|earliest| {
+        (
+            DeployBranchScore {
+                deploy_sig_count,
+                earliest_deploy_block_number: earliest,
+                root_block_number: root_meta.block_number,
+            },
+            deploy_sigs,
+        )
+    }))
 }
 
 fn prefer_deploy_support_main_parent(
@@ -137,7 +143,8 @@ fn prefer_deploy_support_main_parent(
         return Ok(parents);
     }
 
-    let mut scored: Vec<Option<DeployBranchScore>> = Vec::with_capacity(parents.len());
+    let mut scored: Vec<Option<(DeployBranchScore, Vec<Bytes>)>> =
+        Vec::with_capacity(parents.len());
     for parent in &parents {
         scored.push(branch_unfinalized_user_deploy_score(
             dag,
@@ -149,7 +156,7 @@ fn prefer_deploy_support_main_parent(
 
     let mut best: Option<(usize, &DeployBranchScore)> = None;
     for (idx, score) in scored.iter().enumerate() {
-        let Some(score) = score.as_ref() else {
+        let Some((score, _)) = score.as_ref() else {
             continue;
         };
         let replace = best
@@ -169,6 +176,9 @@ fn prefer_deploy_support_main_parent(
     let Some((best_idx, best_score)) = best else {
         return Ok(parents);
     };
+    let Some((_, promoted_deploy_sigs)) = scored[best_idx].as_ref() else {
+        return Ok(parents);
+    };
     if best_idx == 0 {
         return Ok(parents);
     }
@@ -178,6 +188,16 @@ fn prefer_deploy_support_main_parent(
     let mut reordered = parents;
     let promoted_parent = reordered.remove(best_idx);
     reordered.insert(0, promoted_parent);
+    tracing::info!(
+        target: "f1r3fly.casper.deploy_lifecycle",
+        event = "parent_promoted",
+        deploy_sigs = ?promoted_deploy_sigs.iter().map(hex::encode).collect::<Vec<_>>(),
+        original_main = %hex::encode(&original_main),
+        promoted_main = %hex::encode(&promoted),
+        earliest_deploy_block = best_score.earliest_deploy_block_number,
+        promoted_root_block = best_score.root_block_number,
+        "deploy lifecycle"
+    );
     tracing::info!(
         target: "f1r3fly.casper.deploy_support",
         "Parent selection promoted deploy-carrying branch for canonical support: original_main={}, promoted_main={}, deploy_sigs={}, earliest_deploy_block={}, promoted_root_block={}",
