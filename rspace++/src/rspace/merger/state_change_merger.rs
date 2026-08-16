@@ -248,6 +248,7 @@ pub fn compute_trie_actions<C: Clone, P: Clone, A: Clone, K: Clone>(
                 }
                 None => make_trie_action(
                     history_pointer,
+                    "datum",
                     |hash| base_reader.get_data_proj_binary(hash),
                     changes,
                     |hash| {
@@ -343,6 +344,7 @@ pub fn compute_trie_actions<C: Clone, P: Clone, A: Clone, K: Clone>(
             }
             make_trie_action(
                 history_pointer,
+                "joins",
                 |hash| base_reader.get_joins_proj_binary(hash),
                 changes,
                 |hash| {
@@ -386,6 +388,13 @@ pub fn compute_trie_actions<C: Clone, P: Clone, A: Clone, K: Clone>(
 
 fn make_trie_action<C: Clone, P: Clone, A: Clone, K: Clone>(
     history_pointer: &Blake2b256Hash,
+    // Which fold this action belongs to ("datum" | "joins"). The incoherence
+    // error below is otherwise indistinguishable between the two call sites,
+    // and they fail for different reasons: datum removals are checked against
+    // the base by the availability splitter, joins removals are checked by
+    // nothing. Naming the kind is the difference between knowing which guard
+    // failed and re-running the whole hunt to find out.
+    kind: &'static str,
     init_value: impl Fn(&Blake2b256Hash) -> Result<Vec<ByteVector>, HistoryError>,
     changes: &ChannelChange<ByteVector>,
     remove_action: impl Fn(&Blake2b256Hash) -> HotStoreTrieAction<C, P, A, K>,
@@ -415,13 +424,28 @@ fn make_trie_action<C: Clone, P: Clone, A: Clone, K: Clone>(
         }
         let unmatched: usize = remove_counts.values().sum();
         if unmatched > 0 {
+            // Digest the mismatch itself: which values the base holds versus
+            // which the diff wants gone. Without this the message says only
+            // that counts disagree, and identifying the stale value costs a
+            // debug-level re-run of the whole shard.
+            let digest = |items: &[ByteVector]| -> Vec<String> {
+                items
+                    .iter()
+                    .take(4)
+                    .map(|b| hex::encode(&b[..8.min(b.len())]))
+                    .collect()
+            };
             return Err(HistoryError::MergeError(format!(
-                "channel {}: {} removed datum(s) absent from the base (base holds {}, diff \
-                 removes {}) — applied diffs are incoherent with the base state",
+                "channel {} [{}]: {} removed item(s) absent from the base (base holds {}, diff \
+                 removes {}) — applied diffs are incoherent with the base state; base={:?} \
+                 removed={:?}",
                 hex::encode(history_pointer.clone().bytes()),
+                kind,
                 unmatched,
                 init.len(),
                 changes.removed.len(),
+                digest(&init),
+                digest(&changes.removed),
             )));
         }
         result.extend(changes.added.clone());
@@ -659,6 +683,21 @@ mod tests {
             result.is_err(),
             "a datum removal absent from the base must hard-error (record incoherence), not \
              silently no-op"
+        );
+
+        // The message must be actionable on its own. This error deterministically
+        // wedges every propose over the same scope, so a reader who has only this
+        // line must still learn WHICH fold failed and WHAT disagreed — recovering
+        // that from a debug-level re-run costs gigabytes per minute.
+        let message = result.unwrap_err().to_string();
+        assert!(
+            message.contains("[datum]"),
+            "the failing fold must be named — 'datum' and 'joins' share this error text and are \
+             checked by different guards: {message}"
+        );
+        assert!(
+            message.contains("removed=") && message.contains("base="),
+            "the message must digest base-vs-removed values, not just counts: {message}"
         );
     }
 
