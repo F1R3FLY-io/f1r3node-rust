@@ -3323,6 +3323,17 @@ includes validation and deepest-subtree navigation through a 20,000-level term o
 stack. These are test-harness elapsed times under a 5 GiB zero-swap cap, not standalone RSS
 measurements.
 
+Checkpoint `bbdd22887` adds the lossless inverse at the token layer. A validated path iterates its
+borrowed typed tokens and re-emits canonical RMP1 bytes into one output buffer; it never rebuilds a
+recursive `Par`. This boundary is deliberate because the EPathMap token contains a
+domain-separated key-topology digest and is not an invertible serialization of map values. The
+complete 66-shape descriptor corpus now passes encode/validate/token-re-encode byte identity, and a
+committed manifest pins every encoded length and BLAKE2b-256 digest independently of host pointer
+width. The 20,000-level re-encode also passes on the existing 256 KiB worker stack. Focused
+`match_path_cursor` tests pass **6/6**, and strict Clippy for the library and target passes under an
+8 GiB zero-swap scope. This closes the codec round-trip and cross-platform-byte gaps without a
+native-stack slope, `RUST_MIN_STACK`, `stacker`, or an artificial traversal bound.
+
 Checkpoint `b6b53d1b3` activates an ordered nested-query PDA without decoding `Par`. The compiler
 reuses the generated event encoder to divide an EList or ETuple pattern into exact **Rholang Match
 Path format version 1 (RMP1)** byte runs and
@@ -3557,8 +3568,8 @@ swap, and two-core CPU quota**. **MEASURED:**
 | framed-query native stack | recursive framing not admitted | **one million encoded bytes on a 128 KiB worker stack** | iterative double-frame scanner; no recursion, depth/width cap, `RUST_MIN_STACK`, or `stacker` |
 | Rholang query compiler | spatial oracle only | **11/11 focused matcher cases; 61/61 complete matcher group** | every ordered binary/unary/method/matches/list/tuple family uses the generated cursor and agrees with the spatial oracle; unordered/AC shapes and repeated capture levels fall back |
 | generated Rholang matching cursor | no schema-complete cursor | **4/4 cursor cases plus 21/21 schema/exhaustiveness/registration cases** | all 58 descriptor messages and five oneofs are generated from one pass; a 20,000-deep EList spine and a 20,000-wide term traverse on 256 KiB; EPathMap yields one native-trie delegation event without forcing its snapshot |
-| generated Rholang structural match path | canonical-path exact terms only | **3/3 encoder cases; 4/4 models RSpace-path cases; 11/11 Rholang compiler cases** | complete-schema deterministic tokens; canonical EPathMap digest golden and insertion-order witness; deliberate value-insensitive false-positive lane; 20,000-deep/wide encoding on 256 KiB; exact/whole-term/ordered-nested production query paths agree with the spatial oracle |
-| encoded `RMP1` validation/navigation | no byte-side schema validator | **3/3 byte-cursor cases plus 4/4 generated-schema cases** | descriptor-exact fields, child types, and oneof payloads; malformed classes fail closed; all exhaustive-corpus node subtrees validate; 20,000-level validation and deepest-subtree extent discovery complete on 256 KiB |
+| generated Rholang structural match path | canonical-path exact terms only | **3/3 encoder cases; 6/6 token-codec cases; 4/4 models RSpace-path cases; 11/11 Rholang compiler cases** | complete-schema deterministic tokens; all 66 descriptor-corpus shapes have fixed length/digest goldens and token round trips; canonical EPathMap digest golden and insertion-order witness; deliberate value-insensitive false-positive lane; 20,000-deep/wide encoding and 20,000-level re-encoding on 256 KiB; exact/whole-term/ordered-nested production query paths agree with the spatial oracle |
+| encoded `RMP1` validation/navigation | no byte-side schema validator | **6/6 byte-cursor cases plus 4/4 generated-schema cases** | descriptor-exact fields, child types, and oneof payloads; malformed classes fail closed; all exhaustive-corpus node subtrees validate and all 66 complete paths re-encode identically; validated paths compare and hash by canonical bytes; 20,000-level validation, deepest-subtree extent discovery, and token re-emission complete on 256 KiB |
 | nested `RMP1` instruction PDA | unpruned nested spatial scan | **9/9 framing/query cases plus the 8/8 product suite** | one- and two-layer escaping; every tested shallow token truncation rejected; 20,000 levels on 128 KiB; zero-heavy 256-candidate result equivalence with 256-to-1 spatial pruning |
 | datum-first retained structural queries | root fallback for every non-ground pattern | **9/9 combined production pruning cases** | identical COMM result/event trace/post-state map and 256-to-1 spatial calls for a canonically last waiting receive; unsupported patterns remain root fallbacks |
 | retained-filter formal composition | no theorem connecting both prefilters to canonical selection | **Rocq theorem plus complete bounded formal bundle** | exact-prefix and residual-query superset premises imply no false negatives and preservation of the first canonical spatial success; Rocq, Verus 6/6, Z3, all three exhaustive TLC models, and the live-commit mCRL2 checks pass; concrete compiler premises remain open |

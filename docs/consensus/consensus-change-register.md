@@ -4385,6 +4385,17 @@ this checkpoint retains the `BYTE_NEUTRAL_MEASURED` classification. Exhaustive e
 cross-platform evidence, nested matching, and formal correspondence remained campaign gates before
 the optimization could be called complete at that checkpoint.
 
+`f1r3node-rust-mettail@bbdd22887` closes the lossless token round trip and cross-platform golden
+gate for the derived bytes. `ValidatedRhoMatchPath` decodes and canonically re-emits typed RMP1
+tokens without reconstructing `Par`; reconstruction is intentionally outside the format because an
+EPathMap token contains a key-topology digest rather than its original values. All 66
+descriptor-corpus shapes round-trip byte for byte and are pinned by encoded length plus
+BLAKE2b-256; the 20,000-level case completes on a 256 KiB worker stack. Equality, ordering, and
+hashing of validated paths are defined by the canonical bytes. This evidence remains
+`BYTE_NEUTRAL_MEASURED`: it changes no protobuf, bincode, EPM1, cold-store, event-hash, signature,
+network, match-verdict, binding, schedule, post-state, or charge surface. Concrete generated
+query-compiler soundness and complete end-to-end replay remain open.
+
 `f1r3node-rust-mettail@b6b53d1b3` then activates ordered nested EList/ETuple instructions in the
 receive-first product. This later checkpoint is not retired merely because its byte stream is
 derived: a false-negative instruction can hide a COMM. It is therefore governed by active CBR-053's
