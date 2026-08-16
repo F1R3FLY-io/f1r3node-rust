@@ -73,3 +73,7 @@ harness = false
 [[bench]]
 name = "bag"
 harness = false
+
+[[bench]]
+name = "rspace_query_product"
+harness = false
