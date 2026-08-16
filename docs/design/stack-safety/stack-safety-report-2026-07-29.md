@@ -14,7 +14,8 @@
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
 **Report date** 2026-07-29, revised through 2026-08-16
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
-**Living closure head** `f1r3node-rust-mettail@697db373b` (generated ordered-expression datum-first/receive-first
+**Living closure head** `f1r3node-rust-mettail@250e96c80` (PathMap-pruned ordered elements inside the
+stack-safe associative-commutative matcher, following generated ordered-expression datum-first/receive-first
 RhoPath queries in retained PathMap automata and the Bag/position product, following sparse relational-row reuse in the
 production spatial-matcher pushdown automaton (PDA), complete-message protobuf ingress bounds, `InterpreterError`
 lifecycle machine, reducer method-replay machine, exact recursion census, production lint gate,
@@ -3375,6 +3376,27 @@ focused compiler suite passes **11/11**, the complete matcher group passes **61/
 RSpace product/automaton/path suites pass **22/22**; formatting and strict production-library lint
 also pass. These are functional and stack-architecture gates, not new RSS or throughput samples.
 
+Checkpoint `250e96c80` adds a PathMap-native candidate domain in front of the already-iterative
+`ListMachine` augmenting-path PDA. Each compatible unordered target is encoded through the shared
+RMP1 structural sequence and inserted into `PathMap<ListTargetId>`. Its fixed-width nonzero `u64`
+payload names a node in one flat collision arena; candidate domains are owned boxed `u64` arrays,
+not reference-counted platform-width primitives or per-trie-node vectors. Generated exact or
+ordered nested queries cut the trie, query matches reject false structural candidates, and original
+target-position sorting restores the predecessor's search order before the existing PDA runs.
+Unsupported, nonselective, and nonlinear patterns use the full domain. The spatial matcher remains
+the verdict authority, so value-insensitive EPathMap structural hashes can only add work.
+
+At width 128, exact diagonal matching falls from the frozen nominal **8,256** spatial edge
+evaluations to **128**. An ordered-nested ESet witness likewise performs **128** successful edges
+and agrees with the recursive oracle. The unchanged 51-sample displacement control remains
+exhaustive at **16,257** treatment edges versus **699,263** nominal calls in every sample. Its
+isolated process completes in **56.90 s** and peaks at **100.8 MiB RSS** under a 4 GiB zero-swap
+scope. These deterministic edge and resource observations are not a latency or throughput
+comparison. The complete matcher-library group passes **53/53**, the affected RSpace
+query/product/automaton group passes **22/22**, and strict production lint passes. Mutable
+multiplicity deltas, constrained-first dynamic AC search, EPathMap-native lattice/algebra
+integration, small-stack search-width measurement, and formal completeness remain open.
+
 ##### 5.16.5.4 Results
 
 The original SS-A11 depth measurements ran under a user systemd scope with **3 GiB `MemoryHigh`, 4
@@ -3403,6 +3425,7 @@ swap, and two-core CPU quota**. **MEASURED:**
 | nested `RMP1` instruction PDA | unpruned nested spatial scan | **9/9 framing/query cases plus the 8/8 product suite** | one- and two-layer escaping; every tested shallow token truncation rejected; 20,000 levels on 128 KiB; zero-heavy 256-candidate result equivalence with 256-to-1 spatial pruning |
 | datum-first retained structural queries | root fallback for every non-ground pattern | **9/9 combined production pruning cases** | identical COMM result/event trace/post-state map and 256-to-1 spatial calls for a canonically last waiting receive; unsupported patterns remain root fallbacks |
 | retained-filter formal composition | no theorem connecting both prefilters to canonical selection | **Rocq theorem plus complete bounded formal bundle** | exact-prefix and residual-query superset premises imply no false negatives and preservation of the first canonical spatial success; Rocq, Verus 6/6, Z3, and both exhaustive TLC models pass; concrete compiler premises remain open |
+| AC element candidate trie | full unordered target scan | **8,256→128 exact diagonal spatial edges; 128 ordered-nested ESet edges; 16,257 exhaustive displacement edges in each of 51 samples** | fixed-width PathMap heads and a flat arena derive ordered candidate domains; 53/53 matcher and 22/22 RSpace tests pass; isolated counter process is 56.90 s and 100.8 MiB RSS under 4 GiB/zero swap; no timing speedup is inferred |
 | retained waiting-receive throughput | full canonical candidate scan | **23.2–44.6% more COMMs/s** | six treatment pairs; 51 samples/arm; 99% confidence; 16/256/4,096 receives; diverse/shared prefixes |
 | resting-data prefix throughput | full canonical candidate scan | **48.7–53.4% more COMMs/s at 16; 12.22–13.01× at 256; 238.8–256.9× at 4,096** | post-repair eight-pair matrix; 51 samples/arm; 99% confidence; singleton arms are non-regressing because zero/one physical candidates use the direct scan |
 | singleton repair package gate | pre-repair indexed singleton | **392 passed / 0 failed** | full `rspace_plus_plus` package under 5 GiB, zero swap; focused pruning suite is 5/5 |

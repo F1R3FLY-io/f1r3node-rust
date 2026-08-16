@@ -593,7 +593,7 @@ is a *future* fork, not a present one).
 | [CBR-042](#cbr-042) | N | …and on the **bincode** wire too — `U(m)` verbatim and contiguous, then the values (FORM ②), so the reader never decodes a trie key | `3a32cf07` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-043](#cbr-043) | N | …but of **the entries that surface WRITES**. FORM ② keyed lf-blanked values by the *unblanked* entries, putting an entry's `locally_free` on the event hash | `8cf0b770` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-044](#cbr-044) | N | EPathMap becomes a homogeneous PathMap set/map and both codecs carry one versioned EPM1 trie snapshot; generated protobuf PDAs remove the read ceiling | `26876b65` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
-| [CBR-053](#cbr-053) | N | Retained PathMap indexes and a synchronized receive-first Bag/query product skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`; benchmark `7bc5c6994` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
+| [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`; benchmark `7bc5c6994` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
 | [CBR-L07](#cbr-l07) | L | `List.last()` in MeTTaIL's Rholang | `bbceb6d9`, `6e543c01` | · | · | · | · | · | ● | · | PERMISSIVE | **W** |
 | [CBR-L08](#cbr-l08) | L | The kv element-category gate — a Name in a kv slot is refused, not silently dropped | *in flight* | ● | ● | ● | ● | ● | ● | ○ | REGRESSIVE | **W** |
 | [CBR-L10](#cbr-l10) | L | A pathmap's entries come from a projection, not a field | `832d510f` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
@@ -2317,11 +2317,11 @@ Legacy protobuf fields are read-only migration inputs; removing them is a later 
 
 ### CBR-053
 
-**Retained PathMap indexes and a synchronized receive-first Bag/query product skip candidates that cannot match a compiled counterpart.**
+**Retained PathMap indexes and synchronized receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart.**
 
 | | |
 |---|---|
-| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`; benchmark `7bc5c6994` |
+| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`; benchmark `7bc5c6994` |
 | Status | LANDED ON CAMPAIGN BRANCH; VERIFICATION OPEN |
 | Direction | UNVERIFIED |
 | Evidence grade | UNVERIFIED |
@@ -2381,6 +2381,14 @@ historical spatial matcher accumulates nonlinear occurrences; the optimization m
 reinterpret them as generic RhoPath equality. Associative-commutative carriers remain on the
 canonical fallback. This checkpoint changes query eligibility only and leaves bytes, the spatial
 verdict authority, and predecessor candidate order untouched.
+
+Checkpoint `250e96c80` applies the same conservative query contract inside unordered ESet/EMap
+element selection. A `PathMap<ListTargetId>` stores fixed-width nonzero `u64` arena heads;
+generated query matches produce boxed `u64` target-position domains that are sorted back into
+predecessor order before the existing stack-safe augmenting matcher runs. Unsupported,
+nonselective, and nonlinear patterns receive the full domain. Structural collisions remain
+candidates for the spatial oracle. This introduces another possible false-negative site if the
+compiler or trie prefix is unsound, so it extends CBR-053 rather than retiring it.
 
 Checkpoint `e1a587c9f` applies that same structural-query contract to datum-first lookup. A supported
 waiting pattern is retained at its longest exact prefix in the existing
@@ -2478,6 +2486,13 @@ the verdict axis.
   whole/nested atoms also fall back because the historical matcher accumulates nonlinear
   occurrences rather than imposing generic RhoPath equality. The complete matcher group passes
   **61/61**. **MEASURED.**
+- inner-AC candidate-domain control: exact diagonal spatial edges fall from the frozen **8,256**
+  nominal evaluations to **128**; a width-128 ordered-nested ESet witness also takes **128**
+  successful edges and agrees with the recursive oracle. The unchanged adversarial displacement
+  control remains exhaustive at **16,257** treatment edges versus **699,263** nominal calls in all
+  51 samples. The complete matcher-library group passes **53/53** and the affected RSpace
+  query/product/automaton suites pass **22/22**. **MEASURED.** These work counts do not discharge
+  the compiler-superset or schedule/post-state axes.
 - generated resting-data differential: **64 corpora** with identical selected result, RSpace event
   trace, and post-state maps under full and indexed scans. **MEASURED.**
 - both changed libraries plus all tests and benchmark targets compile under a **5 GiB** resident-set
