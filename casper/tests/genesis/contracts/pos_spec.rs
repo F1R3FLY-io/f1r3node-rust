@@ -26,25 +26,20 @@ fn prepare_vault(vault_data: (&str, u64)) -> Vault {
 }
 
 fn test_vaults() -> Vec<Vault> {
-    vec![
-        ("0".repeat(130).as_str(), 10000),
-        ("1".repeat(130).as_str(), 10000),
-        ("2".repeat(130).as_str(), 10000),
-        ("3".repeat(130).as_str(), 10000),
-        ("4".repeat(130).as_str(), 10000),
-        ("5".repeat(130).as_str(), 10000),
-        ("6".repeat(130).as_str(), 10000),
-        ("7".repeat(130).as_str(), 10000),
-        ("8".repeat(130).as_str(), 10000),
-        ("9".repeat(130).as_str(), 10000),
-        ("a".repeat(130).as_str(), 10000),
-        ("b".repeat(130).as_str(), 10000),
-        ("c".repeat(130).as_str(), 10000),
-        ("d".repeat(130).as_str(), 10000),
-        ("e".repeat(130).as_str(), 10000),
+    [
+        "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e",
     ]
     .into_iter()
-    .map(prepare_vault)
+    .map(|token| token.repeat(130))
+    .chain(
+        [
+            "6a", "7b", "8c", "9d", "ae", "bc", "bf", "c1", "c2", "cd", "d1", "d2", "d3", "d4",
+            "de", "e1", "e2", "e3", "e4", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8",
+        ]
+        .into_iter()
+        .map(|token| token.repeat(65)),
+    )
+    .map(|pk| prepare_vault((&pk, 10000)))
     .collect()
 }
 
