@@ -28,8 +28,9 @@ struct TestContext {
 
 impl TestContext {
     async fn new() -> Self {
+        let parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(2));
         let genesis = GenesisBuilder::new()
-            .build_genesis_with_parameters(None)
+            .build_genesis_with_parameters(Some(parameters))
             .await
             .unwrap();
 
@@ -330,6 +331,21 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
             .await
             .expect("sync merge_block 1 -> 0");
     }
+    nodes.sort_by(|left, right| {
+        left.validator_id_opt
+            .as_ref()
+            .expect("left validator identity")
+            .public_key
+            .bytes
+            .cmp(
+                &right
+                    .validator_id_opt
+                    .as_ref()
+                    .expect("right validator identity")
+                    .public_key
+                    .bytes,
+            )
+    });
     assert!(
         nodes[0].contains(&merge_block.block_hash),
         "validator 0 must observe merge_block before recovery propose"
