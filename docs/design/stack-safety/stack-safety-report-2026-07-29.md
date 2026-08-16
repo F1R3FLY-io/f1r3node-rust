@@ -3323,7 +3323,8 @@ stack. These are test-harness elapsed times under a 5 GiB zero-swap cap, not sta
 measurements.
 
 Checkpoint `b6b53d1b3` activates an ordered nested-query PDA without decoding `Par`. The compiler
-reuses the generated event encoder to divide an EList or ETuple pattern into exact RMP1 byte runs and
+reuses the generated event encoder to divide an EList or ETuple pattern into exact **Rholang Match
+Path format version 1 (RMP1)** byte runs and
 whole-`Par` capture or wildcard instructions. Unsupported unordered, associative-commutative,
 remainder-bearing, connective, or otherwise unrecognized shapes fail closed to the existing spatial
 scan. At execution, the first exact instruction run is escaped twice and descended directly through
@@ -3397,6 +3398,20 @@ query/product/automaton group passes **22/22**, and strict production lint passe
 multiplicity deltas, constrained-first dynamic AC search, EPathMap-native lattice/algebra
 integration, small-stack search-width measurement, and formal completeness remain open.
 
+Checkpoint `2d91c4394` makes that inner-AC catalog multiplicity-authoritative. Each supported target
+is keyed by one complete channel-relative RhoPath: the framed RMP1 structural sequence is the trie
+prefix and a generated, stack-safe canonical-bincode sequence is the injective identity suffix.
+Equal values therefore occupy one `Bag` (`PathMap<Multiplicity>`) cell; a parallel nonzero `u64`
+group identifier reaches original positions only when predecessor ordering must be reconstructed.
+Final ESet/EMap remainders are computed as the native Bag difference between the target Bag and
+term-consumed Bag, then materialized in predecessor order. The recursive oracle agrees on the new
+residual case; RhoPath framing is 10/10, the focused matcher-library group is 17/17, compile and
+strict production lint pass under 8 GiB/zero-swap scopes. No native recursion, depth cap,
+`RUST_MIN_STACK`, `stacker`, platform-width trie payload, or reference-counted primitive is added.
+Competing host `rustc` processes made this an invalid benchmark window, so no latency, throughput,
+or new RSS comparison is inferred. Search-time reversible Bag deltas and the concrete compiler
+superset proof remain open.
+
 ##### 5.16.5.4 Results
 
 The original SS-A11 depth measurements ran under a user systemd scope with **3 GiB `MemoryHigh`, 4
@@ -3425,7 +3440,7 @@ swap, and two-core CPU quota**. **MEASURED:**
 | nested `RMP1` instruction PDA | unpruned nested spatial scan | **9/9 framing/query cases plus the 8/8 product suite** | one- and two-layer escaping; every tested shallow token truncation rejected; 20,000 levels on 128 KiB; zero-heavy 256-candidate result equivalence with 256-to-1 spatial pruning |
 | datum-first retained structural queries | root fallback for every non-ground pattern | **9/9 combined production pruning cases** | identical COMM result/event trace/post-state map and 256-to-1 spatial calls for a canonically last waiting receive; unsupported patterns remain root fallbacks |
 | retained-filter formal composition | no theorem connecting both prefilters to canonical selection | **Rocq theorem plus complete bounded formal bundle** | exact-prefix and residual-query superset premises imply no false negatives and preservation of the first canonical spatial success; Rocq, Verus 6/6, Z3, and both exhaustive TLC models pass; concrete compiler premises remain open |
-| AC element candidate trie | full unordered target scan | **8,256→128 exact diagonal spatial edges; 128 ordered-nested ESet edges; 16,257 exhaustive displacement edges in each of 51 samples** | fixed-width PathMap heads and a flat arena derive ordered candidate domains; 53/53 matcher and 22/22 RSpace tests pass; isolated counter process is 56.90 s and 100.8 MiB RSS under 4 GiB/zero swap; no timing speedup is inferred |
+| AC element candidate Bag | full unordered target scan | **8,256 to 128 exact diagonal spatial edges; 128 ordered-nested ESet edges; 16,257 exhaustive displacement edges in each of 51 samples** | the initial fixed-width candidate cut passed 53/53 matcher and 22/22 RSpace tests; `2d91c4394` makes exact multiplicity and residual subtraction Bag-authoritative and passes 17/17 focused matcher plus 10/10 RhoPath framing and strict production lint; isolated pre-Bag counter process was 56.90 s and 100.8 MiB RSS under 4 GiB/zero swap; no post-Bag timing claim is inferred |
 | retained waiting-receive throughput | full canonical candidate scan | **23.2–44.6% more COMMs/s** | six treatment pairs; 51 samples/arm; 99% confidence; 16/256/4,096 receives; diverse/shared prefixes |
 | resting-data prefix throughput | full canonical candidate scan | **48.7–53.4% more COMMs/s at 16; 12.22–13.01× at 256; 238.8–256.9× at 4,096** | post-repair eight-pair matrix; 51 samples/arm; 99% confidence; singleton arms are non-regressing because zero/one physical candidates use the direct scan |
 | singleton repair package gate | pre-repair indexed singleton | **392 passed / 0 failed** | full `rspace_plus_plus` package under 5 GiB, zero swap; focused pruning suite is 5/5 |

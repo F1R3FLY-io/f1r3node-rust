@@ -33,6 +33,7 @@ in [§2](#2-background-and-definitions), which every axis table refers back to.
 | **PDA** | *pushdown automaton* — the explicit heap-backed machine used by generated stack-safe traversals. | **CBR-044** |
 | **SCC** | *strongly connected component* — a maximal dependency-graph region whose members are mutually reachable. | retired **CBR-023** evidence |
 | **EPM1** | *EPathMap format, version 1* — the versioned homogeneous PathMap trie snapshot used by both codecs. | **CBR-044** |
+| **RMP1** | *Rholang Match Path format version 1* — the self-delimiting structural token stream used by generated matcher queries. | **CBR-053** |
 | **TRIE** | not an acronym — typographic emphasis for the prefix-compressed trie that is the EPathMap representation. | **CBR-041** |
 | **D3 / DR-9 / OD-1 / OD-3** | the token cost model's design-record identifiers (`docs/theory/cost-accounting-impl/d3-replace-phlo-with-tokens.md`). | [§2.2](#22-language-and-runtime-vocabulary), [§3.3](#33-how-each-axis-value-was-established) |
 | **COMM** | the Rho-calculus synchronisation of a produce with a consume; realized by a committed RSpace rendezvous. | [§2.2](#22-language-and-runtime-vocabulary) |
@@ -593,7 +594,7 @@ is a *future* fork, not a present one).
 | [CBR-042](#cbr-042) | N | …and on the **bincode** wire too — `U(m)` verbatim and contiguous, then the values (FORM ②), so the reader never decodes a trie key | `3a32cf07` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-043](#cbr-043) | N | …but of **the entries that surface WRITES**. FORM ② keyed lf-blanked values by the *unblanked* entries, putting an entry's `locally_free` on the event hash | `8cf0b770` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-044](#cbr-044) | N | EPathMap becomes a homogeneous PathMap set/map and both codecs carry one versioned EPM1 trie snapshot; generated protobuf PDAs remove the read ceiling | `26876b65` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
-| [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`; benchmark `7bc5c6994` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
+| [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`; benchmark `7bc5c6994` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
 | [CBR-L07](#cbr-l07) | L | `List.last()` in MeTTaIL's Rholang | `bbceb6d9`, `6e543c01` | · | · | · | · | · | ● | · | PERMISSIVE | **W** |
 | [CBR-L08](#cbr-l08) | L | The kv element-category gate — a Name in a kv slot is refused, not silently dropped | *in flight* | ● | ● | ● | ● | ● | ● | ○ | REGRESSIVE | **W** |
 | [CBR-L10](#cbr-l10) | L | A pathmap's entries come from a projection, not a field | `832d510f` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
@@ -2321,7 +2322,7 @@ Legacy protobuf fields are read-only migration inputs; removing them is a later 
 
 | | |
 |---|---|
-| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`; benchmark `7bc5c6994` |
+| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`; benchmark `7bc5c6994` |
 | Status | LANDED ON CAMPAIGN BRANCH; VERIFICATION OPEN |
 | Direction | UNVERIFIED |
 | Evidence grade | UNVERIFIED |
@@ -2389,6 +2390,15 @@ predecessor order before the existing stack-safe augmenting matcher runs. Unsupp
 nonselective, and nonlinear patterns receive the full domain. Structural collisions remain
 candidates for the spatial oracle. This introduces another possible false-negative site if the
 compiler or trie prefix is unsound, so it extends CBR-053 rather than retiring it.
+
+Checkpoint `2d91c4394` replaces the inner-AC structure-only arena authority with an exact
+`Bag` (`PathMap<Multiplicity>`). Its key frames the generated RMP1 structure before a collision-free
+canonical-bincode identity produced by the existing stack-safe serializer. Structural prefixes
+still select a conservative domain; equal semantic targets now share one multiplicity cell; and
+ESet/EMap remainders subtract the term-consumed Bag from the target Bag, materialized through original
+positions solely to preserve predecessor order. This changes neither codecs nor the spatial
+verdict authority. It strengthens multiplicity conservation but does not discharge a possible
+generated-query false negative, so CBR-053 remains `UNVERIFIED`.
 
 Checkpoint `e1a587c9f` applies that same structural-query contract to datum-first lookup. A supported
 waiting pattern is retained at its longest exact prefix in the existing
@@ -2476,7 +2486,7 @@ the verdict axis.
   continuation 256-to-1 spatial-call witnesses, exact/wildcard/repeated-capture/ordered-remainder/
   nested product traversal, embedded-zero/double-escape framing, identical COMM/event/state
   projections, and a structural false positive rejected by the spatial oracle. **MEASURED.**
-- `rho_path_spec`: **9/9**, including malformed framing, embedded double-zero escapes, capture
+- `rho_path_spec`: **10/10**, including channel-relative complete-key equivalence, malformed framing, embedded double-zero escapes, capture
   equality, every proper shallow truncation, a 20,000-level nested query on a 128 KiB worker stack,
   and a million-byte iterative scan on the same stack size. **MEASURED.**
 - `retained_path_index_test`: **11/11** after generated-cursor coverage expands to all 16 ordered
@@ -2493,6 +2503,11 @@ the verdict axis.
   51 samples. The complete matcher-library group passes **53/53** and the affected RSpace
   query/product/automaton suites pass **22/22**. **MEASURED.** These work counts do not discharge
   the compiler-superset or schedule/post-state axes.
+- inner-AC Bag authority at `2d91c4394`: the focused matcher-library group passes **17/17**, including
+  recursive-oracle equivalence for the native Bag residual; `rho_path_spec` passes **10/10**; both
+  changed production libraries compile and pass strict lint under 8 GiB/zero-swap scopes.
+  Competing host `rustc` processes invalidate this window for comparative benchmarking, so these
+  gates make no latency, throughput, or RSS claim. **MEASURED.**
 - generated resting-data differential: **64 corpora** with identical selected result, RSpace event
   trace, and post-state maps under full and indexed scans. **MEASURED.**
 - both changed libraries plus all tests and benchmark targets compile under a **5 GiB** resident-set
