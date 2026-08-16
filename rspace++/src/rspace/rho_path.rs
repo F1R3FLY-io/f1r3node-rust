@@ -10,6 +10,30 @@ const ESCAPE: u8 = 0;
 const ESCAPED_ZERO: u8 = 0xFF;
 const FRAME_END: u8 = 0;
 
+pub const RHO_MATCH_PATH_VERSION: [u8; 4] = *b"RMP\x01";
+pub const RHO_MATCH_NODE_START: u8 = 0x01;
+pub const RHO_MATCH_NODE_END: u8 = 0x02;
+pub const RHO_MATCH_FIELD_START: u8 = 0x03;
+pub const RHO_MATCH_FIELD_END: u8 = 0x04;
+pub const RHO_MATCH_BOOL: u8 = 0x10;
+pub const RHO_MATCH_I32: u8 = 0x11;
+pub const RHO_MATCH_U32: u8 = 0x12;
+pub const RHO_MATCH_I64: u8 = 0x13;
+pub const RHO_MATCH_U64: u8 = 0x14;
+pub const RHO_MATCH_BYTES: u8 = 0x15;
+pub const RHO_MATCH_STRING: u8 = 0x16;
+pub const RHO_MATCH_STRING_SEQUENCE: u8 = 0x17;
+pub const RHO_MATCH_BYTES_SEQUENCE: u8 = 0x18;
+pub const RHO_MATCH_ABSENT: u8 = 0x20;
+pub const RHO_MATCH_SEQUENCE_START: u8 = 0x21;
+pub const RHO_MATCH_SEQUENCE_END: u8 = 0x22;
+pub const RHO_MATCH_MAP_START: u8 = 0x23;
+pub const RHO_MATCH_MAP_KEY: u8 = 0x24;
+pub const RHO_MATCH_MAP_END: u8 = 0x25;
+pub const RHO_MATCH_ONEOF_START: u8 = 0x26;
+pub const RHO_MATCH_ONEOF_END: u8 = 0x27;
+pub const RHO_MATCH_PATHMAP: u8 = 0x28;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct RhoPathCaptureId(u32);
@@ -27,6 +51,7 @@ pub enum RhoPathQueryAtom {
     Exact(Vec<u8>),
     Capture(RhoPathCaptureId),
     Wildcard,
+    Match(RhoMatchQuery),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +62,158 @@ pub(crate) enum CompiledRhoPathQueryAtom {
     },
     Capture(RhoPathCaptureId),
     Wildcard,
+    Match(RhoMatchQuery),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RhoMatchQueryPart {
+    Exact(Vec<u8>),
+    Capture(RhoPathCaptureId),
+    Wildcard,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CompiledRhoMatchQueryPart {
+    Exact {
+        inner_frame: Vec<u8>,
+        stored_frame: Vec<u8>,
+    },
+    Capture(RhoPathCaptureId),
+    Wildcard,
+}
+
+/// A stack-safe structural query over one complete `RMP1` value.
+///
+/// Exact runs are stored in the same escaped form used by the enclosing
+/// RhoPathV1 datum-structure frame. Wildcards and captures consume exactly one
+/// self-delimiting RMP1 value. Repeated capture identifiers compare their
+/// canonical escaped byte slices without decoding a `Par`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RhoMatchQuery {
+    parts: Vec<CompiledRhoMatchQueryPart>,
+}
+
+impl RhoMatchQuery {
+    pub fn new(parts: impl IntoIterator<Item = RhoMatchQueryPart>) -> Self {
+        let parts = parts.into_iter().collect::<Vec<_>>();
+        let mut capture_counts = PathMap::new();
+        for part in &parts {
+            if let RhoMatchQueryPart::Capture(id) = part {
+                let count = capture_counts.get(id.path()).copied().unwrap_or(0u32);
+                capture_counts.insert(id.path(), count.saturating_add(1));
+            }
+        }
+        let mut compiled = Vec::with_capacity(parts.len());
+        for part in parts {
+            let next = match part {
+                RhoMatchQueryPart::Exact(bytes) => {
+                    let mut inner_frame = Vec::with_capacity(bytes.len());
+                    append_frame_prefix(&mut inner_frame, &bytes);
+                    let mut stored_frame = Vec::with_capacity(inner_frame.len());
+                    append_frame_prefix(&mut stored_frame, &inner_frame);
+                    CompiledRhoMatchQueryPart::Exact {
+                        inner_frame,
+                        stored_frame,
+                    }
+                }
+                RhoMatchQueryPart::Capture(id)
+                    if capture_counts.get(id.path()).copied().unwrap_or(0) > 1 =>
+                {
+                    CompiledRhoMatchQueryPart::Capture(id)
+                }
+                RhoMatchQueryPart::Capture(_) | RhoMatchQueryPart::Wildcard => {
+                    CompiledRhoMatchQueryPart::Wildcard
+                }
+            };
+            match (compiled.last_mut(), next) {
+                (
+                    Some(CompiledRhoMatchQueryPart::Exact {
+                        inner_frame: previous_inner,
+                        stored_frame: previous_stored,
+                    }),
+                    CompiledRhoMatchQueryPart::Exact {
+                        inner_frame: next_inner,
+                        stored_frame: next_stored,
+                    },
+                ) => {
+                    previous_inner.extend_from_slice(&next_inner);
+                    previous_stored.extend_from_slice(&next_stored);
+                }
+                (_, next) => compiled.push(next),
+            }
+        }
+        Self { parts: compiled }
+    }
+
+    pub fn matches_stored_frame(&self, frame: &[u8]) -> bool { self.matches_frame(frame, 1) }
+
+    pub(crate) fn matches_product_frame(&self, frame: &[u8]) -> bool {
+        self.matches_frame(frame, 2)
+    }
+
+    pub(crate) fn product_prefix(&self) -> &[u8] {
+        match self.parts.first() {
+            Some(CompiledRhoMatchQueryPart::Exact { stored_frame, .. }) => stored_frame,
+            Some(CompiledRhoMatchQueryPart::Capture(_) | CompiledRhoMatchQueryPart::Wildcard) |
+            None => &[],
+        }
+    }
+
+    fn matches_frame(&self, frame: &[u8], escape_layers: u8) -> bool {
+        let mut cursor = 0usize;
+        let mut captures: PathMap<(usize, usize)> = PathMap::new();
+        for part in &self.parts {
+            match part {
+                CompiledRhoMatchQueryPart::Exact {
+                    inner_frame,
+                    stored_frame,
+                } => {
+                    let bytes = if escape_layers == 1 {
+                        inner_frame
+                    } else {
+                        stored_frame
+                    };
+                    let Some(end) = cursor.checked_add(bytes.len()) else {
+                        return false;
+                    };
+                    if frame.get(cursor..end) != Some(bytes.as_slice()) {
+                        return false;
+                    }
+                    cursor = end;
+                }
+                CompiledRhoMatchQueryPart::Capture(id) => {
+                    let start = cursor;
+                    if skip_rmp_value(frame, &mut cursor, escape_layers).is_err() {
+                        return false;
+                    }
+                    let path = id.path();
+                    match captures.get(path).copied() {
+                        Some((previous_start, previous_end))
+                            if frame[previous_start..previous_end] != frame[start..cursor] =>
+                        {
+                            return false;
+                        }
+                        Some(_) => {}
+                        None => {
+                            captures.insert(path, (start, cursor));
+                        }
+                    }
+                }
+                CompiledRhoMatchQueryPart::Wildcard => {
+                    if skip_rmp_value(frame, &mut cursor, escape_layers).is_err() {
+                        return false;
+                    }
+                }
+            }
+        }
+        let end = if escape_layers == 1 {
+            &[ESCAPE, FRAME_END][..]
+        } else {
+            &[ESCAPE, ESCAPED_ZERO, ESCAPE, ESCAPED_ZERO][..]
+        };
+        frame.get(cursor..cursor.saturating_add(end.len())) == Some(end) &&
+            cursor + end.len() == frame.len()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +257,7 @@ impl RhoPathQuery {
                 RhoPathQueryAtom::Capture(_) | RhoPathQueryAtom::Wildcard => {
                     CompiledRhoPathQueryAtom::Wildcard
                 }
+                RhoPathQueryAtom::Match(query) => CompiledRhoPathQueryAtom::Match(query),
             })
             .collect();
         Self {
@@ -118,6 +296,11 @@ impl RhoPathQuery {
                     }
                 }
                 CompiledRhoPathQueryAtom::Wildcard => {}
+                CompiledRhoPathQueryAtom::Match(query) => {
+                    if !query.matches_stored_frame(frame) {
+                        return false;
+                    }
+                }
             }
         }
         if !self.accepts_remainder {
@@ -180,6 +363,152 @@ impl StoredSequenceFrameScanner {
             self.inner_escape = true;
         }
         StoredSequenceFrameStep::NeedMore
+    }
+}
+
+fn skip_rmp_value(frame: &[u8], cursor: &mut usize, escape_layers: u8) -> Result<(), ()> {
+    let mut closers = Vec::new();
+    let mut root_started = false;
+    loop {
+        let token = take_logical_byte(frame, cursor, escape_layers)?;
+        let primitive = match token {
+            RHO_MATCH_NODE_START => {
+                skip_logical_bytes(frame, cursor, 2, escape_layers)?;
+                closers.push(RHO_MATCH_NODE_END);
+                false
+            }
+            RHO_MATCH_FIELD_START => {
+                if !root_started {
+                    return Err(());
+                }
+                skip_logical_bytes(frame, cursor, 4, escape_layers)?;
+                closers.push(RHO_MATCH_FIELD_END);
+                false
+            }
+            RHO_MATCH_SEQUENCE_START => {
+                skip_logical_bytes(frame, cursor, 8, escape_layers)?;
+                closers.push(RHO_MATCH_SEQUENCE_END);
+                false
+            }
+            RHO_MATCH_MAP_START => {
+                skip_logical_bytes(frame, cursor, 8, escape_layers)?;
+                closers.push(RHO_MATCH_MAP_END);
+                false
+            }
+            RHO_MATCH_ONEOF_START => {
+                skip_logical_bytes(frame, cursor, 4, escape_layers)?;
+                closers.push(RHO_MATCH_ONEOF_END);
+                false
+            }
+            RHO_MATCH_NODE_END |
+            RHO_MATCH_FIELD_END |
+            RHO_MATCH_SEQUENCE_END |
+            RHO_MATCH_MAP_END |
+            RHO_MATCH_ONEOF_END => {
+                if closers.pop() != Some(token) {
+                    return Err(());
+                }
+                if closers.is_empty() {
+                    return Ok(());
+                }
+                false
+            }
+            RHO_MATCH_BOOL => {
+                skip_logical_bytes(frame, cursor, 1, escape_layers)?;
+                true
+            }
+            RHO_MATCH_I32 | RHO_MATCH_U32 => {
+                skip_logical_bytes(frame, cursor, 4, escape_layers)?;
+                true
+            }
+            RHO_MATCH_I64 | RHO_MATCH_U64 => {
+                skip_logical_bytes(frame, cursor, 8, escape_layers)?;
+                true
+            }
+            RHO_MATCH_BYTES | RHO_MATCH_STRING | RHO_MATCH_MAP_KEY => {
+                if token == RHO_MATCH_MAP_KEY && !root_started {
+                    return Err(());
+                }
+                skip_logical_length_prefixed(frame, cursor, escape_layers)?;
+                true
+            }
+            RHO_MATCH_STRING_SEQUENCE | RHO_MATCH_BYTES_SEQUENCE => {
+                let count = take_logical_u64(frame, cursor, escape_layers)?;
+                for _ in 0..count {
+                    skip_logical_length_prefixed(frame, cursor, escape_layers)?;
+                }
+                true
+            }
+            RHO_MATCH_ABSENT => true,
+            RHO_MATCH_PATHMAP => {
+                skip_logical_bytes(frame, cursor, 1 + 8 + 32, escape_layers)?;
+                true
+            }
+            _ => return Err(()),
+        };
+        if !root_started {
+            root_started = true;
+            if primitive {
+                return Ok(());
+            }
+        }
+    }
+}
+
+fn skip_logical_length_prefixed(
+    frame: &[u8],
+    cursor: &mut usize,
+    escape_layers: u8,
+) -> Result<(), ()> {
+    let len = take_logical_u64(frame, cursor, escape_layers)?;
+    let len = usize::try_from(len).map_err(|_| ())?;
+    skip_logical_bytes(frame, cursor, len, escape_layers)
+}
+
+fn take_logical_u64(frame: &[u8], cursor: &mut usize, escape_layers: u8) -> Result<u64, ()> {
+    let mut bytes = [0; 8];
+    for byte in &mut bytes {
+        *byte = take_logical_byte(frame, cursor, escape_layers)?;
+    }
+    Ok(u64::from_be_bytes(bytes))
+}
+
+fn skip_logical_bytes(
+    frame: &[u8],
+    cursor: &mut usize,
+    len: usize,
+    escape_layers: u8,
+) -> Result<(), ()> {
+    for _ in 0..len {
+        take_logical_byte(frame, cursor, escape_layers)?;
+    }
+    Ok(())
+}
+
+fn take_logical_byte(frame: &[u8], cursor: &mut usize, escape_layers: u8) -> Result<u8, ()> {
+    let byte = take_escaped_byte(frame, cursor)?;
+    if escape_layers == 1 || byte != ESCAPE {
+        return Ok(byte);
+    }
+    match take_escaped_byte(frame, cursor)? {
+        ESCAPED_ZERO => Ok(ESCAPE),
+        FRAME_END => Err(()),
+        _ => Err(()),
+    }
+}
+
+fn take_escaped_byte(frame: &[u8], cursor: &mut usize) -> Result<u8, ()> {
+    let byte = *frame.get(*cursor).ok_or(())?;
+    *cursor += 1;
+    if byte != ESCAPE {
+        return Ok(byte);
+    }
+    let escaped = *frame.get(*cursor).ok_or(())?;
+    *cursor += 1;
+    match escaped {
+        ESCAPED_ZERO => Ok(ESCAPE),
+        FRAME_END => Err(()),
+        _ => Err(()),
     }
 }
 

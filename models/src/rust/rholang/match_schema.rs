@@ -95,7 +95,10 @@ pub enum RhoMatchValue<'a> {
 
 #[derive(Clone, Copy)]
 pub enum RhoPathEvent<'a> {
-    EnterNode(&'static RhoMatchProgram),
+    EnterNode {
+        cursor: ParCursor<'a>,
+        program: &'static RhoMatchProgram,
+    },
     LeaveNode,
     EnterField(&'static RhoMatchField),
     LeaveField,
@@ -158,7 +161,10 @@ impl<'a> Iterator for RhoPathCursor<'a> {
                     }
                     let meta = cursor.program().fields.get(field);
                     if field == 0 && meta.is_none() {
-                        return Some(RhoPathEvent::EnterNode(cursor.program()));
+                        return Some(RhoPathEvent::EnterNode {
+                            cursor,
+                            program: cursor.program(),
+                        });
                     }
                     let Some(meta) = meta else { continue };
                     let value = cursor
@@ -173,7 +179,10 @@ impl<'a> Iterator for RhoPathCursor<'a> {
                     self.work
                         .push(RhoPathStep::Emit(RhoPathEvent::EnterField(meta)));
                     if field == 0 {
-                        return Some(RhoPathEvent::EnterNode(cursor.program()));
+                        return Some(RhoPathEvent::EnterNode {
+                            cursor,
+                            program: cursor.program(),
+                        });
                     }
                 }
                 RhoPathStep::Value(value) => match value {

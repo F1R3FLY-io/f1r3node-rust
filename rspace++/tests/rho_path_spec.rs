@@ -1,5 +1,7 @@
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use rspace_plus_plus::rspace::rho_path::{
+    RHO_MATCH_FIELD_END, RHO_MATCH_FIELD_START, RHO_MATCH_I64, RHO_MATCH_NODE_END,
+    RHO_MATCH_NODE_START, RHO_MATCH_PATH_VERSION, RhoMatchQuery, RhoMatchQueryPart,
     RhoPathCaptureId, RhoPathError, RhoPathQuery, RhoPathQueryAtom, RhoPathV1,
     encode_structural_sequence,
 };
@@ -85,6 +87,98 @@ fn structural_queries_reject_malformed_framing() {
     assert!(!query.matches_structure(&[]));
     assert!(!query.matches_structure(&[1, 0]));
     assert!(!query.matches_structure(&[1, 0, 2]));
+}
+
+#[test]
+fn nested_match_queries_skip_values_and_enforce_coreference_without_decoding() {
+    let capture = RhoPathCaptureId::new(3);
+    let mut prefix = RHO_MATCH_PATH_VERSION.to_vec();
+    prefix.extend_from_slice(&[RHO_MATCH_NODE_START, 0, 1, RHO_MATCH_FIELD_START, 0, 0, 0, 1]);
+    let between = vec![RHO_MATCH_FIELD_END, RHO_MATCH_FIELD_START, 0, 0, 0, 2];
+    let suffix = vec![RHO_MATCH_FIELD_END, RHO_MATCH_NODE_END];
+    let query = RhoMatchQuery::new([
+        RhoMatchQueryPart::Exact(prefix.clone()),
+        RhoMatchQueryPart::Capture(capture),
+        RhoMatchQueryPart::Exact(between.clone()),
+        RhoMatchQueryPart::Capture(capture),
+        RhoMatchQueryPart::Exact(suffix.clone()),
+    ]);
+    let query = RhoPathQuery::structural_sequence([RhoPathQueryAtom::Match(query)], false);
+
+    let scalar = |value: i64| {
+        let mut bytes = vec![RHO_MATCH_I64];
+        bytes.extend_from_slice(&value.to_be_bytes());
+        bytes
+    };
+    let value = |left: i64, right: i64| {
+        let mut bytes = prefix.clone();
+        bytes.extend_from_slice(&scalar(left));
+        bytes.extend_from_slice(&between);
+        bytes.extend_from_slice(&scalar(right));
+        bytes.extend_from_slice(&suffix);
+        encode_structural_sequence([bytes.as_slice()])
+    };
+    assert!(query.matches_structure(&value(0, 0)));
+    assert!(query.matches_structure(&value(17, 17)));
+    assert!(!query.matches_structure(&value(17, 18)));
+}
+
+#[test]
+fn nested_value_skip_is_stack_safe_and_rejects_every_small_truncation() {
+    let query = RhoPathQuery::structural_sequence(
+        [RhoPathQueryAtom::Match(RhoMatchQuery::new([
+            RhoMatchQueryPart::Exact(RHO_MATCH_PATH_VERSION.to_vec()),
+            RhoMatchQueryPart::Wildcard,
+        ]))],
+        false,
+    );
+    let shallow = {
+        let mut value = RHO_MATCH_PATH_VERSION.to_vec();
+        value.extend_from_slice(&[
+            RHO_MATCH_NODE_START,
+            0,
+            1,
+            RHO_MATCH_FIELD_START,
+            0,
+            0,
+            0,
+            1,
+            RHO_MATCH_I64,
+        ]);
+        value.extend_from_slice(&7i64.to_be_bytes());
+        value.extend_from_slice(&[RHO_MATCH_FIELD_END, RHO_MATCH_NODE_END]);
+        value
+    };
+    for end in RHO_MATCH_PATH_VERSION.len()..shallow.len() {
+        assert!(!query.matches_structure(&encode_structural_sequence([&shallow[..end]])));
+    }
+
+    std::thread::Builder::new()
+        .stack_size(128 * 1024)
+        .spawn(move || {
+            let mut value = RHO_MATCH_PATH_VERSION.to_vec();
+            for _ in 0..20_000 {
+                value.extend_from_slice(&[
+                    RHO_MATCH_NODE_START,
+                    0,
+                    1,
+                    RHO_MATCH_FIELD_START,
+                    0,
+                    0,
+                    0,
+                    1,
+                ]);
+            }
+            value.push(RHO_MATCH_I64);
+            value.extend_from_slice(&7i64.to_be_bytes());
+            for _ in 0..20_000 {
+                value.extend_from_slice(&[RHO_MATCH_FIELD_END, RHO_MATCH_NODE_END]);
+            }
+            assert!(query.matches_structure(&encode_structural_sequence([value.as_slice()])));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[test]

@@ -1,12 +1,17 @@
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance::{FreeVar, Wildcard};
 use models::rust::rholang::implicits::vector_par;
-use models::rust::rholang::match_path::encode_par_match_path;
+use models::rust::rholang::match_path::{
+    append_match_path_event, encode_par_match_path, RHO_MATCH_PATH_VERSION,
+};
+use models::rust::rholang::match_schema::{RhoPathCursor, RhoPathEvent};
+use models::rust::rholang::match_schema_tables::ParCursor;
 use models::rust::utils::{new_elist_expr, to_vec};
 use rho_pure_eval::{Env as PureEnv, EvalError, SpatialMatch};
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::rho_path::{
-    RhoPathCaptureId, RhoPathEncode, RhoPathQuery, RhoPathQueryAtom, StructuralSequenceEncoder,
+    RhoMatchQuery, RhoMatchQueryPart, RhoPathCaptureId, RhoPathEncode, RhoPathQuery,
+    RhoPathQueryAtom, StructuralSequenceEncoder,
 };
 
 use super::exports::*;
@@ -132,7 +137,121 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
 }
 
 fn rho_path_query_atom(pattern: &Par) -> Option<RhoPathQueryAtom> {
-    let single_expr_carrier = pattern.sends.is_empty()
+    if let Some(hole) = rho_match_hole(pattern) {
+        return Some(match hole {
+            RhoMatchQueryPart::Capture(id) => RhoPathQueryAtom::Capture(id),
+            RhoMatchQueryPart::Wildcard => RhoPathQueryAtom::Wildcard,
+            RhoMatchQueryPart::Exact(_) => unreachable!("a pattern hole is never exact"),
+        });
+    }
+    if let Some(query) = compile_ordered_nested_query(pattern) {
+        return Some(RhoPathQueryAtom::Match(query));
+    }
+    (!pattern.connective_used && pattern.locally_free.is_empty())
+        .then(|| RhoPathQueryAtom::Exact(encode_par_match_path(pattern)))
+}
+
+fn compile_ordered_nested_query(pattern: &Par) -> Option<RhoMatchQuery> {
+    if !single_expr_carrier(pattern) {
+        return None;
+    }
+    match pattern.exprs[0].expr_instance.as_ref()? {
+        ExprInstance::EListBody(_) | ExprInstance::ETupleBody(_) => {}
+        _ => return None,
+    }
+
+    let mut parts = Vec::new();
+    let mut exact = Vec::with_capacity(256);
+    exact.extend_from_slice(&RHO_MATCH_PATH_VERSION);
+    let mut suppressed_nodes = 0usize;
+    let mut skip_metadata_scalar = false;
+    let mut saw_hole = false;
+
+    for event in RhoPathCursor::par(pattern) {
+        if suppressed_nodes != 0 {
+            match event {
+                RhoPathEvent::EnterNode { .. } => suppressed_nodes += 1,
+                RhoPathEvent::LeaveNode => suppressed_nodes -= 1,
+                _ => {}
+            }
+            continue;
+        }
+
+        match event {
+            RhoPathEvent::EnterNode { cursor, .. } => {
+                if let ParCursor::Par(par) = cursor {
+                    if let Some(hole) = rho_match_hole(par) {
+                        flush_exact_query_part(&mut parts, &mut exact);
+                        parts.push(hole);
+                        suppressed_nodes = 1;
+                        saw_hole = true;
+                        continue;
+                    }
+                    if !single_expr_carrier(par) {
+                        return None;
+                    }
+                }
+                match cursor {
+                    ParCursor::EList(list) if list.remainder.is_some() => return None,
+                    ParCursor::ESet(_)
+                    | ParCursor::EMap(_)
+                    | ParCursor::EPathMap(_)
+                    | ParCursor::Connective(_)
+                    | ParCursor::Var(_) => return None,
+                    _ => {}
+                }
+                append_match_path_event(&mut exact, event);
+            }
+            RhoPathEvent::EnterField(field)
+                if matches!(field.name, "locally_free" | "connective_used") =>
+            {
+                append_match_path_event(&mut exact, event);
+                flush_exact_query_part(&mut parts, &mut exact);
+                parts.push(RhoMatchQueryPart::Wildcard);
+                skip_metadata_scalar = true;
+            }
+            RhoPathEvent::Scalar(_) if skip_metadata_scalar => {
+                skip_metadata_scalar = false;
+            }
+            _ => append_match_path_event(&mut exact, event),
+        }
+    }
+    if suppressed_nodes != 0 || skip_metadata_scalar || !saw_hole {
+        return None;
+    }
+    flush_exact_query_part(&mut parts, &mut exact);
+    Some(RhoMatchQuery::new(parts))
+}
+
+fn flush_exact_query_part(parts: &mut Vec<RhoMatchQueryPart>, exact: &mut Vec<u8>) {
+    if !exact.is_empty() {
+        parts.push(RhoMatchQueryPart::Exact(std::mem::take(exact)));
+    }
+}
+
+fn rho_match_hole(pattern: &Par) -> Option<RhoMatchQueryPart> {
+    if !single_expr_carrier(pattern) {
+        return None;
+    }
+    let ExprInstance::EVarBody(variable) = pattern.exprs[0].expr_instance.as_ref()? else {
+        return None;
+    };
+    match variable
+        .v
+        .as_ref()
+        .and_then(|variable| variable.var_instance.as_ref())
+    {
+        Some(FreeVar(level)) => u32::try_from(*level)
+            .ok()
+            .map(RhoPathCaptureId::new)
+            .map(RhoMatchQueryPart::Capture),
+        Some(Wildcard(_)) => Some(RhoMatchQueryPart::Wildcard),
+        _ => None,
+    }
+}
+
+fn single_expr_carrier(pattern: &Par) -> bool {
+    pattern.sends.is_empty()
         && pattern.receives.is_empty()
         && pattern.news.is_empty()
         && pattern.exprs.len() == 1
@@ -140,24 +259,7 @@ fn rho_path_query_atom(pattern: &Par) -> Option<RhoPathQueryAtom> {
         && pattern.unforgeables.is_empty()
         && pattern.bundles.is_empty()
         && pattern.connectives.is_empty()
-        && pattern.conditionals.is_empty();
-    if single_expr_carrier {
-        if let Some(ExprInstance::EVarBody(variable)) = pattern.exprs[0].expr_instance.as_ref() {
-            return match variable
-                .v
-                .as_ref()
-                .and_then(|variable| variable.var_instance.as_ref())
-            {
-                Some(FreeVar(level)) => u32::try_from(*level)
-                    .ok()
-                    .map(|level| RhoPathQueryAtom::Capture(RhoPathCaptureId::new(level))),
-                Some(Wildcard(_)) => Some(RhoPathQueryAtom::Wildcard),
-                _ => None,
-            };
-        }
-    }
-    (!pattern.connective_used && pattern.locally_free.is_empty())
-        .then(|| RhoPathQueryAtom::Exact(encode_par_match_path(pattern)))
+        && pattern.conditionals.is_empty()
 }
 
 fn is_empty_par(par: &Par) -> bool { par == &Par::default() }

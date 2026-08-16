@@ -1,7 +1,9 @@
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{BindPattern, Expr, ListParWithRandom, Par};
-use models::rust::utils::{new_freevar_par, new_freevar_var, new_wildcard_par};
+use models::rust::utils::{
+    new_elist_par, new_eset_par, new_freevar_par, new_freevar_var, new_wildcard_par,
+};
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::rho_path::RhoPathEncode;
@@ -18,6 +20,17 @@ fn datum(par: Par) -> ListParWithRandom {
     let mut datum = ListParWithRandom::default();
     datum.pars.push(par);
     datum
+}
+
+fn list(items: Vec<Par>, connective_used: bool) -> Par {
+    new_elist_par(
+        items,
+        Vec::new(),
+        connective_used,
+        None,
+        Vec::new(),
+        connective_used,
+    )
 }
 
 #[test]
@@ -135,4 +148,45 @@ fn whole_term_wildcards_and_list_remainders_compile_without_an_exact_ground_fall
         ..wildcard
     };
     assert!(matcher.rho_path_query(&invalid_remainder).is_none());
+}
+
+#[test]
+fn nested_ordered_variables_compile_to_structural_queries() {
+    let matcher = Matcher;
+    let pattern = BindPattern {
+        patterns: vec![list(vec![new_freevar_par(0, Vec::new()), integer(7)], true)],
+        remainder: None,
+        free_count: 1,
+    };
+    let matching = datum(list(vec![integer(11), integer(7)], false));
+    let wrong_suffix = datum(list(vec![integer(11), integer(8)], false));
+    let wrong_arity = datum(list(vec![integer(11)], false));
+    let query = matcher
+        .rho_path_query(&pattern)
+        .expect("nested ordered pattern query");
+
+    assert!(query.matches_structure(&matching.rho_path_structure()));
+    assert!(!query.matches_structure(&wrong_suffix.rho_path_structure()));
+    assert!(!query.matches_structure(&wrong_arity.rho_path_structure()));
+    assert!(matcher.get(&pattern, &matching).is_some());
+    assert!(matcher.get(&pattern, &wrong_suffix).is_none());
+    assert!(matcher.get(&pattern, &wrong_arity).is_none());
+}
+
+#[test]
+fn unordered_nested_variables_remain_on_the_spatial_fallback() {
+    let matcher = Matcher;
+    let pattern = BindPattern {
+        patterns: vec![new_eset_par(
+            vec![integer(7), new_freevar_par(0, Vec::new())],
+            Vec::new(),
+            true,
+            None,
+            Vec::new(),
+            true,
+        )],
+        remainder: None,
+        free_count: 1,
+    };
+    assert!(matcher.rho_path_query(&pattern).is_none());
 }

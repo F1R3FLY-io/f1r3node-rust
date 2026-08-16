@@ -20,7 +20,7 @@ fn record(
 ) {
     for event in RhoPathCursor::new(cursor) {
         match event {
-            RhoPathEvent::EnterNode(program) => {
+            RhoPathEvent::EnterNode { program, .. } => {
                 types.insert(program.type_name);
             }
             RhoPathEvent::EnterOneof(oneof) => {
@@ -186,7 +186,7 @@ fn deep_and_wide_cursor_walks_fit_a_small_native_stack() {
         .spawn(|| {
             let deep = par_corpus::deep_par(20_000);
             let deep_nodes = RhoPathCursor::par(&deep)
-                .filter(|event| matches!(event, RhoPathEvent::EnterNode(_)))
+                .filter(|event| matches!(event, RhoPathEvent::EnterNode { .. }))
                 .count();
             assert!(deep_nodes > 20_000);
 
@@ -195,7 +195,7 @@ fn deep_and_wide_cursor_walks_fit_a_small_native_stack() {
             let seed = wide.exprs[0].clone();
             wide.exprs.extend(std::iter::repeat_n(seed, 20_000));
             let wide_nodes = RhoPathCursor::par(&wide)
-                .filter(|event| matches!(event, RhoPathEvent::EnterNode(_)))
+                .filter(|event| matches!(event, RhoPathEvent::EnterNode { .. }))
                 .count();
             assert!(wide_nodes > 20_000);
         })

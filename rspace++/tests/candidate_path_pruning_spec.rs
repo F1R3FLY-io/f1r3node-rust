@@ -8,6 +8,8 @@ use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize
 use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::rho_path::{
+    RHO_MATCH_FIELD_END, RHO_MATCH_FIELD_START, RHO_MATCH_I64, RHO_MATCH_NODE_END,
+    RHO_MATCH_NODE_START, RHO_MATCH_PATH_VERSION, RhoMatchQuery, RhoMatchQueryPart, RhoPathEncode,
     RhoPathQuery, RhoPathQueryAtom, encode_structural_sequence,
 };
 use rspace_plus_plus::rspace::rspace::RSpace;
@@ -89,6 +91,121 @@ fn sequence_value(first: &[u8], second: &[u8]) -> String {
 }
 
 type TestSpace = RSpace<String, Pattern, String, String>;
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+struct NestedDatum {
+    discriminator: i64,
+    match_path: Vec<u8>,
+}
+
+impl StableHashSerialize for NestedDatum {}
+
+impl ColdStoreDecode for NestedDatum {
+    fn cold_decode_prefix(bytes: &[u8]) -> Result<(Self, usize), ColdStoreDecodeError> {
+        legacy_prefix(bytes)
+    }
+}
+
+impl RhoPathEncode for NestedDatum {
+    fn rho_path_structure(&self) -> Vec<u8> {
+        encode_structural_sequence([self.match_path.as_slice()])
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+struct NestedPattern {
+    expected: i64,
+}
+
+impl StableHashSerialize for NestedPattern {}
+
+impl ColdStoreDecode for NestedPattern {
+    fn cold_decode_prefix(bytes: &[u8]) -> Result<(Self, usize), ColdStoreDecodeError> {
+        legacy_prefix(bytes)
+    }
+}
+
+#[derive(Clone)]
+struct NestedCountingMatcher {
+    pruning: bool,
+    calls: Arc<AtomicUsize>,
+}
+
+impl Match<NestedPattern, NestedDatum, NestedDatum> for NestedCountingMatcher {
+    fn get(&self, pattern: &NestedPattern, datum: &NestedDatum) -> Option<NestedDatum> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        (pattern.expected == datum.discriminator).then(|| datum.clone())
+    }
+
+    fn rho_path_query(&self, pattern: &NestedPattern) -> Option<RhoPathQuery> {
+        let mut exact_prefix = RHO_MATCH_PATH_VERSION.to_vec();
+        exact_prefix.extend_from_slice(&[
+            RHO_MATCH_NODE_START,
+            0,
+            1,
+            RHO_MATCH_FIELD_START,
+            0,
+            0,
+            0,
+            1,
+            RHO_MATCH_I64,
+        ]);
+        exact_prefix.extend_from_slice(&pattern.expected.to_be_bytes());
+        exact_prefix.extend_from_slice(&[RHO_MATCH_FIELD_END, RHO_MATCH_FIELD_START, 0, 0, 0, 2]);
+        Some(RhoPathQuery::structural_sequence(
+            [RhoPathQueryAtom::Match(RhoMatchQuery::new([
+                RhoMatchQueryPart::Exact(exact_prefix),
+                RhoMatchQueryPart::Wildcard,
+                RhoMatchQueryPart::Exact(vec![RHO_MATCH_FIELD_END, RHO_MATCH_NODE_END]),
+            ]))],
+            false,
+        ))
+    }
+
+    fn supports_rho_path_candidate_pruning(&self) -> bool { self.pruning }
+}
+
+type NestedTestSpace = RSpace<String, NestedPattern, NestedDatum, NestedDatum>;
+
+fn nested_match_path(discriminator: i64) -> Vec<u8> {
+    let mut value = RHO_MATCH_PATH_VERSION.to_vec();
+    value.extend_from_slice(&[
+        RHO_MATCH_NODE_START,
+        0,
+        1,
+        RHO_MATCH_FIELD_START,
+        0,
+        0,
+        0,
+        1,
+        RHO_MATCH_I64,
+    ]);
+    value.extend_from_slice(&discriminator.to_be_bytes());
+    value.extend_from_slice(&[
+        RHO_MATCH_FIELD_END,
+        RHO_MATCH_FIELD_START,
+        0,
+        0,
+        0,
+        2,
+        RHO_MATCH_I64,
+    ]);
+    value.extend_from_slice(&discriminator.wrapping_neg().to_be_bytes());
+    value.extend_from_slice(&[RHO_MATCH_FIELD_END, RHO_MATCH_NODE_END]);
+    value
+}
+
+async fn nested_space(pruning: bool) -> (NestedTestSpace, Arc<AtomicUsize>) {
+    let mut manager = InMemoryStoreManager::new();
+    let stores = manager.r_space_stores().await.expect("in-memory stores");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let matcher = NestedCountingMatcher {
+        pruning,
+        calls: Arc::clone(&calls),
+    };
+    let space = RSpace::create(stores, Arc::new(Box::new(matcher))).expect("RSpace");
+    (space, calls)
+}
 
 async fn space(pruning: bool) -> (TestSpace, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     let mut manager = InMemoryStoreManager::new();
@@ -277,6 +394,84 @@ async fn pathmap_product_prunes_after_a_wildcard_frame_without_decoding_candidat
                 second: target_second,
             }],
             "continuation".to_string(),
+            false,
+            BTreeSet::new(),
+        )
+        .await
+        .expect("indexed consume")
+        .expect("indexed match");
+
+    assert_eq!(indexed_result, control_result);
+    assert_eq!(control_calls.load(Ordering::Relaxed), values.len());
+    assert_eq!(indexed_calls.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn nested_match_product_preserves_results_while_avoiding_spatial_false_candidates() {
+    let channel = "candidate-nested-match-product";
+    let values = (0..256)
+        .map(|discriminator| NestedDatum {
+            discriminator,
+            match_path: nested_match_path(discriminator),
+        })
+        .collect::<Vec<_>>();
+    let target = values
+        .iter()
+        .max_by_key(|value| {
+            deterministic_candidate_hash(&Datum::create(
+                &channel.to_string(),
+                (*value).clone(),
+                true,
+            ))
+        })
+        .expect("nonempty corpus")
+        .clone();
+
+    let (control, control_calls) = nested_space(false).await;
+    for value in &values {
+        assert!(
+            control
+                .produce(channel.to_string(), value.clone(), true)
+                .await
+                .expect("control produce")
+                .is_none()
+        );
+    }
+    drop(control.take_event_log().await);
+    control_calls.store(0, Ordering::Relaxed);
+    let control_result = control
+        .consume(
+            vec![channel.to_string()],
+            vec![NestedPattern {
+                expected: target.discriminator,
+            }],
+            target.clone(),
+            false,
+            BTreeSet::new(),
+        )
+        .await
+        .expect("control consume")
+        .expect("control match");
+
+    let (indexed, indexed_calls) = nested_space(true).await;
+    for value in &values {
+        assert!(
+            indexed
+                .produce(channel.to_string(), value.clone(), true)
+                .await
+                .expect("indexed produce")
+                .is_none()
+        );
+    }
+    drop(indexed.take_event_log().await);
+    indexed_calls.store(0, Ordering::Relaxed);
+    let indexed_result = indexed
+        .consume(
+            vec![channel.to_string()],
+            vec![NestedPattern {
+                expected: target.discriminator,
+            }],
+            target,
             false,
             BTreeSet::new(),
         )

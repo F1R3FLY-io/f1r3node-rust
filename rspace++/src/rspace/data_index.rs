@@ -247,12 +247,30 @@ struct CandidateQueryState<'a> {
 }
 
 fn visit_sequence_frames<'a>(
-    mut cursor: CandidateProductCursor<'a>,
+    cursor: CandidateProductCursor<'a>,
     mut visitor: impl FnMut(CandidateProductCursor<'a>, &[u8]),
 ) {
+    visit_sequence_frames_with_prefix(cursor, &[], &mut visitor);
+}
+
+fn visit_sequence_frames_with_prefix<'a>(
+    mut cursor: CandidateProductCursor<'a>,
+    prefix: &[u8],
+    mut visitor: impl FnMut(CandidateProductCursor<'a>, &[u8]),
+) {
+    if !cursor.descend_to_existing(prefix) {
+        return;
+    }
+    let mut scanner = StoredSequenceFrameScanner::default();
+    for byte in prefix {
+        if scanner.feed(*byte) != StoredSequenceFrameStep::NeedMore {
+            return;
+        }
+    }
     let mut levels: Vec<(ByteMaskIter, StoredSequenceFrameScanner)> =
-        vec![(cursor.child_mask().iter(), StoredSequenceFrameScanner::default())];
-    let mut frame = Vec::new();
+        vec![(cursor.child_mask().iter(), scanner)];
+    let mut frame = prefix.to_vec();
+    let base_len = frame.len();
     while let Some((children, scanner_base)) = levels.last_mut() {
         match children.next() {
             Some(byte) => {
@@ -275,7 +293,8 @@ fn visit_sequence_frames<'a>(
             }
             None => {
                 levels.pop();
-                if frame.pop().is_some() {
+                if frame.len() > base_len {
+                    frame.pop();
                     cursor.ascend_byte();
                 }
             }
@@ -435,6 +454,21 @@ impl<A: Clone> CandidatePool<A> {
                                 captures: state.captures.clone(),
                             });
                         });
+                    }
+                    CompiledRhoPathQueryAtom::Match(query) => {
+                        visit_sequence_frames_with_prefix(
+                            state.cursor,
+                            query.product_prefix(),
+                            |cursor, frame| {
+                                if query.matches_product_frame(frame) {
+                                    work.push(CandidateQueryState {
+                                        cursor,
+                                        atom_index: state.atom_index + 1,
+                                        captures: state.captures.clone(),
+                                    });
+                                }
+                            },
+                        );
                     }
                 }
                 continue;

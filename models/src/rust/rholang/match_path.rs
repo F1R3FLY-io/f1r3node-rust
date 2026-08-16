@@ -11,37 +11,24 @@ use crypto::rust::hash::blake2b256::Blake2b256;
 use pathmap::utils::ByteMaskIter;
 use pathmap::zipper::{Zipper, ZipperMoving, ZipperReadOnlyValues};
 use pathmap::PathMap;
+pub use rspace_plus_plus::rspace::rho_path::RHO_MATCH_PATH_VERSION;
+pub(super) use rspace_plus_plus::rspace::rho_path::{
+    RHO_MATCH_ABSENT as ABSENT, RHO_MATCH_BOOL as BOOL, RHO_MATCH_BYTES as BYTES,
+    RHO_MATCH_BYTES_SEQUENCE as BYTES_SEQUENCE, RHO_MATCH_FIELD_END as FIELD_END,
+    RHO_MATCH_FIELD_START as FIELD_START, RHO_MATCH_I32 as I32, RHO_MATCH_I64 as I64,
+    RHO_MATCH_MAP_END as MAP_END, RHO_MATCH_MAP_KEY as MAP_KEY, RHO_MATCH_MAP_START as MAP_START,
+    RHO_MATCH_NODE_END as NODE_END, RHO_MATCH_NODE_START as NODE_START,
+    RHO_MATCH_ONEOF_END as ONEOF_END, RHO_MATCH_ONEOF_START as ONEOF_START,
+    RHO_MATCH_PATHMAP as PATHMAP, RHO_MATCH_SEQUENCE_END as SEQUENCE_END,
+    RHO_MATCH_SEQUENCE_START as SEQUENCE_START, RHO_MATCH_STRING as STRING,
+    RHO_MATCH_STRING_SEQUENCE as STRING_SEQUENCE, RHO_MATCH_U32 as U32, RHO_MATCH_U64 as U64,
+};
 
 use super::match_schema::{RhoPathCursor, RhoPathEvent, RhoScalarRef};
 use super::match_schema_tables::ParCursor;
 use crate::rhoapi::Par;
 use crate::rust::epathmap_trie_codec::EPathMapRepr;
 use crate::rust::rhoapi_ext::EPathMap;
-
-pub const RHO_MATCH_PATH_VERSION: [u8; 4] = *b"RMP\x01";
-
-pub(super) const NODE_START: u8 = 0x01;
-pub(super) const NODE_END: u8 = 0x02;
-pub(super) const FIELD_START: u8 = 0x03;
-pub(super) const FIELD_END: u8 = 0x04;
-pub(super) const BOOL: u8 = 0x10;
-pub(super) const I32: u8 = 0x11;
-pub(super) const U32: u8 = 0x12;
-pub(super) const I64: u8 = 0x13;
-pub(super) const U64: u8 = 0x14;
-pub(super) const BYTES: u8 = 0x15;
-pub(super) const STRING: u8 = 0x16;
-pub(super) const STRING_SEQUENCE: u8 = 0x17;
-pub(super) const BYTES_SEQUENCE: u8 = 0x18;
-pub(super) const ABSENT: u8 = 0x20;
-pub(super) const SEQUENCE_START: u8 = 0x21;
-pub(super) const SEQUENCE_END: u8 = 0x22;
-pub(super) const MAP_START: u8 = 0x23;
-pub(super) const MAP_KEY: u8 = 0x24;
-pub(super) const MAP_END: u8 = 0x25;
-pub(super) const ONEOF_START: u8 = 0x26;
-pub(super) const ONEOF_END: u8 = 0x27;
-pub(super) const PATHMAP: u8 = 0x28;
 
 /// Encode one `Par` as a complete-schema structural RSpace search path.
 pub fn encode_par_match_path(value: &Par) -> Vec<u8> { encode_match_path(ParCursor::from(value)) }
@@ -51,42 +38,50 @@ pub fn encode_match_path(root: ParCursor<'_>) -> Vec<u8> {
     let mut output = Vec::with_capacity(256);
     output.extend_from_slice(&RHO_MATCH_PATH_VERSION);
     for event in RhoPathCursor::new(root) {
-        match event {
-            RhoPathEvent::EnterNode(program) => {
-                output.push(NODE_START);
-                output.extend_from_slice(&program.type_id.to_be_bytes());
-            }
-            RhoPathEvent::LeaveNode => output.push(NODE_END),
-            RhoPathEvent::EnterField(field) => {
-                output.push(FIELD_START);
-                output.extend_from_slice(&field.tag.to_be_bytes());
-            }
-            RhoPathEvent::LeaveField => output.push(FIELD_END),
-            RhoPathEvent::Scalar(value) => append_scalar(&mut output, value),
-            RhoPathEvent::Absent => output.push(ABSENT),
-            RhoPathEvent::EnterSequence(len) => {
-                output.push(SEQUENCE_START);
-                append_len(&mut output, len);
-            }
-            RhoPathEvent::LeaveSequence => output.push(SEQUENCE_END),
-            RhoPathEvent::EnterMap(len) => {
-                output.push(MAP_START);
-                append_len(&mut output, len);
-            }
-            RhoPathEvent::MapKey(key) => {
-                output.push(MAP_KEY);
-                append_bytes(&mut output, key.as_bytes());
-            }
-            RhoPathEvent::LeaveMap => output.push(MAP_END),
-            RhoPathEvent::EnterOneof(oneof) => {
-                output.push(ONEOF_START);
-                output.extend_from_slice(&oneof.protobuf_tag.to_be_bytes());
-            }
-            RhoPathEvent::LeaveOneof => output.push(ONEOF_END),
-            RhoPathEvent::PathMap(map) => append_pathmap(&mut output, map),
-        }
+        append_match_path_event(&mut output, event);
     }
     output
+}
+
+/// Append one generated cursor event to an `RMP1` byte stream.
+///
+/// Pattern compilers use the same primitive as the exact encoder so literal
+/// instruction runs cannot drift from datum encoding.
+pub fn append_match_path_event(output: &mut Vec<u8>, event: RhoPathEvent<'_>) {
+    match event {
+        RhoPathEvent::EnterNode { program, .. } => {
+            output.push(NODE_START);
+            output.extend_from_slice(&program.type_id.to_be_bytes());
+        }
+        RhoPathEvent::LeaveNode => output.push(NODE_END),
+        RhoPathEvent::EnterField(field) => {
+            output.push(FIELD_START);
+            output.extend_from_slice(&field.tag.to_be_bytes());
+        }
+        RhoPathEvent::LeaveField => output.push(FIELD_END),
+        RhoPathEvent::Scalar(value) => append_scalar(output, value),
+        RhoPathEvent::Absent => output.push(ABSENT),
+        RhoPathEvent::EnterSequence(len) => {
+            output.push(SEQUENCE_START);
+            append_len(output, len);
+        }
+        RhoPathEvent::LeaveSequence => output.push(SEQUENCE_END),
+        RhoPathEvent::EnterMap(len) => {
+            output.push(MAP_START);
+            append_len(output, len);
+        }
+        RhoPathEvent::MapKey(key) => {
+            output.push(MAP_KEY);
+            append_bytes(output, key.as_bytes());
+        }
+        RhoPathEvent::LeaveMap => output.push(MAP_END),
+        RhoPathEvent::EnterOneof(oneof) => {
+            output.push(ONEOF_START);
+            output.extend_from_slice(&oneof.protobuf_tag.to_be_bytes());
+        }
+        RhoPathEvent::LeaveOneof => output.push(ONEOF_END),
+        RhoPathEvent::PathMap(map) => append_pathmap(output, map),
+    }
 }
 
 fn append_scalar(output: &mut Vec<u8>, value: RhoScalarRef<'_>) {
