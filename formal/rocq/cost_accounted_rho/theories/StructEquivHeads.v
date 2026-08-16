@@ -44,7 +44,7 @@ Lemma heads_length_eq_head_count : forall P,
   length (heads P) = head_count P.
 Proof.
   induction P; simpl; auto.
-  - (* PPar *) rewrite app_length. lia.
+  - (* PPar *) rewrite length_app. lia.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════

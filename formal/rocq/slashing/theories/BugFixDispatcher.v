@@ -127,55 +127,34 @@ Proof.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
-   §4 — BlockException → InvalidTransaction coercion (block_processor.rs)
-   ═══════════════════════════════════════════════════════════════════════════
-
-   block_processor.rs:357-376 coerces a receiver-local `BlockException` (a
-   runtime error raised while the RECEIVER validates the block) into the
-   SLASHABLE variant `IBInvalidTransaction`, then dispatches it against the
-   block's SENDER through the same record-creation path as a genuine invalid
-   block. We model the coercion target so the taxonomy FV explicitly covers this
-   control-flow edge and record that the coerced variant is slashable — hence a
-   slash record is minted (T-9.3 dispatch completeness applies).
-
-   HONEST CAVEAT (not proven here): the SOUNDNESS of attributing a
-   receiver-local exception to the sender rests on the `BlockException` being
-   DETERMINISTIC across nodes. If a `BlockException` can arise from transient
-   receiver-local state (storage error, non-deterministic replay), two nodes may
-   disagree on whether the sender is slashable — a divergence risk in the same
-   family as the LIVE Tier-0 pollution finding (see
-   docs/theory/slashing/design/12-failure-modes.md §12.2.1a). The
-   dispatch-completeness theorem below does NOT establish that premise. *)
+   §4 — Objective invalidity / local-fault separation (block_processor.rs)
+   ═══════════════════════════════════════════════════════════════════════════ *)
 
 Inductive BlockOutcome : Type :=
   | BOValid     : BlockOutcome
   | BOInvalid   : InvalidBlock -> BlockOutcome
   | BOException : BlockOutcome.
 
-Definition coerce_block_outcome (o : BlockOutcome) : option InvalidBlock :=
+Definition classify_block_outcome (o : BlockOutcome) : option InvalidBlock :=
   match o with
   | BOValid      => None
   | BOInvalid ib => Some ib
-  | BOException  => Some IBInvalidTransaction   (* block_processor.rs:372 *)
+  | BOException  => None
   end.
 
-Theorem block_exception_coerces_to_slashable :
-  forall ib,
-    coerce_block_outcome BOException = Some ib ->
-    is_slashable ib = true.
-Proof.
-  intros ib H. simpl in H. inversion H. reflexivity.
-Qed.
+Theorem block_exception_is_not_objective_invalidity :
+  classify_block_outcome BOException = None.
+Proof. reflexivity. Qed.
 
-(* The coercion feeds the dispatcher: a receiver-local exception mints a record
-   against the sender exactly like an admissible equivocation would. *)
-Theorem block_exception_dispatch_records :
-  forall offender baseSeq s,
-    match coerce_block_outcome BOException with
-    | Some ib => has_key (dispatch_post_fix ib offender baseSeq s) (offender, baseSeq) = true
-    | None    => True
+Theorem explicit_slashable_invalidity_dispatches :
+  forall ib offender baseSeq s,
+    is_slashable ib = true ->
+    match classify_block_outcome (BOInvalid ib) with
+    | Some classified =>
+        has_key (dispatch_post_fix classified offender baseSeq s) (offender, baseSeq) = true
+    | None => False
     end.
 Proof.
-  intros offender baseSeq s. simpl.
-  apply t_9_3_dispatch_complete. reflexivity.
+  intros ib offender baseSeq s Hslash. simpl.
+  apply t_9_3_dispatch_complete. exact Hslash.
 Qed.

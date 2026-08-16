@@ -7,7 +7,7 @@
 # Source: cost-accounted-rho.pdf (Meredith)
 # Companion doc: docs/theory/cost-accounted-rho-verification.md
 #
-# 32 modules with kernel-checked theorem bodies. The development is
+# 87 modules with kernel-checked theorem bodies. The development is
 # parameterized over a single
 # hash_process function and 3 structural/cryptographic hypotheses on
 # it; all consensus-critical results (ca_cost_deterministic,
@@ -169,6 +169,12 @@ theories/MergeableChannelAccounting.v
 # Level 4a4: Bounded-memory runtime-budget refinement (depends on syntax)
 theories/RuntimeBudgetRefinement.v
 
+# Atomic RSpace COMM accounting refinement: only committed matches are
+# billable, producer/consumer trigger side and join arity do not alter the
+# single debit, rejection is state-atomic, and play/replay trace cost agrees.
+theories/AtomicCommAccounting.v
+theories/LocatedAuthoritySettlement.v
+
 # Level 4b: Fuel event decomposition (depends on CostAccountedReduction)
 theories/FuelEventDecomposition.v
 
@@ -235,10 +241,10 @@ theories/SyntacticSugar.v
 # Level 8: Use-case adequacy corollaries over the proof stack.
 theories/UseCaseAdequacy.v
 
-# Level 0d: Per-validator wallet @W_v naming (Cost-Accounted Rho Stage A;
-# DR-13). Depends only on RhoSyntax. Proves wallet-name injectivity in the
-# validator public key (distinct validators ⇒ distinct draw wallets) and
-# pairwise disjointness of the wallet / quarantine / funding-slot seed
+# Level 0d: Canonical SystemVault address naming and domain separation
+# (DR-13). Depends only on RhoSyntax. Proves address injectivity in the
+# validator public key (distinct validators ⇒ distinct vaults) and
+# pairwise disjointness of the SystemVault / quarantine / funding-slot seed
 # DOMAINS. Axiom- and hypothesis-free (concrete injective bit-encoder), so
 # its headline theorems are Closed under the global context.
 theories/WalletNaming.v
@@ -431,6 +437,24 @@ theories/CASimulationBicat.v
 theories/CAAdjunctionII.v
 theories/CAProperSubcategory.v
 theories/CAAbstractCapstone.v
+theories/EndToEndAuthority.v
+theories/AuthorityPresentation.v
+theories/ForcedRedexAccounting.v
+theories/StructuralAuthorityBound.v
+theories/CausalStackOrder.v
+theories/TransactionalAdmission.v
+theories/RuntimeBoundAuthority.v
+theories/PayloadSortPersistence.v
+theories/SettlementMergeVisibility.v
+theories/RuntimeAuthorityScope.v
+theories/StackTransferConservation.v
+theories/StateBoundFrontierExpansion.v
+theories/VaultBackedCostLifecycle.v
+theories/AtomicVaultSettlementRefinement.v
+theories/WalletFundedLollipop.v
+theories/PhysicalSettlementWorklist.v
+theories/ReplayRootMaterialization.v
+theories/CanonicalRevRedemption.v
 
 # CA-P-178 — the generic nearness gate near(I,J) on the rho object
 # (continued-gslt-cost-v2 §"The nominal surface" + the R1/R2/R3 premise

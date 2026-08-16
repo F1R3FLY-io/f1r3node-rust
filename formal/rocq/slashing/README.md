@@ -89,7 +89,8 @@ cost-accounting precedent:
 - **(c) Proof-original extensions** — proven bug-fix deltas (T-9.1–T-9.15,
   including T-9.10' / T-9.10″ for the withdrawal flow), plus current-epoch
   slash authorization, checked sequence arithmetic, duplicate-justification
-  rejection, rejected-slash recovery dedup, slash-seed input injectivity, and
+  rejection, canonical complete-evidence candidate selection, zero-bond
+  exclusion, one-candidate-per-target uniqueness, slash-seed input injectivity, and
   auth-token no-op wrappers.
 - **(d) Citable-axiom-gated** — none in the consensus-critical path; all
   classical lemmas appear in the trust base only.

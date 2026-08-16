@@ -321,6 +321,31 @@ Fixpoint sig_algebra_valid (s : sig_algebra) : bool :=
   | ASLolly s1 s2 => sig_algebra_valid s1 && sig_algebra_valid s2
   end.
 
+Definition admission_sig_algebra_atom (s : sig_algebra) : bool :=
+  match s with
+  | ASGround _ => true
+  | ASQuote _ => true
+  | _ => false
+  end.
+
+Fixpoint admission_sig_algebra_all_required (s : sig_algebra) : bool :=
+  match s with
+  | ASGround _ => true
+  | ASQuote _ => true
+  | ASAnd s1 s2 =>
+      admission_sig_algebra_all_required s1 &&
+      admission_sig_algebra_all_required s2
+  | _ => false
+  end.
+
+Definition admission_sig_algebra_valid (s : sig_algebra) : bool :=
+  match s with
+  | ASThreshold k members =>
+      (1 <=? k) && (k <=? length members) &&
+      forallb admission_sig_algebra_atom members
+  | _ => admission_sig_algebra_all_required s
+  end.
+
 Fixpoint sig_algebra_presented_atoms (s : sig_algebra) : list nat :=
   match s with
   | ASUnit => []
@@ -386,6 +411,143 @@ Proof.
   split; apply Nat.leb_le; assumption.
 Qed.
 
+Lemma admission_sig_algebra_atom_sound :
+  forall s,
+    admission_sig_algebra_atom s = true ->
+    sig_algebra_valid s = true /\
+    sig_algebra_min_required s = 1 /\
+    length (sig_algebra_atoms s) = 1.
+Proof.
+  intros s Hatom.
+  destruct s; cbn in *; try discriminate; repeat split; reflexivity.
+Qed.
+
+Lemma admission_sig_algebra_atoms_sound :
+  forall members,
+    forallb admission_sig_algebra_atom members = true ->
+    forallb sig_algebra_valid members = true.
+Proof.
+  induction members as [|member members IH]; intros Hatoms; cbn in *.
+  - reflexivity.
+  - apply andb_prop in Hatoms as [Hmember Hmembers].
+    apply andb_true_intro.
+    split.
+    + apply admission_sig_algebra_atom_sound in Hmember as [Hvalid _].
+      exact Hvalid.
+    + apply IH. exact Hmembers.
+Qed.
+
+Lemma admission_sig_algebra_atom_count :
+  forall members,
+    forallb admission_sig_algebra_atom members = true ->
+    length (concat (map sig_algebra_atoms members)) = length members.
+Proof.
+  induction members as [|member members IH]; intros Hatoms; cbn in *.
+  - reflexivity.
+  - apply andb_prop in Hatoms as [Hmember Hmembers].
+    apply admission_sig_algebra_atom_sound in Hmember as [_ [_ Hlength]].
+    rewrite length_app, Hlength, IH by exact Hmembers.
+    reflexivity.
+Qed.
+
+Lemma admission_sig_algebra_all_required_sound :
+  forall s,
+    admission_sig_algebra_all_required s = true ->
+    sig_algebra_valid s = true.
+Proof.
+  induction s as
+    [|a|a|s1 IH1 s2 IH2|k members|choice s1 IH1 s2 IH2
+     |s1 IH1 s2 IH2|s IH|s IH|s1 IH1 s2 IH2]; intros Hall; cbn in *;
+    try discriminate; try reflexivity.
+  apply andb_prop in Hall as [H1 H2].
+  apply andb_true_intro.
+  split; [apply IH1 | apply IH2]; assumption.
+Qed.
+
+Lemma admission_sig_algebra_all_required_quorum_sound :
+  forall s,
+    admission_sig_algebra_all_required s = true ->
+    1 <= sig_algebra_min_required s /\
+    sig_algebra_min_required s = length (sig_algebra_atoms s).
+Proof.
+  induction s as
+    [|a|a|s1 IH1 s2 IH2|k members|choice s1 IH1 s2 IH2
+     |s1 IH1 s2 IH2|s IH|s IH|s1 IH1 s2 IH2]; intros Hall; cbn in *;
+    try discriminate.
+  - lia.
+  - lia.
+  - apply andb_prop in Hall as [H1 H2].
+    specialize (IH1 H1) as [Hmin1 Heq1].
+    specialize (IH2 H2) as [Hmin2 Heq2].
+    rewrite length_app, <- Heq1, <- Heq2.
+    lia.
+Qed.
+
+Theorem admission_sig_algebra_valid_sound :
+  forall s,
+    admission_sig_algebra_valid s = true ->
+    sig_algebra_valid s = true.
+Proof.
+  intros s Hadmission.
+  destruct s; cbn in Hadmission; try discriminate; try reflexivity.
+  - apply admission_sig_algebra_all_required_sound. exact Hadmission.
+  - apply andb_prop in Hadmission as [Hbounds Hatoms].
+    apply andb_true_intro.
+    split.
+    + exact Hbounds.
+    + apply admission_sig_algebra_atoms_sound. exact Hatoms.
+Qed.
+
+Theorem admission_sig_algebra_scalar_policy_sound :
+  forall s,
+    admission_sig_algebra_valid s = true ->
+    admission_sig_algebra_all_required s = true \/
+    exists k members,
+      s = ASThreshold k members /\
+      1 <= k /\
+      k <= length members /\
+      forallb admission_sig_algebra_atom members = true.
+Proof.
+  intros s Hadmission.
+  destruct s as
+    [|a|a|s1 s2|k members|choice s1 s2|s1 s2|s|s|s1 s2];
+    cbn in Hadmission; try discriminate.
+  - left. reflexivity.
+  - left. reflexivity.
+  - left. exact Hadmission.
+  - right. exists k, members.
+    apply andb_prop in Hadmission as [Hbounds Hatoms].
+    apply andb_prop in Hbounds as [Hlower Hupper].
+    repeat split; try reflexivity; try assumption.
+    + apply Nat.leb_le. exact Hlower.
+    + apply Nat.leb_le. exact Hupper.
+Qed.
+
+Theorem admission_sig_algebra_quorum_sound :
+  forall s,
+    admission_sig_algebra_valid s = true ->
+    1 <= sig_algebra_min_required s /\
+    sig_algebra_min_required s <= length (sig_algebra_atoms s).
+Proof.
+  intros s Hadmission.
+  destruct s; cbn in *; try discriminate.
+  - lia.
+  - lia.
+  - apply andb_prop in Hadmission as [H1 H2].
+    apply admission_sig_algebra_all_required_quorum_sound in H1
+      as [Hmin1 Heq1].
+    apply admission_sig_algebra_all_required_quorum_sound in H2
+      as [Hmin2 Heq2].
+    rewrite length_app, <- Heq1, <- Heq2.
+    lia.
+  - apply andb_prop in Hadmission as [Hbounds Hatoms].
+    apply andb_prop in Hbounds as [Hlower Hupper].
+    destruct n as [|n]; cbn in Hlower; try discriminate.
+    apply Nat.leb_le in Hupper.
+    rewrite admission_sig_algebra_atom_count by exact Hatoms.
+    lia.
+Qed.
+
 Lemma sig_algebra_all_required_min_required_atoms :
   forall s,
     sig_algebra_all_required s = true ->
@@ -399,17 +561,17 @@ Proof.
   - reflexivity.
   - apply andb_prop in Hall as [H1 H2].
     rewrite IH1 by exact H1. rewrite IH2 by exact H2.
-    rewrite app_length. reflexivity.
+    rewrite length_app. reflexivity.
   - discriminate.
   - discriminate.
   - apply andb_prop in Hall as [H1 H2].
     rewrite IH1 by exact H1. rewrite IH2 by exact H2.
-    rewrite app_length. reflexivity.
+    rewrite length_app. reflexivity.
   - apply IH. exact Hall.
   - discriminate.
   - apply andb_prop in Hall as [H1 H2].
     rewrite IH1 by exact H1. rewrite IH2 by exact H2.
-    rewrite app_length. reflexivity.
+    rewrite length_app. reflexivity.
 Qed.
 
 

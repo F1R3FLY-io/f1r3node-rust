@@ -1141,9 +1141,9 @@ Proof.
   exact rb_oop_trace_survives_boundary.
 Qed.
 
-(* UC-CA-043: mixed-success deploy blocks preserve per-deploy trace and
+(* UC-CA-043: matched and unmatched deployments preserve per-deploy trace and
    settlement additivity by the same independence theorem as budget state. *)
-Theorem uc_ca_043_mixed_deploy_block_trace_and_settlement_isolation :
+Theorem uc_ca_043_matched_unmatched_deploy_trace_and_settlement_isolation :
   (forall b1 b1' b2 e r,
     rb_reserve b1 e = (b1', r) ->
     rb_cost_trace_entries b2 = rb_cost_trace_entries b2) /\
@@ -1920,17 +1920,23 @@ Proof.
   - exact mergeable_channel_accounting_preserves_fee_settlement_inputs.
 Qed.
 
-(* UC-CA-146: recovered rejected slashes require evidence from the current
-   cost-invalid epoch and the target activation epoch. *)
-Theorem uc_ca_146_recovered_slash_requires_current_cost_evidence :
+(* UC-CA-146: canonical slash candidates require present evidence from the
+   current cost-invalid epoch and target activation epoch. *)
+Theorem uc_ca_146_canonical_slash_candidate_requires_current_evidence :
   forall view,
-    recovered_rejected_slash_current view = true ->
-    slash_view_evidence_epoch view = slash_view_current_epoch view /\
-    slash_view_target_activation_epoch view = slash_view_current_epoch view.
+    canonical_slash_candidate_selected view = true ->
+    slash_view_evidence_present view = true /\
+    (slash_view_evidence_epoch view = slash_view_current_epoch view /\
+     slash_view_target_activation_epoch view = slash_view_current_epoch view).
 Proof.
-  intros view Hcurrent.
-  apply current_cost_evidence_epoch_sound.
-  exact (recovered_rejected_slash_requires_current_cost_evidence view Hcurrent).
+  intros view Hselected.
+  pose proof
+    (canonical_slash_candidate_requires_current_cost_evidence view Hselected)
+    as [Hpresent Hcurrent].
+  split.
+  - exact Hpresent.
+  - apply current_cost_evidence_epoch_sound.
+    exact Hcurrent.
 Qed.
 
 (* UC-CA-147: slash authorization reads the parent pre-state bond and keeps

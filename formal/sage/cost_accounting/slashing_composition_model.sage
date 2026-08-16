@@ -6,8 +6,8 @@ import sys
 load(os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "scenario_schema.sage"))
 
 
-def current_authorized(parent_bond, evidence_epoch, target_epoch, current_epoch):
-    return int(parent_bond) > 0 and int(evidence_epoch) == int(current_epoch) and int(target_epoch) == int(current_epoch)
+def current_authorized(parent_bond, evidence_present, evidence_epoch, target_epoch, current_epoch):
+    return bool(evidence_present) and int(parent_bond) > 0 and int(evidence_epoch) == int(current_epoch) and int(target_epoch) == int(current_epoch)
 
 
 def records():
@@ -17,6 +17,7 @@ def records():
         "parent_pre_state_bond": 1,
         "ambient_bond": 0,
         "execution_bond": 1,
+        "evidence_present": True,
         "evidence_epoch": 2,
         "target_activation_epoch": 2,
         "current_epoch": 2,
@@ -25,14 +26,16 @@ def records():
         "parent_pre_state_bond": 0,
         "ambient_bond": 1,
         "execution_bond": 1,
+        "evidence_present": True,
         "evidence_epoch": 2,
         "target_activation_epoch": 2,
         "current_epoch": 2,
     }
-    stale_recovered = {
+    stale_candidate = {
         "parent_pre_state_bond": 1,
         "ambient_bond": 1,
         "execution_bond": 1,
+        "evidence_present": True,
         "evidence_epoch": 1,
         "target_activation_epoch": 2,
         "current_epoch": 2,
@@ -41,6 +44,7 @@ def records():
         "parent_pre_state_bond": 1,
         "ambient_bond": 0,
         "execution_bond": 0,
+        "evidence_present": True,
         "evidence_epoch": 2,
         "target_activation_epoch": 2,
         "current_epoch": 2,
@@ -84,27 +88,28 @@ def records():
             "slashing_composition",
             "confirmed_safe",
             "sage_slashing_stale_evidence_requires_boundary_check",
-            "Stale cost-invalid evidence is rejected at the recovered slash boundary.",
+            "Stale cost-invalid evidence is excluded by canonical slash-candidate scanning.",
             canonical_scenario(
                 "slashing_stale_cost_evidence",
                 rust_replay={"evidence_epoch": "stale", "target_activation_epoch": "current"},
-                slashing_authorization=stale_recovered,
+                slashing_authorization=stale_candidate,
                 threat_family="slashing_composition",
-                expected_invariants=["stale_recovered_slash_not_authorized"],
+                expected_invariants=["stale_canonical_slash_candidate_not_authorized"],
                 promotion_target="rocq:uc_ca_146",
                 expected_classification="confirmed_safe",
             ),
             {
                 "slashing": "stale_evidence",
                 "accepted": current_authorized(
-                    stale_recovered["parent_pre_state_bond"],
-                    stale_recovered["evidence_epoch"],
-                    stale_recovered["target_activation_epoch"],
-                    stale_recovered["current_epoch"],
+                    stale_candidate["parent_pre_state_bond"],
+                    stale_candidate["evidence_present"],
+                    stale_candidate["evidence_epoch"],
+                    stale_candidate["target_activation_epoch"],
+                    stale_candidate["current_epoch"],
                 ),
                 "requires_current_evidence": True,
             },
-            ["Rocq: stale_recovered_slash_not_authorized", "Rust: non_current_rejected_slash_is_not_recovered"],
+            ["Rocq: stale_canonical_slash_candidate_not_authorized", "Rust: canonical slash candidate selection tests"],
         ),
         record(
             "slashing_composition",
@@ -127,6 +132,7 @@ def records():
                 "slashing": "parent_pre_state_authorization",
                 "authorized": current_authorized(
                     current_parent["parent_pre_state_bond"],
+                    current_parent["evidence_present"],
                     current_parent["evidence_epoch"],
                     current_parent["target_activation_epoch"],
                     current_parent["current_epoch"],
@@ -153,6 +159,7 @@ def records():
                 "slashing": "ambient_only_rejection",
                 "authorized": current_authorized(
                     ambient_only["parent_pre_state_bond"],
+                    ambient_only["evidence_present"],
                     ambient_only["evidence_epoch"],
                     ambient_only["target_activation_epoch"],
                     ambient_only["current_epoch"],
@@ -164,19 +171,19 @@ def records():
         record(
             "slashing_composition",
             "confirmed_safe",
-            "sage_recovered_rejected_slash_requires_current_evidence",
-            "Recovered rejected slashes are recoverable only when their evidence and target activation epochs are current.",
+            "sage_canonical_slash_candidate_requires_present_current_evidence",
+            "Canonical slash candidates are selected only from present evidence whose evidence and target activation epochs are current.",
             canonical_scenario(
-                "recovered_rejected_slash_current_evidence",
-                rust_replay={"recovered_rejected": True, "evidence_epoch": "current"},
+                "canonical_slash_candidate_current_evidence",
+                rust_replay={"canonical_evidence_scan": True, "evidence_present": True, "evidence_epoch": "current"},
                 slashing_authorization=current_parent,
                 threat_family="slashing_composition",
-                expected_invariants=["recovered_rejected_slash_requires_current_cost_evidence"],
+                expected_invariants=["canonical_slash_candidate_requires_current_cost_evidence"],
                 promotion_target="rocq:uc_ca_146",
                 expected_classification="confirmed_safe",
             ),
-            {"slashing": "recovered_rejected", "recovered": True, "current_evidence": True},
-            ["Rocq: uc_ca_146_recovered_slash_requires_current_cost_evidence", "Rust: rejected_slash::non_current_rejected_slash_is_not_recovered"],
+            {"slashing": "canonical_candidate", "selected": True, "evidence_present": True, "current_evidence": True},
+            ["Rocq: uc_ca_146_canonical_slash_candidate_requires_current_evidence", "Rust: canonical slash candidate selection tests"],
         ),
         record(
             "slashing_composition",

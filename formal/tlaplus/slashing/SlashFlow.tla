@@ -1,13 +1,13 @@
 --------------------------- MODULE SlashFlow ---------------------------
 (****************************************************************************)
 (* End-to-end slashing pipeline:                                            *)
-(*   equivocation → record → propose-with-SlashDeploy →                     *)
+(*   equivocation → canonical evidence scan → propose-with-SlashDeploy →   *)
 (*   PoS bond zero-out → fork-choice exclusion                              *)
 (*                                                                          *)
 (* Models a small DAG of bonded validators where one of them equivocates    *)
 (* and an honest proposer issues a SlashDeploy.  Verifies:                  *)
 (*   - bonds[offender] = 0 after slash                                      *)
-(*   - coopVaultBalance gains exactly the offender's pre-slash bond         *)
+(*   - the offender's pre-slash bond is quarantined for adjudication        *)
 (*   - offender's latest message is filtered from fork-choice               *)
 (*   - eventually slash fires given a fair proposer schedule                *)
 (*                                                                          *)
@@ -27,17 +27,20 @@ VARIABLES
     \* On-chain state (PoS Rholang contract):
     bonds,              \* [Validators -> Nat]: current bond
     activeValidators,   \* SUBSET Validators: not-yet-slashed
-    coopVaultBalance,   \* Nat: coop multisig vault (grows ONLY on Guilty redeem)
+    coopVaultBalance,   \* Nat: stake portion of the canonical coop REV vault
+    coopFuelBalance,    \* Nat: execution-balance portion of the same coop vault
     slashedSet,         \* SUBSET Validators
 
-    \* Cost-Accounted Rho Stage B/C supply + halt state (DR-3 / DR-13):
+    \* Paper supply notation mapped to native SystemVault custody (DR-3 / DR-13):
     mintingHalted,      \* SUBSET Validators: the "mintingHalted" set (slash effect)
     quarantinedStake,   \* [Validators -> Nat]: the "quarantinedStake" earmark
                         \*   (per-offender pre-slash bond; 0 if not quarantined)
     burnedStake,        \* Nat: stake destroyed by a Burned redemption (the REV
-                        \*   becomes posVault protocol surplus). Tracked so the
-                        \*   conservation invariant is exact across all outcomes.
-    supply,             \* [Validators -> Nat]: per-validator Σ⟦v⟧ supply pool
+                        \*   is removed from the PoS custody purse).
+    supply,             \* [Validators -> Nat]: canonical SystemVault balance
+    quarantinedFuel,    \* [Validators -> Nat]: slashed SystemVault balance
+    burnedFuel,         \* Nat: quarantined execution balance destroyed on burn
+    protocolMinted,     \* [Validators -> Nat]: cumulative authorized epoch mint
     mintedEpochs,       \* SUBSET (Validators \X {EpochIndex}): the "mintedEpochs" ledger
 
     \* DAG state:
@@ -46,17 +49,14 @@ VARIABLES
     equivocationRecords,\* SUBSET (Validators \X (0..MaxSeqNum))
 
     \* Pipeline state:
-    pendingSlashDeploys,\* SUBSET BlockId: slash deploys queued by invalid hash
-    rejectedSlashDeploys,
-    recoveredSlashDeploys,
-    noopSlashHashes,
+    pendingSlashDeploys,\* SUBSET BlockId: one authorized candidate per offender
     forkChoiceLatest    \* [Validators -> Nat]: latest seq considered by FC
 
-vars == <<bonds, activeValidators, coopVaultBalance, slashedSet,
-          mintingHalted, quarantinedStake, burnedStake, supply, mintedEpochs,
+vars == <<bonds, activeValidators, coopVaultBalance, coopFuelBalance, slashedSet,
+          mintingHalted, quarantinedStake, burnedStake, supply,
+          quarantinedFuel, burnedFuel, protocolMinted, mintedEpochs,
           blocks, invalidBlocks, equivocationRecords,
-          pendingSlashDeploys, rejectedSlashDeploys, recoveredSlashDeploys,
-          noopSlashHashes,
+          pendingSlashDeploys,
           forkChoiceLatest>>
 
 ASSUME MintAmountType == MintAmount \in Nat /\ MintAmount > 0
@@ -86,19 +86,20 @@ TypeOK ==
     /\ bonds            \in [Validators -> Nat]
     /\ activeValidators \in SUBSET Validators
     /\ coopVaultBalance \in Nat
+    /\ coopFuelBalance  \in Nat
     /\ slashedSet       \in SUBSET Validators
     /\ mintingHalted    \in SUBSET Validators
     /\ quarantinedStake \in [Validators -> Nat]
     /\ burnedStake      \in Nat
     /\ supply           \in [Validators -> Nat]
+    /\ quarantinedFuel  \in [Validators -> Nat]
+    /\ burnedFuel       \in Nat
+    /\ protocolMinted   \in [Validators -> Nat]
     /\ mintedEpochs     \in SUBSET (Validators \X {EpochIndex})
     /\ blocks           \in [Validators -> [1..MaxSeqNum -> SUBSET (1..2)]]
     /\ invalidBlocks    \in SUBSET BlockId
     /\ equivocationRecords \in SUBSET (Validators \X (0..MaxSeqNum))
     /\ pendingSlashDeploys \in SUBSET BlockId
-    /\ rejectedSlashDeploys \in SUBSET BlockId
-    /\ recoveredSlashDeploys \in SUBSET BlockId
-    /\ noopSlashHashes \in SUBSET BlockId
     /\ forkChoiceLatest \in [Validators -> Nat]
 
 (****************************************************************************)
@@ -108,20 +109,21 @@ Init ==
     /\ bonds            = InitialBonds
     /\ activeValidators = {v \in Validators : InitialBonds[v] > 0}
     /\ coopVaultBalance = 0
+    /\ coopFuelBalance  = 0
     /\ slashedSet       = {}
     /\ mintingHalted    = {}
     /\ quarantinedStake = [v \in Validators |-> 0]
     /\ burnedStake      = 0
     /\ supply           = [v \in Validators |-> 0]
+    /\ quarantinedFuel  = [v \in Validators |-> 0]
+    /\ burnedFuel       = 0
+    /\ protocolMinted   = [v \in Validators |-> 0]
     /\ mintedEpochs     = {}
     /\ blocks           = [v \in Validators |->
                               [s \in 1..MaxSeqNum |-> {}]]
     /\ invalidBlocks    = {}
     /\ equivocationRecords = {}
     /\ pendingSlashDeploys = {}
-    /\ rejectedSlashDeploys = {}
-    /\ recoveredSlashDeploys = {}
-    /\ noopSlashHashes = {}
     /\ forkChoiceLatest = [v \in Validators |-> 0]
 
 (****************************************************************************)
@@ -133,10 +135,10 @@ SignHonest(v, s) ==
     /\ blocks[v][s] = {}
     /\ blocks' = [blocks EXCEPT ![v] = [@ EXCEPT ![s] = {1}]]
     /\ forkChoiceLatest' = [forkChoiceLatest EXCEPT ![v] = s]
-    /\ UNCHANGED <<bonds, activeValidators, coopVaultBalance, slashedSet,
-                    mintingHalted, quarantinedStake, burnedStake, supply, mintedEpochs,
-                    invalidBlocks, equivocationRecords, pendingSlashDeploys,
-                    rejectedSlashDeploys, recoveredSlashDeploys, noopSlashHashes>>
+    /\ UNCHANGED <<bonds, activeValidators, coopVaultBalance, coopFuelBalance, slashedSet,
+                    mintingHalted, quarantinedStake, burnedStake, supply,
+                    quarantinedFuel, burnedFuel, protocolMinted, mintedEpochs,
+                    invalidBlocks, equivocationRecords, pendingSlashDeploys>>
 
 (****************************************************************************)
 (* Action: validator v equivocates by signing a SECOND block at seq s.      *)
@@ -148,51 +150,27 @@ SignEquivocating(v, s) ==
     /\ blocks' = [blocks EXCEPT ![v] = [@ EXCEPT ![s] = {1, 2}]]
     /\ invalidBlocks' = invalidBlocks \cup {<<v, s, 2>>}
     /\ equivocationRecords' = equivocationRecords \cup {<<v, s - 1>>}
-    /\ pendingSlashDeploys' = pendingSlashDeploys \cup {<<v, s, 2>>}
-    /\ UNCHANGED <<bonds, activeValidators, coopVaultBalance, slashedSet,
-                    mintingHalted, quarantinedStake, burnedStake, supply, mintedEpochs,
-                    rejectedSlashDeploys, recoveredSlashDeploys, noopSlashHashes, forkChoiceLatest>>
-
-(****************************************************************************)
-(* Action: a merge rejects a slash branch carrying invalid block h.         *)
-(****************************************************************************)
-ObserveRejectedSlash(h) ==
-    /\ h \in invalidBlocks
-    /\ h \notin rejectedSlashDeploys
-    /\ rejectedSlashDeploys' = rejectedSlashDeploys \cup {h}
-    /\ UNCHANGED <<bonds, activeValidators, coopVaultBalance, slashedSet,
-                    mintingHalted, quarantinedStake, burnedStake, supply, mintedEpochs,
-                    blocks, invalidBlocks, equivocationRecords,
-                    pendingSlashDeploys, recoveredSlashDeploys, noopSlashHashes, forkChoiceLatest>>
-
-RecoverRejectedSlash(h) ==
-    /\ h \in rejectedSlashDeploys
-    /\ h \in invalidBlocks
-    /\ h \notin recoveredSlashDeploys
-    /\ recoveredSlashDeploys' = recoveredSlashDeploys \cup {h}
     /\ pendingSlashDeploys' =
-        IF h \in pendingSlashDeploys \/ h[1] \in slashedSet
+        IF \E h \in pendingSlashDeploys : h[1] = v
         THEN pendingSlashDeploys
-        ELSE pendingSlashDeploys \cup {h}
-    /\ UNCHANGED <<bonds, activeValidators, coopVaultBalance, slashedSet,
-                    mintingHalted, quarantinedStake, burnedStake, supply, mintedEpochs,
-                    blocks, invalidBlocks, equivocationRecords,
-                    rejectedSlashDeploys, noopSlashHashes, forkChoiceLatest>>
+        ELSE pendingSlashDeploys \cup {<<v, s, 2>>}
+    /\ UNCHANGED <<bonds, activeValidators, coopVaultBalance, coopFuelBalance, slashedSet,
+                    mintingHalted, quarantinedStake, burnedStake, supply,
+                    quarantinedFuel, burnedFuel, protocolMinted, mintedEpochs,
+                    forkChoiceLatest>>
 
 SlashSeedInput(proposer, seq, h) ==
     <<proposer, seq, h>>
 
 (****************************************************************************)
 (* Action: an honest proposer issues a SlashDeploy against invalid block h. *)
-(* A duplicate slash against a zero-bond offender succeeds as a no-op.       *)
 (****************************************************************************)
 ExecuteSlash(h) ==
     /\ h \in pendingSlashDeploys
+    /\ bonds[h[1]] > 0
     /\ LET o == h[1]
-       IN IF bonds[o] > 0
-          THEN
-            LET valBond == bonds[o]
-            IN  /\ bonds' = [bonds EXCEPT ![o] = 0]
+       IN LET valBond == bonds[o]
+          IN  /\ bonds' = [bonds EXCEPT ![o] = 0]
                 /\ activeValidators' = activeValidators \ {o}
                 \* Cost-Accounted Rho Stage-C TWO-EFFECT slash (Decision 4):
                 \* the legacy coop transfer is GONE — coop is UNCHANGED here;
@@ -200,45 +178,27 @@ ExecuteSlash(h) ==
                 \* quarantine pending redeemSlashed adjudication (coop grows
                 \* ONLY in the Guilty redemption branch).
                 /\ coopVaultBalance' = coopVaultBalance
+                /\ coopFuelBalance' = coopFuelBalance
                 /\ quarantinedStake' = [quarantinedStake EXCEPT ![o] = valBond]
                 /\ burnedStake' = burnedStake
                 /\ slashedSet' = slashedSet \cup {o}
                 /\ pendingSlashDeploys' =
                     {d \in pendingSlashDeploys : d[1] # o}
                 /\ forkChoiceLatest' = [forkChoiceLatest EXCEPT ![o] = 0]
-                /\ noopSlashHashes' = noopSlashHashes
-                \* The other two slash effects: halt minting + zero Σ⟦v⟧ (the
-                \* @W_v drain is the bond zero-out above). mintingHalted is
-                \* idempotent (already-halted stays).
+                \* Slash halts minting and atomically moves available canonical
+                \* SystemVault custody into the offender's quarantine.
                 /\ mintingHalted' = mintingHalted \cup {o}
+                /\ quarantinedFuel' = [quarantinedFuel EXCEPT ![o] = supply[o]]
                 /\ supply' = [supply EXCEPT ![o] = 0]
+                /\ burnedFuel' = burnedFuel
+                /\ protocolMinted' = protocolMinted
                 /\ mintedEpochs' = mintedEpochs
-          ELSE
-            /\ bonds' = bonds
-            /\ activeValidators' = activeValidators
-            /\ coopVaultBalance' = coopVaultBalance
-            /\ quarantinedStake' = quarantinedStake
-            /\ burnedStake' = burnedStake
-            /\ slashedSet' = slashedSet
-            /\ pendingSlashDeploys' = pendingSlashDeploys \ {h}
-            /\ forkChoiceLatest' = forkChoiceLatest
-            /\ noopSlashHashes' = noopSlashHashes \cup {h}
-            \* A duplicate slash of an already-zero-bond offender keeps the
-            \* validator halted with zero supply (idempotent slash); the
-            \* quarantine earmark is untouched (first slash recorded it).
-            /\ mintingHalted' = mintingHalted \cup {h[1]}
-            /\ supply' = supply
-            /\ mintedEpochs' = mintedEpochs
-    /\ UNCHANGED <<blocks, invalidBlocks, equivocationRecords,
-                    rejectedSlashDeploys, recoveredSlashDeploys>>
+    /\ UNCHANGED <<blocks, invalidBlocks, equivocationRecords>>
 
 (****************************************************************************)
-(* Action: the Cost-Accounted Rho Stage-B epoch mint (closeBlock fold +     *)
-(* CloseBlockDeploy::post_eval). Credits MintAmount to an ELIGIBLE validator *)
-(* v — active AND NOT halted AND NOT already minted this epoch — on its      *)
-(* Σ⟦v⟧ supply pool, and records (v, EpochIndex) in mintedEpochs. The        *)
-(* eligibility guards mirror the Rholang predicate + the Rust post_eval      *)
-(* recompute + mint_eligible (MintingInjection.v). The mintedEpochs guard    *)
+(* Authenticated PoS epoch mint. It credits MintAmount directly to an         *)
+(* eligible validator's canonical SystemVault and records (v, EpochIndex).    *)
+(* The mintedEpochs guard                                                     *)
 (* makes a duplicated / multi-parent-merged mint a NO-OP (idempotency).      *)
 (****************************************************************************)
 EpochMint(v) ==
@@ -246,12 +206,13 @@ EpochMint(v) ==
     /\ v \notin mintingHalted
     /\ <<v, EpochIndex>> \notin mintedEpochs
     /\ supply' = [supply EXCEPT ![v] = supply[v] + MintAmount]
+    /\ protocolMinted' = [protocolMinted EXCEPT ![v] = protocolMinted[v] + MintAmount]
     /\ mintedEpochs' = mintedEpochs \cup {<<v, EpochIndex>>}
-    /\ UNCHANGED <<bonds, activeValidators, coopVaultBalance, slashedSet,
-                    mintingHalted, quarantinedStake, burnedStake, blocks,
+    /\ UNCHANGED <<bonds, activeValidators, coopVaultBalance, coopFuelBalance, slashedSet,
+                    mintingHalted, quarantinedStake, burnedStake,
+                    quarantinedFuel, burnedFuel, blocks,
                     invalidBlocks, equivocationRecords,
-                    pendingSlashDeploys, rejectedSlashDeploys,
-                    recoveredSlashDeploys, noopSlashHashes, forkChoiceLatest>>
+                    pendingSlashDeploys, forkChoiceLatest>>
 
 (****************************************************************************)
 (* Action: the Cost-Accounted Rho Stage-C validator redemption              *)
@@ -268,17 +229,15 @@ EpochMint(v) ==
 (*                  remainder 0), UN-HALT, clear quarantine + stale epochs.  *)
 (*   "Burned"     — destroy the quarantined stake (bond stays 0); STAYS      *)
 (*                  halted; clear ONLY the quarantine record.                *)
-(* Redemption writes NEITHER Σ⟦v⟧ NOR @W_v directly — a restored validator   *)
-(* is re-funded by the normal next-epoch mint (so clearing stale mintedEpochs*)
-(* re-enables EpochMint for v). coopVaultBalance grows ONLY here (Guilty).   *)
+(* Redemption resolves quarantined SystemVault custody according to the       *)
+(* verdict. Later protocol minting uses the same canonical vault.              *)
 (****************************************************************************)
 RedeemOutcomes == {"Vindicated", "Guilty", "Burned"}
 
-ClearStaleEpochs(o) == {e \in mintedEpochs : e[1] # o}
+MinNat(a, b) == IF a <= b THEN a ELSE b
 
-\* Drop every slash-pipeline hash targeting offender o (used when a redemption
-\* REVERSES a slash — Vindicated/Guilty — so the merge-recovery bookkeeping does
-\* not dangle on a no-longer-slashed validator). A name-keyed filter on h[1].
+\* Drop every slash-pipeline hash targeting offender o when redemption reverses
+\* a slash. A name-keyed filter on h[1].
 DropSlashArtifacts(S, o) == {h \in S : h[1] # o}
 
 Redeem(o, outcome) ==
@@ -289,16 +248,18 @@ Redeem(o, outcome) ==
                  /\ bonds' = [bonds EXCEPT ![o] = valBond]
                  /\ activeValidators' = activeValidators \cup {o}
                  /\ coopVaultBalance' = coopVaultBalance
+                 /\ coopFuelBalance' = coopFuelBalance
                  /\ mintingHalted' = mintingHalted \ {o}
                  /\ quarantinedStake' = [quarantinedStake EXCEPT ![o] = 0]
+                 /\ supply' = [supply EXCEPT ![o] = supply[o] + quarantinedFuel[o]]
+                 /\ quarantinedFuel' = [quarantinedFuel EXCEPT ![o] = 0]
                  /\ burnedStake' = burnedStake
+                 /\ burnedFuel' = burnedFuel
+                 /\ protocolMinted' = protocolMinted
                  /\ slashedSet' = slashedSet \ {o}
-                 /\ mintedEpochs' = ClearStaleEpochs(o)
+                 /\ mintedEpochs' = mintedEpochs
                  \* The slash is reversed ⇒ vacate o's pipeline bookkeeping.
                  /\ pendingSlashDeploys' = DropSlashArtifacts(pendingSlashDeploys, o)
-                 /\ rejectedSlashDeploys' = DropSlashArtifacts(rejectedSlashDeploys, o)
-                 /\ recoveredSlashDeploys' = DropSlashArtifacts(recoveredSlashDeploys, o)
-                 /\ noopSlashHashes' = DropSlashArtifacts(noopSlashHashes, o)
             [] outcome = "Guilty" ->
                  \* Partial penalty: a PROPORTION (modeled as half, so the
                  \* remainder is positive for any positive bond) goes to the coop
@@ -311,19 +272,22 @@ Redeem(o, outcome) ==
                  \* keeps the re-bonded validator a genuine active validator.)
                  /\ LET penalty == valBond \div 2
                         remainder == valBond - penalty
+                        fuelPenalty == MinNat(penalty, quarantinedFuel[o])
                     IN /\ bonds' = [bonds EXCEPT ![o] = remainder]
                        /\ coopVaultBalance' = coopVaultBalance + penalty
+                       /\ coopFuelBalance' = coopFuelBalance + fuelPenalty
+                       /\ supply' = [supply EXCEPT ![o] = supply[o] + quarantinedFuel[o] - fuelPenalty]
                  /\ activeValidators' = activeValidators \cup {o}
                  /\ mintingHalted' = mintingHalted \ {o}
                  /\ quarantinedStake' = [quarantinedStake EXCEPT ![o] = 0]
+                 /\ quarantinedFuel' = [quarantinedFuel EXCEPT ![o] = 0]
                  /\ burnedStake' = burnedStake
+                 /\ burnedFuel' = burnedFuel
+                 /\ protocolMinted' = protocolMinted
                  /\ slashedSet' = slashedSet \ {o}
-                 /\ mintedEpochs' = ClearStaleEpochs(o)
+                 /\ mintedEpochs' = mintedEpochs
                  \* The slash is (partially) reversed ⇒ vacate o's bookkeeping.
                  /\ pendingSlashDeploys' = DropSlashArtifacts(pendingSlashDeploys, o)
-                 /\ rejectedSlashDeploys' = DropSlashArtifacts(rejectedSlashDeploys, o)
-                 /\ recoveredSlashDeploys' = DropSlashArtifacts(recoveredSlashDeploys, o)
-                 /\ noopSlashHashes' = DropSlashArtifacts(noopSlashHashes, o)
             [] outcome = "Burned" ->
                  \* Destroy the quarantined stake; STAY halted; clear ONLY the
                  \* quarantine record. (Stake leaves the tracked set — coop
@@ -332,16 +296,17 @@ Redeem(o, outcome) ==
                  /\ bonds' = bonds
                  /\ activeValidators' = activeValidators
                  /\ coopVaultBalance' = coopVaultBalance
+                 /\ coopFuelBalance' = coopFuelBalance
                  /\ mintingHalted' = mintingHalted
                  /\ quarantinedStake' = [quarantinedStake EXCEPT ![o] = 0]
+                 /\ supply' = supply
+                 /\ quarantinedFuel' = [quarantinedFuel EXCEPT ![o] = 0]
                  /\ burnedStake' = burnedStake + valBond
+                 /\ burnedFuel' = burnedFuel + quarantinedFuel[o]
+                 /\ protocolMinted' = protocolMinted
                  /\ slashedSet' = slashedSet
                  /\ mintedEpochs' = mintedEpochs
                  /\ pendingSlashDeploys' = pendingSlashDeploys
-                 /\ rejectedSlashDeploys' = rejectedSlashDeploys
-                 /\ recoveredSlashDeploys' = recoveredSlashDeploys
-                 /\ noopSlashHashes' = noopSlashHashes
-    /\ supply' = supply
     /\ UNCHANGED <<blocks, invalidBlocks, equivocationRecords, forkChoiceLatest>>
 
 (****************************************************************************)
@@ -350,8 +315,6 @@ Redeem(o, outcome) ==
 Next ==
     \/ \E v \in Validators, s \in 1..MaxSeqNum : SignHonest(v, s)
     \/ \E v \in Validators, s \in 1..MaxSeqNum : SignEquivocating(v, s)
-    \/ \E h \in BlockId                         : ObserveRejectedSlash(h)
-    \/ \E h \in BlockId                         : RecoverRejectedSlash(h)
     \/ \E h \in BlockId                         : ExecuteSlash(h)
     \/ \E v \in Validators                      : EpochMint(v)
     \/ \E o \in Validators, oc \in RedeemOutcomes : Redeem(o, oc)
@@ -401,6 +364,9 @@ Inv_StakeInQuarantineAfterSlash ==
             /\ bonds[v] = 0
             /\ v \in mintingHalted
 
+Inv_FuelInQuarantineAfterSlash ==
+    \A v \in Validators : v \in mintingHalted => supply[v] = 0
+
 \* T-10: Slashed validators are excluded from fork choice.
 Inv_SlashedExcludedFromFC ==
     \A v \in slashedSet : forkChoiceLatest[v] = 0
@@ -420,34 +386,13 @@ Inv_BondsNonNegative ==
 Inv_PendingSlashHasEvidence ==
     pendingSlashDeploys \subseteq invalidBlocks
 
-Inv_RecoveredSlashHasEvidence ==
-    recoveredSlashDeploys \subseteq invalidBlocks
+Inv_PendingSlashTargetUnique ==
+    \A h1 \in pendingSlashDeploys :
+      \A h2 \in pendingSlashDeploys :
+        h1[1] = h2[1] => h1 = h2
 
-\* A recovered (merge-rejected-then-re-issued) slash is never "lost": its slash
-\* effect is guaranteed to be applied or already-applied. Coverage holds iff the
-\* hash is still actionable (pending), its target is currently slashed, OR the
-\* target's bond is ALREADY 0 — i.e. the slash effect is already realized (the
-\* validator was slashed and possibly subsequently REDEEMED to a 0-remainder
-\* bond, or the recovered slash hit the idempotent no-op branch). The bond-0
-\* disjunct is SOUND, not a weakening: a SlashDeploy against a bond-0 offender
-\* is a no-op by design (idempotency), so coverage of such a hash is vacuous.
-\* This disjunct is what admits the Stage-C redemption lifecycle (a Guilty/
-\* Vindicated redeem moves the offender out of slashedSet) without losing the
-\* recovery guarantee. (Pre-redemption, the first two disjuncts sufficed.)
-Inv_RecoveredSlashCovered ==
-    \A h \in recoveredSlashDeploys :
-        \/ h \in pendingSlashDeploys
-        \/ h[1] \in slashedSet
-        \/ bonds[h[1]] = 0
-
-\* A no-op (already-zero-bond) slash neither re-earmarks quarantine nor moves
-\* funds: the offender's bond stays 0 and the deploy leaves the pending set.
-\* (Coop is never credited by a slash at all under the two-effect model, so the
-\* legacy "coop = SumInitialBonds(slashedSet)" clause is dropped.)
-Inv_ZeroBondSlashNoTransfer ==
-    \A h \in noopSlashHashes :
-        /\ bonds[h[1]] = 0
-        /\ h \notin pendingSlashDeploys
+Inv_PendingSlashAuthorized ==
+    \A h \in pendingSlashDeploys : bonds[h[1]] > 0
 
 Inv_SlashSeedInputInjectiveByHash ==
     \A p \in Validators :
@@ -463,28 +408,28 @@ Inv_SlashSeedInputInjectiveByHash ==
 \* Inv_HaltedNotMinted: a halted validator is NEVER recorded in the mint
 \* ledger for the current epoch — so it never receives an epoch credit while
 \* halted (the cross-epoch halt). The EpochMint eligibility guard refuses any
-\* v in mintingHalted, and slash zeros the offender's supply, so a halted
+\* v in mintingHalted, and slash quarantines the offender's vault balance, so a halted
 \* validator's (v, EpochIndex) record can be present ONLY if it was minted
 \* BEFORE being halted; this invariant asserts the stronger post-slash shape:
-\* a slashed/halted validator carries no supply (its Σ⟦v⟧ was zeroed and the
+\* a slashed/halted validator carries no available vault balance and the
 \* halt blocks all further mints).
 Inv_HaltedNotMinted ==
     \A v \in Validators : v \in mintingHalted => supply[v] = 0
 
 \* Inv_NoDoubleCreditUnderMerge: a validator is credited AT MOST once per
-\* epoch — its supply is bounded by a single MintAmount (the mintedEpochs
+\* epoch — its protocol-minted total is bounded by one MintAmount (the mintedEpochs
 \* idempotency guard prevents a second credit, even under a duplicated /
 \* multi-parent-merged epoch mint). Combined with Inv_HaltedNotMinted (a halt
-\* zeros it), supply[v] is always 0 or MintAmount.
+\* quarantines available custody).
 Inv_NoDoubleCreditUnderMerge ==
-    \A v \in Validators : supply[v] <= MintAmount
+    \A v \in Validators : protocolMinted[v] <= MintAmount
 
-\* Supply is created ONLY by the epoch mint: a validator's supply is non-zero
+\* Native protocol funding is created only by epoch mint: a vault is non-zero
 \* only if it is recorded in mintedEpochs (and not subsequently zeroed by a
 \* slash). Equivalently, an unminted, unslashed validator has zero supply.
 Inv_SupplyOnlyFromMint ==
     \A v \in Validators :
-        (supply[v] > 0) => (<<v, EpochIndex>> \in mintedEpochs /\ v \notin mintingHalted)
+        (supply[v] > 0) => (protocolMinted[v] > 0 /\ v \notin mintingHalted)
 
 \* Redemption un-halts (the RESTORATIVE outcomes). A validator that is back in
 \* activeValidators is NOT in mintingHalted, so the next-epoch mint can re-fund
@@ -501,8 +446,7 @@ Inv_SupplyOnlyFromMint ==
 \* offender BOTH unbonded and OUT of activeValidators, so it is correctly
 \* outside this invariant's scope. Soundness rests on the model's active=>bond>0
 \* (Init bonds are all positive; ExecuteSlash zeros-the-bond-and-deactivates
-\* atomically; Redeem restores a positive bond), so the bond=0 idempotent-slash
-\* branch never adds an ACTIVE validator to mintingHalted.
+\* atomically; Redeem restores a positive bond).
 Inv_RedeemedValidatorUnhalted ==
     \A v \in activeValidators : v \notin mintingHalted
 
@@ -523,16 +467,14 @@ Inv_RedeemedValidatorUnhalted ==
 (* The two definitions below (the auxiliary inductive invariant and the      *)
 (* assembled IndInv) are plain TLA+ — TLC-checkable and shared by both the   *)
 (* TLC models and the TLAPS proof. The auxiliary invariant                  *)
-(* Inv_ActiveImpliesBonded is the crux of the deductive argument: it is what *)
-(* lets the bond=0 idempotent-slash branch of ExecuteSlash conclude that the *)
-(* (zero-bond) offender o is NOT among the active validators, so adding o to *)
-(* mintingHalted cannot violate "active validators are un-halted".          *)
+(* Inv_ActiveImpliesBonded supplies the authorization premise for every      *)
+(* pending slash and is preserved by the atomic slash and redemption steps. *)
 (****************************************************************************)
 
 \* Auxiliary inductive invariant: every active validator carries a positive
 \* bond. (Init bonds the active set with InitialBonds > 0; ExecuteSlash zeros
 \* the bond AND deactivates atomically; Redeem re-activates only with a
-\* positive restored/remainder bond. Burned/no-op leave both unchanged.)
+\* positive restored/remainder bond. Burned leaves both unchanged.)
 Inv_ActiveImpliesBonded ==
     \A v \in activeValidators : bonds[v] > 0
 

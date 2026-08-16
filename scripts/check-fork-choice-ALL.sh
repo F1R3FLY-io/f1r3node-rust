@@ -56,6 +56,8 @@ SAGE_DIR="$REPO_ROOT/formal/sage/fork_choice"
 WL_DIR="$REPO_ROOT/formal/wolfram/fork_choice"
 DIAG_DIR="$REPO_ROOT/docs/theory/fork-choice/diagrams"
 ROCQ_MEMMAX="${ROCQ_MEMMAX:-16G}"
+LOG_DIR="$REPO_ROOT/target/verification/fork-choice"
+mkdir -p "$LOG_DIR"
 
 rc=0
 pass() { printf '  \033[32mPASS\033[0m %s\n' "$1"; }
@@ -78,9 +80,9 @@ elif command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]];
   # shellcheck disable=SC1090
   eval "$(opam env 2>/dev/null)" 2>/dev/null || true
   ( cd "$ROCQ_DIR" && coq_makefile -f _CoqProject -o Makefile ) >/dev/null 2>&1
-  if capped make -C "$ROCQ_DIR" -j1 >/tmp/fc_rocq_build.log 2>&1; then
+  if capped make -C "$ROCQ_DIR" -j1 >"$LOG_DIR/fc_rocq_build.log" 2>&1; then
     pass "Rocq build (Foundation, Score, Filter, TieBreak, Lca, Rank, Bound, GuardBridge, MainTheorem)"
-    tmpd=$(mktemp -d)
+    tmpd=$(mktemp -d "$LOG_DIR/gate-check.XXXXXX")
     chk="$tmpd/GateCheck.v"
     # The 4 capstones + the 4 seam lemmas the Rust ENFORCES (bridge, not assume) +
     # lca_is_lowest + the C2/C4 derived LCA results (maximality + descends-from-root).
@@ -112,18 +114,18 @@ EOF
     if [[ "$n_closed" == "13" ]]; then
       pass "all 13 headline results axiom-free (4 capstones + validation⇒wf_dag, validation⇒single_root [approved-genesis pin], honest-parents-validate, sort_total_order, reduce_converges, lca_is_lowest, lcua_many_is_max [C2], descends_from_root+common_ancestor_root [C4])"
     else
-      fail "headline results NOT all axiom-free ($n_closed/13 Closed):"; echo "$out" | sed 's/^/      /'
+      fail "headline results NOT all axiom-free ($n_closed/13 Closed):"; printf '      %s\n' "${out//$'\n'/$'\n      '}"
     fi
     # Independent kernel re-check (coqchk) — the TRUSTED kernel re-verifies every
     # capstone + dependency `.vo`, not just the elaborator's Print Assumptions.
     if capped coqchk -Q "$ROCQ_DIR/theories" ForkChoice ForkChoice.MainTheorem \
-         >/tmp/fc_coqchk.log 2>&1 && grep -q "Modules were successfully checked" /tmp/fc_coqchk.log; then
+         >"$LOG_DIR/fc_coqchk.log" 2>&1 && grep -q "Modules were successfully checked" "$LOG_DIR/fc_coqchk.log"; then
       pass "coqchk kernel re-check (MainTheorem + all deps)"
     else
-      fail "coqchk kernel re-check FAILED (see /tmp/fc_coqchk.log)"; tail -10 /tmp/fc_coqchk.log | sed 's/^/      /'
+      fail "coqchk kernel re-check FAILED (see $LOG_DIR/fc_coqchk.log)"; tail -10 "$LOG_DIR/fc_coqchk.log" | sed 's/^/      /'
     fi
   else
-    fail "Rocq build failed (see /tmp/fc_rocq_build.log)"; tail -20 /tmp/fc_rocq_build.log | sed 's/^/      /'
+    fail "Rocq build failed (see $LOG_DIR/fc_rocq_build.log)"; tail -20 "$LOG_DIR/fc_rocq_build.log" | sed 's/^/      /'
   fi
 else
   fail "coqc not found — Rocq is authoritative, cannot skip"
@@ -136,29 +138,29 @@ if ! ls "$TLA_DIR"/*.tla >/dev/null 2>&1; then
 elif [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   # shellcheck disable=SC1091
   source "$REPO_ROOT/scripts/lib/tlc-run.sh"
-  if tlc_run "$(tlc_metadir fc_det)" "$TLA_DIR/MC_ForkChoice.cfg" "$TLA_DIR/ForkChoice.tla" >/tmp/fc_tlc_det.log 2>&1; then
+  if tlc_run "$(tlc_metadir fc_det)" "$TLA_DIR/MC_ForkChoice.cfg" "$TLA_DIR/ForkChoice.tla" >"$LOG_DIR/fc_tlc_det.log" 2>&1; then
     pass "TLA+ ForkChoice (Inv_Deterministic, Inv_HeaviestSubtree, ...)"
   else
-    fail "TLA+ MC_ForkChoice.cfg did NOT pass (see /tmp/fc_tlc_det.log)"
+    fail "TLA+ MC_ForkChoice.cfg did NOT pass (see $LOG_DIR/fc_tlc_det.log)"
   fi
-  if tlc_run "$(tlc_metadir fc_nontotal)" "$TLA_DIR/MC_ForkChoice_nontotal.cfg" "$TLA_DIR/ForkChoice.tla" >/tmp/fc_tlc_nontotal.log 2>&1; then
+  if tlc_run "$(tlc_metadir fc_nontotal)" "$TLA_DIR/MC_ForkChoice_nontotal.cfg" "$TLA_DIR/ForkChoice.tla" >"$LOG_DIR/fc_tlc_nontotal.log" 2>&1; then
     fail "TLA+ non-total tie-break should VIOLATE Inv_Deterministic but passed"
-  elif grep -q "Inv_Deterministic is violated" /tmp/fc_tlc_nontotal.log; then
+  elif grep -q "Inv_Deterministic is violated" "$LOG_DIR/fc_tlc_nontotal.log"; then
     pass "TLA+ non-total tie-break reproduces the S1 fork counterexample"
   else
-    fail "TLA+ non-total cfg failed for the wrong reason (see /tmp/fc_tlc_nontotal.log)"
+    fail "TLA+ non-total cfg failed for the wrong reason (see $LOG_DIR/fc_tlc_nontotal.log)"
   fi
-  if tlc_run "$(tlc_metadir fc_scan)" "$TLA_DIR/MC_ForkChoiceScan.cfg" "$TLA_DIR/ForkChoiceScan.tla" >/tmp/fc_tlc_scan.log 2>&1; then
+  if tlc_run "$(tlc_metadir fc_scan)" "$TLA_DIR/MC_ForkChoiceScan.cfg" "$TLA_DIR/ForkChoiceScan.tla" >"$LOG_DIR/fc_tlc_scan.log" 2>&1; then
     pass "TLA+ scan (Inv_LcaDeterministic for ANY latest-message set)"
   else
-    fail "TLA+ MC_ForkChoiceScan.cfg did NOT pass (see /tmp/fc_tlc_scan.log)"
+    fail "TLA+ MC_ForkChoiceScan.cfg did NOT pass (see $LOG_DIR/fc_tlc_scan.log)"
   fi
-  if tlc_run "$(tlc_metadir fc_scan_bug)" "$TLA_DIR/MC_ForkChoiceScan_bug.cfg" "$TLA_DIR/ForkChoiceScan.tla" >/tmp/fc_tlc_scan_bug.log 2>&1; then
+  if tlc_run "$(tlc_metadir fc_scan_bug)" "$TLA_DIR/MC_ForkChoiceScan_bug.cfg" "$TLA_DIR/ForkChoiceScan.tla" >"$LOG_DIR/fc_tlc_scan_bug.log" 2>&1; then
     fail "TLA+ scan bug should VIOLATE Inv_LcaDeterministic but passed"
-  elif grep -q "Inv_LcaDeterministic is violated" /tmp/fc_tlc_scan_bug.log; then
+  elif grep -q "Inv_LcaDeterministic is violated" "$LOG_DIR/fc_tlc_scan_bug.log"; then
     pass "TLA+ scan bug reproduces the node-local-top LCA divergence"
   else
-    fail "TLA+ scan bug failed for the wrong reason (see /tmp/fc_tlc_scan_bug.log)"
+    fail "TLA+ scan bug failed for the wrong reason (see $LOG_DIR/fc_tlc_scan_bug.log)"
   fi
 else
   skip "no TLC jar (\$TLC_JAR) or 'tlc' on PATH"
@@ -186,20 +188,20 @@ else
   aout="$REPO_ROOT/target/apalache-fork-choice"; rm -rf "$aout" 2>/dev/null || true; mkdir -p "$aout"
   a_base=0; a_step=0
   if capped apalache-mc check --init=Init --inv=IndInv --length=0 --cinit=CInit \
-       --out-dir="$aout" "$APALACHE_WRAP" >/tmp/fc_apalache_base.log 2>&1 \
-       && grep -qE "The outcome is: NoError|No error found" /tmp/fc_apalache_base.log; then
+       --out-dir="$aout" "$APALACHE_WRAP" >"$LOG_DIR/fc_apalache_base.log" 2>&1 \
+       && grep -qE "The outcome is: NoError|No error found" "$LOG_DIR/fc_apalache_base.log"; then
     a_base=1
   fi
   if capped apalache-mc check --init=IndInv --inv=IndInv --length=1 --cinit=CInit \
-       --out-dir="$aout" "$APALACHE_WRAP" >/tmp/fc_apalache_step.log 2>&1 \
-       && grep -qE "The outcome is: NoError|No error found" /tmp/fc_apalache_step.log; then
+       --out-dir="$aout" "$APALACHE_WRAP" >"$LOG_DIR/fc_apalache_step.log" 2>&1 \
+       && grep -qE "The outcome is: NoError|No error found" "$LOG_DIR/fc_apalache_step.log"; then
     a_step=1
   fi
   if [[ "$a_base" == "1" && "$a_step" == "1" ]]; then
     pass "Apalache UNBOUNDED IndInv inductive — BASE+STEP clean: Inv_Deterministic + Inv_HeaviestSubtree hold on ALL reachable states (unbounded Int scores; MaxId=6 > TLC's 3)"
   else
-    [[ "$a_base" == "1" ]] || fail "Apalache BASE (Init |= IndInv) did NOT report NoError (see /tmp/fc_apalache_base.log)"
-    [[ "$a_step" == "1" ]] || fail "Apalache STEP (Next preserves IndInv) did NOT report NoError (see /tmp/fc_apalache_step.log)"
+    [[ "$a_base" == "1" ]] || fail "Apalache BASE (Init |= IndInv) did NOT report NoError (see $LOG_DIR/fc_apalache_base.log)"
+    [[ "$a_step" == "1" ]] || fail "Apalache STEP (Next preserves IndInv) did NOT report NoError (see $LOG_DIR/fc_apalache_step.log)"
   fi
 fi
 
@@ -207,15 +209,15 @@ echo "== [4/8] Z3 cross-witness (fail-soft) =="
 if ! ls "$Z3_DIR"/*.py >/dev/null 2>&1; then
   skip "no Z3 scripts yet"
 elif command -v python3 >/dev/null 2>&1 && python3 -c 'import z3' >/dev/null 2>&1; then
-  if python3 "$Z3_DIR/tiebreak_total_order.py" >/tmp/fc_z3_tb.log 2>&1; then
+  if python3 "$Z3_DIR/tiebreak_total_order.py" >"$LOG_DIR/fc_z3_tb.log" 2>&1; then
     pass "Z3 tie-break total order + argmax uniqueness (no fork)"
   else
-    fail "Z3 tiebreak_total_order.py failed (see /tmp/fc_z3_tb.log)"
+    fail "Z3 tiebreak_total_order.py failed (see $LOG_DIR/fc_z3_tb.log)"
   fi
-  if python3 "$Z3_DIR/score_supply_cap_bitvec.py" >/tmp/fc_z3_sc.log 2>&1; then
+  if python3 "$Z3_DIR/score_supply_cap_bitvec.py" >"$LOG_DIR/fc_z3_sc.log" 2>&1; then
     pass "Z3 BitVec-64 score accumulation (assoc/comm; no overflow under supply cap)"
   else
-    fail "Z3 score_supply_cap_bitvec.py failed (see /tmp/fc_z3_sc.log)"
+    fail "Z3 score_supply_cap_bitvec.py failed (see $LOG_DIR/fc_z3_sc.log)"
   fi
 else
   skip "no python3 z3 module"
@@ -225,10 +227,10 @@ echo "== [5/8] Sage cross-witness (fail-soft) =="
 if ! ls "$SAGE_DIR"/*.sage >/dev/null 2>&1; then
   skip "no Sage scripts yet"
 elif command -v sage >/dev/null 2>&1; then
-  if sage "$SAGE_DIR/forkchoice_algebra.sage" >/tmp/fc_sage.log 2>&1 && grep -q "ALL PASS" /tmp/fc_sage.log; then
+  if sage "$SAGE_DIR/forkchoice_algebra.sage" >"$LOG_DIR/fc_sage.log" 2>&1 && grep -q "ALL PASS" "$LOG_DIR/fc_sage.log"; then
     pass "Sage fork-choice algebra (score monoid + heaviest-subtree argmax)"
   else
-    fail "Sage forkchoice_algebra.sage failed (see /tmp/fc_sage.log)"
+    fail "Sage forkchoice_algebra.sage failed (see $LOG_DIR/fc_sage.log)"
   fi
 else
   skip "no sage on PATH"
@@ -244,13 +246,13 @@ if [[ -z "$WL_BIN" || ! -f "$WL_DIR/ghost_heaviest_subtree.wl" ]]; then
   skip "no wolframscript/math/wolfram kernel on PATH, or no ghost_heaviest_subtree.wl yet"
 else
   wlout=$("${WL_RUN[@]}" "$WL_DIR/ghost_heaviest_subtree.wl" 2>&1); wlrc=$?
-  echo "$wlout" >/tmp/fc_wolfram.log
+  echo "$wlout" >"$LOG_DIR/fc_wolfram.log"
   if grep -qiE 'no valid password|cannot find a valid password' <<<"$wlout"; then
-    skip "Wolfram CLI kernel ($WL_BIN) could not bind the license in this shell — model validated via the licensed MCP evaluator (details: /tmp/fc_wolfram.log)"
+    skip "Wolfram CLI kernel ($WL_BIN) could not bind the license in this shell — model validated via the licensed MCP evaluator (details: $LOG_DIR/fc_wolfram.log)"
   elif [[ $wlrc -eq 0 ]]; then
     pass "Wolfram ghost_heaviest_subtree.wl via $WL_BIN (greedy == global heaviest; measure monotone)"
   else
-    fail "Wolfram ghost_heaviest_subtree.wl errored under $WL_BIN (see /tmp/fc_wolfram.log)"
+    fail "Wolfram ghost_heaviest_subtree.wl errored under $WL_BIN (see $LOG_DIR/fc_wolfram.log)"
   fi
 fi
 
@@ -261,10 +263,10 @@ if command -v plantuml >/dev/null 2>&1; then
     diag_ok=1
     for puml in "$DIAG_DIR"/*.puml; do
       svg="${puml%.puml}.svg"
-      derr=$(plantuml -tsvg "$puml" 2>&1)
+      derr=$(env -u DISPLAY plantuml -tsvg "$puml" 2>&1)
       if [[ -n "$derr" ]] || [[ ! -s "$svg" ]] || ! grep -q "</svg>" "$svg" 2>/dev/null; then
         fail "diagram $(basename "$puml") did not render clean"
-        [[ -n "$derr" ]] && echo "$derr" | sed 's/^/      /'
+        [[ -n "$derr" ]] && printf '      %s\n' "${derr//$'\n'/$'\n      '}"
         diag_ok=0
       fi
     done
@@ -290,44 +292,44 @@ if command -v cargo >/dev/null 2>&1; then
   #   prop_filter_deep_parents (C12), prop_estimator_determinism (determinism +
   #   score-monoid + T-10 filter), prop_lca (LUCA converges/common-ancestor/lowest),
   #   prop_bound (B2/B3/B4 sentinel/overflow/empty seams).
-  if cargo test -p casper --test mod -- fork_choice:: >/tmp/fc_rust_prop.log 2>&1 \
-       && grep -qE "test result: ok\. [1-9][0-9]* passed" /tmp/fc_rust_prop.log; then
-    n_rust=$(grep -oE 'result: ok\. [0-9]+ passed' /tmp/fc_rust_prop.log | grep -oE '[0-9]+' | head -1)
+  if cargo test -p casper --test mod -- fork_choice:: >"$LOG_DIR/fc_rust_prop.log" 2>&1 \
+       && grep -qE "test result: ok\. [1-9][0-9]* passed" "$LOG_DIR/fc_rust_prop.log"; then
+    n_rust=$(grep -oE 'result: ok\. [0-9]+ passed' "$LOG_DIR/fc_rust_prop.log" | grep -oE '[0-9]+' | head -1)
     pass "Rust fork-choice proptests (${n_rust:-?} passed: filter_deep_parents ⊨ within_depth/prop_filter; estimator determinism + score-monoid + T-10 filter; LUCA converges/common-ancestor/lowest; B2/B3/B4 bound seams)"
   else
-    fail "Rust fork-choice proptests failed (see /tmp/fc_rust_prop.log)"; tail -20 /tmp/fc_rust_prop.log | sed 's/^/      /'
+    fail "Rust fork-choice proptests failed (see $LOG_DIR/fc_rust_prop.log)"; tail -20 "$LOG_DIR/fc_rust_prop.log" | sed 's/^/      /'
   fi
   # The tie-break total-order proptests live in the `shared` crate (list_ops), the
   # realization of TieBreak.v `sort_total_order` the estimator's ranking depends on.
-  if cargo test -p shared list_ops >/tmp/fc_rust_listops.log 2>&1 \
-       && grep -qE "test result: ok\. [1-9][0-9]* passed" /tmp/fc_rust_listops.log; then
-    n_lo=$(grep -oE 'result: ok\. [0-9]+ passed' /tmp/fc_rust_listops.log | grep -oE '[0-9]+' | head -1)
+  if cargo test -p shared list_ops >"$LOG_DIR/fc_rust_listops.log" 2>&1 \
+       && grep -qE "test result: ok\. [1-9][0-9]* passed" "$LOG_DIR/fc_rust_listops.log"; then
+    n_lo=$(grep -oE 'result: ok\. [0-9]+ passed' "$LOG_DIR/fc_rust_listops.log" | grep -oE '[0-9]+' | head -1)
     pass "Rust tie-break proptests (${n_lo:-?} passed: sort_by_with_decreasing_order — perm-invariant + is-permutation + argmax-unique)"
   else
-    fail "Rust tie-break (shared list_ops) proptests failed (see /tmp/fc_rust_listops.log)"; tail -20 /tmp/fc_rust_listops.log | sed 's/^/      /'
+    fail "Rust tie-break (shared list_ops) proptests failed (see $LOG_DIR/fc_rust_listops.log)"; tail -20 "$LOG_DIR/fc_rust_listops.log" | sed 's/^/      /'
   fi
   # T-MP (seam 3) discharge lives in `snapshot.rs`'s IN-MODULE `mod tests` — the
   # `prefer_deploy_support_main_parent` / `better_deploy_branch_score` fns are private, so
   # the properties cannot be reached from the `mod` integration binary. They therefore run
   # in the LIB target and need their own invocation: the `--test mod` filter above cannot
   # see them, which would leave the T-MP proptests ungated (they were, until this line).
-  if cargo test -p casper --lib -- snapshot::tests >/tmp/fc_rust_snapshot.log 2>&1 \
-       && grep -qE "test result: ok\. [1-9][0-9]* passed" /tmp/fc_rust_snapshot.log; then
-    n_sn=$(grep -oE 'result: ok\. [0-9]+ passed' /tmp/fc_rust_snapshot.log | grep -oE '[0-9]+' | head -1)
+  if cargo test -p casper --lib -- snapshot::tests >"$LOG_DIR/fc_rust_snapshot.log" 2>&1 \
+       && grep -qE "test result: ok\. [1-9][0-9]* passed" "$LOG_DIR/fc_rust_snapshot.log"; then
+    n_sn=$(grep -oE 'result: ok\. [0-9]+ passed' "$LOG_DIR/fc_rust_snapshot.log" | grep -oE '[0-9]+' | head -1)
     pass "Rust T-MP main-parent proptests (${n_sn:-?} passed: better_deploy_branch_score strict total order; deploy-support promotion is a permutation + argmax invariant under input order; identity when no branch scores)"
   else
-    fail "Rust T-MP main-parent proptests failed (see /tmp/fc_rust_snapshot.log)"; tail -20 /tmp/fc_rust_snapshot.log | sed 's/^/      /'
+    fail "Rust T-MP main-parent proptests failed (see $LOG_DIR/fc_rust_snapshot.log)"; tail -20 "$LOG_DIR/fc_rust_snapshot.log" | sed 's/^/      /'
   fi
   # C12 receive-side mirror: Validate::parents enforces the SAME depth horizon on the
   # receiving side that filter_deep_parents applies proposer-side — an honest within-horizon
   # parent accepts, a too-deep parent is InvalidParents, and depth_buffer extends the
   # horizon. Extends the abstract GuardBridge bridge to the real validator predicate.
   # Integration test in the `mod` binary (casper/tests/batch2/validate_test.rs).
-  if cargo test -p casper --test mod -- parent_validation_enforces_max_parent_depth_horizon >/tmp/fc_rust_parents.log 2>&1 \
-       && grep -qE "test result: ok\. [1-9][0-9]* passed" /tmp/fc_rust_parents.log; then
+  if cargo test -p casper --test mod -- parent_validation_enforces_max_parent_depth_horizon >"$LOG_DIR/fc_rust_parents.log" 2>&1 \
+       && grep -qE "test result: ok\. [1-9][0-9]* passed" "$LOG_DIR/fc_rust_parents.log"; then
     pass "Rust Validate::parents depth-horizon (C12 receive-side: accept within / reject beyond / buffer extends)"
   else
-    fail "Rust Validate::parents depth-horizon test failed (see /tmp/fc_rust_parents.log)"; tail -20 /tmp/fc_rust_parents.log | sed 's/^/      /'
+    fail "Rust Validate::parents depth-horizon test failed (see $LOG_DIR/fc_rust_parents.log)"; tail -20 "$LOG_DIR/fc_rust_parents.log" | sed 's/^/      /'
   fi
 else
   skip "no cargo on PATH"
@@ -335,10 +337,10 @@ fi
 
 if [[ "${RUN_SOAK:-0}" == "1" ]]; then
   echo "== [soak] multi-writer fork-choice churn Rust soak (slow) =="
-  if cargo test -p casper --test mod --release -- fork_choice_churn_soak --ignored >/tmp/fc_soak.log 2>&1; then
+  if cargo test -p casper --test mod --release -- fork_choice_churn_soak --ignored >"$LOG_DIR/fc_soak.log" 2>&1; then
     pass "fork_choice_churn_soak"
   else
-    fail "soak failed (see /tmp/fc_soak.log)"
+    fail "soak failed (see $LOG_DIR/fc_soak.log)"
   fi
 fi
 

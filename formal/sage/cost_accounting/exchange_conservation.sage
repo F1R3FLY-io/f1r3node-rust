@@ -45,6 +45,8 @@ def apply_op(state, op):
     state: dict with keys
         c_datum   : int  — the count datum on the c-carrier
         v_datum   : int  — the count datum on the v-carrier
+        c_stack   : list — the ordered cost-stack cells on the c-carrier
+        v_stack   : list — the ordered cost-stack cells on the v-carrier
         c_present : bool — a datum is present on the c-carrier
         v_present : bool — a datum is present on the v-carrier
         swapped   : bool — the join has fired
@@ -60,8 +62,12 @@ def apply_op(state, op):
         if s["c_present"] and s["v_present"] and (not s["swapped"]):
             new_c = s["v_datum"]
             new_v = s["c_datum"]
+            new_c_stack = list(s["v_stack"])
+            new_v_stack = list(s["c_stack"])
             s["c_datum"] = new_c
             s["v_datum"] = new_v
+            s["c_stack"] = new_c_stack
+            s["v_stack"] = new_v_stack
             s["c_present"] = True
             s["v_present"] = True
             s["swapped"] = True
@@ -126,11 +132,32 @@ def check_properties(initial, ops):
             if not (h["c_datum"] == initial["v_datum"] and h["v_datum"] == initial["c_datum"]):
                 e4 = False
 
+    e5 = all(
+        (
+            h["c_stack"] == initial["v_stack"]
+            and h["v_stack"] == initial["c_stack"]
+        )
+        if h["swapped"]
+        else (
+            h["c_stack"] == initial["c_stack"]
+            and h["v_stack"] == initial["v_stack"]
+        )
+        for h in history
+    )
+
+    initial_cells = sorted(initial["c_stack"] + initial["v_stack"])
+    e6 = all(
+        sorted(h["c_stack"] + h["v_stack"]) == initial_cells
+        for h in history
+    )
+
     return {
         "e1_per_channel_conservation": e1,
         "e2_total_conservation": e2,
         "e3_requires_both_inputs": e3,
         "e4_swap_exchanges_values": e4,
+        "e5_stack_identity_and_order": e5,
+        "e6_stack_cell_conservation": e6,
     }
 
 
@@ -144,6 +171,7 @@ def adversarial_search():
     ]
     initial = {
         "c_datum": INIT_C, "v_datum": INIT_V,
+        "c_stack": [101, 102], "v_stack": [201, 202],
         "c_present": True, "v_present": True, "swapped": False,
     }
 
@@ -182,6 +210,7 @@ def records():
 
     initial = {
         "c_datum": INIT_C, "v_datum": INIT_V,
+        "c_stack": [101, 102], "v_stack": [201, 202],
         "c_present": True, "v_present": True, "swapped": False,
     }
     conserve_witness = check_properties(initial, [("swap",)])
@@ -193,6 +222,8 @@ def records():
         "total_conservation",
         "requires_both_inputs",
         "swap_exchanges_values",
+        "stack_identity_and_order",
+        "stack_cell_conservation",
     ]
 
     return [
@@ -204,15 +235,22 @@ def records():
             canonical_scenario(
                 "exchange_swap_conserves",
                 threat_family="settlement",
-                settlement={"init_c": INIT_C, "init_v": INIT_V, "swapped": [INIT_V, INIT_C]},
+                settlement={
+                    "init_c": INIT_C,
+                    "init_v": INIT_V,
+                    "swapped": [INIT_V, INIT_C],
+                    "initial_stacks": [[101, 102], [201, 202]],
+                    "swapped_stacks": [[201, 202], [101, 102]],
+                },
                 concurrency={"interleavings": int(search["traces_searched"])},
                 expected_invariants=common_invariants,
                 expected_classification="confirmed_safe",
             ),
             {"properties": conserve_witness, "traces_searched": int(search["traces_searched"])},
-            ["Rocq: exchange_conserves_per_channel", "Rocq: exchange_total_conserved",
-             "TLA+: ExchangeFlow Inv_PerChannelConservation",
-             "Rust: exchange_conserves_per_channel"],
+            ["Rocq: exchange_preserves_stack_identity_and_order",
+             "Rocq: exchange_preserves_resource_cell_count",
+             "TLA+: ExchangeFlow Inv_StackIdentityAndOrder",
+             "Rust: exchange_transports_cost_stacks_without_minting_or_retagging"],
         ),
         record(
             "exchange",
@@ -227,8 +265,10 @@ def records():
                 expected_classification="confirmed_safe",
             ),
             {"properties_c": one_sided_c_witness, "properties_v": one_sided_v_witness},
-            ["Rocq: exchange_requires_both_inputs", "Rocq: exchange_is_ca_step_not_amint",
+            ["Rocq: exchange_resource_join_requires_both",
+             "Rocq: exchange_resource_join_one_sided_is_inert",
              "TLA+: ExchangeFlow Inv_RequiresBothInputs",
+             "Rust: exchange_does_not_release_a_one_sided_cost_stack",
              "DR-4 / TM-CA-158"],
         ),
     ]

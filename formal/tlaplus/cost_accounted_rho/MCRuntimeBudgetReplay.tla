@@ -51,7 +51,6 @@ MC_Rank == [e \in MC_Events |-> CASE e = e0 -> 0
                                    [] e = e4 -> 4
                                    [] e = e5 -> 5]
 MC_InitialBudget == 6
-MC_MaxTraceEvents == 3
 MC_MaxSourcePathComponents == 2
 MC_MaxPrimitiveDescriptor == 9
 MC_NoOop == no_oop

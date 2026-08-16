@@ -12,6 +12,8 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIR="$ROOT/formal/mcrl2/cost_accounting"
+WORK_ROOT="$ROOT/target/verification/cost-accounted-rho/mcrl2"
+mkdir -p "$WORK_ROOT"
 
 echo "Checking cost-accounted rho bisimulation + no-leak (mCRL2)..."
 
@@ -23,7 +25,7 @@ for t in mcrl22lps lps2lts ltscompare lps2pbes pbes2bool; do
   command -v "$t" >/dev/null 2>&1 || { echo "  $t not found on PATH — skipped (fail-soft)."; exit 0; }
 done
 
-d="$(mktemp -d)"; trap 'rm -rf "$d"' EXIT
+d="$(mktemp -d "$WORK_ROOT/run.XXXXXX")"; trap 'rm -rf "$d"' EXIT
 mcrl22lps "$DIR/ca_instance.mcrl2"    "$d/ca.lps" >/dev/null 2>&1
 mcrl22lps "$DIR/rho_translation.mcrl2" "$d/tr.lps" >/dev/null 2>&1
 lps2lts "$d/ca.lps" "$d/ca.lts" >/dev/null 2>&1

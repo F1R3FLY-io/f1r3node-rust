@@ -8,7 +8,9 @@
 #   - concurrent disjoint-pool admission with no global lock (CA-P-171,
 #     ↔ EvalScheduling.tla:DisjointPoolsAdmitConcurrentlyNoGlobalLock),
 #   - the N-ary join's atomic combined-token debit (CA-P-052/108,
-#     ↔ TokenGatedJoin.tla:Inv_M1_AtomicNoPartialPrefix).
+#     ↔ TokenGatedJoin.tla:Inv_M1_AtomicNoPartialPrefix),
+#   - native successful-COMM charge-once and rejection-before-mutation
+#     (CA-P-185/187, ↔ AtomicCommAccounting / AtomicCommRejection).
 #
 # Fail-soft: absent cargo is reported and skipped (exit 0). A loom run that
 # explores an interleaving violating an assertion IS a failure.
@@ -44,6 +46,6 @@ if [ "$rc" -ne 0 ] || [ "${fails:-1}" != "0" ]; then
 fi
 
 passed="$(printf '%s\n' "$out" | grep -oE '[0-9]+ passed' | awk '{s+=$1} END{print s+0}')"
-echo "  loom: all interleavings explored, $passed passed / 0 failed (concurrent-admission + atomic-join)."
+echo "  loom: all interleavings explored, $passed passed / 0 failed (concurrent-admission + atomic-COMM)."
 echo "Loom concurrency cross-witness passed."
 exit 0

@@ -8,7 +8,7 @@ protocol and eval scheduling, complementing the Rocq mechanization at
 
 - Java 17+ (`java -version`)
 - TLC through a local `tla2tools.jar`
-- Optional Apalache (`apalache-mc version`) for SMT-backed bounded cross-checks
+- Apalache 0.58.3+ (`apalache-mc version`) for SMT-backed bounded cross-checks
 
 Common TLC jar locations:
 - `/usr/share/java/tla2tools.jar`
@@ -30,12 +30,59 @@ Common TLC jar locations:
 | `MCRuntimeBudgetReplay.tla` | Model instance for RuntimeBudgetReplay — OOP arm (budget binds; deploy goes OOP) | — | — |
 | `MCRuntimeBudgetReplayNonOop.tla` | Model instance for RuntimeBudgetReplay — non-OOP arm (Σ valid weights ≤ budget; complete commit) | — | — |
 | `MCRuntimeBudgetReplayCap.tla` | Model instance for RuntimeBudgetReplay — bounded-K cap arm (MaxTraceEvents < valid-event count; cap binds before budget) | — | — |
-| `CostAccountingThreats.tla` | Replay tampering, activation downgrade, unauthorized settlement, evidence-recording, and slash-authorization threat model | 5,408 distinct / 401,025 generated | CostAccountedReplayAcceptsOnlyValidPayload, CostAccountedReplayRejectsMissingCommitment, SettlementNeverAddsRuntimeFuel, CostInvalidEvidenceHasViolation, RecoveredSlashRequiresCurrentEvidence, SlashAuthorizationUsesParentPreState, AmbientBondDoesNotAuthorizeWithoutParent, ParentPositiveAmbientZeroCanAuthorize, SlashNoopPreservesCostBoundary |
+| `CostAccountingThreats.tla` | Replay tampering, activation downgrade, unauthorized settlement, evidence-recording, and slash-authorization threat model | 7,696 distinct / 1,056,225 generated | CostAccountedReplayAcceptsOnlyValidPayload, CostAccountedReplayRejectsMissingCommitment, SettlementNeverAddsRuntimeFuel, CostInvalidEvidenceHasViolation, CanonicalSlashCandidateRequiresEvidence, CanonicalSlashCandidateRequiresPositiveBond, SlashAuthorizationUsesParentPreState, AmbientBondDoesNotAuthorizeWithoutParent, ParentPositiveAmbientZeroCanAuthorize, SlashNoopPreservesCostBoundary |
 | `MCCostAccountingThreats.tla` | Model instance for CostAccountingThreats | — | — |
 | `CostAccountingSearchFrontier.tla` | Witness classification and promotion discipline for generated cost-accounting findings | 34,167 distinct / 266,015 generated | NoSourceFixWithoutRustOrInvariantEvidence, ProjectionRiskHasRustGuard, FormalStrengtheningHasInvariantTarget, ConfirmedBugHasSourceTarget, SourceSemanticWitnessHasFacets, SourceGraphSlashingWitnessHasAuthorizationMetadata |
 | `MCCostAccountingSearchFrontier.tla` | Model instance for CostAccountingSearchFrontier | — | — |
 | `MergeableChannelAccounting.tla` | Typed mergeable-channel diff/merge behavior and cost-boundary isolation | 2,656 distinct / 8,992 generated | BitmaskDiffMergeRoundTrip, IntegerAddDiffMergeRoundTrip, BitmaskMergeDoesNotDropBits, NonNumericPayloadHasNoNumericDiff, MergeableAccountingPreservesUserCost, SlashSystemEffectPreservesCostBoundary |
 | `MCMergeableChannelAccounting.tla` | Model instance for MergeableChannelAccounting | — | — |
+| `MergeAggregateAgreement.tla` | Widened simultaneous `IntegerAdd` aggregation shared by survivor selection and trie application | Safe instance explored by `MergeAggregateAgreement.cfg` | SelectionApplicationAgree, AcceptanceIsPermutationInvariant, FinalResultIsMathematicalTotal |
+| `MCMergeAggregateAgreement.tla` | Safe and unsafe contribution-order instances | — | — |
+| `MergeAggregateAgreementPrefixUnsafe.cfg` | Expected-refutation control that validates every enumeration prefix instead of the final mathematical total | Counterexample required | Violates AcceptanceIsPermutationInvariant |
+| `DeployTraceSegmentation.tla` | Soft-checkpoint drain semantics that assign exactly one causal event segment to each deploy | Safe instance explored by `DeployTraceSegmentation.cfg` | CheckpointContainsOnlyItsDeploy, CheckpointClearsActiveTrace; liveness: EventuallyAllDeploysCheckpointed |
+| `MCDeployTraceSegmentation.tla` | Three-deploy trace-segmentation instance | — | — |
+| `DeployTraceSegmentationRetentionUnsafe.cfg` | Expected-refutation control that retains earlier deploy events in the active trace | Counterexample required | Violates CheckpointContainsOnlyItsDeploy |
+| `AtomicCommAccounting.tla` | Atomic RSpace COMM accounting across producer/consumer arrival orders, unmatched introductions, binary matches, joins, finite capacity, and replay | Safe instance explored by `AtomicCommAccounting.cfg` | CostEqualsCommittedComms, UnmatchedIntroductionsAreFree, JoinArityDoesNotMultiplyCost, RejectedCommIsAtomic, ReplayMatchesPlayAtCompletion, BudgetNeverOverspent, TerminalRSpaceIsScheduleIndependent; liveness: EventuallyComplete |
+| `AtomicCommRejection.tla` | Zero-capacity specialization of the atomic observer boundary | Safe instance explored by `AtomicCommRejection.cfg` | Observer rejection preserves pending state, committed events, cost, and replay trace |
+| `MCAtomicCommAccountingIntroductionUnsafe.tla` | Expected-refutation control that charges unmatched send/receive introductions | Counterexample required with `AtomicCommAccountingIntroductionUnsafe.cfg` | Violates ExactCommCost |
+| `StructuralAuthorityBound.tla` | Scoped non-persistent introductions under arbitrary COMM participant groupings and firing orders | Safe instance explored by `StructuralAuthorityBound.cfg` | TypeOK, RealizedNeverExceedsStructuralDemand |
+| `StructuralAuthorityBoundReuseUnsafe.cfg` | Expected-refutation control that reuses one non-persistent introduction in multiple events | Counterexample required | Violates RealizedNeverExceedsStructuralDemand |
+| `LocatedAuthoritySettlement.tla` | Integrated native-refinement model for signed interaction regions, exact authority partitions, located purses, lollipop payer transfer, atomic split/combined joins, deployment reservations, cross-deploy funding slots, settlement, and replay | 94,056 generated / 15,323 distinct / depth 33 | ReservationsNeverExceedSupply, RealizedBackedByReservation, NoPartialEventDebit, CommittedEventsHaveExactAuthority, NoAmbientAuthority, LollipopContinuationOrder, LollipopUsesDistinctPayers, WholeJoinConsumesOneCell, SplitJoinConsumesEveryPresentedCell, CombinedJoinConsumesOneCompleteCell, CrossDeploySlotIdentityStable, SettlementConservesEveryPurse, ReplayPreservesAuthority, ReplayMatchesSettlement; liveness: EventuallyDone |
+| `LocatedAuthoritySettlement*Unsafe.cfg` | Six expected-refutation controls for authority erasure, ambient-purse substitution, continuation rewrapping, partial multi-purse debit, replay metadata omission, and cross-deploy slot-identity loss | Counterexample required for each configuration | Refutes the reservation, atomicity, replay-authority, or persistent-slot invariant that excludes the enabled defect |
+| `WalletFundedLollipop.tla` | Composed native refinement from retained unforgeable lollipop capability through public-address SystemVault funding, authenticated gateway ingress, validator certification, realized slot debit, separate gateway fee transfer, refund, and replay | Safe instance explored by `WalletFundedLollipop.cfg` | CanonicalCustodyConserved, FundingUsesAddressWithoutDelegatingDraw, ContinuationRequiresOuter, OnlyGatewayAuthorizesContinuation, UnauthorizedAttemptPreservesContinuation, CertifiedPayerIsSlot, ValidatorsAgreeOnAdmission, RealizedCostAndFeeAreSeparated, UnusedCertifiedBoundIsRefunded, ReplayMatchesCommit; liveness: EventuallyDone |
+| `WalletFundedLollipop*Unsafe.cfg` | Seven expected-refutation controls for custody copying, capability leakage, gateway-authentication bypass, per-validator payer collapse, missing outer authority, certified-bound overcharge, and replay omission | Counterexample required for each configuration | Refutes the exact conservation, ingress authority, attribution, staging, refund, or replay invariant that excludes the enabled defect |
+| `EndToEndCostConsensus.tla` | Canonical SystemVault genesis funding and replay, unit-authority symmetry for blessed genesis execution, proof-bearing reservation for every signed deployment kind, concurrent realized events, direct payer-to-proposer fee transfer, settlement, replay, recoverable local faults, validation disposition, and DAG finality | Safe instance explored by `EndToEndCostConsensus.cfg` | GenesisCommitIsExact, AdmissionRequiresGenesisAgreement, GenesisExecutionReplayAuthorityAgree, SettlementDoesNotReapplyGenesisFunding, CostReservationBacksEveryChoice, ReservationBacksRealized, EveryExecutedDeploymentWasFunded, SettlementIsExact, SettlementConserves, FeeIsCanonicalTransfer, RefundIsUnusedReservation, ReplayUsesSameCommittedEvents, LocalFaultNeverCreatesSlashEvidence, FinalityUsesDAGAncestry; liveness: EventuallyDoneOrRejected |
+| `MCEndToEndCostConsensus.tla` | Model instance for EndToEndCostConsensus | — | — |
+| `EndToEndCostConsensusUnsafe.cfg` | Expected-refutation control mapping local faults to slash evidence | Counterexample required | Violates LocalFaultNeverCreatesSlashEvidence |
+| `EndToEndCostConsensusFundingBypassUnsafe.cfg` | Expected-refutation control allowing one deployment class to execute without funding | Counterexample required | Violates EveryExecutedDeploymentWasFunded |
+| `EndToEndCostConsensusGenesisMismatchUnsafe.cfg` | Expected-refutation control allowing replay to use authority allocations different from the committed genesis allocations | Counterexample required | Violates AdmissionRequiresGenesisAgreement |
+| `EndToEndCostConsensusGenesisAuthorityMismatchUnsafe.cfg` | Expected-refutation control that executes genesis with unit authority but replays it with deploy-funder authority | Counterexample required | Violates GenesisExecutionReplayAuthorityAgree |
+| `EndToEndCostConsensusDoubleCreditUnsafe.cfg` | Expected-refutation control reapplying canonical genesis SystemVault funding during ordinary settlement | Counterexample required | Violates SettlementDoesNotReapplyGenesisFunding |
+| `StateBoundAdmission.tla` | Dependent bounded execution retained as the committed witness, followed by certificate-constrained replay and fee-inclusive settlement across schedule permutations | Safe instance explored by `StateBoundAdmission.cfg` | AdmittedProofCompleted, AdmissionRequiresCompletedProof, AdmittedCostIsFunded, PreflightCommitReplayAgree, EvidenceMatchesCommit, CommitMatchesReplay, SettlementIsExact, ScheduleIndependentCost; liveness: EventuallyDoneOrRejected |
+| `MCStateBoundAdmission.tla` | Model instance for StateBoundAdmission | — | — |
+| `StateBoundAdmissionStructuralUnsafe.cfg` | Expected-refutation control using submitted-structure cost while the authenticated state contributes ambient events | Counterexample required | Violates EvidenceMatchesCommit |
+| `StateBoundAdmissionDriftUnsafe.cfg` | Expected-refutation control performing a second unconstrained play instead of retaining the bounded witness | Counterexample required | Violates EvidenceMatchesCommit |
+| `StateBoundAdmissionExhaustionUnsafe.cfg` | Expected-refutation control admitting a proof that exhausted finite capacity | Counterexample required | Violates AdmissionRequiresCompletedProof |
+| `StateBoundValidatorConvergence.tla` | Independent validators decide the same certificate under different arrival orders and reducer schedules, including local schedules with different event sets and costs; stale roots or different block contexts are rejected | Safe instance explored by `StateBoundValidatorConvergence.cfg` | ScheduleDiversityIsExercised, AcceptedUsesAuthenticatedContext, AcceptedUsesCanonicalDeployOrder, AcceptedReproducesCertificate, AcceptedValidatorsAgree; liveness: EventuallyAllValidatorsDecide |
+| `MCStateBoundValidatorConvergence.tla` | Three-validator model instance for state-bound convergence | — | — |
+| `StateBoundValidatorConvergenceContextUnsafe.cfg` | Expected-refutation control accepting a certificate outside its authenticated root/block context | Counterexample required | Violates AcceptedUsesAuthenticatedContext |
+| `StateBoundValidatorConvergenceOrderUnsafe.cfg` | Expected-refutation control executing arrival order without checking the certified post-state | Counterexample required | Violates AcceptedUsesCanonicalDeployOrder |
+| `StateBoundValidatorConvergenceScheduleUnsafe.cfg` | Expected-refutation control accepting a scheduler-local event trace instead of replaying the certified causal witness | Counterexample required | Violates AcceptedReproducesCertificate |
+| `LocatedStackConservation.tla` | Atomic materialization of first-class located stacks as transfers from an authenticated source purse, with fresh transfer identities and byte-identical replay | Safe instances explored by `LocatedStackConservation.cfg` and `LocatedStackConservationCollision.cfg` | UserStackProductionConserves, RejectedTransferIsAtomic, TransferIdentityIsFresh, ReplayMatchesCommittedTransfer |
+| `LocatedStackConservation*Unsafe.cfg` | Expected-refutation controls for duplicate-identity minting, partial underfunded transfer, and replay transfer omission | Counterexample required for each configuration | Refutes UserStackProductionConserves or ReplayMatchesCommittedTransfer |
+| `StateBoundFrontierExpansion.tla` | Finite retry protocol that discovers authenticated pre-state authority at an exhausted scalar or per-lane allocation boundary, reverts the speculative attempt, expands capacity strictly, and replays under the final bound | Safe instance explored by `StateBoundFrontierExpansion.cfg` | CapacityUsesOnlyAuthenticatedBacking, ExpansionIsStrictAndBounded, SpeculativeAttemptsAreEffectFree, AcceptanceRequiresCompleteTrace, CompleteBackedTraceIsAccepted, ReplayUsesTheExpandedBound; liveness: EventuallyDone |
+| `StateBoundFrontierExpansion*Unsafe.cfg` | Expected-refutation controls for a frozen initial cap, unbacked frontier credit, leaked speculative effects, and replay under the initial rather than expanded bound | Counterexample required for each configuration | Refutes CompleteBackedTraceIsAccepted, CapacityUsesOnlyAuthenticatedBacking, SpeculativeAttemptsAreEffectFree, or ReplayUsesTheExpandedBound |
+| `ReplaySupplySnapshot.tla` | Per-deploy capture of authenticated SystemVault and located-stack supply from ordinary RSpace, followed by trace-only ReplayRSpace execution with no live authority query | Safe instance explored by `ReplaySupplySnapshot.cfg` | SnapshotsAreAuthenticated, ReplayUsesAuthenticatedSnapshots, ExactRecordedReplayTrace, ReplayConservesSupply; liveness: EventuallyReplayCompletes |
+| `ReplaySupplySnapshotLiveQueryUnsafe.cfg` | Expected-refutation control that queries live authority through ReplayRSpace and appends the query to the committed replay trace | Counterexample required | Violates ExactRecordedReplayTrace |
+| `ReplayRootMaterialization.tla` | Independent producer, validator, and reporter histories replay a three-deployment root chain by alternating ordinary-RSpace purse capture with trace replay and checkpoint materialization | Safe instance explored by `ReplayRootMaterialization.cfg` | SnapshotsFollowCanonicalChain, SnapshotReadsMaterializedRoot, SnapshotsUseOrdinaryRuntime, CursorMatchesReplayPrefix, AcceptedMaterializedPostState, CompletedValidatorsAgree; liveness: EventuallyAllComplete |
+| `ReplayRootMaterializationApalache.cfg` | SMT-bounded two-validator, two-deployment instance of the replay-root model | Safe executions through the complete eight-transition horizon | The seven replay-root safety invariants; liveness remains a TLC obligation |
+| `ReplayRootMaterialization*Unsafe.cfg` | Expected-refutation controls for eager future-root reads, producer-local-history-dependent validation, and ReplayRSpace purse queries | Counterexample required for each configuration | Refutes SnapshotReadsMaterializedRoot, CompletedValidatorsAgree, or SnapshotsUseOrdinaryRuntime |
+| `AtomicVaultSettlementRefinement.tla` | One native externally atomic SystemVault application refining maximum reserve, exact burn and fee transfer, and refund without persistent transient reservation state | Safe instance explored by `MCAtomicVaultSettlementRefinement.cfg` | NoPersistentReservationState, EverySelectedBranchWasStateBoundFunded, FinalizedAggregateIsFunded, AtomicVisibleRefinement, CanonicalValueConserved, FeeCreditIsAConservingTransfer, RejectedAggregateHasNoEffect, ReplayMatchesFinalizedState |
+| `AtomicVaultSettlementRefinementGlobalCellUnsafe.cfg` | Expected-refutation control restoring a consensus-visible singleton reservation cell shared by independent branches | Counterexample required | Violates NoPersistentReservationState |
+| `NormalizerEnvironmentRefinement.tla` | Certification, retained execution, and replay use one authenticated deployer/cosigner normalizer environment | Safe instance explored by `NormalizerEnvironmentRefinement.cfg` | CertificationExecutionReplayUseSameEnvironment, AuthenticatedProgramIsAdmitted, ExecutionRequiresAdmission, ReplayMatchesExecution; liveness: EventuallyReplayCompletes |
+| `NormalizerEnvironmentRefinementEmptyUnsafe.cfg` | Expected-refutation control certifying a deployer-ID program under an empty environment while execution uses authenticated bindings | Counterexample required | Violates CertificationExecutionReplayUseSameEnvironment |
+| `PhysicalSettlementWorklist.tla` | Canonical heap-worklist physical proof search for two independently scheduled deployments, with a bounded native call stack | Safe instance explored by `PhysicalSettlementWorklist.cfg` | NativeStackBound, WorklistUsesNoNativeRecursion, CompletedResultMatchesReference, SearchNodesStayWithinTheFiniteTree; liveness: EventuallyAllDeploymentsComplete |
+| `PhysicalSettlementWorklistRecursiveUnsafe.cfg` | Expected-refutation control that consumes one native frame per event instead of using the heap worklist | Counterexample required | Violates NativeStackBound |
 
 ### Phase 1 / 2 / 3 multi-signature + LL-rich algebra specs
 
@@ -113,6 +160,31 @@ java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
 java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
   tlc2.TLC MCCostAccountingSearchFrontier.tla -config CostAccountingSearchFrontier.cfg -workers auto -nowarning
 
+# Atomic semantic COMM accounting and rejection rollback
+java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
+  tlc2.TLC AtomicCommAccounting.tla -config AtomicCommAccounting.cfg -workers auto -nowarning
+java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
+  tlc2.TLC AtomicCommRejection.tla -config AtomicCommRejection.cfg -workers auto -nowarning
+
+# State-bound single-play evidence, constrained replay, and settlement. The first command must
+# pass; each following negative control must report its named invariant breach.
+java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
+  tlc2.TLC MCStateBoundAdmission.tla -config StateBoundAdmission.cfg -workers auto -nowarning
+java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
+  tlc2.TLC MCStateBoundAdmission.tla -config StateBoundAdmissionStructuralUnsafe.cfg -workers auto -nowarning
+java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
+  tlc2.TLC MCStateBoundAdmission.tla -config StateBoundAdmissionDriftUnsafe.cfg -workers auto -nowarning
+java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
+  tlc2.TLC MCStateBoundAdmission.tla -config StateBoundAdmissionExhaustionUnsafe.cfg -workers auto -nowarning
+java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
+  tlc2.TLC MCStateBoundValidatorConvergence.tla -config StateBoundValidatorConvergence.cfg -workers auto -nowarning
+java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
+  tlc2.TLC MCStateBoundValidatorConvergence.tla -config StateBoundValidatorConvergenceContextUnsafe.cfg -workers auto -nowarning
+java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
+  tlc2.TLC MCStateBoundValidatorConvergence.tla -config StateBoundValidatorConvergenceOrderUnsafe.cfg -workers auto -nowarning
+java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
+  tlc2.TLC MCStateBoundValidatorConvergence.tla -config StateBoundValidatorConvergenceScheduleUnsafe.cfg -workers auto -nowarning
+
 # Typed mergeable-channel diff/merge and cost-boundary isolation
 java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
   tlc2.TLC MCMergeableChannelAccounting.tla -config MergeableChannelAccounting.cfg -workers auto -nowarning
@@ -141,7 +213,9 @@ done
 ### Aggregate runner (local-only)
 
 The companion script `scripts/check-cost-accounted-rho-tla-invariants.sh`
-runs ALL of the above (currently 24 specs) sequentially through TLC.
+runs every registered safe specification sequentially through TLC and runs each
+registered unsafe configuration as a required expected refutation. A negative
+control passes only when TLC names its exact intended invariant violation.
 Per the team's "formal verification is local-only, NOT in CI" policy
 this script does NOT live under `scripts/ci/`. Invoke directly from
 the repo root:
@@ -153,22 +227,97 @@ bash scripts/check-cost-accounted-rho-tla-invariants.sh --filter MC
 bash scripts/check-cost-accounted-rho-tla-invariants.sh --filter RuntimeBudget
 ```
 
-All specs should report: `Model checking completed. No error has been found.`
+Safe specs report `Model checking completed. No error has been found.` Unsafe
+controls report `PASS (refuted <Invariant>)`.
 
-When Apalache is installed, the threat and search-frontier models can also
-be checked symbolically:
+The end-to-end safe model and all six expected-refutation controls run together:
 
 ```bash
-cd formal/tlaplus/cost_accounted_rho
-apalache-mc check --out-dir=/tmp/apalache-MCCostAccountingThreats \
-  --config=CostAccountingThreats.cfg MCCostAccountingThreats.tla
-apalache-mc check --out-dir=/tmp/apalache-CostAccountingSearchFrontier \
-  --config=CostAccountingSearchFrontier.cfg CostAccountingSearchFrontier.tla
+bash scripts/check-cost-accounted-rho-tla-invariants.sh --filter EndToEndCostConsensus
 ```
 
-Both should report `The outcome is: NoError`.
+The controls require violations of `LocalFaultNeverCreatesSlashEvidence`,
+`EveryExecutedDeploymentWasFunded`, `AdmissionRequiresGenesisAgreement`,
+`GenesisExecutionReplayAuthorityAgree`, `ValidationOriginParity`, and
+`SettlementDoesNotReapplyGenesisFunding`, respectively.
+
+The atomic-COMM safe models and introduction-charging negative control are:
+
+```bash
+bash scripts/check-cost-accounted-rho-tla-invariants.sh --filter AtomicComm
+```
+
+The registered control is successful only when TLC reports a violation of
+`ExactCommCost`: unmatched introductions are deliberately charged in that model,
+reproducing the implementation defect that caused replay disagreement.
+
+The authenticated replay-supply boundary and its live-query negative control are:
+
+```bash
+bash scripts/check-cost-accounted-rho-tla-invariants.sh --filter ReplaySupplySnapshot
+bash scripts/check-cost-accounted-rho-tla-invariants.sh --filter ReplayRootMaterialization
+bash scripts/check-cost-accounted-rho-tla-invariants.sh --filter AtomicVaultSettlementRefinement
+```
+
+The safe model captures each deployment's supply before trace replay and proves
+that replay consumes the same supply sequence while reproducing the exact
+recorded trace. The control is successful only when TLC reports a violation of
+`ExactRecordedReplayTrace`: a live SystemVault query through ReplayRSpace is an
+extra RSpace event and therefore cannot be part of replay admission.
+
+The root-materialization model gives the producer every intermediate root but
+starts the independent validator and reporter with genesis only. The safe loop
+must replay and checkpoint deployment $`i`$ before reading deployment $`i+1`$.
+Its controls demonstrate that eager reads access absent roots, make acceptance
+depend on producer-local history, or cross the ordinary/replay runtime boundary.
+
+The aggregate formal gate runs Apalache over symbolic N-ary join authority,
+the threat and search-frontier models, and the bounded replay-root model:
+
+```bash
+bash scripts/check-cost-accounted-rho-apalache.sh
+```
+
+The replay-root cross-check covers all eight steps required for both validators
+to capture two authenticated pre-state snapshots, replay both deployments, and
+materialize both post-state roots. It checks the seven safety invariants with an
+SMT-backed state encoding. TLC separately exhausts the three-node,
+three-deployment state space, proves the liveness property under weak fairness,
+and requires the three unsafe configurations to exhibit their named defects.
+Every Apalache leg must report `The outcome is: NoError`.
 
 ## Verified Properties
+
+### AtomicCommAccounting
+
+- **ExactCommCost / CostEqualsCommittedComms**: cost is exactly the cardinality
+  of successful semantic COMM transitions.
+- **UnmatchedIntroductionsAreFree**: storing an unmatched send or receive
+  cannot consume authority.
+- **JoinArityDoesNotMultiplyCost**: a committed join contributes one unit,
+  independent of the number of channels in its requirement set.
+- **RejectedCommIsAtomic**: a capacity rejection cannot commit the match or
+  mutate pending RSpace state.
+- **ReplayMatchesPlayAtCompletion**: replay of the committed semantic events
+  produces the exact play cost.
+- **TerminalRSpaceIsScheduleIndependent**: with sufficient authority, every
+  command-arrival order leaves exactly the unmatched commands resident.
+
+### EndToEndCostConsensus
+
+- **GenesisCommitIsExact**: the authority map committed by genesis is exactly the canonical initial SystemVault funding map.
+- **AdmissionRequiresGenesisAgreement**: no deployment can be admitted until replay has reconstructed the same genesis authority map; the mismatch control demonstrates the missing guard with a counterexample.
+- **SettlementDoesNotReapplyGenesisFunding**: ordinary settlement cannot apply genesis SystemVault funding again; the double-credit control refutes the invariant.
+- **CostReservationBacksEveryChoice**: the certified cost reservation bounds every modeled reachable event subset, not only one schedule.
+- **ReservationBacksRealized**: every realized authority event and deterministic fee is covered by the combined reservation.
+- **EveryExecutedDeploymentWasFunded**: every client, heartbeat, or dummy deployment that reaches execution first passed the same proof-bearing funding reservation; no deployment class bypasses authority accounting.
+- **SettlementIsExact / SettlementConserves**: the post-state burns realized execution cost, transfers the fee, and preserves the global custody identity.
+- **FeeIsCanonicalTransfer**: the proposer SystemVault receives exactly the total fee debited from payer SystemVault balances; no intermediate fee pool or conversion exists.
+- **RefundIsUnusedReservation**: realized event cost plus unused cost reservation is exactly the certified cost reservation; the fixed fee is reserved and settled separately.
+- **ReplayUsesSameCommittedEvents**: reordering replay work cannot change the canonical realized cost or settled balance.
+- **LocalFaultNeverCreatesSlashEvidence**: missing local history and other local validation faults never become invalid-block evidence.
+- **FinalityUsesDAGAncestry**: parent-array permutation cannot change DAG-based finality advancement.
+- **EventuallyDoneOrRejected**: under weak fairness, the finite valid path completes after at most one recoverable local fault; an unprovable or underfunded admission terminates as rejected.
 
 ### CostAccountedRho (atomic signatures)
 
@@ -220,9 +369,11 @@ The `extCost` variable tracks what the externalized (buggy) cost model would pro
   for a modeled cost-invalid violation.
 - **ReplayTamperCannotStayAccepted**: after digest/count/commitment
   tampering, cost-accounted replay is no longer accepted.
-- **RecoveredSlashRequiresCurrentEvidence**: a recovered rejected slash
-  is considered only when its evidence epoch and target activation epoch
-  are both the current epoch.
+- **CanonicalSlashCandidateRequiresEvidence**: canonical scanning selects a
+  slash candidate only when the invalid-block evidence is present and both its
+  epoch and the target activation epoch are current.
+- **CanonicalSlashCandidateRequiresPositiveBond**: canonical scanning excludes
+  targets whose bond is non-positive in the exact parent pre-state.
 - **SlashAuthorizationUsesParentPreState**: slash acceptance is
   authorized by the parent pre-state bond, not by an ambient post-state
   or execution-time bond view.
@@ -394,6 +545,15 @@ These TLA+ specifications complement the Rocq mechanization at `formal/rocq/cost
 | `CostAccountingThreats.tla` | 1 deploy boundary plus slash authorization view | — | 0 | bounded fuel 5, epochs 0..1, bonds 0..1 | 5,408 distinct / 401,025 generated |
 | `CostAccountingSearchFrontier.tla` | 11 witness families | — | 0 | — | 34,167 distinct / 266,015 generated |
 | `MergeableChannelAccounting.tla` | typed values over 2-bit bitmaps and bounded integers | — | 0 | bounded values 0..3 | 2,656 |
+| `StateBoundAdmission.tla` | one authenticated deployment with bounded play, evidence commitment, constrained replay, and settlement phases | — | 0 | three event schedules, supply 4, fee 1 | 162 distinct / 162 generated |
+| `StateBoundValidatorConvergence.tla` | 3 independent validators, 2 arrival orders, 3 reducer schedules, 2 roots, and 2 block contexts | — | 0 | local schedules include both permutations and a distinct event/cost trace; acceptance requires the exact certified witness | model-checker count recorded by the bounded runner |
+| `LocatedStackConservation.tla` | one source purse, one located target, and bounded repeated transfer attempts | — | 0 | bounded source depth 0..4 and transfer depth 1..3 | model-checker count recorded by the bounded runner |
+| `StateBoundFrontierExpansion.tla` | one deployment discovering a finite ordered pre-state authority frontier | — | 0 | three positive backing pools, one fee, and a trace that requires expansion | model-checker count recorded by the bounded runner |
+| `ReplaySupplySnapshot.tla` | two sequential deployments with authenticated pre-state supply capture and trace-only replay | — | 0 | initial supply 9, two costs, two committed events | model-checker count recorded by the bounded runner |
+| `ReplayRootMaterialization.tla` | producer, validator, and reporter with asymmetric initial root histories | — | 0 | three sequential deployments and four roots | model-checker count recorded by the bounded runner |
+| `AtomicVaultSettlementRefinement.tla` | two independently selected paid branches, including a shared payer and a distinct located payer | — | 0 | three purses, two certified maxima, exact burn and fee vectors | model-checker count recorded by the bounded runner |
+| `NormalizerEnvironmentRefinement.tla` | certification, execution, and replay phases over authenticated versus empty environments | — | 0 | one deployer-ID-dependent program | model-checker count recorded by the bounded runner |
+| `PhysicalSettlementWorklist.tla` | two independently scheduled physical allocators exploring a canonical finite candidate tree | — | 0 | event depth 3, binary candidates, native-stack bound 2 | model-checker count recorded by the bounded runner |
 
 Running on larger bounds has not been attempted — doubly-compound depth-2 already exercises the cascading-Split + Join interactions and is the deepest scenario anticipated by the design.
 

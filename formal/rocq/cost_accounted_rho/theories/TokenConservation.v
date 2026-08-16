@@ -244,9 +244,8 @@ Qed.
    deployments and then SETTLES the per-signature supply pool [Σ⟦s⟧] by
    subtracting the SUM of the admitted deployments' demands [ΣΔ_admitted]
    (cost-accounted-rho §7.7; supply-realization handoff Decision 4c). The
-   realized form (casper/.../costacc/close_block_deploy.rs::dual_write_supply)
-   is the integer balance update [new = old.checked_sub(ΣΔ)], applied exactly
-   once per block AFTER all admitted deployments have executed.
+   realized form is an authenticated SystemVault reservation or located-stack
+   consumption settled exactly once after admitted execution.
 
    Here we prove the conservation law for that settlement at the balance level:
    the post-settlement balance plus the debited amount equals the pre-settlement
@@ -303,114 +302,47 @@ Proof.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
-   Section 6: Stage-D fee collection + 1:1 conversion conserves (the FEE layer)
+   Section 6: Native SystemVault fee transfer conserves canonical REV
    ═══════════════════════════════════════════════════════════════════════════
 
-   The COST lemmas above (settlement debit) are UNCHANGED. This section adds the
-   independent FEE-layer conservation law (Stage D; spec "Fee conversion"
-   tex:3061-3100). The fee is the spec's FeeExtract — a SEPARATE token,
-   TRANSFERRED to the validator (never the burned settlement debit; cost ≠ fee).
-   The realization holds two reducer-unwritable balances per validator: the fee
-   pool [F_v] (`supply::fee_collection_channel`) and the gate pool [Σ⟦v⟧]. The
-   economic loop is a conserving TRANSFER (F-C/F-D alignment — NO mint):
+   The paper writes FeeExtract as a client-signature token sent toward the
+   validator. F1R3node realizes both sides as balances owned by canonical
+   SystemVault addresses. Settlement atomically debits the reserved client
+   vault and credits the proposing validator's vault. There is no intermediate
+   protocol fee ledger and no mandatory exchange step. The separately blessed
+   Exchange contract remains an ordinary optional market operation. *)
 
-     - COLLECTION (carve): [client_pool -= f; F_v += f] (one CLIENT token per
-       processed deploy — the FeeExtract CARVES the fee from Σ⟦c⟧, never mints);
-     - CONVERSION (1:1): move the collected [f] from [F_v] into [Σ⟦v⟧] —
-       [Σ⟦v⟧ += f], [F_v := 0]. Under Option A this is the CONTRACT-level market
-       Exchange(c,v), not a protocol write; the conservation is identical.
-
-   We prove the WHOLE loop (carve then convert) CONSERVES the validator's total
-   client+fee+supply holding under [f <= client_pool l]: Σ⟦c⟧ → F_v → Σ⟦v⟧ with
-   no token created or destroyed. This is the balance-layer companion of
-   [exchange_total_conserved] (Exchange.v) and the conservation half of
-   [fee_convert_credit_is_backed] (MintingInjection.v). No tokens are minted or
-   destroyed by the fee loop.                                                     *)
-
-(* The client + fee + supply ledger: the client pool [client_pool] = Σ⟦c⟧ that the
-   per-deploy fee is CARVED from, the collected fee pool [fee_pool] = F_v, and the
-   gate pool [supply_pool] = Σ⟦v⟧. *)
 Record fee_ledger : Type := {
-  client_pool : nat;  (* Σ⟦c⟧ : the client pool the per-deploy fee is CARVED from *)
-  fee_pool    : nat;  (* F_v : collected, not-yet-converted fees (c-denominated) *)
-  supply_pool : nat   (* Σ⟦v⟧ : the gate pool *)
+  client_vault : nat;
+  proposer_vault : nat
 }.
 
-(* COLLECTION (the FeeExtract): CARVE [f] client tokens from [client_pool] (Σ⟦c⟧)
-   into the fee pool [F_v] — a conserving TRANSFER, NOT a mint. Well-defined when
-   [f <= client_pool l] (the funding gate guarantees the client affords cost+fee;
-   nat subtraction saturates otherwise, and every conservation lemma below carries
-   the [f <= client_pool l] hypothesis). *)
-Definition fee_collect (l : fee_ledger) (f : nat) : fee_ledger :=
-  {| client_pool := client_pool l - f;
-     fee_pool := fee_pool l + f;
-     supply_pool := supply_pool l |}.
+Definition fee_transfer (l : fee_ledger) (f : nat) : fee_ledger :=
+  {| client_vault := client_vault l - f;
+     proposer_vault := proposer_vault l + f |}.
 
-(* CONVERSION (1:1): move the ENTIRE fee pool [f = fee_pool l] into the supply
-   pool and zero the fee pool; the client pool is carried through unchanged. This
-   models the c→v conversion, which under the F-C/F-D alignment (Option A) is the
-   CONTRACT-level market Exchange(c,v) — NOT a protocol write — but the
-   conservation property is identical: F_v → Σ⟦v⟧ 1:1, no mint. For f = 0 it is
-   the identity. *)
-Definition fee_convert (l : fee_ledger) : fee_ledger :=
-  {| client_pool := client_pool l;
-     fee_pool := 0;
-     supply_pool := supply_pool l + fee_pool l |}.
+Definition fee_ledger_total (l : fee_ledger) : nat :=
+  client_vault l + proposer_vault l.
 
-(* The validator's total client+fee+supply holding (all three pools). *)
-Definition ledger_total (l : fee_ledger) : nat :=
-  client_pool l + fee_pool l + supply_pool l.
-
-(* [fee_collection_conserves]: the 1:1 fee conversion CONSERVES the combined
-   client + F_v + Σ⟦v⟧ total — exactly the [f] that leaves [F_v] enters [Σ⟦v⟧]
-   (the client pool is untouched BY the conversion), so no token is created or
-   destroyed. The COLLECTION that precedes it is the conserving carve
-   [fee_collect] (client_pool -= f; see [fee_collect_conserves]), so the fee is a
-   genuine Σ⟦c⟧ → F_v → Σ⟦v⟧ transfer with no mint anywhere. *)
-Theorem fee_collection_conserves : forall l,
-  ledger_total (fee_convert l) = ledger_total l.
+Theorem fee_transfer_conserves : forall l f,
+  f <= client_vault l ->
+  fee_ledger_total (fee_transfer l f) = fee_ledger_total l.
 Proof.
-  intros l. unfold ledger_total, fee_convert. simpl. lia.
+  intros l f Hf. unfold fee_ledger_total, fee_transfer. simpl. lia.
 Qed.
 
-(* The convert credit to Σ⟦v⟧ is EXACTLY the fee pool that was drained (the
-   1:1 peg with no remainder), and the fee pool ends at 0 — the realization'
-   `Σ⟦v⟧ += f` / `F_v := 0`. *)
-Theorem fee_convert_credit_eq_drained : forall l,
-  supply_pool (fee_convert l) = supply_pool l + fee_pool l
-  /\ fee_pool (fee_convert l) = 0.
+Theorem fee_recipient_credit_eq_client_debit : forall l f,
+  f <= client_vault l ->
+  client_vault l - client_vault (fee_transfer l f)
+    = proposer_vault (fee_transfer l f) - proposer_vault l.
 Proof.
-  intros l. unfold fee_convert. simpl. split; reflexivity.
+  intros l f Hf. unfold fee_transfer. simpl. lia.
 Qed.
 
-(* End-to-end (carve then convert) CONSERVES the total — NO inflation. The fee is
-   carved from the client pool and flows Σ⟦c⟧ → F_v → Σ⟦v⟧, neither minted nor
-   destroyed; under [f <= client_pool l] the total is invariant (the prior `+ f`
-   was the inflation the carve removes — F-C/F-D alignment). *)
-Theorem fee_collect_then_convert_conserves : forall l f,
-  f <= client_pool l ->
-  ledger_total (fee_convert (fee_collect l f)) = ledger_total l.
+Theorem fee_transfer_zero_is_noop : forall l,
+  fee_transfer l 0 = l.
 Proof.
-  intros l f Hf. unfold ledger_total, fee_convert, fee_collect. simpl. lia.
-Qed.
-
-(* The COLLECTION step alone conserves the total: the carve moves [f] from the
-   client pool to the fee pool (Σ⟦c⟧ → F_v), nothing created or destroyed. *)
-Theorem fee_collect_conserves : forall l f,
-  f <= client_pool l ->
-  ledger_total (fee_collect l f) = ledger_total l.
-Proof.
-  intros l f Hf. unfold ledger_total, fee_collect. simpl. lia.
-Qed.
-
-(* The carve is BACKED by the client debit: what leaves Σ⟦c⟧ EXACTLY equals what
-   enters F_v (the no-mint property AT collection — the F-C/F-D fix). *)
-Theorem fee_collection_conserves_with_client : forall l f,
-  f <= client_pool l ->
-  client_pool l - client_pool (fee_collect l f)
-    = fee_pool (fee_collect l f) - fee_pool l.
-Proof.
-  intros l f Hf. unfold fee_collect. simpl. lia.
+  intros [client proposer]. unfold fee_transfer. simpl. f_equal; lia.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════

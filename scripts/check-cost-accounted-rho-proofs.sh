@@ -1,22 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ── Proof-gate posture (Greg's design, 2026-06) ───────────────────────────────
-# Validator behavioral alignment is supplied by compile-time SHAPES (types), so
-# external-proof CERTIFICATES (Rocq/Lean/TLA+) are NOT a required gate. This gate
-# is therefore ADVISORY by default: it reports the posture and exits 0 without
-# blocking. Formal verification remains valuable — the full strict gate (compile +
-# rocqchk + axiom-free `Print Assumptions`) is preserved verbatim below and runs
-# when CA_ENFORCE_PROOFS=1.
-if [ "${CA_ENFORCE_PROOFS:-0}" != "1" ]; then
-  echo "cost-accounted-rho proof gate: ADVISORY (relaxed per Greg's compile-time-shapes design)."
-  echo "  External-proof certificates are no longer a required gate; behavioral"
-  echo "  alignment comes from the compile-time type discipline."
-  echo "  Run the full strict gate with: CA_ENFORCE_PROOFS=1 $0"
-  exit 0
-fi
-# ──────────────────────────────────────────────────────────────────────────────
-
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROOF_ROOT="$ROOT/formal/rocq/cost_accounted_rho"
 THEORIES="$PROOF_ROOT/theories"
@@ -29,10 +13,12 @@ VERIFICATION_DOCS=(
   "$ROOT/docs/theory/cost-accounting-use-cases.md"
   "$ROOT/docs/theory/cost-accounting-threat-model.md"
 )
+WORK_ROOT="$ROOT/target/verification/cost-accounted-rho/proofs"
+mkdir -p "$WORK_ROOT"
 
 echo "Checking cost-accounted rho proof hygiene..."
 
-SANITIZED_THEORIES="$(mktemp -d)"
+SANITIZED_THEORIES="$(mktemp -d "$WORK_ROOT/sanitized.XXXXXX")"
 for proof in "$THEORIES"/*.v; do
   perl -0pe 's/\(\*.*?\*\)//gs' "$proof" > "$SANITIZED_THEORIES/$(basename "$proof")"
 done
@@ -50,7 +36,7 @@ for proof in "$SLASHING_ROOT/theories"/*.v; do
   perl -0pe 's/\(\*.*?\*\)//gs' "$proof" > "$SANITIZED_THEORIES/slashing__$(basename "$proof")"
 done
 
-assumptions="$(mktemp)"
+assumptions="$(mktemp "$WORK_ROOT/assumptions.XXXXXX.log")"
 trap 'rm -rf "$SANITIZED_THEORIES"; rm -f "$assumptions"' EXIT
 
 if rg -n '(^|[[:space:]])(Admitted\.|admit\.)|^[[:space:]]*(Conjecture|Parameter)[[:space:]]' "$SANITIZED_THEORIES"; then
@@ -116,7 +102,150 @@ echo "Compiling and checking the validator contract aggregation..."
 )
 
 if ! rocq repl -Q "$THEORIES" CostAccountedRho > "$assumptions" 2>&1 <<'EOF'
-From CostAccountedRho Require Import TranslationFaithfulness Bisimulation Replication Settlement SlashingComposition MergeableChannelAccounting RuntimeBudgetRefinement MultiSignerRefinement LinearLogicResources LLIdentities MintingInjection MintingHalt UseCaseAdequacy SystemStructEquiv SyntacticSugar WalletNaming ChannelSeparation TokenConservation FuelEventDecomposition Exchange BoundedLedger GSLTOSLFCapstone Rule45ContinuationAdequacy CAReduction WrappingSubjectReduction SignatureMonoid CATokenConservation CAStrongNormalization CAConfluence CAStepDeterminism CACostDeterminism CAModulus ContinuedGSLTCapstone CAGradedTransition CATranslation CostMonad CATranslationLemmas CATranslationFaithfulness CABisimulation CASettlement CAMintingInjection CAExchange CAEconomicCapstone CALocatedPurses CAGradedAdequacy CAAdjunctions CATypeDiscipline CAGradedImageFinite CAGradedSuccPairs CAGradedCompleteness CAInternalisation CAGradedLimit CAForceSeparation CAJoinConservation CategoryInterface CACategory CACostFunctor CACostFunctorCI CACostMonadCat CAAdjunctionI CACostMonadInstances CASimulationBicat CAAdjunctionII CAProperSubcategory CAAbstractCapstone CAUntypedLambda CAUntypedLambdaCI.
+From CostAccountedRho Require Import CostAccountedSyntax TranslationFaithfulness Bisimulation Replication Settlement SlashingComposition MergeableChannelAccounting RuntimeBudgetRefinement AtomicCommAccounting MultiSignerRefinement LinearLogicResources LLIdentities MintingInjection MintingHalt UseCaseAdequacy SystemStructEquiv SyntacticSugar WalletNaming ChannelSeparation TokenConservation FuelEventDecomposition Exchange BoundedLedger GSLTOSLFCapstone Rule45ContinuationAdequacy CAReduction WrappingSubjectReduction SignatureMonoid CATokenConservation CAStrongNormalization CAConfluence CAStepDeterminism CACostDeterminism CAModulus ContinuedGSLTCapstone CAGradedTransition CATranslation CostMonad CATranslationLemmas CATranslationFaithfulness CABisimulation CASettlement CAMintingInjection CAExchange CAEconomicCapstone CALocatedPurses CAGradedAdequacy CAAdjunctions CATypeDiscipline CAGradedImageFinite CAGradedSuccPairs CAGradedCompleteness CAInternalisation CAGradedLimit CAForceSeparation CAJoinConservation CategoryInterface CACategory CACostFunctor CACostFunctorCI CACostMonadCat CAAdjunctionI CACostMonadInstances CASimulationBicat CAAdjunctionII CAProperSubcategory CAAbstractCapstone CAUntypedLambda CAUntypedLambdaCI EndToEndAuthority.
+From CostAccountedRho Require Import LocatedAuthoritySettlement RuntimeBoundAuthority PayloadSortPersistence SettlementMergeVisibility StructuralAuthorityBound RuntimeAuthorityScope StackTransferConservation StateBoundFrontierExpansion VaultBackedCostLifecycle AtomicVaultSettlementRefinement WalletFundedLollipop PhysicalSettlementWorklist ReplayRootMaterialization.
+Print Assumptions unmatched_introduction_costs_zero.
+Print Assumptions committed_comm_costs_exactly_one.
+Print Assumptions trigger_side_does_not_change_cost.
+Print Assumptions join_arity_does_not_multiply_cost.
+Print Assumptions comm_trace_cost_is_comm_count.
+Print Assumptions comm_trace_cost_permutation_invariant.
+Print Assumptions replaying_same_comm_trace_has_same_cost.
+Print Assumptions rejected_comm_is_atomic.
+Print Assumptions funded_comm_debits_before_commit.
+Print Assumptions rejected_event_is_state_atomic.
+Print Assumptions admitted_event_debits_exactly.
+Print Assumptions debit_preserves_unselected_purse.
+Print Assumptions debit_conserves_each_purse.
+Print Assumptions admitted_settlement_conserves.
+Print Assumptions plan_permutation_preserves_authority.
+Print Assumptions replay_preserves_authority.
+Print Assumptions replay_preserves_purse_debit.
+Print Assumptions continuation_requires_outer_event.
+Print Assumptions cross_deploy_slot_identity_is_replay_stable.
+Print Assumptions atomic_join_debits_all_or_none.
+Print Assumptions bound_authority_is_excluded_from_static_capacity.
+Print Assumptions resolved_authority_is_static.
+Print Assumptions runtime_resolution_eliminates_bound_levels.
+Print Assumptions new_bound_slot_becomes_the_persisted_continuation_authority.
+Print Assumptions replay_preserves_the_resolved_slot_identity.
+Print Assumptions reserve_success_is_conserving.
+Print Assumptions settlement_requires_complete_reservation.
+Print Assumptions settlement_is_conserving_and_refunds_exactly.
+Print Assumptions mint_is_the_only_supply_growth.
+Print Assumptions independent_credit_is_unbacked.
+Print Assumptions lollipop_reservation_is_all_or_nothing.
+Print Assumptions lollipop_insufficient_continuation_payer_rejects_atomically.
+Print Assumptions native_apply_refines_reserve_then_settle.
+Print Assumptions native_apply_success_is_visible_and_conserving.
+Print Assumptions native_apply_insufficient_bound_has_no_result.
+Print Assumptions native_apply_rejects_realized_over_bound.
+Print Assumptions aggregate_native_apply_is_order_independent.
+Print Assumptions aggregate_native_apply_rejects_overdraw.
+Print Assumptions pre_state_materialized_before_snapshot.
+Print Assumptions next_snapshot_pre_state_is_materialized.
+Print Assumptions all_snapshots_use_ordinary_runtime.
+Print Assumptions accepted_post_state_is_exact.
+Print Assumptions independent_validator_replay_agrees.
+Print Assumptions eager_second_snapshot_is_not_materialized_by_genesis.
+Print Assumptions replay_runtime_is_not_an_ordinary_snapshot_source.
+Print Assumptions slot_address_is_canonical.
+Print Assumptions slot_address_is_injective.
+Print Assumptions public_address_alone_never_authorizes_draw.
+Print Assumptions retained_slot_capability_authorizes_draw.
+Print Assumptions fund_slot_success_is_exact.
+Print Assumptions fund_slot_success_is_conserving.
+Print Assumptions fund_slot_is_not_minting.
+Print Assumptions insufficient_sponsor_rejects_funding.
+Print Assumptions continuation_requires_outer_commit.
+Print Assumptions continuation_requires_retained_slot_capability.
+Print Assumptions unauthenticated_gateway_cannot_consume_continuation.
+Print Assumptions authenticated_gateway_refines_slot_settlement.
+Print Assumptions continuation_insufficient_slot_rejects_atomically.
+Print Assumptions continuation_realized_over_bound_rejects_atomically.
+Print Assumptions continuation_insufficient_gateway_fee_rejects_atomically.
+Print Assumptions continuation_success_uses_slot_and_separates_fee.
+Print Assumptions continuation_success_refunds_unused_bound.
+Print Assumptions continuation_success_is_conserving.
+Print Assumptions wallet_funding_then_lollipop_is_conserving.
+Print Assumptions wallet_funding_then_lollipop_is_exact.
+Print Assumptions replay_uses_identical_authenticated_settlement.
+Print Assumptions candidate_stack_does_not_inflate_creator_preflight_capacity.
+Print Assumptions certification_execution_replay_share_authenticated_environment.
+Print Assumptions empty_certification_environment_diverges_on_deployer_identity.
+Print Assumptions worklist_solutions_refine_recursive.
+Print Assumptions worklist_first_preserves_canonical_candidate_order.
+Print Assumptions worklist_success_is_recursive_success.
+Print Assumptions worklist_failure_is_recursive_failure.
+Print Assumptions storage_preserves_complete_payload.
+Print Assumptions free_capture_preserves_complete_payload.
+Print Assumptions execution_preserves_complete_payload.
+Print Assumptions replay_preserves_complete_payload.
+Print Assumptions free_capture_preserves_authority.
+Print Assumptions free_capture_preserves_stack_order.
+Print Assumptions free_capture_preserves_conditionals.
+Print Assumptions settlement_pop_is_event_visible.
+Print Assumptions replay_reproduces_settlement_removal.
+Print Assumptions same_linear_instance_conflicts.
+Print Assumptions distinct_linear_instances_do_not_conflict.
+Print Assumptions soft_checkpoint_returns_current_segment.
+Print Assumptions soft_checkpoint_clears_active_segment.
+Print Assumptions consecutive_soft_checkpoints_are_disjoint.
+Print Assumptions checkpoint_segments_reconstruct_execution_trace.
+Print Assumptions settlement_extends_trace_prefix.
+Print Assumptions realized_authority_never_exceeds_structural_demand.
+Print Assumptions runtime_unit_has_zero_demand.
+Print Assumptions runtime_unit_is_left_neutral.
+Print Assumptions runtime_unit_is_right_neutral.
+Print Assumptions concurrent_scope_entry_is_order_independent.
+Print Assumptions first_scope_exit_preserves_other_owner_a.
+Print Assumptions first_scope_exit_preserves_other_owner_b.
+Print Assumptions final_scope_exit_deactivates_accounting.
+Print Assumptions duplicate_stack_transfer_is_rejected_atomically.
+Print Assumptions underfunded_stack_transfer_is_rejected_atomically.
+Print Assumptions funded_fresh_stack_transfer_is_exact.
+Print Assumptions funded_stack_transfer_conserves.
+Print Assumptions funded_stack_transfer_produces_every_debited_cell.
+Print Assumptions funded_stack_transfer_records_one_fresh_event.
+Print Assumptions stack_transfer_is_all_or_none.
+Print Assumptions replay_stack_transfer_is_identical.
+Print Assumptions authorized_mint_is_the_only_supply_increase.
+Print Assumptions authenticated_capacity_append_monotone.
+Print Assumptions positive_backing_strictly_expands_capacity.
+Print Assumptions authenticated_prefix_is_bounded_by_total.
+Print Assumptions frontier_retry_count_is_finite.
+Print Assumptions speculative_exhaustion_does_not_publish_state.
+Print Assumptions discovered_backing_conserves_total_supply.
+Print Assumptions candidate_created_supply_cannot_expand_prestate_capacity.
+Print Assumptions replay_uses_the_same_authenticated_capacity.
+Print Assumptions admitted_trace_fits_budget.
+Print Assumptions admitted_witness_is_funded.
+Print Assumptions left_branch_fits_reservation.
+Print Assumptions pointwise_funded_realized_is_funded.
+Print Assumptions left_branch_fits_pointwise_max.
+Print Assumptions pointwise_settlement_conserves.
+Print Assumptions pointwise_refund_is_unused_reservation.
+Print Assumptions exact_settlement_conserves.
+Print Assumptions local_fault_never_slashes.
+Print Assumptions validation_origin_independent.
+Print Assumptions every_origin_replays_checkpoint_and_checks_bonds.
+Print Assumptions finality_parent_permutation_invariant.
+Print Assumptions genesis_allocation_total_permutation.
+Print Assumptions permutation_genesis_replay_agrees.
+Print Assumptions genesis_replay_agreement_preserves_admission.
+Print Assumptions duplicate_genesis_allocations_combine.
+Print Assumptions genesis_system_vault_funding_is_exact.
+Print Assumptions committed_genesis_system_vault_funding_is_idempotent.
+Print Assumptions genesis_system_vault_replay_agrees.
+Print Assumptions admission_requires_verified_genesis.
+Print Assumptions genesis_unit_execution_replay_agrees.
+Print Assumptions genesis_unit_execution_rejects_funder_replay.
+Print Assumptions capacity_exactly_characterizes_funding.
+Print Assumptions exhausted_execution_cannot_be_certified.
+Print Assumptions state_bound_certificate_funds_committed_cost.
+Print Assumptions state_bound_chain_preserves_adjacent_roots.
+Print Assumptions admitted_costs_are_funded.
+Print Assumptions state_bound_exact_settlement_conserves.
 Print Assumptions cost_accounted_calculus_is_gslt_with_oslf_logic.
 Print Assumptions sig_monoid_comm.
 Print Assumptions sig_monoid_assoc.
@@ -130,6 +259,9 @@ Print Assumptions continuation_seal_is_cost_irrelevant.
 Print Assumptions rule45_result_cost_independent_of_seal.
 Print Assumptions subject_reduction_wrapping.
 Print Assumptions no_leak_requires_token.
+Print Assumptions admission_sig_algebra_valid_sound.
+Print Assumptions admission_sig_algebra_scalar_policy_sound.
+Print Assumptions admission_sig_algebra_quorum_sound.
 (* DR-25: untyped-lambda R1-only cost instance (CAUntypedLambda + CAUntypedLambdaCI) *)
 Print Assumptions lca_only_beta_r1.
 Print Assumptions lca_contact_requires_token.
@@ -211,7 +343,14 @@ Print Assumptions ca_funded_reachable_monotone.
 Print Assumptions ca_post_evaluation_settlement_no_mint.
 Print Assumptions mint_inject_st_not_ca_step.
 Print Assumptions ca_admin_fuel_classified.
+Print Assumptions exchange_preserves_stack_identity_and_order.
+Print Assumptions exchange_preserves_resource_multiset.
+Print Assumptions exchange_preserves_resource_cell_count.
+Print Assumptions exchange_resource_join_requires_both.
+Print Assumptions exchange_resource_join_one_sided_is_inert.
 Print Assumptions ca_exchange_total_conserved.
+Print Assumptions ca_exchange_preserves_stack_identity_and_order.
+Print Assumptions ca_exchange_preserves_resource_cell_count.
 Print Assumptions ca_exchange_is_step_not_mint.
 Print Assumptions ca_economic_conservation.
 Print Assumptions local_sufficiency_composes.
@@ -267,8 +406,8 @@ Print Assumptions consumed_comm_count_determined_by_endpoints.
 Print Assumptions mint_inject_not_ca_step.
 Print Assumptions user_ca_step_does_not_mint.
 Print Assumptions admin_trans_mint_adds_exactly.
-Print Assumptions supply_write_injective_in_pk.
-Print Assumptions supply_wallet_disjoint.
+Print Assumptions system_vault_credit_injective_in_pk.
+Print Assumptions system_vault_credit_names_distinct.
 Print Assumptions epoch_mint_idempotent_on_balance.
 Print Assumptions user_ca_step_does_not_increase_balance.
 Print Assumptions halted_validator_supply_not_increased.
@@ -293,8 +432,9 @@ Print Assumptions current_cost_evidence_epoch_sound.
 Print Assumptions parent_pre_state_authorizes_current_cost_evidence.
 Print Assumptions parent_pre_state_authorization_requires_parent_bond.
 Print Assumptions ambient_bond_does_not_authorize_without_parent_pre_state.
-Print Assumptions recovered_rejected_slash_requires_current_cost_evidence.
-Print Assumptions stale_recovered_slash_not_authorized.
+Print Assumptions canonical_slash_candidate_requires_current_cost_evidence.
+Print Assumptions stale_canonical_slash_candidate_not_authorized.
+Print Assumptions missing_evidence_cannot_select_canonical_slash_candidate.
 Print Assumptions parent_pre_state_authorized_slash_preserves_cost_boundary.
 Print Assumptions zero_bond_slash_noop_preserves_cost_boundary.
 Print Assumptions slash_two_effect_is_unmetered_for_user_budget.
@@ -309,6 +449,10 @@ Print Assumptions mergeable_channel_delta_preserves_type.
 Print Assumptions non_numeric_channel_not_mergeable_payload_match.
 Print Assumptions mergeable_channel_accounting_preserves_user_budget.
 Print Assumptions mergeable_channel_accounting_preserves_fee_settlement_inputs.
+Print Assumptions integer_diff_total_permutation.
+Print Assumptions integer_total_result_permutation.
+Print Assumptions integer_selection_application_agree.
+Print Assumptions widened_total_ignores_invalid_prefix_when_final_result_fits.
 Print Assumptions rb_total_remaining_conservation.
 Print Assumptions rb_reserve_oop_commits_limit.
 Print Assumptions rb_reserve_first_oop_commits_boundary.
@@ -409,7 +553,7 @@ Print Assumptions uc_ca_039_post_activation_cost_trace_required.
 Print Assumptions uc_ca_040_full_replay_payload_authenticates_cost_trace_fields.
 Print Assumptions uc_ca_041_concurrent_finalization_trace_completeness.
 Print Assumptions uc_ca_042_oop_trace_survives_failed_deploy_boundary.
-Print Assumptions uc_ca_043_mixed_deploy_block_trace_and_settlement_isolation.
+Print Assumptions uc_ca_043_matched_unmatched_deploy_trace_and_settlement_isolation.
 Print Assumptions uc_ca_044_oversized_weight_rejection_preserves_trace.
 Print Assumptions uc_ca_045_nonbillable_frames_do_not_enter_cost_trace.
 Print Assumptions uc_ca_046_zero_event_post_activation_trace_commitment.
@@ -446,7 +590,7 @@ Print Assumptions uc_ca_142_bitmask_or_diff_merge_round_trip.
 Print Assumptions uc_ca_143_bitmask_or_fold_order_independent.
 Print Assumptions uc_ca_144_integer_add_diff_merge_round_trip.
 Print Assumptions uc_ca_145_mergeable_channel_accounting_preserves_cost_boundary.
-Print Assumptions uc_ca_146_recovered_slash_requires_current_cost_evidence.
+Print Assumptions uc_ca_146_canonical_slash_candidate_requires_current_evidence.
 Print Assumptions uc_ca_147_parent_pre_state_slash_authorization_preserves_cost_boundary.
 Print Assumptions uc_ca_148_slash_target_epoch_is_replay_authenticated.
 Print Assumptions uc_ca_149_zero_bond_slash_noop_preserves_cost_boundary.
@@ -509,11 +653,12 @@ Print Assumptions compound_split_debit_conserves.
 Print Assumptions compound_split_debit_no_underflow.
 Print Assumptions multi_settlement_conserves.
 Print Assumptions compound_debit_is_block_settlement_instance.
-Print Assumptions fee_collection_conserves.
-Print Assumptions fee_collect_then_convert_conserves.
-Print Assumptions fee_convert_credit_is_backed.
-Print Assumptions fee_convert_conserves_holding.
-Print Assumptions fee_convert_zero_is_noop.
+Print Assumptions fee_transfer_conserves.
+Print Assumptions fee_recipient_credit_eq_client_debit.
+Print Assumptions fee_transfer_zero_is_noop.
+Print Assumptions native_fee_credit_is_backed.
+Print Assumptions native_fee_transfer_conserves_holding.
+Print Assumptions native_fee_transfer_zero_is_noop.
 Print Assumptions exchange_conserves_per_channel.
 Print Assumptions exchange_total_conserved.
 Print Assumptions exchange_requires_both_inputs.
@@ -524,10 +669,10 @@ Print Assumptions sse_par_unit.
 Print Assumptions token_decomp.
 Print Assumptions uniform_sugar_translation_equiv.
 Print Assumptions lollipop_sugar_translation_equiv.
-Print Assumptions wallet_name_injective.
+Print Assumptions system_vault_name_injective.
 Print Assumptions domain_name_injective.
-Print Assumptions wallet_quarantine_domain_disjoint.
-Print Assumptions wallet_funding_slot_domain_disjoint.
+Print Assumptions system_vault_quarantine_domain_disjoint.
+Print Assumptions system_vault_funding_slot_domain_disjoint.
 Print Assumptions quarantine_funding_slot_domain_disjoint.
 Print Assumptions lane_pool_disjoint.
 Print Assumptions lane_key_not_app_channel.
@@ -547,9 +692,9 @@ Print Assumptions checked_add_i64_none_iff_overflow.
 Print Assumptions checked_add_i64_some_in_range.
 Print Assumptions checked_sub_nonneg_conserved_or_rejected.
 Print Assumptions checked_add_i64_matches_nat.
-Print Assumptions supply_credit_conserved_or_rejected.
+Print Assumptions vault_credit_conserved_or_rejected.
 Print Assumptions bounded_settlement_conserved_or_rejected.
-Print Assumptions bounded_fee_convert_conserved_or_rejected.
+Print Assumptions bounded_fee_transfer_conserved_or_rejected.
 (* item 2509 — consensus-core vs diagnostic-only split of the full replay payload. *)
 Print Assumptions rb_full_replay_payload_equiv_split.
 Print Assumptions rb_full_replay_payload_equiv_implies_consensus.
@@ -614,6 +759,7 @@ Print Assumptions main_T10_fork_choice_exclusion.
 Print Assumptions main_T9_1_ignorable.
 Print Assumptions main_T9_2_atomic.
 Print Assumptions main_T9_3_dispatch.
+Print Assumptions main_T9_3_block_exception_is_local_fault.
 Print Assumptions main_T9_4_transfer.
 Print Assumptions main_T9_5_stake_zero.
 Print Assumptions main_T9_6_self_regression.
@@ -628,14 +774,15 @@ Print Assumptions main_T9_10_failure_preserves_total_funds.
 Print Assumptions main_T9_10_withdraw_independence.
 Print Assumptions main_T9_12_stale_evidence_not_authorized.
 Print Assumptions main_T9_13_unknown_slash_evidence_noop.
-Print Assumptions main_T9_13_zero_parent_bond_not_authorized.
-Print Assumptions main_T9_13_positive_parent_bond_authorizes_matching_candidate.
-Print Assumptions main_T9_13_parent_pre_state_authorizes_when_ambient_zero.
-Print Assumptions main_T9_13_parent_zero_rejects_even_if_ambient_positive.
-Print Assumptions main_T9_13_recoverable_rejected_slash_hashes_nodup.
-Print Assumptions main_T9_13_own_detected_hash_not_recovered.
-Print Assumptions main_T9_13_uncovered_rejected_hash_recovered.
-Print Assumptions main_T9_13_recoverable_rejected_slash_requires_current_evidence.
+Print Assumptions main_T9_13_zero_canonical_bond_not_authorized.
+Print Assumptions main_T9_13_positive_canonical_bond_authorizes_matching_candidate.
+Print Assumptions main_T9_13_canonical_pre_state_authorizes_when_ambient_zero.
+Print Assumptions main_T9_13_canonical_zero_rejects_even_if_ambient_positive.
+Print Assumptions main_T9_13_proposer_receiver_authorization_parity.
+Print Assumptions main_T9_13_same_pre_state_root_same_authorization.
+Print Assumptions main_T9_13_merge_rejected_hint_subsumed_by_authorized_scan.
+Print Assumptions main_T9_13_zero_bond_candidate_not_selected.
+Print Assumptions main_T9_13_selected_target_keys_nodup.
 Print Assumptions main_TAuth_invalid_token_noop.
 Print Assumptions main_TAuth_valid_token_equiv.
 Print Assumptions main_TSlash_seed_input_hash_injective.

@@ -13,90 +13,76 @@ I64_MAX = 2**63 - 1
 # limit * price, refund = (limit - token_cost) * price) is REMOVED. A deploy's
 # cost is the per-COMM token count `demand` (= Delta_s); funding is the
 # per-signature supply pool `supply` (= Sigma_s); the block-assembly gate admits
-# iff the EFFECTIVE supply meets the demand plus the genesis safety `margin`, and
-# the SINGLE consensus decrement is the settlement debit `post = supply - demand`
-# (applied once at block close), which must never underflow for an admitted
-# deploy. There is NO op-budget-exhaustion surface and NO per-deploy refund.
-def is_funded(demand, supply, margin):
+# iff the EFFECTIVE supply meets the certified demand plus the fixed fee. The
+# close-block transition burns realized cost and transfers the fee from the
+# client pool to the validator fee pool. There is NO op-budget-exhaustion surface.
+def is_funded(demand, supply, fee):
     # The pure Def-19/Thm-20 funding inequality (i128 in Rust; unbounded here).
-    return int(supply) >= int(demand) + int(margin)
+    return int(supply) >= int(demand) + int(fee)
 
 
-def settle(demand, supply, margin):
-    if demand < 0 or supply < 0 or margin < 0:
+def settle(demand, supply, fee):
+    if demand < 0 or supply < 0 or fee < 0:
         return {"valid": False, "reason": "negative_input"}
-    funded = is_funded(demand, supply, margin)
+    funded = is_funded(demand, supply, fee)
     # The per-COMM settlement debit is the demand (COMM count) for an admitted
     # deploy; an unfunded deploy is rejected and debits nothing.
     debit = int(demand) if funded else 0
-    post = int(supply) - debit
+    fee_debit = int(fee) if funded else 0
+    post = int(supply) - debit - fee_debit
     return {
         "valid": True,
         "demand": int(demand),
         "supply": int(supply),
-        "margin": int(margin),
+        "fee": int(fee),
         "funded": bool(funded),
         # The single consensus decrement: post = pre - debit (>= 0 for admitted).
         "settlement_debit": debit,
+        "fee_debit": fee_debit,
+        "fee_credit": fee_debit,
         "supply_after": int(post),
     }
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# #13a/#13b — the spec-strict (§7.6 step 5) acceptance-gate activation, and the
-# #13b genesis client funding-slot seed that makes a strict shard usable.
+# #13a/#13b — mandatory (§7.6 step 5) acceptance and genesis client funding.
 # ════════════════════════════════════════════════════════════════════════════
 #
-# Task #13a added the shard-genesis `strict_funding_enforcement` flag. The D2
-# gate's TRANSITIONAL default admits a deploy whose supply pool is ABSENT (not
-# yet provisioned) UNENFORCED with no debit (pre-cost-accounting behavior). With
-# the flag ON the gate is SPEC-STRICT: an ABSENT pool is treated as present-zero
-# (effective supply 0), so an underfunded (Δ>0) deploy is REJECTED (no execution,
-# no state change, no debit) and only a Δ=0 deploy is admitted. Task #13b SEEDS
-# client pools at genesis (making them PRESENT and funded) precisely so a strict
-# shard does NOT reject the clients it intends to fund.
+# An ABSENT pool has effective supply 0. Every deployment kind is checked against
+# the same cost-plus-fee obligation. Task #13b seeds client pools at genesis so
+# configured clients can satisfy that obligation.
 #
 # `pool_present` distinguishes an ABSENT pool (None — no datum on Σ⟦c⟧) from a
 # PRESENT pool (an int balance, incl. a drained 0), mirroring
 # `supply::read_balance_present`. The EFFECTIVE supply the funding inequality
 # sees is 0 for an absent pool (the paper's supply(s) = 0).
-def strict_admit(demand, pool_present, strict, margin):
-    if demand < 0 or margin < 0:
+def admit(demand, pool_present, fee):
+    if demand < 0 or fee < 0:
         return {"valid": False, "reason": "negative_input"}
     if pool_present is not None and int(pool_present) < 0:
         return {"valid": False, "reason": "negative_input"}
     absent = pool_present is None
     effective_supply = 0 if absent else int(pool_present)
 
-    # TRANSITIONAL early-admit: flag OFF + ABSENT pool ⇒ admit UNENFORCED, no
-    # debit (the `if !strict && !present { admit; continue }` branch). Otherwise
-    # the deploy falls through to the funding inequality at effective supply.
-    if (not strict) and absent:
-        admitted = True
-        enforced = False
-        funded = None  # not evaluated on the early-admit path
-        debit = 0
-    else:
-        enforced = True
-        funded = is_funded(demand, effective_supply, margin)
-        admitted = bool(funded)
-        debit = int(demand) if funded else 0
-
-    post = None if absent and not admitted else (effective_supply - debit)
+    funded = is_funded(demand, effective_supply, fee)
+    admitted = bool(funded)
+    debit = int(demand) if funded else 0
+    fee_debit = int(fee) if funded else 0
+    post = effective_supply - debit - fee_debit
     return {
         "valid": True,
         "demand": int(demand),
         "pool_present": (None if absent else int(pool_present)),
         "effective_supply": int(effective_supply),
-        "strict": bool(strict),
-        "margin": int(margin),
-        "enforced": bool(enforced),
+        "fee": int(fee),
+        "enforced": True,
         "admitted": bool(admitted),
-        "funded": (None if funded is None else bool(funded)),
-        # The single consensus decrement (0 for a rejected / early-admitted-absent
-        # deploy); for an admitted PRESENT pool it is exactly the per-COMM demand.
+        "funded": bool(funded),
         "settlement_debit": int(debit),
-        "supply_after": (None if post is None else int(post)),
+        "fee_debit": int(fee_debit),
+        "fee_credit": int(fee_debit),
+        "supply_after": int(post),
+        "pool_after": (None if absent else int(post)),
     }
 
 
@@ -360,40 +346,101 @@ def cross_group_admission_search(max_supply=4):
     }
 
 
+def state_bound_fixed_point(base_costs, supply, fee):
+    candidates = list(range(len(base_costs)))
+    rounds = 0
+    rejected = []
+    while True:
+        rounds += 1
+        mask = sum(1 << index for index in candidates)
+        costs = {index: (int(base_costs[index]) + mask) % 7 for index in candidates}
+        cap = max(0, int(supply) - int(fee))
+        exhausted = [index for index in candidates if costs[index] > cap]
+        if exhausted:
+            rejected.extend(exhausted)
+            candidates = [index for index in candidates if index not in exhausted]
+            continue
+        residual = int(supply)
+        admitted = []
+        suffix_rejected = []
+        prefix_open = True
+        for index in candidates:
+            required = costs[index] + int(fee)
+            if prefix_open and required <= residual:
+                admitted.append(index)
+                residual -= required
+            else:
+                prefix_open = False
+                suffix_rejected.append(index)
+        if suffix_rejected:
+            rejected.extend(suffix_rejected)
+            candidates = admitted
+            continue
+        return {
+            "admitted": admitted,
+            "rejected": sorted(set(rejected)),
+            "costs": costs,
+            "rounds": rounds,
+            "residual": residual,
+            "capacity": cap,
+        }
+
+
+def state_bound_fixed_point_search(max_supply=6, candidate_count=3):
+    from itertools import product
+    traces = 0
+    violations = []
+    for supply in range(max_supply + 1):
+        for base_costs in product(range(max_supply + 1), repeat=candidate_count):
+            traces += 1
+            result = state_bound_fixed_point(base_costs, supply, 1)
+            total = sum(result["costs"].get(index, 0) + 1 for index in result["admitted"])
+            safe = (
+                result["rounds"] <= candidate_count + 1
+                and total <= supply
+                and all(result["costs"][index] <= result["capacity"]
+                        for index in result["admitted"])
+                and set(result["admitted"]).isdisjoint(result["rejected"])
+            )
+            if not safe:
+                violations.append({
+                    "supply": supply,
+                    "base_costs": list(base_costs),
+                    "result": result,
+                    "total": total,
+                })
+    return {
+        "traces": traces,
+        "violations": violations,
+        "all_safe": len(violations) == 0,
+    }
+
+
 def records():
-    # Funded boundary: Sigma = Delta + margin admits, and the debit (= Delta)
+    # Funded boundary: Sigma = Delta + fee admits, and the cost plus fee debit
     # leaves a non-negative pool (no underflow).
-    funded = settle(demand=8, supply=10, margin=2)
-    # Just below the margin: Sigma = Delta + margin - 1 is REJECTED (no debit).
-    rejected = settle(demand=8, supply=9, margin=2)
+    funded = settle(demand=8, supply=10, fee=2)
+    # Just below the boundary: Sigma = Delta + fee - 1 is REJECTED (no debit).
+    rejected = settle(demand=8, supply=9, fee=2)
     # Drained pool: a present-but-zero supply rejects a further per-COMM demand
     # (the §7.7 duplicate-deploy double-spend shape).
-    drained = settle(demand=3, supply=0, margin=0)
+    drained = settle(demand=3, supply=0, fee=1)
     # Block settlement is the sum of independent per-signature pool debits.
-    multi = [settle(8, 10, 0), settle(5, 4, 0), settle(3, 3, 0)]
+    multi = [settle(8, 10, 1), settle(5, 4, 1), settle(3, 4, 1)]
     multi_debit = sum(item.get("settlement_debit", 0) for item in multi if item["valid"])
     multi_supply_after = sum(item.get("supply_after", 0) for item in multi if item["valid"])
 
-    # #13a/#13b — spec-strict acceptance-gate activation + the #13b genesis
-    # client funding-slot seed. Three deterministic witnesses:
-    #   (1) STRICT + ABSENT pool + Δ>0 ⇒ REJECTED (effective supply 0 < Δ).
-    #   (2) flag-OFF + ABSENT pool + Δ>0 ⇒ ADMITTED-UNENFORCED (transitional).
-    #   (3) STRICT + PRESENT funded client pool (the #13b genesis seed) ⇒
-    #       ADMITTED + debited exactly Δ. This is the end-to-end #13b payoff:
-    #       seeding Σ⟦c⟧ at genesis makes the client pool present+funded, so a
-    #       strict shard ADMITS it (rather than rejecting it as underfunded).
-    strict_absent_reject = strict_admit(demand=5, pool_present=None, strict=True, margin=1)
-    flagoff_absent_admit = strict_admit(demand=5, pool_present=None, strict=False, margin=1)
-    strict_funded_client = strict_admit(demand=4, pool_present=10, strict=True, margin=1)
+    absent_reject = admit(demand=5, pool_present=None, fee=1)
+    absent_zero_demand_reject = admit(demand=0, pool_present=None, fee=1)
+    funded_client = admit(demand=4, pool_present=10, fee=1)
     # The model's own consistency asserts (a regression flips classification).
-    assert strict_absent_reject["admitted"] is False and strict_absent_reject["settlement_debit"] == 0, \
-        "strict + absent + Δ>0 must be REJECTED with no debit"
-    assert flagoff_absent_admit["admitted"] is True and flagoff_absent_admit["enforced"] is False \
-        and flagoff_absent_admit["settlement_debit"] == 0, \
-        "flag-off + absent + Δ>0 must be ADMITTED-UNENFORCED with no debit"
-    assert strict_funded_client["admitted"] is True and strict_funded_client["settlement_debit"] == 4 \
-        and strict_funded_client["supply_after"] == 6, \
-        "strict + present funded client (#13b seed) must be ADMITTED + debited exactly Δ"
+    assert absent_reject["admitted"] is False and absent_reject["settlement_debit"] == 0, \
+        "absent + Δ>0 must be REJECTED with no debit"
+    assert absent_zero_demand_reject["admitted"] is False, \
+        "absent + Δ=0 must still be REJECTED when the fee cannot be funded"
+    assert funded_client["admitted"] is True and funded_client["settlement_debit"] == 4 \
+        and funded_client["fee_debit"] == 1 and funded_client["supply_after"] == 5, \
+        "present funded client must be ADMITTED and pay realized cost plus fee"
 
     # #12 — the EXACT per-component (Split/Join) compound settlement debit. The
     # bounded-EXHAUSTIVE sweep MUST find zero violations across every admissible
@@ -426,6 +473,12 @@ def records():
         and admission_gate_witness["live_eff2"] == 1 \
         and admission_gate_witness["eff2_pre_fix"] == 3, \
         "TM-CA-165 witness: shared Σ⟦s1⟧=3 must reject the second demand-2 group (live cap 1)"
+    state_bound_search = state_bound_fixed_point_search()
+    assert state_bound_search["all_safe"], (
+        "state-bound fixed-point search found a violation: %s"
+        % json.dumps(state_bound_search["violations"][:3], default=schema_json_default)
+    )
+    state_bound_witness = state_bound_fixed_point([1, 4, 2], 6, 1)
     # Witness 1 — combined-pool-first then component pair: Σ⟦comp⟧=1, Σ1=Σ2=5,
     # k=3 ⇒ draw_compound=1, draw_pair=2; post=(0,3,3), total_drawn=1+2·2=5=k+drawn.
     compound_split_witness, compound_split_props = compound_settle_properties(1, 5, 5, 3)
@@ -445,58 +498,78 @@ def records():
         record(
             "settlement",
             "confirmed_safe",
-            "sage_per_comm_funding_admits_when_supply_meets_demand_plus_margin",
-            "A deploy is admitted iff Sigma_s >= Delta_s + margin; its settlement debit (= the per-COMM demand) never underflows the supply pool.",
-            canonical_scenario("funded_admission", settlement={"kind": "per_comm_settle", "demand": 8, "supply": 10, "margin": 2}, expected_classification="confirmed_safe"),
+            "sage_state_bound_admission_fixed_point",
+            "State-bound proof execution removes exhausted or underfunded candidates, re-executes the retained sequence, and terminates with exact costs whose cost-plus-fee sum fits supply.",
+            canonical_scenario(
+                "state_bound_admission_fixed_point",
+                threat_family="settlement",
+                settlement={"kind": "state_bound_fixed_point", "supply": 6, "fee": 1},
+                concurrency={"interleavings": int(state_bound_search["traces"])},
+                expected_invariants=["proof_completes", "exact_cost_funded", "fixed_point_terminates"],
+                expected_classification="confirmed_safe",
+            ),
+            {"witness": state_bound_witness,
+             "traces_searched": int(state_bound_search["traces"]),
+             "violations": len(state_bound_search["violations"])},
+            ["Rocq: exhausted_execution_cannot_be_certified / admitted_costs_are_funded",
+             "TLA+: StateBoundAdmission AdmissionRequiresCompletedProof / EvidenceMatchesCommit",
+             "Rust: admit_with_state_bound_evidence"],
+        ),
+        record(
+            "settlement",
+            "confirmed_safe",
+            "sage_per_comm_funding_admits_when_supply_meets_cost_plus_fee",
+            "A deploy is admitted iff Sigma_s >= Delta_s + fee; realized cost is burned and the fee is transferred without underflow.",
+            canonical_scenario("funded_admission", settlement={"kind": "per_comm_settle", "demand": 8, "supply": 10, "fee": 2}, expected_classification="confirmed_safe"),
             funded,
             ["Rocq: consumed_fuel_count_eq_token_drop / funded_settlement_debit_never_underflows_supply (kani)", "Rust: settlement_debit_equals_comm_count"],
         ),
         record(
             "settlement",
             "confirmed_safe",
-            "sage_per_comm_reject_below_demand_plus_margin",
-            "Sigma_s strictly below Delta_s + margin is rejected and debits nothing (§7.7 reject direction).",
-            canonical_scenario("rejected_admission", settlement={"kind": "per_comm_settle", "demand": 8, "supply": 9, "margin": 2}, expected_classification="confirmed_safe"),
+            "sage_per_comm_reject_below_cost_plus_fee",
+            "Sigma_s strictly below Delta_s + fee is rejected and debits nothing (§7.7 reject direction).",
+            canonical_scenario("rejected_admission", settlement={"kind": "per_comm_settle", "demand": 8, "supply": 9, "fee": 2}, expected_classification="confirmed_safe"),
             rejected,
-            ["Rocq: reject_below_demand_plus_margin (kani)", "Rust: funded_unfunded_boundary_at_margin"],
+            ["Rocq: positive_exact_demand_cannot_use_absent_supply", "Rust: funded_unfunded_boundary_at_def19"],
         ),
         record(
             "settlement",
             "confirmed_safe",
             "sage_per_comm_drained_pool_rejects_double_spend",
             "A present-but-drained supply (Sigma = 0) rejects a further per-COMM demand — the §7.7 duplicate-deploy double-spend shape.",
-            canonical_scenario("drained_pool", settlement={"kind": "per_comm_settle", "demand": 3, "supply": 0, "margin": 0}, expected_classification="confirmed_safe"),
+            canonical_scenario("drained_pool", settlement={"kind": "per_comm_settle", "demand": 3, "supply": 0, "fee": 1}, expected_classification="confirmed_safe"),
             drained,
             ["Rust: drained_present_pool_rejects"],
         ),
         record(
             "settlement",
             "confirmed_safe",
-            "sage_strict_absent_pool_rejects_positive_demand",
-            "#13a: with strict_funding_enforcement ON, an ABSENT pool (effective Sigma=0) REJECTS a Delta>0 deploy (§7.6 step 5: rejected without executing any part, no state change, no debit).",
-            canonical_scenario("strict_absent_reject", settlement={"kind": "strict_admit", "demand": 5, "pool_present": None, "strict": True, "margin": 1}, expected_classification="confirmed_safe"),
-            strict_absent_reject,
-            ["Rocq: strict_reject_when_underfunded / strict_absent_pool_rejects_positive_demand",
-             "TLA+: EvalScheduling Inv_StrictRejectsAbsent (EvalStrictAbsent.cfg)",
-             "Rust: strict_absent_pool_rejects"],
+            "sage_absent_pool_rejects_positive_reservation",
+            "An ABSENT pool has effective Sigma=0 and rejects a positive cost-plus-fee reservation before execution.",
+            canonical_scenario("absent_reject", settlement={"kind": "mandatory_admit", "demand": 5, "pool_present": None, "fee": 1}, expected_classification="confirmed_safe"),
+            absent_reject,
+            ["Rocq: positive_exact_demand_cannot_use_absent_supply",
+             "TLA+: EndToEndCostConsensus EveryExecutedDeploymentWasFunded",
+             "Rust: absent_pool_is_zero_supply_and_rejects"],
         ),
         record(
             "settlement",
             "confirmed_safe",
-            "sage_flagoff_absent_pool_admits_unenforced",
-            "#13a back-compat: with strict OFF, an ABSENT pool ADMITS the same Delta>0 deploy UNENFORCED with no debit (the transitional per-pool-presence early-admit) — byte-identical to pre-cost-accounting behavior.",
-            canonical_scenario("flagoff_absent_admit", settlement={"kind": "strict_admit", "demand": 5, "pool_present": None, "strict": False, "margin": 1}, expected_classification="confirmed_safe"),
-            flagoff_absent_admit,
-            ["Rust: absent_pool_admits_without_enforcement / strict_flag_off_is_byte_identical_to_transitional"],
+            "sage_absent_pool_cannot_pay_zero_cost_fee",
+            "Even zero cost requires the deterministic fee, so an absent pool cannot admit a zero-demand deployment.",
+            canonical_scenario("absent_zero_demand_reject", settlement={"kind": "mandatory_admit", "demand": 0, "pool_present": None, "fee": 1}, expected_classification="confirmed_safe"),
+            absent_zero_demand_reject,
+            ["Rust: zero_demand_is_fee_gated"],
         ),
         record(
             "settlement",
             "confirmed_safe",
-            "sage_strict_funded_client_admitted_and_debited",
-            "#13b end-to-end: a client whose Sigma_c was SEEDED at genesis (a PRESENT, funded pool) is, under strict mode, ADMITTED and debited exactly its demand (post = pre - Delta). Seeding the pool at genesis is what lets a strict shard admit the clients it intends to fund (rather than rejecting them as underfunded).",
-            canonical_scenario("strict_funded_client", settlement={"kind": "strict_admit", "demand": 4, "pool_present": 10, "strict": True, "margin": 1}, expected_classification="confirmed_safe"),
-            strict_funded_client,
-            ["Rust: client_fuel_allocation_credits_sigma_c_at_genesis / strict_mode_funded_client_admitted_and_replays",
+            "sage_funded_client_admitted_and_debited",
+            "A client whose Sigma_c was seeded at genesis is admitted when it funds cost plus fee; close block burns realized cost and transfers the fee.",
+            canonical_scenario("funded_client", settlement={"kind": "mandatory_admit", "demand": 4, "pool_present": 10, "fee": 1}, expected_classification="confirmed_safe"),
+            funded_client,
+            ["Rust: genesis_supply_is_committed_funded_and_replay_deterministic / funded_client_is_admitted_and_replays",
              "Rocq: funding_check_balance_sound", "TLA+: EvalScheduling acceptance gate"],
         ),
         record(

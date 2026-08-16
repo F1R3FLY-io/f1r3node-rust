@@ -43,7 +43,7 @@ Fixpoint combined_key (s1 : sig) (ts : list sig) : sig :=
 Lemma sig_atoms_nonempty : forall s, 1 <= length (sig_atoms s).
 Proof.
   induction s; simpl; try lia.
-  rewrite app_length. lia.
+  rewrite length_app. lia.
 Qed.
 
 (* ── Proposition 4.7: conservation of authority ─────────────────────────────
@@ -106,7 +106,7 @@ Proof.
   intros s1 t ts.
   pose proof (join_authority_conserved s1 (t :: ts)) as HP.
   apply Permutation_length in HP. rewrite HP. simpl.
-  rewrite app_length, app_length.
+  rewrite length_app, length_app.
   pose proof (sig_atoms_nonempty t). lia.
 Qed.
 

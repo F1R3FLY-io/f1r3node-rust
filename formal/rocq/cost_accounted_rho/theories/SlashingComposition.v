@@ -60,6 +60,7 @@ Record slash_system_effect := {
 
 Record slash_authorization_view := {
   slash_view_current_epoch : nat;
+  slash_view_evidence_present : bool;
   slash_view_evidence_epoch : nat;
   slash_view_target_activation_epoch : nat;
   slash_view_parent_pre_state_bond : nat;
@@ -164,13 +165,14 @@ Definition slash_evidence_epoch_current
 Definition slash_authorized_by_parent_pre_state
   (view : slash_authorization_view)
   : bool :=
+  slash_view_evidence_present view &&
   slash_evidence_epoch_current view &&
   (0 <? slash_view_parent_pre_state_bond view).
 
-Definition recovered_rejected_slash_current
+Definition canonical_slash_candidate_selected
   (view : slash_authorization_view)
   : bool :=
-  slash_evidence_epoch_current view.
+  slash_authorized_by_parent_pre_state view.
 
 Definition slash_execution_bond_zero
   (view : slash_authorization_view)
@@ -315,13 +317,14 @@ Qed.
 
 Theorem parent_pre_state_authorizes_current_cost_evidence :
   forall view,
+    slash_view_evidence_present view = true ->
     slash_evidence_epoch_current view = true ->
     0 < slash_view_parent_pre_state_bond view ->
     slash_authorized_by_parent_pre_state view = true.
 Proof.
-  intros view Hcurrent Hbond.
+  intros view Hpresent Hcurrent Hbond.
   unfold slash_authorized_by_parent_pre_state.
-  rewrite Hcurrent.
+  rewrite Hpresent, Hcurrent.
   apply Nat.ltb_lt in Hbond.
   rewrite Hbond.
   reflexivity.
@@ -348,19 +351,25 @@ Proof.
   intros view Hparent _.
   unfold slash_authorized_by_parent_pre_state.
   rewrite Hparent.
-  destruct (slash_evidence_epoch_current view); reflexivity.
+  destruct (slash_view_evidence_present view),
+    (slash_evidence_epoch_current view); reflexivity.
 Qed.
 
-Theorem recovered_rejected_slash_requires_current_cost_evidence :
+Theorem canonical_slash_candidate_requires_current_cost_evidence :
   forall view,
-    recovered_rejected_slash_current view = true ->
+    canonical_slash_candidate_selected view = true ->
+    slash_view_evidence_present view = true /\
     slash_evidence_epoch_current view = true.
 Proof.
-  intros view Hcurrent.
-  exact Hcurrent.
+  intros view Hselected.
+  unfold canonical_slash_candidate_selected,
+    slash_authorized_by_parent_pre_state in Hselected.
+  apply andb_true_iff in Hselected as [HpresentAndCurrent _].
+  apply andb_true_iff in HpresentAndCurrent as [Hpresent Hcurrent].
+  split; assumption.
 Qed.
 
-Theorem stale_recovered_slash_not_authorized :
+Theorem stale_canonical_slash_candidate_not_authorized :
   forall view,
     slash_view_evidence_epoch view <> slash_view_current_epoch view \/
     slash_view_target_activation_epoch view <> slash_view_current_epoch view ->
@@ -369,14 +378,26 @@ Proof.
   intros view Hnoncurrent.
   destruct (slash_authorized_by_parent_pre_state view) eqn:Hauthorized.
   - unfold slash_authorized_by_parent_pre_state in Hauthorized.
+    apply andb_true_iff in Hauthorized as [HpresentAndCurrent _].
+    apply andb_true_iff in HpresentAndCurrent as [_ Hcurrent].
     destruct Hnoncurrent as [Hevidence | Htarget].
-    + apply andb_true_iff in Hauthorized as [Hcurrent _].
-      apply current_cost_evidence_epoch_sound in Hcurrent as [Heq _].
+    + apply current_cost_evidence_epoch_sound in Hcurrent as [Heq _].
       contradiction.
-    + apply andb_true_iff in Hauthorized as [Hcurrent _].
-      apply current_cost_evidence_epoch_sound in Hcurrent as [_ Heq].
+    + apply current_cost_evidence_epoch_sound in Hcurrent as [_ Heq].
       contradiction.
   - reflexivity.
+Qed.
+
+Theorem missing_evidence_cannot_select_canonical_slash_candidate :
+  forall view,
+    slash_view_evidence_present view = false ->
+    canonical_slash_candidate_selected view = false.
+Proof.
+  intros view Hmissing.
+  unfold canonical_slash_candidate_selected,
+    slash_authorized_by_parent_pre_state.
+  rewrite Hmissing.
+  reflexivity.
 Qed.
 
 Theorem cost_invalid_block_evidence_does_not_change_user_cost :

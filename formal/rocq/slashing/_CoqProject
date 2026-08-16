@@ -67,6 +67,7 @@ theories/InvalidBlock.v
 theories/EquivocationRecord.v
 theories/DAGState.v
 theories/EquivocationDetector.v
+theories/DetectorProduct.v
 theories/PoSContract.v
 theories/ValidatorRedemption.v
 theories/SlashDeploy.v

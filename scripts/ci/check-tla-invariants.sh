@@ -85,6 +85,13 @@ POST_FIX_CONFIGS=(
     slashing/MC_WithdrawFlow
     block_admission/MC_BlockAdmission
     deploy_occurrence/MC_DeployOccurrence
+    deploy_recovery/MC_DeployRecovery
+    deploy_recovery/MC_MergeRecoveryCoherence
+    deploy_recovery/MC_RejectionReasonConfluence
+    deploy_recovery/MC_ProtocolActivationCoherence
+    deploy_recovery/MC_ProtocolVersionLifecycle
+    deploy_recovery/MC_ProtocolVersionLifecycle_legacy_rejected
+    deploy_recovery/MC_ProtocolVersionLifecycle_unsupported_rejected
 )
 
 if [[ "${RUN_EXHAUSTIVE_TLA:-0}" == "1" ]]; then

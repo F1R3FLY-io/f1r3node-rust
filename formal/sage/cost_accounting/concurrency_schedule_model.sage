@@ -66,6 +66,143 @@ def _valid_events(attempt_log, max_weight):
     return [e for e in attempt_log if 0 < int(e["weight"]) <= max_weight]
 
 
+def semantic_comm_identity(consume, produces, peeks):
+    semantic_produces = sorted(
+        (
+            produce["channel"],
+            produce["datum_hash"],
+            bool(produce["persistent"]),
+            int(produce["repetition_count"]),
+        )
+        for produce in produces
+    )
+    return (
+        consume["channels_hash"],
+        consume["patterns_hash"],
+        consume["continuation_hash"],
+        bool(consume["persistent"]),
+        tuple(semantic_produces),
+        tuple(sorted(int(peek) for peek in peeks)),
+    )
+
+
+def execute_atomic_comms(order, requirements, budget):
+    pending = set()
+    committed = []
+    rejected = []
+    for command in order:
+        available = pending | {command}
+        ready = sorted(
+            event
+            for event, required in requirements.items()
+            if event not in committed and required.issubset(available)
+        )
+        if not ready:
+            pending.add(command)
+            continue
+        event = ready[0]
+        before = frozenset(pending)
+        if len(committed) >= budget:
+            rejected.append((event, command, before, frozenset(pending)))
+            continue
+        pending = available - requirements[event]
+        committed.append(event)
+    return frozenset(pending), tuple(sorted(committed)), tuple(rejected)
+
+
+def assert_atomic_comm_semantics():
+    requirements = {
+        "binary": frozenset(["send-a", "receive-a"]),
+        "join": frozenset(["send-b", "send-c", "join-bc"]),
+    }
+    commands = ["send-a", "receive-a", "send-b", "send-c", "join-bc", "unmatched"]
+    terminal_states = set()
+    permutations_checked = 0
+    for order in itertools.permutations(commands):
+        pending, committed, rejected = execute_atomic_comms(order, requirements, 2)
+        assert not rejected
+        assert committed == ("binary", "join")
+        assert pending == frozenset(["unmatched"])
+        assert len(committed) == 2
+        terminal_states.add((pending, committed))
+        permutations_checked += 1
+    assert len(terminal_states) == 1
+
+    rejection_orders_checked = 0
+    for order in itertools.permutations(["send-a", "receive-a", "unmatched"]):
+        pending, committed, rejected = execute_atomic_comms(
+            order, {"binary": requirements["binary"]}, 0
+        )
+        assert committed == ()
+        assert len(rejected) == 1
+        _, trigger, before, after = rejected[0]
+        assert before == after
+        assert trigger not in after
+        assert len(committed) == 0
+        rejection_orders_checked += 1
+
+    consume = {
+        "channels_hash": "channels",
+        "patterns_hash": "patterns",
+        "continuation_hash": "continuation",
+        "persistent": False,
+    }
+    producer_triggered = [
+        {
+            "channel": "a",
+            "datum_hash": "datum",
+            "persistent": False,
+            "repetition_count": 1,
+            "output_value": "scheduler-local-a",
+            "failed": False,
+        },
+        {
+            "channel": "b",
+            "datum_hash": "datum-b",
+            "persistent": True,
+            "repetition_count": 1,
+            "output_value": "scheduler-local-c",
+            "failed": False,
+        },
+    ]
+    consumer_triggered = [
+        {
+            "channel": "b",
+            "datum_hash": "datum-b",
+            "persistent": True,
+            "repetition_count": 1,
+            "output_value": "scheduler-local-d",
+            "failed": True,
+        },
+        {
+            "channel": "a",
+            "datum_hash": "datum",
+            "persistent": False,
+            "repetition_count": 1,
+            "output_value": "scheduler-local-b",
+            "failed": True,
+        }
+    ]
+    stable_identity = semantic_comm_identity(consume, producer_triggered, [])
+    assert stable_identity == semantic_comm_identity(consume, consumer_triggered, [])
+    changed_repetition = list(consumer_triggered)
+    changed_repetition[0] = dict(changed_repetition[0], repetition_count=2)
+    assert stable_identity != semantic_comm_identity(consume, changed_repetition, [])
+
+    return {
+        "arrival_permutations_checked": int(permutations_checked),
+        "rejection_permutations_checked": int(rejection_orders_checked),
+        "terminal_state_count": int(len(terminal_states)),
+        "successful_binary_cost": 1,
+        "successful_join_cost": 1,
+        "unmatched_introduction_cost": 0,
+        "rejection_preserves_state": True,
+        "trigger_and_telemetry_independent_identity": True,
+        "producer_order_independent_identity": True,
+        "repetition_count_authenticated": True,
+    }
+
+
 def assert_schedule_independence(seed=20260527, trials=400, max_forks=6,
                                  max_weight_cap=2 ** 63 - 1):
     """Bounded-exhaustive check of the consensus-quantity claims:
@@ -235,6 +372,7 @@ def assert_schedule_independence(seed=20260527, trials=400, max_forks=6,
 
 def records():
     schedule_independence_witness = assert_schedule_independence()
+    atomic_comm_witness = assert_atomic_comm_semantics()
 
     oop_race = [
         canonical_event("source", 3, descriptor="branch-a", path=[0]),
@@ -308,7 +446,7 @@ def records():
             "concurrency_schedule",
             "proof_or_model_strengthening",
             "sage_concurrency_reconciliation_is_schedule_independent",
-            "Option E: post-hoc canonical reconciliation produces the same (committed_set, oop_event, consumed_units) triple under any concurrent attempt-log permutation. The Rust runtime races lock-free CAS attempts; the consensus-relevant values come from the canonical walk, not from CAS race winners.",
+            "Historical low-level reservation diagnostic: post-hoc canonical reconciliation produces the same (committed_set, oop_event, consumed_units) triple under any concurrent attempt-log permutation. Native consensus cost is established separately from successful atomic COMM observations; this record does not define Rholang cost semantics.",
             canonical_scenario(
                 "concurrency_reconciliation_schedule_independent",
                 events=oop_race,
@@ -341,8 +479,8 @@ def records():
             "concurrency_schedule",
             "proof_or_model_strengthening",
             "sage_concurrency_consumed_and_verdict_schedule_independent_bounded_exhaustive",
-            "Bounded-exhaustive over random fork/weight/budget configs: the consensus "
-            "cost quantity `consumed` (= min(initial, Σ valid weights)) and the OOP "
+            "Bounded-exhaustive low-level reservation diagnostic over random fork/weight/budget configs: "
+            "`consumed` (= min(initial, Σ valid weights)) and the OOP "
             "verdict are schedule-independent under EVERY permutation of the attempt "
             "log, and the non-OOP committed multiset is complete. This is the property "
             "that survives the dropping of the per-operation cost_trace_digest from "
@@ -386,6 +524,99 @@ def records():
                 "TLA+: RuntimeBudgetReplay.NonOopCommittedMultisetComplete",
                 "TLA+: RuntimeBudgetReplay.TotalCostMatchesClampedSum",
                 "Loom: reconcile_canonical_oop_is_higher_rank_event_under_any_schedule",
+            ],
+        ),
+        record(
+            "concurrency_schedule",
+            "confirmed_safe",
+            "sage_atomic_comm_arrival_order_is_semantically_irrelevant",
+            "Every permutation of two independent matches plus one unmatched introduction commits the same binary and join COMMs, charges one unit per COMM, and leaves only the unmatched command resident.",
+            canonical_scenario(
+                "atomic_comm_arrival_order",
+                events=success_then_finalize,
+                initial_budget=2,
+                concurrency={"all_arrival_permutations": True},
+                threat_family="concurrency_schedule",
+                expected_invariants=[
+                    "unmatched_introductions_are_free",
+                    "successful_comm_costs_exactly_one",
+                    "join_arity_does_not_multiply_cost",
+                    "terminal_rspace_is_schedule_independent",
+                ],
+                rust_reproducer={"test": "observes_exactly_once_for_either_trigger_side"},
+                promotion_target="tla:AtomicCommAccounting",
+                expected_classification="confirmed_safe",
+            ),
+            atomic_comm_witness,
+            [
+                "Rocq: committed_comm_costs_exactly_one",
+                "Rocq: join_arity_does_not_multiply_cost",
+                "TLA+: AtomicCommAccounting.TerminalRSpaceIsScheduleIndependent",
+                "Rust: observes_exactly_once_for_either_trigger_side",
+            ],
+        ),
+        record(
+            "concurrency_schedule",
+            "confirmed_safe",
+            "sage_atomic_comm_identity_excludes_scheduler_telemetry",
+            "Producer order, producer telemetry, and trigger direction do not change the semantic COMM identity, while repetition count remains authenticated.",
+            canonical_scenario(
+                "atomic_comm_semantic_identity",
+                events=success_then_finalize,
+                initial_budget=2,
+                concurrency={
+                    "opposite_trigger_paths": True,
+                    "reversed_producer_order": True,
+                    "different_telemetry": True,
+                },
+                threat_family="concurrency_schedule",
+                expected_invariants=[
+                    "trigger_side_does_not_change_cost",
+                    "producer_order_does_not_change_identity",
+                    "scheduler_telemetry_not_authenticated",
+                    "repetition_count_authenticated",
+                ],
+                rust_reproducer={"test": "cost_identity_ignores_produce_telemetry"},
+                promotion_target="rocq:trigger_side_does_not_change_cost",
+                expected_classification="confirmed_safe",
+            ),
+            {
+                "trigger_and_telemetry_independent_identity": atomic_comm_witness["trigger_and_telemetry_independent_identity"],
+                "producer_order_independent_identity": atomic_comm_witness["producer_order_independent_identity"],
+                "repetition_count_authenticated": atomic_comm_witness["repetition_count_authenticated"],
+            },
+            [
+                "Rocq: trigger_side_does_not_change_cost",
+                "Rust: cost_identity_ignores_produce_telemetry",
+                "Rust: cost_identity_canonicalizes_producer_order",
+                "Rust: cost_identity_commits_repetition_count",
+            ],
+        ),
+        record(
+            "concurrency_schedule",
+            "confirmed_safe",
+            "sage_atomic_comm_rejection_precedes_state_mutation",
+            "Every trigger order at zero budget rejects before removing or storing RSpace data and emits no committed COMM cost.",
+            canonical_scenario(
+                "atomic_comm_rejection",
+                events=[invalid_event],
+                initial_budget=0,
+                concurrency={"all_trigger_orders": True},
+                threat_family="concurrency_schedule",
+                expected_invariants=["rejected_comm_is_atomic", "rejected_comm_costs_zero"],
+                rust_reproducer={"test": "replay_observer_rejection_preserves_rspace_and_trace"},
+                promotion_target="tla:AtomicCommRejection",
+                expected_classification="confirmed_safe",
+            ),
+            {
+                "orders_checked": atomic_comm_witness["rejection_permutations_checked"],
+                "rejection_preserves_state": atomic_comm_witness["rejection_preserves_state"],
+                "committed_cost": 0,
+            },
+            [
+                "Rocq: rejected_comm_is_atomic",
+                "TLA+: AtomicCommRejection.RejectedCommIsAtomic",
+                "Rust: replay_observer_rejection_preserves_rspace_and_trace",
             ],
         ),
     ]

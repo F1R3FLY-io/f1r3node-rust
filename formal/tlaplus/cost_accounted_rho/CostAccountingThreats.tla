@@ -49,7 +49,9 @@ VARIABLES
     \* @type: Int;
     executionBond,
     \* @type: Bool;
-    recoveredSlash,
+    slashEvidence,
+    \* @type: Bool;
+    slashCandidate,
     \* @type: Bool;
     slashAccepted,
     \* @type: Bool;
@@ -61,7 +63,8 @@ vars ==
     <<mode, present, committedDigest, actualDigest, committedCount,
       actualCount, accepted, fuel, violation, evidence, evidenceEpoch,
       targetActivationEpoch, currentEpoch, parentBond, ambientBond,
-      executionBond, recoveredSlash, slashAccepted, slashNoop, costBoundary>>
+      executionBond, slashEvidence, slashCandidate, slashAccepted, slashNoop,
+      costBoundary>>
 
 ModeSet == {"Legacy", "CostAccounted"}
 DigestSet == {GoodDigest, BadDigest}
@@ -95,6 +98,7 @@ CurrentSlashEvidence ==
     /\ targetActivationEpoch = currentEpoch
 
 ParentPreStateAuthorizesSlash ==
+    /\ slashEvidence
     /\ CurrentSlashEvidence
     /\ parentBond > 0
 
@@ -115,7 +119,8 @@ Init ==
     /\ parentBond = 1
     /\ ambientBond = 0
     /\ executionBond = 1
-    /\ recoveredSlash = FALSE
+    /\ slashEvidence = TRUE
+    /\ slashCandidate = FALSE
     /\ slashAccepted = FALSE
     /\ slashNoop = FALSE
     /\ costBoundary = InitialFuel
@@ -137,7 +142,8 @@ TypeOK ==
     /\ parentBond \in BondSet
     /\ ambientBond \in BondSet
     /\ executionBond \in BondSet
-    /\ recoveredSlash \in BOOLEAN
+    /\ slashEvidence \in BOOLEAN
+    /\ slashCandidate \in BOOLEAN
     /\ slashAccepted \in BOOLEAN
     /\ slashNoop \in BOOLEAN
     /\ costBoundary \in 0..InitialFuel
@@ -150,7 +156,7 @@ ValidateReplay ==
     /\ UNCHANGED <<mode, present, committedDigest, actualDigest,
         committedCount, actualCount, fuel, violation, evidence,
         evidenceEpoch, targetActivationEpoch, currentEpoch, parentBond,
-        ambientBond, executionBond, recoveredSlash, slashAccepted,
+        ambientBond, executionBond, slashEvidence, slashCandidate, slashAccepted,
         slashNoop, costBoundary>>
 
 \* TM-CA-151: digest/count are diagnostic; this models the digest-inclusive refinement level, not a production consensus rejection.
@@ -161,7 +167,7 @@ TamperDigest ==
     /\ UNCHANGED <<mode, present, committedDigest, committedCount,
         actualCount, fuel, evidence, evidenceEpoch, targetActivationEpoch,
         currentEpoch, parentBond, ambientBond, executionBond,
-        recoveredSlash, slashAccepted, slashNoop, costBoundary>>
+        slashEvidence, slashCandidate, slashAccepted, slashNoop, costBoundary>>
 
 \* TM-CA-151: digest/count are diagnostic; this models the digest-inclusive refinement level, not a production consensus rejection.
 TamperCount ==
@@ -171,7 +177,7 @@ TamperCount ==
     /\ UNCHANGED <<mode, present, committedDigest, actualDigest,
         committedCount, fuel, evidence, evidenceEpoch, targetActivationEpoch,
         currentEpoch, parentBond, ambientBond, executionBond,
-        recoveredSlash, slashAccepted, slashNoop, costBoundary>>
+        slashEvidence, slashCandidate, slashAccepted, slashNoop, costBoundary>>
 
 DropCommitment ==
     /\ present' = FALSE
@@ -181,7 +187,7 @@ DropCommitment ==
     /\ violation' = TRUE
     /\ UNCHANGED <<mode, actualDigest, actualCount, fuel, evidence,
         evidenceEpoch, targetActivationEpoch, currentEpoch, parentBond,
-        ambientBond, executionBond, recoveredSlash, slashAccepted,
+        ambientBond, executionBond, slashEvidence, slashCandidate, slashAccepted,
         slashNoop, costBoundary>>
 
 LegacyDowngradeAttempt ==
@@ -191,7 +197,7 @@ LegacyDowngradeAttempt ==
     /\ UNCHANGED <<present, committedDigest, actualDigest, committedCount,
         actualCount, fuel, evidence, evidenceEpoch, targetActivationEpoch,
         currentEpoch, parentBond, ambientBond, executionBond,
-        recoveredSlash, slashAccepted, slashNoop, costBoundary>>
+        slashEvidence, slashCandidate, slashAccepted, slashNoop, costBoundary>>
 
 UnauthorizedSettlementAttempt ==
     /\ violation' = TRUE
@@ -200,7 +206,7 @@ UnauthorizedSettlementAttempt ==
     /\ UNCHANGED <<mode, present, committedDigest, actualDigest,
         committedCount, actualCount, evidence, evidenceEpoch,
         targetActivationEpoch, currentEpoch, parentBond, ambientBond,
-        executionBond, recoveredSlash, slashAccepted, slashNoop,
+        executionBond, slashEvidence, slashCandidate, slashAccepted, slashNoop,
         costBoundary>>
 
 AuthorizedSettlement ==
@@ -208,7 +214,7 @@ AuthorizedSettlement ==
     /\ UNCHANGED <<mode, present, committedDigest, actualDigest,
         committedCount, actualCount, accepted, violation, evidence,
         evidenceEpoch, targetActivationEpoch, currentEpoch, parentBond,
-        ambientBond, executionBond, recoveredSlash, slashAccepted,
+        ambientBond, executionBond, slashEvidence, slashCandidate, slashAccepted,
         slashNoop, costBoundary>>
 
 RecordEvidence ==
@@ -216,7 +222,7 @@ RecordEvidence ==
     /\ UNCHANGED <<mode, present, committedDigest, actualDigest,
         committedCount, actualCount, accepted, fuel, violation,
         evidenceEpoch, targetActivationEpoch, currentEpoch, parentBond,
-        ambientBond, executionBond, recoveredSlash, slashAccepted,
+        ambientBond, executionBond, slashEvidence, slashCandidate, slashAccepted,
         slashNoop, costBoundary>>
 
 SelectSlashView ==
@@ -226,26 +232,29 @@ SelectSlashView ==
     /\ parentBond' \in BondSet
     /\ ambientBond' \in BondSet
     /\ executionBond' \in BondSet
-    /\ recoveredSlash' = FALSE
+    /\ slashEvidence' \in BOOLEAN
+    /\ slashCandidate' = FALSE
     /\ slashAccepted' = FALSE
     /\ slashNoop' = FALSE
     /\ costBoundary' = costBoundary
     /\ UNCHANGED <<mode, present, committedDigest, actualDigest,
         committedCount, actualCount, accepted, fuel, violation, evidence>>
 
-RecoverRejectedSlash ==
-    /\ recoveredSlash' = CurrentSlashEvidence
+ScanCanonicalSlashEvidence ==
+    /\ slashCandidate' = ParentPreStateAuthorizesSlash
     /\ UNCHANGED <<mode, present, committedDigest, actualDigest,
         committedCount, actualCount, accepted, fuel, violation, evidence,
         evidenceEpoch, targetActivationEpoch, currentEpoch, parentBond,
-        ambientBond, executionBond, slashAccepted, slashNoop, costBoundary>>
+        ambientBond, executionBond, slashEvidence, slashAccepted, slashNoop,
+        costBoundary>>
 
 AuthorizeSlash ==
-    /\ slashAccepted' = ParentPreStateAuthorizesSlash
+    /\ slashAccepted' = slashCandidate /\ ParentPreStateAuthorizesSlash
     /\ UNCHANGED <<mode, present, committedDigest, actualDigest,
         committedCount, actualCount, accepted, fuel, violation, evidence,
         evidenceEpoch, targetActivationEpoch, currentEpoch, parentBond,
-        ambientBond, executionBond, recoveredSlash, slashNoop, costBoundary>>
+        ambientBond, executionBond, slashEvidence, slashCandidate, slashNoop,
+        costBoundary>>
 
 ExecuteSlashNoop ==
     /\ slashAccepted
@@ -256,13 +265,13 @@ ExecuteSlashNoop ==
     /\ UNCHANGED <<mode, present, committedDigest, actualDigest,
         committedCount, actualCount, accepted, violation, evidence,
         evidenceEpoch, targetActivationEpoch, currentEpoch, parentBond,
-        ambientBond, executionBond, recoveredSlash, slashAccepted>>
+        ambientBond, executionBond, slashEvidence, slashCandidate, slashAccepted>>
 
 Next ==
     ValidateReplay \/ TamperDigest \/ TamperCount \/ DropCommitment \/
     LegacyDowngradeAttempt \/ UnauthorizedSettlementAttempt \/
     AuthorizedSettlement \/ RecordEvidence \/ SelectSlashView \/
-    RecoverRejectedSlash \/ AuthorizeSlash \/ ExecuteSlashNoop
+    ScanCanonicalSlashEvidence \/ AuthorizeSlash \/ ExecuteSlashNoop
 
 Spec == Init /\ [][Next]_vars
 
@@ -281,8 +290,11 @@ CostInvalidEvidenceHasViolation ==
 ReplayTamperCannotStayAccepted ==
     violation /\ mode = "CostAccounted" /\ ~ReplayPayloadValid => ~accepted
 
-RecoveredSlashRequiresCurrentEvidence ==
-    recoveredSlash => CurrentSlashEvidence
+CanonicalSlashCandidateRequiresEvidence ==
+    slashCandidate => slashEvidence /\ CurrentSlashEvidence
+
+CanonicalSlashCandidateRequiresPositiveBond ==
+    slashCandidate => parentBond > 0
 
 SlashAuthorizationUsesParentPreState ==
     slashAccepted => ParentPreStateAuthorizesSlash
@@ -291,7 +303,7 @@ AmbientBondDoesNotAuthorizeWithoutParent ==
     (parentBond = 0 /\ ambientBond > 0) => ~slashAccepted
 
 ParentPositiveAmbientZeroCanAuthorize ==
-    (CurrentSlashEvidence /\ parentBond > 0 /\ ambientBond = 0) =>
+    (slashEvidence /\ CurrentSlashEvidence /\ parentBond > 0 /\ ambientBond = 0) =>
         ParentPreStateAuthorizesSlash
 
 SlashNoopPreservesCostBoundary ==

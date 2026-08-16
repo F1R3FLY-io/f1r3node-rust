@@ -30,6 +30,32 @@ Definition integer_add_diff (prev endv : Z) : Z :=
 Definition integer_add_merge (prev diff : Z) : Z :=
   prev + diff.
 
+Fixpoint integer_diff_total (diffs : list Z) : Z :=
+  match diffs with
+  | [] => 0
+  | diff :: tail => diff + integer_diff_total tail
+  end.
+
+Definition integer_total_result
+  (lower upper previous : Z)
+  (diffs : list Z)
+  : option Z :=
+  let result := previous + integer_diff_total diffs in
+  if (lower <=? result) && (result <=? upper)
+  then Some result
+  else None.
+
+Definition integer_selection_accepts
+  (lower upper previous : Z)
+  (diffs : list Z)
+  : bool :=
+  match integer_total_result lower upper previous diffs with
+  | Some _ => true
+  | None => false
+  end.
+
+Definition integer_application_result := integer_total_result.
+
 Fixpoint bitmask_fold (values : list bitmask) : bitmask :=
   match values with
   | [] => []
@@ -173,6 +199,48 @@ Proof.
   lia.
 Qed.
 
+Theorem integer_diff_total_permutation : forall left right,
+  Permutation left right ->
+  integer_diff_total left = integer_diff_total right.
+Proof.
+  intros left right Hpermutation.
+  induction Hpermutation; simpl; lia.
+Qed.
+
+Theorem integer_total_result_permutation :
+  forall lower upper previous left right,
+    Permutation left right ->
+    integer_total_result lower upper previous left =
+    integer_total_result lower upper previous right.
+Proof.
+  intros lower upper previous left right Hpermutation.
+  unfold integer_total_result.
+  now rewrite (integer_diff_total_permutation left right Hpermutation).
+Qed.
+
+Theorem integer_selection_application_agree :
+  forall lower upper previous diffs,
+    integer_selection_accepts lower upper previous diffs = true <->
+    exists result,
+      integer_application_result lower upper previous diffs = Some result.
+Proof.
+  intros lower upper previous diffs.
+  unfold integer_selection_accepts, integer_application_result.
+  destruct (integer_total_result lower upper previous diffs) as [result|] eqn:Hresult.
+  - split.
+    + intros _. now exists result.
+    + intros _. reflexivity.
+  - split.
+    + discriminate.
+    + intros [result Hsome]. discriminate.
+Qed.
+
+Theorem widened_total_ignores_invalid_prefix_when_final_result_fits :
+  integer_total_result 0 10 1 [10; -1] = Some 10.
+Proof.
+  reflexivity.
+Qed.
+
 Theorem mergeable_channel_bitmask_fold_preserves_bits :
   forall values bit,
     In bit (bitmask_fold values) <->
@@ -272,3 +340,8 @@ Theorem mergeable_channel_accounting_preserves_user_budget :
 Proof.
   reflexivity.
 Qed.
+
+Print Assumptions integer_diff_total_permutation.
+Print Assumptions integer_total_result_permutation.
+Print Assumptions integer_selection_application_agree.
+Print Assumptions widened_total_ignores_invalid_prefix_when_final_result_fits.

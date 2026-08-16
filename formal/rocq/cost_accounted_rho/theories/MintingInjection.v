@@ -53,11 +53,10 @@
                  CostAccountedReduction, TokenConservation (this project)
 
    ─────────────────────────────────────────────────────────────────────────
-   Item 2505 (bounded-ledger re-modeling). The supply / fee balances below
-   ([pb_balance], [credit], [epoch_mint], [fb_client]/[fb_fees]/[fb_supply],
-   [fb_collect], [fb_convert]) are modeled in [nat]: their conservation laws
-   ([fee_convert_conserves_holding], [fee_collect_conserves_holding], the epoch-mint
-   idempotency, ...) hold on the HAPPY PATH but domain-EXCLUDE the over/underflow
+   Item 2505 (bounded-ledger re-modeling). The canonical SystemVault balances
+   below ([pb_balance], [credit], [epoch_mint], [fb_client]/[fb_validator],
+   [native_fee_transfer]) are modeled in [nat]: their conservation laws and
+   epoch-mint idempotency hold on the HAPPY PATH but domain-EXCLUDE over/underflow
    the Rust runtime guards ([nat] cannot overflow). The i64-bounded [Z] re-modeling
    — where the CREDIT [checked_add_i64] / DEBIT [checked_sub_nonneg] each return
    [Some] (conservation) OR [None] (a DETERMINISTIC block rejection, item 2494) —
@@ -332,80 +331,37 @@ Proof.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
-   Section 5: The supply-pool balance layer (Stage B; DR-13)
+   Section 5: Native SystemVault minting layer (DR-13)
    ═══════════════════════════════════════════════════════════════════════════
 
-   Stage A proved the validator DRAW wallet @W_v is injective + domain-
-   separated (WalletNaming.v). Stage B adds the distinct SUPPLY POOL
-   Σ⟦v⟧ = from_sig(Ground(pk)) — the channel the WD-D2 acceptance gate reads
-   and the Rust [supply::produce_balance] writes — and the per-validator-per-
-   epoch mint ledger. We model:
+   WalletNaming.v proves that validator public keys select distinct canonical
+   SystemVault addresses. The paper's wallet and supply-pool notation are two
+   semantic roles of that existing native vault, not two persistent ledgers.
+   We therefore model:
 
-     - [supply_name pk]  : the content-addressed supply channel Σ⟦v⟧, a FOURTH
-       content-addressed family beside Wallet / Quarantine / FundingSlot. Built
-       with the SAME injective bit-encoder [encode_bits] (WalletNaming.v) under
-       a structurally-distinct [Supply] marker, so injectivity is inherited and
-       proved unconditionally.
      - [pos_state]       : the administrative state the mint reads/writes — the
-       per-validator balances [pb_balance], the mint ledger [pb_minted] (the
+       per-validator SystemVault balances [pb_balance], the mint ledger [pb_minted] (the
        Rholang "mintedEpochs": Set[(Pk,Int)]), and the halt set [pb_halted]
        (the Rholang "mintingHalted": Set[Pk]).
-     - [epoch_mint]      : the Stage-B mint operation on [pos_state]; it credits
+     - [epoch_mint]      : the native PoS mint operation on [pos_state]; it credits
        [amt] to [v] and records [(v,e)] ONLY when [v] is eligible (not halted,
-       not already minted for epoch [e]) — mirroring the Rholang fold predicate
-       and the Rust post_eval recompute. Otherwise it is the identity.
+       not already minted for epoch [e]). Otherwise it is the identity.
 
    Everything is concrete (no axioms / Section hypotheses), so the headline
    lemmas are Closed under the global context.                                 *)
 
-(* The supply-pool domain marker: a FOURTH structurally-distinct closed marker,
-   never equal to the three WalletNaming markers (a 4-deep [PReplicate] nest is
-   distinct from the 1/2/3-deep wallet/quarantine/funding-slot nests). *)
-Definition supply_marker : proc :=
-  PReplicate (PReplicate (PReplicate (PReplicate PNil))).
-
-(* Σ⟦v⟧ for validator [pk]: the quotation pairing the supply marker with the
-   injective bit-encoding of [pk]. The same shape as [domain_name], so the
-   supply channel inherits [encode_bits]'s injectivity. *)
-Definition supply_name (pk : pubkey) : name :=
-  Quote (PPar supply_marker (encode_bits pk)).
-
-(* DR-13 / Decision 7: the supply pool is INJECTIVE in the validator public
-   key — distinct validators' Σ⟦v⟧ channels are distinct, so a mint credited
-   for [pk1] can never land in [pk2]'s pool and the multi-parent merge engine
-   never conflates two validators' supply Produces. Proved by descending the
-   [Quote]/[PPar] (identical [supply_marker] on both sides) to the bit-encoding
-   equality and applying [encode_bits_injective] (WalletNaming.v's blake2b-
-   analogue injective encoder). *)
-Theorem supply_write_injective_in_pk : forall pk1 pk2,
-  supply_name pk1 = supply_name pk2 -> pk1 = pk2.
+(* DR-13: a native SystemVault credit is injective in the validator public key,
+   inherited directly from the canonical address derivation. *)
+Theorem system_vault_credit_injective_in_pk : forall pk1 pk2,
+  system_vault_name pk1 = system_vault_name pk2 -> pk1 = pk2.
 Proof.
-  intros pk1 pk2 Heq.
-  unfold supply_name in Heq.
-  injection Heq as Hbits.
-  apply encode_bits_injective. exact Hbits.
+  apply system_vault_name_injective.
 Qed.
 
-(* Inequality form: distinct keys ⇒ distinct supply pools. *)
-Corollary supply_name_distinct : forall pk1 pk2,
-  pk1 <> pk2 -> supply_name pk1 <> supply_name pk2.
+Corollary system_vault_credit_names_distinct : forall pk1 pk2,
+  pk1 <> pk2 -> system_vault_name pk1 <> system_vault_name pk2.
 Proof.
-  intros pk1 pk2 Hne Heq. apply Hne.
-  apply supply_write_injective_in_pk. exact Heq.
-Qed.
-
-(* The supply pool is a DISTINCT channel family from the draw wallet @W_v: for
-   ANY keys, Σ⟦v⟧ ≠ @W_v' (the markers differ — supply is a 4-deep nest, wallet
-   a 1-deep nest). This is the DR-13 "@W_v is DISTINCT from Σ⟦v⟧" property at
-   the name layer: the gate's read channel can never collide with a draw. *)
-Theorem supply_wallet_disjoint : forall pk1 pk2,
-  supply_name pk1 <> wallet_name pk2.
-Proof.
-  intros pk1 pk2 Heq.
-  unfold supply_name, wallet_name, domain_name in Heq.
-  injection Heq as Hm _.
-  (* Hm : supply_marker = domain_marker Wallet, i.e. a 4-deep nest = 1-deep. *)
-  unfold supply_marker, domain_marker in Hm. discriminate.
+  apply system_vault_name_distinct.
 Qed.
 
 (* Public keys decide equality (bit-lists over [bool] have decidable equality),
@@ -460,7 +416,7 @@ Qed.
 
 (* The administrative PoS economic state read/written by the Stage-B mint. *)
 Record pos_state : Type := {
-  pb_balance : pubkey -> nat;             (* Σ⟦v⟧ supply balances *)
+  pb_balance : pubkey -> nat;             (* canonical SystemVault balances *)
   pb_minted  : list (pubkey * nat);        (* "mintedEpochs": Set[(Pk,Int)] *)
   pb_halted  : list pubkey                 (* "mintingHalted": Set[Pk] *)
 }.
@@ -468,7 +424,7 @@ Record pos_state : Type := {
 Definition balance_of (st : pos_state) (v : pubkey) : nat := pb_balance st v.
 
 (* Eligibility for an epoch mint — the EXACT predicate of the Rholang fold and
-   the Rust post_eval recompute: NOT halted AND NOT already minted for [e].
+   the native PoS mint path: NOT halted AND NOT already minted for [e].
    (Activeness is an orthogonal membership the caller folds over; halt +
    not-already-minted are the idempotency/halt guards modeled here.) *)
 Definition mint_eligible (st : pos_state) (v : pubkey) (e : nat) : bool :=
@@ -480,10 +436,7 @@ Definition credit (st : pos_state) (v : pubkey) (amt : nat) : pubkey -> nat :=
 
 (* The Stage-B epoch mint on the administrative state. Eligible ⇒ credit [amt]
    and record [(v,e)]; ineligible (halted or already minted this epoch) ⇒ the
-   IDENTITY (no balance change, no ledger change) — mirroring both the Rholang
-   guard (no second @W_v purse) and the Rust post_eval guard (no
-   produce_balance). [produce_balance]'s read-modify-REPLACE means an accidental
-   re-exec rewrites the SAME value, exactly captured by this idempotent shape. *)
+   IDENTITY (no balance change, no ledger change). *)
 Definition epoch_mint (st : pos_state) (v : pubkey) (e : nat) (amt : nat) : pos_state :=
   if mint_eligible st v e
   then {| pb_balance := credit st v amt;
@@ -494,7 +447,7 @@ Definition epoch_mint (st : pos_state) (v : pubkey) (e : nat) (amt : nat) : pos_
 (* Decision 7 / Decision 3: the epoch mint is IDEMPOTENT on the balance — once
    [(v,e)] is in the mint ledger, re-running the epoch mint for [(v,e)] does not
    change [v]'s balance. This is the formal core of multi-parent-merge / replay
-   mint-idempotency: a duplicated epoch mint is a no-op on Σ⟦v⟧. Immediate from
+   mint-idempotency: a duplicated epoch mint is a no-op on SystemVault(v). Immediate from
    the eligibility guard short-circuiting [epoch_mint] to the identity. *)
 Theorem epoch_mint_idempotent_on_balance : forall st v e amt,
   In (v, e) (pb_minted st) ->
@@ -531,7 +484,7 @@ Qed.
    The balance-layer companion of [user_ca_step_does_not_mint]. The cost-
    accounted reduction relation [ca_step] acts on the token-fuel [system]; the
    supply balances live in the ADMINISTRATIVE [pos_state], written ONLY by the
-   authorized mint/settlement path (DR-13: Σ⟦v⟧ is unwritable from the reducer).
+   authenticated SystemVault path (DR-13: user reduction cannot mutate custody).
    We model the joint runtime configuration as a pair [(system, pos_state)] and
    the user-reduction transition as stepping ONLY the [system] component, leaving
    [pos_state] (hence every balance) fixed. Therefore no user step can increase
@@ -575,108 +528,41 @@ Proof.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
-   Section 7: Stage-D fee→v conversion credit is BACKED, not minted
+   Section 7: Native fee ownership transfer is backed, not minted
    ═══════════════════════════════════════════════════════════════════════════
 
-   The Stage-B epoch mint INJECTS new fuel into Σ⟦v⟧ (it is the SOLE producer,
-   Section 4 / the [AMint] case). The Stage-D fee CONVERSION does NOT: it moves
-   already-collected fees from the per-validator fee pool [F_v] into Σ⟦v⟧ 1:1.
-   The Σ⟦v⟧ credit is therefore BOUNDED BY (in fact EQUAL to) the fees that leave
-   F_v — it is BACKED, categorically distinct from a mint.
+   Epoch mint is an exogenous protocol credit. Fee settlement is not: it moves
+   existing canonical REV directly from the client's SystemVault to the
+   proposing validator's SystemVault. The two balances are the only persistent
+   holdings involved in the fee path. *)
 
-   We model the per-validator client + fee + supply cell and prove:
-
-     - [fee_collect_is_client_backed] : the COLLECTION carve credits F_v by
-       exactly the amount drained from the client pool Σ⟦c⟧ — BACKED, no mint at
-       collection (the F-C/F-D fix; the prior additive collection was the inflation).
-     - [fee_collect_conserves_holding] : Σ⟦c⟧ + F_v + Σ⟦v⟧ invariant across the carve.
-     - [fee_convert_credit_is_backed] : the convert credits Σ⟦v⟧ by exactly the
-       drained fee amount f, and f ≤ the pre-convert F_v — the credit never
-       exceeds the collected fees (no inflation).
-     - [fee_convert_conserves_holding] : F_v + Σ⟦v⟧ is invariant across the
-       convert (the balance-layer conservation, cf. TokenConservation
-       [fee_collection_conserves]).
-     - [fee_convert_zero_is_noop] : an eligible validator with EMPTY fees
-       (f = 0) gets NO Σ⟦v⟧ credit (DR-4: no one-sided mint).
-
-   Concrete (no axioms / hypotheses), so the headline lemmas are Closed under the
-   global context.                                                               *)
-
-(* A per-validator client+fee+supply cell: the client pool [fb_client] = Σ⟦c⟧ the
-   fee is CARVED from, the collected fee pool [fb_fees] = F_v, and the gate-pool
-   balance [fb_supply] = Σ⟦v⟧. *)
 Record fee_balance : Type := {
-  fb_client : nat;   (* Σ⟦c⟧ : the client pool the per-deploy fee is carved from *)
-  fb_fees   : nat;   (* F_v : collected fees pending conversion (c-denominated) *)
-  fb_supply : nat    (* Σ⟦v⟧ : the gate pool *)
+  fb_client : nat;
+  fb_validator : nat
 }.
 
-(* COLLECTION (the FeeExtract carve): move [f] from the client pool into F_v — a
-   conserving transfer (Σ⟦c⟧ → F_v), NOT a mint. Well-defined for [f <= fb_client b]. *)
-Definition fb_collect (b : fee_balance) (f : nat) : fee_balance :=
+Definition native_fee_transfer (b : fee_balance) (f : nat) : fee_balance :=
   {| fb_client := fb_client b - f;
-     fb_fees := fb_fees b + f;
-     fb_supply := fb_supply b |}.
+     fb_validator := fb_validator b + f |}.
 
-(* The 1:1 fee→v conversion on a single validator's cell: credit Σ⟦v⟧ by the
-   ENTIRE collected fee [fb_fees] and zero F_v; the client pool is carried through.
-   Under the F-C/F-D alignment (Option A) this is the contract-level market
-   Exchange(c,v), not a protocol write; the backed/conserving property is identical. *)
-Definition fb_convert (b : fee_balance) : fee_balance :=
-  {| fb_client := fb_client b;
-     fb_fees := 0;
-     fb_supply := fb_supply b + fb_fees b |}.
-
-(* [fee_convert_credit_is_backed]: the conversion credits Σ⟦v⟧ by EXACTLY the
-   amount [fb_fees b] that is drained from F_v, and that credit is ≤ the
-   pre-convert collected fees — the Σ⟦v⟧ increase is BACKED by (equal to) the
-   fees that left F_v, never an unbacked injection. So, unlike the epoch mint
-   (the sole [AMint] producer), the fee convert cannot inflate Σ⟦v⟧ beyond the
-   collected fees. *)
-Theorem fee_convert_credit_is_backed : forall b,
-  fb_supply (fb_convert b) = fb_supply b + fb_fees b
-  /\ fb_supply (fb_convert b) - fb_supply b <= fb_fees b.
-Proof.
-  intros b. unfold fb_convert. simpl. split; lia.
-Qed.
-
-(* The total holding F_v + Σ⟦v⟧ is invariant across the convert (balance-layer
-   conservation; cf. TokenConservation [fee_collection_conserves]). *)
-Theorem fee_convert_conserves_holding : forall b,
-  fb_fees (fb_convert b) + fb_supply (fb_convert b) = fb_fees b + fb_supply b.
-Proof.
-  intros b. unfold fb_convert. simpl. lia.
-Qed.
-
-(* DR-4: an eligible validator whose collected fees are EMPTY (f = 0) receives
-   NO Σ⟦v⟧ credit from the convert (Σ⟦v⟧ unchanged) — there is no one-sided
-   mint; such a validator is funded only by the epoch mint. *)
-Theorem fee_convert_zero_is_noop : forall b,
-  fb_fees b = 0 ->
-  fb_supply (fb_convert b) = fb_supply b.
-Proof.
-  intros b Hzero. unfold fb_convert. simpl. rewrite Hzero. lia.
-Qed.
-
-(* [fee_collect_is_client_backed]: the COLLECTION carve credits F_v by EXACTLY the
-   amount drained from the client pool — the F_v increase is BACKED by the client
-   debit, never an unbacked injection. With [fee_convert_credit_is_backed] this
-   closes the no-mint story for the WHOLE fee loop (Σ⟦c⟧ → F_v → Σ⟦v⟧): neither
-   step mints; only the epoch [AMint] produces tokens (the F-C/F-D fix — the prior
-   additive collection [F_v += count, no client debit] was the inflation). *)
-Theorem fee_collect_is_client_backed : forall b f,
+Theorem native_fee_credit_is_backed : forall b f,
   f <= fb_client b ->
-  fb_fees (fb_collect b f) - fb_fees b = fb_client b - fb_client (fb_collect b f).
+  fb_validator (native_fee_transfer b f) - fb_validator b
+    = fb_client b - fb_client (native_fee_transfer b f).
 Proof.
-  intros b f Hf. unfold fb_collect. simpl. lia.
+  intros b f Hf. unfold native_fee_transfer. simpl. lia.
 Qed.
 
-(* The collection carve conserves the total client+fee+supply holding (Σ⟦c⟧ → F_v,
-   nothing minted or destroyed). *)
-Theorem fee_collect_conserves_holding : forall b f,
+Theorem native_fee_transfer_conserves_holding : forall b f,
   f <= fb_client b ->
-  fb_client (fb_collect b f) + fb_fees (fb_collect b f) + fb_supply (fb_collect b f)
-    = fb_client b + fb_fees b + fb_supply b.
+  fb_client (native_fee_transfer b f) + fb_validator (native_fee_transfer b f)
+    = fb_client b + fb_validator b.
 Proof.
-  intros b f Hf. unfold fb_collect. simpl. lia.
+  intros b f Hf. unfold native_fee_transfer. simpl. lia.
+Qed.
+
+Theorem native_fee_transfer_zero_is_noop : forall b,
+  native_fee_transfer b 0 = b.
+Proof.
+  intros [client validator]. unfold native_fee_transfer. simpl. f_equal; lia.
 Qed.

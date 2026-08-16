@@ -7,43 +7,44 @@ import sys
 load(os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "scenario_schema.sage"))
 
 # ════════════════════════════════════════════════════════════════════════════
-# supply_accounting_model.sage — Cost-Accounted Rho Stage B supply accounting
+# supply_accounting_model.sage — native SystemVault and located-authority accounting
 # ════════════════════════════════════════════════════════════════════════════
 #
-# Adversarial search over (mint, admit, settle) interleavings on the per-
-# validator supply pool Σ⟦v⟧ (DR-13; stageb-minting-halt-interface.md Decision
-# 6/7). The model is the Sage companion of:
+# Greg's paper notation is mapped onto F1R3node's existing architecture: the
+# persistent balance is the canonical SystemVault, while the acceptance residual
+# is located authority reserved for the current execution. The model is the Sage
+# companion of:
 #   - MintingInjection.v   (epoch_mint idempotency on the balance; user steps
 #                            never move a supply balance)
 #   - MintingHalt.v        (halted ⇒ no mint, no supply increase)
-#   - EvalScheduling.tla    (SupplyOnlyFromMint / HaltedValidatorSupplyNonIncreasing)
+#   - EvalScheduling.tla    (CanonicalVaultTotalBacked / direct fee transfer)
 #   - SlashFlow.tla         (Inv_HaltedNotMinted / Inv_NoDoubleCreditUnderMerge)
 #
 # It searches all interleavings of a small operation alphabet and asserts the
-# four supply safety properties hold over EVERY reachable interleaving:
+# six custody and authority safety properties hold over every reachable interleaving:
 #
 #   (P1) no-negative-balance         : a balance is never driven below 0.
 #   (P2) no-double-credit-under-merge: an (epoch) mint already recorded in
 #        mintedEpochs is a NO-OP (idempotent) — duplicated / multi-parent-merged
-#        mints credit Σ⟦v⟧ at most once per epoch.
+#        mints credit the canonical validator vault at most once per epoch.
 #   (P3) settlement-conservation     : after the acceptance gate settles, the
 #        post-state balance equals pre minus the admitted demand
 #        (post = pre − ΣΔ_admitted); rejected demand consumes nothing.
 #   (P4) halt-no-credit              : a halted validator's balance is never
 #        increased by a mint (the cross-epoch halt).
 #
-# The mint write is read-modify-REPLACE of a single datum (supply::produce_balance
-# in Rust): so even an out-of-guard re-execution rewrites the SAME value — the
-# search exercises that explicitly via duplicated mint operations.
+# Protocol mint credits the canonical vault once per epoch. Fee settlement moves
+# existing REV directly from the payer vault to the proposer vault.
 
 EPOCH = 0
 
 
 def apply_op(state, op):
-    """Apply one operation to (balance, minted, halted, residual, committed).
+    """Apply one operation to canonical vault and located-authority state.
 
     state: dict with keys
-        balance   : int  — Σ⟦v⟧ for the single validator under test
+        balance   : int  — payer's canonical SystemVault balance
+        proposer_balance : int — proposer's canonical SystemVault balance
         minted    : bool — (v, EPOCH) ∈ mintedEpochs
         halted    : bool — v ∈ mintingHalted
         residual  : int  — in-pass admission residual (effectiveΣ_s)
@@ -85,41 +86,26 @@ def apply_op(state, op):
     elif kind == "settle":
         # Settlement debit = the committed demand: post = pre − ΣΔ_admitted.
         # This is the single consensus decrement (DR-13 Decision 4(c)). The
-        # debit is floored at the available balance: a supply pool can never be
+        # debit is floored at the available authority: a located purse cannot be
         # driven negative (the spec's funding obligation Σ_s ≥ Δ_s, tex 1590),
-        # and a slash that zeros Σ⟦v⟧ between gate and settle simply leaves
+        # and a slash that quarantines custody between gate and settle leaves
         # nothing to debit (the validator's deploys would not have been admitted
         # — VB blocks — so this floor is never actually exercised in-band; it
         # makes the no-negative invariant unconditional over ALL interleavings).
         s["balance"] = s["balance"] - min(s["committed"], s["balance"])
         s["committed"] = 0
     elif kind == "halt":
-        # Slash effect (Decision 4): halt minting + zero Σ⟦v⟧ (drain @W_v is
-        # modeled as the supply zero here).
+        # Slash effect: halt minting and quarantine available vault custody.
         s["halted"] = True
         s["balance"] = 0
-    elif kind == "fee_collect":
-        # Cost-Accounted Rho Stage D — the FeeExtract: credit `amount` tokens to
-        # the validator's FEE pool F_v (s["fees"]). NEVER touches the supply pool
-        # (cost ≠ fee; the fee reaches Σ⟦v⟧ only via fee_convert). Read-modify-add.
+    elif kind == "fee_transfer":
         amount = int(op[1])
-        s["fees"] = s.get("fees", 0) + amount
-    elif kind == "fee_convert":
-        # Cost-Accounted Rho Stage D — the per-epoch fee→v conversion (spec
-        # tex:3095-3100). An ELIGIBLE validator (NOT halted AND NOT already
-        # converted this epoch) moves its WHOLE fee pool f into Σ⟦v⟧ 1:1 and
-        # zeroes F_v, recording converted (the convertedEpochs idempotency guard).
-        # The Σ⟦v⟧ credit equals EXACTLY the drained fees (BACKED, not minted —
-        # fee_convert_credit_is_backed). DR-4: f == 0 still records the epoch but
-        # credits nothing (no one-sided mint). Idempotent: a re-convert is a
-        # NO-OP on Σ⟦v⟧.
-        if (not s["halted"]) and (not s.get("converted", False)):
-            f = s.get("fees", 0)
-            s["balance"] = s["balance"] + f
-            s["fees"] = 0
-            s["converted"] = True
+        if (not s.get("fee_settled", False)) and amount <= s["balance"]:
+            s["balance"] = s["balance"] - amount
+            s["proposer_balance"] = s.get("proposer_balance", 0) + amount
+            s["fee_settled"] = True
     elif kind == "user_step":
-        # A user reduction step NEVER touches the supply pool (DR-13). Identity.
+        # A user reduction step never mutates canonical vault custody directly.
         pass
     return s
 
@@ -137,8 +123,11 @@ def check_properties(initial, ops):
     """Return a dict of property -> bool over a single interleaving."""
     state, history = run_trace(initial, ops)
 
-    # (P1) no negative balance at any point.
-    p1 = all(h["balance"] >= 0 for h in history)
+    # (P1) no canonical vault balance is negative at any point.
+    p1 = all(
+        h["balance"] >= 0 and h.get("proposer_balance", 0) >= 0
+        for h in history
+    )
 
     # (P2) no double credit: total minted credit across the trace is at most
     # one MintAmount (idempotency). We recover the credit from mint ops that
@@ -204,68 +193,62 @@ def check_properties(initial, ops):
                 p5 = False
             prefix_was_closed = True
 
-    # (P6) Stage-D fee→v conversion is BACKED + idempotent: across the trace, the
-    # TOTAL fees converted into Σ⟦v⟧ is at most the total fees ever COLLECTED (the
-    # convert is backed, never a mint), AND a validator is converted at most ONCE
-    # per epoch (the convertedEpochs guard ⇒ no double-credit under merge/replay).
+    # (P6) Fee settlement is an atomic, conserving, idempotent ownership transfer
+    # between canonical SystemVault balances.
     p6 = True
     sim = dict(initial)
-    total_collected = 0
-    total_converted = 0
-    convert_fired = 0
+    transfers_fired = 0
     for op in ops:
-        if op[0] == "fee_collect":
-            total_collected += int(op[1])
-        before = sim.get("converted", False)
-        bal_before = sim["balance"]
-        fees_before = sim.get("fees", 0)
+        payer_before = sim["balance"]
+        proposer_before = sim.get("proposer_balance", 0)
+        settled_before = sim.get("fee_settled", False)
         sim = apply_op(sim, op)
-        if op[0] == "fee_convert" and (not before) and sim.get("converted", False):
-            # A convert just fired: it credited Σ⟦v⟧ by EXACTLY the drained fees,
-            # and zeroed F_v (backed, 1:1).
-            convert_fired += 1
-            credited = sim["balance"] - bal_before
-            total_converted += credited
-            if credited != fees_before or sim.get("fees", 0) != 0:
+        if op[0] == "fee_transfer" and not settled_before and sim.get("fee_settled", False):
+            transfers_fired += 1
+            amount = int(op[1])
+            payer_debit = payer_before - sim["balance"]
+            proposer_credit = sim.get("proposer_balance", 0) - proposer_before
+            if (
+                payer_debit != amount
+                or proposer_credit != amount
+                or sim["balance"] + sim.get("proposer_balance", 0)
+                != payer_before + proposer_before
+            ):
                 p6 = False
-    # Backed: converted ≤ collected; idempotent: at most one convert per epoch.
-    if total_converted > total_collected or convert_fired > 1:
+    if transfers_fired > 1:
         p6 = False
 
     return {"p1_no_negative": p1, "p2_no_double_credit": p2,
             "p3_settlement_conserves": p3, "p4_halt_no_credit": p4,
             "p5_canonical_prefix_reject_both": p5,
-            "p6_fee_convert_backed_idempotent": p6}
+            "p6_fee_transfer_atomic_conserving": p6}
 
 
 def adversarial_search():
     """Exhaustively search all interleavings of a small op alphabet and assert
-    the four supply safety properties hold over every reachable interleaving."""
+    all custody and authority safety properties hold over every reachable interleaving."""
     mint_amount = 1000
     # The ORIGINAL Stage-B/D2 op set, permuted in full (8! orderings) to preserve
     # the prior supply/gate coverage verbatim.
     base_alphabet = [
-        ("mint", mint_amount),     # epoch mint (post_eval produce_balance)
+        ("mint", mint_amount),     # authenticated PoS protocol mint
         ("mint", mint_amount),     # DUPLICATE mint (multi-parent merge / replay)
         ("open_gate",),            # acceptance gate reads Σ_s -> residual
         ("admit", 300),            # a fitting demand
         ("admit", 900),            # a (possibly) non-fitting demand
         ("settle",),               # settlement debit = committed
         ("user_step",),            # a user reduction step (no supply effect)
-        ("halt",),                 # slash: halt + zero Σ⟦v⟧
+        ("halt",),                 # slash: halt + quarantine vault custody
     ]
-    # The Stage-D fee ops, exercised in interleavings via the length-4 product
-    # over the FULL alphabet (avoids the 11! permutation blowup while still
-    # covering collect → convert → re-convert(merge) orderings against mints/halts).
+    # Direct fee settlement is exercised against mint, halt, and gate orderings.
     fee_alphabet = [
-        ("fee_collect", 5),        # Stage D: FeeExtract into F_v
-        ("fee_convert",),          # Stage D: epoch fee→v convert (backed, 1:1)
-        ("fee_convert",),          # DUPLICATE convert (merge/replay) — guarded no-op
+        ("fee_transfer", 5),
+        ("fee_transfer", 5),
     ]
     full_alphabet = base_alphabet + fee_alphabet
     initial = {"balance": 0, "minted": False, "halted": False,
                "residual": 0, "committed": 0, "prefix_open": False,
-               "fees": 0, "converted": False}
+               "proposer_balance": 0, "fee_settled": False}
 
     total = 0
     violations = []
@@ -328,13 +311,10 @@ def records():
         {"balance": 500, "minted": True, "halted": False, "residual": 0, "committed": 0, "prefix_open": False},
         [("open_gate",), ("admit", 300), ("admit", 900), ("admit", 100), ("settle",)],
     )
-    # Stage D: collect a fee, convert it (Σ⟦v⟧ += f, F_v := 0), then a DUPLICATE
-    # convert is a guarded no-op (convertedEpochs) — Σ⟦v⟧ credited once, backed by
-    # the collected fee. post Σ⟦v⟧ = pre(0) + epochMint(1000) + convertedFees(5).
-    fee_convert_witness = check_properties(
+    fee_transfer_witness = check_properties(
         {"balance": 0, "minted": False, "halted": False, "residual": 0, "committed": 0,
-         "prefix_open": False, "fees": 0, "converted": False},
-        [("mint", 1000), ("fee_collect", 5), ("fee_convert",), ("fee_convert",)],
+         "prefix_open": False, "proposer_balance": 0, "fee_settled": False},
+        [("mint", 1000), ("fee_transfer", 5), ("fee_transfer", 5)],
     )
 
     common_invariants = [
@@ -343,7 +323,7 @@ def records():
         "settlement_post_eq_pre_minus_admitted",
         "halted_validator_gains_no_supply",
         "canonical_prefix_reject_both",
-        "fee_convert_backed_and_idempotent",
+        "fee_transfer_atomic_conserving_and_idempotent",
     ]
 
     return [
@@ -351,7 +331,7 @@ def records():
             "supply_accounting",
             "confirmed_safe",
             "sage_supply_no_negative_and_settlement_conserves",
-            "Across every (mint, gate, admit, settle) interleaving, Σ⟦v⟧ stays non-negative and settles to post = pre − ΣΔ_admitted.",
+            "Across every mint, gate, admission, settlement, and fee-transfer interleaving, canonical vault balances stay non-negative and located authority settles to post = pre − ΣΔ_admitted.",
             canonical_scenario(
                 "supply_mint_admit_settle",
                 threat_family="settlement",
@@ -362,13 +342,13 @@ def records():
             ),
             {"properties": no_negative_witness, "traces_searched": int(search["traces_searched"])},
             ["Rocq: epoch_mint_idempotent_on_balance", "Rocq: user_ca_step_does_not_increase_balance",
-             "TLA+: EvalScheduling SupplyOnlyFromMint", "Rust: close_block_supply_mint_is_play_replay_deterministic"],
+             "TLA+: EvalScheduling CanonicalVaultTotalBacked", "Rust: protocol mint play/replay determinism"],
         ),
         record(
             "supply_accounting",
             "confirmed_safe",
             "sage_supply_no_double_credit_under_merge",
-            "A duplicated / multi-parent-merged epoch mint credits Σ⟦v⟧ at most once per epoch (mintedEpochs idempotency; read-modify-replace).",
+            "A duplicated or multi-parent-merged epoch mint credits the validator's canonical SystemVault at most once per epoch.",
             canonical_scenario(
                 "supply_double_mint_merge",
                 threat_family="slashing_composition",
@@ -384,7 +364,7 @@ def records():
             "supply_accounting",
             "confirmed_safe",
             "sage_supply_halted_validator_gains_no_supply",
-            "A halted validator (mintingHalted) gains no supply: the epoch mint is a no-op and Σ⟦v⟧ stays at its zeroed value.",
+            "A halted validator gains no canonical SystemVault funding: the epoch mint is a no-op and quarantined custody is not restored.",
             canonical_scenario(
                 "supply_halted_no_mint",
                 threat_family="slashing_composition",
@@ -400,7 +380,7 @@ def records():
             "supply_accounting",
             "confirmed_safe",
             "sage_supply_oversubscription_rejects_both",
-            "Oversubscription against Σ⟦v⟧ rejects the non-fitting demand (reject-both) so the settled debit never exceeds the pre-state supply.",
+            "Oversubscription rejects the non-fitting demand and closes the canonical prefix, so located settlement never exceeds reserved authority.",
             canonical_scenario(
                 "supply_oversubscription",
                 threat_family="settlement",
@@ -432,20 +412,20 @@ def records():
         record(
             "supply_accounting",
             "confirmed_safe",
-            "sage_supply_fee_convert_backed_and_idempotent",
-            "Stage D: the epoch fee→v conversion credits Σ⟦v⟧ by EXACTLY the collected fees that leave F_v (backed, 1:1 — never a mint), and a duplicated / multi-parent-merged convert is a guarded no-op (convertedEpochs). post Σ⟦v⟧ = pre + epochMint + convertedFees, with convertedFees ≤ feesCollected.",
+            "sage_system_vault_fee_transfer_atomic_conserving",
+            "Fee settlement atomically debits the payer's canonical SystemVault and credits the proposer's canonical SystemVault by the same amount; replay of the same settlement identity is a no-op.",
             canonical_scenario(
-                "supply_fee_convert_backed",
+                "system_vault_fee_transfer",
                 threat_family="settlement",
-                settlement={"epoch_mint": 1000, "fees_collected": 5, "converted_fees": 5},
-                concurrency={"racing_convert": True, "merge": "multi_parent"},
+                settlement={"epoch_mint": 1000, "fee_debit": 5, "proposer_credit": 5},
+                concurrency={"duplicate_settlement": True, "merge": "multi_parent"},
                 expected_invariants=common_invariants,
                 expected_classification="confirmed_safe",
             ),
-            {"properties": fee_convert_witness},
-            ["Rocq: fee_collection_conserves", "Rocq: fee_convert_credit_is_backed",
-             "TLA+: EvalScheduling Inv_FeeConvertConserves / SupplyOnlyFromMintOrBackedFeeConvert",
-             "Sage: exchange_conservation", "DR-4 / TM-CA-158"],
+            {"properties": fee_transfer_witness},
+            ["Rocq: fee_transfer_conserves", "Rocq: native_fee_credit_is_backed",
+             "TLA+: EvalScheduling CanonicalVaultTotalBacked / VaultMutationIsProtocolAccounted",
+             "Rust: SystemVault applyCost", "TM-CA-158", "TM-CA-174"],
         ),
     ]
 

@@ -1,6 +1,6 @@
 # Slashing — TLA+ Specifications and Model Checking
 
-This directory contains seven TLA+ specifications and their TLC model-checking
+This directory contains eight TLA+ specifications and their TLC model-checking
 instances for the slashing subsystem. The verification model complements the
 Rocq proofs at `formal/rocq/slashing/` by exhaustively model-checking finite
 configurations of the protocol.
@@ -11,25 +11,27 @@ configurations of the protocol.
 |---|---|
 | `EquivocationDetector.tla` | Pure detector state machine: validator equivocates → detection → status (admissible / ignorable / neglected). |
 | `ConcurrentTracker.tla` | Models the lock-free vs. locked equivocation-tracker access. The lock-free version *demonstrates* the Rust-introduced race condition (Bug #2); the locked version proves the fix restores monotonicity. |
-| `SlashFlow.tla` | End-to-end pipeline: detection → record → propose/recover → SlashDeploy → PoS bond zeroing/idempotent reissue with no second transfer → fork-choice exclusion. |
+| `SlashFlow.tla` | End-to-end pipeline: detection → canonical evidence scan → SlashDeploy → PoS bond zeroing and quarantine → fork-choice exclusion. |
 | `TwoLevelSlashing.tla` | Level 1 + Level 2 slashing closure; proves termination, fixed-point stabilization, count-weighted quorum under the closure bound, stake-weighted quorum under the weighted closure bound, active-quorum intersection, current-validator and epoch filtering, visibility/report admissibility, validator-renaming equivariance, bounded arithmetic envelopes, and differential-divergence classification. |
-| `AuthorizedSlashFlow.tla` | Slash-authorization state machine for current-epoch invalid-block evidence, parent-pre-state authorization distinct from ambient receiver state, same-key rebond stale-evidence rejection, received-deploy authorization, invalid-index slash liveness, merge-rejected slash recovery, and duplicate target/hash suppression. |
+| `AuthorizedSlashFlow.tla` | Slash-authorization state machine for current-epoch invalid-block evidence, canonical merged-pre-state authority distinct from ambient node state, proposer/receiver parity, same-key rebond stale-evidence rejection, received-deploy authorization, complete-index slash liveness, merge-rejected-hint subsumption, zero-bond exclusion, and duplicate target/hash suppression. |
+| `SlashEvidenceDependency.tla` | Receive-side availability state machine proving every slash target is fetched before authorization, tracker-only witnesses do not satisfy metadata readiness, and fair fetch/resume eventually classifies every submitted authorized slash. Omitted-target and tracker-bypass configurations are required counterexamples. |
 | `JustificationProjection.tla` | Justification-validator projection model proving duplicate validators are rejected before any validator-key map projection can hide the malformed input. |
 | `WithdrawFlow.tla` | Post-quarantine withdrawal flow modelling Bug #10 (T-9.10). Verifies that a failed `posVault.transfer` leaves the validator's `withdrawers` entry intact, the `total_funds` invariant is preserved across success and failure, every removed validator was paid in full, and every withdrawer is eventually paid under fair retry scheduling. Companion Rocq theorem set: `BugFixWithdrawTransferFailure.v` (T-9.10 / T-9.10' / T-9.10″). |
 
-Each `*.tla` has a corresponding `MC_*.tla` instance with TLC parameters
-(validator count, max DAG depth, max equivocations) calibrated to keep the
-state space ≤ 10⁵.
+Each `*.tla` has a corresponding `MC_*.tla` instance with explicit finite
+parameters. Rocq carries the corresponding unbounded claims; TLC exhausts the
+configured concurrency and lifecycle interleavings.
 
 ## Running
 
 ```sh
-# All seven model-check passes
+# All eight model-check passes
 tlc -workers 12 MC_EquivocationDetector.tla
 tlc -workers 12 MC_ConcurrentTracker.tla     # NB: must FAIL pre-fix, PASS post-fix
 tlc -workers 12 MC_SlashFlow.tla
 tlc -workers 12 MC_TwoLevelSlashing.tla
 tlc -workers 12 MC_AuthorizedSlashFlow.tla
+tlc -workers 12 MC_SlashEvidenceDependency.tla
 tlc -workers 12 MC_JustificationProjection.tla
 tlc -workers 12 MC_WithdrawFlow.tla
 ```
@@ -54,7 +56,7 @@ tlc -workers 12 MC_WithdrawFlow.tla
 | ConcurrentTracker (temporal) | `[]<>RecordPersists` | Once recorded, a record persists. |
 | SlashFlow | `Inv_SlashedExcludedFromFC` | After `SlashDeploy` succeeds, the offender's latest message is filtered from the fork-choice estimator. |
 | SlashFlow | `Inv_BondsZeroAfterSlash` | `bondsMap[offender] = 0` after a successful slash. |
-| SlashFlow | `Inv_ForfeitedToCoopVault` | `coopVaultBalance` increases by exactly the offender's pre-slash bond. |
+| SlashFlow | `Inv_StakeInQuarantineAfterSlash` | A slashed validator has zero bond and its positive pre-slash stake is quarantined until adjudication. |
 | SlashFlow (temporal) | `<>SlashedEventually` | Every detected equivocation eventually results in a slash, given a live proposer schedule. |
 | TwoLevelSlashing | `Inv_ActiveSetAboveQuorum` | `|activeValidators| ≥ n − ⌊(n−1)/3⌋` at every reachable state. |
 | TwoLevelSlashing | `Inv_ActiveStakeAboveWeightedQuorum` | Active stake remains above the weighted quorum bound when the weighted closure bound is enforced. |
@@ -91,10 +93,13 @@ tlc -workers 12 MC_WithdrawFlow.tla
 | AuthorizedSlashFlow | `Inv_RejectedSlashWithoutEvidenceNoPending` | Rejected slash deploys do not create pending slash authorization. |
 | AuthorizedSlashFlow | `Inv_InvalidAuthSlashNoPending` | Bad-auth slash deploy receipt cannot create pending slash authorization without independent valid evidence. |
 | AuthorizedSlashFlow | `Inv_BondsZeroAfterSlash` | Executed authorized slash deploys zero the offender's bond. |
-| AuthorizedSlashFlow | `Inv_RecoveredSlashHasEvidence` / `Inv_RecoveredSlashCoveredByPendingOrExecuted` / `Inv_PendingSlashHashUnique` | Merge-rejected slash recovery preserves evidence, avoids uncovered recovered entries, and keeps one pending entry per invalid hash. |
-| AuthorizedSlashFlow | `Inv_AuthorizationUsesParentPreState` / `Inv_AmbientZeroDoesNotBlockParentPositiveAuth` / `Inv_ParentZeroRejectsEvenAmbientPositive` | Received Slash deploy authorization depends on the block's parent-pre-state bond view, not the receiver's ambient snapshot. |
-| SlashFlow | `Inv_PendingSlashHasEvidence` / `Inv_RecoveredSlashHasEvidence` / `Inv_RecoveredSlashCovered` / `Inv_SlashSeedInputInjectiveByHash` | Recovered slashes have invalid-block evidence, are pending or already executed, and use seed inputs injective in invalid hash. |
-| SlashFlow | `Inv_ZeroBondSlashNoTransfer` | A duplicate Slash deploy against a zero-bond offender cleans pending work without increasing the Coop vault. |
+| AuthorizedSlashFlow | `Inv_MergeRejectedSlashCoveredByCanonicalScan` / `Inv_MergeRejectedSlashCannotAuthorizeZeroBond` / `Inv_PendingSlashHashUnique` / `Inv_PendingSlashTargetUnique` | Complete evidence scanning subsumes merge-rejected hints, excludes zero-bond targets, and keeps one canonical pending candidate per target. |
+| AuthorizedSlashFlow | `Inv_AuthorizationUsesCanonicalPreState` / `Inv_AmbientZeroDoesNotBlockCanonicalPositiveAuth` / `Inv_CanonicalZeroRejectsEvenAmbientPositive` | Slash authorization depends on the exact canonical merged pre-state, not an ambient snapshot or individual-parent approximation. |
+| AuthorizedSlashFlow | `Inv_ProposerAuthorizationMatchesCanonical` / `Inv_ReceiverAuthorizationMatchesCanonical` / `Inv_ProposerReceiverAuthorizationParity` | Proposer generation and receiver validation agree on every authorization verdict when bound to the same canonical pre-state. |
+| SlashEvidenceDependency | `Inv_NoCanonicalEvidenceRejectedForLocalAbsence` / `Inv_WaitingDependencyTracked` / `Inv_RequestedDependencyIsCanonical` | Locally missing canonical evidence buffers and requests the slash target instead of objectively rejecting the proposer. |
+| SlashEvidenceDependency | `Inv_TrackerWitnessIsCanonical` / `Inv_AcceptedDependencyWasFetched` / `Inv_ClassificationsDisjoint` | Tracker witnesses never replace block metadata, acceptance requires fetched evidence, and waiting/accepted/rejected classifications cannot overlap. |
+| SlashEvidenceDependency (temporal) | `Live_SubmittedSlashEventuallyClassified` | Fair receive, fetch, and resume scheduling eventually accepts or objectively rejects every submitted slash. |
+| SlashFlow | `Inv_PendingSlashHasEvidence` / `Inv_PendingSlashTargetUnique` / `Inv_PendingSlashAuthorized` / `Inv_SlashSeedInputInjectiveByHash` | Every pending slash has evidence and a positive target bond, each target has one candidate, and seed inputs remain injective in invalid hash. |
 | JustificationProjection | `Inv_DuplicateJustificationsRejected` | A justification list with duplicate validator keys is rejected before projection. |
 | JustificationProjection | `Inv_AcceptedImpliesUniqueJustifications` / `Inv_AcceptedProjectionCardinality` | Accepted justification lists preserve one entry per validator under map/set projection. |
 | WithdrawFlow | `Inv_NoFundsLost` | A failed `posVault.transfer` does not remove the validator from `withdrawers`; equivalently, every removed validator was paid in full (T-9.10). |
@@ -114,7 +119,7 @@ table. In summary:
 | `Inv_FixedDetectorTotal`, `Inv_MissingPointerNonContributing`, `Inv_DuplicateChildNeedsDistinctChildren`, `Inv_TwoDistinctChildrenDetect`, `Inv_DetectedHashDetects` | T-9.11 (`fixed_detectable_*` in `EquivocationDetector.v`) |
 | `Inv_RecordMonotone` (with Locked=TRUE) | T-9.2 (`t_9_2_atomic_no_overwrite` in `BugFixAtomicTracker.v`) |
 | `Inv_BondsZeroAfterSlash` | T-7 (`slash_zeros_bond` in `PoSContract.v`) |
-| `Inv_ForfeitedToCoopVault` | T-8 (`slash_transfers_stake` in `PoSContract.v`) |
+| `Inv_StakeInQuarantineAfterSlash` | Stage-C quarantine theorems in `ValidatorRedemption.v` and `PoSContract.v` |
 | `Inv_SlashedExcludedFromFC` | T-10 (`fork_choice_exclusion` in `ForkChoice.v`) |
 | `Inv_StakeConservation` | T-7 + T-8 corollary (combination of `slash_zeros_bond` and `slash_transfers_stake`) |
 | `Inv_LevelClosureTerminates` | T-11 (`t_11_level_2_termination` in `TwoLevelSlashing.v`) |
@@ -146,8 +151,10 @@ table. In summary:
 | `ArithmeticProjectionStressClass` | `arithmetic_projection_stress_boundary_8bit` in `TwoLevelSlashing.v` |
 | `PartitionGossipDivergenceClass` / `ObjectiveGuidedDivergenceClass` / `PreconditionFuzzingClass` / `RustReplayDivergenceClass` / `DeepThreatModelDivergenceClass` / `DagTraceDivergenceClass` / `AdversarialCampaignDivergenceClass` / `DifferentialOraclePipelineClass` | `frontier_expansion_reasons_require_review` in `Bisimulation.v`; `deep_threat_chain_closure_bound_assumption_needed` in `TwoLevelSlashing.v` |
 | `Inv_LivenessAsSafety` (Eager) | T-2 (`detection_complete` in `EquivocationDetector.v`) |
-| `Inv_StaleEvidenceCannotSlashRebondedKey`, `Inv_OnlyAuthorizedSlashCanBePending`, `Inv_RejectedSlashWithoutEvidenceNoPending`, `Inv_InvalidAuthSlashNoPending`, `Inv_BondsZeroAfterSlash`, `Inv_AuthorizationUsesParentPreState`, `Inv_AmbientZeroDoesNotBlockParentPositiveAuth`, `Inv_ParentZeroRejectsEvenAmbientPositive` | `ValidatorLifetime.v`, `BugFixSlashAuthorization.v`, and `SlashDeploy.v` authorization/no-op theorems |
-| `Inv_RecoveredSlashHasEvidence`, `Inv_RecoveredSlashCoveredByPendingOrExecuted`, `Inv_PendingSlashHashUnique`, `Inv_SlashSeedInputInjectiveByHash`, `Inv_ZeroBondSlashNoTransfer` | `BlockCreator.v` recoverable rejected-slash hash theorems, `SlashDeploy.v` seed-input injectivity, and `PoSContract.v` zero-bond no-op theorem |
+| Pointwise detector invariants across validator products | `DetectorProduct.detector_product_steps_preserve_pointwise_invariant` |
+| `Inv_StaleEvidenceCannotSlashRebondedKey`, `Inv_OnlyAuthorizedSlashCanBePending`, `Inv_RejectedSlashWithoutEvidenceNoPending`, `Inv_InvalidAuthSlashNoPending`, `Inv_BondsZeroAfterSlash`, `Inv_AuthorizationUsesCanonicalPreState`, `Inv_AmbientZeroDoesNotBlockCanonicalPositiveAuth`, `Inv_CanonicalZeroRejectsEvenAmbientPositive`, `Inv_ProposerAuthorizationMatchesCanonical`, `Inv_ReceiverAuthorizationMatchesCanonical`, `Inv_ProposerReceiverAuthorizationParity` | `ValidatorLifetime.v`, `BugFixSlashAuthorization.v`, and `SlashDeploy.v` authorization/no-op and origin-parity theorems |
+| `Inv_NoCanonicalEvidenceRejectedForLocalAbsence`, `Inv_WaitingDependencyTracked`, `Inv_AcceptedDependencyWasFetched` | `every_slash_target_is_a_dependency`, `unavailable_declared_slash_waits_for_evidence`, and `tracker_witness_does_not_satisfy_slash_evidence_dependency` in `BugFixSlashAuthorization.v` |
+| `Inv_MergeRejectedSlashCoveredByCanonicalScan`, `Inv_MergeRejectedSlashCannotAuthorizeZeroBond`, `Inv_PendingSlashHashUnique`, `Inv_PendingSlashTargetUnique`, `Inv_SlashSeedInputInjectiveByHash` | `BlockCreator.v` complete-scan subsumption, zero-bond exclusion, and target-uniqueness theorems plus `SlashDeploy.v` seed-input injectivity |
 | `Inv_NoInvalidLatestLivenessGap` | `BlockCreator.deploy_epoch_matches_target` and `BugFixSlashAuthorization.authorized_execution_zeros_offender` |
 | `Inv_DuplicateJustificationsRejected`, `Inv_AcceptedImpliesUniqueJustifications`, `Inv_AcceptedProjectionCardinality` | `BugFixDuplicateJustifications.v` |
 

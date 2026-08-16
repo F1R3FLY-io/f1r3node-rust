@@ -548,7 +548,7 @@ Qed.
    evaluates).                                                                  *)
 
 (* The pure demand [delta_s] (cost-accounted-rho Def 17), on the [ll_formula]
-   image of a signature. Matches the Rust [DemandEntry::known_lower_bound] for a
+   image of a signature. Matches the Rust [DemandEntry::certified_upper_bound] for a
    fully-resolvable term: the multiplicative-core layer count. *)
 Fixpoint delta_s (f : ll_formula) : nat :=
   match f with
@@ -653,15 +653,14 @@ Qed.
 
 (* ─── Supply-realization Decision 8: funding-check soundness over the balance ─
 
-   The Rust gate computes [is_funded(analysis, effective_supply_s, margin) =
-   (effective_supply_s >= known_lower_bound + margin)]. With the supply read as
-   the balance [n] and (for the spec-level obligation [Σ_s ≥ Δ_s]) a zero margin,
-   this is the decidable boolean [d <=? n]. The soundness obligation is that this
+   The Rust gate accepts only a proof-bearing finite [certified_upper_bound] and
+   rejects unprovable demand. With the supply read as the balance [n], this is the
+   decidable boolean [d <=? n]. The soundness obligation is that this
    boolean verdict AGREES with the funding proposition [funds n d] — i.e. the
    balance-read gate accepts exactly when [Σ_s ≥ Δ_s]. *)
 
-(* The gate's boolean funding check over the balance, at the spec obligation
-   (margin 0): accept iff [delta_s f <=? n]. *)
+(* The gate's boolean funding check over the balance accepts iff
+   [delta_s f <=? n]. *)
 Definition is_funded_balance (n : nat) (f : ll_formula) : bool :=
   Nat.leb (delta_s f) n.
 
@@ -694,29 +693,23 @@ Proof.
   reflexivity.
 Qed.
 
-(* ─── #13b: spec-strict rejection of an underfunded deploy on an ABSENT pool ──
+(* ─── Mandatory rejection of an underfunded deploy on an absent pool ───────
 
-   Task #13a switched the WD-D2 acceptance gate to its spec-strict mode (§7.6
-   step 5: an underfunded deploy MUST be rejected — no "admit-unenforced"
-   carve-out). In that mode an ABSENT supply pool is treated as a present pool
-   carrying the empty stack: its balance is [Σ_s = 0] (the paper's [supply(s) =
-   0] for an absent pool; realized in Rust by [supply::read_balance] folding an
-   absent channel to 0). Task #13b SEEDS client pools at genesis precisely so a
-   strict shard does NOT reject the clients it intends to fund.
+   An absent supply pool carries the empty stack with balance [Σ_s = 0]. Client
+   and validator provisioning create positive supply; they do not activate a
+   separate enforcement regime.
 
-   The headline obligation [strict_reject_when_underfunded] is the formal content
-   of the strict reject property: under strict mode, a deploy whose demand is
-   POSITIVE ([delta_s f > 0]) against an absent pool (supply [0]) FAILS the gate's
+   The theorem [strict_reject_when_underfunded] keeps its historical name but
+   states the universal rule: a deploy whose demand is POSITIVE
+   ([delta_s f > 0]) against supply [0] FAILS the gate's
    boolean funding check — [is_funded_balance 0 f = false] — so it is rejected
    (§7.6 step 5: rejected without executing any part, no state change, no tokens
    consumed). This is an axiom-free COROLLARY of the Decision-8 soundness
    biconditional [funding_check_balance_sound] (= [funding_decidable]'s boolean
    witness): at [n = 0] the check is true iff [funds 0 (delta_s f)] i.e. iff
    [delta_s f <= 0], which CONTRADICTS [delta_s f > 0]; hence the check is false.
-   It mirrors the Rust strict branch ([acceptance.rs::admit_by_funding]: an absent
-   pool's effective supply is 0, so a [Δ>0] group fails [is_funded(_, 0, margin)])
-   and the replay re-verification ([recompute_settlement_debits] under strict:
-   an admitted [Δ>0] deploy on an absent pool is a gate-bypass ⇒ invalid block). *)
+   It mirrors Rust proposal and replay, both of which map absence to zero and
+   reject any admitted positive reservation that does not fit. *)
 Theorem strict_reject_when_underfunded :
   forall (f : ll_formula),
     delta_s f > 0 ->

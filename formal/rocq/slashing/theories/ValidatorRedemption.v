@@ -25,8 +25,8 @@
      Guilty penalty  — partial: move min(penalty, bond) to the Coop vault (the
                        ONLY coop-growth path) and restore the remainder; un-halt
                        + clear quarantine.
-     Burned          — total: destroy the quarantined stake (REV stays in
-                       posVault as protocol surplus); the validator STAYS
+     Burned          — total: destroy the quarantined stake from PoS custody;
+                       the validator STAYS
                        unbonded AND halted (NOT removed from "mintingHalted");
                        only the quarantine record is cleared.
 
@@ -164,7 +164,8 @@ Qed.
 
    Models the Rholang Burned branch: only the quarantine record is cleared; the
    bond stays at its slashed value (0 in any reachable post-slash state), the
-   Coop vault is unchanged, and crucially the validator is NOT removed from
+   Coop vault is unchanged, the custody refinement burns the corresponding REV,
+   and crucially the validator is NOT removed from
    "mintingHalted" — a burned validator cannot resume minting. *)
 
 Theorem redeem_burned_conserves :

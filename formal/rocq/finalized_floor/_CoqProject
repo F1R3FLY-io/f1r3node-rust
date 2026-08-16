@@ -24,6 +24,8 @@
 #   Merge                        (semilattice merge algebra: determinism + no-lost-write)
 #   OccurrenceDisposition         (exact-source rejection + order independence)
 #   Recovery                     (record-driven recovery: no-double-apply, T-NDA)
+#   EffectCausalClosure           (least exact-effect rejection closure)
+#   StateLineageFinality          (certificate separation + committed-lineage preservation)
 #   MainTheorem -> all           (end-to-end capstone, axiom-free)
 
 -Q theories FinalizedFloor
@@ -35,8 +37,18 @@ theories/GuardBridge.v
 theories/Merge.v
 theories/OccurrenceDisposition.v
 theories/Recovery.v
+theories/MergeRecoveryCoherence.v
+theories/RejectionReasonConfluence.v
+theories/ProtocolVersionLifecycle.v
+theories/ProtocolActivationCoherence.v
 theories/Selection.v
 theories/IntegerAdd.v
 theories/FtExact.v
 theories/FtProvenance.v
+theories/FinalizerProgress.v
+theories/BootstrapReplayContext.v
+theories/LocalFaultDeferral.v
+theories/FundingAdmissionLifecycle.v
+theories/EffectCausalClosure.v
+theories/StateLineageFinality.v
 theories/MainTheorem.v

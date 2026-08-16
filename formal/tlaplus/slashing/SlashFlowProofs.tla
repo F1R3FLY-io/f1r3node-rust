@@ -75,12 +75,6 @@ LEMMA NextIndInv == IndInv /\ [Next]_vars => IndInv'
     <2>2. Inv_ActiveImpliesBonded' /\ Inv_RedeemedValidatorUnhalted'
           BY <1>3 DEF SignEquivocating
     <2> QED BY <2>1, <2>2 DEF IndInv
-  <1>4. ASSUME NEW h \in BlockId, ObserveRejectedSlash(h)
-        PROVE  IndInv'
-        BY <1>4 DEF ObserveRejectedSlash, TypeOK
-  <1>5. ASSUME NEW h \in BlockId, RecoverRejectedSlash(h)
-        PROVE  IndInv'
-        BY <1>5 DEF RecoverRejectedSlash, TypeOK
   <1>6. ASSUME NEW v \in Validators, EpochMint(v)
         PROVE  IndInv'
     \* bonds, activeValidators, mintingHalted UNCHANGED ⇒ the two carried
@@ -95,62 +89,33 @@ LEMMA NextIndInv == IndInv /\ [Next]_vars => IndInv'
     <2>4. Inv_ActiveImpliesBonded' /\ Inv_RedeemedValidatorUnhalted'
           BY <1>6 DEF EpochMint
     <2> QED BY <2>3, <2>4 DEF IndInv
-  \* ExecuteSlash(h): o == h[1] \in Validators since h \in BlockId.
+  \* ExecuteSlash(h): o == h[1] \in Validators with a positive bond.
   <1>7. ASSUME NEW h \in BlockId, ExecuteSlash(h)
         PROVE  IndInv'
     <2> DEFINE o == h[1]
     <2>o. o \in Validators
           BY <1>7 DEF ExecuteSlash, BlockId
-    <2>1. CASE bonds[o] > 0
-      \* bonds'=[bonds EXCEPT ![o]=0]; active'=active\{o}; halted'=halted\cup{o}.
-      <3>1. TypeOK'
-            \* Expose the branch's primed equalities in two groups (the folded
-            \* IF/LET action is too large to unfold + retype in one backend call),
-            \* then close TypeOK' from the equalities.
-            <4>e1. /\ bonds' = [bonds EXCEPT ![o] = 0]
-                   /\ activeValidators' = activeValidators \ {o}
-                   /\ coopVaultBalance' = coopVaultBalance
-                   /\ quarantinedStake' = [quarantinedStake EXCEPT ![o] = bonds[o]]
-                   /\ burnedStake' = burnedStake
-                   /\ slashedSet' = slashedSet \cup {o}
-                   BY <1>7, <2>1 DEF ExecuteSlash
-            <4>e2. /\ pendingSlashDeploys' = {d \in pendingSlashDeploys : d[1] # o}
-                   /\ forkChoiceLatest' = [forkChoiceLatest EXCEPT ![o] = 0]
-                   /\ noopSlashHashes' = noopSlashHashes
-                   /\ mintingHalted' = mintingHalted \cup {o}
-                   /\ supply' = [supply EXCEPT ![o] = 0]
-                   /\ mintedEpochs' = mintedEpochs
-                   /\ UNCHANGED <<blocks, invalidBlocks, equivocationRecords,
-                                  rejectedSlashDeploys, recoveredSlashDeploys>>
-                   BY <1>7, <2>1 DEF ExecuteSlash
-            <4> QED BY <2>o, <4>e1, <4>e2 DEF TypeOK, BlockId
-      <3>2. Inv_ActiveImpliesBonded'
-            \* v \in active\{o} ⇒ v # o ⇒ bonds'[v]=bonds[v]>0 (IH).
-            BY <1>7, <2>1, <2>o DEF ExecuteSlash, TypeOK
-      <3>3. Inv_RedeemedValidatorUnhalted'
-            \* v \in active\{o} ⇒ v # o and v \notin halted (IH) ⇒
-            \* v \notin halted \cup {o}.
-            BY <1>7, <2>1, <2>o DEF ExecuteSlash
-      <3> QED BY <3>1, <3>2, <3>3
-    <2>2. CASE ~(bonds[o] > 0)
-      \* bonds'=bonds; active'=active; halted'=halted\cup{h[1]} (= \cup{o}).
-      <3>0. bonds[o] = 0
-            BY <1>7, <2>2, <2>o DEF ExecuteSlash, TypeOK
-      <3>x. o \notin activeValidators
-            \* KEY: by the IH (Inv_ActiveImpliesBonded), o \in active would
-            \* force bonds[o] > 0, contradicting bonds[o] = 0.
-            BY <3>0
-      <3>1. TypeOK'
-            BY <1>7, <2>2, <2>o DEF ExecuteSlash, TypeOK, BlockId
-      <3>2. Inv_ActiveImpliesBonded'
-            \* active and bonds unchanged ⇒ from IH.
-            BY <1>7, <2>2 DEF ExecuteSlash, TypeOK
-      <3>3. Inv_RedeemedValidatorUnhalted'
-            \* for v \in active: v \notin halted (IH) and v # o (since
-            \* o \notin active by <3>x) ⇒ v \notin halted \cup {o}.
-            BY <1>7, <2>2, <3>x DEF ExecuteSlash
-      <3> QED BY <3>1, <3>2, <3>3
-    <2> QED BY <2>1, <2>2
+    <2>1. TypeOK'
+      <3>e1. /\ bonds' = [bonds EXCEPT ![o] = 0]
+              /\ activeValidators' = activeValidators \ {o}
+              /\ coopVaultBalance' = coopVaultBalance
+              /\ quarantinedStake' = [quarantinedStake EXCEPT ![o] = bonds[o]]
+              /\ burnedStake' = burnedStake
+              /\ slashedSet' = slashedSet \cup {o}
+              BY <1>7 DEF ExecuteSlash
+      <3>e2. /\ pendingSlashDeploys' = {d \in pendingSlashDeploys : d[1] # o}
+              /\ forkChoiceLatest' = [forkChoiceLatest EXCEPT ![o] = 0]
+              /\ mintingHalted' = mintingHalted \cup {o}
+              /\ supply' = [supply EXCEPT ![o] = 0]
+              /\ mintedEpochs' = mintedEpochs
+              /\ UNCHANGED <<blocks, invalidBlocks, equivocationRecords>>
+              BY <1>7 DEF ExecuteSlash
+      <3> QED BY <2>o, <3>e1, <3>e2 DEF TypeOK, BlockId
+    <2>2. Inv_ActiveImpliesBonded'
+          BY <1>7, <2>o DEF ExecuteSlash, TypeOK
+    <2>3. Inv_RedeemedValidatorUnhalted'
+          BY <1>7, <2>o DEF ExecuteSlash
+    <2> QED BY <2>1, <2>2, <2>3
   \* Redeem(o, outcome): guard quarantinedStake[o] > 0; valBond > 0.
   <1>8. ASSUME NEW o \in Validators, NEW oc \in RedeemOutcomes, Redeem(o, oc)
         PROVE  IndInv'
@@ -173,18 +138,12 @@ LEMMA NextIndInv == IndInv /\ [Next]_vars => IndInv'
             <4>e2. /\ slashedSet' = slashedSet \ {o}
                    /\ mintedEpochs' = ClearStaleEpochs(o)
                    /\ pendingSlashDeploys' = DropSlashArtifacts(pendingSlashDeploys, o)
-                   /\ rejectedSlashDeploys' = DropSlashArtifacts(rejectedSlashDeploys, o)
-                   /\ recoveredSlashDeploys' = DropSlashArtifacts(recoveredSlashDeploys, o)
-                   /\ noopSlashHashes' = DropSlashArtifacts(noopSlashHashes, o)
                    /\ supply' = supply
                    /\ UNCHANGED <<blocks, invalidBlocks, equivocationRecords, forkChoiceLatest>>
                    BY <1>8, <2>1 DEF Redeem
             <4>m. mintedEpochs' \in SUBSET (Validators \X {EpochIndex})
                   BY <4>e2 DEF TypeOK, ClearStaleEpochs
-            <4>p. /\ pendingSlashDeploys' \in SUBSET BlockId
-                  /\ rejectedSlashDeploys' \in SUBSET BlockId
-                  /\ recoveredSlashDeploys' \in SUBSET BlockId
-                  /\ noopSlashHashes' \in SUBSET BlockId
+            <4>p. pendingSlashDeploys' \in SUBSET BlockId
                   BY <4>e2 DEF TypeOK, DropSlashArtifacts
             <4> QED BY <2>v, <4>e1, <4>e2, <4>m, <4>p DEF TypeOK, BlockId
       <3>2. Inv_ActiveImpliesBonded'
@@ -220,9 +179,6 @@ LEMMA NextIndInv == IndInv /\ [Next]_vars => IndInv'
             <4>e2. /\ slashedSet' = slashedSet \ {o}
                    /\ mintedEpochs' = ClearStaleEpochs(o)
                    /\ pendingSlashDeploys' = DropSlashArtifacts(pendingSlashDeploys, o)
-                   /\ rejectedSlashDeploys' = DropSlashArtifacts(rejectedSlashDeploys, o)
-                   /\ recoveredSlashDeploys' = DropSlashArtifacts(recoveredSlashDeploys, o)
-                   /\ noopSlashHashes' = DropSlashArtifacts(noopSlashHashes, o)
                    /\ supply' = supply
                    /\ UNCHANGED <<blocks, invalidBlocks, equivocationRecords, forkChoiceLatest>>
                    BY <1>8, <2>2 DEF Redeem
@@ -232,10 +188,7 @@ LEMMA NextIndInv == IndInv /\ [Next]_vars => IndInv'
                   BY <4>e1, <3>n DEF TypeOK
             <4>m. mintedEpochs' \in SUBSET (Validators \X {EpochIndex})
                   BY <4>e2 DEF TypeOK, ClearStaleEpochs
-            <4>p. /\ pendingSlashDeploys' \in SUBSET BlockId
-                  /\ rejectedSlashDeploys' \in SUBSET BlockId
-                  /\ recoveredSlashDeploys' \in SUBSET BlockId
-                  /\ noopSlashHashes' \in SUBSET BlockId
+            <4>p. pendingSlashDeploys' \in SUBSET BlockId
                   BY <4>e2 DEF TypeOK, DropSlashArtifacts
             <4> QED BY <4>e1, <4>e2, <4>b, <4>c, <4>m, <4>p DEF TypeOK, BlockId
       <3>2. Inv_ActiveImpliesBonded'
@@ -258,7 +211,7 @@ LEMMA NextIndInv == IndInv /\ [Next]_vars => IndInv'
       <3> QED BY <3>1, <3>2, <3>3
     <2> QED BY <2>1, <2>2, <2>3 DEF RedeemOutcomes
   <1> QED
-      BY <1>1, <1>2, <1>3, <1>4, <1>5, <1>6, <1>7, <1>8 DEF Next
+      BY <1>1, <1>2, <1>3, <1>6, <1>7, <1>8 DEF Next
 
 (****************************************************************************)
 (* THEOREM Safety: Spec satisfies []Inv_RedeemedValidatorUnhalted.          *)

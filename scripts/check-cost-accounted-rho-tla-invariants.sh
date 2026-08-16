@@ -5,31 +5,24 @@
 # Per team policy (memory `feedback_formal_verification_is_local_only_not_ci`),
 # formal verification stays local — this script is NOT a CI step.
 #
-# Runs TLC against every .cfg under formal/tlaplus/cost_accounted_rho/
-# whose paired .tla module exists. Every TLC run goes through the shared
+# Runs TLC against every safe .cfg under formal/tlaplus/cost_accounted_rho/
+# whose paired .tla module exists, then checks each registered unsafe control
+# for its exact expected invariant violation. Every TLC run goes through the shared
 # scripts/lib/tlc-run.sh launcher, which enforces a strict memory envelope
 # (on-disk metadir — NOT tmpfs; bounded -Xmx heap; bounded workers; and a
 # hard systemd-run MemoryMax / MemorySwapMax=0 ceiling) so a single large
 # model can't exhaust RAM. Tune via TLC_HEAP / TLC_WORKERS / TLC_RSS /
 # TLC_METADIR_ROOT (see the helper header).
 #
-# Each run is reported as PASS / FAIL based on the TLC output. Exit
-# code 0 iff every spec reports "Model checking completed. No error
-# has been found".
+# Each run is reported as PASS / FAIL based on the TLC output. Exit code 0 iff
+# every safe spec reports no errors and every unsafe control reports its named
+# counterexample.
 #
 # Usage:
 #   bash scripts/check-cost-accounted-rho-tla-invariants.sh
 #   bash scripts/check-cost-accounted-rho-tla-invariants.sh --filter MC
 
 set -euo pipefail
-
-# Advisory by default per Greg's compile-time-shapes design: external-proof
-# certificates (Rocq/Lean/TLA+) are NOT a required gate. Set CA_ENFORCE_PROOFS=1
-# to run the full strict TLA+ invariant gate (preserved verbatim below).
-if [ "${CA_ENFORCE_PROOFS:-0}" != "1" ]; then
-  echo "cost-accounted-rho TLA+ invariant gate: ADVISORY (relaxed; external-proof certificates not required). CA_ENFORCE_PROOFS=1 to run the full gate."
-  exit 0
-fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -79,6 +72,19 @@ WRAPPED_BY[EvalStrictAbsent]=MCEvalStrictAbsent
 WRAPPED_BY[FullProtocol]=MCFull
 WRAPPED_BY[MergeableChannelAccounting]=MCMergeableChannelAccounting
 WRAPPED_BY[RuntimeBudgetReplay]=MCRuntimeBudgetReplay
+WRAPPED_BY[EndToEndCostConsensus]=MCEndToEndCostConsensus
+WRAPPED_BY[DeployTraceSegmentation]=MCDeployTraceSegmentation
+WRAPPED_BY[ReplaySupplySnapshot]=MCReplaySupplySnapshot
+WRAPPED_BY[MergeAggregateAgreement]=MCMergeAggregateAgreement
+WRAPPED_BY[StateBoundAdmission]=MCStateBoundAdmission
+WRAPPED_BY[StateBoundValidatorConvergence]=MCStateBoundValidatorConvergence
+WRAPPED_BY[LocatedAuthoritySettlement]=MCLocatedAuthoritySettlement
+WRAPPED_BY[CapacityBoundedTrace]=MCCapacityBoundedTrace
+WRAPPED_BY[LocatedStackConservationCollision]=LocatedStackConservation
+WRAPPED_BY[StateBoundFrontierExpansion]=MCStateBoundFrontierExpansion
+WRAPPED_BY[VaultBackedCostLifecycle]=MCVaultBackedCostLifecycle
+WRAPPED_BY[AtomicVaultSettlementRefinement]=MCAtomicVaultSettlementRefinement
+WRAPPED_BY[WalletFundedLollipop]=MCWalletFundedLollipop
 # MAJOR-5: the token-gated-join sequential-fuel griefing / atomicity obligation.
 # TokenGatedJoin.cfg is the NATIVE-model safety suite (must HOLD). The companion
 # TokenGatedJoinM2Grief.cfg is an EXPECTED-REFUTATION run (it confirms the griefing
@@ -86,6 +92,157 @@ WRAPPED_BY[RuntimeBudgetReplay]=MCRuntimeBudgetReplay
 # it is deliberately NOT registered here — a counterexample is its intended result,
 # not a pass. Run it explicitly: tlc -config TokenGatedJoinM2Grief.cfg MCTokenGatedJoin.tla
 WRAPPED_BY[TokenGatedJoin]=MCTokenGatedJoin
+
+declare -A EXPECTED_REFUTATION_WRAPPER
+declare -A EXPECTED_REFUTATION_INVARIANT
+EXPECTED_REFUTATION_WRAPPER[AccountingScopeLifetimeBooleanUnsafe]=AccountingScopeLifetime
+EXPECTED_REFUTATION_INVARIANT[AccountingScopeLifetimeBooleanUnsafe]=AccountingScopeReflectsOwners
+EXPECTED_REFUTATION_WRAPPER[AtomicCommAccountingIntroductionUnsafe]=MCAtomicCommAccountingIntroductionUnsafe
+EXPECTED_REFUTATION_INVARIANT[AtomicCommAccountingIntroductionUnsafe]=ExactCommCost
+EXPECTED_REFUTATION_WRAPPER[AuthenticatedSupplySnapshotLiveUnsafe]=AuthenticatedSupplySnapshot
+EXPECTED_REFUTATION_INVARIANT[AuthenticatedSupplySnapshotLiveUnsafe]=CandidateMintCannotFundItself
+EXPECTED_REFUTATION_WRAPPER[ReplaySupplySnapshotLiveQueryUnsafe]=MCReplaySupplySnapshot
+EXPECTED_REFUTATION_INVARIANT[ReplaySupplySnapshotLiveQueryUnsafe]=ExactRecordedReplayTrace
+EXPECTED_REFUTATION_WRAPPER[ReplayRootMaterializationEagerUnsafe]=ReplayRootMaterialization
+EXPECTED_REFUTATION_INVARIANT[ReplayRootMaterializationEagerUnsafe]=SnapshotReadsMaterializedRoot
+EXPECTED_REFUTATION_WRAPPER[ReplayRootMaterializationHistoryUnsafe]=ReplayRootMaterialization
+EXPECTED_REFUTATION_INVARIANT[ReplayRootMaterializationHistoryUnsafe]=CompletedValidatorsAgree
+EXPECTED_REFUTATION_WRAPPER[ReplayRootMaterializationQueryUnsafe]=ReplayRootMaterialization
+EXPECTED_REFUTATION_INVARIANT[ReplayRootMaterializationQueryUnsafe]=SnapshotsUseOrdinaryRuntime
+EXPECTED_REFUTATION_WRAPPER[StateBoundAdmissionDriftUnsafe]=MCStateBoundAdmission
+EXPECTED_REFUTATION_INVARIANT[StateBoundAdmissionDriftUnsafe]=EvidenceMatchesCommit
+EXPECTED_REFUTATION_WRAPPER[StateBoundAdmissionExhaustionUnsafe]=MCStateBoundAdmission
+EXPECTED_REFUTATION_INVARIANT[StateBoundAdmissionExhaustionUnsafe]=AdmissionRequiresCompletedProof
+EXPECTED_REFUTATION_WRAPPER[StateBoundAdmissionStructuralUnsafe]=MCStateBoundAdmission
+EXPECTED_REFUTATION_INVARIANT[StateBoundAdmissionStructuralUnsafe]=EvidenceMatchesCommit
+EXPECTED_REFUTATION_WRAPPER[StateBoundAdmissionReplayUnsafe]=MCStateBoundAdmission
+EXPECTED_REFUTATION_INVARIANT[StateBoundAdmissionReplayUnsafe]=CommitMatchesReplay
+EXPECTED_REFUTATION_WRAPPER[StateBoundAdmissionCheckpointUnsafe]=MCStateBoundAdmission
+EXPECTED_REFUTATION_INVARIANT[StateBoundAdmissionCheckpointUnsafe]=PhysicalRejectionCreatesNoCheckpoint
+EXPECTED_REFUTATION_WRAPPER[StateBoundValidatorConvergenceContextUnsafe]=MCStateBoundValidatorConvergence
+EXPECTED_REFUTATION_INVARIANT[StateBoundValidatorConvergenceContextUnsafe]=AcceptedUsesAuthenticatedContext
+EXPECTED_REFUTATION_WRAPPER[StateBoundValidatorConvergenceOrderUnsafe]=MCStateBoundValidatorConvergence
+EXPECTED_REFUTATION_INVARIANT[StateBoundValidatorConvergenceOrderUnsafe]=AcceptedUsesCanonicalDeployOrder
+EXPECTED_REFUTATION_WRAPPER[StateBoundValidatorConvergenceScheduleUnsafe]=MCStateBoundValidatorConvergence
+EXPECTED_REFUTATION_INVARIANT[StateBoundValidatorConvergenceScheduleUnsafe]=AcceptedReproducesCertificate
+EXPECTED_REFUTATION_WRAPPER[EndToEndCostConsensusDoubleCreditUnsafe]=MCEndToEndCostConsensus
+EXPECTED_REFUTATION_INVARIANT[EndToEndCostConsensusDoubleCreditUnsafe]=SettlementDoesNotReapplyGenesisFunding
+EXPECTED_REFUTATION_WRAPPER[EndToEndCostConsensusFundingBypassUnsafe]=MCEndToEndCostConsensus
+EXPECTED_REFUTATION_INVARIANT[EndToEndCostConsensusFundingBypassUnsafe]=EveryExecutedDeploymentWasFunded
+EXPECTED_REFUTATION_WRAPPER[EndToEndCostConsensusGenesisMismatchUnsafe]=MCEndToEndCostConsensus
+EXPECTED_REFUTATION_INVARIANT[EndToEndCostConsensusGenesisMismatchUnsafe]=AdmissionRequiresGenesisAgreement
+EXPECTED_REFUTATION_WRAPPER[EndToEndCostConsensusGenesisAuthorityMismatchUnsafe]=MCEndToEndCostConsensus
+EXPECTED_REFUTATION_INVARIANT[EndToEndCostConsensusGenesisAuthorityMismatchUnsafe]=GenesisExecutionReplayAuthorityAgree
+EXPECTED_REFUTATION_WRAPPER[EndToEndCostConsensusUnsafe]=MCEndToEndCostConsensus
+EXPECTED_REFUTATION_INVARIANT[EndToEndCostConsensusUnsafe]=LocalFaultNeverCreatesSlashEvidence
+EXPECTED_REFUTATION_WRAPPER[EndToEndCostConsensusOriginBypassUnsafe]=MCEndToEndCostConsensus
+EXPECTED_REFUTATION_INVARIANT[EndToEndCostConsensusOriginBypassUnsafe]=ValidationOriginParity
+EXPECTED_REFUTATION_WRAPPER[DeployTraceSegmentationRetentionUnsafe]=MCDeployTraceSegmentation
+EXPECTED_REFUTATION_INVARIANT[DeployTraceSegmentationRetentionUnsafe]=CheckpointContainsOnlyItsDeploy
+EXPECTED_REFUTATION_WRAPPER[MergeAggregateAgreementPrefixUnsafe]=MCMergeAggregateAgreement
+EXPECTED_REFUTATION_INVARIANT[MergeAggregateAgreementPrefixUnsafe]=AcceptanceIsPermutationInvariant
+EXPECTED_REFUTATION_WRAPPER[LocatedAuthoritySettlementMetadataErasureUnsafe]=MCLocatedAuthoritySettlement
+EXPECTED_REFUTATION_INVARIANT[LocatedAuthoritySettlementMetadataErasureUnsafe]=RealizedBackedByReservation
+EXPECTED_REFUTATION_WRAPPER[LocatedAuthoritySettlementAmbientPurseUnsafe]=MCLocatedAuthoritySettlement
+EXPECTED_REFUTATION_INVARIANT[LocatedAuthoritySettlementAmbientPurseUnsafe]=RealizedBackedByReservation
+EXPECTED_REFUTATION_WRAPPER[LocatedAuthoritySettlementContinuationRewrapUnsafe]=MCLocatedAuthoritySettlement
+EXPECTED_REFUTATION_INVARIANT[LocatedAuthoritySettlementContinuationRewrapUnsafe]=RealizedBackedByReservation
+EXPECTED_REFUTATION_WRAPPER[LocatedAuthoritySettlementNonAtomicDebitUnsafe]=MCLocatedAuthoritySettlement
+EXPECTED_REFUTATION_INVARIANT[LocatedAuthoritySettlementNonAtomicDebitUnsafe]=NoPartialEventDebit
+EXPECTED_REFUTATION_WRAPPER[LocatedAuthoritySettlementReplayOmissionUnsafe]=MCLocatedAuthoritySettlement
+EXPECTED_REFUTATION_INVARIANT[LocatedAuthoritySettlementReplayOmissionUnsafe]=ReplayPreservesAuthority
+EXPECTED_REFUTATION_WRAPPER[LocatedAuthoritySettlementSlotIdentityUnsafe]=MCLocatedAuthoritySettlement
+EXPECTED_REFUTATION_INVARIANT[LocatedAuthoritySettlementSlotIdentityUnsafe]=CrossDeploySlotIdentityStable
+EXPECTED_REFUTATION_WRAPPER[AuthorityPresentationMissingUnsafe]=AuthorityPresentation
+EXPECTED_REFUTATION_INVARIANT[AuthorityPresentationMissingUnsafe]=IntermediatePartitionAdmitted
+EXPECTED_REFUTATION_WRAPPER[AuthorityPresentationWeakeningUnsafe]=AuthorityPresentation
+EXPECTED_REFUTATION_INVARIANT[AuthorityPresentationWeakeningUnsafe]=NoWeakening
+EXPECTED_REFUTATION_WRAPPER[AuthorityPresentationNonAtomicUnsafe]=AuthorityPresentation
+EXPECTED_REFUTATION_INVARIANT[AuthorityPresentationNonAtomicUnsafe]=NoPartialEventDebit
+EXPECTED_REFUTATION_WRAPPER[AuthorityPresentationReplayUnsafe]=AuthorityPresentation
+EXPECTED_REFUTATION_INVARIANT[AuthorityPresentationReplayUnsafe]=ReplayUsesCertifiedPresentation
+EXPECTED_REFUTATION_WRAPPER[AuthorityPresentationCertificateUnsafe]=AuthorityPresentation
+EXPECTED_REFUTATION_INVARIANT[AuthorityPresentationCertificateUnsafe]=CertificateBindsPhysicalReservation
+EXPECTED_REFUTATION_WRAPPER[ForcedRedexAccountingDedupUnsafe]=ForcedRedexAccounting
+EXPECTED_REFUTATION_INVARIANT[ForcedRedexAccountingDedupUnsafe]=EveryForcedRedexConsumesOne
+EXPECTED_REFUTATION_WRAPPER[ForcedRedexAccountingReplayUnsafe]=ForcedRedexAccounting
+EXPECTED_REFUTATION_INVARIANT[ForcedRedexAccountingReplayUnsafe]=ReplayStaysWithinCertificate
+EXPECTED_REFUTATION_WRAPPER[StructuralAuthorityBoundReuseUnsafe]=StructuralAuthorityBound
+EXPECTED_REFUTATION_INVARIANT[StructuralAuthorityBoundReuseUnsafe]=RealizedNeverExceedsStructuralDemand
+EXPECTED_REFUTATION_WRAPPER[CausalStackOrderHashUnsafe]=CausalStackOrder
+EXPECTED_REFUTATION_INVARIANT[CausalStackOrderHashUnsafe]=CausallyFundedTraceIsAccepted
+EXPECTED_REFUTATION_WRAPPER[CapacityBoundedTraceFixedCapUnsafe]=MCCapacityBoundedTrace
+EXPECTED_REFUTATION_INVARIANT[CapacityBoundedTraceFixedCapUnsafe]=AcceptedTraceIsExact
+EXPECTED_REFUTATION_WRAPPER[RuntimeBoundAuthorityPrematureRejectUnsafe]=RuntimeBoundAuthority
+EXPECTED_REFUTATION_INVARIANT[RuntimeBoundAuthorityPrematureRejectUnsafe]=BoundAuthorityDeferred
+EXPECTED_REFUTATION_WRAPPER[RuntimeBoundAuthorityCandidateMintUnsafe]=RuntimeBoundAuthority
+EXPECTED_REFUTATION_INVARIANT[RuntimeBoundAuthorityCandidateMintUnsafe]=CandidateStackCannotFundCreator
+EXPECTED_REFUTATION_WRAPPER[RuntimeBoundAuthorityReplayUnsafe]=RuntimeBoundAuthority
+EXPECTED_REFUTATION_INVARIANT[RuntimeBoundAuthorityReplayUnsafe]=ReplayPreservesResolvedSlot
+EXPECTED_REFUTATION_WRAPPER[PayloadSortPersistenceStorageErasureUnsafe]=PayloadSortPersistence
+EXPECTED_REFUTATION_INVARIANT[PayloadSortPersistenceStorageErasureUnsafe]=StoragePreservesCompletePayload
+EXPECTED_REFUTATION_WRAPPER[PayloadSortPersistenceMatcherErasureUnsafe]=PayloadSortPersistence
+EXPECTED_REFUTATION_INVARIANT[PayloadSortPersistenceMatcherErasureUnsafe]=MatcherCaptureIsExact
+EXPECTED_REFUTATION_WRAPPER[PayloadSortPersistenceReplayErasureUnsafe]=PayloadSortPersistence
+EXPECTED_REFUTATION_INVARIANT[PayloadSortPersistenceReplayErasureUnsafe]=ReplayPreservesCompletePayload
+EXPECTED_REFUTATION_WRAPPER[SettlementMergeVisibilityEventOmissionUnsafe]=SettlementMergeVisibility
+EXPECTED_REFUTATION_INVARIANT[SettlementMergeVisibilityEventOmissionUnsafe]=SettlementStateChangeIsIndexed
+EXPECTED_REFUTATION_WRAPPER[SettlementMergeVisibilityIdentityCollapseUnsafe]=SettlementMergeVisibility
+EXPECTED_REFUTATION_INVARIANT[SettlementMergeVisibilityIdentityCollapseUnsafe]=DistinctInstancesRemainMergeable
+EXPECTED_REFUTATION_WRAPPER[SettlementMergeVisibilityReplayOmissionUnsafe]=SettlementMergeVisibility
+EXPECTED_REFUTATION_INVARIANT[SettlementMergeVisibilityReplayOmissionUnsafe]=ReplayReproducesRemoval
+EXPECTED_REFUTATION_WRAPPER[SettlementMergeVisibilityTraceLossUnsafe]=SettlementMergeVisibility
+EXPECTED_REFUTATION_INVARIANT[SettlementMergeVisibilityTraceLossUnsafe]=SoftCheckpointPreservesTracePrefix
+EXPECTED_REFUTATION_WRAPPER[LocatedStackConservationDuplicateUnsafe]=LocatedStackConservation
+EXPECTED_REFUTATION_INVARIANT[LocatedStackConservationDuplicateUnsafe]=UserStackProductionConserves
+EXPECTED_REFUTATION_WRAPPER[LocatedStackConservationPartialUnsafe]=LocatedStackConservation
+EXPECTED_REFUTATION_INVARIANT[LocatedStackConservationPartialUnsafe]=UserStackProductionConserves
+EXPECTED_REFUTATION_WRAPPER[LocatedStackConservationReplayUnsafe]=LocatedStackConservation
+EXPECTED_REFUTATION_INVARIANT[LocatedStackConservationReplayUnsafe]=ReplayMatchesCommittedTransfer
+EXPECTED_REFUTATION_WRAPPER[StateBoundFrontierExpansionFixedUnsafe]=MCStateBoundFrontierExpansion
+EXPECTED_REFUTATION_INVARIANT[StateBoundFrontierExpansionFixedUnsafe]=CompleteBackedTraceIsAccepted
+EXPECTED_REFUTATION_WRAPPER[StateBoundFrontierExpansionUnbackedUnsafe]=MCStateBoundFrontierExpansion
+EXPECTED_REFUTATION_INVARIANT[StateBoundFrontierExpansionUnbackedUnsafe]=CapacityUsesOnlyAuthenticatedBacking
+EXPECTED_REFUTATION_WRAPPER[StateBoundFrontierExpansionLeakUnsafe]=MCStateBoundFrontierExpansion
+EXPECTED_REFUTATION_INVARIANT[StateBoundFrontierExpansionLeakUnsafe]=SpeculativeAttemptsAreEffectFree
+EXPECTED_REFUTATION_WRAPPER[StateBoundFrontierExpansionReplayUnsafe]=MCStateBoundFrontierExpansion
+EXPECTED_REFUTATION_INVARIANT[StateBoundFrontierExpansionReplayUnsafe]=ReplayUsesTheExpandedBound
+EXPECTED_REFUTATION_WRAPPER[ExchangeFlowOneSidedUnsafe]=ExchangeFlow
+EXPECTED_REFUTATION_INVARIANT[ExchangeFlowOneSidedUnsafe]=Inv_RequiresBothInputs
+EXPECTED_REFUTATION_WRAPPER[VaultBackedCostLifecycleExecuteFirstUnsafe]=MCVaultBackedCostLifecycle
+EXPECTED_REFUTATION_INVARIANT[VaultBackedCostLifecycleExecuteFirstUnsafe]=ExecutionRequiresCompleteReservation
+EXPECTED_REFUTATION_WRAPPER[VaultBackedCostLifecyclePartialReserveUnsafe]=MCVaultBackedCostLifecycle
+EXPECTED_REFUTATION_INVARIANT[VaultBackedCostLifecyclePartialReserveUnsafe]=ReservationMatchesCertificate
+EXPECTED_REFUTATION_WRAPPER[VaultBackedCostLifecycleUnauthorizedUnsafe]=MCVaultBackedCostLifecycle
+EXPECTED_REFUTATION_INVARIANT[VaultBackedCostLifecycleUnauthorizedUnsafe]=ReservationUsesAuthorizedPayers
+EXPECTED_REFUTATION_WRAPPER[VaultBackedCostLifecycleRefundLossUnsafe]=MCVaultBackedCostLifecycle
+EXPECTED_REFUTATION_INVARIANT[VaultBackedCostLifecycleRefundLossUnsafe]=CanonicalValueConserved
+EXPECTED_REFUTATION_WRAPPER[VaultBackedCostLifecycleReplayOmissionUnsafe]=MCVaultBackedCostLifecycle
+EXPECTED_REFUTATION_INVARIANT[VaultBackedCostLifecycleReplayOmissionUnsafe]=ReplayMatchesCommit
+EXPECTED_REFUTATION_WRAPPER[VaultBackedCostLifecycleDoubleMintUnsafe]=MCVaultBackedCostLifecycle
+EXPECTED_REFUTATION_INVARIANT[VaultBackedCostLifecycleDoubleMintUnsafe]=MintOccursAtMostOnce
+EXPECTED_REFUTATION_WRAPPER[VaultBackedCostLifecycleIndependentCreditUnsafe]=MCVaultBackedCostLifecycle
+EXPECTED_REFUTATION_INVARIANT[VaultBackedCostLifecycleIndependentCreditUnsafe]=SingleCanonicalLedger
+EXPECTED_REFUTATION_WRAPPER[AtomicVaultSettlementRefinementGlobalCellUnsafe]=MCAtomicVaultSettlementRefinement
+EXPECTED_REFUTATION_INVARIANT[AtomicVaultSettlementRefinementGlobalCellUnsafe]=NoPersistentReservationState
+EXPECTED_REFUTATION_WRAPPER[WalletFundedLollipopFundingCopyUnsafe]=MCWalletFundedLollipop
+EXPECTED_REFUTATION_INVARIANT[WalletFundedLollipopFundingCopyUnsafe]=CanonicalCustodyConserved
+EXPECTED_REFUTATION_WRAPPER[WalletFundedLollipopCapabilityLeakUnsafe]=MCWalletFundedLollipop
+EXPECTED_REFUTATION_INVARIANT[WalletFundedLollipopCapabilityLeakUnsafe]=FundingUsesAddressWithoutDelegatingDraw
+EXPECTED_REFUTATION_WRAPPER[WalletFundedLollipopPayerCollapseUnsafe]=MCWalletFundedLollipop
+EXPECTED_REFUTATION_INVARIANT[WalletFundedLollipopPayerCollapseUnsafe]=CertifiedPayerIsSlot
+EXPECTED_REFUTATION_WRAPPER[WalletFundedLollipopReplayOmissionUnsafe]=MCWalletFundedLollipop
+EXPECTED_REFUTATION_INVARIANT[WalletFundedLollipopReplayOmissionUnsafe]=ReplayMatchesCommit
+EXPECTED_REFUTATION_WRAPPER[WalletFundedLollipopMissingOuterUnsafe]=MCWalletFundedLollipop
+EXPECTED_REFUTATION_INVARIANT[WalletFundedLollipopMissingOuterUnsafe]=ContinuationRequiresOuter
+EXPECTED_REFUTATION_WRAPPER[WalletFundedLollipopBoundChargeUnsafe]=MCWalletFundedLollipop
+EXPECTED_REFUTATION_INVARIANT[WalletFundedLollipopBoundChargeUnsafe]=UnusedCertifiedBoundIsRefunded
+EXPECTED_REFUTATION_WRAPPER[WalletFundedLollipopGatewayAuthBypassUnsafe]=MCWalletFundedLollipop
+EXPECTED_REFUTATION_INVARIANT[WalletFundedLollipopGatewayAuthBypassUnsafe]=OnlyGatewayAuthorizesContinuation
+EXPECTED_REFUTATION_WRAPPER[NormalizerEnvironmentRefinementEmptyUnsafe]=NormalizerEnvironmentRefinement
+EXPECTED_REFUTATION_INVARIANT[NormalizerEnvironmentRefinementEmptyUnsafe]=CertificationExecutionReplayUseSameEnvironment
+EXPECTED_REFUTATION_WRAPPER[PhysicalSettlementWorklistRecursiveUnsafe]=PhysicalSettlementWorklist
+EXPECTED_REFUTATION_INVARIANT[PhysicalSettlementWorklistRecursiveUnsafe]=NativeStackBound
 
 # Collect all .cfg files whose paired .tla module exists.
 specs=()
@@ -107,7 +264,14 @@ for cfg in *.cfg; do
     fi
 done
 
-if [[ ${#specs[@]} -eq 0 ]]; then
+matching_refutations=0
+for base in "${!EXPECTED_REFUTATION_WRAPPER[@]}"; do
+    if [[ -z "$FILTER" || "$base" == *"$FILTER"* ]]; then
+        matching_refutations=$((matching_refutations + 1))
+    fi
+done
+
+if [[ ${#specs[@]} -eq 0 && $matching_refutations -eq 0 ]]; then
     echo "No matching specs found" >&2
     exit 2
 fi
@@ -135,10 +299,10 @@ for i in "${!specs[@]}"; do
     printf "  %-40s " "${base} (${spec_root%.tla})"
     metadir="$METADIR_ROOT/$base"
     output=$(tlc_run "$metadir" "${base}.cfg" "$spec_root" -deadlock 2>&1 || true)
-    if echo "$output" | grep -q "Model checking completed. No error has been found"; then
+    if grep -q "Model checking completed. No error has been found" <<<"$output"; then
         echo "PASS"
         passes=$((passes + 1))
-    elif echo "$output" | grep -q "Error:"; then
+    elif grep -q "Error:" <<<"$output"; then
         echo "FAIL"
         failures=$((failures + 1))
         failed_specs+=("$base")
@@ -148,6 +312,35 @@ for i in "${!specs[@]}"; do
         failures=$((failures + 1))
         failed_specs+=("$base")
         echo "$output" | tail -5 | sed 's/^/    /'
+    fi
+done
+
+expected_refutations=0
+for base in "${!EXPECTED_REFUTATION_WRAPPER[@]}"; do
+    if [[ -n "$FILTER" && "$base" != *"$FILTER"* ]]; then
+        continue
+    fi
+    wrapper="${EXPECTED_REFUTATION_WRAPPER[$base]}"
+    invariant="${EXPECTED_REFUTATION_INVARIANT[$base]}"
+    if [[ ! -f "${base}.cfg" || ! -f "${wrapper}.tla" ]]; then
+        printf "  %-40s FAIL\n" "${base} (expected refutation)"
+        failures=$((failures + 1))
+        failed_specs+=("$base(missing-control)")
+        continue
+    fi
+    expected_refutations=$((expected_refutations + 1))
+    printf "  %-40s " "${base} (expected refutation)"
+    metadir="$METADIR_ROOT/$base"
+    output=$(tlc_run "$metadir" "${base}.cfg" "${wrapper}.tla" -deadlock 2>&1 || true)
+    if grep -Fq "Invariant ${invariant} is violated" <<<"$output" \
+       || grep -Fq "The invariant of ${invariant} is equal to FALSE" <<<"$output"; then
+        echo "PASS (refuted ${invariant})"
+        passes=$((passes + 1))
+    else
+        echo "FAIL (expected ${invariant} counterexample)"
+        failures=$((failures + 1))
+        failed_specs+=("$base(expected-refutation)")
+        echo "$output" | tail -10 | sed 's/^/    /'
     fi
 done
 
@@ -172,8 +365,8 @@ if [[ -z "$FILTER" || "Validator" == *"$FILTER"* ]] \
         # imported TLAPS.tla reports "All 0 obligation proved", so success is
         # a non-zero-obligation "All N obligations proved." for Validator.tla
         # with no "failed"/"omitted" anywhere.
-        if echo "$tlaps_out" | grep -Eq "All [1-9][0-9]* obligations? proved\." \
-           && ! echo "$tlaps_out" | grep -Eiq "obligation.*(failed|omitted)|[1-9][0-9]* (failed|omitted)"; then
+        if grep -Eq "All [1-9][0-9]* obligations? proved\." <<<"$tlaps_out" \
+           && ! grep -Eiq "obligation.*(failed|omitted)|[1-9][0-9]* (failed|omitted)" <<<"$tlaps_out"; then
             echo "PASS"
             passes=$((passes + 1))
         else
@@ -188,7 +381,7 @@ if [[ -z "$FILTER" || "Validator" == *"$FILTER"* ]] \
 fi
 
 echo
-echo "Summary: $passes passed, $failures failed (total $((${#specs[@]} + 1)))"
+echo "Summary: $passes passed, $failures failed ($expected_refutations expected refutations exercised)"
 if [[ $failures -gt 0 ]]; then
     echo "Failed specs:"
     printf '  - %s\n' "${failed_specs[@]}"

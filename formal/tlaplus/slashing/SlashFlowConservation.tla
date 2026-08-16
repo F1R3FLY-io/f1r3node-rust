@@ -41,6 +41,24 @@ SumQuarantined(S) ==
     ELSE LET v == CHOOSE x \in S : TRUE
          IN  quarantinedStake[v] + SumQuarantined(S \ {v})
 
+RECURSIVE SumFuel(_)
+SumFuel(S) ==
+    IF S = {} THEN 0
+    ELSE LET v == CHOOSE x \in S : TRUE
+         IN  supply[v] + SumFuel(S \ {v})
+
+RECURSIVE SumQuarantinedFuel(_)
+SumQuarantinedFuel(S) ==
+    IF S = {} THEN 0
+    ELSE LET v == CHOOSE x \in S : TRUE
+         IN  quarantinedFuel[v] + SumQuarantinedFuel(S \ {v})
+
+RECURSIVE SumProtocolMinted(_)
+SumProtocolMinted(S) ==
+    IF S = {} THEN 0
+    ELSE LET v == CHOOSE x \in S : TRUE
+         IN  protocolMinted[v] + SumProtocolMinted(S \ {v})
+
 \* Total stake conservation (quarantine-inclusive, Stage-C): the initial stake
 \* is fully accounted across the four buckets it can occupy — currently bonded,
 \* the coop vault (Guilty penalties), the per-offender quarantine (slashed but
@@ -52,5 +70,10 @@ Inv_StakeConservation ==
     SumBonds(Validators) + coopVaultBalance
       + SumQuarantined(Validators) + burnedStake
     = SumInitialBonds(Validators)
+
+Inv_FuelConservation ==
+    SumFuel(Validators) + SumQuarantinedFuel(Validators)
+      + coopFuelBalance + burnedFuel
+    = SumProtocolMinted(Validators)
 
 ============================================================================

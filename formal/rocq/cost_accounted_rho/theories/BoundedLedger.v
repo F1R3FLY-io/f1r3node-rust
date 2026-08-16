@@ -8,10 +8,10 @@
    sound but domain-EXCLUDE the adversarial branch the runtime actually guards:
    [nat] is unbounded, so a CREDIT [+] can never overflow, and the DEBIT guard is
    only reachable via the [draw <= pre] premise those theorems ASSUME. The Rust
-   runtime (casper/.../costacc/close_block_deploy.rs::dual_write_supply) holds each
-   pool balance as an [i64] in [[0, i64::MAX]] and updates it with [checked_add] /
-   [checked_sub] — both of which return [None] at the machine boundary, which the
-   caller turns into a DETERMINISTIC block rejection (never a panic; item 2494).
+   runtime holds each native SystemVault balance as an [i64] in [[0, i64::MAX]]
+   and updates it with [checked_add] / [checked_sub] — both of which return [None]
+   at the machine boundary, which the caller turns into a DETERMINISTIC block
+   rejection (never a panic; item 2494).
 
    This module re-models the ledger quantity in [Z], bounded to the i64
    non-negative range, so BOTH branches are REPRESENTABLE and PROVEN:
@@ -41,10 +41,9 @@
    checked_add_i64_none_iff_overflow                  | reject iff overflow
    checked_sub_nonneg_conserved_or_rejected           | debit: Sigma conserved OR reject
    checked_add_i64_matches_nat                         | nat model = in-range restriction
-   supply_credit_conserved_or_rejected                | dual_write_supply mint/convert/
-                                                      |   collect loop (item 2494)
+   vault_credit_conserved_or_rejected                 | SystemVault credit loop
    bounded_settlement_conserved_or_rejected            | settle_balance / settlement_conserves
-   bounded_fee_convert_conserved_or_rejected           | fb_convert / fee_convert_*_backed
+   bounded_fee_transfer_conserved_or_rejected          | direct client -> proposer fee
    ─────────────────────────────────────────────────────────────────────────
 
    Dependencies: Rocq 9.1.x ZArith, TokenConservation, MintingInjection.
@@ -176,15 +175,15 @@ Proof.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
-   Section 5: The applied headline — the dual_write_supply credit loop (item 2494)
+   Section 5: The applied headline — native SystemVault credits (item 2494)
    ═══════════════════════════════════════════════════════════════════════════
 
-   [dual_write_supply] folds a list of credits (the mint list, the fee carve, the
-   collection, the convert, the client seed) onto pool balances via the checked
-   credit, [?]-propagating the first overflow as the deterministic rejection.     *)
+   Native SystemVault funding folds a list of credits onto a canonical vault via
+   the checked credit, [?]-propagating the first overflow as deterministic
+   rejection.                                                                    *)
 
-(* Apply a list of non-negative credits to a pool, short-circuiting to [None] on the
-   first overflow — the exact shape of the mint/convert/collect loop. *)
+(* Apply a list of non-negative credits to a vault, short-circuiting to [None] on
+   the first overflow. *)
 Fixpoint apply_credits (old : Z) (amts : list Z) : option Z :=
   match amts with
   | [] => Some old
@@ -204,11 +203,11 @@ Fixpoint zsum (l : list Z) : Z :=
 (* Item 2494 headline (the Rocq mirror of the Rust [checked_supply_credit] guard):
    folding the block's credits onto a pool EITHER conserves — the final balance is
    EXACTLY the pre-balance plus the total credited (no wrap, no loss) — OR it is
-   deterministically REJECTED ([None], exactly as [dual_write_supply] returns the
-   [ReplaySupplyOverflow] error and every node rejects the same block the same way).
+   deterministically REJECTED ([None], exactly as native SystemVault settlement
+   returns an overflow error and every node rejects the same block the same way).
    "The ledger sum is conserved OR the block is deterministically rejected on
    overflow." *)
-Theorem supply_credit_conserved_or_rejected : forall amts old,
+Theorem vault_credit_conserved_or_rejected : forall amts old,
   0 <= old -> Forall (fun a => 0 <= a) amts ->
   apply_credits old amts = Some (old + zsum amts)
   \/ apply_credits old amts = None.
@@ -248,22 +247,34 @@ Proof.
   - right. exact Hnone.
 Qed.
 
-(* Bounded fee->v convert (MintingInjection.fb_convert / fee_convert_credit_is_backed
-   at the i64 layer): crediting [Sigma(v)] by the collected fee [f] and zeroing
-   [F_v] EITHER conserves the [F_v + Sigma(v)] holding with the exact 1:1 peg (the
-   fees that leave F_v EXACTLY enter Sigma(v); nat [fee_convert_conserves_holding]
-   is this Some-branch) OR overflows and is deterministically rejected. The credit
-   is BACKED (bounded by the drained fee), never an unbacked mint. *)
-Theorem bounded_fee_convert_conserved_or_rejected : forall fees supply,
-  0 <= fees -> 0 <= supply ->
-  match checked_add_i64 supply fees with
-  | Some supply' => supply' + 0 = supply + fees /\ in_i64 supply'
-  | None => supply + fees > i64_max
+Definition checked_fee_transfer (client proposer fee : Z) : option (Z * Z) :=
+  match checked_sub_nonneg client fee with
+  | None => None
+  | Some client' =>
+      match checked_add_i64 proposer fee with
+      | None => None
+      | Some proposer' => Some (client', proposer')
+      end
+  end.
+
+(* A native fee transfer is atomic: either the client debit and proposer credit
+   both commit with exact global conservation, or neither commits because the
+   client is underfunded or the proposer balance would overflow. *)
+Theorem bounded_fee_transfer_conserved_or_rejected : forall client proposer fee,
+  in_i64 client -> in_i64 proposer -> 0 <= fee ->
+  match checked_fee_transfer client proposer fee with
+  | Some (client', proposer') =>
+      client' + proposer' = client + proposer /\
+      in_i64 client' /\ in_i64 proposer'
+  | None => fee > client \/ proposer + fee > i64_max
   end.
 Proof.
-  intros fees supply Hf Hs.
-  destruct (checked_add_i64_conserved_or_rejected supply fees Hs Hf)
-    as [[Hsome Hin] | [Hnone Hover]].
-  - rewrite Hsome. split; [lia | exact Hin].
-  - rewrite Hnone. exact Hover.
+  intros client proposer fee Hclient Hproposer Hfee.
+  unfold checked_fee_transfer, checked_sub_nonneg, checked_add_i64.
+  destruct (fee <=? client) eqn:Hdebit.
+  - apply Z.leb_le in Hdebit.
+    destruct (proposer + fee <=? i64_max) eqn:Hcredit.
+    + apply Z.leb_le in Hcredit. unfold in_i64 in *. repeat split; lia.
+    + apply Z.leb_gt in Hcredit. right. lia.
+  - apply Z.leb_gt in Hdebit. left. lia.
 Qed.

@@ -13,8 +13,8 @@
 (* Same event attributes as MCRuntimeBudgetReplay (so e0 = zero-weight,     *)
 (* e4 = over-long source path, e5 = over-large primitive descriptor are all *)
 (* intrinsically invalid; ValidEventSet = {e1, e2, e3}, Σ weights = 9).     *)
-(* InitialBudget = 12 > 9, MaxTraceEvents = 4 >= 3 valid events, so neither  *)
-(* the budget nor the trace cap bites — pure complete-commit path.          *)
+(* InitialBudget = 12 > 9, so the capacity-derived window contains every    *)
+(* valid event and this is the pure complete-commit path.                    *)
 (****************************************************************************)
 
 EXTENDS RuntimeBudgetReplay, TLC
@@ -60,7 +60,6 @@ MC_Rank == [e \in MC_Events |-> CASE e = e0 -> 0
                                    [] e = e4 -> 4
                                    [] e = e5 -> 5]
 MC_InitialBudget == 12
-MC_MaxTraceEvents == 4
 MC_MaxSourcePathComponents == 2
 MC_MaxPrimitiveDescriptor == 9
 MC_NoOop == no_oop

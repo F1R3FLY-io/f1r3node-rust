@@ -2227,7 +2227,7 @@ Proof.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
-   Option E Reconciliation Theorems
+   Diagnostic Reservation Reconciliation Theorems
    ═══════════════════════════════════════════════════════════════════════════
 
    These theorems formalize the post-hoc canonical reconciliation
@@ -2236,11 +2236,11 @@ Qed.
    `formal/tlaplus/cost_accounted_rho/RuntimeBudgetReplay.tla`.
 
    The Rust runtime races lock-free CAS attempts against a shared
-   `consumed_tokens` counter. The consensus-relevant `total_cost`,
-   `cost_trace_digest`, and `last_oop_event` come from a post-execution
-   canonical walk over the attempt log — NOT from the runtime CAS
-   outcomes (which depend on Tokio scheduling). This module proves the
-   invariants that justify that decoupling:
+   `consumed_tokens` counter. The post-execution canonical walk is a
+   low-level reservation and diagnostic mechanism; it is not the semantic
+   definition of native Rholang cost. Native cost is the successful atomic
+   COMM trace proved in AtomicCommAccounting.v. This section proves the
+   internal invariants of the reservation mechanism:
 
    - `rb_event_weight_sum_permutation_invariant`: the multiset weight
      is independent of input order (the foundation of permutation
@@ -2254,7 +2254,7 @@ Qed.
    - `rb_reconcile_oop_iff_overflow`: the canonical OOP fires iff
      sum_of_weights > initial; otherwise no OOP. Permutation-invariant.
 
-   Together these mirror the headline Option E theorem:
+   Together these establish the diagnostic reconciliation theorem:
      "for the same multiset of attempts and the same initial budget,
       reconciliation produces the same observable accounting state
       regardless of which CAS race winners occurred at runtime."
@@ -2522,10 +2522,9 @@ Qed.
       (lowK_merge_comm / _assoc / _id_l / _id_r, identity []) — associativity
       being the bounded-K absorption law lowK_absorb.  Then
       rb_reconcile_bounded_K_eq_sort_truncate shows the cost walk over the
-      lowest min(MAX_COST_TRACE_EVENTS, initial+1) events produces the SAME
-      committed event_log, last_oop, consumed, and OOP-count as the full
-      sorted-then-truncated walk (weights >= 1 ⇒ <= initial events committed
-      + 1 boundary).
+      lowest initial+1 events produces the SAME committed event_log,
+      last_oop, consumed, and OOP-count as the full canonical walk
+      (weights >= 1 ⇒ <= initial events committed + 1 boundary).
 
    2. total_cost SCHEDULE-INDEPENDENCE.  rb_total_cost_eq_min_initial_sum +
       rb_total_cost_schedule_independent + rb_total_cost_clamped_characterization
@@ -3653,20 +3652,15 @@ Qed.
    Bounded-K equivalence of the cost walk
    ══════════════════════════════════════════════════════════════════════════
 
-   The Rust `reconcile` (accounting/mod.rs:455) sorts the attempt log by the
-   canonical Ord, truncates to MAX_COST_TRACE_EVENTS, then walks committing
-   events until the cumulative weight would exceed `initial` (the OOP
-   boundary). With every billable weight >= 1, the walk can commit at most
-   `initial` events before stopping, so it inspects at most `initial + 1`
-   events. Hence the walk reads only the lowest `min(MAX, initial+1)` events.
-
-   MAX_COST_TRACE_EVENTS = 1_048_576 in accounting/mod.rs:27. Its concrete
-   value is irrelevant to these proofs — only that the walk window is
-   min(MAX, initial+1). *)
-Definition MAX_COST_TRACE_EVENTS : nat := Nat.pow 2 20.  (* = 1_048_576 *)
+   The Rust `reconcile` keeps the canonical lowest `initial + 1` COMM
+   attempts and walks them until the cumulative weight would exceed
+   `initial` (the OOP boundary). With every billable weight >= 1, the walk
+   can commit at most `initial` events before stopping, so it inspects at
+   most `initial + 1` events. The bound is derived from authenticated
+   execution capacity and therefore cannot truncate an accepted trace. *)
 
 Definition rb_bounded_K (initial : nat) : nat :=
-  Nat.min MAX_COST_TRACE_EVENTS (initial + 1).
+  initial + 1.
 
 (* Every weight >= 1 transfers across the canonical sort (it is a
    permutation). *)
@@ -3725,32 +3719,14 @@ Proof.
         reflexivity.
 Qed.
 
-(* lowestK at the bounded-K window equals the bounded-K prefix of the full
-   sorted-then-truncated (to MAX) multiset that the Rust walk consumes. *)
-Lemma rb_bounded_K_le_max : forall initial,
-  rb_bounded_K initial <= MAX_COST_TRACE_EVENTS.
-Proof. intro initial. unfold rb_bounded_K. apply Nat.le_min_l. Qed.
-
-Lemma lowestK_bounded_K_is_prefix_of_truncated : forall initial events,
-  lowestK (rb_bounded_K initial) events
-  = firstn (rb_bounded_K initial)
-           (firstn MAX_COST_TRACE_EVENTS (rb_event_sort events)).
-Proof.
-  intros initial events. unfold lowestK.
-  rewrite firstn_firstn.
-  rewrite (Nat.min_l (rb_bounded_K initial) MAX_COST_TRACE_EVENTS
-             (rb_bounded_K_le_max initial)).
-  reflexivity.
-Qed.
-
-(* The full sorted-then-truncated multiset the runtime walks. *)
+(* The full canonical multiset against which the bounded window refines. *)
 Definition rb_sort_truncate (events : list rb_event) : list rb_event :=
-  firstn MAX_COST_TRACE_EVENTS (rb_event_sort events).
+  rb_event_sort events.
 
 (* ── DELIVERABLE 1 (headline): the cost walk's full output — final state
    (committed event_log, consumed, last_oop) AND the per-event results list —
-   over the bounded lowest-K fold equals the output over the full
-   sorted-then-truncated multiset.  Weights >= 1 and consumed starts at 0
+   over the bounded lowest-K fold equals the output over the full canonical
+   multiset.  Weights >= 1 and consumed starts at 0
    (a fresh per-deploy budget), so the walk inspects <= initial + 1 events
    and never looks past the lowest min(MAX, initial+1). *)
 Theorem rb_reconcile_bounded_K_eq_sort_truncate : forall b events,
@@ -3762,35 +3738,13 @@ Theorem rb_reconcile_bounded_K_eq_sort_truncate : forall b events,
   = rb_reserve_many b (rb_sort_truncate events).
 Proof.
   intros b events Hpos Hvalid Hunmet Hcons0.
-  unfold rb_sort_truncate.
-  rewrite (lowestK_bounded_K_is_prefix_of_truncated (rb_initial b) events).
-  set (S := firstn MAX_COST_TRACE_EVENTS (rb_event_sort events)).
-  (* All weights in S are >= 1 (S is a sublist of the sorted positives). *)
-  assert (HposS : Forall rb_event_positive S).
-  { unfold S. apply Forall_firstn. apply rb_event_positive_sort. exact Hpos. }
-  (* Case on whether the bounded window reaches the prefix-stability bound. *)
-  destruct (Nat.le_gt_cases (rb_initial b + 1) MAX_COST_TRACE_EVENTS) as [Hle | Hgt].
-  - (* initial + 1 <= MAX: bounded_K = initial + 1 >= initial - consumed + 1. *)
-    assert (HbK : rb_bounded_K (rb_initial b) = rb_initial b + 1).
-    { unfold rb_bounded_K. rewrite Nat.min_r by lia. reflexivity. }
-    rewrite HbK.
-    symmetry.
-    apply rb_reserve_many_prefix_stable.
-    + exact HposS.
-    + exact Hvalid.
-    + exact Hunmet.
-    + rewrite Hcons0. lia.
-  - (* MAX < initial + 1: bounded_K = MAX, and length S <= MAX so the prefix
-       is all of S — both sides walk S. *)
-    assert (HbK : rb_bounded_K (rb_initial b) = MAX_COST_TRACE_EVENTS).
-    { unfold rb_bounded_K. rewrite Nat.min_l by lia. reflexivity. }
-    rewrite HbK.
-    assert (HlenS : length S <= MAX_COST_TRACE_EVENTS).
-    { unfold S. rewrite length_firstn. lia. }
-    assert (Hsafe : firstn MAX_COST_TRACE_EVENTS S = S)
-      by (apply firstn_all2; exact HlenS).
-    rewrite Hsafe.
-    reflexivity.
+  unfold rb_sort_truncate, lowestK, rb_bounded_K.
+  symmetry.
+  apply rb_reserve_many_prefix_stable.
+  - apply rb_event_positive_sort. exact Hpos.
+  - exact Hvalid.
+  - exact Hunmet.
+  - rewrite Hcons0. lia.
 Qed.
 
 (* Explicit corollaries: each observable the runtime reads off `reconcile`

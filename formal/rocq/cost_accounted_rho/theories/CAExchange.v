@@ -33,6 +33,17 @@ Theorem ca_exchange_swaps_values : forall cs,
   /\ carrier_v (exchange_swap cs) = carrier_c cs.
 Proof. exact exchange_swaps_values. Qed.
 
+Theorem ca_exchange_preserves_stack_identity_and_order : forall cs,
+  resource_c (exchange_resource_swap cs) = resource_v cs
+  /\ resource_v (exchange_resource_swap cs) = resource_c cs.
+Proof. exact exchange_preserves_stack_identity_and_order. Qed.
+
+Theorem ca_exchange_preserves_resource_cell_count : forall cs,
+  length (resource_c (exchange_resource_swap cs)) +
+  length (resource_v (exchange_resource_swap cs)) =
+  length (resource_c cs) + length (resource_v cs).
+Proof. exact exchange_preserves_resource_cell_count. Qed.
+
 (* The native calculus characterization: an exchange swap, viewed at the fuel
    layer, is a FUNDED ca_step (fuel-non-increasing — it moves tokens between
    carriers, it does not mint them), and exogenous minting is never such a step. *)

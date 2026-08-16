@@ -54,15 +54,12 @@ ASSUME CostPerToken \in Nat
 VARIABLE channelTouches  \* Nat: number of bodies that have touched the channel
 
 (*--------------------------------------------------------------------------*)
-(* Cost-Accounted Rho Stage B: the per-validator SUPPLY pool Σ⟦v⟧ written    *)
-(* by the close-block epoch mint (CloseBlockDeploy::post_eval). We reuse     *)
-(* Bodies as the validator set. [supply] is the per-validator balance; it is *)
-(* written ONLY by the mint action (DR-13: Σ⟦v⟧ is reducer-unwritable, so a  *)
-(* user ExecuteBody never touches it). [halted] is the "mintingHalted" set   *)
-(* (Stage-C slash effect); [mintedThisEpoch] is the "mintedEpochs" guard for *)
-(* the single epoch this model checks. MintAmount is the per-epoch credit.   *)
+(* The paper's validator supply notation maps to the existing canonical       *)
+(* SystemVault selected by the validator key. We reuse Bodies as validator    *)
+(* identities. [supply] is that native vault balance, written by authenticated *)
+(* PoS minting and conserving fee transfers, never by user reduction.         *)
 (*--------------------------------------------------------------------------*)
-VARIABLE supply           \* [Bodies -> Nat]: per-validator Σ⟦v⟧ balance
+VARIABLE supply           \* [Bodies -> Nat]: canonical SystemVault balance
 VARIABLE halted           \* SUBSET Bodies: validators whose minting is halted
 VARIABLE mintedThisEpoch  \* SUBSET Bodies: validators already minted this epoch
 
@@ -71,23 +68,26 @@ CONSTANT MintAmount       \* Nat: epochPhlogiston credited per eligible mint
 ASSUME MintAmount \in Nat /\ MintAmount > 0
 
 (*--------------------------------------------------------------------------*)
-(* Cost-Accounted Rho Stage D: the per-validator FEE pool F_v and the per-   *)
-(* epoch fee→v CONVERSION (the economic loop, spec tex:3061-3100). Rust holds *)
-(* F_v as a reducer-unwritable, content-addressed pool (distinct from Σ⟦v⟧).  *)
-(* COLLECTION credits feeCollected[v] (the FeeExtract — one token per         *)
-(* processed deploy). At an epoch boundary, FeeConvert moves an ELIGIBLE      *)
-(* validator's WHOLE feeCollected[v] into supply[v] (Σ⟦v⟧) 1:1 and zeroes the *)
-(* fee pool, recording convertedThisEpoch (the convertedEpochs idempotency    *)
-(* guard). DR-4: an eligible validator with feeCollected = 0 gets NO Σ⟦v⟧     *)
-(* credit (no one-sided mint). cost ≠ fee: the fee is a SEPARATE token, never  *)
-(* the burned settlement debit (poolBalance).                                  *)
+(* FeeExtract is realized as an atomic transfer between two canonical          *)
+(* SystemVault balances. [feeTransfers] records each modeled payer/proposer     *)
+(* pair once, bounding the state space while retaining arbitrary interleavings. *)
+(* No fee pool, conversion epoch, or parallel economic ledger exists.           *)
 (*--------------------------------------------------------------------------*)
-VARIABLE feeCollected      \* [Bodies -> Nat]: per-validator F_v fee pool
-VARIABLE convertedThisEpoch \* SUBSET Bodies: validators already fee-converted this epoch
+VARIABLE feeTransfers      \* SUBSET (Bodies \X Bodies): completed transfers
 
 CONSTANT FeeAmount         \* Nat: per-COLLECTION fee credit (the flat FeeExtract)
 
 ASSUME FeeAmount \in Nat
+
+FeePairs == {<<payer, proposer>> \in Bodies \X Bodies : payer # proposer}
+
+RECURSIVE SumBalances(_, _)
+SumBalances(balances, identities) ==
+    IF identities = {}
+    THEN 0
+    ELSE LET identity == CHOOSE member \in identities : TRUE
+         IN balances[identity]
+            + SumBalances(balances, identities \ {identity})
 
 (*--------------------------------------------------------------------------*)
 (* Cost-Accounted Rho WD-D2: the per-signature ACCEPTANCE GATE + settlement  *)
@@ -189,7 +189,7 @@ AdmittedSetB(len) == { CanonOrderB[i] : i \in 1..len }
 vars == <<executed, totalCost, extCost, orderSoFar, channelTouches,
           supply, halted, mintedThisEpoch,
           gatePhase, admittedLen, poolBalance, gateExecuted,
-          feeCollected, convertedThisEpoch,
+          feeTransfers,
           gatePhaseB, admittedLenB, poolBalanceB, gateExecutedB>>
 
 (* CA-P-171: the group-B gate variables alone, used as the UNCHANGED footprint  *)
@@ -209,8 +209,7 @@ TypeOK ==
     /\ admittedLen \in 0..Len(CanonOrder)
     /\ poolBalance \in Nat
     /\ gateExecuted \in SUBSET Bodies
-    /\ feeCollected \in [Bodies -> Nat]
-    /\ convertedThisEpoch \in SUBSET Bodies
+    /\ feeTransfers \in SUBSET FeePairs
     \* CA-P-171 group-B gate.
     /\ gatePhaseB \in {"pregate", "executing", "settled"}
     /\ admittedLenB \in 0..Len(CanonOrderB)
@@ -234,9 +233,7 @@ Init ==
     /\ admittedLen  = 0
     /\ poolBalance  = PoolSupply
     /\ gateExecuted = {}
-    \* Stage D: no fees collected or converted yet.
-    /\ feeCollected      = [b \in Bodies |-> 0]
-    /\ convertedThisEpoch = {}
+    /\ feeTransfers = {}
     \* CA-P-171: group B starts BEFORE its own gate, carrying its disjoint
     \* pre-state Σ⟦sB⟧ = PoolSupplyB; nothing admitted or executed in B yet.
     /\ gatePhaseB    = "pregate"
@@ -260,21 +257,16 @@ ExecuteBody(b) ==
                                      ELSE StorageCostB)
     /\ channelTouches' = channelTouches + 1
     /\ orderSoFar'     = Append(orderSoFar, b)
-    \* A user reduction step NEVER touches the supply pool (DR-13) nor the
-    \* WD-D2 gate state nor the Stage-D fee pool (orthogonal dynamics).
+    \* A user reduction step never touches SystemVault custody or gate state.
     /\ UNCHANGED <<supply, halted, mintedThisEpoch,
                    gatePhase, admittedLen, poolBalance, gateExecuted,
-                   feeCollected, convertedThisEpoch>>
+                   feeTransfers>>
     \* CA-P-171: orthogonal to group B's disjoint gate.
     /\ UNCHANGED varsB
 
 (*--------------------------------------------------------------------------*)
-(* Cost-Accounted Rho Stage B: the epoch mint. An ELIGIBLE validator        *)
-(* (active is implicit here; NOT halted AND NOT already minted this epoch)   *)
-(* is credited MintAmount on its Σ⟦v⟧ and recorded in mintedThisEpoch. This  *)
-(* is the SOLE supply-increasing action — the model's analogue of the        *)
-(* closeBlock fold + post_eval produce_balance. The eligibility guards       *)
-(* mirror mint_eligible (MintingInjection.v) and the Rholang predicate.      *)
+(* An eligible validator receives an authenticated protocol mint directly in *)
+(* its canonical SystemVault and is recorded in the epoch mint ledger.        *)
 (*--------------------------------------------------------------------------*)
 MintValidator(b) ==
     /\ b \notin halted
@@ -283,51 +275,29 @@ MintValidator(b) ==
     /\ mintedThisEpoch' = mintedThisEpoch \cup {b}
     /\ UNCHANGED <<executed, totalCost, extCost, orderSoFar, channelTouches, halted,
                    gatePhase, admittedLen, poolBalance, gateExecuted,
-                   feeCollected, convertedThisEpoch>>
+                   feeTransfers>>
     \* CA-P-171: orthogonal to group B's disjoint gate.
     /\ UNCHANGED varsB
 
 (*--------------------------------------------------------------------------*)
-(* Cost-Accounted Rho Stage D: the per-block fee COLLECTION. The proposing    *)
-(* validator's fee pool feeCollected[b] is credited FeeAmount (the FeeExtract).*)
-(* Modeled as a free action on any validator (any may propose a block). This   *)
-(* is the only fee-pool-increasing action; it NEVER touches supply (Σ⟦v⟧) —    *)
-(* the fee reaches Σ⟦v⟧ only via FeeConvert (backed conversion). cost ≠ fee.    *)
+(* FeeExtract atomically moves existing REV from the payer's canonical         *)
+(* SystemVault to the eligible proposer's canonical SystemVault.               *)
 (*--------------------------------------------------------------------------*)
-CollectFee(b) ==
-    \* Bound the single-epoch model: a validator holds at most ONE outstanding
-    \* collection in its fee pool at a time (it accrues FeeAmount, then the epoch
-    \* convert drains it back to 0 before the next collection). This keeps the
-    \* state space finite while exercising the collect → convert → re-collect
-    \* loop; the per-block FeeExtract is the same flat FeeAmount.
-    /\ feeCollected[b] = 0
-    /\ feeCollected'   = [feeCollected EXCEPT ![b] = FeeAmount]
-    /\ UNCHANGED <<executed, totalCost, extCost, orderSoFar, channelTouches,
-                   supply, halted, mintedThisEpoch, gatePhase, admittedLen,
-                   poolBalance, gateExecuted, convertedThisEpoch>>
-    \* CA-P-171: orthogonal to group B's disjoint gate.
-    /\ UNCHANGED varsB
-
-(*--------------------------------------------------------------------------*)
-(* Cost-Accounted Rho Stage D: the per-epoch fee→v CONVERSION (the economic    *)
-(* loop). An ELIGIBLE validator (NOT halted AND NOT already converted this      *)
-(* epoch) moves its WHOLE feeCollected[b] into supply[b] (Σ⟦v⟧) 1:1 and zeroes  *)
-(* its fee pool, recording convertedThisEpoch (the convertedEpochs idempotency  *)
-(* guard, sibling of mintedThisEpoch). The Σ⟦v⟧ credit equals EXACTLY the fees   *)
-(* that leave feeCollected — it is BACKED, not minted (Rocq                     *)
-(* fee_convert_credit_is_backed). DR-4: a validator with feeCollected = 0 still  *)
-(* records the epoch (idempotency) but credits NOTHING (no one-sided mint).     *)
-(*--------------------------------------------------------------------------*)
-FeeConvert(b) ==
-    /\ b \notin halted
-    /\ b \notin convertedThisEpoch
-    /\ supply'             = [supply EXCEPT ![b] = supply[b] + feeCollected[b]]
-    /\ feeCollected'       = [feeCollected EXCEPT ![b] = 0]
-    /\ convertedThisEpoch' = convertedThisEpoch \cup {b}
+TransferFee(payer, proposer) ==
+    /\ <<payer, proposer>> \in FeePairs \ feeTransfers
+    /\ proposer \notin halted
+    /\ supply[payer] >= FeeAmount
+    /\ supply' =
+         [identity \in Bodies |->
+           IF identity = payer
+           THEN supply[identity] - FeeAmount
+           ELSE IF identity = proposer
+                THEN supply[identity] + FeeAmount
+                ELSE supply[identity]]
+    /\ feeTransfers' = feeTransfers \cup {<<payer, proposer>>}
     /\ UNCHANGED <<executed, totalCost, extCost, orderSoFar, channelTouches,
                    halted, mintedThisEpoch, gatePhase, admittedLen,
                    poolBalance, gateExecuted>>
-    \* CA-P-171: orthogonal to group B's disjoint gate.
     /\ UNCHANGED varsB
 
 (*--------------------------------------------------------------------------*)
@@ -344,7 +314,7 @@ AcceptanceGate ==
     /\ gatePhase'   = "executing"
     /\ UNCHANGED <<executed, totalCost, extCost, orderSoFar, channelTouches,
                    supply, halted, mintedThisEpoch, poolBalance, gateExecuted,
-                   feeCollected, convertedThisEpoch>>
+                   feeTransfers>>
     \* CA-P-171: group A's gate NEVER reads or writes group B's pool/phase —
     \* the two groups share no lock/turn variable (no global execution lock).
     /\ UNCHANGED varsB
@@ -363,14 +333,14 @@ ExecuteAdmitted(b) ==
     /\ gateExecuted' = gateExecuted \cup {b}
     /\ UNCHANGED <<executed, totalCost, extCost, orderSoFar, channelTouches,
                    supply, halted, mintedThisEpoch, gatePhase, admittedLen,
-                   poolBalance, feeCollected, convertedThisEpoch>>
+                   poolBalance, feeTransfers>>
     \* CA-P-171: orthogonal to group B's disjoint gate.
     /\ UNCHANGED varsB
 
 (*--------------------------------------------------------------------------*)
 (* WD-D2 Action: SETTLE the block. Once every admitted deploy has executed,    *)
-(* debit the pool by ΣΔ_admitted exactly once (post Σ⟦s⟧ = pre − ΣΔ). This is  *)
-(* the close-block settlement debit (dual_write_supply). The admitted prefix    *)
+(* debit the pool by ΣΔ_admitted exactly once (post Σ⟦s⟧ = pre − ΣΔ). The       *)
+(* authority is prepaid RSpace custody, distinct from the SystemVault ledger.   *)
 (* fits PoolSupply by construction, so the debit never underflows.             *)
 (*--------------------------------------------------------------------------*)
 SettleBlock ==
@@ -380,7 +350,7 @@ SettleBlock ==
     /\ gatePhase'   = "settled"
     /\ UNCHANGED <<executed, totalCost, extCost, orderSoFar, channelTouches,
                    supply, halted, mintedThisEpoch, admittedLen, gateExecuted,
-                   feeCollected, convertedThisEpoch>>
+                   feeTransfers>>
     \* CA-P-171: settling group A leaves group B's disjoint pool untouched.
     /\ UNCHANGED varsB
 
@@ -398,7 +368,7 @@ SettleBlock ==
 AOthers == <<executed, totalCost, extCost, orderSoFar, channelTouches,
              supply, halted, mintedThisEpoch,
              gatePhase, admittedLen, poolBalance, gateExecuted,
-             feeCollected, convertedThisEpoch>>
+             feeTransfers>>
 
 AcceptanceGateB ==
     /\ gatePhaseB = "pregate"
@@ -426,8 +396,7 @@ SettleBlockB ==
 Next ==
     \/ \E b \in Bodies : ExecuteBody(b)
     \/ \E b \in Bodies : MintValidator(b)
-    \/ \E b \in Bodies : CollectFee(b)
-    \/ \E b \in Bodies : FeeConvert(b)
+    \/ \E payer, proposer \in Bodies : TransferFee(payer, proposer)
     \/ AcceptanceGate
     \/ \E b \in Bodies : ExecuteAdmitted(b)
     \/ SettleBlock
@@ -466,103 +435,51 @@ InternalizedCostBounded ==
     totalCost <= Cardinality(Bodies) * CostPerToken
 
 (*==========================================================================*)
-(* Cost-Accounted Rho Stage B SUPPLY INVARIANTS                             *)
+(* Native SystemVault economic invariants                                   *)
 (*==========================================================================*)
 
 (*--------------------------------------------------------------------------*)
-(* HaltedValidatorSupplyNonIncreasing: a validator that is halted (the      *)
-(* "mintingHalted" set) never accrues supply — its Σ⟦v⟧ stays at its initial *)
-(* 0, because the mint action skips halted validators. State invariant; the  *)
-(* TLA+ analogue of halted_validator_supply_not_increased (MintingHalt.v).   *)
+(* A validator already halted at this model's initial state cannot mint or be *)
+(* selected as a fee recipient, so its canonical vault remains empty.         *)
 (*--------------------------------------------------------------------------*)
-HaltedValidatorSupplyNonIncreasing ==
+HaltedValidatorVaultEmpty ==
     \A b \in Bodies : b \in halted => supply[b] = 0
 
 (*--------------------------------------------------------------------------*)
-(* Supply is bounded by the mint accounting: a validator's Σ⟦v⟧ is 0 unless  *)
-(* it was minted this epoch, in which case it is exactly MintAmount. So the  *)
-(* supply is created ONLY by a mint and is precisely accountable — the state *)
-(* form of "minting is the sole producer of supply" (DR-13). The TLA+        *)
-(* analogue of epoch_mint crediting exactly MintAmount to an eligible        *)
-(* validator and the identity otherwise.                                     *)
+(* Protocol mint is the only operation that changes total native custody.     *)
+(* Direct fees only redistribute that custody between canonical vaults.       *)
 (*--------------------------------------------------------------------------*)
-SupplyOnlyFromMint ==
-    \A b \in Bodies :
-        \/ /\ b \notin mintedThisEpoch
-           /\ supply[b] = 0
-        \/ /\ b \in mintedThisEpoch
-           /\ supply[b] = MintAmount
+CanonicalVaultTotalBacked ==
+    SumBalances(supply, Bodies) = Cardinality(mintedThisEpoch) * MintAmount
 
 (*--------------------------------------------------------------------------*)
-(* SupplyOnlyFromMintOrBackedFeeConvert (Stage-D generalization of            *)
-(* SupplyOnlyFromMint): with the fee→v conversion added, Σ⟦v⟧ is produced by   *)
-(* EXACTLY TWO sources — the epoch MINT (MintAmount) and the BACKED fee        *)
-(* convert (≤ the fees that were collected). So a validator's supply is        *)
-(* bounded above by `(minted ? MintAmount : 0) + TotalFeesEverCollected[b]`,    *)
-(* and in particular is 0 unless it was minted OR fee-converted. We pin the     *)
-(* upper bound MintAmount + (FeeAmount * |Bodies|) (a loose but sound cap: at   *)
-(* most that many fee tokens can have been collected then converted in this     *)
-(* single-epoch model), so supply is never inflated beyond mint + collectible   *)
-(* fees — "minting + backed conversion are the sole producers of supply".       *)
+(* Every recorded fee recipient was eligible when the transfer committed.     *)
 (*--------------------------------------------------------------------------*)
-SupplyOnlyFromMintOrBackedFeeConvert ==
-    \A b \in Bodies :
-        \* A validator NEITHER minted NOR fee-converted has 0 supply (the two
-        \* sources are the ONLY producers).
-        /\ (b \notin mintedThisEpoch /\ b \notin convertedThisEpoch => supply[b] = 0)
-        \* Supply is bounded above by the mint plus the BACKED converted fees
-        \* (≤ all fees ever collectible in this single-epoch model) — never
-        \* inflated beyond mint + collected fees.
-        /\ supply[b] <= MintAmount + FeeAmount * Cardinality(Bodies)
+NoFeeToHaltedValidator ==
+    \A transfer \in feeTransfers : transfer[2] \notin halted
 
 (*--------------------------------------------------------------------------*)
-(* Inv_FeeConvertConserves: the fee conversion CONSERVES the validator's        *)
-(* total holding — it MOVES fees from feeCollected into supply (1:1), it never   *)
-(* mints or destroys. So the combined per-validator total                       *)
-(* feeCollected[b] + supply[b] is bounded above by the mint plus ALL collectible *)
-(* fees (FeeAmount per validator in this single-epoch model): the convert can     *)
-(* not inflate the combined holding beyond what was minted + collected. (A        *)
-(* convert that drains f from feeCollected adds exactly f to supply — the total   *)
-(* is unchanged by the convert itself; subsequent collections add NEW            *)
-(* next-epoch fees, still within the bound.) TLA+ analogue of Rocq               *)
-(* fee_collection_conserves / fee_convert_conserves_holding.                     *)
+(* Any canonical vault mutation is attributable to a new mint-ledger entry or *)
+(* a newly committed direct fee transfer.                                      *)
 (*--------------------------------------------------------------------------*)
-Inv_FeeConvertConserves ==
-    \A b \in Bodies :
-        feeCollected[b] + supply[b] <= MintAmount + FeeAmount * Cardinality(Bodies)
-
-(*--------------------------------------------------------------------------*)
-(* Inv_FeeConvertNotFromEmpty (DR-4): the fee convert never credits Σ⟦v⟧ from   *)
-(* nothing — a HALTED validator (whose fee convert is blocked, like its mint)   *)
-(* never has its fees converted, so a halted validator's supply stays 0 and its *)
-(* fees, if any, are never moved into Σ⟦v⟧. Combined with                       *)
-(* HaltedValidatorSupplyNonIncreasing this is the "no one-sided / unauthorized  *)
-(* supply from the fee loop" guarantee.                                         *)
-(*--------------------------------------------------------------------------*)
-Inv_FeeConvertNotFromEmpty ==
-    \A b \in Bodies : b \in halted => b \notin convertedThisEpoch
-
-(*--------------------------------------------------------------------------*)
-(* SupplyMonotoneStep (ACTION property): across any step, every validator's   *)
-(* supply is non-decreasing, and it strictly increases ONLY on a MINT step    *)
-(* (transition into mintedThisEpoch) OR a Stage-D fee-CONVERT step (transition *)
-(* into convertedThisEpoch). A user ExecuteBody, a CollectFee (credits the fee *)
-(* pool, not supply), and the gate steps all leave supply UNCHANGED. This is   *)
-(* the transition form of "the epoch mint and the BACKED fee convert are the   *)
-(* sole producers of supply".                                                  *)
-(*--------------------------------------------------------------------------*)
-SupplyMonotoneStep ==
-    [][ \A b \in Bodies :
-          /\ supply'[b] >= supply[b]
-          /\ (supply'[b] > supply[b] =>
-                \/ (b \notin mintedThisEpoch /\ b \in mintedThisEpoch')
-                \/ (b \notin convertedThisEpoch /\ b \in convertedThisEpoch'))
+VaultMutationIsProtocolAccounted ==
+    [][ (\E b \in Bodies : supply'[b] # supply[b]) =>
+          \/ mintedThisEpoch' # mintedThisEpoch
+          \/ feeTransfers' # feeTransfers
       ]_vars
 
 (*--------------------------------------------------------------------------*)
-(* A halted validator's supply NEVER changes across any step (sticky halt).  *)
+(* If no mint-ledger entry is added, the aggregate canonical balance is exact. *)
 (*--------------------------------------------------------------------------*)
-HaltedSupplyFrozenStep ==
+VaultTotalChangesOnlyByMint ==
+    [][ mintedThisEpoch' = mintedThisEpoch =>
+          SumBalances(supply', Bodies) = SumBalances(supply, Bodies)
+      ]_vars
+
+(*--------------------------------------------------------------------------*)
+(* A halted validator's canonical vault never changes across any step.       *)
+(*--------------------------------------------------------------------------*)
+HaltedVaultFrozenStep ==
     [][ \A b \in Bodies : b \in halted => supply'[b] = supply[b] ]_vars
 
 (*==========================================================================*)
@@ -617,21 +534,18 @@ SupplyConservation ==
     gatePhase = "settled" => poolBalance + CumDemand(admittedLen) = PoolSupply
 
 (*--------------------------------------------------------------------------*)
-(* #13b: Inv_StrictRejectsAbsent — the spec-strict (§7.6 step 5) rejection of *)
-(* an underfunded deploy on an ABSENT pool. Task #13a switched the gate to its *)
-(* strict mode, where an ABSENT supply pool is treated as a present pool with  *)
+(* Inv_StrictRejectsAbsent keeps its historical name and states the mandatory  *)
+(* §7.6 step-5 rejection of underfunded demand. An ABSENT supply pool has       *)
 (* balance 0 (the paper's [supply(s) = 0] for an absent pool). This invariant   *)
 (* models that pool as [PoolSupply = 0] and asserts the consequence: once the   *)
 (* gate has run (phase "executing"/"settled"), NO admitted deploy has positive  *)
 (* demand — i.e. a [Δ > 0] deploy is never admitted against a zero (absent)     *)
-(* pool. (Task #13b SEEDS client pools at genesis precisely so a strict shard   *)
-(* does NOT reject the clients it intends to fund — making PoolSupply > 0.)     *)
+(* pool. Client and validator provisioning make PoolSupply positive; they do    *)
+(* not activate a separate enforcement mode.                                   *)
 (*                                                                              *)
-(* This is the TLA+ analogue of the Rust strict branch                          *)
-(* ([acceptance.rs::admit_by_funding]: an absent pool's effective supply is 0,  *)
-(* so a [Δ>0] group fails [is_funded(_, 0, margin)] and is rejected) and of the *)
+(* This is the TLA+ analogue of the universal Rust proposal/replay rule and of   *)
 (* Rocq corollary [strict_reject_when_underfunded] ([is_funded_balance 0 f =    *)
-(* false] when [delta_s f > 0]). It holds in EVERY phase: in "pregate"          *)
+(* false] when [delta_s f > 0]). It holds in EVERY phase: in "pregate"           *)
 (* [admittedLen = 0] so [AdmittedSet] is empty (vacuously true), and after the  *)
 (* gate the admitted prefix's cumulative demand is [<= PoolSupply = 0], which   *)
 (* (with non-negative per-deploy [Demand]) forces every admitted deploy's       *)
@@ -642,18 +556,12 @@ Inv_StrictRejectsAbsent ==
         \A b \in AdmittedSet(admittedLen) : Demand[b] = 0
 
 (*--------------------------------------------------------------------------*)
-(* SupplyOnlyWrittenByMintOrFeeConvert (ACTION property): the per-validator    *)
-(* supply Σ⟦v⟧ is written ONLY by a mint step OR a Stage-D fee-convert step,    *)
-(* and the signature pool Σ⟦s⟧ ([poolBalance]) is written ONLY by the          *)
-(* settlement step (the gate transition to "settled"). No user execution       *)
-(* (ExecuteBody / ExecuteAdmitted), no gate-admission step, and no CollectFee   *)
-(* (which writes the fee pool, NOT supply) mutates Σ⟦v⟧ — DR-13 (Σ is reducer-  *)
-(* unwritable; the only writers are the Rust mint, the Rust fee-convert mirror, *)
-(* and the Rust settlement debit).                                              *)
+(* Canonical vault writes arise only from authenticated protocol mint or direct *)
+(* fee transfer. Located-pool writes arise only from atomic settlement.          *)
 (*--------------------------------------------------------------------------*)
-SupplyOnlyWrittenByMintOrFeeConvert ==
+VaultAndLocatedPoolWritersAreSeparated ==
     [][ /\ (\A b \in Bodies : supply'[b] # supply[b] =>
-              ~ UNCHANGED mintedThisEpoch \/ ~ UNCHANGED convertedThisEpoch)
+              ~ UNCHANGED mintedThisEpoch \/ ~ UNCHANGED feeTransfers)
         /\ (poolBalance' # poolBalance => gatePhase' = "settled" /\ gatePhase = "executing")
       ]_vars
 

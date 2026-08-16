@@ -11,6 +11,8 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIR="$ROOT/formal/isabelle/cost_accounting"
+WORK_ROOT="$ROOT/target/verification/cost-accounted-rho/isabelle"
+mkdir -p "$WORK_ROOT"
 
 echo "Checking cost-accounted rho join conservation (Isabelle/HOL)..."
 
@@ -21,7 +23,7 @@ if ! command -v isabelle >/dev/null 2>&1; then
   exit 0
 fi
 
-tmp="$(mktemp)"; trap 'rm -f "$tmp"' EXIT
+tmp="$(mktemp "$WORK_ROOT/build.XXXXXX.log")"; trap 'rm -f "$tmp"' EXIT
 if timeout "${ISABELLE_TIMEOUT:-1200}" isabelle build -D "$DIR" > "$tmp" 2>&1; then
   echo "  Isabelle: CostAccounting session verified (join_authority_conserved, join_no_weakening)."
   echo "Isabelle/HOL cross-witness passed."

@@ -1,4 +1,5 @@
 From Stdlib Require Import Arith.Arith.
+From Stdlib Require Import Lia.
 From Stdlib Require Import Lists.List.
 Import ListNotations.
 
@@ -89,4 +90,95 @@ Proof.
   - symmetry. exact Hdeploy.
   - intro Heq. apply Hsource. symmetry. exact Heq.
   - unfold active, tombstoned. simpl. tauto.
+Qed.
+
+Definition all_sources_tombstoned
+  (records occurrences : list occurrence) : Prop :=
+  forall candidate, In candidate occurrences -> tombstoned records candidate.
+
+Definition retry_eligible
+  (records occurrences : list occurrence)
+  (valid_after next_block lifespan : nat) : Prop :=
+  all_sources_tombstoned records occurrences /\
+  valid_after < next_block /\
+  next_block < valid_after + lifespan.
+
+Theorem no_active_iff_all_sources_tombstoned :
+  forall records occurrences,
+    (forall candidate, In candidate occurrences -> ~ active records candidate) <->
+    all_sources_tombstoned records occurrences.
+Proof.
+  intros records occurrences. split.
+  - intros H candidate Hin.
+    specialize (H candidate Hin).
+    unfold active, tombstoned in H.
+    destruct (in_dec occurrence_eq_dec candidate records) as [Hmember | Hmissing].
+    + exact Hmember.
+    + exfalso. apply H. exact Hmissing.
+  - intros H candidate Hin Hactive.
+    apply Hactive. apply H. exact Hin.
+Qed.
+
+Theorem retry_requires_no_active_source :
+  forall records occurrences valid_after next_block lifespan,
+    retry_eligible records occurrences valid_after next_block lifespan ->
+    forall candidate, In candidate occurrences -> ~ active records candidate.
+Proof.
+  intros records occurrences valid_after next_block lifespan Hretry.
+  apply no_active_iff_all_sources_tombstoned.
+  exact (proj1 Hretry).
+Qed.
+
+Theorem active_source_blocks_retry :
+  forall records occurrences candidate valid_after next_block lifespan,
+    In candidate occurrences ->
+    active records candidate ->
+    ~ retry_eligible records occurrences valid_after next_block lifespan.
+Proof.
+  intros records occurrences candidate valid_after next_block lifespan Hin Hactive Hretry.
+  pose proof (retry_requires_no_active_source
+    records occurrences valid_after next_block lifespan Hretry candidate Hin) as Hnone.
+  exact (Hnone Hactive).
+Qed.
+
+Theorem expiry_closes_recovery :
+  forall records occurrences valid_after next_block lifespan,
+    valid_after + lifespan <= next_block ->
+    ~ retry_eligible records occurrences valid_after next_block lifespan.
+Proof.
+  intros records occurrences valid_after next_block lifespan Hexpired Hretry.
+  unfold retry_eligible in Hretry.
+  lia.
+Qed.
+
+Definition recovery_leader (validator_count finalized_height : nat) : nat :=
+  S (finalized_height mod validator_count).
+
+Definition recovery_authorized
+  (validator_count finalized_height proposer : nat) : Prop :=
+  validator_count > 0 /\
+  proposer = recovery_leader validator_count finalized_height.
+
+Theorem recovery_leader_in_validator_set :
+  forall validator_count finalized_height,
+    validator_count > 0 ->
+    1 <= recovery_leader validator_count finalized_height <= validator_count.
+Proof.
+  intros validator_count finalized_height Hpositive.
+  unfold recovery_leader.
+  pose proof (Nat.mod_upper_bound finalized_height validator_count) as Hbound.
+  lia.
+Qed.
+
+Theorem recovery_authorization_unique_per_finalized_view :
+  forall validator_count finalized_height proposer_a proposer_b,
+    recovery_authorized validator_count finalized_height proposer_a ->
+    recovery_authorized validator_count finalized_height proposer_b ->
+    proposer_a = proposer_b.
+Proof.
+  intros validator_count finalized_height proposer_a proposer_b Ha Hb.
+  unfold recovery_authorized in Ha, Hb.
+  destruct Ha as [_ Ha].
+  destruct Hb as [_ Hb].
+  now rewrite Ha, Hb.
 Qed.
