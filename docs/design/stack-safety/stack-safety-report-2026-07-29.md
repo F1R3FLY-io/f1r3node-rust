@@ -14,7 +14,7 @@
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
 **Report date** 2026-07-29, revised through 2026-08-16
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
-**Living closure head** `f1r3node-rust-mettail@e1a587c9f` (shared datum-first/receive-first
+**Living closure head** `f1r3node-rust-mettail@697db373b` (generated ordered-expression datum-first/receive-first
 RhoPath queries in retained PathMap automata and the Bag/position product, following sparse relational-row reuse in the
 production spatial-matcher pushdown automaton (PDA), complete-message protobuf ingress bounds, `InterpreterError`
 lifecycle machine, reducer method-replay machine, exact recursion census, production lint gate,
@@ -3363,6 +3363,18 @@ over every eligible schema family; unordered/multiplicity-aware matching and gen
 replay remain open. Consequently, no consensus-equivalence or final resource conclusion is inferred
 from the theorem alone.
 
+Checkpoint `697db373b` discharges the variant-specific portion of the ordered compiler boundary.
+`compile_ordered_nested_query` consumes the already-generated `RhoPathCursor` for all 16 ordered
+binary expression variants, ordered unary expressions, `EMatches`, methods, lists, and tuples. The
+same explicit byte-query PDA executes every resulting program; no variant adds native recursion,
+decoded-term materialization, or a traversal limit. One `PathMap<()>` capture registry spans all
+top-level atoms and nested holes. A repeated Rholang free-variable level rejects the derived query
+because the legacy spatial matcher accumulates nonlinear occurrences rather than imposing generic
+RhoPath equality. Associative-commutative carriers remain on the separate open workstream. The
+focused compiler suite passes **11/11**, the complete matcher group passes **61/61**, and the three
+RSpace product/automaton/path suites pass **22/22**; formatting and strict production-library lint
+also pass. These are functional and stack-architecture gates, not new RSS or throughput samples.
+
 ##### 5.16.5.4 Results
 
 The original SS-A11 depth measurements ran under a user systemd scope with **3 GiB `MemoryHigh`, 4
@@ -3384,9 +3396,9 @@ swap, and two-core CPU quota**. **MEASURED:**
 | RSpace actions with retained indexing enabled | same 41-case semantic corpus | **41/41** | consume/produce, joins, persistence, checkpoint, reset, and soft-revert |
 | receive-first Bag/query product | full canonical scan | **8/8 query/product cases plus 64 generated corpora** | flat and nested 256-to-1 spatial-call witnesses, exact/wildcard/repeated-capture/ordered-remainder/nested ordered traversal, embedded-zero and double-escape framing, structural false-positive oracle check, singleton zero-query base case, and identical result/event/post-state maps |
 | framed-query native stack | recursive framing not admitted | **one million encoded bytes on a 128 KiB worker stack** | iterative double-frame scanner; no recursion, depth/width cap, `RUST_MIN_STACK`, or `stacker` |
-| Rholang query compiler | spatial oracle only | **7/7 focused matcher cases** | supported whole-term, ordered-remainder, and nested EList/ETuple fragments agree with the spatial oracle; unordered ESet and other unsupported shapes fall back |
+| Rholang query compiler | spatial oracle only | **11/11 focused matcher cases; 61/61 complete matcher group** | every ordered binary/unary/method/matches/list/tuple family uses the generated cursor and agrees with the spatial oracle; unordered/AC shapes and repeated capture levels fall back |
 | generated Rholang matching cursor | no schema-complete cursor | **4/4 cursor cases plus 21/21 schema/exhaustiveness/registration cases** | all 58 descriptor messages and five oneofs are generated from one pass; a 20,000-deep EList spine and a 20,000-wide term traverse on 256 KiB; EPathMap yields one native-trie delegation event without forcing its snapshot |
-| generated Rholang structural match path | canonical-path exact terms only | **3/3 encoder cases; 4/4 models RSpace-path cases; 7/7 Rholang compiler cases** | complete-schema deterministic tokens; canonical EPathMap digest golden and insertion-order witness; deliberate value-insensitive false-positive lane; 20,000-deep/wide encoding on 256 KiB; exact/whole-term/ordered-nested production query paths agree with the spatial oracle |
+| generated Rholang structural match path | canonical-path exact terms only | **3/3 encoder cases; 4/4 models RSpace-path cases; 11/11 Rholang compiler cases** | complete-schema deterministic tokens; canonical EPathMap digest golden and insertion-order witness; deliberate value-insensitive false-positive lane; 20,000-deep/wide encoding on 256 KiB; exact/whole-term/ordered-nested production query paths agree with the spatial oracle |
 | encoded `RMP1` validation/navigation | no byte-side schema validator | **3/3 byte-cursor cases plus 4/4 generated-schema cases** | descriptor-exact fields, child types, and oneof payloads; malformed classes fail closed; all exhaustive-corpus node subtrees validate; 20,000-level validation and deepest-subtree extent discovery complete on 256 KiB |
 | nested `RMP1` instruction PDA | unpruned nested spatial scan | **9/9 framing/query cases plus the 8/8 product suite** | one- and two-layer escaping; every tested shallow token truncation rejected; 20,000 levels on 128 KiB; zero-heavy 256-candidate result equivalence with 256-to-1 spatial pruning |
 | datum-first retained structural queries | root fallback for every non-ground pattern | **9/9 combined production pruning cases** | identical COMM result/event trace/post-state map and 256-to-1 spatial calls for a canonically last waiting receive; unsupported patterns remain root fallbacks |

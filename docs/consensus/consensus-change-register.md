@@ -593,7 +593,7 @@ is a *future* fork, not a present one).
 | [CBR-042](#cbr-042) | N | …and on the **bincode** wire too — `U(m)` verbatim and contiguous, then the values (FORM ②), so the reader never decodes a trie key | `3a32cf07` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-043](#cbr-043) | N | …but of **the entries that surface WRITES**. FORM ② keyed lf-blanked values by the *unblanked* entries, putting an entry's `locally_free` on the event hash | `8cf0b770` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-044](#cbr-044) | N | EPathMap becomes a homogeneous PathMap set/map and both codecs carry one versioned EPM1 trie snapshot; generated protobuf PDAs remove the read ceiling | `26876b65` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
-| [CBR-053](#cbr-053) | N | Retained PathMap indexes and a synchronized receive-first Bag/query product skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`; benchmark `7bc5c6994` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
+| [CBR-053](#cbr-053) | N | Retained PathMap indexes and a synchronized receive-first Bag/query product skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`; benchmark `7bc5c6994` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
 | [CBR-L07](#cbr-l07) | L | `List.last()` in MeTTaIL's Rholang | `bbceb6d9`, `6e543c01` | · | · | · | · | · | ● | · | PERMISSIVE | **W** |
 | [CBR-L08](#cbr-l08) | L | The kv element-category gate — a Name in a kv slot is refused, not silently dropped | *in flight* | ● | ● | ● | ● | ● | ● | ○ | REGRESSIVE | **W** |
 | [CBR-L10](#cbr-l10) | L | A pathmap's entries come from a projection, not a field | `832d510f` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
@@ -2321,7 +2321,7 @@ Legacy protobuf fields are read-only migration inputs; removing them is a later 
 
 | | |
 |---|---|
-| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`; benchmark `7bc5c6994` |
+| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`; benchmark `7bc5c6994` |
 | Status | LANDED ON CAMPAIGN BRANCH; VERIFICATION OPEN |
 | Direction | UNVERIFIED |
 | Evidence grade | UNVERIFIED |
@@ -2372,6 +2372,15 @@ value per hole without decoding `Par`. In-memory frames and stored product frame
 and two-layer escape modes. Unsupported unordered, associative-commutative, remainder-bearing,
 connective, and other schema shapes still use the full canonical scan. The spatial matcher remains
 the final verdict authority.
+
+Checkpoint `697db373b` removes the EList/ETuple-specific eligibility gate and consumes the same
+generated `RhoPathCursor` for all 16 ordered binary expression variants, ordered unary variants,
+`EMatches`, methods, lists, and tuples. One `PathMap<()>` capture registry spans the whole bind
+pattern. Repeated Rholang free-variable levels make the derived query ineligible because the
+historical spatial matcher accumulates nonlinear occurrences; the optimization must not silently
+reinterpret them as generic RhoPath equality. Associative-commutative carriers remain on the
+canonical fallback. This checkpoint changes query eligibility only and leaves bytes, the spatial
+verdict authority, and predecessor candidate order untouched.
 
 Checkpoint `e1a587c9f` applies that same structural-query contract to datum-first lookup. A supported
 waiting pattern is retained at its longest exact prefix in the existing
@@ -2462,10 +2471,13 @@ the verdict axis.
 - `rho_path_spec`: **9/9**, including malformed framing, embedded double-zero escapes, capture
   equality, every proper shallow truncation, a 20,000-level nested query on a 128 KiB worker stack,
   and a million-byte iterative scan on the same stack size. **MEASURED.**
-- `retained_path_index_test`: **7/7** after whole-term, ordered-remainder, and ordered nested query
-  compilation; supported queries agree with the spatial oracle and unordered or otherwise
-  unsupported shapes fall back.
-  **MEASURED.**
+- `retained_path_index_test`: **11/11** after generated-cursor coverage expands to all 16 ordered
+  binary variants, ordered unary variants, `EMatches`, methods, lists, tuples, and whole-term holes;
+  supported queries agree with the spatial oracle and unordered or otherwise unsupported shapes
+  fall back. Repeated Rholang capture levels inside one expression, across whole atoms, and across
+  whole/nested atoms also fall back because the historical matcher accumulates nonlinear
+  occurrences rather than imposing generic RhoPath equality. The complete matcher group passes
+  **61/61**. **MEASURED.**
 - generated resting-data differential: **64 corpora** with identical selected result, RSpace event
   trace, and post-state maps under full and indexed scans. **MEASURED.**
 - both changed libraries plus all tests and benchmark targets compile under a **5 GiB** resident-set
