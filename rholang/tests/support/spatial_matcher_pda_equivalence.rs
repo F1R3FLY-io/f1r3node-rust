@@ -314,6 +314,25 @@ fn recursive_oracle_and_pda_agree_on_the_semantic_corpus() {
         ),
     );
     compare(
+        "legacy set Bag residual",
+        new_eset_par(
+            vec![one(), two(), seven()],
+            Vec::new(),
+            false,
+            None,
+            Vec::new(),
+            false,
+        ),
+        new_eset_par(
+            vec![two()],
+            Vec::new(),
+            true,
+            Some(models::rust::utils::new_freevar_var(4)),
+            Vec::new(),
+            true,
+        ),
+    );
+    compare(
         "legacy map",
         new_emap_par(
             vec![KeyValuePair {

@@ -35,6 +35,18 @@ fn channel_and_structural_prefixes_are_real_trie_prefixes() {
 }
 
 #[test]
+fn relative_datum_keys_share_the_complete_key_framing_contract() {
+    let channel = b"channel\0with-zero".to_vec();
+    let structure = b"structure\0with-zero";
+    let identity = b"identity\0suffix";
+    let complete = RhoPathV1::datum_key(&channel, structure, identity);
+    let channel_prefix = RhoPathV1::datum_prefix(&channel);
+    let relative = RhoPathV1::relative_datum_key(structure, identity);
+    assert_eq!(&complete[channel_prefix.len()..], relative.as_slice());
+    assert!(relative.starts_with(&RhoPathV1::relative_datum_structure_prefix(structure)));
+}
+
+#[test]
 fn structural_sequences_are_injective() {
     let one = encode_structural_sequence([b"a".as_slice(), b"bc".as_slice()]);
     let other = encode_structural_sequence([b"ab".as_slice(), b"c".as_slice()]);

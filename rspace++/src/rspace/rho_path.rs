@@ -678,6 +678,26 @@ impl RhoPathV1 {
         output
     }
 
+    /// Encode one complete datum key relative to an already-selected channel
+    /// subtree.
+    ///
+    /// The structural frame remains the leading trie dimension, so
+    /// [`Self::relative_datum_structure_prefix`] can prune it without touching
+    /// identity bytes. The unframed identity suffix then makes each complete
+    /// path injective. This is the channel-relative counterpart of
+    /// [`Self::datum_key`] and deliberately shares its framing implementation.
+    pub fn relative_datum_key(datum_structure: &[u8], datum_identity: &[u8]) -> Vec<u8> {
+        let mut output = Vec::with_capacity(
+            datum_structure
+                .len()
+                .saturating_add(datum_identity.len())
+                .saturating_add(2),
+        );
+        append_frame(&mut output, datum_structure);
+        output.extend_from_slice(datum_identity);
+        output
+    }
+
     pub fn parse_datum(path: &[u8]) -> Result<DatumPathView<'_>, RhoPathError> {
         let (channel, mut cursor) = parse_channel(path)?;
         let channel_prefix_len = cursor;

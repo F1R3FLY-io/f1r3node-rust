@@ -24,7 +24,9 @@ use models::rust::rholang::implicits::{single_expr, vector_par};
 use models::rust::rholang::match_path::encode_par_match_path;
 use models::rust::utils::*;
 use pathmap::PathMap;
-use rspace_plus_plus::rspace::rho_path::{RhoPathQuery, StructuralSequenceEncoder};
+use rspace_plus_plus::rspace::bag::Bag;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
+use rspace_plus_plus::rspace::rho_path::{RhoPathQuery, RhoPathV1, StructuralSequenceEncoder};
 
 use super::exports::*;
 use super::has_locally_free::HasLocallyFree;
@@ -1091,6 +1093,26 @@ impl MatchValue {
         Some(output.finish())
     }
 
+    /// Collision-free identity for the variants accepted by the generated
+    /// RhoPath query compiler. Each `Par` leg uses the stack-safe canonical
+    /// bincode emitter and the same injective sequence framing as structure.
+    fn rho_path_identity(&self) -> Option<Vec<u8>> {
+        let mut output = StructuralSequenceEncoder::with_capacity(match self {
+            Self::Par(_) => 1,
+            Self::ParPair(_) => 2,
+            _ => return None,
+        });
+        match self {
+            Self::Par(value) => output.push(&value.stable_hash_bytes()),
+            Self::ParPair((key, value)) => {
+                output.push(&key.stable_hash_bytes());
+                output.push(&value.stable_hash_bytes());
+            }
+            _ => unreachable!("the supported variants were checked above"),
+        }
+        Some(output.finish())
+    }
+
     fn rho_path_query(&self, captures: &mut PathMap<()>) -> Option<RhoPathQuery> {
         let atoms = match self {
             Self::Par(value) => vec![rho_path_query_atom(value, captures)?],
@@ -1335,69 +1357,99 @@ impl ListCandidateDomain {
 }
 
 #[derive(Clone, Copy)]
-struct ListTargetId(NonZeroU64);
+struct ListTargetGroupId(NonZeroU64);
 
-struct ListTargetNode {
-    position: u64,
-    previous: Option<ListTargetId>,
+struct ListTargetGroup {
+    key: Vec<u8>,
+    structure: Vec<u8>,
+    positions: Vec<u64>,
 }
 
 /// Derived prefix-compressed target catalog for one unordered list match.
 ///
-/// A fixed-width trie payload names the head of a flat linked arena. Multiple
-/// structurally identical or deliberately collision-equivalent values share
-/// one trie path without storing a reference-counted primitive or a vector in
-/// every node.
-/// Original target positions remain the ordering authority; query results are
-/// sorted by those positions before the existing augmenting-path PDA sees
-/// them.
+/// The authoritative trie is a [`Bag`]: a `PathMap<Multiplicity>` whose key is
+/// the framed RMP1 structure followed by a collision-free, stack-safe bincode
+/// identity. Structurally equal values therefore share trie prefixes while
+/// semantically equal values share one multiplicity cell. A parallel
+/// fixed-width group id reaches the only position vectors retained by this
+/// derived matcher index. Those positions are an ordering witness, not the
+/// membership representation; the Bag remains authoritative for cardinality.
 struct ListTargetIndex {
-    heads: PathMap<ListTargetId>,
-    nodes: Vec<ListTargetNode>,
+    bag: Bag,
+    group_ids: PathMap<ListTargetGroupId>,
+    groups: Vec<ListTargetGroup>,
+    position_groups: Box<[ListTargetGroupId]>,
 }
 
 impl ListTargetIndex {
     fn from_targets(targets: &[MatchValue]) -> Option<Self> {
-        let mut heads = PathMap::new();
-        let mut nodes = Vec::with_capacity(targets.len());
+        let mut bag = Bag::new();
+        let mut group_ids: PathMap<ListTargetGroupId> = PathMap::new();
+        let mut groups: Vec<ListTargetGroup> = Vec::new();
+        let mut position_groups = Vec::with_capacity(targets.len());
         for (position, target) in targets.iter().enumerate() {
             let structure = target.rho_path_structure()?;
-            let previous = heads.get(&structure).copied();
-            let raw_id = u64::try_from(nodes.len()).ok()?.checked_add(1)?;
-            let id = ListTargetId(NonZeroU64::new(raw_id)?);
-            nodes.push(ListTargetNode {
-                position: u64::try_from(position).ok()?,
-                previous,
-            });
-            heads.insert(structure, id);
+            let identity = target.rho_path_identity()?;
+            let key = RhoPathV1::relative_datum_key(&structure, &identity);
+            let position = u64::try_from(position).ok()?;
+            bag.insert(&key).ok()?;
+            if let Some(id) = group_ids.get(&key).copied() {
+                let group_index = usize::try_from(id.0.get() - 1).ok()?;
+                groups.get_mut(group_index)?.positions.push(position);
+                position_groups.push(id);
+            } else {
+                let raw_id = u64::try_from(groups.len()).ok()?.checked_add(1)?;
+                let id = ListTargetGroupId(NonZeroU64::new(raw_id)?);
+                groups.push(ListTargetGroup {
+                    key: key.clone(),
+                    structure,
+                    positions: vec![position],
+                });
+                group_ids.insert(&key, id);
+                position_groups.push(id);
+            }
         }
-        Some(Self { heads, nodes })
+        debug_assert_eq!(bag.cardinality(), targets.len() as u128);
+        debug_assert_eq!(bag.distinct_len(), groups.len());
+        Some(Self {
+            bag,
+            group_ids,
+            groups,
+            position_groups: position_groups.into_boxed_slice(),
+        })
+    }
+
+    fn group_at_position(&self, position: usize) -> &ListTargetGroup {
+        let id = self.position_groups[position];
+        let group_index = usize::try_from(id.0.get() - 1)
+            .expect("a target group id originated as an addressable Vec index");
+        &self.groups[group_index]
     }
 
     fn positions_matching(&self, query: &RhoPathQuery) -> Option<Box<[u64]>> {
-        let prefix = query.retained_prefix();
-        if prefix.len() <= 1 {
+        let structural_prefix = query.retained_prefix();
+        if structural_prefix.len() <= 1 {
             return None;
         }
+        let prefix = RhoPathV1::relative_datum_structure_prefix(&structural_prefix);
         let mut result = Vec::new();
-        let mut structure = Vec::new();
-        for (relative, head) in self.heads.read_zipper_at_borrowed_path(&prefix) {
-            structure.clear();
-            structure.reserve(prefix.len() + relative.len());
-            structure.extend_from_slice(&prefix);
-            structure.extend_from_slice(&relative);
-            if !query.matches_structure(&structure) {
-                continue;
+        self.bag.visit_prefix(&prefix, |key, multiplicity| {
+            let id = self
+                .group_ids
+                .get(key)
+                .copied()
+                .expect("every Bag identity has a target group");
+            let group_index = usize::try_from(id.0.get() - 1)
+                .expect("a target group id originated as an addressable Vec index");
+            let group = &self.groups[group_index];
+            debug_assert_eq!(
+                usize::try_from(multiplicity.get()).ok(),
+                Some(group.positions.len())
+            );
+            if query.matches_structure(&group.structure) {
+                result.extend_from_slice(&group.positions);
             }
-            let mut next = Some(*head);
-            while let Some(id) = next {
-                let node_index = usize::try_from(id.0.get() - 1)
-                    .expect("a ListTargetId was created from an addressable Vec index");
-                let node = &self.nodes[node_index];
-                result.push(node.position);
-                next = node.previous;
-            }
-        }
+        });
         result.sort_unstable();
         Some(result.into_boxed_slice())
     }
@@ -1417,6 +1469,7 @@ struct ListSearchFrame {
 
 struct ListMachine {
     targets: Arc<[MatchValue]>,
+    target_index: Option<ListTargetIndex>,
     patterns: Arc<[ListPattern]>,
     candidate_domains: Box<[ListCandidateDomain]>,
     assignments: Vec<Option<ListAssignment>>,
@@ -1517,6 +1570,7 @@ fn init_list(
 
     let mut machine = ListMachine {
         targets: request.targets.into(),
+        target_index,
         assignments: (0..target_len).map(|_| None).collect(),
         patterns: patterns.into(),
         candidate_domains,
@@ -1725,6 +1779,7 @@ fn step_list(
 fn finish_list(context: &mut SpatialMatcherContext, machine: ListMachine) -> Job {
     let ListMachine {
         targets,
+        target_index,
         patterns,
         assignments,
         mut relation,
@@ -1734,6 +1789,24 @@ fn finish_list(context: &mut SpatialMatcherContext, machine: ListMachine) -> Job
         ..
     } = machine;
     relation.clear();
+
+    let bag_remainder = remainder.and_then(|_| {
+        target_index.as_ref().map(|target_index| {
+            let mut consumed = Bag::new();
+            for (target_position, assignment) in assignments.iter().enumerate() {
+                let Some(assignment) = assignment else {
+                    continue;
+                };
+                if matches!(patterns[assignment.pattern_index], ListPattern::Term(_)) {
+                    consumed
+                        .insert(&target_index.group_at_position(target_position).key)
+                        .expect("a successful assignment cannot exceed target multiplicity");
+                }
+            }
+            debug_assert!(consumed.is_subbag_of(&target_index.bag));
+            target_index.bag.subtract(&consumed)
+        })
+    });
 
     let mut ordered: Vec<_> = assignments
         .into_iter()
@@ -1749,9 +1822,20 @@ fn finish_list(context: &mut SpatialMatcherContext, machine: ListMachine) -> Job
         }
     });
     let mut remainder_target_indices = vec![false; targets.len()];
-    for (target_index, assignment) in &ordered {
-        if matches!(patterns[assignment.pattern_index], ListPattern::Remainder) {
-            remainder_target_indices[*target_index] = true;
+    if let (Some(mut residual), Some(target_index)) = (bag_remainder, target_index.as_ref()) {
+        for (position, is_remainder) in remainder_target_indices.iter_mut().enumerate() {
+            let key = &target_index.group_at_position(position).key;
+            if residual.contains(key) {
+                let _ = residual.remove(key);
+                *is_remainder = true;
+            }
+        }
+        debug_assert!(residual.is_empty());
+    } else {
+        for (target_index, assignment) in &ordered {
+            if matches!(patterns[assignment.pattern_index], ListPattern::Remainder) {
+                remainder_target_indices[*target_index] = true;
+            }
         }
     }
     let remainder_sorted = targets
