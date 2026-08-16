@@ -95,18 +95,7 @@ struct ResolverState {
     valid_after_block_number: i64,
     first_seen_block_hash: BlockHash,
     rejection_count: u32,
-    /// Highest-block-number `is_failed=true` inclusion + its block hash.
-    /// Tracked symmetrically with `clean_finalized_event` so the
-    /// post-loop step can apply the same canonical-descendant gate to
-    /// both — a failed inclusion in a non-main-chain finalized sibling
-    /// must NOT terminate the state machine when a later canonical
-    /// clean inclusion exists.
-    failed_finalized_event: Option<(i64, BlockHash)>,
     failed_finalized_events: Vec<(i64, BlockHash)>,
-    /// Highest-block-number clean inclusion + its block hash. Tracked
-    /// together so the post-loop invalidation step can do a canonical-
-    /// descendant ancestry comparison against `latest_rejected_event`.
-    clean_finalized_event: Option<(i64, BlockHash)>,
     clean_finalized_events: Vec<(i64, BlockHash)>,
     latest_event: Option<(i64, BlockHash)>,
     latest_rejected_event: Option<(i64, BlockHash)>,
@@ -125,9 +114,7 @@ impl ResolverState {
             valid_after_block_number,
             first_seen_block_hash,
             rejection_count: 0,
-            failed_finalized_event: None,
             failed_finalized_events: Vec::new(),
-            clean_finalized_event: None,
             clean_finalized_events: Vec::new(),
             latest_event: None,
             latest_rejected_event: None,
@@ -345,26 +332,10 @@ fn bfs_finalized_window(
                     state
                         .failed_finalized_events
                         .push((height, candidate_hash.clone()));
-                    if state
-                        .failed_finalized_event
-                        .as_ref()
-                        .map(|(h, _)| height > *h)
-                        .unwrap_or(true)
-                    {
-                        state.failed_finalized_event = Some((height, candidate_hash.clone()));
-                    }
                 } else {
                     state
                         .clean_finalized_events
                         .push((height, candidate_hash.clone()));
-                    if state
-                        .clean_finalized_event
-                        .as_ref()
-                        .map(|(h, _)| height > *h)
-                        .unwrap_or(true)
-                    {
-                        state.clean_finalized_event = Some((height, candidate_hash.clone()));
-                    }
                 }
             }
         }
@@ -446,7 +417,7 @@ fn scan_visible_unfinalized_rejections(
         let Some(height) = dag.block_number(&candidate_hash) else {
             continue;
         };
-        if height < scan_floor {
+        if height < scan_floor || finalized_window.contains(&candidate_hash) {
             continue;
         }
         let Some(candidate_block) = block_store.get(&candidate_hash)? else {
@@ -457,10 +428,6 @@ fn scan_visible_unfinalized_rejections(
                 frontier.push(parent.clone());
             }
         }
-        if finalized_window.contains(&candidate_hash) {
-            continue;
-        }
-
         for rejected in &candidate_block.body.rejected_deploys {
             if rejected.duplicate || !active_sigs.contains(&rejected.sig) {
                 continue;
@@ -514,7 +481,7 @@ fn finalize_sig_state(
         state
             .finalized_rejected_events
             .iter()
-            .any(|(reject_height, _)| *reject_height >= inclusion_height)
+            .any(|(reject_height, _)| *reject_height > inclusion_height)
     };
 
     let mut clean_candidates = state.clean_finalized_events.clone();
