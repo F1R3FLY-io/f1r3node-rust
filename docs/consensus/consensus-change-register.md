@@ -593,7 +593,7 @@ is a *future* fork, not a present one).
 | [CBR-042](#cbr-042) | N | …and on the **bincode** wire too — `U(m)` verbatim and contiguous, then the values (FORM ②), so the reader never decodes a trie key | `3a32cf07` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-043](#cbr-043) | N | …but of **the entries that surface WRITES**. FORM ② keyed lf-blanked values by the *unblanked* entries, putting an entry's `locally_free` on the event hash | `8cf0b770` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-044](#cbr-044) | N | EPathMap becomes a homogeneous PathMap set/map and both codecs carry one versioned EPM1 trie snapshot; generated protobuf PDAs remove the read ceiling | `26876b65` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
-| [CBR-053](#cbr-053) | N | A retained PathMap prefilter skips receives whose pattern paths cannot match the fresh datum | `a89cbc294`, `f149cef2b`, `ea8c39f92`; benchmark `7bc5c6994` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
+| [CBR-053](#cbr-053) | N | Retained PathMap prefix indexes skip waiting receives or resting data that cannot match an exact-ground counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`; benchmark `7bc5c6994` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
 | [CBR-L07](#cbr-l07) | L | `List.last()` in MeTTaIL's Rholang | `bbceb6d9`, `6e543c01` | · | · | · | · | · | ● | · | PERMISSIVE | **W** |
 | [CBR-L08](#cbr-l08) | L | The kv element-category gate — a Name in a kv slot is refused, not silently dropped | *in flight* | ● | ● | ● | ● | ● | ● | ○ | REGRESSIVE | **W** |
 | [CBR-L10](#cbr-l10) | L | A pathmap's entries come from a projection, not a field | `832d510f` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
@@ -2317,15 +2317,15 @@ Legacy protobuf fields are read-only migration inputs; removing them is a later 
 
 ### CBR-053
 
-**A retained PathMap prefilter skips receives whose pattern paths cannot match the fresh datum.**
+**Retained PathMap prefix indexes skip waiting receives or resting data that cannot match an exact-ground counterpart.**
 
 | | |
 |---|---|
-| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`; benchmark `7bc5c6994` |
+| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`; benchmark `7bc5c6994` |
 | Status | LANDED ON CAMPAIGN BRANCH; VERIFICATION OPEN |
 | Direction | UNVERIFIED |
 | Evidence grade | UNVERIFIED |
-| Files | `rspace++/src/rspace/{match.rs,hot_store.rs,retained_set_automaton.rs,rspace.rs}`, `rholang/src/rust/interpreter/matcher/match.rs` |
+| Files | `rspace++/src/rspace/{data_index.rs,match.rs,hot_store.rs,retained_set_automaton.rs,rho_path.rs,rspace.rs,space_matcher.rs}`, `rholang/src/rust/interpreter/matcher/match.rs` |
 
 #### (a) The issue
 
@@ -2346,6 +2346,16 @@ query. The filter runs only when the target channel had no resting datum before 
 prepended. When resting data exists, the unfiltered path remains necessary because a valid COMM can
 use only old data and leave the fresh produce resting.
 
+Checkpoint `564dac0b4` applies the same conservative-prefix rule in the opposite traffic shape. For
+an exact-ground receive bind, a derived `PathMap<CandidatePosition>` is cut at the framed structural
+prefix before resting data is decoded or passed to the spatial matcher. `CandidatePosition` is a
+fixed-width `u64` newtype. The matching positions are sorted back into canonical order; the
+authoritative `PathMap<Multiplicity>` Bag is checked before reservation; a fresh datum is checked
+through its retained path; and the spatial matcher remains the acceptance oracle. Generic matchers
+use the full scan unless they explicitly assert that successful matches imply the same RhoPath
+prefix relation. This is an exact-ground candidate cut, not yet the direct retained-automaton/Bag
+zipper product.
+
 #### (b) How it may break consensus
 
 | Axis | Verdict |
@@ -2365,7 +2375,8 @@ continuation result, and resting data. Candidate reordering is not a second mech
 retains the canonical relative order of every selected candidate.
 
 **Blast radius.** Every produce reaching a channel group whose pre-produce datum pool is empty and
-whose waiting receives contain at least one exact-ground bind. Installed and persistent receives are
+whose waiting receives contain at least one exact-ground bind, plus every consume whose exact-ground
+bind scans resting data through the opted-in Rholang matcher. Installed and persistent receives are
 included in the same versioned candidate vector. No user-facing Rholang API or wire migration is
 introduced.
 
@@ -2378,7 +2389,7 @@ subsets before any datum decode or spatial-match state allocation. A flat `Vec`,
 `BTreeMap` transition authority would lose that shared-prefix property and is not the selected
 design.
 
-The current containment argument has five independently checked parts:
+The current containment argument has eight independently checked parts:
 
 1. exact-ground `BindPattern` and matching `ListParWithRandom` values use the same canonical
    structural sequence;
@@ -2387,7 +2398,11 @@ The current containment argument has five independently checked parts:
 4. the generic automaton selection is a superset of direct exact/wildcard matches over single and
    repeated bind positions; and
 5. continuation-group revisions invalidate only the mutated group, while state replacement and
-   clear invalidate every derived automaton.
+   clear invalidate every derived automaton;
+6. resting prefix positions are sorted into the predecessor's canonical order before matching;
+7. Bag availability, rather than the derived position trie, remains the membership authority; and
+8. unsupported matchers fail closed to the full scan while prefix false positives still reach and
+   can be rejected by the spatial oracle.
 
 Cache-counter saturation returns `None` and recompiles instead of accepting a stale trie. Cache hits
 borrow the trie under a sharded map guard and perform no `PathMap` clone. Empty groups remove their
@@ -2404,6 +2419,10 @@ the verdict axis.
   binding/connective fallback checks. **MEASURED.**
 - `storage_actions_test` with path indexing enabled: **41/41**, covering single and joined receives,
   repeated channels, persistence, checkpoint, reset, and soft-revert. **MEASURED.**
+- `candidate_path_pruning_spec`: **4/4**, including a 256-candidate 256-to-1 spatial-call witness,
+  embedded-zero framing, and a prefix false positive rejected by the spatial oracle. **MEASURED.**
+- generated resting-data differential: **64 corpora** with identical selected result, RSpace event
+  trace, and post-state maps under full and indexed scans. **MEASURED.**
 - both changed libraries plus all tests and benchmark targets compile under a **5 GiB** resident-set
   cap and one-core quota; focused strict lint passes. **MEASURED.**
 - the corrected produce-driven benchmark passes all six exact-ground treatment pairs: **18.8–30.8%
@@ -2413,9 +2432,9 @@ the verdict axis.
 This entry retires as `OPTIMIZATION_MEASURED_NEUTRAL` only after the campaign's generated
 old-selector/new-selector differential covers every eligible and fallback `BindPattern` family,
 play/replay traces and post-state roots agree over generated schedules, and the formal superset
-obligation proves that filtering cannot remove the first admissible candidate. The preregistered
-throughput pair is separately pending an interference-free host window; timing cannot close a
-consensus obligation.
+obligation proves that filtering cannot remove the first admissible candidate. The retained-receive
+throughput pair has passed; the paired resting-data benchmark remains pending an interference-free
+host window. Timing cannot close a consensus obligation in either direction.
 
 ---
 

@@ -3220,18 +3220,24 @@ guard consultation two implementations of one consensus-visible rule.
 ##### 5.16.5.2 Architecture of the repair, and why this shape
 
 One explicit-frame PDA now owns both modes. Its states are `Descend`, `Scan`, and `Return`; a frame
-stores the current channel/pattern pair, derived-order scan cursor, an optional reserved position,
-and whether any complete leaf reached the guard. The selector supplies a leaf callback
+stores the current channel/pattern pair, a resumable `CandidateScan`, an optional reserved position,
+and whether any complete leaf reached the guard. `CandidateScan::All` stores the next canonical
+position; `CandidateScan::Indexed` stores a sorted fixed-width position slice and its next index.
+The scan is constructed once when the frame is entered rather than rebuilding a prefix query at
+each retry. The selector supplies a leaf callback
 that stops at the first admissible selection. The enumerator supplies a callback that clones the
 accepted selection and continues. Thus the enumeration head is the selector result by construction,
 not by coordination between sibling algorithms.
 
 Each channel has one `CandidatePool`: a copy-on-write `PathMap<Multiplicity>` Bag subtrie is the
 residual authority, while a derived `CandidateCatalog` shares canonical order and one lazy decode
-cell per distinct trie key across pool snapshots. A catalog-local `PathMap<()>` records paths already
-seen so persistent zero-to-one reactivation does not rebuild the order; it is constructed once with
-the catalog, refreshed after permanent membership changes, and never substitutes for the
-`PathMap<Multiplicity>` authority. The chosen-candidate stack and Bag reservations obey the transaction law: an
+cell per distinct trie key across pool snapshots. A catalog-local
+`PathMap<CandidatePosition>` maps each complete relative RhoPathV1 key to a fixed-width `u64`
+position. That one trie serves known-path membership for persistent zero-to-one reactivation and
+indexed structural-prefix scans; no duplicate `PathMap<()>` and no platform-width trie value remain.
+It is constructed once with the catalog, refreshed after permanent membership changes, and never
+substitutes for the `PathMap<Multiplicity>` authority. The chosen-candidate stack and Bag
+reservations obey the transaction law: an
 accepted early stop leaves nonpersistent decrements installed; an exhausted subtree releases its
 parent's multiplicity; exhaustive enumeration restores the entry state. Persistent records are never
 decremented. A `Vec<Par>`, expanded occurrence list, per-frame pool clone, traversal-depth cap,
@@ -3261,6 +3267,14 @@ borrowed during lookup rather than cloned. Counter saturation disables the deriv
 introducing a correctness or traversal limit. No event hash, serialized record, PathMap crate code,
 or cost-accounting rule changed.
 
+Checkpoint `564dac0b4` adds the complementary resting-data exact-ground slice. A matcher opts in only
+when its retained pattern and datum paths satisfy the RhoPath prefix-superset contract. The PDA then
+uses a borrowed read zipper at the framed structural prefix to collect catalog positions, sorts
+those positions to restore canonical selection order, and resumes through `CandidateScan::Indexed`.
+Unsupported matchers and patterns use `CandidateScan::All`. The Bag is checked before reservation,
+fresh data is checked through its retained path, and the spatial matcher remains the final oracle;
+therefore a prefix false positive costs work but cannot become an accepted match.
+
 ##### 5.16.5.4 Results
 
 The original SS-A11 depth measurements ran under a user systemd scope with **3 GiB `MemoryHigh`, 4
@@ -3280,6 +3294,7 @@ swap, and two-core CPU quota**. **MEASURED:**
 | continuation-version lifecycle | no compiled automaton cache | **2/2** | group-local insert/remove invalidation plus generation invalidation on replace/clear |
 | Rholang structural-path contract | no retained path hook | **3/3** | exact-ground equality/inequality and binding/connective fallback |
 | RSpace actions with retained indexing enabled | same 41-case semantic corpus | **41/41** | consume/produce, joins, persistence, checkpoint, reset, and soft-revert |
+| resting-datum structural-prefix pruning | full canonical scan | **4/4 plus 64 generated corpora** | 256-to-1 spatial-call witness, embedded-zero framing, prefix false-positive oracle check, and identical result/event/post-state maps |
 | retained waiting-receive throughput | full canonical candidate scan | **23.2–44.6% more COMMs/s** | six treatment pairs; 51 samples/arm; 99% confidence; 16/256/4,096 receives; diverse/shared prefixes |
 | exact source census | 574 recursive components before this conversion | **572** after the PDA; then **566 recursive / 42 term-family / 19 mutual / 25 production files** after relocating recursive oracles; current **566 / 41 / 18 / 24** after the fused evaluator cycle disappeared and its stale disposition was retired | `handwritten_recursion_census`, 5/5; independent normalizer control 31 members $`\geq`$ 26 required |
 
@@ -3313,6 +3328,11 @@ throughput hypothesis therefore passes for this exact-ground slice; direct autom
 construction cost, allocations, and the broader workload matrix remain open. The recorded estimates
 are [`measurements/rspace-retained-pathmap-prefilter-2026-08-15.tsv`](measurements/rspace-retained-pathmap-prefilter-2026-08-15.tsv).
 
+The paired resting-datum control/PathMap benchmark is present at `564dac0b4` but has not yet been
+admitted to the measurement ledger. A concurrent release build in another f1r3node worktree failed
+the host preflight, so running it would not produce comparable evidence. The correctness witnesses
+above are valid; no latency, allocation, or throughput conclusion is claimed for this second slice.
+
 ##### 5.16.5.5 What it cost
 
 Native-stack complexity changes from $`\Theta(b)`$ to $`O(1)`$. Explicit control storage is
@@ -3328,6 +3348,13 @@ terminal relation per bind position and a temporary selection bit vector linear 
 waiting continuations. Cache hits perform no trie clone. The exact-ground slice walks the arriving
 datum path, so its native stack remains $`O(1)`$; direct automaton/Bag zipper-product traversal is a
 separate, still-open campaign stage and is not claimed by this checkpoint.
+
+For a resting exact-ground pattern, the indexed scan allocates one heap vector containing only the
+matching prefix's fixed-width catalog positions and sorts it in $`O(m \log m)`$, where $`m`$ is the
+number of prefix candidates, before the final spatial checks. The full-scan control is $`O(n)`$ in
+distinct channel records. Native-stack use remains $`O(1)`$ in both cases because the zipper and PDA
+are iterative. Whether the heap collection/sort is preferable to a direct ordered zipper product is
+an open measured question, not a settled optimization claim.
 
 ##### 5.16.5.6 What is still recursive
 
@@ -3362,6 +3389,13 @@ identical nonpersistent occurrences to fill two binds without an expanded occurr
 requires exhaustive enumeration to emit exactly one rendezvous for those indistinguishable
 occurrences, then fires it and observes cardinality zero. Exact-path data-index tests independently
 remove one of two identical occurrences and observe multiplicity one before the final removal.
+
+The resting-prefix refinement adds four more witnesses. A worst-canonical-order corpus requires the
+control to call the spatial matcher 256 times and the indexed scan exactly once. A key containing an
+embedded zero rejects delimiter-based prefix shortcuts. A deliberate prefix false positive must
+still be rejected by the spatial oracle. Finally, 64 generated corpora compare the full and indexed
+selector result, RSpace event trace, and post-state maps, so a vacuous empty scan, reordered scan, or
+unchecked derived membership fails observably.
 
 #### 5.16.6 Sparse relational-row reuse inside the production PDA [SS-A10 refinement]
 
