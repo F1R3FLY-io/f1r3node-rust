@@ -2,6 +2,7 @@ pub mod bag;
 pub mod candidate_order;
 pub mod data_index;
 pub mod hashing;
+pub mod pathmap_codec;
 pub mod history;
 pub mod hot_store;
 pub mod internal;

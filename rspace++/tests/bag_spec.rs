@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
+use pathmap::PathMap;
+use pathmap::arena_compact::ArenaCompactTree;
 use pathmap::ring::{AlgebraicResult, DistributiveLattice, Lattice, SELF_IDENT};
 use proptest::collection::vec;
 use proptest::prelude::*;
-use rspace_plus_plus::rspace::bag::{Bag, BagDelta, BagError, Multiplicity};
+use rspace_plus_plus::rspace::bag::{Bag, BagCodecError, BagDelta, BagError, Multiplicity};
 
 fn bag(entries: &[(&[u8], u64)]) -> Bag {
     let mut result = Bag::new();
@@ -168,6 +170,14 @@ fn sum_is_additive_while_join_and_meet_are_lattice_operations() {
 }
 
 #[test]
+fn meet_combines_exact_values_when_an_overlap_is_also_a_prefix() {
+    let left = bag(&[(b"\x07", 7), (b"\x08", 1)]);
+    let right = bag(&[(b"\x07", 1), (b"\x07\x00", 1), (b"\x08", 1)]);
+    assert_eq!(left.meet(&right), bag(&[(b"\x07", 1), (b"\x08", 1)]));
+    assert_eq!(right.meet(&left), bag(&[(b"\x07", 1), (b"\x08", 1)]));
+}
+
+#[test]
 fn bag_lattice_satisfies_commutativity_associativity_and_absorption() {
     let a = bag(&[(b"shared", 2), (b"a", 8)]);
     let b = bag(&[(b"shared", 5), (b"b", 3)]);
@@ -273,6 +283,70 @@ fn equality_order_hash_and_debug_share_one_canonical_entry_observation() {
     assert!(rendered.contains("cardinality: 6"));
 }
 
+#[test]
+fn compact_byte_image_is_the_canonical_pathmap_arena_for_empty_and_populated_bags() {
+    for value in [Bag::new(), bag(&[(b"", 7), (b"shared/alpha", 2), (b"shared/beta", 9)])] {
+        let image = value.compact_bytes();
+        assert!(image.starts_with(b"ACTree03"));
+        let decoded = Bag::from_compact_bytes(&image).unwrap();
+        assert_eq!(decoded, value);
+        assert_eq!(decoded.compact_bytes(), image);
+
+        let bincode_bytes = bincode::serialize(&value).unwrap();
+        assert_eq!(&bincode_bytes[8..], image);
+        assert_eq!(bincode::deserialize::<Bag>(&bincode_bytes).unwrap(), value);
+    }
+}
+
+#[test]
+fn compact_reader_rejects_malformed_non_bag_and_noncanonical_images() {
+    let image = bag(&[(b"alpha", 2)]).compact_bytes();
+    assert!(matches!(
+        Bag::from_compact_bytes(&image[..image.len() - 1]),
+        Err(BagCodecError::CompactTrie(_))
+    ));
+
+    let mut alternate = image.clone();
+    alternate.push(0);
+    assert!(matches!(Bag::from_compact_bytes(&alternate), Err(BagCodecError::CompactTrie(_))));
+
+    let mut zero = PathMap::new();
+    zero.insert(b"zero", 0u64);
+    let zero_image = ArenaCompactTree::from_zipper(zero.read_zipper(), |value| *value);
+    assert_eq!(
+        Bag::from_compact_bytes(zero_image.get_data()),
+        Err(BagCodecError::ZeroMultiplicity)
+    );
+
+    let mut dangling = PathMap::<u64>::new();
+    dangling.create_path(b"dangling");
+    let dangling_image = ArenaCompactTree::from_zipper(dangling.read_zipper(), |value| *value);
+    assert_eq!(
+        Bag::from_compact_bytes(dangling_image.get_data()),
+        Err(BagCodecError::MissingMultiplicity)
+    );
+}
+
+#[test]
+fn compact_byte_image_round_trip_is_stack_safe_for_a_deep_compressed_key() {
+    std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(|| {
+            let path = vec![0x5a; 200_000];
+            let mut value = Bag::new();
+            value
+                .insert_many(&path, Multiplicity::new(17).unwrap())
+                .unwrap();
+            let image = value.compact_bytes();
+            let decoded = Bag::from_compact_bytes(&image).unwrap();
+            assert_eq!(decoded, value);
+            assert_eq!(decoded.compact_bytes(), image);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
 fn oracle(entries: &[(Vec<u8>, u8)]) -> BTreeMap<Vec<u8>, u64> {
     let mut result = BTreeMap::new();
     for (path, count) in entries {
@@ -363,5 +437,8 @@ proptest! {
                 right_oracle.get(path).copied().unwrap_or(0) >= *count
             })
         );
+        let compact = left.compact_bytes();
+        prop_assert_eq!(Bag::from_compact_bytes(&compact).unwrap(), left.clone());
+        prop_assert_eq!(bincode::deserialize::<Bag>(&bincode::serialize(&left).unwrap()).unwrap(), left);
     }
 }

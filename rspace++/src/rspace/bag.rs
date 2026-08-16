@@ -3,9 +3,12 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 
 use pathmap::PathMap;
+use pathmap::arena_compact::ArenaCompactTree;
 use pathmap::merkleization::MerkleizeResult;
 use pathmap::ring::{AlgebraicResult, COUNTER_IDENT, DistributiveLattice, Lattice, SELF_IDENT};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+use super::pathmap_codec::{CompactTrie, CompactTrieError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BagError {
@@ -33,6 +36,31 @@ impl fmt::Display for BagError {
 }
 
 impl std::error::Error for BagError {}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BagCodecError {
+    CompactTrie(CompactTrieError),
+    MissingMultiplicity,
+    ZeroMultiplicity,
+}
+
+impl fmt::Display for BagCodecError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CompactTrie(error) => write!(f, "invalid Bag compact trie: {error}"),
+            Self::MissingMultiplicity => {
+                f.write_str("Bag compact trie contains a value-free terminating path")
+            }
+            Self::ZeroMultiplicity => f.write_str("Bag compact trie contains a zero multiplicity"),
+        }
+    }
+}
+
+impl std::error::Error for BagCodecError {}
+
+impl From<CompactTrieError> for BagCodecError {
+    fn from(error: CompactTrieError) -> Self { Self::CompactTrie(error) }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
@@ -336,15 +364,50 @@ impl Bag {
     }
 
     pub fn join(&self, other: &Self) -> Self {
-        Self::from_pathmap(self.entries.join(&other.entries))
+        let (mut result, updates) = if self.distinct_len >= other.distinct_len {
+            (self.clone(), other)
+        } else {
+            (other.clone(), self)
+        };
+        for (path, multiplicity) in updates.iter() {
+            if multiplicity.get() > result.count(&path) {
+                result.set_count(&path, Some(multiplicity));
+            }
+        }
+        result
     }
 
     pub fn meet(&self, other: &Self) -> Self {
-        Self::from_pathmap(self.entries.meet(&other.entries))
+        // PathMap's generic lattice is prefix-aware: a value at `k` can
+        // interact with descendants below `k`. Bag membership is an exact-key
+        // finite-support function, so its pointwise lattice must use exact
+        // trie lookups. Iterate only the smaller support and construct no
+        // flattened entry collection.
+        let (probe, index) = if self.distinct_len <= other.distinct_len {
+            (self, other)
+        } else {
+            (other, self)
+        };
+        let mut result = Self::new();
+        for (path, multiplicity) in probe.iter() {
+            if let Some(counter) = index.entries.get(&path) {
+                result.set_count(&path, Some(multiplicity.min(*counter)));
+            }
+        }
+        result
     }
 
     pub fn subtract(&self, other: &Self) -> Self {
-        Self::from_pathmap(self.entries.subtract(&other.entries))
+        let mut result = self.clone();
+        for (path, removed) in other.iter() {
+            let Some(current) = result.entries.get(&path).copied() else {
+                continue;
+            };
+            let next = (current.get() > removed.get())
+                .then(|| Multiplicity(current.get() - removed.get()));
+            result.set_count(&path, next);
+        }
+        result
     }
 
     pub fn is_subbag_of(&self, other: &Self) -> bool {
@@ -352,7 +415,83 @@ impl Bag {
             .all(|(path, multiplicity)| other.count(&path) >= multiplicity.get())
     }
 
+    /// Serialize this Bag as PathMap's raw prefix-compressed `ACTree03` arena.
+    /// Multiplicities occupy ACTree's native `u64` value slots; there is no
+    /// entry list, shadow index, or second value table.
+    pub fn compact_bytes(&self) -> Vec<u8> {
+        ArenaCompactTree::from_zipper(self.entries.read_zipper(), |value| value.get())
+            .get_data()
+            .to_vec()
+    }
+
+    /// Reconstruct a Bag directly from one canonical `ACTree03` byte image.
+    /// The reader is iterative and rejects alternate encodings, zero values,
+    /// and value-free endpoints that the Bag API cannot produce.
+    pub fn from_compact_bytes(bytes: &[u8]) -> Result<Self, BagCodecError> {
+        let trie = CompactTrie::parse_canonical(bytes)?;
+        if trie.is_empty() {
+            return Ok(Self::new());
+        }
+
+        let mut entries = PathMap::new();
+        let mut distinct_len = 0usize;
+        let mut cardinality = 0u128;
+        trie.visit(|path, value| {
+            let value = value.ok_or(BagCodecError::MissingMultiplicity)?;
+            let multiplicity =
+                Multiplicity::new(value).map_err(|_| BagCodecError::ZeroMultiplicity)?;
+            entries.insert(path, multiplicity);
+            distinct_len += 1;
+            cardinality += u128::from(value);
+            Ok::<(), BagCodecError>(())
+        })?;
+        Ok(Self {
+            entries,
+            distinct_len,
+            cardinality,
+        })
+    }
+
     pub fn merkleize(&mut self) -> MerkleizeResult { self.entries.merkleize() }
+}
+
+impl Serialize for Bag {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where S: Serializer {
+        serializer.serialize_bytes(&self.compact_bytes())
+    }
+}
+
+struct BagVisitor;
+
+impl<'de> serde::de::Visitor<'de> for BagVisitor {
+    type Value = Bag;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a canonical PathMap ACTree03 Bag byte image")
+    }
+
+    fn visit_bytes<E>(self, bytes: &[u8]) -> Result<Self::Value, E>
+    where E: serde::de::Error {
+        Bag::from_compact_bytes(bytes).map_err(E::custom)
+    }
+
+    fn visit_borrowed_bytes<E>(self, bytes: &'de [u8]) -> Result<Self::Value, E>
+    where E: serde::de::Error {
+        self.visit_bytes(bytes)
+    }
+
+    fn visit_byte_buf<E>(self, bytes: Vec<u8>) -> Result<Self::Value, E>
+    where E: serde::de::Error {
+        self.visit_bytes(&bytes)
+    }
+}
+
+impl<'de> Deserialize<'de> for Bag {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: Deserializer<'de> {
+        deserializer.deserialize_bytes(BagVisitor)
+    }
 }
 
 /// Net, reversible multiplicity changes represented by two disjoint Bags.

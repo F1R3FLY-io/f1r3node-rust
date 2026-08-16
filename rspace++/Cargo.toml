@@ -48,6 +48,11 @@ metrics = "0.23"
 tracing-subscriber = { workspace = true }
 pathmap = { version = "0.2.2", features = ["arena_compact"] }
 
+# Canonical ACTree03 validation must reproduce PathMap 0.2.2's deterministic
+# line-reuse hash on every architecture where PathMap selects gxhash.
+[target.'cfg(not(any(miri,target_arch="riscv64")))'.dependencies]
+gxhash = "3.5"
+
 [dependencies.uuid]
 version = "1.4.0"
 features = [
