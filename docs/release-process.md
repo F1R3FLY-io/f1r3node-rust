@@ -202,6 +202,8 @@ The evidence document includes these fields:
 
 Exact field names can change during implementation. The schema version must change after an incompatible schema change.
 
+Phase 1 evidence uses `publication_mode: evidence_only`. Its image record uses `publication_state: not_published` and contains no registry references.
+
 Evidence must not contain credentials, tokens, user data, or local absolute paths.
 
 ## 8. Required stable gates
@@ -443,6 +445,8 @@ Exact script boundaries can change after test design. The release invariants mus
 ## 17. Migration plan
 
 Use staged migration to prevent an unintended stable release.
+
+Phase 1 disables automatic stable publication. A manual workflow generates evidence only from one successful `master` CI run.
 
 ### Phase 1: Evidence only
 

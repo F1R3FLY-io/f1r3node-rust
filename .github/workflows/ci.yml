@@ -161,6 +161,14 @@ jobs:
         shell: bash -euo pipefail {0}
         run: scripts/test-repin-system-integration.sh
 
+      - name: Verify release evidence
+        shell: bash -euo pipefail {0}
+        run: .github/scripts/test-release-evidence.sh
+
+      - name: Verify release workflows
+        shell: bash -euo pipefail {0}
+        run: .github/scripts/test-release-workflows.sh
+
       - name: Verify soak summary aggregation
         shell: bash -euo pipefail {0}
         run: scripts/bench/test-write-soak-summary.sh
