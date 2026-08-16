@@ -1548,6 +1548,85 @@ struct ListSearchFrame {
     pending: Option<(usize, EdgeResult<FreeMap>)>,
 }
 
+/// Per-augmenting-search visitation state.
+///
+/// The target trie Bag is authoritative in both lanes. When the target really
+/// is a multiset (at least one multiplicity exceeds one), visiting the next
+/// byte-identical target increments that identity's Bag multiplicity. A
+/// set-shaped target has no multiplicity to compress, so the one-bit position
+/// lane is strictly smaller and avoids a trie lookup on every rejected edge.
+/// The group's original position vector is only the deterministic ordering
+/// witness needed to reproduce the predecessor Kuhn traversal exactly.
+enum ListSeenTargets {
+    Multiplicities(Bag),
+    Positions(Vec<bool>),
+}
+
+impl ListSeenTargets {
+    fn new(target_index: Option<&ListTargetIndex>, target_count: usize) -> Self {
+        match target_index {
+            Some(index) if index.bag.distinct_len() < target_count => {
+                Self::Multiplicities(Bag::new())
+            }
+            _ => Self::Positions(vec![false; target_count]),
+        }
+    }
+
+    fn reset(&mut self) {
+        match self {
+            Self::Multiplicities(seen) => *seen = Bag::new(),
+            Self::Positions(seen) => seen.fill(false),
+        }
+    }
+
+    fn contains(&self, target_index: Option<&ListTargetIndex>, target_position: usize) -> bool {
+        match self {
+            Self::Multiplicities(seen) => {
+                let target_index = target_index
+                    .expect("multiplicity visitation requires the authoritative target Bag");
+                let group = target_index.group_at_position(target_position);
+                let position = u64::try_from(target_position)
+                    .expect("an indexed target position was already represented as u64");
+                let ordinal = group
+                    .positions
+                    .binary_search(&position)
+                    .expect("a target group's ordering witness contains every member");
+                let ordinal = u64::try_from(ordinal)
+                    .expect("a target-group ordinal fits the fixed-width multiplicity domain");
+                ordinal < seen.count(&group.key)
+            }
+            Self::Positions(seen) => seen[target_position],
+        }
+    }
+
+    fn insert(&mut self, target_index: Option<&ListTargetIndex>, target_position: usize) {
+        match self {
+            Self::Multiplicities(seen) => {
+                let target_index = target_index
+                    .expect("multiplicity visitation requires the authoritative target Bag");
+                let group = target_index.group_at_position(target_position);
+                let position = u64::try_from(target_position)
+                    .expect("an indexed target position was already represented as u64");
+                let ordinal = group
+                    .positions
+                    .binary_search(&position)
+                    .expect("a target group's ordering witness contains every member");
+                let ordinal = u64::try_from(ordinal)
+                    .expect("a target-group ordinal fits the fixed-width multiplicity domain");
+                let already_seen = seen.count(&group.key);
+                assert_eq!(
+                    ordinal, already_seen,
+                    "candidate domains must visit byte-identical targets in predecessor order"
+                );
+                seen.insert(&group.key)
+                    .expect("seen multiplicity cannot exceed target multiplicity");
+                debug_assert!(seen.is_subbag_of(&target_index.bag));
+            }
+            Self::Positions(seen) => seen[target_position] = true,
+        }
+    }
+}
+
 struct ListMachine {
     targets: Arc<[MatchValue]>,
     target_index: Option<ListTargetIndex>,
@@ -1555,7 +1634,7 @@ struct ListMachine {
     candidate_domains: Box<[ListCandidateDomain]>,
     assignments: Vec<Option<ListAssignment>>,
     root_pattern: usize,
-    seen_targets: Vec<bool>,
+    seen_targets: ListSeenTargets,
     search: Vec<ListSearchFrame>,
     relation: LazyRelation<FreeMap>,
     empty_delta: Rc<FreeMap>,
@@ -1649,6 +1728,7 @@ fn init_list(
             .map(|pattern| matches!(pattern, ListPattern::Term(_))),
     );
 
+    let seen_targets = ListSeenTargets::new(target_index.as_ref(), target_len);
     let mut machine = ListMachine {
         targets: request.targets.into(),
         target_index,
@@ -1656,7 +1736,7 @@ fn init_list(
         patterns: patterns.into(),
         candidate_domains,
         root_pattern: 0,
-        seen_targets: vec![false; target_len],
+        seen_targets,
         search: Vec::new(),
         relation,
         empty_delta: Rc::new(new_free_map()),
@@ -1689,13 +1769,14 @@ impl ListMachine {
 
     fn start_next_root(&mut self) {
         if self.root_pattern < self.patterns.len() {
-            self.seen_targets.fill(false);
+            self.seen_targets.reset();
             self.push_search(self.root_pattern);
         }
     }
 
     fn accept_edge(mut self, target_index: usize, free_map: EdgeResult<FreeMap>) -> Job {
-        self.seen_targets[target_index] = true;
+        self.seen_targets
+            .insert(self.target_index.as_ref(), target_index);
         let frame = self
             .search
             .last_mut()
@@ -1758,7 +1839,11 @@ fn step_list(
                         .next_cached(pattern_index, &mut frame.relation_cursor)
                 };
                 match cached {
-                    Some((target_index, produced)) if !machine.seen_targets[target_index] => {
+                    Some((target_index, produced))
+                        if !machine
+                            .seen_targets
+                            .contains(machine.target_index.as_ref(), target_index) =>
+                    {
                         #[cfg(test)]
                         update_list_relation_stats(|stats| stats.cached_edge_visits += 1);
                         return machine.accept_edge(target_index, EdgeResult::Shared(produced));
@@ -1801,13 +1886,18 @@ fn step_list(
             }
             let target_index = candidate_domain.target_at(frame.next_candidate);
             frame.next_candidate += 1;
-            if machine.seen_targets[target_index] {
+            if machine
+                .seen_targets
+                .contains(machine.target_index.as_ref(), target_index)
+            {
                 continue;
             }
             target_index
         };
 
-        let candidate_was_seen = machine.seen_targets[target_index];
+        let candidate_was_seen = machine
+            .seen_targets
+            .contains(machine.target_index.as_ref(), target_index);
         #[cfg(test)]
         update_list_relation_stats(|stats| stats.edge_evaluations += 1);
         match &machine.patterns[pattern_index] {
