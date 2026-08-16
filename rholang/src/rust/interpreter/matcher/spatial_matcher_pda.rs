@@ -102,6 +102,17 @@ pub(super) fn match_send_list_with_stats(
     (result, stats)
 }
 
+#[cfg(test)]
+pub(super) fn send_target_index_shape(targets: Vec<Send>) -> (u128, usize) {
+    let targets = targets
+        .into_iter()
+        .map(MatchValue::Send)
+        .collect::<Vec<_>>();
+    let index = ListTargetIndex::from_targets(&targets)
+        .expect("test targets fit the Bag target-index representation");
+    (index.bag.cardinality(), index.bag.distinct_len())
+}
+
 pub(super) fn match_par_pair(
     context: &mut SpatialMatcherContext,
     target: (Par, Par),
@@ -1468,16 +1479,40 @@ impl ListTargetIndex {
         let mut group_ids: PathMap<ListTargetGroupId> = PathMap::new();
         let mut groups: Vec<ListTargetGroup> = Vec::new();
         let mut position_groups = Vec::with_capacity(targets.len());
+        let mut previous: Option<(&MatchValue, ListTargetGroupId)> = None;
         for (position, target) in targets.iter().enumerate() {
+            let position = u64::try_from(position).ok()?;
+
+            // Canonically normalized AC fields place byte-identical terms next
+            // to one another. Their generated `Ord` is itself a stack-safe
+            // worklist traversal and, unlike Rholang's AlwaysEqual
+            // `PartialEq`, includes transient `locally_free` metadata. Thus
+            // `Equal` here proves both RMP1 structure and canonical bincode
+            // identity can be reused. The ordinary exact-key lookup below
+            // remains authoritative for identical values that are not
+            // adjacent.
+            if let Some((previous_target, id)) = previous {
+                if previous_target.cmp(target) == Ordering::Equal {
+                    let group_index = usize::try_from(id.0.get() - 1).ok()?;
+                    let group = groups.get_mut(group_index)?;
+                    bag.insert(&group.key).ok()?;
+                    group.positions.push(position);
+                    position_groups.push(id);
+                    previous = Some((target, id));
+                    continue;
+                }
+            }
+
+            #[cfg(test)]
+            update_list_relation_stats(|stats| stats.target_key_encodes += 1);
             let structure = target.rho_path_structure();
             let identity = target.rho_path_identity();
             let key = RhoPathV1::relative_datum_key(&structure, &identity);
-            let position = u64::try_from(position).ok()?;
             bag.insert(&key).ok()?;
-            if let Some(id) = group_ids.get(&key).copied() {
+            let id = if let Some(id) = group_ids.get(&key).copied() {
                 let group_index = usize::try_from(id.0.get() - 1).ok()?;
                 groups.get_mut(group_index)?.positions.push(position);
-                position_groups.push(id);
+                id
             } else {
                 let raw_id = u64::try_from(groups.len()).ok()?.checked_add(1)?;
                 let id = ListTargetGroupId(NonZeroU64::new(raw_id)?);
@@ -1487,8 +1522,10 @@ impl ListTargetIndex {
                     positions: vec![position],
                 });
                 group_ids.insert(&key, id);
-                position_groups.push(id);
-            }
+                id
+            };
+            position_groups.push(id);
+            previous = Some((target, id));
         }
         debug_assert_eq!(bag.cardinality(), targets.len() as u128);
         debug_assert_eq!(bag.distinct_len(), groups.len());

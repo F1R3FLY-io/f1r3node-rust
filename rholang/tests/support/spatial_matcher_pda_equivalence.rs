@@ -19,7 +19,9 @@ use super::recursive_oracle::spatial_matcher::{
     SpatialMatcher as RecursiveSpatialMatcher, SpatialMatcherContext as RecursiveContext,
 };
 use super::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
-use super::spatial_matcher_pda::{match_par_list_with_stats, match_send_list_with_stats};
+use super::spatial_matcher_pda::{
+    match_par_list_with_stats, match_send_list_with_stats, send_target_index_shape,
+};
 
 fn compare(label: &str, target: Par, pattern: Par) {
     let mut recursive = RecursiveContext::new();
@@ -601,6 +603,47 @@ fn production_list_pda_does_not_build_an_unusable_target_index() {
     let (result, stats) = match_par_list_with_stats(&mut context, targets, patterns);
     assert!(result.is_some());
     assert_eq!(stats.target_index_builds, 0);
+    assert_eq!(stats.target_key_encodes, 0);
+}
+
+#[test]
+fn production_list_pda_reuses_adjacent_duplicate_bag_identity() {
+    const WIDTH: usize = 64;
+    let element = send_value(
+        new_gint_par(7, Vec::new(), false),
+        vec![new_gint_par(11, Vec::new(), false)],
+        false,
+    );
+
+    let mut context = SpatialMatcherContext::new();
+    let (result, stats) =
+        match_send_list_with_stats(&mut context, vec![element.clone(); WIDTH], vec![
+            element;
+            WIDTH
+        ]);
+
+    assert!(result.is_some());
+    assert_eq!(stats.target_index_builds, 1);
+    assert_eq!(stats.target_key_encodes, 1);
+
+    // AlwaysEqual deliberately ignores `locally_free`, while RMP1 retains it.
+    // The reuse guard must therefore use the generated, stack-safe total order
+    // rather than semantic equality or these two distinct trie keys collapse.
+    let first = send_value(
+        new_gint_par(7, Vec::new(), false),
+        vec![new_gint_par(11, Vec::new(), false)],
+        false,
+    );
+    let mut second = first.clone();
+    second
+        .chan
+        .as_mut()
+        .expect("the Send channel exists")
+        .locally_free = vec![1];
+    assert_eq!(first, second);
+    assert_ne!(first.cmp(&second), std::cmp::Ordering::Equal);
+
+    assert_eq!(send_target_index_shape(vec![first, second]), (2, 2));
 }
 
 #[test]
