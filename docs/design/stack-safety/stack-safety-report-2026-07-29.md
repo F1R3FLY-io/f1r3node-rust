@@ -3478,9 +3478,9 @@ trie entry and have the same construction-allocation count; the largest ACTree03
 only eight bytes larger because the branchless `u64` varint occupies one through nine bytes. Rocq
 kernel-checks exact-key independence, the sum monoid, distributive lattice, subtraction, and
 normalized/canonical delta laws. Verus with `--no-cheating` verifies the executable `u64`
-underflow/overflow boundary and successful normalized reversal. The complete Rocq, Verus, Z3, and
-TLC bundle passes. This is constant-native-stack, semantic-equivalence, allocation-shape, and formal
-evidence for the standalone Bag.
+underflow/overflow boundary and successful normalized reversal. The complete Rocq, Verus, Z3, TLC,
+and mCRL2 bundle passes. This is constant-native-stack, semantic-equivalence, allocation-shape, and
+formal evidence for the standalone Bag.
 
 Checkpoint `cd01ea721` then makes the normalized delta the live datum-consumption commit carrier for
 both play and replay. The accepted candidate vector is scanned iteratively; fresh and persistent
@@ -3490,6 +3490,18 @@ clones the authoritative PathMap root once, mutates only changed trie frontiers,
 after every exact removal, checked addition, and RhoPath validation succeeds. The hot store holds one
 write lock for that publication. No recursion, traversal cap, `RUST_MIN_STACK`, `stacker`, or
 alternate stack is introduced. End-to-end comparative memory remains open.
+
+Checkpoint `21ece399d` binds that live transition to three complementary formal models. Rocq proves
+that only stored nonpersistent candidates contribute exact removals, permutation of the same
+accepted candidates produces the same play/replay delta, and rejected publication exposes the
+unchanged Bag. TLC exhaustively checks **3,942 generated / 2,628 distinct states** at depth 3 for
+exact multiplicity, persistent/fresh exclusion, accepted-result equality, rejected-state
+immutability, and whole-root publication. mCRL2 proves the implementation process
+branching-bisimilar to its atomic reference contract and independently proves that observable
+partial-key publication is unreachable. The full bounded proof script passes Rocq, Verus
+`--no-cheating`, Z3, all three TLC models, and both mCRL2 obligations under **1 GiB per-tool caps and
+zero swap**. This closes the abstract live-commit transition obligation; concrete generated-query
+soundness and full RSpace schedule/post-state equivalence remain open consensus obligations.
 
 ##### 5.16.5.4 Results
 
@@ -3518,11 +3530,11 @@ swap, and two-core CPU quota**. **MEASURED:**
 | encoded `RMP1` validation/navigation | no byte-side schema validator | **3/3 byte-cursor cases plus 4/4 generated-schema cases** | descriptor-exact fields, child types, and oneof payloads; malformed classes fail closed; all exhaustive-corpus node subtrees validate; 20,000-level validation and deepest-subtree extent discovery complete on 256 KiB |
 | nested `RMP1` instruction PDA | unpruned nested spatial scan | **9/9 framing/query cases plus the 8/8 product suite** | one- and two-layer escaping; every tested shallow token truncation rejected; 20,000 levels on 128 KiB; zero-heavy 256-candidate result equivalence with 256-to-1 spatial pruning |
 | datum-first retained structural queries | root fallback for every non-ground pattern | **9/9 combined production pruning cases** | identical COMM result/event trace/post-state map and 256-to-1 spatial calls for a canonically last waiting receive; unsupported patterns remain root fallbacks |
-| retained-filter formal composition | no theorem connecting both prefilters to canonical selection | **Rocq theorem plus complete bounded formal bundle** | exact-prefix and residual-query superset premises imply no false negatives and preservation of the first canonical spatial success; Rocq, Verus 6/6, Z3, and both exhaustive TLC models pass; concrete compiler premises remain open |
+| retained-filter formal composition | no theorem connecting both prefilters to canonical selection | **Rocq theorem plus complete bounded formal bundle** | exact-prefix and residual-query superset premises imply no false negatives and preservation of the first canonical spatial success; Rocq, Verus 6/6, Z3, all three exhaustive TLC models, and the live-commit mCRL2 checks pass; concrete compiler premises remain open |
 | AC element candidate Bag | full unordered target scan | **8,256 to 128 exact diagonal spatial edges; 128 ordered-nested ESet edges; 128 generalized Send edges from 16,384 possible pairs; one real edge for a width-128 remainder; 16,257 exhaustive displacement edges in each of 51 samples** | the initial fixed-width candidate cut passed 53/53 matcher and 22/22 RSpace tests; `2d91c4394` makes exact multiplicity and residual subtraction Bag-authoritative; `bbe91b90f` extends exact stack-safe keys/queries to every unordered `Par` field root and passes 18/18 focused matcher plus strict lint; `3a70ddc58` uses Bag visitation only for true duplicates; `ad5d37a59` encodes one identity for 64 adjacent duplicates without merging metadata-distinct values; `26b72b096` quotient-compresses universal remainder vertices, passes all 651 bounded recursive-oracle cases, 12/12 spatial differential tests, and 81/81 matcher integrations; isolated pre-Bag counter process was 56.90 s and 100.8 MiB RSS under 4 GiB/zero swap; competing processes invalidate post-Bag durations, so no new throughput or RSS claim is inferred |
 | standalone Bag delta and compact-trie codec | no direct Bag codec or normalized reversible transition carrier | **200,000-byte compressed key round-trips on 256 KiB; 22/22 Bag tests; 1/1 allocation gate; 183/183 affected EPathMap tests** | `0d7a6a3f8` adds atomic exact-key delta apply/revert; `1560f4371` uses raw canonical ACTree03 with native `u64` value slots and a shared iterative reader; `46aaa6472` adds legacy parity, prefix, algebra, delta, deep/wide, Merkle-image, and multiplicity-allocation evidence; malformed/noncanonical/zero/dangling images fail closed and strict lint passes |
-| live accepted-match Bag transaction | per-selected-datum hot-store lock and removal | **22/22 Bag; 18/18 data index; 17/17 guarded play/replay; 146/146 broad RSpace integration** | `cd01ea721` normalizes exact selected identities, commits one COW root under one lock, preserves fresh/persistent candidates, and rejects underflow or malformed paths without mutation; broad gate 3 min 6.13 s, 489,848 KiB peak RSS, zero swap under 12 GiB `MemoryMax` and four-core quota; affected strict Clippy passes, while the intentionally broader all-test Clippy reaches unrelated pre-existing warnings and is not claimed |
-| standalone Bag formal laws | informal implementation equations | **Rocq and Verus `--no-cheating` pass inside the complete bounded bundle** | `8e4938ec6` proves exact-key multiplicity algebra and normalized/canonical deltas in Rocq, plus executable checked-`u64` apply/revert in Verus; the focused proofs use 351,028 KiB and 261,824 KiB peak RSS respectively with zero swap; the bundle's existing Z3 and two TLC models also pass |
+| live accepted-match Bag transaction | per-selected-datum hot-store lock and removal | **22/22 Bag; 18/18 data index; 17/17 guarded play/replay; 146/146 broad RSpace integration; Rocq/TLC/mCRL2 live-commit proof** | `cd01ea721` normalizes exact selected identities, commits one COW root under one lock, preserves fresh/persistent candidates, and rejects underflow or malformed paths without mutation; `21ece399d` proves candidate projection, play/replay delta equality, atomic publication, all seven invariants over 2,628 TLC states, branching bisimulation, and no partial-publication reachability; broad gate 3 min 6.13 s, 489,848 KiB peak RSS, zero swap under 12 GiB `MemoryMax` and four-core quota; affected strict Clippy passes, while the intentionally broader all-test Clippy reaches unrelated pre-existing warnings and is not claimed |
+| Bag formal laws | informal implementation equations | **Rocq and Verus `--no-cheating` plus TLC and mCRL2 pass inside the complete bounded bundle** | `8e4938ec6` proves exact-key multiplicity algebra and normalized/canonical deltas in Rocq, plus executable checked-`u64` apply/revert in Verus; `21ece399d` adds the live-commit Rocq bridge, a 2,628-state TLC model, branching bisimulation, and no-partial-publication proof; the earlier focused Rocq/Verus proofs used 351,028 KiB and 261,824 KiB peak RSS respectively with zero swap; Z3 and all three TLC models pass |
 | standalone Bag microbenchmark | legacy `HashMultiSet` controls | **15/15 comparative pairs plus 6 logical-multiplicity points** | construction improves 20.5–54.6%; the full exact-lookup sweep improves except for an operationally neutral 0.236% loss at 4,096; copy-on-write clone/update improves from 16 keys but loses 65.9% at one; one-key construction remains approximately 76 ns through `u64::MAX`; aggregate benchmark-process RSS is 39,912 KiB, not a comparative per-operation memory result |
 | retained waiting-receive throughput | full canonical candidate scan | **23.2–44.6% more COMMs/s** | six treatment pairs; 51 samples/arm; 99% confidence; 16/256/4,096 receives; diverse/shared prefixes |
 | resting-data prefix throughput | full canonical candidate scan | **48.7–53.4% more COMMs/s at 16; 12.22–13.01× at 256; 238.8–256.9× at 4,096** | post-repair eight-pair matrix; 51 samples/arm; 99% confidence; singleton arms are non-regressing because zero/one physical candidates use the direct scan |
@@ -6090,7 +6102,7 @@ The proof and executable evidence deliberately use independent shapes:
 | direct replay, depths 512 / 1,024 / 2,048 / 4,096 | **10.136 / 18.843 / 37.647 / 74.721 ms decode** |
 | final five-test key/fold binary | **5/5**, **4.12 s**, **25,204 KiB peak RSS**, zero swap |
 | depth witness | **20,000** levels on a **256 KiB** worker stack |
-| formal aggregate | **5.87 s**, four Rocq theories, Verus **6/6**, Z3, and two exhaustive TLC models |
+| pre-live-commit formal aggregate | **5.87 s**, four Rocq theories, Verus **6/6**, Z3, and two exhaustive TLC models |
 | complete `models` package gate | **all targets passed**, **18 min 30.75 s**, **518,108 KiB peak process RSS**, zero swap |
 | complete `rholang` library gate | **308/308**, **4 min 25.12 s**, **1,413,656 KiB peak process RSS**, zero swap |
 

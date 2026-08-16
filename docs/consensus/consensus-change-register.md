@@ -594,7 +594,7 @@ is a *future* fork, not a present one).
 | [CBR-042](#cbr-042) | N | …and on the **bincode** wire too — `U(m)` verbatim and contiguous, then the values (FORM ②), so the reader never decodes a trie key | `3a32cf07` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-043](#cbr-043) | N | …but of **the entries that surface WRITES**. FORM ② keyed lf-blanked values by the *unblanked* entries, putting an entry's `locally_free` on the event hash | `8cf0b770` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-044](#cbr-044) | N | EPathMap becomes a homogeneous PathMap set/map and both codecs carry one versioned EPM1 trie snapshot; generated protobuf PDAs remove the read ceiling | `26876b65` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
-| [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`; benchmarks `7bc5c6994`, `7b3254573` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
+| [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`; benchmarks `7bc5c6994`, `7b3254573` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
 | [CBR-L07](#cbr-l07) | L | `List.last()` in MeTTaIL's Rholang | `bbceb6d9`, `6e543c01` | · | · | · | · | · | ● | · | PERMISSIVE | **W** |
 | [CBR-L08](#cbr-l08) | L | The kv element-category gate — a Name in a kv slot is refused, not silently dropped | *in flight* | ● | ● | ● | ● | ● | ● | ○ | REGRESSIVE | **W** |
 | [CBR-L10](#cbr-l10) | L | A pathmap's entries come from a projection, not a field | `832d510f` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
@@ -2322,7 +2322,7 @@ Legacy protobuf fields are read-only migration inputs; removing them is a later 
 
 | | |
 |---|---|
-| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`; benchmarks `7bc5c6994`, `7b3254573` |
+| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`; benchmarks `7bc5c6994`, `7b3254573` |
 | Status | LANDED ON CAMPAIGN BRANCH; VERIFICATION OPEN |
 | Direction | UNVERIFIED |
 | Evidence grade | UNVERIFIED |
@@ -2429,8 +2429,8 @@ occupancy repaired that discrepancy. Full verdict and `FreeMap` equality then ho
 binary target/pattern cases through width four, including locally-free refusal, while the width-128
 remainder control evaluates one real edge and captures 127 residual sends. The complete spatial
 differential module passes 12/12 and the affected matcher integration suites pass 81/81. These
-checks strengthen the ordering and residual evidence, but generated-query soundness, schedule
-replay, and post-state equivalence remain open; CBR-053 remains `UNVERIFIED`.
+checks strengthen the ordering and residual evidence, but generated-query soundness and complete
+schedule/replay and post-state equivalence remain open; CBR-053 remains `UNVERIFIED`.
 
 Checkpoint `0d7a6a3f8` adds normalized reversible deltas to the same exact-key Bag authority.
 Checkpoint `cd01ea721` makes that delta the live accepted-match datum commit carrier in both play and
@@ -2441,6 +2441,17 @@ root, so an absent later identity, multiplicity underflow, checked addition over
 RhoPath cannot leave a partially changed datum trie. Candidate catalogs receive the exact previous
 and current multiplicities and are discarded only when a new identity was not represented. Join
 removal remains the same subsequent operation as before this checkpoint.
+
+Checkpoint `21ece399d` formalizes that live transition without changing an executable or serialized
+surface. Rocq proves the accepted-candidate projection: only stored nonpersistent candidates
+contribute exact removals, permutation of the same selected candidates gives the same play/replay
+delta, and rejection publishes the unchanged Bag. TLC checks **3,942 generated / 2,628 distinct
+states** at depth 3 for exact multiplicity, persistent/fresh exclusion, accepted-result equality,
+rejected-state immutability, and whole-root publication. mCRL2 proves the implementation process
+branching-bisimilar to the atomic reference contract and separately proves that observable
+partial-key publication is unreachable. These proofs close the abstract accepted-match Bag commit
+obligation. They do not establish the concrete generated-query superset premises or every complete
+RSpace schedule and post-state, so CBR-053 remains `UNVERIFIED`.
 
 Checkpoint `1560f4371` gives a standalone Bag a
 direct canonical `ACTree03(PathMap<Multiplicity>)` byte image through the iterative trie reader
@@ -2454,7 +2465,8 @@ prefix-aware, whereas Bag join, meet, and subtraction are pointwise over exact k
 trie updates without changing PathMap. The AC residual already depends on exact-key subtraction, so
 this is consensus-sensitive implementation evidence under CBR-053 rather than a separate active
 wire change. The standalone Bag, malformed-image, prefix-regression, and tiny-stack gates pass, but
-schedule/replay and post-state equivalence remain open; CBR-053 remains `UNVERIFIED`.
+complete generated schedule/replay and post-state equivalence remain open; CBR-053 remains
+`UNVERIFIED`.
 
 Checkpoint `46aaa6472` adds differential parity with the predecessor `HashMultiSet`, exact-key
 prefix regression cases, multiplicity-independent allocation shape, algebraic laws, reversible
@@ -2538,6 +2550,8 @@ The current containment argument has thirteen independently checked parts:
     preserves the first spatially accepted candidate in canonical order; and
 13. compact remainder occupancy reproduces the predecessor universal-root initialization and
     displacement scan, while Bag subtraction conserves the exact unassigned multiplicity.
+14. accepted-match datum removal projects only stored nonpersistent candidates into an exact-key
+    multiplicity delta, and publishes either the complete play/replay result or the unchanged Bag.
 
 Cache-counter saturation returns `None` and recompiles instead of accepting a stale trie. Cache hits
 borrow the trie under a sharded map guard and perform no `PathMap` clone. Empty groups remove their
@@ -2616,7 +2630,9 @@ the verdict axis.
   regression but does not discharge verdict or post-state equivalence.
 - checkpoint `5a56376b4` proves the abstract retained-filter composition law in Rocq. The complete
   bounded formal bundle passes: Rocq, Verus `--no-cheating` (**6/6**), Z3, PDA TLC (**2,816 distinct
-  states**), and spatial-matcher TLC (**478 distinct states**). **PROVEN, CONDITIONALLY.** The
+  states**), spatial-matcher TLC (**478 distinct states**), and live Bag-commit TLC (**2,628 distinct
+  states**); mCRL2 also proves live-commit branching bisimulation and no reachable partial
+  publication. **PROVEN, CONDITIONALLY.** The
   theorem reduces the remaining semantic obligation to the concrete generated Rust compiler's two
   superset premises; it does not assume or establish those premises for schema families that are not
   yet generated, including associative-commutative matching.
