@@ -10,7 +10,7 @@ use pathmap::zipper::{
 };
 use serde::Serialize;
 
-use super::bag::{Bag, BagError, Multiplicity};
+use super::bag::{Bag, BagDelta, BagError, Multiplicity};
 use super::candidate_order::deterministic_candidate_hash;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::internal::{Datum, DatumAddress};
@@ -168,22 +168,40 @@ impl<A: Clone> CandidateCatalog<A> {
 
     fn needs_refresh(&self) -> bool { self.active_distinct_len != self.ordered.len() }
 
-    fn record_insert(&mut self, relative_path: &[u8], multiplicity: Multiplicity) -> bool {
-        self.cardinality += 1;
-        if multiplicity == Multiplicity::ONE {
-            if !self.positions.contains(relative_path) {
-                return false;
+    fn record_transition(
+        &mut self,
+        relative_path: &[u8],
+        previous: Option<Multiplicity>,
+        current: Option<Multiplicity>,
+    ) -> bool {
+        let previous_count = previous.map_or(0, Multiplicity::get);
+        let current_count = current.map_or(0, Multiplicity::get);
+        self.cardinality =
+            self.cardinality - u128::from(previous_count) + u128::from(current_count);
+        match (previous, current) {
+            (None, Some(_)) => {
+                if !self.positions.contains(relative_path) {
+                    return false;
+                }
+                self.active_distinct_len += 1;
             }
-            self.active_distinct_len += 1;
+            (Some(_), None) => self.active_distinct_len -= 1,
+            _ => {}
         }
         true
     }
 
-    fn record_remove(&mut self, previous: Multiplicity) {
-        self.cardinality -= 1;
-        if previous == Multiplicity::ONE {
-            self.active_distinct_len -= 1;
-        }
+    fn record_insert(&mut self, relative_path: &[u8], multiplicity: Multiplicity) -> bool {
+        let previous = (multiplicity != Multiplicity::ONE)
+            .then(|| Multiplicity::new(multiplicity.get() - 1).expect("positive predecessor"));
+        self.record_transition(relative_path, previous, Some(multiplicity))
+    }
+
+    fn record_remove(&mut self, relative_path: &[u8], previous: Multiplicity) {
+        let current = (previous != Multiplicity::ONE)
+            .then(|| Multiplicity::new(previous.get() - 1).expect("positive remainder"));
+        let retained = self.record_transition(relative_path, Some(previous), current);
+        debug_assert!(retained, "removal cannot introduce an unknown catalog identity");
     }
 }
 
@@ -890,6 +908,54 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
         Ok(multiplicity)
     }
 
+    /// Atomically apply exact datum-identity multiplicity changes.
+    ///
+    /// The authoritative Bag is cloned once through PathMap's copy-on-write
+    /// representation. Every changed path is validated before that replacement
+    /// is published, and already-built candidate catalogs are advanced by the
+    /// same before/after multiplicities rather than rebuilt speculatively.
+    pub fn apply_delta(&mut self, delta: &BagDelta) -> Result<(), DataIndexError> {
+        if delta.is_empty() {
+            return Ok(());
+        }
+
+        let mut updated = self.index.bag.clone();
+        delta.apply_to(&mut updated)?;
+
+        let mut transitions = Vec::new();
+        for (is_addition, changes) in [(true, delta.additions()), (false, delta.removals())] {
+            for (path, _) in changes.iter() {
+                let view = RhoPathV1::parse_datum(&path)?;
+                let marker = path[..view.channel_prefix_len()].to_vec();
+                let relative_path = path[view.channel_prefix_len()..].to_vec();
+                let previous = Multiplicity::new(self.index.bag.count(&path)).ok();
+                let current = Multiplicity::new(updated.count(&path)).ok();
+                transitions.push((marker, relative_path, previous, current, is_addition));
+            }
+        }
+
+        self.index.bag = updated;
+        for (marker, _, _, _, is_addition) in &transitions {
+            if *is_addition && self.loaded_channels.insert(marker, ()).is_none() {
+                self.loaded_channel_count += 1;
+            }
+        }
+
+        let catalogs = self
+            .candidate_catalogs
+            .get_mut()
+            .expect("candidate catalog write lock");
+        for (marker, relative_path, previous, current, _) in transitions {
+            let invalidate = catalogs.get_mut(&marker).is_some_and(|catalog| {
+                !Arc::make_mut(catalog).record_transition(&relative_path, previous, current)
+            });
+            if invalidate {
+                catalogs.remove(&marker);
+            }
+        }
+        Ok(())
+    }
+
     pub fn channel_entries(
         &self,
         channel: &C,
@@ -969,13 +1035,14 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
         };
         self.index.remove_path(path);
         if let Ok(view) = RhoPathV1::parse_datum(path) {
+            let relative_path = &path[view.channel_prefix_len()..];
             if let Some(catalog) = self
                 .candidate_catalogs
                 .get_mut()
                 .expect("candidate catalog write lock")
                 .get_mut(&path[..view.channel_prefix_len()])
             {
-                Arc::make_mut(catalog).record_remove(previous);
+                Arc::make_mut(catalog).record_remove(relative_path, previous);
             }
         }
         true

@@ -12,6 +12,7 @@ use rand::{Rng, thread_rng};
 use serde::Serialize;
 use tracing::warn;
 
+use super::bag::BagDelta;
 use super::data_index::{CandidatePool, DataIndexError, RSpaceDataStore};
 use super::errors::RSpaceError;
 use crate::rspace::history::history_reader::HistoryReaderBase;
@@ -70,6 +71,7 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
     fn put_datum(&self, channel: &C, d: Datum<A>) -> ();
     fn remove_datum(&self, channel: &C, index: i32) -> Result<(), RSpaceError>;
     fn remove_datum_path(&self, path: &[u8]) -> Result<(), RSpaceError>;
+    fn apply_datum_delta(&self, delta: &BagDelta) -> Result<(), RSpaceError>;
 
     fn get_joins(&self, channel: &C) -> Vec<Vec<C>>;
     fn put_join(&self, channel: &C, join: &[C]) -> Option<()>;
@@ -602,6 +604,15 @@ where
                 "Stored datum path was absent during removal".to_string(),
             ))
         }
+    }
+
+    fn apply_datum_delta(&self, delta: &BagDelta) -> Result<(), RSpaceError> {
+        self.state
+            .write()
+            .expect("hot store state write lock")
+            .data
+            .apply_delta(delta)
+            .map_err(Into::into)
     }
 
     // Joins

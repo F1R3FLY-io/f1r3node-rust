@@ -1254,30 +1254,9 @@ where
         data_candidates: Vec<ConsumeCandidate<C, A>>,
         _peeks: &BTreeSet<i32>,
     ) -> Option<Vec<()>> {
-        let results: Vec<_> = data_candidates
-            .into_iter()
-            .map(|consume_candidate| {
-                let ConsumeCandidate {
-                    datum: Datum { persist, .. },
-                    removed_datum: _,
-                    address,
-                    ..
-                } = consume_candidate;
-
-                match (persist, address) {
-                    (false, DatumAddress::Stored(path)) => {
-                        self.get_store().remove_datum_path(&path).ok()
-                    }
-                    _ => Some(()),
-                }
-            })
-            .collect();
-
-        if results.iter().any(|res| res.is_none()) {
-            None
-        } else {
-            Some(results.into_iter().flatten().collect())
-        }
+        let delta = stored_datum_removal_delta(&data_candidates).ok()?;
+        self.get_store().apply_datum_delta(&delta).ok()?;
+        Some(vec![(); data_candidates.len()])
     }
 
     fn restore_installs(&self) {
@@ -1397,35 +1376,13 @@ where
         channels: Vec<C>,
         data_candidates: Vec<ConsumeCandidate<C, A>>,
     ) -> Option<Vec<()>> {
-        let results: Vec<_> = data_candidates
-            .into_iter()
-            .map(|consume_candidate| {
-                let ConsumeCandidate {
-                    channel,
-                    datum: Datum { persist, .. },
-                    removed_datum: _,
-                    address,
-                } = consume_candidate;
-
-                let channels_clone = channels.clone();
-                if !persist {
-                    if let DatumAddress::Stored(path) = address {
-                        if self.get_store().remove_datum_path(&path).is_err() {
-                            return None;
-                        }
-                    }
-                }
-                self.get_store().remove_join(&channel, &channels_clone);
-
-                Some(())
-            })
-            .collect();
-
-        if results.iter().any(|res| res.is_none()) {
-            None
-        } else {
-            Some(results.into_iter().flatten().collect())
+        let delta = stored_datum_removal_delta(&data_candidates).ok()?;
+        let store = self.get_store();
+        store.apply_datum_delta(&delta).ok()?;
+        for consume_candidate in &data_candidates {
+            store.remove_join(&consume_candidate.channel, &channels);
         }
+        Some(vec![(); data_candidates.len()])
     }
 
     fn run_matcher_for_channels(

@@ -8,6 +8,7 @@ use counter::Counter;
 use dashmap::DashMap;
 use proptest_derive::Arbitrary;
 
+use super::bag::{BagDelta, BagError, Multiplicity};
 use super::hashing::stable_hash_provider::StableHashSerialize;
 use super::trace::event::{Consume, Produce};
 
@@ -115,6 +116,26 @@ pub enum DatumAddress {
 
 impl DatumAddress {
     pub fn is_fresh(&self) -> bool { matches!(self, Self::Fresh) }
+}
+
+/// Aggregate the exact stored identities consumed by one accepted rendezvous.
+///
+/// Persistent and fresh data are intentionally absent. Repeated stored paths
+/// become one trie key whose multiplicity is the number of selected copies,
+/// which lets the hot store validate and commit the whole removal atomically.
+pub fn stored_datum_removal_delta<C, A: Clone>(
+    candidates: &[ConsumeCandidate<C, A>],
+) -> Result<BagDelta, BagError> {
+    let mut delta = BagDelta::new();
+    for candidate in candidates {
+        if candidate.datum.persist {
+            continue;
+        }
+        if let DatumAddress::Stored(path) = &candidate.address {
+            delta.record_removal(path, Multiplicity::ONE)?;
+        }
+    }
+    Ok(delta)
 }
 
 /// `Clone` mirrors [`ConsumeCandidate`]'s, and is what lets a caller HOLD an

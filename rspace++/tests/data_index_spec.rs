@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use rspace_plus_plus::rspace::bag::{BagDelta, Multiplicity};
 use rspace_plus_plus::rspace::data_index::{DataIndexError, RSpaceDataIndex, RSpaceDataStore};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
@@ -349,6 +350,90 @@ fn candidate_pool_addresses_remove_exact_path_multiplicity() {
     assert!(store.remove_path(&path));
     assert_eq!(store.cardinality(), 0);
     assert!(!store.remove_path(&path));
+}
+
+#[test]
+fn data_store_delta_commits_repeated_and_distinct_removals_atomically() {
+    let channel = "channel".to_string();
+    let repeated = datum("repeated", false, 1);
+    let other = datum("other", false, 2);
+    let repeated_path = RSpaceDataIndex::datum_path(&channel, &repeated);
+    let other_path = RSpaceDataIndex::datum_path(&channel, &other);
+    let mut store = RSpaceDataStore::new();
+    store
+        .set_channel(channel.clone(), [
+            repeated.clone(),
+            repeated.clone(),
+            repeated.clone(),
+            other.clone(),
+        ])
+        .unwrap();
+
+    // Populate the derived catalog before the transaction so the test also
+    // covers exact before/after cache maintenance.
+    assert_eq!(store.channel_pool(&channel).unwrap().unwrap().len(), 2);
+    let mut delta = BagDelta::new();
+    delta
+        .record_removal(&repeated_path, Multiplicity::new(2).unwrap())
+        .unwrap();
+    delta
+        .record_removal(&other_path, Multiplicity::ONE)
+        .unwrap();
+    store.apply_delta(&delta).unwrap();
+
+    assert_eq!(store.index().count(&channel, &repeated), 1);
+    assert_eq!(store.index().count(&channel, &other), 0);
+    assert_eq!(store.distinct_len(), 1);
+    assert_eq!(store.cardinality(), 1);
+    let residual = store.channel_pool(&channel).unwrap().unwrap();
+    assert_eq!(residual.len(), 1);
+    assert_eq!(residual.candidate(0).unwrap().0, &repeated);
+
+    store.apply_delta(&delta.inverse()).unwrap();
+    assert_eq!(store.index().count(&channel, &repeated), 3);
+    assert_eq!(store.index().count(&channel, &other), 1);
+    assert_eq!(store.distinct_len(), 2);
+    assert_eq!(store.cardinality(), 4);
+    assert_eq!(store.channel_pool(&channel).unwrap().unwrap().len(), 2);
+}
+
+#[test]
+fn data_store_delta_underflow_is_non_mutating() {
+    let channel = "channel".to_string();
+    let present = datum("present", false, 1);
+    let absent = datum("absent", false, 2);
+    let mut store = RSpaceDataStore::new();
+    store
+        .set_channel(channel.clone(), [present.clone()])
+        .unwrap();
+    let before = store.clone();
+    let mut delta = BagDelta::new();
+    delta
+        .record_removal(&RSpaceDataIndex::datum_path(&channel, &present), Multiplicity::ONE)
+        .unwrap();
+    delta
+        .record_removal(&RSpaceDataIndex::datum_path(&channel, &absent), Multiplicity::ONE)
+        .unwrap();
+
+    assert!(matches!(store.apply_delta(&delta), Err(DataIndexError::Bag(_))));
+    assert_eq!(store, before);
+}
+
+#[test]
+fn data_store_delta_rejects_malformed_paths_before_publication() {
+    let channel = "channel".to_string();
+    let mut store = RSpaceDataStore::new();
+    store
+        .set_channel(channel, [datum("present", false, 1)])
+        .unwrap();
+    let before = store.clone();
+    let mut delta = BagDelta::new();
+    delta
+        .record_addition(b"not-a-rho-datum-path", Multiplicity::ONE)
+        .unwrap();
+
+    assert!(matches!(store.apply_delta(&delta), Err(DataIndexError::Path(_))));
+    assert_eq!(store, before);
 }
 
 #[test]

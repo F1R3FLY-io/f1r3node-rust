@@ -572,17 +572,17 @@ impl BagDelta {
     }
 
     fn apply_parts(target: &mut Bag, additions: &Bag, removals: &Bag) -> Result<(), BagError> {
-        for (path, requested) in removals.iter() {
-            let available = target.count(&path);
-            if available < requested.get() {
-                return Err(BagError::InsufficientMultiplicity {
-                    available,
-                    requested: requested.get(),
-                });
-            }
+        // Clone the root once, then mutate only the paths named by the delta.
+        // PathMap's copy-on-write nodes keep this proportional to the changed
+        // trie frontier; committing the replacement last makes both a failed
+        // removal and a failed checked addition atomic to the caller.
+        let mut updated = target.clone();
+        for (path, amount) in removals.iter() {
+            updated.try_remove_many(&path, amount)?;
         }
-        let reduced = target.subtract(removals);
-        let updated = reduced.sum(additions)?;
+        for (path, amount) in additions.iter() {
+            updated.insert_many(&path, amount)?;
+        }
         *target = updated;
         Ok(())
     }
