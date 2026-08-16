@@ -6,7 +6,7 @@ Campaign: `campaign-4131-rspace-pathmap-integration`
 
 Experiment: `rspace-pathmap-end-to-end-layout-2026-08-15`
 Last updated: 2026-08-16
-Current implementation checkpoint: `26b72b096`
+Current implementation checkpoint: `1560f4371`
 
 ## Purpose and scope
 
@@ -48,7 +48,7 @@ The layout experiment remains open until the preregistered A/B/C comparison sele
 
 | Stage | Commit | Current evidence | Disposition |
 |---|---|---|---|
-| Lawful `Bag` over `PathMap<Multiplicity>` | `a82288ae0` | algebra and multiplicity property tests | implemented |
+| Lawful `Bag` over `PathMap<Multiplicity>` | `a82288ae0`, `0d7a6a3f8`, `1560f4371` | exact multiplicity laws, normalized reversible transaction deltas, direct canonical ACTree03 byte images, malformed-image refusal, a 200,000-byte compressed-key gate on a 256 KiB stack, and randomized `BTreeMap` differential properties | implemented as a standalone authority; allocation/RSS characterization, complete formal laws, and end-to-end RSpace consumption remain open |
 | Canonical framed `RhoPathV1` | `651f278aa` | exact-channel isolation, structural-prefix pruning, malformed-key refusal | implemented |
 | Multiplicity-aware datum index | `5d4c5eca9` | one trie key per identical complete record; one decode per distinct key | implemented |
 | Authoritative hot-store datum trie | `ccec9b730`, `bd55758e4` | history fill, loaded-empty state, snapshots, indexed compatibility removal, and package tests | implemented |
@@ -222,6 +222,28 @@ The Bag caches distinct and total cardinality as derived scalars while `PathMap<
 \qquad
 \operatorname{cardinality}(B)=\sum_{p\in\operatorname{keys}(B)} B(p).
 ```
+
+PathMap's generic lattice operations are deliberately **not** Bag's lattice implementation.
+PathMap is a prefix dictionary, so its generic meet and join may relate keys that are prefixes of
+one another. Bag membership is instead exact: `[a]` and `[a, b]` are two independent elements.
+Randomized comparison with a `BTreeMap<Vec<u8>, u64>` oracle exposed that distinction, including a
+minimal prefix-related failure. The Bag therefore computes pointwise join, meet, and subtraction
+with exact PathMap lookups and copy-on-write trie updates. This preserves prefix compression and
+does not flatten the Bag or modify PathMap.
+
+The canonical standalone Bag byte image is the PathMap arena itself:
+
+```text
+BagBytes ::= ACTree03(PathMap<Multiplicity>)
+```
+
+Each terminal carries one native `u64` multiplicity slot. Zero-valued terminals and dangling
+value-free endpoints are rejected. The typed empty Bag is the canonical empty ACTree03 arena, so it
+has no EPathMap-style set-versus-map ambiguity. Serde, including bincode, transports this image as
+one byte string; it does not project entries into a vector. A shared iterative ACTree03 reader
+validates canonical topology and supplies zero-copy compressed-line key ranges to both Bag and
+EPathMap decoding. Consequently the two integrations share the physical trie parser without
+sharing their distinct value semantics.
 
 ## RhoPathV1 key model
 
@@ -414,6 +436,7 @@ The implementation evidence available at this checkpoint is:
 | generated structural match path | 3/3 encoder gates plus 4/4 models RSpace-path and 11/11 Rholang compiler gates | exhaustive-corpus determinism and adjacent-term distinction; canonical EPathMap digest golden; insertion-order independence; set/map separation; deliberate map-value false-positive lane; snapshot remains cold; 20,000-deep/wide encoding on 256 KiB; exact, whole-term, and ordered nested query behavior preserved |
 | nested RMP1 instruction PDA | 9/9 framing/query cases plus the 8/8 product suite | one- and two-layer escaping agree; every tested shallow token truncation fails closed; a 20,000-level nested value matches on a 128 KiB worker stack; a zero-heavy 256-candidate production differential preserves the result with 256-to-1 spatial pruning |
 | AC element candidate Bag | 53/53 matcher-library tests plus 22/22 affected RSpace suites at the candidate-cut checkpoint; 17/17 focused matcher-library and 10/10 RhoPath after `2d91c4394`; 18/18 focused matcher-library and strict production lint after `bbe91b90f`; duplicate/permutation and semantic-oracle controls after `3a70ddc58`; adjacent-identity controls after `ad5d37a59`; 12/12 spatial differential and 81/81 matcher integrations after `26b72b096` | exact diagonal, ordered nested ESet, and generalized unordered-Send controls each require 128 successful edges at width 128 and agree with the recursive oracle; one run of 64 byte-identical targets requires one exact identity encoding; the width-128 remainder control evaluates one term edge and captures 127 residual sends; exact target identity follows framed RMP1 structure in an authoritative Bag, residuals use native Bag subtraction, and byte-identical search visitation uses multiplicities; all 651 bounded binary target/pattern cases agree with the recursive oracle; the unchanged 51-sample adversarial displacement gate remains exhaustive at 16,257 treatment edges versus 699,263 nominal calls; contended earlier runs invalidate comparative debug durations, so no post-Bag throughput or RSS claim is made |
+| standalone Bag algebra and compact image | 20/20 Bag integration tests; 183/183 EPathMap codec and representation tests; strict `-D warnings` lint for the affected RSpace and models libraries | reversible normalized deltas apply and revert atomically; exact-key join/meet/subtraction agree with a randomized `BTreeMap` finite-support oracle even when one key prefixes another; raw ACTree03 and bincode byte images round-trip canonically; malformed, noncanonical, zero-valued, and dangling-terminal images are refused; a 200,000-byte compressed key round-trips on a 256 KiB stack; the shared reader leaves EPathMap behavior unchanged; no allocation, throughput, or RSS improvement is inferred from this correctness checkpoint |
 | encoded structural-path validation | 3/3 byte-cursor gates plus 4/4 generated-schema gates | all 58 message programs use one-based constant-time type dispatch; child type IDs and every oneof arm/payload are descriptor-derived; malformed token/length/UTF-8/boolean/field/nesting/type/oneof/PathMap cases fail closed; exhaustive subtrees validate; a 20,000-level path validates and navigates on a 256 KiB stack |
 | waiting-receive COMM throughput | 6/6 treatment pairs pass | 51 samples per arm at 99% confidence; 23.2–44.6% more completed COMMs/s; intervals are disjoint |
 | resting-data COMM throughput | 8/8 treatment pairs do not regress after repair | at 16/256/4,096 distinct entries, throughput improves 48.7–25,589.8%; the one-entry base case is 2.2% faster on diverse input and statistically neutral at a +0.6% point estimate on shared input |
@@ -498,9 +521,14 @@ unordered `Par` field root, make duplicate visitation multiplicity-native, and r
 target identities while retaining a smaller set-shaped visitation lane for all-distinct targets.
 Checkpoint `26b72b096` quotient-compresses universal remainder fillers into one explicit heap-PDA
 state and computes the residual by authoritative Bag subtraction. Original positions survive only
-as consensus-order witnesses for materialization and displacement order. Term
-assignment/reservation deltas during augmenting search, constrained-first dynamic search,
-residual-state memoization, native
+as consensus-order witnesses for materialization and displacement order. Checkpoint `0d7a6a3f8`
+adds normalized reversible Bag deltas with atomic apply/revert, and `1560f4371` gives the Bag a
+direct canonical ACTree03 image through the shared iterative trie reader. It also corrects the Bag
+lattice boundary to exact-key finite-support semantics rather than PathMap's generic prefix-aware
+lattice relation. The standalone algebra, delta, codec, malformed-input, property, and tiny-stack
+gates pass; allocation/RSS characterization, complete formal laws, and live consumption of those
+deltas remain open. Term-assignment/reservation deltas during augmenting search,
+constrained-first dynamic search, residual-state memoization, native
 EPathMap algebra, concrete
 generated-compiler soundness, schedule/replay equivalence,
 experiment selection, full formal closure, and legacy-

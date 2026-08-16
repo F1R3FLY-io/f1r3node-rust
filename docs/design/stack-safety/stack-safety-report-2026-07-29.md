@@ -3394,8 +3394,8 @@ exhaustive at **16,257** treatment edges versus **699,263** nominal calls in eve
 isolated process completes in **56.90 s** and peaks at **100.8 MiB RSS** under a 4 GiB zero-swap
 scope. These deterministic edge and resource observations are not a latency or throughput
 comparison. The complete matcher-library group passes **53/53**, the affected RSpace
-query/product/automaton group passes **22/22**, and strict production lint passes. Mutable
-multiplicity deltas, constrained-first dynamic AC search, EPathMap-native lattice/algebra
+query/product/automaton group passes **22/22**, and strict production lint passes. Live consumption
+of multiplicity deltas, constrained-first dynamic AC search, EPathMap-native lattice/algebra
 integration, small-stack search-width measurement, and formal completeness remain open.
 
 Checkpoint `2d91c4394` makes that inner-AC catalog multiplicity-authoritative. Each supported target
@@ -3409,7 +3409,7 @@ residual case; RhoPath framing is 10/10, the focused matcher-library group is 17
 strict production lint pass under 8 GiB/zero-swap scopes. No native recursion, depth cap,
 `RUST_MIN_STACK`, `stacker`, platform-width trie payload, or reference-counted primitive is added.
 Competing host `rustc` processes made this an invalid benchmark window, so no latency, throughput,
-or new RSS comparison is inferred. Search-time assignment/reservation Bag deltas and the concrete
+or new RSS comparison is inferred. Search-time consumption of Bag assignment/reservation deltas and the concrete
 compiler superset proof remain open.
 
 Checkpoint `bbe91b90f` makes the generated candidate catalog total across the unordered `Par` field
@@ -3459,6 +3459,24 @@ affected matcher integration suites pass 81/81, and strict production-library li
 are stack architecture, semantic, and deterministic-work results. They are not a release latency,
 allocation, or RSS comparison; that resource evidence remains open.
 
+Checkpoint `0d7a6a3f8` supplies the standalone Bag transaction primitive required by that open
+search integration. A normalized `BagDelta` records exact-key additions and removals, validates the
+whole transition before mutation, and applies or reverts without partially changing the trie on
+overflow or underflow. Checkpoint `1560f4371` then serializes the Bag as the canonical raw ACTree03
+arena of its authoritative `PathMap<Multiplicity>`. A shared iterative reader validates canonical
+topology and streams zero-copy compressed-line key ranges; EPathMap now uses the same physical
+reader without sharing Bag value semantics or projecting entries into a vector.
+
+The compact-image gate round-trips one 200,000-byte compressed key on a **256 KiB** worker stack.
+Malformed, noncanonical, zero-valued, and value-free terminal images fail closed. The complete Bag
+suite passes **20/20**, the affected EPathMap matrix passes **183/183**, and strict lint passes for
+both production libraries. A randomized `BTreeMap<Vec<u8>, u64>` oracle also distinguishes the
+Bag's exact-key pointwise lattice from PathMap's generic prefix-aware lattice; exact PathMap lookups
+and copy-on-write updates preserve Bag laws without changing PathMap. This is evidence of constant
+native stack for the codec and of semantic equivalence for the tested domains. It is **not** an
+allocation, throughput, or peak-RSS result; those measurements and live delta consumption remain
+open.
+
 ##### 5.16.5.4 Results
 
 The original SS-A11 depth measurements ran under a user systemd scope with **3 GiB `MemoryHigh`, 4
@@ -3488,6 +3506,7 @@ swap, and two-core CPU quota**. **MEASURED:**
 | datum-first retained structural queries | root fallback for every non-ground pattern | **9/9 combined production pruning cases** | identical COMM result/event trace/post-state map and 256-to-1 spatial calls for a canonically last waiting receive; unsupported patterns remain root fallbacks |
 | retained-filter formal composition | no theorem connecting both prefilters to canonical selection | **Rocq theorem plus complete bounded formal bundle** | exact-prefix and residual-query superset premises imply no false negatives and preservation of the first canonical spatial success; Rocq, Verus 6/6, Z3, and both exhaustive TLC models pass; concrete compiler premises remain open |
 | AC element candidate Bag | full unordered target scan | **8,256 to 128 exact diagonal spatial edges; 128 ordered-nested ESet edges; 128 generalized Send edges from 16,384 possible pairs; one real edge for a width-128 remainder; 16,257 exhaustive displacement edges in each of 51 samples** | the initial fixed-width candidate cut passed 53/53 matcher and 22/22 RSpace tests; `2d91c4394` makes exact multiplicity and residual subtraction Bag-authoritative; `bbe91b90f` extends exact stack-safe keys/queries to every unordered `Par` field root and passes 18/18 focused matcher plus strict lint; `3a70ddc58` uses Bag visitation only for true duplicates; `ad5d37a59` encodes one identity for 64 adjacent duplicates without merging metadata-distinct values; `26b72b096` quotient-compresses universal remainder vertices, passes all 651 bounded recursive-oracle cases, 12/12 spatial differential tests, and 81/81 matcher integrations; isolated pre-Bag counter process was 56.90 s and 100.8 MiB RSS under 4 GiB/zero swap; competing processes invalidate post-Bag durations, so no new throughput or RSS claim is inferred |
+| standalone Bag delta and compact-trie codec | no direct Bag codec or normalized reversible transition carrier | **200,000-byte compressed key round-trips on 256 KiB; 20/20 Bag tests; 183/183 affected EPathMap tests** | `0d7a6a3f8` adds atomic exact-key delta apply/revert; `1560f4371` uses raw canonical ACTree03 with native `u64` value slots and a shared iterative reader, rejects malformed/noncanonical/zero/dangling images, and passes randomized exact-key `BTreeMap` algebra/codec differentials plus strict lint; no allocation, throughput, or RSS claim is made |
 | retained waiting-receive throughput | full canonical candidate scan | **23.2–44.6% more COMMs/s** | six treatment pairs; 51 samples/arm; 99% confidence; 16/256/4,096 receives; diverse/shared prefixes |
 | resting-data prefix throughput | full canonical candidate scan | **48.7–53.4% more COMMs/s at 16; 12.22–13.01× at 256; 238.8–256.9× at 4,096** | post-repair eight-pair matrix; 51 samples/arm; 99% confidence; singleton arms are non-regressing because zero/one physical candidates use the direct scan |
 | singleton repair package gate | pre-repair indexed singleton | **392 passed / 0 failed** | full `rspace_plus_plus` package under 5 GiB, zero swap; focused pruning suite is 5/5 |
