@@ -48,6 +48,10 @@ fn proposer_queue_max_pending() -> usize { PROPOSER_QUEUE_MAX_PENDING }
 
 fn block_processor_queue_max_pending() -> usize { BLOCK_PROCESSOR_QUEUE_MAX_PENDING }
 
+fn block_report_prewarm_enabled(is_node_read_only: bool, dev_mode: bool) -> bool {
+    is_node_read_only || dev_mode
+}
+
 pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'static>(
     rp_connections: ConnectionsCell,
     rp_conf_cell: comm::rust::rp::rp_conf::RPConfCell,
@@ -588,12 +592,9 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     {
         use futures::StreamExt;
         use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
-        use tokio::sync::mpsc::error::TrySendError;
 
         let is_ready_flag = is_ready.clone();
         let mut event_stream = event_publisher.consume();
-        // Bounds how far pre-caching may fall behind finalization before blocks
-        // start being dropped.
         const PREWARM_QUEUE_CAPACITY: usize = 64;
         let (report_tx, mut report_rx) = tokio::sync::mpsc::channel::<
             shared::rust::shared::f1r3fly_event::BlockFinalised,
@@ -601,6 +602,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         let report_api = block_report_api.clone();
         let transfer_unforgeable_for_reports = transfer_unforgeable.clone();
         let event_pub_for_reports = event_publisher.clone();
+        let prewarm_enabled = block_report_prewarm_enabled(is_node_read_only, conf.dev_mode);
 
         tokio::spawn(async move {
             while let Some(finalized) = report_rx.recv().await {
@@ -620,42 +622,19 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         tokio::spawn(async move {
             while let Some(event) = event_stream.next().await {
                 match &event {
-                    F1r3flyEvent::BlockFinalised(finalized)
-                        if is_node_read_only
-                            && is_ready_flag.load(std::sync::atomic::Ordering::Acquire) =>
-                    {
-                        match report_tx.try_send(finalized.clone()) {
-                            // Depth is reported by the consumer alone, so the two
-                            // tasks cannot race to define the same series.
-                            Ok(()) => {}
-                            Err(TrySendError::Full(_)) => {
-                                metrics::counter!(
-                                    "block_report.prewarm_skipped",
-                                    "source" => "node",
-                                    "reason" => "queue_full"
-                                )
-                                .increment(1);
-                            }
-                            Err(TrySendError::Closed(_)) => {
-                                metrics::counter!(
-                                    "block_report.prewarm_skipped",
-                                    "source" => "node",
-                                    "reason" => "queue_closed"
-                                )
-                                .increment(1);
-                            }
+                    F1r3flyEvent::BlockFinalised(finalized) if prewarm_enabled => {
+                        if report_tx.send(finalized.clone()).await.is_err() {
+                            metrics::counter!(
+                                "block_report.prewarm_skipped",
+                                "source" => "node",
+                                "reason" => "queue_closed"
+                            )
+                            .increment(1);
+                            tracing::warn!(
+                                block_hash = %finalized.block_hash,
+                                "Block report prewarm queue closed"
+                            );
                         }
-                    }
-                    // Finalizations arriving before the node is ready are dropped
-                    // like any other skip, and are counted so a catch-up that
-                    // pre-caches nothing is visible rather than merely quiet.
-                    F1r3flyEvent::BlockFinalised(_) if is_node_read_only => {
-                        metrics::counter!(
-                            "block_report.prewarm_skipped",
-                            "source" => "node",
-                            "reason" => "not_ready"
-                        )
-                        .increment(1);
                     }
                     F1r3flyEvent::EnteredRunningState(_) => {
                         is_ready_flag.store(true, std::sync::atomic::Ordering::Release);
@@ -1073,5 +1052,18 @@ async fn handle_block_finalized(
                 "Block report pre-cache failed; transfers for this block will be unavailable"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::block_report_prewarm_enabled;
+
+    #[test]
+    fn block_report_prewarm_supports_read_only_and_dev_mode_nodes() {
+        assert!(block_report_prewarm_enabled(true, false));
+        assert!(block_report_prewarm_enabled(false, true));
+        assert!(block_report_prewarm_enabled(true, true));
+        assert!(!block_report_prewarm_enabled(false, false));
     }
 }
