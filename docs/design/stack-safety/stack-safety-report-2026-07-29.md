@@ -3480,8 +3480,16 @@ kernel-checks exact-key independence, the sum monoid, distributive lattice, subt
 normalized/canonical delta laws. Verus with `--no-cheating` verifies the executable `u64`
 underflow/overflow boundary and successful normalized reversal. The complete Rocq, Verus, Z3, and
 TLC bundle passes. This is constant-native-stack, semantic-equivalence, allocation-shape, and formal
-evidence for the standalone Bag. Live delta consumption and end-to-end comparative memory remain
-open.
+evidence for the standalone Bag.
+
+Checkpoint `cd01ea721` then makes the normalized delta the live datum-consumption commit carrier for
+both play and replay. The accepted candidate vector is scanned iteratively; fresh and persistent
+candidates are skipped, and each nonpersistent stored PathMap identity records one exact removal.
+Repeated identities collapse into a multiplicity rather than an occurrence vector. `BagDelta`
+clones the authoritative PathMap root once, mutates only changed trie frontiers, and publishes only
+after every exact removal, checked addition, and RhoPath validation succeeds. The hot store holds one
+write lock for that publication. No recursion, traversal cap, `RUST_MIN_STACK`, `stacker`, or
+alternate stack is introduced. End-to-end comparative memory remains open.
 
 ##### 5.16.5.4 Results
 
@@ -3513,6 +3521,7 @@ swap, and two-core CPU quota**. **MEASURED:**
 | retained-filter formal composition | no theorem connecting both prefilters to canonical selection | **Rocq theorem plus complete bounded formal bundle** | exact-prefix and residual-query superset premises imply no false negatives and preservation of the first canonical spatial success; Rocq, Verus 6/6, Z3, and both exhaustive TLC models pass; concrete compiler premises remain open |
 | AC element candidate Bag | full unordered target scan | **8,256 to 128 exact diagonal spatial edges; 128 ordered-nested ESet edges; 128 generalized Send edges from 16,384 possible pairs; one real edge for a width-128 remainder; 16,257 exhaustive displacement edges in each of 51 samples** | the initial fixed-width candidate cut passed 53/53 matcher and 22/22 RSpace tests; `2d91c4394` makes exact multiplicity and residual subtraction Bag-authoritative; `bbe91b90f` extends exact stack-safe keys/queries to every unordered `Par` field root and passes 18/18 focused matcher plus strict lint; `3a70ddc58` uses Bag visitation only for true duplicates; `ad5d37a59` encodes one identity for 64 adjacent duplicates without merging metadata-distinct values; `26b72b096` quotient-compresses universal remainder vertices, passes all 651 bounded recursive-oracle cases, 12/12 spatial differential tests, and 81/81 matcher integrations; isolated pre-Bag counter process was 56.90 s and 100.8 MiB RSS under 4 GiB/zero swap; competing processes invalidate post-Bag durations, so no new throughput or RSS claim is inferred |
 | standalone Bag delta and compact-trie codec | no direct Bag codec or normalized reversible transition carrier | **200,000-byte compressed key round-trips on 256 KiB; 22/22 Bag tests; 1/1 allocation gate; 183/183 affected EPathMap tests** | `0d7a6a3f8` adds atomic exact-key delta apply/revert; `1560f4371` uses raw canonical ACTree03 with native `u64` value slots and a shared iterative reader; `46aaa6472` adds legacy parity, prefix, algebra, delta, deep/wide, Merkle-image, and multiplicity-allocation evidence; malformed/noncanonical/zero/dangling images fail closed and strict lint passes |
+| live accepted-match Bag transaction | per-selected-datum hot-store lock and removal | **22/22 Bag; 18/18 data index; 17/17 guarded play/replay; 146/146 broad RSpace integration** | `cd01ea721` normalizes exact selected identities, commits one COW root under one lock, preserves fresh/persistent candidates, and rejects underflow or malformed paths without mutation; broad gate 3 min 6.13 s, 489,848 KiB peak RSS, zero swap under 12 GiB `MemoryMax` and four-core quota; affected strict Clippy passes, while the intentionally broader all-test Clippy reaches unrelated pre-existing warnings and is not claimed |
 | standalone Bag formal laws | informal implementation equations | **Rocq and Verus `--no-cheating` pass inside the complete bounded bundle** | `8e4938ec6` proves exact-key multiplicity algebra and normalized/canonical deltas in Rocq, plus executable checked-`u64` apply/revert in Verus; the focused proofs use 351,028 KiB and 261,824 KiB peak RSS respectively with zero swap; the bundle's existing Z3 and two TLC models also pass |
 | standalone Bag microbenchmark | legacy `HashMultiSet` controls | **15/15 comparative pairs plus 6 logical-multiplicity points** | construction improves 20.5–54.6%; the full exact-lookup sweep improves except for an operationally neutral 0.236% loss at 4,096; copy-on-write clone/update improves from 16 keys but loses 65.9% at one; one-key construction remains approximately 76 ns through `u64::MAX`; aggregate benchmark-process RSS is 39,912 KiB, not a comparative per-operation memory result |
 | retained waiting-receive throughput | full canonical candidate scan | **23.2–44.6% more COMMs/s** | six treatment pairs; 51 samples/arm; 99% confidence; 16/256/4,096 receives; diverse/shared prefixes |

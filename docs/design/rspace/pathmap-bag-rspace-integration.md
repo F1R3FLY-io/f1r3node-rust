@@ -48,11 +48,12 @@ The layout experiment remains open until the preregistered A/B/C comparison sele
 
 | Stage | Commit | Current evidence | Disposition |
 |---|---|---|---|
-| Lawful `Bag` over `PathMap<Multiplicity>` | `a82288ae0`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `7b3254573`, `8e4938ec6` | exact multiplicity laws, normalized reversible transaction deltas, direct canonical ACTree03 byte images, malformed-image refusal, a 200,000-byte compressed-key gate on a 256 KiB stack, 22 legacy/differential laws, multiplicity-independent construction allocation, clean comparative microbenchmarks, and kernel-checked Rocq/Verus proofs | implemented as a standalone authority; live delta consumption, end-to-end allocation/RSS comparison, and final RSpace layout selection remain open |
+| Lawful `Bag` over `PathMap<Multiplicity>` | `a82288ae0`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `7b3254573`, `8e4938ec6`, `cd01ea721` | exact multiplicity laws, normalized reversible transaction deltas, direct canonical ACTree03 byte images, malformed-image refusal, a 200,000-byte compressed-key gate on a 256 KiB stack, 22 legacy/differential laws, multiplicity-independent construction allocation, clean comparative microbenchmarks, kernel-checked Rocq/Verus proofs, and atomic live accepted-match commits | implemented as the datum authority and accepted-match transition carrier; end-to-end allocation/RSS comparison and final RSpace layout selection remain open |
 | Canonical framed `RhoPathV1` | `651f278aa` | exact-channel isolation, structural-prefix pruning, malformed-key refusal | implemented |
 | Multiplicity-aware datum index | `5d4c5eca9` | one trie key per identical complete record; one decode per distinct key | implemented |
 | Authoritative hot-store datum trie | `ccec9b730`, `bd55758e4` | history fill, loaded-empty state, snapshots, indexed compatibility removal, and package tests | implemented |
 | Multiplicity-native matching pools | `5329b27a3` | exact-path firing; reversible Bag reservations; fresh-datum addressing; repeated-channel duplicate tests | implemented |
+| Atomic accepted-match commit | `cd01ea721` | play and replay normalize every nonpersistent stored identity into one exact-key `BagDelta`; repeated identities become multiplicity; one hot-store write lock publishes one PathMap COW root; underflow and malformed-path controls leave the complete data store unchanged; 22/22 Bag, 18/18 data-index, 17/17 guarded play/replay, and 146/146 broad RSpace tests pass | implemented for datum consumption; join removal remains the unchanged subsequent operation and the full consensus-equivalence campaign remains open |
 | Shared canonical candidate catalogs | `2eb0d3871` | one canonical order and one lazy decode cell per distinct record across channel-pool snapshots; multiplicity-only updates do not rebuild the catalog | implemented |
 | Single-lookup hot-store reads | `d50b1183d` | one encoded prefix and one loaded-store read lock per hot pool/data lookup; final performance verdict remains pending | implemented |
 | Retained receive automaton, ordered query slice | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `e1a587c9f`, `697db373b`; benchmark `7bc5c6994`; pgmcp `rspace-retained-set-automaton` | one `PathMap<TerminalId>` transition segment per bind position; supported queries reside at their longest exact structural prefix and residual wildcard/capture instructions run on canonical datum bytes; fixed-width terminal/candidate identifiers; root fallback terminals; group-local versioning; no trie clone on cache hits; 4/4 automaton, 2/2 lifecycle, 11/11 Rholang query, 41/41 RSpace action, 9/9 dual-direction pruning, and 61/61 complete matcher tests pass; the ordered datum-first differential reduces spatial calls from 256 to 1 with identical COMM/trace/state; earlier exact-ground treatment is 18.8–30.8% lower latency | ordered query prefilter implemented; full generated automaton, resource measurement, and equivalence campaign open |
@@ -546,9 +547,14 @@ adds normalized reversible Bag deltas with atomic apply/revert, and `1560f4371` 
 direct canonical ACTree03 image through the shared iterative trie reader. It also corrects the Bag
 lattice boundary to exact-key finite-support semantics rather than PathMap's generic prefix-aware
 lattice relation. The standalone algebra, delta, codec, malformed-input, property, tiny-stack,
-allocation-shape, comparative-microbenchmark, and core Rocq/Verus law gates pass. End-to-end
-comparative allocation/RSS, the concrete Rust-to-formal correspondence beyond checked scalar delta
-cells, and live consumption of those deltas remain open. Term-assignment/reservation deltas during augmenting search,
+allocation-shape, comparative-microbenchmark, and core Rocq/Verus law gates pass. Checkpoint
+`cd01ea721` makes the normalized delta the live commit carrier for accepted datum selections in both
+play and replay: fresh and persistent candidates contribute no removal, repeated exact identities
+contribute multiplicity, and one hot-store write lock publishes one PathMap copy-on-write root only
+after the whole transition and every RhoPath have validated. Candidate catalogs advance from exact
+before/after counts and invalidate only when a delta introduces an identity absent from the retained
+catalog. End-to-end comparative allocation/RSS and the concrete Rust-to-formal correspondence beyond
+checked scalar delta cells remain open. Term-assignment/reservation deltas during augmenting search,
 constrained-first dynamic search, residual-state memoization, native
 EPathMap algebra, concrete
 generated-compiler soundness, schedule/replay equivalence,
