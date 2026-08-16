@@ -26,11 +26,12 @@ use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, CasperMessage};
 use prost::Message;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
 use shared::rust::env;
 
 use crate::rust::block_status::{BlockError, InvalidBlock};
-use crate::rust::casper::{Casper, CasperSnapshot};
+use crate::rust::casper::{Casper, CasperSnapshot, MultiParentCasper};
 use crate::rust::engine::block_retriever::{AdmitHashReason, BlockRetriever};
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
@@ -168,34 +169,69 @@ fn missing_dependency_quarantine_ms() -> u64 {
     })
 }
 
+fn block_age_is_of_interest(
+    block_number: i64,
+    approved_block_number: i64,
+    minimum_synced_block_number: i64,
+    requested_as_dependency: bool,
+    pre_state_available: bool,
+) -> bool {
+    block_number >= approved_block_number
+        || (requested_as_dependency
+            && block_number >= minimum_synced_block_number
+            && pre_state_available)
+}
+
 impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
     pub fn new(dependencies: BlockProcessorDependencies<T>) -> Self { Self { dependencies } }
 
     /// check if block should be processed
     pub fn check_if_of_interest(
         &self,
-        casper: Arc<dyn Casper + Send + Sync + 'static>,
+        casper: Arc<dyn MultiParentCasper + Send + Sync + 'static>,
         block: &BlockMessage,
     ) -> Result<bool, CasperError> {
         // TODO casper.dag_contains does not take into account equivocation tracker
         let already_processed =
             casper.dag_contains(&block.block_hash) || casper.buffer_contains(&block.block_hash);
+        let approved_block = casper.get_approved_block()?;
+        let approved_block_number = proto_util::block_number(approved_block);
+        let block_number = proto_util::block_number(block);
+        let shard_conf = casper.casper_shard_conf();
+        let minimum_synced_block_number =
+            crate::rust::util::rspace_history_horizon::lfs_min_block_number(
+                approved_block_number,
+                shard_conf.deploy_lifespan,
+                shard_conf.max_parent_depth,
+                shard_conf.mergeable_channels_gc_depth_buffer,
+            );
+        let requested_as_dependency = self
+            .dependencies
+            .casper_buffer
+            .requested_as_dependency(&BlockHashSerde(block.block_hash.clone()));
+        let pre_state_available = if block_number < approved_block_number
+            && requested_as_dependency
+            && block_number >= minimum_synced_block_number
+        {
+            let pre_state_hash =
+                Blake2b256Hash::from_bytes_prost(&proto_util::pre_state_hash(block));
+            casper.runtime_manager().has_root(&pre_state_hash)?
+        } else {
+            false
+        };
+        let block_age_of_interest = block_age_is_of_interest(
+            block_number,
+            approved_block_number,
+            minimum_synced_block_number,
+            requested_as_dependency,
+            pre_state_available,
+        );
+        let shard_of_interest = approved_block
+            .shard_id
+            .eq_ignore_ascii_case(&block.shard_id);
+        let version_of_interest = Validate::version(block, approved_block.header.version);
 
-        let shard_of_interest = casper.get_approved_block().map(|approved_block| {
-            approved_block
-                .shard_id
-                .eq_ignore_ascii_case(&block.shard_id)
-        })?;
-
-        let version_of_interest = casper
-            .get_approved_block()
-            .map(|approved_block| Validate::version(block, approved_block.header.version))?;
-
-        let old_block = casper.get_approved_block().map(|approved_block| {
-            proto_util::block_number(block) < proto_util::block_number(approved_block)
-        })?;
-
-        Ok(!already_processed && shard_of_interest && version_of_interest && !old_block)
+        Ok(!already_processed && shard_of_interest && version_of_interest && block_age_of_interest)
     }
 
     /// check block format and store if check passed
@@ -987,4 +1023,19 @@ pub fn new_block_processor<T: TransportLayer + Send + Sync>(
     );
 
     BlockProcessor::new(dependencies)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::block_age_is_of_interest;
+
+    #[test]
+    fn old_block_requested_as_dependency_remains_of_interest() {
+        assert!(!block_age_is_of_interest(5, 6, 4, false, true));
+        assert!(block_age_is_of_interest(5, 6, 4, true, true));
+        assert!(!block_age_is_of_interest(5, 6, 4, true, false));
+        assert!(!block_age_is_of_interest(3, 6, 4, true, true));
+        assert!(block_age_is_of_interest(6, 6, 4, false, false));
+        assert!(block_age_is_of_interest(7, 6, 4, false, false));
+    }
 }

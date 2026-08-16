@@ -66,7 +66,7 @@ COLLECTION_LOG=$OUTPUT_DIR/collection.log
 JUNIT_XML=$OUTPUT_DIR/junit.xml
 PYTEST_LOG=$OUTPUT_DIR/pytest.log
 REPORT=$OUTPUT_DIR/report.txt
-rm -f "$COLLECTION_LOG" "$JUNIT_XML" "$PYTEST_LOG" "$REPORT"
+rm -f "$COLLECTION_LOG" "$JUNIT_XML" "$PYTEST_LOG" "$REPORT" "$OUTPUT_DIR"/junit-*.xml "$OUTPUT_DIR"/pytest-*.log
 set +e
 (
 	cd "$SYSTEM_INTEGRATION_DIR"
@@ -90,42 +90,79 @@ if [ "$collection_status" -ne 0 ] || [ "$collected_tests" -eq 0 ]; then
 fi
 
 started=$(date +%s)
-set +e
-(
-	cd "$SYSTEM_INTEGRATION_DIR"
-	timeout --signal=TERM --kill-after=30 "${TIMEOUT_SECONDS}s" \
-		poetry run pytest \
-		"${TESTS[@]}" \
-		--provider="$PROVIDER" \
-		"${NODE_CAPABILITY_ARGS[@]}" \
-		--run-all-node-capability-tests \
-		--monitor \
-		--rss-ceiling-mb "$RSS_CEILING_MB" \
-		--host-free-floor-mb "$HOST_FREE_FLOOR_MB" \
-		-v --tb=short --instafail --maxfail=20 \
-		-n 1 --dist=loadgroup --timeout=1200 \
-		--junitxml="$JUNIT_XML"
-) 2>&1 | tee "$PYTEST_LOG"
-pytest_status=${PIPESTATUS[0]}
-set -e
+deadline=$((started + TIMEOUT_SECONDS))
+pytest_status=0
+suite_statuses=()
+junit_files=()
+: >"$PYTEST_LOG"
+for selector in "${TESTS[@]}"; do
+	suite=${selector%/}
+	suite=${suite##*/}
+	suite_junit=$OUTPUT_DIR/junit-$suite.xml
+	suite_log=$OUTPUT_DIR/pytest-$suite.log
+	junit_files+=("$suite_junit")
+	remaining=$((deadline - $(date +%s)))
+	if [ "$remaining" -le 0 ]; then
+		suite_status=124
+		printf 'preflight timeout exhausted before suite: %s\n' "$selector" | tee "$suite_log" | tee -a "$PYTEST_LOG"
+	else
+		printf '\n===== preflight suite: %s =====\n' "$selector" | tee -a "$PYTEST_LOG"
+		set +e
+		(
+			cd "$SYSTEM_INTEGRATION_DIR"
+			timeout --signal=TERM --kill-after=30 "${remaining}s" \
+				poetry run pytest \
+				"$selector" \
+				--provider="$PROVIDER" \
+				"${NODE_CAPABILITY_ARGS[@]}" \
+				--run-all-node-capability-tests \
+				--monitor \
+				--rss-ceiling-mb "$RSS_CEILING_MB" \
+				--host-free-floor-mb "$HOST_FREE_FLOOR_MB" \
+				-v --tb=short --instafail --maxfail=20 \
+				-n 1 --dist=loadgroup --timeout=1200 \
+				--junitxml="$suite_junit"
+		) 2>&1 | tee "$suite_log" | tee -a "$PYTEST_LOG"
+		suite_status=${PIPESTATUS[0]}
+		set -e
+	fi
+	suite_statuses+=("$suite:$suite_status")
+	if [ "$suite_status" -ne 0 ]; then
+		pytest_status=1
+	fi
+done
 elapsed=$(( $(date +%s) - started ))
 
 set +e
-python3 - "$JUNIT_XML" "$collected_tests" >"$REPORT" <<'PY'
+python3 - "$JUNIT_XML" "$collected_tests" "${junit_files[@]}" >"$REPORT" <<'PY'
 import pathlib
 import sys
 import xml.etree.ElementTree as ET
 
-path = pathlib.Path(sys.argv[1])
+output_path = pathlib.Path(sys.argv[1])
 expected_tests = int(sys.argv[2])
-if not path.is_file():
-    print(f"tests=0 collected={expected_tests} failures=0 errors=1 skipped=0")
-    raise SystemExit(1)
-root = ET.parse(path).getroot()
-cases = root.findall(".//testcase")
+input_paths = [pathlib.Path(value) for value in sys.argv[3:]]
+combined = ET.Element("testsuites")
+missing_reports = 0
+for path in input_paths:
+    if not path.is_file():
+        missing_reports += 1
+        continue
+    try:
+        root = ET.parse(path).getroot()
+    except ET.ParseError:
+        missing_reports += 1
+        continue
+    if root.tag == "testsuite":
+        combined.append(root)
+    else:
+        for suite in root.findall("testsuite"):
+            combined.append(suite)
+ET.ElementTree(combined).write(output_path, encoding="utf-8", xml_declaration=True)
+cases = combined.findall(".//testcase")
 tests = len(cases)
 failures = sum(case.find("failure") is not None for case in cases)
-errors = sum(case.find("error") is not None for case in cases)
+errors = sum(case.find("error") is not None for case in cases) + missing_reports
 skipped = sum(case.find("skipped") is not None for case in cases)
 print(
     f"tests={tests} collected={expected_tests} failures={failures} "
@@ -140,8 +177,8 @@ PY
 report_status=$?
 set -e
 cat "$REPORT"
-printf 'provider=%s suite_roots=%s elapsed_seconds=%s pytest_status=%s collection_status=%s\n' \
-	"$PROVIDER" "${#TESTS[@]}" "$elapsed" "$pytest_status" "$collection_status" >>"$REPORT"
+printf 'provider=%s suite_roots=%s elapsed_seconds=%s pytest_status=%s collection_status=%s suite_statuses=%s\n' \
+	"$PROVIDER" "${#TESTS[@]}" "$elapsed" "$pytest_status" "$collection_status" "${suite_statuses[*]}" >>"$REPORT"
 
 result=passed
 if [ "$pytest_status" -ne 0 ] || [ "$report_status" -ne 0 ]; then
