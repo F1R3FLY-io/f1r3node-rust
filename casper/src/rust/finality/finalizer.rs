@@ -146,6 +146,7 @@ impl Finalizer {
         Fut: std::future::Future<Output = Result<(), KvStoreError>>,
     {
         let total_started = std::time::Instant::now();
+        let current_lfb_hash = dag.last_finalized_block();
         let lfb_lag = dag.latest_block_number().saturating_sub(curr_lfb_height);
         let catchup_mode = lfb_lag > FINALIZER_CATCHUP_LAG_THRESHOLD_BLOCKS;
         let work_budget = if catchup_mode {
@@ -442,6 +443,19 @@ impl Finalizer {
 
             if finalized {
                 let lfb_hash = message.block_hash.clone();
+                let extends_previous_lfb = lfb_hash == current_lfb_hash
+                    || dag.is_in_main_chain(&current_lfb_hash, &lfb_hash)?;
+                tracing::info!(
+                    target: "f1r3fly.casper.finalization_lifecycle",
+                    event = "candidate_finalized",
+                    candidate_hash = %hex::encode(&lfb_hash),
+                    candidate_height = message.block_number,
+                    previous_lfb_hash = %hex::encode(&current_lfb_hash),
+                    previous_lfb_height = curr_lfb_height,
+                    extends_previous_lfb,
+                    fault_tolerance = ft_value,
+                    "finalization lifecycle"
+                );
                 new_lfb_found_effect((lfb_hash.clone(), ft_value)).await?;
                 lfb_result = Some((lfb_hash, ft_value));
                 break;

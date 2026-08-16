@@ -483,6 +483,18 @@ async fn prepare_user_deploys_with_policy(
         .cloned()
         .collect();
     if !expired_buffered.is_empty() {
+        for deploy in &expired_buffered {
+            tracing::info!(
+                target: "f1r3fly.casper.deploy_lifecycle",
+                event = "buffer_removed",
+                deploy_sig = %hex::encode(&deploy.sig),
+                reason = "expired",
+                valid_after_block = deploy.data.valid_after_block_number,
+                floor_expiry_bound = ?floor_expiry_bound,
+                current_time_millis,
+                "deploy lifecycle"
+            );
+        }
         tracing::info!(
             target: "f1r3fly.casper.recovery",
             "Removing {} expired rejected-buffer deploy(s) from storage and rejected-deploy buffer",
@@ -542,6 +554,18 @@ async fn prepare_user_deploys_with_policy(
         .cloned()
         .collect();
     if !settled_buffered.is_empty() {
+        for deploy in &settled_buffered {
+            tracing::info!(
+                target: "f1r3fly.casper.deploy_lifecycle",
+                event = "buffer_removed",
+                deploy_sig = %hex::encode(&deploy.sig),
+                reason = "floor_won",
+                floor_hash = floor_ctx.map(|ctx| hex::encode(&ctx.floor.hash)),
+                floor_block = floor_ctx.map(|ctx| ctx.floor.block_number),
+                next_block = block_number,
+                "deploy lifecycle"
+            );
+        }
         rejected_deploy_buffer
             .lock()
             .map_err(|e| CasperError::LockError(e.to_string()))?
@@ -563,6 +587,18 @@ async fn prepare_user_deploys_with_policy(
         .cloned()
         .collect();
     if !settled_stored.is_empty() {
+        for deploy in &settled_stored {
+            tracing::info!(
+                target: "f1r3fly.casper.deploy_lifecycle",
+                event = "storage_removed",
+                deploy_sig = %hex::encode(&deploy.sig),
+                reason = "floor_won",
+                floor_hash = floor_ctx.map(|ctx| hex::encode(&ctx.floor.hash)),
+                floor_block = floor_ctx.map(|ctx| ctx.floor.block_number),
+                next_block = block_number,
+                "deploy lifecycle"
+            );
+        }
         deploy_storage_guard.remove(settled_stored.clone())?;
         for deploy in settled_stored {
             stored_unfinalized.remove(&deploy);
@@ -629,6 +665,22 @@ async fn prepare_user_deploys_with_policy(
         0
     };
     if suppressed_recovered_in_scope > 0 {
+        for sig in buffered_sigs.iter().filter(|sig| {
+            canonical_won_buffer_sigs.contains(*sig)
+                || (casper_snapshot.deploys_in_scope.contains(*sig)
+                    && !casper_snapshot.rejected_in_scope.contains(*sig))
+        }) {
+            tracing::info!(
+                target: "f1r3fly.casper.deploy_lifecycle",
+                event = "recovery_suppressed",
+                deploy_sig = %hex::encode(sig),
+                canonical_won = canonical_won_buffer_sigs.contains(sig),
+                in_scope = casper_snapshot.deploys_in_scope.contains(sig),
+                rejected_in_scope = casper_snapshot.rejected_in_scope.contains(sig),
+                next_block = block_number,
+                "deploy lifecycle"
+            );
+        }
         tracing::info!(
             target: "f1r3fly.casper.recovery",
             "Prepare user deploys: suppressed {} recovered deploy(s) still visible in unresolved scope",
@@ -638,6 +690,18 @@ async fn prepare_user_deploys_with_policy(
 
     let recovered_count = recovered.len();
     if recovered_count > 0 {
+        for deploy in &recovered {
+            tracing::info!(
+                target: "f1r3fly.casper.deploy_lifecycle",
+                event = "recovery_candidate",
+                deploy_sig = %hex::encode(&deploy.sig),
+                valid_after_block = deploy.data.valid_after_block_number,
+                in_scope = casper_snapshot.deploys_in_scope.contains(&deploy.sig),
+                rejected_in_scope = casper_snapshot.rejected_in_scope.contains(&deploy.sig),
+                next_block = block_number,
+                "deploy lifecycle"
+            );
+        }
         let recovered_sigs: Vec<String> = recovered
             .iter()
             .map(|d| hex::encode(&d.sig[..d.sig.len().min(8)]))
@@ -761,6 +825,16 @@ async fn prepare_user_deploys_with_policy(
         HashSet::new()
     };
     let already_in_scope_count = already_in_scope.len();
+    for deploy in &recovered_canonical_wins {
+        tracing::info!(
+            target: "f1r3fly.casper.deploy_lifecycle",
+            event = "storage_removed",
+            deploy_sig = %hex::encode(&deploy.sig),
+            reason = "canonical_parent_win",
+            next_block = block_number,
+            "deploy lifecycle"
+        );
+    }
     let purged_recovered_already_in_scope = purge_recovered_already_in_scope(
         &mut deploy_storage_guard,
         &recovered_canonical_wins,
@@ -854,6 +928,18 @@ async fn prepare_user_deploys_with_policy(
         .chain(ordinary_selection.deploys.into_iter())
         .chain(selected_in_scope_recovery.into_iter())
         .collect();
+    for deploy in &selected {
+        tracing::info!(
+            target: "f1r3fly.casper.deploy_lifecycle",
+            event = "selected",
+            deploy_sig = %hex::encode(&deploy.sig),
+            next_block = block_number,
+            retry = is_retry_candidate(deploy),
+            in_scope_recovery = selected_in_scope_recovery_sigs.contains(&deploy.sig),
+            valid_after_block = deploy.data.valid_after_block_number,
+            "deploy lifecycle"
+        );
+    }
     let selected_user_deploy_bytes = retry_selection
         .selected_bytes
         .saturating_add(ordinary_selection.selected_bytes)
@@ -1053,6 +1139,20 @@ async fn prepare_user_deploys_with_policy(
         .cloned()
         .collect();
     if !all_expired.is_empty() {
+        for deploy in &all_expired {
+            tracing::info!(
+                target: "f1r3fly.casper.deploy_lifecycle",
+                event = "storage_and_buffer_removed",
+                deploy_sig = %hex::encode(&deploy.sig),
+                reason = "expired",
+                block_expired = block_expired_deploys.iter().any(|item| item.sig == deploy.sig),
+                time_expired = time_expired_deploys.iter().any(|item| item.sig == deploy.sig),
+                valid_after_block = deploy.data.valid_after_block_number,
+                floor_expiry_bound = ?floor_expiry_bound,
+                next_block = block_number,
+                "deploy lifecycle"
+            );
+        }
         tracing::info!(
             "Removing {} expired deploy(s) from storage and rejected-deploy buffer",
             all_expired.len()
@@ -1740,6 +1840,14 @@ fn drain_selected_recovered_deploys_from_deploy_storage(
                 .remove_by_sig(&deploy.sig)
                 .map_err(CasperError::KvStoreError)?
             {
+                tracing::info!(
+                    target: "f1r3fly.casper.deploy_lifecycle",
+                    event = "storage_removed",
+                    deploy_sig = %hex::encode(&deploy.sig),
+                    reason = "recovery_carrier_packaged",
+                    buffer_retained = true,
+                    "deploy lifecycle"
+                );
                 removed_from_storage += 1;
             }
         }
@@ -2679,6 +2787,17 @@ pub async fn create(
             block_store,
             floor_ctx.as_ref(),
         )?;
+        if rejected_buffer_non_empty {
+            tracing::info!(
+                target: "f1r3fly.casper.deploy_lifecycle",
+                event = "recovery_leadership",
+                proposer = %hex::encode(&validator_identity.public_key.bytes),
+                recovery_leader = ?recovered_deploy_leader(casper_snapshot).map(|leader| hex::encode(&leader)),
+                selected = allow_recovered_deploys,
+                next_block = next_block_num,
+                "deploy lifecycle"
+            );
+        }
         let admission_policy = ordinary_admission_policy(
             casper_snapshot,
             rejected_buffer_non_empty,
@@ -3246,6 +3365,32 @@ pub async fn create(
     let signed_block_bytes = signed_block.to_proto().encoded_len();
     metrics::gauge!(BLOCK_CREATOR_PACKED_BLOCK_BYTES_METRIC, "source" => CASPER_METRICS_SOURCE)
         .set(signed_block_bytes as f64);
+
+    for processed in &signed_block.body.deploys {
+        tracing::info!(
+            target: "f1r3fly.casper.deploy_lifecycle",
+            event = "carrier_created",
+            deploy_sig = %hex::encode(&processed.deploy.sig),
+            block_hash = %hex::encode(&signed_block.block_hash),
+            block_number = signed_block.body.state.block_number,
+            sender = %hex::encode(&signed_block.sender),
+            failed = processed.is_failed,
+            parents = ?signed_block.header.parents_hash_list.iter().map(hex::encode).collect::<Vec<_>>(),
+            "deploy lifecycle"
+        );
+    }
+    for rejected in &signed_block.body.rejected_deploys {
+        tracing::info!(
+            target: "f1r3fly.casper.deploy_lifecycle",
+            event = "rejection_recorded",
+            deploy_sig = %hex::encode(&rejected.sig),
+            block_hash = %hex::encode(&signed_block.block_hash),
+            block_number = signed_block.body.state.block_number,
+            carrier = %hex::encode(&rejected.carrier),
+            duplicate = rejected.duplicate,
+            "deploy lifecycle"
+        );
+    }
 
     let selected_user_deploys_for_buffer_drain: Vec<Signed<DeployData>> = ordered_user_deploys
         .iter()
