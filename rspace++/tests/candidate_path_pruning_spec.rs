@@ -7,6 +7,9 @@ use rspace_plus_plus::rspace::candidate_order::deterministic_candidate_hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::r#match::Match;
+use rspace_plus_plus::rspace::rho_path::{
+    RhoPathQuery, RhoPathQueryAtom, encode_structural_sequence,
+};
 use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
 use rspace_plus_plus::rspace::serializers::cold_store_decode::{
@@ -21,6 +24,10 @@ enum Pattern {
     #[default]
     Wildcard,
     Exact(String),
+    SequenceSecond {
+        expected: String,
+        second: Vec<u8>,
+    },
 }
 
 impl StableHashSerialize for Pattern {}
@@ -44,7 +51,8 @@ impl Match<Pattern, String, String> for CountingMatcher {
         match pattern {
             Pattern::Wildcard => Some(datum.clone()),
             Pattern::Exact(expected) if expected == datum => Some(datum.clone()),
-            Pattern::Exact(_) => None,
+            Pattern::SequenceSecond { expected, .. } if expected == datum => Some(datum.clone()),
+            Pattern::Exact(_) | Pattern::SequenceSecond { .. } => None,
         }
     }
 
@@ -53,6 +61,7 @@ impl Match<Pattern, String, String> for CountingMatcher {
         match pattern {
             Pattern::Wildcard => None,
             Pattern::Exact(value) => Some(value.as_bytes().to_vec()),
+            Pattern::SequenceSecond { .. } => None,
         }
     }
 
@@ -61,7 +70,22 @@ impl Match<Pattern, String, String> for CountingMatcher {
         Some(datum.as_bytes().to_vec())
     }
 
+    fn rho_path_query(&self, pattern: &Pattern) -> Option<RhoPathQuery> {
+        match pattern {
+            Pattern::SequenceSecond { second, .. } => Some(RhoPathQuery::structural_sequence(
+                [RhoPathQueryAtom::Wildcard, RhoPathQueryAtom::Exact(second.clone())],
+                false,
+            )),
+            Pattern::Wildcard | Pattern::Exact(_) => None,
+        }
+    }
+
     fn supports_rho_path_candidate_pruning(&self) -> bool { self.pruning }
+}
+
+fn sequence_value(first: &[u8], second: &[u8]) -> String {
+    String::from_utf8(encode_structural_sequence([first, second]))
+        .expect("ASCII structural sequence")
 }
 
 type TestSpace = RSpace<String, Pattern, String, String>;
@@ -202,6 +226,69 @@ async fn singleton_pool_uses_the_unprunable_direct_scan() {
     );
 }
 
+#[tokio::test]
+async fn pathmap_product_prunes_after_a_wildcard_frame_without_decoding_candidates() {
+    let channel = "candidate-path-product";
+    let records = (0..256)
+        .map(|index| {
+            let first = format!("record/{index:08x}");
+            let second = format!("class/{index:08x}").into_bytes();
+            (sequence_value(first.as_bytes(), &second), second)
+        })
+        .collect::<Vec<_>>();
+    let values = records
+        .iter()
+        .map(|(value, _)| value.clone())
+        .collect::<Vec<_>>();
+    let target = last_canonical_value(channel, &values);
+    let target_second = records
+        .iter()
+        .find(|(value, _)| value == &target)
+        .expect("target belongs to corpus")
+        .1
+        .clone();
+
+    let (control, control_calls, _) = space(false).await;
+    populate(&control, channel, &values).await;
+    control_calls.store(0, Ordering::Relaxed);
+    let control_result = control
+        .consume(
+            vec![channel.to_string()],
+            vec![Pattern::SequenceSecond {
+                expected: target.clone(),
+                second: target_second.clone(),
+            }],
+            "continuation".to_string(),
+            false,
+            BTreeSet::new(),
+        )
+        .await
+        .expect("control consume")
+        .expect("control match");
+
+    let (indexed, indexed_calls, _) = space(true).await;
+    populate(&indexed, channel, &values).await;
+    indexed_calls.store(0, Ordering::Relaxed);
+    let indexed_result = indexed
+        .consume(
+            vec![channel.to_string()],
+            vec![Pattern::SequenceSecond {
+                expected: target,
+                second: target_second,
+            }],
+            "continuation".to_string(),
+            false,
+            BTreeSet::new(),
+        )
+        .await
+        .expect("indexed consume")
+        .expect("indexed match");
+
+    assert_eq!(indexed_result, control_result);
+    assert_eq!(control_calls.load(Ordering::Relaxed), values.len());
+    assert_eq!(indexed_calls.load(Ordering::Relaxed), 1);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
@@ -235,6 +322,59 @@ proptest! {
                 .consume(
                     vec![channel.to_string()],
                     vec![Pattern::Exact(target)],
+                    "continuation".to_string(),
+                    false,
+                    BTreeSet::new(),
+                )
+                .await
+                .expect("indexed consume");
+
+            prop_assert_eq!(control_result, indexed_result);
+            prop_assert_eq!(control.to_map().await, indexed.to_map().await);
+            prop_assert_eq!(control.take_event_log().await, indexed.take_event_log().await);
+            Ok(())
+        })?;
+    }
+
+    #[test]
+    fn framed_product_queries_preserve_results_traces_and_post_states(
+        pairs in prop::collection::vec(("[a-z0-9]{0,4}", "[a-z0-9]{0,4}"), 0..12),
+        target in ("[a-z0-9]{0,4}", "[a-z0-9]{0,4}"),
+    ) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Tokio runtime");
+        runtime.block_on(async {
+            let channel = "generated-product-differential";
+            let values = pairs
+                .iter()
+                .map(|(first, second)| sequence_value(first.as_bytes(), second.as_bytes()))
+                .collect::<Vec<_>>();
+            let expected = sequence_value(target.0.as_bytes(), target.1.as_bytes());
+            let pattern = Pattern::SequenceSecond {
+                expected,
+                second: target.1.into_bytes(),
+            };
+            let (control, _, _) = space(false).await;
+            let (indexed, _, _) = space(true).await;
+            populate(&control, channel, &values).await;
+            populate(&indexed, channel, &values).await;
+
+            let control_result = control
+                .consume(
+                    vec![channel.to_string()],
+                    vec![pattern.clone()],
+                    "continuation".to_string(),
+                    false,
+                    BTreeSet::new(),
+                )
+                .await
+                .expect("control consume");
+            let indexed_result = indexed
+                .consume(
+                    vec![channel.to_string()],
+                    vec![pattern],
                     "continuation".to_string(),
                     false,
                     BTreeSet::new(),

@@ -4,14 +4,20 @@ use std::marker::PhantomData;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use pathmap::PathMap;
-use pathmap::zipper::ZipperSubtries;
+use pathmap::utils::{ByteMask, ByteMaskIter};
+use pathmap::zipper::{
+    ReadZipperUntracked, Zipper, ZipperMoving, ZipperReadOnlyValues, ZipperSubtries,
+};
 use serde::Serialize;
 
 use super::bag::{Bag, BagError, Multiplicity};
 use super::candidate_order::deterministic_candidate_hash;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::internal::{Datum, DatumAddress};
-use super::rho_path::{RhoPathEncode, RhoPathError, RhoPathV1};
+use super::rho_path::{
+    CompiledRhoPathQueryAtom, RhoPathEncode, RhoPathError, RhoPathQuery, RhoPathV1,
+    StoredSequenceFrameScanner, StoredSequenceFrameStep,
+};
 use super::serializers::cold_store_decode::{ColdStoreDecode, ColdStoreDecodeError};
 use super::serializers::serializers::{CandidateOrderingBytes, decode_datum, encode_datum};
 
@@ -191,6 +197,119 @@ pub struct CandidatePool<A: Clone> {
     decode: fn(&[u8]) -> Datum<A>,
 }
 
+#[derive(Clone)]
+struct CandidateProductCursor<'a> {
+    availability: ReadZipperUntracked<'a, 'static, Multiplicity>,
+    positions: ReadZipperUntracked<'a, 'static, CandidatePosition>,
+}
+
+impl<'a> CandidateProductCursor<'a> {
+    fn new(
+        availability: &'a PathMap<Multiplicity>,
+        positions: &'a PathMap<CandidatePosition>,
+    ) -> Self {
+        Self {
+            availability: availability.read_zipper(),
+            positions: positions.read_zipper(),
+        }
+    }
+
+    fn descend_to_existing(&mut self, path: &[u8]) -> bool {
+        self.availability.descend_to_existing(path) == path.len() &&
+            self.positions.descend_to_existing(path) == path.len()
+    }
+
+    fn descend_to_byte(&mut self, byte: u8) {
+        self.availability.descend_to_byte(byte);
+        self.positions.descend_to_byte(byte);
+    }
+
+    fn ascend_byte(&mut self) {
+        let availability_ascended = self.availability.ascend_byte();
+        let positions_ascended = self.positions.ascend_byte();
+        debug_assert_eq!(availability_ascended, positions_ascended);
+    }
+
+    fn child_mask(&self) -> ByteMask {
+        self.availability.child_mask() & self.positions.child_mask()
+    }
+
+    fn position(&self) -> Option<CandidatePosition> {
+        self.availability.get_val()?;
+        self.positions.get_val().copied()
+    }
+}
+
+struct CandidateQueryState<'a> {
+    cursor: CandidateProductCursor<'a>,
+    atom_index: usize,
+    captures: PathMap<Arc<[u8]>>,
+}
+
+fn visit_sequence_frames<'a>(
+    mut cursor: CandidateProductCursor<'a>,
+    mut visitor: impl FnMut(CandidateProductCursor<'a>, &[u8]),
+) {
+    let mut levels: Vec<(ByteMaskIter, StoredSequenceFrameScanner)> =
+        vec![(cursor.child_mask().iter(), StoredSequenceFrameScanner::default())];
+    let mut frame = Vec::new();
+    while let Some((children, scanner_base)) = levels.last_mut() {
+        match children.next() {
+            Some(byte) => {
+                let mut scanner = *scanner_base;
+                match scanner.feed(byte) {
+                    StoredSequenceFrameStep::NeedMore => {
+                        cursor.descend_to_byte(byte);
+                        frame.push(byte);
+                        levels.push((cursor.child_mask().iter(), scanner));
+                    }
+                    StoredSequenceFrameStep::Complete => {
+                        cursor.descend_to_byte(byte);
+                        frame.push(byte);
+                        visitor(cursor.clone(), &frame);
+                        frame.pop();
+                        cursor.ascend_byte();
+                    }
+                    StoredSequenceFrameStep::Invalid => {}
+                }
+            }
+            None => {
+                levels.pop();
+                if frame.pop().is_some() {
+                    cursor.ascend_byte();
+                }
+            }
+        }
+    }
+}
+
+fn visit_product_values(
+    mut cursor: CandidateProductCursor<'_>,
+    mut visitor: impl FnMut(CandidatePosition),
+) {
+    if let Some(position) = cursor.position() {
+        visitor(position);
+    }
+    let mut levels = vec![cursor.child_mask().iter()];
+    while let Some(children) = levels.last_mut() {
+        match children.next() {
+            Some(byte) => {
+                cursor.descend_to_byte(byte);
+                if let Some(position) = cursor.position() {
+                    visitor(position);
+                }
+                levels.push(cursor.child_mask().iter());
+            }
+            None => {
+                levels.pop();
+                if !levels.is_empty() {
+                    cursor.ascend_byte();
+                }
+            }
+        }
+    }
+}
+
 impl<A: Clone + PartialEq> PartialEq for CandidatePool<A> {
     fn eq(&self, other: &Self) -> bool {
         self.availability == other.availability &&
@@ -250,6 +369,95 @@ impl<A: Clone> CandidatePool<A> {
             result.push(position.index() + stored_offset);
         }
         result.sort_unstable();
+        result
+    }
+
+    pub(crate) fn positions_matching_query(
+        &self,
+        query: &RhoPathQuery,
+        fresh_matches: bool,
+    ) -> Vec<usize> {
+        let mut result = Vec::new();
+        if self.fresh.is_some() && fresh_matches {
+            result.push(0);
+        }
+        let stored_offset = usize::from(self.fresh.is_some());
+        let mut root = CandidateProductCursor::new(self.availability.as_pathmap(), &self.positions);
+        if !root.descend_to_existing(&[1]) {
+            return result;
+        }
+        let mut work = vec![CandidateQueryState {
+            cursor: root,
+            atom_index: 0,
+            captures: PathMap::new(),
+        }];
+        while let Some(state) = work.pop() {
+            if let Some(atom) = query.atoms().get(state.atom_index) {
+                match atom {
+                    CompiledRhoPathQueryAtom::Exact { stored_frame, .. } => {
+                        let mut cursor = state.cursor;
+                        if cursor.descend_to_existing(stored_frame) {
+                            work.push(CandidateQueryState {
+                                cursor,
+                                atom_index: state.atom_index + 1,
+                                captures: state.captures,
+                            });
+                        }
+                    }
+                    CompiledRhoPathQueryAtom::Capture(id) => {
+                        let capture_path = id.path();
+                        if let Some(frame) = state.captures.get(capture_path) {
+                            let mut cursor = state.cursor;
+                            if cursor.descend_to_existing(frame.as_ref()) {
+                                work.push(CandidateQueryState {
+                                    cursor,
+                                    atom_index: state.atom_index + 1,
+                                    captures: state.captures,
+                                });
+                            }
+                        } else {
+                            visit_sequence_frames(state.cursor, |cursor, frame| {
+                                let mut captures = state.captures.clone();
+                                captures.insert(capture_path, Arc::from(frame));
+                                work.push(CandidateQueryState {
+                                    cursor,
+                                    atom_index: state.atom_index + 1,
+                                    captures,
+                                });
+                            });
+                        }
+                    }
+                    CompiledRhoPathQueryAtom::Wildcard => {
+                        visit_sequence_frames(state.cursor, |cursor, _| {
+                            work.push(CandidateQueryState {
+                                cursor,
+                                atom_index: state.atom_index + 1,
+                                captures: state.captures.clone(),
+                            });
+                        });
+                    }
+                }
+                continue;
+            }
+
+            let mut end = state.cursor.clone();
+            if end.descend_to_existing(&[0, 0]) {
+                visit_product_values(end, |position| {
+                    result.push(position.index() + stored_offset);
+                });
+            }
+            if query.accepts_remainder() {
+                visit_sequence_frames(state.cursor, |cursor, _| {
+                    work.push(CandidateQueryState {
+                        cursor,
+                        atom_index: state.atom_index,
+                        captures: state.captures.clone(),
+                    });
+                });
+            }
+        }
+        result.sort_unstable();
+        result.dedup();
         result
     }
 

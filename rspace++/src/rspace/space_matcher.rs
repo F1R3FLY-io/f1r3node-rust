@@ -73,6 +73,22 @@ impl CandidateScan {
                 next_position: start,
             };
         }
+        if let Some(query) = matcher
+            .rho_path_query(pattern)
+            .filter(|query| query.is_selective())
+        {
+            let fresh_matches = data.fresh_datum().is_some_and(|datum| {
+                matcher
+                    .retained_datum_path(&datum.a)
+                    .is_some_and(|datum_path| query.matches_structure(&datum_path))
+            });
+            let positions = data.positions_matching_query(&query, fresh_matches);
+            let next_index = positions.partition_point(|position| *position < start);
+            return Self::Indexed {
+                positions,
+                next_index,
+            };
+        }
         let Some(pattern_path) = matcher.retained_pattern_path(pattern) else {
             return Self::All {
                 next_position: start,

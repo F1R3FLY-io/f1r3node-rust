@@ -1,7 +1,10 @@
 use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::var::VarInstance;
 use models::rhoapi::{BindPattern, Expr, ListParWithRandom, Par};
+use models::rust::utils::{new_freevar_par, new_freevar_var, new_wildcard_par};
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rspace_plus_plus::rspace::r#match::Match;
+use rspace_plus_plus::rspace::rho_path::RhoPathEncode;
 
 fn integer(value: i64) -> Par {
     let mut par = Par::default();
@@ -65,4 +68,71 @@ fn distinct_ground_values_do_not_share_an_exact_retained_path() {
         matcher.retained_datum_path(&datum)
     );
     assert!(matcher.get(&pattern, &datum).is_none());
+}
+
+#[test]
+fn ordered_whole_term_variables_compile_to_the_same_query_used_by_rspace() {
+    let matcher = Matcher;
+    let pattern = BindPattern {
+        patterns: vec![new_freevar_par(0, Vec::new()), integer(7)],
+        remainder: None,
+        free_count: 1,
+    };
+    let matching = ListParWithRandom {
+        pars: vec![integer(11), integer(7)],
+        ..ListParWithRandom::default()
+    };
+    let wrong_suffix = ListParWithRandom {
+        pars: vec![integer(11), integer(8)],
+        ..ListParWithRandom::default()
+    };
+    let wrong_arity = ListParWithRandom {
+        pars: vec![integer(11), integer(7), integer(12)],
+        ..ListParWithRandom::default()
+    };
+    let query = matcher
+        .rho_path_query(&pattern)
+        .expect("ordered whole-term pattern query");
+
+    assert!(query.matches_structure(&matching.rho_path_structure()));
+    assert!(!query.matches_structure(&wrong_suffix.rho_path_structure()));
+    assert!(!query.matches_structure(&wrong_arity.rho_path_structure()));
+    assert!(matcher.get(&pattern, &matching).is_some());
+    assert!(matcher.get(&pattern, &wrong_suffix).is_none());
+    assert!(matcher.get(&pattern, &wrong_arity).is_none());
+}
+
+#[test]
+fn whole_term_wildcards_and_list_remainders_compile_without_an_exact_ground_fallback() {
+    let matcher = Matcher;
+    let wildcard = BindPattern {
+        patterns: vec![new_wildcard_par(Vec::new(), true), integer(7)],
+        remainder: Some(new_freevar_var(0)),
+        free_count: 1,
+    };
+    let matching = ListParWithRandom {
+        pars: vec![integer(11), integer(7), integer(12), integer(13)],
+        ..ListParWithRandom::default()
+    };
+    let too_short = ListParWithRandom {
+        pars: vec![integer(11)],
+        ..ListParWithRandom::default()
+    };
+    let query = matcher
+        .rho_path_query(&wildcard)
+        .expect("wildcard and remainder query");
+
+    assert!(matcher.retained_pattern_path(&wildcard).is_none());
+    assert!(query.matches_structure(&matching.rho_path_structure()));
+    assert!(!query.matches_structure(&too_short.rho_path_structure()));
+    assert!(matcher.get(&wildcard, &matching).is_some());
+    assert!(matcher.get(&wildcard, &too_short).is_none());
+
+    let invalid_remainder = BindPattern {
+        remainder: Some(models::rhoapi::Var {
+            var_instance: Some(VarInstance::BoundVar(0)),
+        }),
+        ..wildcard
+    };
+    assert!(matcher.rho_path_query(&invalid_remainder).is_none());
 }

@@ -1,12 +1,13 @@
-use std::marker::{Send, Sync};
-
 use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::var::VarInstance::{FreeVar, Wildcard};
 use models::rust::canonical_path::encode_trie_path;
 use models::rust::rholang::implicits::vector_par;
 use models::rust::utils::{new_elist_expr, to_vec};
 use rho_pure_eval::{Env as PureEnv, EvalError, SpatialMatch};
 use rspace_plus_plus::rspace::r#match::Match;
-use rspace_plus_plus::rspace::rho_path::{encode_structural_sequence, RhoPathEncode};
+use rspace_plus_plus::rspace::rho_path::{
+    encode_structural_sequence, RhoPathCaptureId, RhoPathEncode, RhoPathQuery, RhoPathQueryAtom,
+};
 
 use super::exports::*;
 use super::fold_match::FoldMatch;
@@ -14,10 +15,6 @@ use super::spatial_matcher::SpatialMatcherContext;
 
 #[derive(Clone, Default)]
 pub struct Matcher;
-
-// Matcher must implement Send + Sync to satisfy Match trait bounds
-unsafe impl Send for Matcher {}
-unsafe impl Sync for Matcher {}
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/package.scala - matchListPar
 //
@@ -92,6 +89,24 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
         Some(datum.rho_path_structure())
     }
 
+    fn rho_path_query(&self, pattern: &BindPattern) -> Option<RhoPathQuery> {
+        let accepts_remainder = match pattern
+            .remainder
+            .as_ref()
+            .and_then(|remainder| remainder.var_instance.as_ref())
+        {
+            None => false,
+            Some(FreeVar(_) | Wildcard(_)) => true,
+            Some(_) => return None,
+        };
+        let atoms = pattern
+            .patterns
+            .iter()
+            .map(rho_path_query_atom)
+            .collect::<Option<Vec<_>>>()?;
+        Some(RhoPathQuery::structural_sequence(atoms, accepts_remainder))
+    }
+
     fn supports_rho_path_candidate_pruning(&self) -> bool { true }
 
     /// Cross-channel `where`-clause guard. Called by the matcher
@@ -115,6 +130,35 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
         }
         guard_passes(guard, &combined)
     }
+}
+
+fn rho_path_query_atom(pattern: &Par) -> Option<RhoPathQueryAtom> {
+    let single_expr_carrier = pattern.sends.is_empty()
+        && pattern.receives.is_empty()
+        && pattern.news.is_empty()
+        && pattern.exprs.len() == 1
+        && pattern.matches.is_empty()
+        && pattern.unforgeables.is_empty()
+        && pattern.bundles.is_empty()
+        && pattern.connectives.is_empty()
+        && pattern.conditionals.is_empty();
+    if single_expr_carrier {
+        if let Some(ExprInstance::EVarBody(variable)) = pattern.exprs[0].expr_instance.as_ref() {
+            return match variable
+                .v
+                .as_ref()
+                .and_then(|variable| variable.var_instance.as_ref())
+            {
+                Some(FreeVar(level)) => u32::try_from(*level)
+                    .ok()
+                    .map(|level| RhoPathQueryAtom::Capture(RhoPathCaptureId::new(level))),
+                Some(Wildcard(_)) => Some(RhoPathQueryAtom::Wildcard),
+                _ => None,
+            };
+        }
+    }
+    (!pattern.connective_used && pattern.locally_free.is_empty())
+        .then(|| RhoPathQueryAtom::Exact(encode_trie_path(pattern)))
 }
 
 fn is_empty_par(par: &Par) -> bool { par == &Par::default() }

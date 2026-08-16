@@ -1,3 +1,5 @@
+use super::rho_path::RhoPathQuery;
+
 /**
  * See rspace/src/main/scala/coop/rchain/rspace/Match.scala
  *
@@ -25,6 +27,8 @@ pub trait Match<P, A, K>: Send + Sync {
     fn retained_pattern_path(&self, _pattern: &P) -> Option<Vec<u8>> { None }
 
     fn retained_datum_path(&self, _datum: &A) -> Option<Vec<u8>> { None }
+
+    fn rho_path_query(&self, _pattern: &P) -> Option<RhoPathQuery> { None }
 
     /// Opt in to pruning a resting-data candidate pool by the PathMap paths
     /// returned from `retained_pattern_path` and `retained_datum_path`.

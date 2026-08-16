@@ -1,5 +1,7 @@
 use std::fmt;
 
+use pathmap::PathMap;
+
 use super::hashing::stable_hash_provider::StableHashSerialize;
 
 const MAGIC: [u8; 4] = *b"RHP\x01";
@@ -7,6 +9,179 @@ const DATUM_KIND: u8 = 1;
 const ESCAPE: u8 = 0;
 const ESCAPED_ZERO: u8 = 0xFF;
 const FRAME_END: u8 = 0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct RhoPathCaptureId(u32);
+
+impl RhoPathCaptureId {
+    pub const fn new(id: u32) -> Self { Self(id) }
+
+    pub const fn get(self) -> u32 { self.0 }
+
+    pub(crate) const fn path(self) -> [u8; 4] { self.0.to_be_bytes() }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RhoPathQueryAtom {
+    Exact(Vec<u8>),
+    Capture(RhoPathCaptureId),
+    Wildcard,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CompiledRhoPathQueryAtom {
+    Exact {
+        inner_frame: Vec<u8>,
+        stored_frame: Vec<u8>,
+    },
+    Capture(RhoPathCaptureId),
+    Wildcard,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RhoPathQuery {
+    atoms: Vec<CompiledRhoPathQueryAtom>,
+    accepts_remainder: bool,
+}
+
+impl RhoPathQuery {
+    pub fn structural_sequence(
+        atoms: impl IntoIterator<Item = RhoPathQueryAtom>,
+        accepts_remainder: bool,
+    ) -> Self {
+        let atoms = atoms.into_iter().collect::<Vec<_>>();
+        let mut capture_counts = PathMap::new();
+        for atom in &atoms {
+            if let RhoPathQueryAtom::Capture(id) = atom {
+                let path = id.path();
+                let count = capture_counts.get(path).copied().unwrap_or(0u32);
+                capture_counts.insert(path, count.saturating_add(1));
+            }
+        }
+        let atoms = atoms
+            .into_iter()
+            .map(|atom| match atom {
+                RhoPathQueryAtom::Exact(bytes) => {
+                    let mut inner_frame = Vec::with_capacity(bytes.len() + 2);
+                    append_frame(&mut inner_frame, &bytes);
+                    let mut stored_frame = Vec::with_capacity(inner_frame.len());
+                    append_frame_prefix(&mut stored_frame, &inner_frame);
+                    CompiledRhoPathQueryAtom::Exact {
+                        inner_frame,
+                        stored_frame,
+                    }
+                }
+                RhoPathQueryAtom::Capture(id)
+                    if capture_counts.get(id.path()).copied().unwrap_or(0) > 1 =>
+                {
+                    CompiledRhoPathQueryAtom::Capture(id)
+                }
+                RhoPathQueryAtom::Capture(_) | RhoPathQueryAtom::Wildcard => {
+                    CompiledRhoPathQueryAtom::Wildcard
+                }
+            })
+            .collect();
+        Self {
+            atoms,
+            accepts_remainder,
+        }
+    }
+
+    pub fn is_selective(&self) -> bool { !(self.atoms.is_empty() && self.accepts_remainder) }
+
+    pub fn matches_structure(&self, structure: &[u8]) -> bool {
+        if structure.first() != Some(&1) {
+            return false;
+        }
+        let mut cursor = 1usize;
+        let mut captures: PathMap<Vec<u8>> = PathMap::new();
+        for atom in &self.atoms {
+            let frame = match take_frame(structure, &mut cursor) {
+                Ok(frame) => frame,
+                Err(_) => return false,
+            };
+            match atom {
+                CompiledRhoPathQueryAtom::Exact { inner_frame, .. } => {
+                    if frame != inner_frame {
+                        return false;
+                    }
+                }
+                CompiledRhoPathQueryAtom::Capture(id) => {
+                    let path = id.path();
+                    match captures.get(path) {
+                        Some(previous) if previous.as_slice() != frame => return false,
+                        Some(_) => {}
+                        None => {
+                            captures.insert(path, frame.to_vec());
+                        }
+                    }
+                }
+                CompiledRhoPathQueryAtom::Wildcard => {}
+            }
+        }
+        if !self.accepts_remainder {
+            return cursor == structure.len();
+        }
+        while cursor < structure.len() {
+            if take_frame(structure, &mut cursor).is_err() {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub(crate) fn atoms(&self) -> &[CompiledRhoPathQueryAtom] { &self.atoms }
+
+    pub(crate) const fn accepts_remainder(&self) -> bool { self.accepts_remainder }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StoredSequenceFrameStep {
+    NeedMore,
+    Complete,
+    Invalid,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct StoredSequenceFrameScanner {
+    outer_escape: bool,
+    inner_escape: bool,
+}
+
+impl StoredSequenceFrameScanner {
+    pub(crate) fn feed(&mut self, byte: u8) -> StoredSequenceFrameStep {
+        if self.outer_escape {
+            self.outer_escape = false;
+            return match byte {
+                ESCAPED_ZERO => self.feed_inner(ESCAPE),
+                FRAME_END => StoredSequenceFrameStep::Invalid,
+                _ => StoredSequenceFrameStep::Invalid,
+            };
+        }
+        if byte == ESCAPE {
+            self.outer_escape = true;
+            StoredSequenceFrameStep::NeedMore
+        } else {
+            self.feed_inner(byte)
+        }
+    }
+
+    fn feed_inner(&mut self, byte: u8) -> StoredSequenceFrameStep {
+        if self.inner_escape {
+            self.inner_escape = false;
+            return match byte {
+                ESCAPED_ZERO => StoredSequenceFrameStep::NeedMore,
+                FRAME_END => StoredSequenceFrameStep::Complete,
+                _ => StoredSequenceFrameStep::Invalid,
+            };
+        }
+        if byte == ESCAPE {
+            self.inner_escape = true;
+        }
+        StoredSequenceFrameStep::NeedMore
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RhoPathError {

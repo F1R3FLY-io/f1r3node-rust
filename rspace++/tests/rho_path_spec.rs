@@ -1,5 +1,8 @@
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
-use rspace_plus_plus::rspace::rho_path::{RhoPathError, RhoPathV1, encode_structural_sequence};
+use rspace_plus_plus::rspace::rho_path::{
+    RhoPathCaptureId, RhoPathError, RhoPathQuery, RhoPathQueryAtom, RhoPathV1,
+    encode_structural_sequence,
+};
 
 #[test]
 fn datum_paths_round_trip_all_byte_values() {
@@ -36,6 +39,52 @@ fn structural_sequences_are_injective() {
     let empty = encode_structural_sequence(std::iter::empty());
     assert_ne!(one, other);
     assert_ne!(one, empty);
+}
+
+#[test]
+fn structural_queries_match_exact_wildcard_coreference_and_remainder_cases() {
+    let capture = RhoPathCaptureId::new(7);
+    let coreferential = RhoPathQuery::structural_sequence(
+        [
+            RhoPathQueryAtom::Capture(capture),
+            RhoPathQueryAtom::Exact(vec![0, 1, 255]),
+            RhoPathQueryAtom::Capture(capture),
+        ],
+        false,
+    );
+    let matching =
+        encode_structural_sequence([[0, 9].as_slice(), [0, 1, 255].as_slice(), [0, 9].as_slice()]);
+    let unequal_capture =
+        encode_structural_sequence([[0, 9].as_slice(), [0, 1, 255].as_slice(), [0, 8].as_slice()]);
+    let wrong_exact =
+        encode_structural_sequence([[0, 9].as_slice(), [0, 1, 254].as_slice(), [0, 9].as_slice()]);
+    assert!(coreferential.matches_structure(&matching));
+    assert!(!coreferential.matches_structure(&unequal_capture));
+    assert!(!coreferential.matches_structure(&wrong_exact));
+
+    let remainder = RhoPathQuery::structural_sequence(
+        [RhoPathQueryAtom::Wildcard, RhoPathQueryAtom::Exact(vec![2])],
+        true,
+    );
+    assert!(remainder.matches_structure(&encode_structural_sequence([
+        [1].as_slice(),
+        [2].as_slice(),
+        [3].as_slice(),
+        [4].as_slice(),
+    ])));
+    assert!(!remainder.matches_structure(&encode_structural_sequence([
+        [1].as_slice(),
+        [3].as_slice(),
+        [2].as_slice(),
+    ])));
+}
+
+#[test]
+fn structural_queries_reject_malformed_framing() {
+    let query = RhoPathQuery::structural_sequence([RhoPathQueryAtom::Wildcard], true);
+    assert!(!query.matches_structure(&[]));
+    assert!(!query.matches_structure(&[1, 0]));
+    assert!(!query.matches_structure(&[1, 0, 2]));
 }
 
 #[test]
