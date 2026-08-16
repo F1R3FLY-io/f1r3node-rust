@@ -2428,13 +2428,18 @@ the verdict axis.
 - the corrected produce-driven benchmark passes all six exact-ground treatment pairs: **18.8–30.8%
   lower latency** and **23.2–44.6% higher throughput**, 51 samples per arm at 99% confidence.
   **MEASURED.** This is performance evidence only; it cannot discharge the verdict/post-state axes.
+- the resting-data benchmark improves throughput by **43.9–55.0%** at 16 entries, **12.39–13.30×**
+  at 256, and **239–259×** at 4,096, but regresses **7.1–11.4%** at one entry; all arms use 51
+  samples at 99% confidence. **MEASURED.** The crossover is performance evidence only and leaves the
+  semantic superset obligation unchanged.
 
 This entry retires as `OPTIMIZATION_MEASURED_NEUTRAL` only after the campaign's generated
 old-selector/new-selector differential covers every eligible and fallback `BindPattern` family,
 play/replay traces and post-state roots agree over generated schedules, and the formal superset
 obligation proves that filtering cannot remove the first admissible candidate. The retained-receive
-throughput pair has passed; the paired resting-data benchmark remains pending an interference-free
-host window. Timing cannot close a consensus obligation in either direction.
+throughput pair has passed; the resting-data curve passes from 16 through 4,096 entries and exposes
+an open one-entry fixed-cost regression. Timing cannot close a consensus obligation in either
+direction.
 
 ---
 

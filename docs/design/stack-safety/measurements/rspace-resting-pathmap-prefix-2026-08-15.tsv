@@ -1,0 +1,22 @@
+# SS-A11 resting-data PathMap prefix-pruning measurements.
+# Times are Criterion slope estimates and 99% confidence intervals. Percentage changes compare the PathMap point estimate with control at equal prefix shape and distinct resting-data cardinality; negative latency and positive throughput changes are improvements.
+# Host: AMD Ryzen Threadripper PRO 5975WX, 32 physical cores, SMT disabled. Scheduler affinity was unrestricted; approximately 6/32 cores were occupied at preflight, below the user-approved stop threshold of 30 occupied cores.
+# Command: systemd-run --user --wait --collect --pipe --working-directory=/home/dylon/Workspace/f1r3fly.io/f1r3node-rust-mettail -p MemoryMax=5G -p MemorySwapMax=0 -p CPUQuota=3200% env CARGO_BUILD_JOBS=32 cargo bench -p rspace_plus_plus --bench rspace_comm -- distinct_
+# Criterion: 51 samples, 2 s warm-up, 5 s requested measurement time, 99% confidence, 1% significance. Scope runtime 3 min 2.697 s; CPU time 5 min 48.628 s; scope peak 1.5 GiB including compilation; zero swap.
+date	production_commit	harness_commit	pgmcp_run_id	prefix_shape	arm	resting_distinct	lower_ns	estimate_ns	upper_ns	latency_change_percent	throughput_change_percent	memory_max_mib	scope_peak_mib	swap_max_mib	cpu_affinity	result
+2026-08-15	564dac0b4	564dac0b4	dd32894e-5dd8-4992-9a26-b91aff58952e	diverse	control	1	2976.483	2988.138	3000.412	0.000	0.000	5120	1536	0	unrestricted	pass
+2026-08-15	564dac0b4	564dac0b4	67abbe42-913f-4b66-9b06-363f4526907c	diverse	pathmap	1	3206.497	3216.357	3232.650	7.638	-7.096	5120	1536	0	unrestricted	regression
+2026-08-15	564dac0b4	564dac0b4	6d853649-c910-46a5-a72e-2ee2e527ba92	diverse	control	16	4935.809	4954.815	4974.387	0.000	0.000	5120	1536	0	unrestricted	pass
+2026-08-15	564dac0b4	564dac0b4	bbf31a94-62fe-433b-833c-0d0756dec809	diverse	pathmap	16	3428.317	3443.016	3459.374	-30.512	43.909	5120	1536	0	unrestricted	pass
+2026-08-15	564dac0b4	564dac0b4	4d70522c-653b-4a88-9dd5-b51ddf204bae	diverse	control	256	43214.298	43506.300	43905.689	0.000	0.000	5120	1536	0	unrestricted	pass
+2026-08-15	564dac0b4	564dac0b4	f298bce2-dab9-47bc-a20b-05f991205ea6	diverse	pathmap	256	3481.916	3511.089	3541.332	-91.930	1139.111	5120	1536	0	unrestricted	pass
+2026-08-15	564dac0b4	564dac0b4	ebfd5fd8-f0f0-4d5d-801e-965d17e1c4f9	diverse	control	4096	996822.365	1002123.756	1007322.227	0.000	0.000	5120	1536	0	unrestricted	pass
+2026-08-15	564dac0b4	564dac0b4	bdaf193b-f48c-48e7-979e-9aa61b8047a5	diverse	pathmap	4096	3840.379	3870.300	3899.819	-99.614	25792.663	5120	1536	0	unrestricted	pass
+2026-08-15	564dac0b4	564dac0b4	0c46010f-991e-464e-acd7-659858a07895	shared	control	1	3021.810	3045.531	3072.872	0.000	0.000	5120	1536	0	unrestricted	pass
+2026-08-15	564dac0b4	564dac0b4	47b7ada6-7987-4e22-a50d-9ea200b7449c	shared	pathmap	1	3430.825	3436.627	3444.338	12.842	-11.380	5120	1536	0	unrestricted	regression
+2026-08-15	564dac0b4	564dac0b4	f1d2ace9-bab9-42fb-a808-dafa67991d8d	shared	control	16	5479.335	5534.697	5592.324	0.000	0.000	5120	1536	0	unrestricted	pass
+2026-08-15	564dac0b4	564dac0b4	1abdc00e-db66-4651-8a96-6c75aafb85ad	shared	pathmap	16	3565.348	3571.345	3577.971	-35.474	54.975	5120	1536	0	unrestricted	pass
+2026-08-15	564dac0b4	564dac0b4	650899e8-6957-4c31-a2f6-de3f3c2353ed	shared	control	256	48057.887	48464.943	49004.278	0.000	0.000	5120	1536	0	unrestricted	pass
+2026-08-15	564dac0b4	564dac0b4	cc18f55b-92ce-4a72-850d-439796adf4d3	shared	pathmap	256	3640.307	3643.905	3649.477	-92.481	1230.027	5120	1536	0	unrestricted	pass
+2026-08-15	564dac0b4	564dac0b4	e406816f-d1f6-499c-afe7-0e3158b8c483	shared	control	4096	952556.306	954434.318	956698.950	0.000	0.000	5120	1536	0	unrestricted	pass
+2026-08-15	564dac0b4	564dac0b4	b7d967fd-bad1-4f52-8171-68fc52fb294c	shared	pathmap	4096	3986.093	3992.926	3999.130	-99.582	23803.131	5120	1536	0	unrestricted	pass

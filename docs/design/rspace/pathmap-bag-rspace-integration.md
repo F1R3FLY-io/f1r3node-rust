@@ -53,9 +53,9 @@ The layout experiment remains open until the preregistered A/B/C comparison sele
 | Shared canonical candidate catalogs | `2eb0d3871` | one canonical order and one lazy decode cell per distinct record across channel-pool snapshots; multiplicity-only updates do not rebuild the catalog | implemented |
 | Single-lookup hot-store reads | `d50b1183d` | one encoded prefix and one loaded-store read lock per hot pool/data lookup; final performance verdict remains pending | implemented |
 | Retained receive automaton, exact-ground slice | `a89cbc294`, `f149cef2b`, `ea8c39f92`; benchmark `7bc5c6994`; pgmcp `rspace-retained-set-automaton` | one `PathMap<TerminalId>` transition segment per bind position; fixed-width terminal/candidate identifiers; root fallback terminals; group-local versioning; no trie clone on cache hits; 3/3 automaton, 2/2 lifecycle, 3/3 Rholang path, and 41/41 RSpace action tests; valid end-to-end treatment is 18.8–30.8% lower latency | implemented, equivalence campaign open |
-| Resting-datum structural-prefix pruning | `564dac0b4`; pgmcp `rspace-pattern-over-pathmap` | one fixed-width `PathMap<CandidatePosition>` catalog index; native zipper prefix cuts before decode; canonical order restored before the spatial oracle; 4/4 focused and 64 generated differential corpora pass | implemented exact-ground slice; full product/equivalence campaign open |
+| Resting-datum structural-prefix pruning | `564dac0b4`; pgmcp `rspace-pattern-over-pathmap` | one fixed-width `PathMap<CandidatePosition>` catalog index; native zipper prefix cuts before decode; canonical order restored before the spatial oracle; 4/4 focused and 64 generated differential corpora pass; throughput improves 43.9–55.0% at 16 entries and 239–259× at 4,096, while the one-entry fixed-cost case regresses 7.1–11.4% | implemented exact-ground slice; single-entry fast path and full product/equivalence campaign open |
 | Direct automaton/Bag product walk | pgmcp `rspace-pattern-over-pathmap` | the fresh-datum path uses an iterative automaton zipper and the resting path now cuts one indexed structural-prefix subtrie; a direct retained-automaton/authoritative-Bag zipper product is not yet implemented | next implementation stage |
-| Layout selection and performance verdict | pgmcp experiment 208 | retained-receive slice passes its preregistered five-percent throughput threshold at 99% confidence; direct product, full workload matrix, allocations, and final layout selection remain open | partial measurement accepted |
+| Layout selection and performance verdict | pgmcp experiment 208 | retained-receive slice passes its preregistered five-percent throughput threshold at 99% confidence; resting-data pruning passes from 16 through 4,096 entries but exposes a one-entry regression; direct product, full workload matrix, allocations, and final layout selection remain open | partial measurement accepted |
 
 At `564dac0b4`, each exact channel produces a `CandidatePool`. Its semantic residual is a
 channel-local `Bag`, obtained as a copy-on-write PathMap subtrie through a read zipper. Pools share a
@@ -264,14 +264,21 @@ The implementation evidence available at this checkpoint is:
 | RSpace action suite with indexing enabled | 41/41 | consume/produce, joins, repeated channels, persistence, checkpoint, reset, and soft-revert behavior remain unchanged |
 | resting-datum prefix pruning | 4/4 plus 64 generated corpora | worst-order 256-candidate witness reduces spatial calls from 256 to 1; embedded-zero framing and prefix false positives are accepted correctly; full-scan and indexed result, event trace, and post-state maps agree |
 | waiting-receive COMM throughput | 6/6 treatment pairs pass | 51 samples per arm at 99% confidence; 23.2–44.6% more completed COMMs/s; intervals are disjoint |
+| resting-data COMM throughput | 6/8 treatment pairs improve; 2/8 expose a fixed-cost regression | at 16/256/4,096 distinct entries, throughput improves 43.9–25,792.7% and every interval is disjoint; at one entry, throughput falls 7.1% (diverse) and 11.4% (shared) |
 | modified libraries and benchmark target strict lint | pass | focused `-D warnings` lint passes; the all-test-target lint remains blocked only by three pre-existing `vec_init_then_push` findings in `consume_arity_refusal.rs` |
 | formatter and all changed test/benchmark target compilation | pass | both libraries, their tests, and their benchmark targets compile after the retained-automaton integration |
 
-These gates establish the exact-ground retained-receive slice and the correctness of the first
-resting-datum prefix cut, but they do not select the final end-to-end RSpace layout. The paired
-resting-datum benchmark is committed but deliberately unmeasured while another worktree is running
-a release Rust build; this report therefore makes no latency or allocation claim for that slice.
-Experiment 208 remains open for the direct product, full workload matrix, and resource profiles.
+These gates establish the exact-ground retained-receive slice and the correctness and measured
+scaling behavior of the first resting-datum prefix cut, but they do not select the final end-to-end
+RSpace layout. The resting-data matrix measured 51 samples per arm at 99% confidence. PathMap
+throughput is 43.9–55.0% higher at 16 entries, 12.39–13.30 times control at 256, and 239–259 times
+control at 4,096. The one-entry case is instead 7.1–11.4% slower, identifying fixed index-query and
+sorting overhead that must be removed or bypassed before final selection. Raw estimates and pgmcp
+run identifiers are recorded in
+[`rspace-resting-pathmap-prefix-2026-08-15.tsv`](../stack-safety/measurements/rspace-resting-pathmap-prefix-2026-08-15.tsv).
+Experiment 208 remains open for that small-pool repair, the direct product, the full workload
+matrix, and resource profiles; the scope-wide 1.5 GiB peak includes release compilation and is not
+an allocation-per-COMM measurement.
 
 ## Verification ladder
 

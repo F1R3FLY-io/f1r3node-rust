@@ -3296,6 +3296,7 @@ swap, and two-core CPU quota**. **MEASURED:**
 | RSpace actions with retained indexing enabled | same 41-case semantic corpus | **41/41** | consume/produce, joins, persistence, checkpoint, reset, and soft-revert |
 | resting-datum structural-prefix pruning | full canonical scan | **4/4 plus 64 generated corpora** | 256-to-1 spatial-call witness, embedded-zero framing, prefix false-positive oracle check, and identical result/event/post-state maps |
 | retained waiting-receive throughput | full canonical candidate scan | **23.2–44.6% more COMMs/s** | six treatment pairs; 51 samples/arm; 99% confidence; 16/256/4,096 receives; diverse/shared prefixes |
+| resting-data prefix throughput | full canonical candidate scan | **43.9–55.0% more COMMs/s at 16; 12.39–13.30× at 256; 239–259× at 4,096** | eight treatment pairs; 51 samples/arm; 99% confidence; the one-entry arms instead regress 7.1–11.4% and remain an open fast-path target |
 | exact source census | 574 recursive components before this conversion | **572** after the PDA; then **566 recursive / 42 term-family / 19 mutual / 25 production files** after relocating recursive oracles; current **566 / 41 / 18 / 24** after the fused evaluator cycle disappeared and its stale disposition was retired | `handwritten_recursion_census`, 5/5; independent normalizer control 31 members $`\geq`$ 26 required |
 
 At the initial SS-A11 checkpoint, the guarded-search workload retained its expected algorithmic counts: the 1,000-datum single-bind
@@ -3328,10 +3329,18 @@ throughput hypothesis therefore passes for this exact-ground slice; direct autom
 construction cost, allocations, and the broader workload matrix remain open. The recorded estimates
 are [`measurements/rspace-retained-pathmap-prefilter-2026-08-15.tsv`](measurements/rspace-retained-pathmap-prefilter-2026-08-15.tsv).
 
-The paired resting-datum control/PathMap benchmark is present at `564dac0b4` but has not yet been
-admitted to the measurement ledger. A concurrent release build in another f1r3node worktree failed
-the host preflight, so running it would not produce comparable evidence. The correctness witnesses
-above are valid; no latency, allocation, or throughput conclusion is claimed for this second slice.
+The paired resting-datum control/PathMap benchmark at `564dac0b4` is now admitted to the measurement
+ledger. The run used 51 samples per arm at 99% confidence under a 5 GiB no-swap scope on the
+32-physical-core host. Approximately six cores were occupied at preflight, below the user-approved
+stop threshold of 30; scheduler affinity was unrestricted. Treatment throughput is **43.9–55.0%
+higher** at 16 distinct entries, **12.39–13.30 times** control at 256, and **239–259 times** control
+at 4,096. Every treatment interval at those sizes is disjoint from control. At one entry the result
+reverses: treatment throughput is **7.1% lower** for diverse and **11.4% lower** for shared prefixes,
+also with disjoint intervals. The crossover supports structural prefix pruning for nontrivial pools
+but rejects a blanket “never regresses” claim; a single-entry bypass or lower-fixed-cost query must
+be tested before final layout selection. The scope's 1.5 GiB peak includes compilation and therefore
+does not establish allocation or steady-state RSS. Raw estimates are
+[`measurements/rspace-resting-pathmap-prefix-2026-08-15.tsv`](measurements/rspace-resting-pathmap-prefix-2026-08-15.tsv).
 
 ##### 5.16.5.5 What it cost
 
@@ -3353,8 +3362,10 @@ For a resting exact-ground pattern, the indexed scan allocates one heap vector c
 matching prefix's fixed-width catalog positions and sorts it in $`O(m \log m)`$, where $`m`$ is the
 number of prefix candidates, before the final spatial checks. The full-scan control is $`O(n)`$ in
 distinct channel records. Native-stack use remains $`O(1)`$ in both cases because the zipper and PDA
-are iterative. Whether the heap collection/sort is preferable to a direct ordered zipper product is
-an open measured question, not a settled optimization claim.
+are iterative. The admitted curve shows that this collection/sort decisively wins once the pool has
+16 entries in the tested worst-order workloads, but its fixed cost loses at one entry. Whether a
+small-pool bypass or a direct ordered zipper product gives the best general crossover remains an
+open measured question, not a settled optimization claim.
 
 ##### 5.16.5.6 What is still recursive
 
