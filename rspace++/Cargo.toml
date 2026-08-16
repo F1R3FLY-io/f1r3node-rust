@@ -69,3 +69,7 @@ metrics-util = "0.17"
 [[bench]]
 name = "rspace_comm"
 harness = false
+
+[[bench]]
+name = "bag"
+harness = false
