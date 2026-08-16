@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
@@ -65,7 +64,6 @@ impl ReportingCasper for NoopReportingCasper {
 /// Real implementation using RhoReporter
 pub struct RhoReporterCasper {
     rspace_store: RSpaceStore,
-    block_store: KeyValueBlockStore,
     block_dag_storage: BlockDagKeyValueStorage,
     external_services: rholang::rust::interpreter::external_services::ExternalServices,
 }
@@ -94,16 +92,6 @@ impl ReportingCasper for RhoReporterCasper {
             .block_dag_storage
             .get_representation()
             .map_err(|e| format!("Failed to get DAG representation: {}", e))?;
-
-        let genesis = self
-            .block_store
-            .get_approved_block()
-            .map_err(|e| format!("Failed to get approved block: {}", e))?;
-
-        let is_genesis = genesis
-            .as_ref()
-            .map(|g| block.block_hash == g.candidate.block.block_hash)
-            .unwrap_or(false);
 
         let invalid_blocks_set = dag.invalid_blocks();
 
@@ -135,7 +123,7 @@ impl ReportingCasper for RhoReporterCasper {
             &pre_state_hash,
             &block.body.deploys,
             &block.body.system_deploys,
-            !is_genesis,
+            with_cost_accounting(&block.header.parents_hash_list),
             &block_data,
             seen_invalid_blocks,
         )
@@ -264,17 +252,19 @@ pub fn noop() -> Arc<dyn ReportingCasper> { Arc::new(NoopReportingCasper) }
 /// Factory function to create rho reporter with real reporting capability
 pub fn rho_reporter(
     rspace_store: &RSpaceStore,
-    block_store: &KeyValueBlockStore,
     block_dag_storage: &BlockDagKeyValueStorage,
     external_services: rholang::rust::interpreter::external_services::ExternalServices,
 ) -> Arc<dyn ReportingCasper> {
     Arc::new(RhoReporterCasper {
         rspace_store: rspace_store.clone(),
-        block_store: block_store.clone(),
         block_dag_storage: block_dag_storage.clone(),
         external_services,
     })
 }
+
+/// Genesis is the only block without parents, and it replays without cost
+/// accounting because no precharge or refund system deploy is wrapped around it.
+fn with_cost_accounting(parent_hashes: &[prost::bytes::Bytes]) -> bool { !parent_hashes.is_empty() }
 
 /// ReportingRuntime wraps RhoRuntimeImpl with ReportingRspace to enable event collection
 pub struct ReportingRuntime {
@@ -410,5 +400,18 @@ impl ReportingRuntime {
             runtime,
             space: reporting_space,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn genesis_deploys_are_not_cost_accounted() {
+        assert!(!with_cost_accounting(&[]));
+        assert!(with_cost_accounting(&[prost::bytes::Bytes::from_static(
+            b"parent",
+        )]));
     }
 }
