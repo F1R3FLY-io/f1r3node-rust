@@ -4640,11 +4640,48 @@ test-only consensus path is part of the repair.
 | Physical allocation is stack-safe and semantically identical | 4,096-event allocator regression and unchanged high-fanout play/replay stress test | mixed-event exact-debit/order proptest; Rocq `worklist_solutions_refine_recursive` and canonical-first theorem; TLA+ independent allocator interleavings | `PhysicalSettlementWorklistRecursiveUnsafe.cfg` must violate `NativeStackBound` |
 | Certified promotion preserves every committed state transition while distinguishing causal and state support | `finalizer_rejects_dag_descendant_without_state_lineage` proves a stale candidate passes both exact certificates before the current-LFB gate rejects it; `causal_merge_vote_cannot_certify_a_rejected_parent_state` and `finalizer_rejects_causal_certificate_without_state_support` prove a rejected parent passes the original causal certificate but fails the state certificate; the real conflicting-deploy replay regression proves the successor uses the finalized value | state-frontier/state-support proptests; Rocq `finalized_floor_state_lineage_correct` and `finalized_floor_state_support_refines_causal_certificate`; complete 144-state two-validator TLC state space; Apalache safe check through bound 8 | `MC_StateLineageFinality_unsafe.cfg` must violate `Inv_AllCommittedStatesRemainInLineage`; `MC_StateLineageFinality_state_support_unsafe.cfg` must promote the rejected parent and violate `Inv_NoUnsupportedStateFloor` |
 | Finite located OSLF checking preserves the evidence boundary | `accounting/oslf.rs` examples and disjoint-surface property test; generic `OslfResourceLogic<G>` conformance; native Rho candidate-supply regression | Rocq `CAOSLFSpatialModal.v` and extended `GSLTOSLFCapstone.v`; TLC safe model; Apalache safe check through both independent spends | five unsafe configurations must violate linear no-contraction, linear no-weakening, location isolation, modal-evidence soundness, or authenticated-funding-only respectively |
+| Verification scratch has one aggregate owner and never consumes host tmpfs after the run | `check-cost-accounted-rho-scratch.sh` creates a leaked-LMDB-shaped child in a subprocess that exits with an error and asserts the exit trap removes it | deletion-target guard rejects the scratch parent itself; the umbrella exports its owned repository-backed `TMPDIR` to every child gate | retaining any `tmp.*` child or accepting the parent as a cleanup target fails the gate |
 
 The aggregate proof gate compiles every Rocq theory, runs `rocqchk`, prints the
 assumptions of each headline theorem, and rejects admitted statements or
 incompletion markers. The TLA+ runner requires both the safe models and the
 named counterexamples; an unsafe configuration that unexpectedly passes is a
 failed verification run.
+
+### D.3 Verification scratch lifetime
+
+The aggregate runner owns one verification scratch directory below
+`target/verification/cost-accounted-rho/` and exports it as `TMPDIR` before it
+starts any child gate. A **verification scratch directory** is disposable
+storage used by compilers, model checkers, and test-only LMDB environments; it
+is not a protocol artifact or retained proof result. The runner removes that
+directory through its exit trap after success, failure, or an interrupt.
+
+This ownership boundary is required because Casper's integration-test support
+shares one LMDB environment per test process. The environment path is retained
+by a process-global value so every test in that process can reuse the same
+named databases. Process-global Rust values are not destructed at process
+termination, so relying on the `TempDir` destructor leaks one directory per
+test binary. Without an aggregate owner, a complete verification campaign can
+therefore retain gigabytes in the host's default temporary filesystem. On a
+machine where `/tmp` is `tmpfs`, that retained data consumes RAM and can turn a
+normally bounded finalizer regression into an apparent liveness failure.
+
+The resource contract is consequently:
+
+1. the aggregate runner creates the scratch root on repository-backed storage;
+2. every child inherits the exact same `TMPDIR` unless it creates and cleans a
+   stricter nested directory;
+3. test processes may share LMDB state only within their own process lifetime;
+4. the aggregate runner removes the complete scratch tree after all children
+   terminate;
+5. persistent logs and proof outputs remain under their named `target/`
+   directories, outside the disposable tree.
+
+The finalizer's causal clique calculation, state-preserving certificate, and
+majority threshold are intentionally unchanged by this resource repair. The
+complete-candidate regression must pass with the same selected block in a
+fresh repository-backed scratch directory; no timeout, candidate cap, reduced
+history, or relaxed certificate is an acceptable substitute.
 
 *E Pluribus Potentia*

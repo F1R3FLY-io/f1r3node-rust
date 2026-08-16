@@ -9,6 +9,8 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SELF="$(basename "${BASH_SOURCE[0]}")"
+source "$ROOT/scripts/lib/verification-tmpdir.sh"
+verification_tmpdir_install "$ROOT/target/verification/cost-accounted-rho"
 
 heavy_re='check-cost-accounted-rho-(proofs|lean)\.sh$'
 
