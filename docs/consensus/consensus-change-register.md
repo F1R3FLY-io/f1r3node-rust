@@ -594,7 +594,7 @@ is a *future* fork, not a present one).
 | [CBR-042](#cbr-042) | N | …and on the **bincode** wire too — `U(m)` verbatim and contiguous, then the values (FORM ②), so the reader never decodes a trie key | `3a32cf07` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-043](#cbr-043) | N | …but of **the entries that surface WRITES**. FORM ② keyed lf-blanked values by the *unblanked* entries, putting an entry's `locally_free` on the event hash | `8cf0b770` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-044](#cbr-044) | N | EPathMap becomes a homogeneous PathMap set/map and both codecs carry one versioned EPM1 trie snapshot; generated protobuf PDAs remove the read ceiling | `26876b65` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
-| [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`; benchmark `7bc5c6994` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
+| [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`; benchmark `7bc5c6994` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
 | [CBR-L07](#cbr-l07) | L | `List.last()` in MeTTaIL's Rholang | `bbceb6d9`, `6e543c01` | · | · | · | · | · | ● | · | PERMISSIVE | **W** |
 | [CBR-L08](#cbr-l08) | L | The kv element-category gate — a Name in a kv slot is refused, not silently dropped | *in flight* | ● | ● | ● | ● | ● | ● | ○ | REGRESSIVE | **W** |
 | [CBR-L10](#cbr-l10) | L | A pathmap's entries come from a projection, not a field | `832d510f` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
@@ -2322,11 +2322,11 @@ Legacy protobuf fields are read-only migration inputs; removing them is a later 
 
 | | |
 |---|---|
-| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`; benchmark `7bc5c6994` |
+| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`; benchmark `7bc5c6994` |
 | Status | LANDED ON CAMPAIGN BRANCH; VERIFICATION OPEN |
 | Direction | UNVERIFIED |
 | Evidence grade | UNVERIFIED |
-| Files | `rspace++/src/rspace/{data_index.rs,match.rs,hot_store.rs,retained_set_automaton.rs,rho_path.rs,rspace.rs,space_matcher.rs}`, `models/src/rust/rholang/{match_path.rs,match_schema.rs}`, `rholang/src/rust/interpreter/matcher/match.rs` |
+| Files | `rspace++/src/rspace/{data_index.rs,match.rs,hot_store.rs,retained_set_automaton.rs,rho_path.rs,rspace.rs,space_matcher.rs}`, `models/src/rust/rholang/{match_path.rs,match_schema.rs}`, `rholang/src/rust/interpreter/matcher/{match.rs,spatial_matcher_pda.rs}` |
 
 #### (a) The issue
 
@@ -2399,6 +2399,18 @@ ESet/EMap remainders subtract the term-consumed Bag from the target Bag, materia
 positions solely to preserve predecessor order. This changes neither codecs nor the spatial
 verdict authority. It strengthens multiplicity conservation but does not discharge a possible
 generated-query false negative, so CBR-053 remains `UNVERIFIED`.
+
+Checkpoint `bbe91b90f` extends the same conservative derived index to every unordered `Par` field
+root. Generated RMP1 structure and the existing one-walk stack-safe canonical-bincode encoder give
+`Send`, `Receive`, `New`, `Expr`, `Match`, `Bundle`, `GUnforgeable`, and `ReceiveBind` exact Bag
+identities. Dynamic receives deliberately remain on the full domain because their binds are AC
+while the generated protobuf cursor is ordered. A width-128 Send differential evaluates 128 edges
+instead of 16,384 possible pairs and agrees with the recursive oracle on all bindings. Checkpoint
+`3a70ddc58` records visitation of byte-identical targets as Bag multiplicities while preserving the
+predecessor position order; an all-distinct target keeps the smaller position bitmap because it has
+no multiplicity to compress. These refinements change neither candidate order nor the spatial
+verdict authority, but their generated-query superset premise is still consensus-relevant.
+CBR-053 therefore remains `UNVERIFIED`.
 
 Checkpoint `e1a587c9f` applies that same structural-query contract to datum-first lookup. A supported
 waiting pattern is retained at its longest exact prefix in the existing
@@ -2508,6 +2520,14 @@ the verdict axis.
   changed production libraries compile and pass strict lint under 8 GiB/zero-swap scopes.
   Competing host `rustc` processes invalidate this window for comparative benchmarking, so these
   gates make no latency, throughput, or RSS claim. **MEASURED.**
+- generalized AC Bag authority at `bbe91b90f` and `3a70ddc58`: the focused matcher-library group
+  passes **18/18** after every unordered `Par` field root receives an exact stack-safe identity and
+  conservative query lane; the new width-128 Send control performs **128** successful edges from
+  16,384 possible pairs and agrees with the recursive oracle on all bindings. The duplicate and
+  permutation differential plus the semantic corpus pass with multiplicity-native visitation, and
+  the 51-sample displacement schedule remains **16,257** treatment edges versus **699,263** nominal
+  calls. Competing pgmcp and `rustc` workloads make wall time and RSS inadmissible as comparative
+  evidence. **MEASURED for semantics/work counts; resource verdict OPEN.**
 - generated resting-data differential: **64 corpora** with identical selected result, RSpace event
   trace, and post-state maps under full and indexed scans. **MEASURED.**
 - both changed libraries plus all tests and benchmark targets compile under a **5 GiB** resident-set
