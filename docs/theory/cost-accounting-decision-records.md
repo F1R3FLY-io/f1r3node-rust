@@ -102,6 +102,12 @@ safety, rejected as the interface default (the explicit zero is spec-complete an
 
 ## DR-4 — Fee conversion via a conserving `Exchange(c,v)` contract
 
+**Status.** The conservation requirement and blessed two-sided Exchange remain
+normative. The former `F_v`, `Σ⟦v⟧`, `@W_v`, and close-block mirror realization
+described below is retired and superseded by DR-36 and DR-38. Native fees are an
+atomic, conserving SystemVault payer-to-proposer transfer; Exchange remains
+available for swaps of already-existing assets or authority carriers.
+
 **Decision.** Fees are converted through a Rholang `Exchange(c,v)` market-making contract: a **conserving
 1:1 swap** that consumes one `c`-token and one `v`-token and re-emits one of each with swapped remainders
 (extensible to variable rates / AMMs). The fee token is a client-signature token; converting it to
@@ -116,7 +122,8 @@ n_v!(*t_c) }}`, 1:1 peg).
 **Alternatives considered.** (a) Direct fee→stake bond increase — rejected: not what the spec's `Exchange`
 does (it requires both inputs); would also raise consensus weight over time (concentration risk).
 
-**Realization (Stage D).** Implemented as three layers (design `staged-fee-exchange.md`):
+**Historical realization (removed).** Stage D originally used three layers
+(design `staged-fee-exchange.md`):
 1. The blessed **`Exchange.rhox`** (registered at `rho:lang:exchange`) is the spec's conserving 1:1 swap as
    a persistent JOIN over ordinary **carrier** channels (`exchange_conserves_per_channel` /
    `exchange_total_conserved` / `exchange_requires_both_inputs` in `Exchange.v`). It is genesis-wired exactly
@@ -134,10 +141,9 @@ does (it requires both inputs); would also raise consensus weight over time (con
    is SEPARATE from the WD-D2 settlement debit (the burned COST). PoS owns only the conversion ELIGIBILITY
    (`active ∧ ¬mintingHalted ∧
    ¬convertedEpochs`) + `convertedEpochs` idempotency, publishing the eligible list on
-   `sys:casper:feeConvertList`. **Settled (DR-14, user-ratified): the OD-4 `@W_v` mirror is unnecessary; `Σ⟦v⟧`-only is the permanent,
-   spec-complete fee realization** — the convert credits the consensus pool `Σ⟦v⟧` only (the released form of
-   the single spec phlo location); the `@W_v` purse *amount* is operationally inert under the s₀-collapse, so
-   no `@W_v` fee-credit — and no Rust→PoS seam to perform it — is built. See DR-14.)
+   `sys:casper:feeConvertList`. DR-14 selected a `Σ⟦v⟧`-only mirror within that
+   now-retired architecture. DR-36 subsequently removed both the mirror and the
+   duplicated ledgers in favor of canonical SystemVault custody.
 
 ---
 
@@ -320,6 +326,13 @@ folded in as the staging order (the built-in is proven first as the reference).
 
 ## DR-13 — Per-signature supply is a balance datum on `Σ⟦s⟧ = from_sig(s)`, committed at acceptance
 
+**Status.** Retired storage realization, superseded by DR-36 through DR-38.
+Stable canonical signature identity, point-wise sufficiency, atomic rejection,
+and replay determinism remain normative. The separate `Σ⟦s⟧` balance datum,
+`produce_balance`, fee pool, and close-block settlement paths do not. Production
+supply is canonical SystemVault custody plus authenticated located `CostStack`
+cells, and settlement follows each retained native authority region.
+
 **Decision.** Token supply for a signature `s` is a **single balance-carrying datum** `(TOKEN_TAG, n)` on the
 unforgeable channel `SignatureChannel::from_sig(s)` (`Σ⟦s⟧`); `supply(s) = n` (0 if absent). It is written
 **only** by the Rust `sysAuthToken`-gated mint/settlement path (`produce_balance`), never from Rholang. The
@@ -330,8 +343,9 @@ Appendix B) is DISTINCT from the *supply pool* `Σ⟦v⟧`.
 
 **Spec basis.** §4.6 (per-`s` pool), Appendix A (`Σ⟦·⟧`, `K⟦s:S⟧ = send(Σ⟦s⟧, K⟦S⟧)`), Def 17 (`Σ_s` is a
 layer COUNT), §7.6 (compute `Σ` then accept), tex 1677-1729 (tokens *committed* at acceptance; "no
-interleaving of acceptance and execution"), Remark 11 (the s₀-collapse lifts the per-COMM gate to static
-analysis).
+interleaving of acceptance and execution"). Remark 11 defines the mathematical
+single-signature limit; DR-41 records why that limit is not the production
+settlement topology.
 
 **Rationale.** The balance is the spec's `Σ_s` count expressed in the runtime's existing normal form
 (`Token::Count{sig,remaining}`, accounting/mod.rs:1156-1164). A literal-message representation is O(n) per
@@ -400,6 +414,11 @@ minting contracts (ERC-20-style), unnecessary while the only authorized writer i
 
 ## DR-14 — `Σ⟦v⟧`-only fee realization is permanent and spec-complete (the `@W_v` fee-mirror is unnecessary)
 
+**Status.** Retired with the duplicated-ledger architecture it compared. DR-36
+supersedes this record's claim of permanence: neither `Σ⟦v⟧` nor `@W_v` is the
+native production fee ledger. Its still-valid conclusion is narrower—fee
+conversion must conserve value and must not create an unauthenticated mint.
+
 **Decision.** Stage D's fee→phlogiston conversion credits the per-signature supply pool `Σ⟦v⟧` ONLY (the
 load-bearing, gate-read pool). It does **not** credit the validator's `@W_v` draw wallet with the converted
 fee amount (the "OD-4 `@W_v` mirror"), and the project will **not** build the proposed `rho:casper:feeCount`
@@ -410,8 +429,9 @@ fee feedback loop. (User-ratified after an independent second-opinion Plan-agent
 (tex:2389-2392) — and `Σ⟦v⟧` (the spec's `n_v`) is the *released form* of that stack ("a token stack becomes
 a chain of sends … on the signature channel", tex:1906; released by `\drop{t}`, tex:1965). So "fees can be
 converted to replenish the phlogiston supply" (tex:3097-3098) is satisfied the moment `Σ⟦v⟧` is credited —
-`Σ⟦v⟧` *is* the supply. Under the adopted s₀-collapse (Remark 11, tex:1063-1071; §5; §6.4 block-validity is a
-*presence* predicate) the static acceptance gate (DR-11) against `Σ⟦v⟧` is the operative funding check.
+`Σ⟦v⟧` was treated as the supply. The former design interpreted Remark 11's
+mathematical single-signature limit as a production storage simplification; that
+interpretation is superseded by DR-36 and explicitly corrected by DR-41.
 
 **Rationale.** (1) *No-op:* the `@W_v` purse *amount* is read by nothing — every consumer reads presence, not
 quantity (VB `for(phlo<=@W_v){*phlo}` drops it with VH=nil; slash `for(_<-@W_v){Nil}` discards it; no
@@ -423,10 +443,9 @@ quantity plus a standing replay-rig fragility (the seed `produce` double-counts 
 is the landed code (zero new work, no new `RwLock`/system-process read, no contention). `@W_v` presence (the
 DR-3 halt anchor) continues to be maintained by the epoch mint.
 
-**When it would matter (and why it does not now).** The `@W_v` amount-mirror would be load-bearing ONLY under
-the spec's *literal* per-COMM measured-`VB`-draw model (where `@W_v`'s amount gates each draw). DR-11 rejected
-that model on O(n)-gate-read performance grounds in favor of the s₀-collapse. So the mirror is contingent on
-reverting a committed, spec-sanctioned decision — not a current obligation.
+**Historical scope.** The `@W_v` amount-mirror question applied only to the
+removed dual-ledger design. Native settlement now draws exact authority from
+SystemVault custody and located stack cells without either mirror.
 
 **Alternatives considered.** (a) *`Σ⟦v⟧`-only, permanent* — CHOSEN. (b′) a Rust-side fixed *presence* top-up of
 `@W_v` (no `f`, riding the existing `post_eval` seam) — viable if a literal "wallet replenished" artifact is
@@ -2063,6 +2082,82 @@ high-fanout `compute_state_should_just_work` play/replay test and the complete
 
 **Cross-refs.** DR-31, DR-32, DR-39, TM-CA-176, CA-P-036, CA-P-048,
 CA-P-059, CA-P-194, and UC-CA-171.
+
+## DR-41 — The $`s_0`$ limit is an embedding, not a production settlement mode
+
+**Context.** `cost-accounted-rho.tex` presents two related limit results. Giving
+every actor one distinguished signature $`s_0`$ collapses the spectral resource
+model to homogeneous phlogiston, and making that signature perpetually funded
+recovers pure rho reduction. Those results establish conservativity of the
+extended calculus. They do not prescribe that an F1R3node validator erase
+distinct signed regions, debit every communication from the deployment
+envelope, or maintain a second supply ledger beside SystemVault.
+
+Earlier staging records used “$`s_0`$ collapse” for all three ideas. That
+conflation made historical diagnostics appear normative after native
+`CostAuthority`, persistent `CostStack`, and exact physical settlement had
+landed.
+
+**Decision.** The mathematical $`s_0`$ embedding remains part of the formal
+correspondence. It is not a runtime flag, activation mode, funding fallback, or
+consensus storage design.
+
+- Every production user deployment enters the authority-accounting protocol.
+  An unsigned surface inherits its authenticated deployment payer.
+- An explicit signed region replaces that inherited payer within its lexical
+  scope. Ambient deployment custody cannot satisfy the region unless the
+  region's signature algebra explicitly presents the same authority.
+- `Sig::Unit` is the zero-demand multiplicative identity used by payer-less
+  bootstrap construction and low-level reducer tests. It cannot be serialized
+  as a physical stack cell and does not disable accounting around an explicit
+  region.
+- P8 balancing applies inside a compound funding presentation. It does not move
+  cost between independently located regions or collapse them into the outer
+  deployment payer.
+- Native settlement selects SystemVault balance and located-stack cells from
+  the complete authority of each committed atomic COMM. Play and replay bind
+  the same selection to the certificate, witness, and adjacent state roots.
+
+The production invariant for a committed event $`e`$ and an unrelated ambient
+purse $`p_a`$ is:
+
+```math
+p_a\notin\operatorname{purses}(e)
+\Longrightarrow
+\operatorname{debit}(e,p_a)=0.
+```
+
+For an explicit region with purse $`p_r`$, sufficiency is checked at $`p_r`$;
+an arbitrarily large balance at $`p_a`$ cannot make an underfunded $`p_r`$
+admissible.
+
+**Formal verification.** Rocq theorem
+`explicit_regions_do_not_debit_ambient_purse` proves the invariant for arbitrary
+region lists, plans, balances, and ambient purses. The existing
+`debit_preserves_unselected_purse`, `admitted_event_debits_exactly`, and
+`replay_preserves_purse_debit` theorems compose it with exact admission and
+replay. `LocatedAuthoritySettlement.tla` checks `NoAmbientAuthority`; its
+`AmbientPurseUnsafe` configuration must refute that invariant. The wallet-funded
+lollipop model independently refutes slot-to-envelope payer collapse.
+
+**Implementation verification.** The reducer regression
+`explicit_region_authority_overrides_the_deploy_default` installs a distinct
+default payer and proves that only the explicit region appears in the realized
+authority witness. The physical-allocation regression
+`explicit_region_cannot_spend_an_unrelated_default_balance` proves that an
+abundant default balance cannot fund the explicit region and that adding the
+matching located stack pops only that stack. Existing unit-authority,
+state-bound rollback, lollipop, cross-deploy, and replay tests cover the adjacent
+boundaries.
+
+**Supersession.** This record supersedes every production claim in DR-4,
+DR-13, DR-14, and their staging documents that calls envelope-only settlement
+the $`s_0`$ collapse. It does not supersede the papers' $`s_0`$ limit theorems or
+historical descriptions explicitly labeled as retired.
+
+**Cross-refs.** DR-24, DR-31, DR-32, DR-36 through DR-40, E2E-009A, E2E-022,
+E2E-026, `cost-accounting-as-monad-correspondence.md`, and
+`cost-accounting-impl/end-to-end-authority-settlement.md`.
 
 **Cross-refs.**
 [End-to-End Authority Settlement](cost-accounting-impl/end-to-end-authority-settlement.md),

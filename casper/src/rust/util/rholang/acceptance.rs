@@ -3419,8 +3419,8 @@ mod tests {
     /// signer's public key via [`pk_from_sig`], which the gate keys the supply
     /// pool `Σ⟦Ground(pk)⟧` by (`funding_sig`). The gate does not verify
     /// signatures, so an arbitrary label is sufficient to place the deploy into a
-    /// chosen group — two deploys sharing a label share a pk, hence a pool (the
-    /// s₀-collapse double-spend shape).
+    /// chosen group — two deploys sharing a label share a pk and therefore the
+    /// same default-payer oversubscription group.
     fn cosigned(term: &str, sig: &[u8], vabn: i64, ts: i64) -> Cosigned<DeployData> {
         let data = DeployData {
             term: term.to_string(),

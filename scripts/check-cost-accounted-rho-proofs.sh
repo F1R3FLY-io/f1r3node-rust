@@ -116,6 +116,7 @@ Print Assumptions funded_comm_debits_before_commit.
 Print Assumptions rejected_event_is_state_atomic.
 Print Assumptions admitted_event_debits_exactly.
 Print Assumptions debit_preserves_unselected_purse.
+Print Assumptions explicit_regions_do_not_debit_ambient_purse.
 Print Assumptions debit_conserves_each_purse.
 Print Assumptions admitted_settlement_conserves.
 Print Assumptions plan_permutation_preserves_authority.

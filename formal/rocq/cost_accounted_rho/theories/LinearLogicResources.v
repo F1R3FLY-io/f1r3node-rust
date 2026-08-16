@@ -541,11 +541,10 @@ Qed.
    (Def 17): [LLUnit -> 0], [LLAtom -> 1], [LLTensor -> sum], every other
    connective -> 0. It is DELIBERATELY distinct from [ll_required_units] (which
    models the full ILLE algebra — [LLThreshold -> k], [LLPlus -> chosen branch],
-   etc.). [delta_s] counts ONLY the multiplicative-core layers, which is exactly
-   the per-signature linear-token demand the runtime meters under the s₀ collapse
-   (one token per token-consuming COMM, all attributed to the envelope signature;
-   the non-core connectives do not arise in the s₀-collapsed demand the gate
-   evaluates).                                                                  *)
+   etc.). [delta_s] counts ONLY the multiplicative-core layers. In the papers'
+   mathematical [s0] limit all layers share one signature; native production
+   instead applies the same point-wise definition to every retained authority
+   region, as refined by [LocatedAuthoritySettlement] and [EndToEndAuthority]. *)
 
 (* The pure demand [delta_s] (cost-accounted-rho Def 17), on the [ll_formula]
    image of a signature. Matches the Rust [DemandEntry::certified_upper_bound] for a

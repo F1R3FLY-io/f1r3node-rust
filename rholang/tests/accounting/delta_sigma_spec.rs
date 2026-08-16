@@ -44,9 +44,9 @@ use rholang::rust::interpreter::test_utils::resources::create_runtimes;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
-/// A representative envelope signature (a single ground atom). Under the s₀
-/// collapse the demand count is signature-agnostic, so any concrete `Sig` drives
-/// the same node count; we use a ground atom to mirror a single-signer deploy.
+/// A representative default deploy authority for unsigned surfaces. Structural
+/// demand is signature-agnostic until a native signed region supplies an
+/// explicit authority.
 fn envelope_sig() -> Sig { Sig::Ground(b"alice-envelope".to_vec()) }
 
 async fn fresh_runtime() -> RhoRuntimeImpl {
@@ -578,12 +578,11 @@ async fn is_funded_unknown_demand_requires_finite_bound_proof() {
     assert!(!is_funded(&analysis, i64::MAX));
 }
 
-/// W1 Phase 3 (GATE 3) — under the s₀ collapse `demand_by_sig` agrees with
-/// `demand`: a single-signer deploy's COMMs are all on DATA channels (never a
-/// `Σ⟦s⟧` supply channel), so the real channel-match returns `None` for every
-/// COMM and the per-lane demand is the singleton `{ envelope: demand() }`.
+/// The legacy signature-channel projection defaults unsigned data-channel
+/// introductions to the deploy authority. Native `CostAuthority` regions are
+/// tested separately and are not represented by this diagnostic projection.
 #[test]
-fn demand_by_sig_collapses_to_envelope_under_s0() {
+fn demand_by_sig_defaults_unsigned_surfaces_to_the_deploy_authority() {
     let par = normalized_par(r#"@"a"!(1) | for(x <- @"b"){ Nil }"#);
     let env = envelope_sig();
     let env_key = sig_key(&env);
@@ -600,11 +599,11 @@ fn demand_by_sig_collapses_to_envelope_under_s0() {
     let by_sig = demand_by_sig(&par, env_key, &region);
     let scalar = demand(&par, &env);
 
-    assert_eq!(by_sig.len(), 1, "s₀ collapse ⇒ exactly one (envelope) lane");
+    assert_eq!(by_sig.len(), 1, "unsigned surfaces have one default lane");
     assert_eq!(
         by_sig.get(&env_key).copied(),
         Some(scalar),
-        "the single lane is the envelope and equals demand()"
+        "the default lane equals structural demand"
     );
 }
 

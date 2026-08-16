@@ -129,6 +129,25 @@ Proof.
   reflexivity.
 Qed.
 
+Theorem explicit_regions_do_not_debit_ambient_purse :
+  forall balance regions plan ambient,
+    (forall current, In current regions -> plan current <> ambient) ->
+    debit balance regions plan ambient = balance ambient.
+Proof.
+  intros balance regions plan ambient separated.
+  apply debit_preserves_unselected_purse.
+  induction regions as [| current rest IH].
+  - reflexivity.
+  - cbn.
+    destruct (purse_eq_dec (plan current) ambient) as [same | different].
+    + exfalso.
+      exact (separated current (or_introl eq_refl) same).
+    + apply IH.
+      intros candidate present.
+      apply separated.
+      now right.
+Qed.
+
 Theorem debit_conserves_each_purse : forall balance regions plan selected,
   purse_demand regions plan selected <= balance selected ->
   debit balance regions plan selected

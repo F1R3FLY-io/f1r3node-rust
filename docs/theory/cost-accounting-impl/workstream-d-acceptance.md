@@ -14,7 +14,7 @@ cost authority, and production no longer uses the $s_0$ collapse.
 
 ## Central representation decision (load-bearing)
 
-Today the runtime is the **s₀ collapse** (spec Remark 11): one `Sig` per deploy, installed once at
+At the start of this historical workstream, the runtime used one `Sig` per deploy, installed once at
 `rholang/.../interpreter.rs:117-122` (`SignedProcess::metered(parsed, self.c.signature(), initial_phlo)`),
 held as scalar fields in `RuntimeBudget` (`accounting/mod.rs:35,41,42`). The normalized `Par` carries no
 per-layer signature, so a static Δ_s has nothing to count layers on.

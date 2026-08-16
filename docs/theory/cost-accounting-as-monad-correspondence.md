@@ -91,8 +91,11 @@ The authoritative model:
   undocumented extension (DR-27 F-A). This corrects an earlier reading that conflated the funding `Sig` algebra
   with the type-connective set.
 
-See [DR-26](cost-accounting-decision-records.md) (verification posture: shapes, not certificates) and
-[DR-27](cost-accounting-decision-records.md) (full findings + remediations).
+See [DR-26](cost-accounting-decision-records.md) (verification posture),
+[DR-27](cost-accounting-decision-records.md) (token-source findings),
+[DR-36](cost-accounting-decision-records.md) (native resource refinement), and
+[DR-41](cost-accounting-decision-records.md) (the mathematical $`s_0`$ limit
+versus production authority semantics).
 
 ## Native architecture correspondence
 

@@ -16,11 +16,12 @@
 //! | `rule4_decreases_by_one`   │ split input/output, combined token      │  −1  |
 //! | `rule5_decreases_by_two`   │ split input/output, two tokens          │  −2  |
 //!
-//! Those token drops live on the `TGate` gate-stripping layer. The f1r3node
-//! runtime is the spec's `s₀` collapse with native recognition-only signing.
-//! The normalized `Par` carries no explicit fuel-gate processes. RSpace emits
-//! one `BillableKind::Comm` when a complete binary or join match commits;
-//! producer/consumer arrival order and unmatched I/O do not affect cost.
+//! Those token drops live on the `TGate` gate-stripping layer. The native
+//! runtime preserves signed regions as `CostAuthority` metadata rather than
+//! materializing explicit fuel-gate processes. RSpace emits one
+//! `BillableKind::Comm` when a complete binary or join match commits and binds
+//! that event to the complete matched authority; producer/consumer arrival
+//! order and unmatched I/O do not affect cost.
 //!
 //! So this file asserts the rules at the TWO layers where each is observable:
 //!

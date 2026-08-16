@@ -96,22 +96,22 @@ impl MeteredMachine {
         self.reserve_cost(BillableKind::Comm, amount)
     }
 
-    /// W1 Phase 3 — per-redex located-stack attribution. AFTER a COMM's channel is
-    /// resolved, match it against the installed signer channels: a COMM on a
-    /// NON-envelope signer channel (`Σ⟦sᵢ⟧`) is tallied to that signer's lane for
-    /// the diagnostic per-lane projection ([`RuntimeBudget::per_lane_demand`]). The
-    /// COMM itself was ALREADY charged (scalar, to the envelope) by `reserve_comm`,
-    /// so this records only the per-lane VIEW — it never re-charges and never
-    /// touches the consensus reconciliation (`reconcile`/`total_cost`/the supply
-    /// pools). Cheap on the single-signer fast path: the `any_signed_regions` gate
-    /// short-circuits before any channel encode / snapshot.
+    /// Legacy signature-channel projection for budget diagnostics. AFTER a COMM's
+    /// channel is resolved, match it against the installed signer channels and
+    /// tally the match in [`RuntimeBudget::per_lane_demand`]. Native consensus
+    /// settlement does not consume this projection: `CostAuthority` regions on
+    /// the matched data and continuation produce the exact persisted authority
+    /// witness and physical purse draw. The COMM itself was already charged by
+    /// `reserve_comm`, so this method neither re-charges nor changes settlement.
+    /// The `any_signed_regions` gate keeps this diagnostic off the unsigned fast
+    /// path.
     ///
-    /// Under the s₀ collapse every COMM is on a DATA channel (never a `Σ⟦s⟧` supply
-    /// channel — the §5 no-alias audit), so the match never fires and the
-    /// projection stays the singleton envelope lane. The shared decision is
-    /// [`match_channel_to_lane`] — the SAME one the static dual
-    /// [`demand_by_sig`](super::accounting::delta_sigma::demand_by_sig) uses, so the
-    /// two cannot drift (the consensus bridge).
+    /// For an unsigned surface every COMM is on a data channel rather than a
+    /// signature channel, so this legacy projection stays on the deploy default.
+    /// An explicit region is nevertheless preserved and settled by its native
+    /// authority witness; it is never collapsed to that default. The shared
+    /// diagnostic matcher is [`match_channel_to_lane`], also used by
+    /// [`demand_by_sig`](super::accounting::delta_sigma::demand_by_sig).
     pub fn note_channel_lane(&self, channel: &Par) {
         if !self.budget.any_signed_regions() {
             return;

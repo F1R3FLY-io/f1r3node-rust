@@ -86,7 +86,12 @@ Rholang `mintPhlogiston` keeps the authorization shape + `@W_v` bookkeeping; the
 
 ## Decision 7 — Spec-conformance verdict
 
-**FAITHFUL** to §4.6 / Appendix A / §7, with two **guarded encoding choices**: (1) balance datum vs literal sends — guard #1 `sigma_s_balance_eq_stack_count`, #2 O(1) vs O(n), #3 fewer messages + single Rust writer; (2) acceptance-time commit vs runtime per-COMM peeling — guard #1 the spec mandates acceptance-time commit (tex 1677-1729) + s₀-collapse lifts the gate to static analysis (Remark 11 / DR-11), #2 avoids per-rendezvous writes, #3 keeps `Σ⟦s⟧` unwritable from the reducer. Neither is a deviation.
+**Historical verdict:** the retired design treated §4.6 / Appendix A / §7 as
+permitting two guarded encodings: a balance datum rather than literal sends, and
+an acceptance-time commit rather than runtime peeling. It also treated Remark
+11's mathematical single-signature limit as a production static-analysis
+justification. DR-36 and DR-41 retain the conservation and atomic-acceptance
+requirements but supersede that storage and settlement interpretation.
 
 ## Decision 8 — Formal obligations (register every new lemma in scripts/check-cost-accounted-rho-proofs.sh)
 

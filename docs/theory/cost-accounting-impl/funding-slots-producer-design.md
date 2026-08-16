@@ -31,9 +31,11 @@ and are not current behavior.
 > existing balanced apportionment (`compute_settlement_debits` +
 > `DefaultApportionment`, verified by `default_apportionment_conserves_and_never_overdraws`)
 > IS the intended multi-sig cost model. A per-signer attribution would *contradict*
-> balanced settlement (it implies `sᵢ` pays for its region; in truth all cosigners
-> pay equally). **No producer is built.** The W1 s₀ collapse (single-sig → the lone
-> envelope lane) + balanced multi-sig apportionment already realize Greg's intent.
+> balanced settlement (it implied `sᵢ` pays for its region; this design assumed
+> all cosigners pay equally). **At that stage no producer had been built.** The
+> then-current envelope-only path plus balanced multi-sig apportionment was
+> believed to realize Greg's intent. DR-36 and DR-41 supersede that production
+> conclusion while retaining P8 inside compound presentations.
 >
 > The mechanisms below stand only as the (now optional, low-value) DIAGNOSTIC
 > per-region *structural* visibility — they show which signature *decorates* a
@@ -46,13 +48,13 @@ Phase-3 channel-match infra remains dormant diagnostic forward-infra.
 
 ## 0. Decisions already taken (frame the whole design)
 
-1. **Settlement stays P8-balanced.** Multi-sig cost is split equally across
+1. **Historical decision: settlement stays P8-balanced.** Multi-sig cost is split equally across
    cosigners (`∘` commutative — the ratified P8), realized by the existing
    `compute_settlement_debits` + `DefaultApportionment`. Funding slots does **NOT**
    change which `Σ⟦sᵢ⟧` pool settles — the located-stack per-signature draw of
-   Rule 1 is **deferred** until Greg reconciles Rule 1 vs P8 in the papers (they
-   currently conflict: Rule 1 §838 charges a signed redex to *its* signature's
-   stack; P8 charges multi-sig balanced).
+   Rule 1 was **deferred** by this design pending reconciliation with P8. DR-36
+   and DR-41 resolve the apparent conflict: a located region selects its purse,
+   while P8 balances only within a compound presentation.
 2. **Consequence — the per-lane split is DIAGNOSTIC, not consensus.** Since
    settlement is balanced, the per-lane attribution feeds only *visibility*
    (`per_lane_demand`-style reports: "which signature funds which COMMs"), never

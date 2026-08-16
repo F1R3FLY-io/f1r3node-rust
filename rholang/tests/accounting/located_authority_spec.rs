@@ -97,6 +97,31 @@ async fn whole_redex_deduplicates_one_shared_region() {
 }
 
 #[tokio::test]
+async fn explicit_region_authority_overrides_the_deploy_default() {
+    let mut runtime = runtime().await;
+    let default = Sig::Ground(b"default envelope payer".to_vec());
+    runtime
+        .cost
+        .set_deploy_signature_funded(b"explicit region deploy", default.clone());
+    evaluate(
+        &mut runtime,
+        r#"{% for(_ <- @"x"){ Nil } | @"x"!(0) %}[ explicit ]"#,
+    )
+    .await;
+
+    let explicit = lane("explicit");
+    let realized = runtime.cost.authority_realized();
+    assert_eq!(realized.get(&explicit), 1);
+    assert_eq!(realized.get(&default.lane_hash()), 0);
+    assert_eq!(realized.0.len(), 1);
+    assert_eq!(runtime.cost.authority_events().len(), 1);
+    assert_eq!(
+        runtime.cost.authority_events()[0].debit,
+        rholang::rust::interpreter::accounting::authority::ResourceMultiset::singleton(explicit, 1)
+    );
+}
+
+#[tokio::test]
 async fn separately_signed_surfaces_charge_every_distinct_region_atomically() {
     let mut runtime = runtime().await;
     evaluate(

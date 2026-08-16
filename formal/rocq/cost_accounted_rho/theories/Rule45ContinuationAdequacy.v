@@ -28,10 +28,11 @@
    proof needed here): (1) the static demand `Δ_s` that consensus meters
    (`delta_sigma.rs` / `LinearLogicResources.v`) is computed from the desugared
    `Par`'s COMM-node structure and never references `ca_step`'s per-step seals;
-   (2) the production runtime (the s₀-collapse) meters by COMM count under one
-   envelope signature and likewise does not re-derive cost from intermediate
-   seals. The exact native-seal model is the Option-B mutually-inductive grammar,
-   recorded separately as a representation migration. `ca_cost_deterministic`
+   (2) the production runtime meters atomic COMM count independently of seal
+   syntax while its native `CostAuthority` witness retains the actual outer and
+   continuation regions for physical settlement. The exact native-seal model is
+   the Option-B mutually-inductive grammar, recorded separately as a
+   representation migration. `ca_cost_deterministic`
    (Confluence.v) already establishes that the terminal cost of a FIXED system is
    path-independent; this module establishes that the cost is also independent of
    the continuation's seal.

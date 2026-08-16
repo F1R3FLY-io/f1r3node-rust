@@ -1763,6 +1763,49 @@ mod tests {
     }
 
     #[test]
+    fn explicit_region_cannot_spend_an_unrelated_default_balance() {
+        let default = ground(b"default envelope payer");
+        let explicit = ground(b"explicit region payer");
+        let default_key = cost_signature_to_sig(&default).unwrap().lane_hash();
+        let explicit_key = cost_signature_to_sig(&explicit).unwrap().lane_hash();
+        let authority_event = event(std::slice::from_ref(&explicit));
+        let stack_id = [31; 32];
+        let signatures = BTreeMap::from([(default_key, default)]);
+        let without_explicit_stack = AuthorityPhysicalInventory {
+            balances: ResourceMultiset::singleton(default_key, 100),
+            stacks: BTreeMap::new(),
+            born_stacks: BTreeMap::new(),
+        };
+
+        assert_eq!(
+            allocate_physical_settlement(
+                std::slice::from_ref(&authority_event),
+                &signatures,
+                &without_explicit_stack,
+            ),
+            Err(AuthorityError::InsufficientAuthority)
+        );
+
+        let inventory = AuthorityPhysicalInventory {
+            balances: ResourceMultiset::singleton(default_key, 100),
+            stacks: BTreeMap::from([(stack_id, vec![explicit])]),
+            born_stacks: BTreeMap::new(),
+        };
+        let settlement = allocate_physical_settlement(
+            std::slice::from_ref(&authority_event),
+            &signatures,
+            &inventory,
+        )
+        .unwrap();
+
+        assert!(settlement.balance_debit.0.is_empty());
+        assert_eq!(settlement.stack_pops, BTreeMap::from([(stack_id, 1)]));
+        assert_eq!(settlement.draws[0].stack_ids, vec![stack_id]);
+        assert_eq!(authority_event.debit.get(&explicit_key), 1);
+        assert_eq!(authority_event.debit.get(&default_key), 0);
+    }
+
+    #[test]
     fn physical_settlement_search_is_stack_safe_for_long_event_traces() {
         let signature = ground(b"stack-safe");
         let key = cost_signature_to_sig(&signature).unwrap().lane_hash();
