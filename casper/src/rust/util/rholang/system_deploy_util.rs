@@ -20,9 +20,9 @@ use super::tools::Tools;
 // closeBlock fires exactly once per block, so PREFIX ++ PublicKey ++ seqNum
 // is collision-free for it.
 //
-// Slashing can fire multiple times per block (one per equivocator detected
-// in the proposer's invalid_latest_messages, plus any merge-rejected slash
-// re-issued via the recovery path). The slash seed therefore takes the
+// Slashing can fire multiple times per block, once for each distinct offender
+// in the proposer's canonical invalid-evidence candidate set. The slash seed
+// therefore takes the
 // equivocator's invalid_block_hash as well so each slash in the same block
 // gets a distinct rng — the slash contract allocates `new rl, poSCh, ...`
 // from this rng, and shared seeds would alias those unforgeable channel
@@ -150,16 +150,6 @@ pub fn generate_epoch_mint_deploy_random_seed(
     seed.extend(seq);
     Tools::rng(&seed).split_byte(2)
 }
-
-// D3 (DR-9, OD-2): the pre-charge / refund random-seed derivations
-// (`generate_pre_charge_deploy_random_seed[_for_signer]`,
-// `generate_refund_deploy_random_seed[_for_signer]`) and the
-// `deploy_group_id` PoS charge-tracking channel id are REMOVED with the
-// per-deploy escrow model. A deploy's cost is the per-COMM token count,
-// settled once against Σ⟦s⟧ at block close (no pre-charge/refund system
-// deploys, hence no per-deploy/per-cosigner seeds and no charge-tracking
-// channel). The close-block / slash / redeem / epoch-mint seed families
-// below are retained (they name DISTINCT system deploys).
 
 #[cfg(test)]
 mod tests {

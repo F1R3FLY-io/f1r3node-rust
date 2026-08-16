@@ -30,19 +30,24 @@ use crate::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
+
+pub const LEGACY_CASPER_PROTOCOL_VERSION: i64 = 1;
+pub const CURRENT_CASPER_PROTOCOL_VERSION: i64 = 2;
 use crate::rust::validator_identity::ValidatorIdentity;
 
-/// Default for `CasperShardConf::finalizer_blocking_timeout`. The
-/// finalizer-run timeout was originally hardcoded at two call sites
-/// (`casper.rs::CasperShardConf::new` and
-/// `node/src/rust/runtime/setup.rs`). Centralizing prevents two-way
-/// drift. When `CasperConf` gains a corresponding field, the
-/// constant becomes the documented fallback.
-pub const FINALIZER_BLOCKING_TIMEOUT_DEFAULT: Duration = Duration::from_secs(15);
+pub fn is_supported_casper_protocol_version(version: i64) -> bool {
+    version == CURRENT_CASPER_PROTOCOL_VERSION
+}
+
+pub fn ensure_supported_casper_protocol_version(version: i64) -> Result<(), CasperError> {
+    if is_supported_casper_protocol_version(version) {
+        Ok(())
+    } else {
+        Err(CasperError::UnsupportedProtocolVersion { version })
+    }
+}
 
 /// Default for `CasperShardConf::active_validators_cache_max_entries`.
-/// Mirrors `FINALIZER_BLOCKING_TIMEOUT_DEFAULT`'s rationale — see
-/// commit centralizing Phase 13 hardcoded defaults.
 pub const ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT: usize = 4096;
 
 /// Wire convention for `CasperShardConf::max_number_of_parents`: `-1`
@@ -142,10 +147,7 @@ pub trait Casper {
         snapshot: &mut CasperSnapshot,
     ) -> Result<Either<BlockError, ValidBlock>, CasperError>;
 
-    /// Validate a self-created block, skipping the expensive checkpoint replay and bonds_cache
-    /// steps since both were already computed during `block_creator::create`.
-    /// All other validation steps (block_summary, neglected_invalid_block, phlo_price,
-    /// equivocation checks, block-index computation) still run.
+    /// Validate a self-created block through the same consensus checks used for a peer block.
     async fn validate_self_created(
         &self,
         block: &BlockMessage,
@@ -233,6 +235,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     approved_block: BlockMessage,
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
 ) -> Result<MultiParentCasperImpl<T>, CasperError> {
+    casper_shard_conf.adopt_approved_protocol_version(&approved_block)?;
     // SINGLE ADOPTION POINT for the protocol fault-tolerance threshold.
     //
     // θ is a CONSENSUS value: the finalized-floor oracle runs on it, and the
@@ -393,28 +396,8 @@ pub struct CasperShardConf {
     pub epoch_length: i32,
     pub quarantine_length: i32,
     pub min_phlo_price: i64,
-    /// Cost-Accounted Rho acceptance-gate activation mode (task #13a). `false`
-    /// (default) = TRANSITIONAL per-pool-presence gate (absent pool ⇒ admit
-    /// unenforced, no debit; back-compat). `true` = SPEC-STRICT (§7.6 step 5):
-    /// an absent pool is a present-zero pool, so an underfunded (`Δ > 0`)
-    /// deploy is rejected and only a `Δ = 0` deploy is admitted (no debit).
-    /// Shard-genesis constant shared by every node ⇒ replay-deterministic
-    /// (mirrors `min_phlo_price`). Threaded onto both the play gate
-    /// (`admit_by_funding`) and the replay recompute
-    /// (`recompute_settlement_debits`) so play and replay agree.
-    pub strict_funding_enforcement: bool,
-    /// Cost-Accounted Rho task #13b: the genesis CLIENT funding-slot allocations
-    /// `[(client_pk, amount)]` — the §5.7/§7.5 genesis/system write that SEEDS
-    /// each client supply pool `Σ⟦c⟧ = from_sig(Ground(client_pk))` so a
-    /// spec-strict shard (`strict_funding_enforcement = true`) can bootstrap
-    /// FUNDED clients. Wired from `CasperConf::client_fuel_allocations` at genesis
-    /// (default EMPTY ⇒ existing shards byte-identical). Shard-genesis constant
-    /// shared by every node ⇒ replay-deterministic (mirrors `min_phlo_price` /
-    /// `strict_funding_enforcement`). Threaded onto the genesis-block-1
-    /// `CloseBlockDeploy` on BOTH the play (`block_creator::create`) and replay
-    /// (`replay_block_system_deploy`) paths; the credit is performed once at the
-    /// block-1 close (gated on `block_number == 1`), mirroring the StageB
-    /// genesis-bonded-set `initialPhlogiston` funding.
+    /// Additional client SystemVault balances incorporated into the canonical
+    /// blessed vault-generator deploys at genesis.
     pub client_fuel_allocations: Vec<(crypto::rust::public_key::PublicKey, i64)>,
     /// Disable late block filtering in DagMerger (for testing or special configurations)
     pub disable_late_block_filtering: bool,
@@ -454,12 +437,6 @@ pub struct CasperShardConf {
     pub native_token_name: String,
     pub native_token_symbol: String,
     pub native_token_decimals: u32,
-    /// Phase 13 (TC-1): blocking timeout for `run_queued_finalizer`'s
-    /// `compute_last_finalized_block` call. Previously a hardcoded
-    /// 15-second constant in `engine/multi_parent_casper/finalization_runner.rs`;
-    /// lifted to configuration so operators can extend the budget for
-    /// deep-DAG finalization sweeps without recompiling.
-    pub finalizer_blocking_timeout: Duration,
     /// Phase 13 (TC-2): maximum entries in the `active_validators_cache`
     /// inside `compute_snapshot`. Previously a hardcoded `usize = 4096`
     /// constant in `engine/multi_parent_casper/types.rs`; lifted to configuration so
@@ -470,6 +447,16 @@ pub struct CasperShardConf {
 }
 
 impl CasperShardConf {
+    pub fn adopt_approved_protocol_version(
+        &mut self,
+        approved_block: &BlockMessage,
+    ) -> Result<(), CasperError> {
+        let version = approved_block.header.version;
+        ensure_supported_casper_protocol_version(version)?;
+        self.casper_version = version;
+        Ok(())
+    }
+
     pub fn new() -> Self {
         Self {
             fault_tolerance_threshold: 0.0,
@@ -482,21 +469,15 @@ impl CasperShardConf {
             synchrony_constraint_threshold: 0.0,
             height_constraint_threshold: 0,
             deploy_lifespan: 0,
-            casper_version: 0,
+            casper_version: CURRENT_CASPER_PROTOCOL_VERSION,
             config_version: 0,
             bond_minimum: 0,
             bond_maximum: 0,
             epoch_length: 0,
             quarantine_length: 0,
             min_phlo_price: 0,
-            // Task #13a: default OFF = transitional per-pool-presence gate
-            // (back-compat). `CasperShardConf::new()` is the basis for every
-            // `..CasperShardConf::new()`-spread literal, so this default
-            // covers all such sites.
-            strict_funding_enforcement: false,
-            // Task #13b: default EMPTY = no genesis client funding-slot seed
-            // (back-compat — the block-1 close performs no client credit, so
-            // existing shards stay byte-identical). Covers every
+            // Task #13b: default EMPTY = no genesis client funding-slot seed.
+            // Covers every
             // `..CasperShardConf::new()`-spread literal (incl. test sites).
             client_fuel_allocations: Vec::new(),
             disable_late_block_filtering: true,
@@ -515,7 +496,6 @@ impl CasperShardConf {
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,
-            finalizer_blocking_timeout: FINALIZER_BLOCKING_TIMEOUT_DEFAULT,
             active_validators_cache_max_entries: ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT,
         }
     }
@@ -646,11 +626,7 @@ pub mod test_helpers {
 
         fn buffer_contains(&self, _hash: &BlockHash) -> bool { false }
 
-        fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> {
-            Err(CasperError::RuntimeError(
-                "get_approved_block not implemented for TestCasperWithSnapshot".to_string(),
-            ))
-        }
+        fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> { Ok(&self.lfb) }
 
         fn deploy(
             &self,
@@ -666,7 +642,7 @@ pub mod test_helpers {
             Ok(Vec::new())
         }
 
-        fn get_version(&self) -> i64 { 1 }
+        fn get_version(&self) -> i64 { self.snapshot.on_chain_state.shard_conf.casper_version }
 
         async fn validate(
             &self,
@@ -744,6 +720,50 @@ pub mod test_helpers {
 
         async fn has_pending_deploys_in_storage(&self) -> Result<bool, CasperError> {
             Ok(self.pending_deploy_count > 0)
+        }
+    }
+}
+
+#[cfg(test)]
+mod protocol_version_tests {
+    use models::rust::block_implicits::get_random_block_default;
+    use proptest::prelude::*;
+
+    use super::*;
+
+    #[test]
+    fn approved_protocol_version_adoption_accepts_current() {
+        let mut block = get_random_block_default();
+        block.header.version = CURRENT_CASPER_PROTOCOL_VERSION;
+        let mut conf = CasperShardConf::new();
+        conf.adopt_approved_protocol_version(&block).unwrap();
+        assert_eq!(conf.casper_version, CURRENT_CASPER_PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn noncurrent_approved_protocol_versions_fail_without_mutation() {
+        for version in [
+            LEGACY_CASPER_PROTOCOL_VERSION,
+            CURRENT_CASPER_PROTOCOL_VERSION + 1,
+        ] {
+            let mut block = get_random_block_default();
+            block.header.version = version;
+            let mut conf = CasperShardConf::new();
+            let original = conf.casper_version;
+            assert_eq!(
+                conf.adopt_approved_protocol_version(&block),
+                Err(CasperError::UnsupportedProtocolVersion { version })
+            );
+            assert_eq!(conf.casper_version, original);
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn supported_protocol_versions_are_exactly_the_declared_versions(version in any::<i64>()) {
+            let expected = version == CURRENT_CASPER_PROTOCOL_VERSION;
+            prop_assert_eq!(is_supported_casper_protocol_version(version), expected);
+            prop_assert_eq!(ensure_supported_casper_protocol_version(version).is_ok(), expected);
         }
     }
 }

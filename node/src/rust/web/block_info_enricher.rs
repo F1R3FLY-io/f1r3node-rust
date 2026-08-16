@@ -165,6 +165,7 @@ mod tests {
                 ret_unforg,
             ],
             random_state: vec![],
+            ..Default::default()
         };
 
         let comm = ReportCommProto {

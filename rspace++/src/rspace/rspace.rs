@@ -31,11 +31,12 @@ use super::metrics_constants::{
 };
 use super::replay_rspace::ReplayRSpace;
 use super::rspace_interface::{
-    ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult, RSpaceResult,
+    CommObserver, ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate,
+    MaybeProduceResult, RSpaceResult,
 };
 use super::striped_locks::{self, ChannelLockGuard};
 use super::trace::Log;
-use super::trace::event::{COMM, Consume, Event, IOEvent, Produce};
+use super::trace::event::{COMM, Consume, Event, IOEvent, Produce, recorded_removal};
 use super::util::unpack_option;
 use crate::rspace::checkpoint::Checkpoint;
 use crate::rspace::history::history_repository::{HistoryRepository, HistoryRepositoryInstances};
@@ -60,6 +61,7 @@ pub struct RSpace<C, P, A, K> {
     event_log: Arc<std::sync::Mutex<Log>>,
     produce_counter: Arc<std::sync::Mutex<BTreeMap<Produce, i32>>>,
     matcher: Arc<Box<dyn Match<P, A, K>>>,
+    comm_observer: Arc<std::sync::RwLock<Option<Arc<dyn CommObserver<A, K>>>>>,
     // Fixed-size striped locks replace the growing DashMap<u64, Mutex>.
     // See striped_locks.rs for the stripe count and hashing/lock scheme.
     // No DashMap entry() → no parking_lot shard contention per produce/consume.
@@ -135,6 +137,13 @@ where
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
     K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
 {
+    fn set_comm_observer(&self, observer: Option<Arc<dyn CommObserver<A, K>>>) {
+        *self
+            .comm_observer
+            .write()
+            .expect("comm observer write lock") = observer;
+    }
+
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {
         // Span[F].withMarks("create-checkpoint") from Scala - works because this is NOT
         // async
@@ -217,6 +226,34 @@ where
         for index in (0..len).rev() {
             self.get_store().remove_datum(channel, index as i32)?;
         }
+        Ok(())
+    }
+
+    async fn remove_data_at(&self, channel: &C, index: i32) -> Result<(), RSpaceError> {
+        self.get_store().remove_datum(channel, index)
+    }
+
+    async fn remove_data_at_recorded(
+        &self,
+        channel: &C,
+        index: i32,
+        operation_id: &[u8],
+    ) -> Result<(), RSpaceError> {
+        let channel_lock = striped_locks::channel_hash(channel);
+        let _guard = self.consume_lock(&[channel_lock]).await;
+        let datum = usize::try_from(index)
+            .ok()
+            .and_then(|index| self.get_store().get_data(channel).get(index).cloned())
+            .ok_or_else(|| {
+                RSpaceError::BugFoundError(
+                    "recorded removal references a missing datum".to_string(),
+                )
+            })?;
+        let (consume, comm) = recorded_removal(channel, &datum.source, operation_id);
+        self.get_store().remove_datum(channel, index)?;
+        let mut event_log = self.event_log.lock().expect("event log lock");
+        event_log.push(Event::IoEvent(IOEvent::Consume(consume)));
+        event_log.push(Event::Comm(comm));
         Ok(())
     }
 
@@ -452,6 +489,7 @@ where
             history_repository: Arc::new(std::sync::RwLock::new(history_repository)),
             store: Arc::new(std::sync::RwLock::new(Arc::new(store))),
             matcher,
+            comm_observer: Arc::new(std::sync::RwLock::new(None)),
             installs: Arc::new(std::sync::Mutex::new(HashMap::new())),
             event_log: Arc::new(std::sync::Mutex::new(Vec::new())),
             produce_counter: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
@@ -591,11 +629,6 @@ where
         let _span = tracing::info_span!(target: "f1r3fly.rspace", LOCKED_CONSUME_SPAN).entered();
         tracing::trace!(target: "f1r3fly.rspace.ops", mark = "started-locked-consume", "locked_consume");
 
-        let t0 = Instant::now();
-        self.log_consume(consume_ref, channels, patterns, continuation, persist, peeks);
-        metrics::counter!("rspace.consume.log_ns", "source" => RSPACE_METRICS_SOURCE)
-            .increment(t0.elapsed().as_nanos() as u64);
-
         let t1 = Instant::now();
         let mut channel_to_indexed_data = self.fetch_channel_to_index_data(channels);
         metrics::counter!("rspace.consume.fetch_data_ns", "source" => RSPACE_METRICS_SOURCE)
@@ -640,17 +673,19 @@ where
                 let produce_counters_closure =
                     |produces: &[Produce]| self.produce_counters(produces);
 
-                self.log_comm(
-                    channels,
-                    &wk,
-                    COMM::new(
-                        &data_candidates,
-                        consume_ref.clone(),
-                        peeks.clone(),
-                        produce_counters_closure,
-                    ),
-                    "comm.consume",
+                let comm = COMM::new(
+                    &data_candidates,
+                    consume_ref.clone(),
+                    peeks.clone(),
+                    produce_counters_closure,
                 );
+                self.observe_comm(&comm, continuation, persist, &data_candidates)?;
+
+                let t0 = Instant::now();
+                self.log_consume(consume_ref, channels, patterns, continuation, persist, peeks);
+                metrics::counter!("rspace.consume.log_ns", "source" => RSPACE_METRICS_SOURCE)
+                    .increment(t0.elapsed().as_nanos() as u64);
+                self.log_comm(channels, &wk, comm, "comm.consume");
                 self.store_persistent_data(&data_candidates, peeks);
                 metrics::counter!("rspace.consume.process_match_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t3.elapsed().as_nanos() as u64);
@@ -659,6 +694,10 @@ where
             }
             _ => {
                 let t3 = Instant::now();
+                let t0 = Instant::now();
+                self.log_consume(consume_ref, channels, patterns, continuation, persist, peeks);
+                metrics::counter!("rspace.consume.log_ns", "source" => RSPACE_METRICS_SOURCE)
+                    .increment(t0.elapsed().as_nanos() as u64);
                 self.store_waiting_continuation(channels.to_vec(), wk);
                 metrics::counter!("rspace.consume.store_continuation_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t3.elapsed().as_nanos() as u64);
@@ -703,7 +742,7 @@ where
         metrics::counter!("rspace.produce.get_joins_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(t0.elapsed().as_nanos() as u64);
 
-        self.log_produce(produce_ref, &channel, &data, persist);
+        self.increment_produce_counter(produce_ref, persist);
 
         let t1 = Instant::now();
         let extracted = self.extract_produce_candidate(grouped_channels, channel.clone(), Datum {
@@ -717,12 +756,16 @@ where
         match extracted {
             Some(produce_candidate) => {
                 let t2 = Instant::now();
-                let result =
-                    Ok(self
-                        .process_match_found(produce_candidate)
-                        .map(|consume_result| {
+                let result = self
+                    .process_match_found(produce_candidate, &channel, &data, persist, produce_ref)
+                    .map(|matched| {
+                        matched.map(|consume_result| {
                             (consume_result.0, consume_result.1, produce_ref.clone())
-                        }));
+                        })
+                    });
+                if result.is_err() {
+                    self.rollback_produce_counter(produce_ref, persist);
+                }
                 metrics::counter!("rspace.produce.process_match_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t2.elapsed().as_nanos() as u64);
                 tracing::trace!(target: "f1r3fly.rspace.ops", mark = "finished-locked-produce", "locked_produce");
@@ -730,6 +773,7 @@ where
             }
             None => {
                 let t2 = Instant::now();
+                self.log_produce(produce_ref, &channel, &data, persist);
                 let result = Ok(self.store_data(channel, data, persist, produce_ref.clone()));
                 metrics::counter!("rspace.produce.store_data_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t2.elapsed().as_nanos() as u64);
@@ -790,7 +834,11 @@ where
     fn process_match_found(
         &self,
         pc: ProduceCandidate<C, P, A, K>,
-    ) -> MaybeConsumeResult<C, P, A, K> {
+        channel: &C,
+        data: &A,
+        produced_persistently: bool,
+        produce_ref: &Produce,
+    ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
         let ProduceCandidate {
             channels,
             continuation,
@@ -807,17 +855,15 @@ where
         } = &continuation;
 
         let produce_counters_closure = |produces: &[Produce]| self.produce_counters(produces);
-        self.log_comm(
-            &channels,
-            &continuation,
-            COMM::new(
-                &data_candidates,
-                consume_ref.clone(),
-                peeks.clone(),
-                produce_counters_closure,
-            ),
-            "comm.produce",
+        let comm = COMM::new(
+            &data_candidates,
+            consume_ref.clone(),
+            peeks.clone(),
+            produce_counters_closure,
         );
+        self.observe_comm(&comm, _cont, *persist, &data_candidates)?;
+        self.log_produce(produce_ref, channel, data, produced_persistently);
+        self.log_comm(&channels, &continuation, comm, "comm.produce");
 
         if !persist {
             self.get_store()
@@ -826,7 +872,31 @@ where
 
         self.remove_matched_datum_and_join(&channels, &data_candidates);
 
-        self.wrap_result(&channels, &continuation, consume_ref, &data_candidates)
+        Ok(self.wrap_result(&channels, &continuation, consume_ref, &data_candidates))
+    }
+
+    fn observe_comm(
+        &self,
+        comm: &COMM,
+        continuation: &K,
+        continuation_persistent: bool,
+        data_candidates: &[ConsumeCandidate<C, A>],
+    ) -> Result<(), RSpaceError> {
+        let observer = self
+            .comm_observer
+            .read()
+            .expect("comm observer read lock")
+            .clone();
+        match observer {
+            Some(observer) => {
+                let data = data_candidates
+                    .iter()
+                    .map(|candidate| (&candidate.datum.a, candidate.datum.persist))
+                    .collect::<Vec<_>>();
+                observer.observe(comm, continuation, continuation_persistent, &data)
+            }
+            None => Ok(()),
+        }
     }
 
     fn log_comm(&self, _channels: &[C], _wk: &WaitingContinuation<P, K>, comm: COMM, label: &str) {
@@ -870,15 +940,33 @@ where
             .push(Event::IoEvent(IOEvent::Consume(consume_ref.clone())));
     }
 
-    fn log_produce(&self, produce_ref: &Produce, _channel: &C, _data: &A, persist: bool) {
+    fn log_produce(&self, produce_ref: &Produce, _channel: &C, _data: &A, _persist: bool) {
         self.event_log
             .lock()
             .expect("event log lock")
             .push(Event::IoEvent(IOEvent::Produce(produce_ref.clone())));
+    }
+
+    fn increment_produce_counter(&self, produce_ref: &Produce, persist: bool) {
         if !persist {
             let mut counter = self.produce_counter.lock().expect("produce counter lock");
             let current = counter.get(produce_ref).copied().unwrap_or(0);
             counter.insert(produce_ref.clone(), current + 1);
+        }
+    }
+
+    fn rollback_produce_counter(&self, produce_ref: &Produce, persist: bool) {
+        if !persist {
+            let mut counter = self.produce_counter.lock().expect("produce counter lock");
+            match counter.get(produce_ref).copied().unwrap_or(0) {
+                0 => {}
+                1 => {
+                    counter.remove(produce_ref);
+                }
+                count => {
+                    counter.insert(produce_ref.clone(), count - 1);
+                }
+            }
         }
     }
 

@@ -12,6 +12,9 @@ pub struct ParCount {
     pub matches: usize,
     pub unforgeables: usize,
     pub bundles: usize,
+    pub conditionals: usize,
+    pub cost_signed_terms: usize,
+    pub cost_stacks: usize,
 }
 
 impl ParCount {
@@ -24,6 +27,9 @@ impl ParCount {
             matches: par.matches.len(),
             unforgeables: par.unforgeables.len(),
             bundles: par.bundles.len(),
+            conditionals: par.conditionals.len(),
+            cost_signed_terms: par.cost_signed_terms.len(),
+            cost_stacks: par.cost_stacks.len(),
         }
     }
 
@@ -36,6 +42,9 @@ impl ParCount {
             matches: 0,
             unforgeables: 0,
             bundles: 0,
+            conditionals: 0,
+            cost_signed_terms: 0,
+            cost_stacks: 0,
         }
     }
 
@@ -48,6 +57,9 @@ impl ParCount {
             matches: self.matches.max(other.matches),
             unforgeables: self.unforgeables.max(other.unforgeables),
             bundles: self.bundles.max(other.bundles),
+            conditionals: self.conditionals.max(other.conditionals),
+            cost_signed_terms: self.cost_signed_terms.max(other.cost_signed_terms),
+            cost_stacks: self.cost_stacks.max(other.cost_stacks),
         }
     }
 
@@ -60,6 +72,9 @@ impl ParCount {
             exprs: 1000,
             unforgeables: 1000,
             bundles: 1000,
+            conditionals: 1000,
+            cost_signed_terms: 1000,
+            cost_stacks: 1000,
         }
     }
 
@@ -72,6 +87,9 @@ impl ParCount {
             matches: self.matches.min(other.matches),
             unforgeables: self.unforgeables.min(other.unforgeables),
             bundles: self.bundles.min(other.bundles),
+            conditionals: self.conditionals.min(other.conditionals),
+            cost_signed_terms: self.cost_signed_terms.min(other.cost_signed_terms),
+            cost_stacks: self.cost_stacks.min(other.cost_stacks),
         }
     }
 
@@ -84,6 +102,11 @@ impl ParCount {
             matches: self.matches.saturating_add(other.matches),
             unforgeables: self.unforgeables.saturating_add(other.unforgeables),
             bundles: self.bundles.saturating_add(other.bundles),
+            conditionals: self.conditionals.saturating_add(other.conditionals),
+            cost_signed_terms: self
+                .cost_signed_terms
+                .saturating_add(other.cost_signed_terms),
+            cost_stacks: self.cost_stacks.saturating_add(other.cost_stacks),
         }
     }
 

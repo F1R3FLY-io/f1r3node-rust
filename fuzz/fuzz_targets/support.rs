@@ -132,6 +132,7 @@ pub fn block_with_system_deploys(
                 post_state_hash: repeated(hash_seed.wrapping_add(2), 32),
                 bonds: vec![],
                 block_number,
+                genesis_supply: Vec::new(),
             },
             deploys: vec![],
             rejected_deploys: vec![],

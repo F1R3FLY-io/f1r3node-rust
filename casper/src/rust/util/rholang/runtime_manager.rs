@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::hash::Hash;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crypto::rust::hash::blake2b256::Blake2b256;
@@ -14,7 +15,7 @@ use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::block::state_hash::{StateHash, StateHashSerde};
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
-    Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy,
+    BlockMessage, Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy,
     SystemDeployData,
 };
 use models::rust::validator::Validator;
@@ -41,15 +42,17 @@ use shared::rust::ByteVector;
 use crate::rust::errors::CasperError;
 use crate::rust::merging::block_index::BlockIndex;
 use crate::rust::metrics_constants::{
-    BLOCK_INDEX_CACHE_SIZE_METRIC, CASPER_METRICS_SOURCE, PARENTS_POST_STATE_CACHE_SIZE_METRIC,
-    REPLAY_CACHE_ENTRIES_METRIC, REPLAY_CACHE_RETAINED_BYTES_METRIC,
-    RUNTIME_SPAWN_REPLAY_TIME_METRIC, RUNTIME_SPAWN_TIME_METRIC,
+    BLOCK_INDEX_CACHE_RETAINED_BYTES_METRIC, BLOCK_INDEX_CACHE_SIZE_METRIC, CASPER_METRICS_SOURCE,
+    PARENTS_POST_STATE_CACHE_SIZE_METRIC, REPLAY_CACHE_ENTRIES_METRIC,
+    REPLAY_CACHE_RETAINED_BYTES_METRIC, RUNTIME_SPAWN_REPLAY_TIME_METRIC,
+    RUNTIME_SPAWN_TIME_METRIC,
 };
 use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
 use crate::rust::rholang::runtime::RuntimeOps;
 use crate::rust::util::rholang::replay_cache::{
     InMemoryReplayCache, ReplayCache, ReplayCacheEntry, ReplayCacheKey,
 };
+use crate::rust::util::rholang::replay_failure::ReplayFailure;
 use crate::rust::util::rholang::state_hash_cache::StateHashCache;
 
 type MergeableStore = KeyValueTypedStoreImpl<ByteVector, Vec<DeployMergeableData>>;
@@ -72,8 +75,10 @@ pub struct RuntimeManager {
         std::collections::HashMap<Par, rspace_plus_plus::rspace::merger::merging_logic::MergeType>,
     >,
     // TODO: make proper storage for block indices - OLD
-    pub block_index_cache: Arc<DashMap<BlockHash, BlockIndex>>,
-    pub block_index_cache_order: Arc<Mutex<VecDeque<BlockHash>>>,
+    block_index_cache: Arc<DashMap<BlockHash, BlockIndex>>,
+    block_index_cache_order: Arc<Mutex<VecDeque<BlockHash>>>,
+    block_index_cache_retained_bytes: Arc<AtomicUsize>,
+    block_index_cache_write_lock: Arc<Mutex<()>>,
     pub active_validators_cache: Arc<DashMap<StateHash, Vec<Validator>>>,
     pub active_validators_cache_order: Arc<Mutex<VecDeque<StateHash>>>,
     pub bonds_cache: Arc<DashMap<StateHash, Vec<Bond>>>,
@@ -86,6 +91,74 @@ pub struct RuntimeManager {
     /// Optional state hash cache for skipping known replays
     pub state_hash_cache: Option<Arc<StateHashCache>>,
     pub external_services: ExternalServices,
+}
+
+#[derive(Clone)]
+pub struct StateBoundAdmission {
+    pre_state: StateHash,
+    block_data: BlockData,
+    invalid_blocks: HashMap<BlockHash, Validator>,
+    outcome: crate::rust::util::rholang::acceptance::AdmissionOutcome,
+    evidence: Arc<[ProcessedDeploy]>,
+    user_post_state: StateHash,
+    user_mergeable: Arc<[NumberChannelsEndVal]>,
+}
+
+#[derive(Clone)]
+struct StateBoundExecution {
+    post_state: StateHash,
+    processed: Arc<[ProcessedDeploy]>,
+    mergeable: Arc<[NumberChannelsEndVal]>,
+}
+
+fn ensure_terminal_close(
+    system_deploys: &mut Vec<super::system_deploy_enum::SystemDeployEnum>,
+    block_data: &BlockData,
+) -> Result<(), CasperError> {
+    let close_positions = system_deploys
+        .iter()
+        .enumerate()
+        .filter_map(|(index, deploy)| deploy.as_close().map(|_| index))
+        .collect::<Vec<_>>();
+    match close_positions.as_slice() {
+        [] => system_deploys.push(
+            super::system_deploy_enum::SystemDeployEnum::Close(
+                crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy::new(
+                    crate::rust::util::rholang::system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                        block_data.sender.clone(),
+                        block_data.seq_num,
+                    ),
+                ),
+            ),
+        ),
+        [index] if *index + 1 == system_deploys.len() => {}
+        _ => {
+            return Err(CasperError::InvalidCostSettlement(
+                "ordinary checkpoint must contain exactly one terminal close deploy".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+impl StateBoundAdmission {
+    pub fn pre_state(&self) -> &StateHash { &self.pre_state }
+
+    pub fn outcome(&self) -> &crate::rust::util::rholang::acceptance::AdmissionOutcome {
+        &self.outcome
+    }
+
+    pub fn matches_context(
+        &self,
+        block_data: &BlockData,
+        invalid_blocks: &HashMap<BlockHash, Validator>,
+    ) -> bool {
+        self.block_data.time_stamp == block_data.time_stamp
+            && self.block_data.block_number == block_data.block_number
+            && self.block_data.sender == block_data.sender
+            && self.block_data.seq_num == block_data.seq_num
+            && &self.invalid_blocks == invalid_blocks
+    }
 }
 
 #[derive(Clone, Hash, PartialEq, Eq)]
@@ -102,14 +175,11 @@ pub struct ParentsPostStateCacheKey {
     pub disable_late_block_filtering: bool,
 }
 
-pub type ParentsPostStateCacheVal = (
-    StateHash,
-    Vec<RejectedDeploy>,
-    Vec<crate::rust::merging::rejected_slash::RejectedSlash>,
-);
+pub type ParentsPostStateCacheVal = (StateHash, Vec<RejectedDeploy>);
 
 impl RuntimeManager {
     const MAX_BLOCK_INDEX_CACHE_ENTRIES: usize = 128;
+    const MAX_BLOCK_INDEX_CACHE_BYTES: usize = 64 * 1024 * 1024;
     const MAX_PARENTS_POST_STATE_CACHE_ENTRIES: usize = 64;
     const MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES: usize = 256;
     const MAX_BONDS_CACHE_ENTRIES: usize = 64;
@@ -280,6 +350,8 @@ impl RuntimeManager {
 
     fn max_block_index_cache_entries() -> usize { Self::MAX_BLOCK_INDEX_CACHE_ENTRIES }
 
+    fn max_block_index_cache_bytes() -> usize { Self::MAX_BLOCK_INDEX_CACHE_BYTES }
+
     fn max_parents_post_state_cache_entries() -> usize {
         Self::MAX_PARENTS_POST_STATE_CACHE_ENTRIES
     }
@@ -339,6 +411,42 @@ impl RuntimeManager {
         }
     }
 
+    fn evict_block_index_entry(&self) -> bool {
+        let removed = self
+            .block_index_cache_order
+            .lock()
+            .ok()
+            .and_then(|mut order| {
+                while let Some(key) = order.pop_front() {
+                    if let Some((_, value)) = self.block_index_cache.remove(&key) {
+                        return Some(value);
+                    }
+                }
+                None
+            });
+        if let Some(value) = removed {
+            let bytes = value.retained_bytes();
+            let _ = self.block_index_cache_retained_bytes.fetch_update(
+                Ordering::AcqRel,
+                Ordering::Acquire,
+                |current| Some(current.saturating_sub(bytes)),
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    fn record_block_index_cache_metrics(&self) {
+        metrics::gauge!(BLOCK_INDEX_CACHE_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .set(self.block_index_cache.len() as f64);
+        metrics::gauge!(BLOCK_INDEX_CACHE_RETAINED_BYTES_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .set(
+                self.block_index_cache_retained_bytes
+                    .load(Ordering::Acquire) as f64,
+            );
+    }
+
     pub async fn spawn_runtime(&self) -> RhoRuntimeImpl {
         let start = std::time::Instant::now();
         let new_space = self.space.spawn().expect("Failed to spawn RSpace");
@@ -377,11 +485,7 @@ impl RuntimeManager {
         runtime
     }
 
-    /// Multi-signature-aware variant of [`Self::compute_state`]. Routes
-    /// `Vec<Cosigned<DeployData>>` through the per-cosigner runtime
-    /// fan-out at `RuntimeOps::compute_state_cosigned`. For legacy
-    /// single-signature deploys (1-element Cosigned envelopes), behavior
-    /// is byte-identical to `compute_state`.
+    /// Multi-signature-aware variant of [`Self::compute_state`].
     pub async fn compute_state_cosigned(
         &self,
         start_hash: &StateHash,
@@ -390,14 +494,8 @@ impl RuntimeManager {
         block_data: BlockData,
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
     ) -> Result<(StateHash, Vec<ProcessedDeploy>, Vec<ProcessedSystemDeploy>), CasperError> {
-        let invalid_blocks = invalid_blocks.unwrap_or_default();
-        let runtime = self.spawn_runtime().await;
-        let mut runtime_ops = RuntimeOps::new(runtime);
-        let sender = block_data.sender.clone();
-        let seq_num = block_data.seq_num;
-
-        let (state_hash, usr_deploy_res, sys_deploy_res) = runtime_ops
-            .compute_state_cosigned(
+        let (state_hash, user_deploys, system_deploys, _) = self
+            .compute_state_with_bonds_cosigned(
                 start_hash,
                 terms,
                 system_deploys,
@@ -405,49 +503,7 @@ impl RuntimeManager {
                 invalid_blocks,
             )
             .await?;
-
-        let (usr_processed, usr_mergeable): (Vec<ProcessedDeploy>, Vec<NumberChannelsEndVal>) =
-            usr_deploy_res.into_iter().unzip();
-        let (sys_processed, sys_mergeable): (
-            Vec<ProcessedSystemDeploy>,
-            Vec<NumberChannelsEndVal>,
-        ) = sys_deploy_res.into_iter().unzip();
-
-        let mergeable_chs = usr_mergeable
-            .into_iter()
-            .chain(sys_mergeable.into_iter())
-            .collect();
-        let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);
-        let post_state_hash = Blake2b256Hash::from_bytes_prost(&state_hash);
-        self.save_mergeable_channels(
-            post_state_hash,
-            sender.bytes.clone(),
-            seq_num,
-            mergeable_chs,
-            &pre_state_hash,
-        )?;
-
-        // Cache replay result (mirror compute_state's caching logic).
-        let replay_cache_event_log_cap = Self::max_replay_cache_event_log_entries();
-        if let Some(ref cache) = self.replay_cache {
-            let all_logs = Self::collect_replay_logs(&usr_processed, &sys_processed);
-            if !all_logs.is_empty() && all_logs.len() <= replay_cache_event_log_cap {
-                let replay_payload_hash =
-                    Self::replay_payload_hash(&usr_processed, &sys_processed, false);
-                let key = ReplayCacheKey::new(
-                    start_hash.clone(),
-                    sender.bytes.to_vec(),
-                    seq_num as i64,
-                    replay_payload_hash,
-                );
-                let entry = ReplayCacheEntry::new(all_logs, state_hash.clone());
-                cache.put(key, entry);
-            }
-        }
-        if let Some(ref cache) = self.state_hash_cache {
-            cache.put(start_hash.clone(), state_hash.clone());
-        }
-        Ok((state_hash, usr_processed, sys_processed))
+        Ok((state_hash, user_deploys, system_deploys))
     }
 
     pub async fn compute_state(
@@ -458,93 +514,26 @@ impl RuntimeManager {
         block_data: BlockData,
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
     ) -> Result<(StateHash, Vec<ProcessedDeploy>, Vec<ProcessedSystemDeploy>), CasperError> {
-        let invalid_blocks = invalid_blocks.unwrap_or_default();
-        let runtime = self.spawn_runtime().await;
-        let mut runtime_ops = RuntimeOps::new(runtime);
-
-        // Block data used for mergeable key
-        let sender = block_data.sender.clone();
-        let seq_num = block_data.seq_num;
-
-        let (state_hash, usr_deploy_res, sys_deploy_res) = runtime_ops
-            .compute_state(
-                start_hash,
-                terms,
-                system_deploys,
-                block_data,
-                invalid_blocks,
-            )
-            .await?;
-
-        let (usr_processed, usr_mergeable): (Vec<ProcessedDeploy>, Vec<NumberChannelsEndVal>) =
-            usr_deploy_res.into_iter().unzip();
-        let (sys_processed, sys_mergeable): (
-            Vec<ProcessedSystemDeploy>,
-            Vec<NumberChannelsEndVal>,
-        ) = sys_deploy_res.into_iter().unzip();
-        let replay_cache_event_log_cap = Self::max_replay_cache_event_log_entries();
-
-        // Concat user and system deploys mergeable channel maps
-        let mergeable_chs = usr_mergeable
+        let cosigned = terms
             .into_iter()
-            .chain(sys_mergeable.into_iter())
-            .collect();
-
-        // Convert from final to diff values and persist mergeable (number) channels for post-state hash
-        let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);
-        let post_state_hash = Blake2b256Hash::from_bytes_prost(&state_hash);
-
-        // Save mergeable channels to store
-        self.save_mergeable_channels(
-            post_state_hash,
-            sender.bytes.clone(),
-            seq_num,
-            mergeable_chs,
-            &pre_state_hash,
-        )?;
-
-        // Cache replay result for potential replay shortcut (including event logs)
-        if let Some(ref cache) = self.replay_cache {
-            let all_logs = Self::collect_replay_logs(&usr_processed, &sys_processed);
-
-            if !all_logs.is_empty() && all_logs.len() <= replay_cache_event_log_cap {
-                let replay_payload_hash =
-                    Self::replay_payload_hash(&usr_processed, &sys_processed, false);
-                let key = ReplayCacheKey::new(
-                    start_hash.clone(),
-                    sender.bytes.to_vec(),
-                    seq_num as i64,
-                    replay_payload_hash,
-                );
-                let entry = ReplayCacheEntry::new(all_logs, state_hash.clone());
-                let replay_cached = cache.put(key, entry);
-                let (cache_entries, cache_retained_bytes) =
-                    Self::record_replay_cache_metrics(cache);
-                tracing::debug!("[CACHE] Replay cache admission for sender seq={}: cached={}, entries={}, retained_bytes={}", seq_num, replay_cached, cache_entries, cache_retained_bytes);
-            } else if !all_logs.is_empty() {
-                tracing::debug!(
-                    "[CACHE] Skipped replay cache store for sender seq={} (event_log={})",
-                    seq_num,
-                    all_logs.len()
-                );
-            }
-        }
-
-        // Cache state hash mapping for skip-replay optimization
-        if let Some(ref cache) = self.state_hash_cache {
-            cache.put(start_hash.clone(), state_hash.clone());
-            tracing::debug!("[CACHE] Stored state hash mapping");
-        }
-
-        Ok((state_hash, usr_processed, sys_processed))
+            .map(crypto::rust::signatures::signed::Cosigned::from_single_signer)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        self.compute_state_cosigned(
+            start_hash,
+            cosigned,
+            system_deploys,
+            block_data,
+            invalid_blocks,
+        )
+        .await
     }
 
     /// Multi-signature-aware variant of [`Self::compute_state_with_bonds`].
-    /// Accepts `Vec<Cosigned<DeployData>>` so multi-signature deploys
-    /// execute through the per-cosigner pre-charge + FIFO refund fan-out.
-    /// For legacy single-signature deploys (1-element Cosigned envelopes)
-    /// behavior is byte-identical. Bonds computation is unaffected by the
-    /// signature shape — it reads validator stake from the post-state.
+    /// Accepts `Vec<Cosigned<DeployData>>` so the complete authority envelope
+    /// participates in reservation and realized-cost settlement. For legacy
+    /// single-signature deploys (1-element Cosigned envelopes) behavior is
+    /// byte-identical. Bonds computation is unaffected by the signature shape.
     pub async fn compute_state_with_bonds_cosigned(
         &self,
         start_hash: &StateHash,
@@ -562,32 +551,74 @@ impl RuntimeManager {
         CasperError,
     > {
         let invalid_blocks = invalid_blocks.unwrap_or_default();
+        let admission = self
+            .certify_state_bound_admission(start_hash, terms, &block_data, &invalid_blocks)
+            .await?;
+        if !admission.outcome.rejected.is_empty() {
+            return Err(CasperError::InvalidCostSettlement(format!(
+                "checkpoint received {} deploys without valid state-bound funding evidence",
+                admission.outcome.rejected.len()
+            )));
+        }
+        self.compute_state_with_bonds_cosigned_admitted(admission, system_deploys)
+            .await
+    }
+
+    pub async fn compute_state_with_bonds_cosigned_admitted(
+        &self,
+        admission: StateBoundAdmission,
+        mut system_deploys: Vec<super::system_deploy_enum::SystemDeployEnum>,
+    ) -> Result<
+        (
+            StateHash,
+            Vec<ProcessedDeploy>,
+            Vec<ProcessedSystemDeploy>,
+            Vec<Bond>,
+        ),
+        CasperError,
+    > {
+        let StateBoundAdmission {
+            pre_state: start_hash,
+            block_data,
+            invalid_blocks,
+            outcome,
+            evidence,
+            user_post_state,
+            user_mergeable,
+        } = admission;
+        ensure_terminal_close(&mut system_deploys, &block_data)?;
+        if evidence.len() != outcome.admitted.len() {
+            return Err(CasperError::InvalidCostSettlement(
+                "committed authority evidence count differs from the admitted deploy count"
+                    .to_string(),
+            ));
+        }
         let runtime = self.spawn_runtime().await;
         let mut runtime_ops = RuntimeOps::new(runtime);
         let sender = block_data.sender.clone();
         let seq_num = block_data.seq_num;
-
-        let (state_hash, usr_deploy_res, sys_deploy_res) = runtime_ops
-            .compute_state_cosigned(
-                start_hash,
-                terms,
-                system_deploys,
-                block_data,
-                invalid_blocks,
-            )
+        runtime_ops.runtime.set_block_data(block_data).await;
+        runtime_ops.runtime.set_invalid_blocks(invalid_blocks).await;
+        runtime_ops
+            .runtime
+            .reset(&Blake2b256Hash::from_bytes_prost(&user_post_state))
+            .await?;
+        let committed_user_state = user_post_state;
+        let usr_processed = evidence.to_vec();
+        let (state_hash, sys_deploy_res) = runtime_ops
+            .play_system_deploys_for_state(&committed_user_state, system_deploys)
             .await?;
 
-        let (usr_processed, usr_mergeable): (Vec<ProcessedDeploy>, Vec<NumberChannelsEndVal>) =
-            usr_deploy_res.into_iter().unzip();
         let (sys_processed, sys_mergeable): (
             Vec<ProcessedSystemDeploy>,
             Vec<NumberChannelsEndVal>,
         ) = sys_deploy_res.into_iter().unzip();
-        let mergeable_chs = usr_mergeable
-            .into_iter()
+        let mergeable_chs = user_mergeable
+            .iter()
+            .cloned()
             .chain(sys_mergeable.into_iter())
             .collect();
-        let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);
+        let pre_state_hash = Blake2b256Hash::from_bytes_prost(&start_hash);
         let post_state_hash = Blake2b256Hash::from_bytes_prost(&state_hash);
         self.save_mergeable_channels(
             post_state_hash,
@@ -611,10 +642,11 @@ impl RuntimeManager {
                 );
                 let entry = ReplayCacheEntry::new(all_logs, state_hash.clone());
                 cache.put(key, entry);
+                Self::record_replay_cache_metrics(cache);
             }
         }
         if let Some(ref cache) = self.state_hash_cache {
-            cache.put(start_hash.clone(), state_hash.clone());
+            cache.put(start_hash, state_hash.clone());
         }
 
         // Reuse the same spawned runtime for bonds query (mirrors
@@ -623,6 +655,120 @@ impl RuntimeManager {
         drop(runtime_ops);
 
         Ok((state_hash, usr_processed, sys_processed, bonds))
+    }
+
+    pub async fn state_bound_cost_evidence(
+        &self,
+        start_hash: &StateHash,
+        terms: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
+        block_data: BlockData,
+        invalid_blocks: HashMap<BlockHash, Validator>,
+    ) -> Result<(Vec<ProcessedDeploy>, Vec<prost::bytes::Bytes>), CasperError> {
+        let (execution, outcome) = self
+            .state_bound_execution(start_hash, terms, block_data, invalid_blocks)
+            .await?;
+        Ok((execution.processed.to_vec(), outcome.rejected))
+    }
+
+    async fn state_bound_execution(
+        &self,
+        start_hash: &StateHash,
+        mut terms: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
+        block_data: BlockData,
+        invalid_blocks: HashMap<BlockHash, Validator>,
+    ) -> Result<
+        (
+            StateBoundExecution,
+            crate::rust::util::rholang::acceptance::AdmissionOutcome,
+        ),
+        CasperError,
+    > {
+        crate::rust::util::rholang::acceptance::canonical_sort(&mut terms);
+        let runtime = self.spawn_runtime().await;
+        let mut runtime_ops = RuntimeOps::new(runtime);
+        let fee_recipient = block_data.sender.clone();
+        runtime_ops.runtime.set_block_data(block_data).await;
+        runtime_ops.runtime.set_invalid_blocks(invalid_blocks).await;
+        let (post_state, processed, outcome) = runtime_ops
+            .state_bound_cost_evidence_for_state_cosigned(start_hash, terms, &fee_recipient)
+            .await?;
+        let (processed, mergeable): (Vec<_>, Vec<_>) = processed.into_iter().unzip();
+        Ok((
+            StateBoundExecution {
+                post_state,
+                processed: Arc::from(processed),
+                mergeable: Arc::from(mergeable),
+            },
+            outcome,
+        ))
+    }
+
+    pub async fn admit_with_state_bound_evidence(
+        &self,
+        pre_state: &StateHash,
+        candidates: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
+        block_data: &BlockData,
+        invalid_blocks: &HashMap<BlockHash, Validator>,
+    ) -> Result<crate::rust::util::rholang::acceptance::AdmissionOutcome, CasperError> {
+        self.admit_with_state_bound_evidence_and_witness(
+            pre_state,
+            candidates,
+            block_data,
+            invalid_blocks,
+        )
+        .await
+        .map(|(outcome, _)| outcome)
+    }
+
+    async fn admit_with_state_bound_evidence_and_witness(
+        &self,
+        pre_state: &StateHash,
+        mut candidates: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
+        block_data: &BlockData,
+        invalid_blocks: &HashMap<BlockHash, Validator>,
+    ) -> Result<
+        (
+            crate::rust::util::rholang::acceptance::AdmissionOutcome,
+            StateBoundExecution,
+        ),
+        CasperError,
+    > {
+        crate::rust::util::rholang::acceptance::canonical_sort(&mut candidates);
+        let (execution, outcome) = self
+            .state_bound_execution(
+                pre_state,
+                candidates,
+                block_data.clone(),
+                invalid_blocks.clone(),
+            )
+            .await?;
+        Ok((outcome, execution))
+    }
+
+    pub async fn certify_state_bound_admission(
+        &self,
+        pre_state: &StateHash,
+        candidates: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
+        block_data: &BlockData,
+        invalid_blocks: &HashMap<BlockHash, Validator>,
+    ) -> Result<StateBoundAdmission, CasperError> {
+        let (outcome, execution) = self
+            .admit_with_state_bound_evidence_and_witness(
+                pre_state,
+                candidates,
+                block_data,
+                invalid_blocks,
+            )
+            .await?;
+        Ok(StateBoundAdmission {
+            pre_state: pre_state.clone(),
+            block_data: block_data.clone(),
+            invalid_blocks: invalid_blocks.clone(),
+            outcome,
+            evidence: execution.processed,
+            user_post_state: execution.post_state,
+            user_mergeable: execution.mergeable,
+        })
     }
 
     pub async fn compute_state_with_bonds(
@@ -644,108 +790,24 @@ impl RuntimeManager {
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
         }
-
-        let invalid_blocks = invalid_blocks.unwrap_or_default();
-        let runtime = self.spawn_runtime().await;
-        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_spawn_runtime", rss_kb);
-        }
-        let mut runtime_ops = RuntimeOps::new(runtime);
-
-        // Block data used for mergeable key
-        let sender = block_data.sender.clone();
-        let seq_num = block_data.seq_num;
-
-        let (state_hash, usr_deploy_res, sys_deploy_res) = runtime_ops
-            .compute_state(
+        let cosigned = terms
+            .into_iter()
+            .map(crypto::rust::signatures::signed::Cosigned::from_single_signer)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        let result = self
+            .compute_state_with_bonds_cosigned(
                 start_hash,
-                terms,
+                cosigned,
                 system_deploys,
                 block_data,
                 invalid_blocks,
             )
             .await?;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_compute_state", rss_kb);
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "complete", rss_kb);
         }
-
-        let (usr_processed, usr_mergeable): (Vec<ProcessedDeploy>, Vec<NumberChannelsEndVal>) =
-            usr_deploy_res.into_iter().unzip();
-        let (sys_processed, sys_mergeable): (
-            Vec<ProcessedSystemDeploy>,
-            Vec<NumberChannelsEndVal>,
-        ) = sys_deploy_res.into_iter().unzip();
-        let replay_cache_event_log_cap = Self::max_replay_cache_event_log_entries();
-
-        // Concat user and system deploys mergeable channel maps
-        let mergeable_chs = usr_mergeable
-            .into_iter()
-            .chain(sys_mergeable.into_iter())
-            .collect();
-
-        // Convert from final to diff values and persist mergeable (number) channels for post-state hash
-        let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);
-        let post_state_hash = Blake2b256Hash::from_bytes_prost(&state_hash);
-
-        // Save mergeable channels to store
-        self.save_mergeable_channels(
-            post_state_hash,
-            sender.bytes.clone(),
-            seq_num,
-            mergeable_chs,
-            &pre_state_hash,
-        )?;
-        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_save_mergeable_channels", rss_kb);
-        }
-
-        // Cache replay result for potential replay shortcut (including event logs)
-        if let Some(ref cache) = self.replay_cache {
-            let all_logs = Self::collect_replay_logs(&usr_processed, &sys_processed);
-
-            if !all_logs.is_empty() && all_logs.len() <= replay_cache_event_log_cap {
-                let replay_payload_hash =
-                    Self::replay_payload_hash(&usr_processed, &sys_processed, false);
-                let key = ReplayCacheKey::new(
-                    start_hash.clone(),
-                    sender.bytes.to_vec(),
-                    seq_num as i64,
-                    replay_payload_hash,
-                );
-                let entry = ReplayCacheEntry::new(all_logs, state_hash.clone());
-                let replay_cached = cache.put(key, entry);
-                let (cache_entries, cache_retained_bytes) =
-                    Self::record_replay_cache_metrics(cache);
-                tracing::debug!("[CACHE] Replay cache admission for sender seq={}: cached={}, entries={}, retained_bytes={}", seq_num, replay_cached, cache_entries, cache_retained_bytes);
-            } else if !all_logs.is_empty() {
-                tracing::debug!(
-                    "[CACHE] Skipped replay cache store for sender seq={} (event_log={})",
-                    seq_num,
-                    all_logs.len()
-                );
-            }
-        }
-
-        // Cache state hash mapping for skip-replay optimization
-        if let Some(ref cache) = self.state_hash_cache {
-            cache.put(start_hash.clone(), state_hash.clone());
-            tracing::debug!("[CACHE] Stored state hash mapping");
-        }
-        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_cache_updates", rss_kb);
-        }
-
-        // Reuse the same spawned runtime for bonds query to avoid a second runtime init.
-        let bonds = runtime_ops.compute_bonds(&state_hash).await?;
-        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_compute_bonds", rss_kb);
-        }
-        drop(runtime_ops);
-        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_drop_runtime_ops", rss_kb);
-        }
-
-        Ok((state_hash, usr_processed, sys_processed, bonds))
+        Ok(result)
     }
 
     pub async fn compute_genesis(
@@ -786,25 +848,43 @@ impl RuntimeManager {
         block_data: &BlockData,
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
         is_genesis: bool, // FIXME have a better way of knowing this. Pass the replayDeploy function maybe? - OLD
-        // Task #13a: shard-genesis spec-strict acceptance-gate mode
-        // (`CasperShardConf::strict_funding_enforcement`). Threaded from the
-        // validation caller (which has the shard conf) down to the replay-side
-        // recompute so play and replay evaluate the gate with the SAME constant
-        // (replay determinism). Genesis / historical-replay callers that have
-        // no live snapshot pass their engine's shard-conf value (cost-accounting
-        // is off for genesis, so the value is inert there).
-        strict_funding_enforcement: bool,
-        // Task #13b: shard-genesis client funding-slot allocations
-        // (`CasperShardConf::client_fuel_allocations`, lowered to raw pk bytes).
-        // Threaded from the validation caller down to the reconstructed block-1
-        // close deploy so its `Σ⟦c⟧` seed is byte-identical to the play side.
-        // Genesis / historical-replay callers with no live snapshot pass their
-        // engine's shard-conf value (empty / inert there).
-        client_fuel_allocations: &[(Vec<u8>, i64)],
     ) -> Result<StateHash, CasperError> {
         let sender = block_data.sender.clone();
         let seq_num = block_data.seq_num;
         let replay_payload_hash = Self::replay_payload_hash(&terms, &system_deploys, is_genesis);
+
+        if !is_genesis {
+            let mut admission_runtime = self.spawn_runtime().await;
+            admission_runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(start_hash))
+                .await?;
+            let admission_ops = RuntimeOps::new(admission_runtime);
+            let reader = crate::rust::util::rholang::acceptance::RuntimeOpsSupplyReader {
+                runtime_ops: &admission_ops,
+                pre_state_root: start_hash
+                    .as_ref()
+                    .try_into()
+                    .expect("consensus state roots are Blake2b-256"),
+            };
+            crate::rust::util::rholang::acceptance::verify_state_bound_replay_admission(
+                &terms,
+                &sender.bytes,
+                &reader,
+            )
+            .await
+            .map_err(|error| match error {
+                CasperError::InvalidCostSettlement(detail) => {
+                    CasperError::ReplayFailure(ReplayFailure::replay_admission_mismatch(
+                        terms.len(),
+                        terms.len(),
+                        0,
+                        0,
+                        detail,
+                    ))
+                }
+                other => other,
+            })?;
+        }
 
         // Step 1: Check state-hash cache.
         //
@@ -817,58 +897,63 @@ impl RuntimeManager {
         // We only fast-return on cache hit if mergeable entry already exists for this block key.
         // For empty blocks we can safely synthesize and persist an empty mergeable entry.
         // Otherwise, fall through to full replay to materialize mergeable data.
-        if let Some(ref cache) = self.state_hash_cache {
-            if let Some(cached_post) = cache.get(start_hash) {
-                let mergeable_key = MergeableKey {
-                    state_hash: StateHashSerde(cached_post.clone()),
-                    creator: sender.bytes.clone(),
-                    seq_num,
-                };
-                let mergeable_key_encoded = bincode::serialize(&mergeable_key).map_err(|e| {
-                    CasperError::KvStoreError(KvStoreError::SerializationError(e.to_string()))
-                })?;
+        if !is_genesis {
+            if let Some(ref cache) = self.state_hash_cache {
+                if let Some(cached_post) = cache.get(start_hash) {
+                    let mergeable_key = MergeableKey {
+                        state_hash: StateHashSerde(cached_post.clone()),
+                        creator: sender.bytes.clone(),
+                        seq_num,
+                    };
+                    let mergeable_key_encoded =
+                        bincode::serialize(&mergeable_key).map_err(|e| {
+                            CasperError::KvStoreError(KvStoreError::SerializationError(
+                                e.to_string(),
+                            ))
+                        })?;
 
-                if self
-                    .mergeable_store
-                    .contains_key(mergeable_key_encoded.clone())?
-                {
-                    tracing::info!(
+                    if self
+                        .mergeable_store
+                        .contains_key(mergeable_key_encoded.clone())?
+                    {
+                        tracing::info!(
                         "[CACHE] StateHashCache hit: mergeable entry present, skipping full replay"
                     );
-                    return Ok(cached_post);
-                }
+                        return Ok(cached_post);
+                    }
 
-                let no_user_deploys = terms.is_empty();
-                let no_system_deploys = system_deploys.is_empty();
-                if no_user_deploys && no_system_deploys {
-                    if cached_post != *start_hash {
-                        tracing::warn!(
+                    let no_user_deploys = terms.is_empty();
+                    let no_system_deploys = system_deploys.is_empty();
+                    if no_user_deploys && no_system_deploys {
+                        if cached_post != *start_hash {
+                            tracing::warn!(
                             "[CACHE] StateHashCache hit mismatch for empty block (seq={}): pre_state != cached_post, forcing full replay",
                             seq_num
                         );
-                        // Continue to full replay path for validation.
-                    } else {
-                        let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);
-                        let post_state_hash = Blake2b256Hash::from_bytes_prost(&cached_post);
-                        self.save_mergeable_channels(
-                            post_state_hash,
-                            sender.bytes.clone(),
-                            seq_num,
-                            Vec::new(),
-                            &pre_state_hash,
-                        )?;
-                        tracing::warn!(
+                            // Continue to full replay path for validation.
+                        } else {
+                            let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);
+                            let post_state_hash = Blake2b256Hash::from_bytes_prost(&cached_post);
+                            self.save_mergeable_channels(
+                                post_state_hash,
+                                sender.bytes.clone(),
+                                seq_num,
+                                Vec::new(),
+                                &pre_state_hash,
+                            )?;
+                            tracing::warn!(
                             "[CACHE] StateHashCache hit without mergeable entry for empty block (seq={}); synthesized empty mergeable metadata",
                             seq_num
                         );
-                        return Ok(cached_post);
+                            return Ok(cached_post);
+                        }
                     }
-                }
 
-                tracing::warn!(
+                    tracing::warn!(
                     "[CACHE] StateHashCache hit without mergeable entry for seq={}; falling back to full replay",
                     seq_num
                 );
+                }
             }
         }
 
@@ -881,18 +966,22 @@ impl RuntimeManager {
         );
         if let Some(ref cache) = self.replay_cache {
             if let Some(entry) = cache.get(&replay_cache_key) {
-                tracing::info!("[CACHE] ReplayCache hit for sender seq={}", seq_num);
-
-                // Rig the replay runtime with cached event log
-                let replay_runtime = self.spawn_replay_runtime().await;
-                let rspace_events: Vec<_> = entry
-                    .event_log
-                    .iter()
-                    .map(crate::rust::util::event_converter::to_rspace_event)
-                    .collect();
-                replay_runtime.rig(rspace_events).await?;
-
-                return Ok(entry.post_state);
+                let mergeable_key = MergeableKey {
+                    state_hash: StateHashSerde(entry.post_state.clone()),
+                    creator: sender.bytes.clone(),
+                    seq_num,
+                };
+                let mergeable_key_encoded = bincode::serialize(&mergeable_key).map_err(|e| {
+                    CasperError::KvStoreError(KvStoreError::SerializationError(e.to_string()))
+                })?;
+                if self.mergeable_store.contains_key(mergeable_key_encoded)? {
+                    tracing::info!("[CACHE] ReplayCache hit for sender seq={}", seq_num);
+                    return Ok(entry.post_state);
+                }
+                tracing::warn!(
+                    "[CACHE] ReplayCache hit without mergeable entry for seq={}; falling back to full replay",
+                    seq_num
+                );
             }
         }
 
@@ -910,8 +999,7 @@ impl RuntimeManager {
                 block_data,
                 Some(invalid_blocks),
                 is_genesis,
-                strict_funding_enforcement,
-                client_fuel_allocations,
+                Some(self),
             )
             .await?;
 
@@ -937,11 +1025,165 @@ impl RuntimeManager {
         })?;
 
         // Cache the result for future replays
-        if let Some(ref cache) = self.state_hash_cache {
-            cache.put(start_hash.clone(), post_state.clone());
+        if !is_genesis {
+            if let Some(ref cache) = self.state_hash_cache {
+                cache.put(start_hash.clone(), post_state.clone());
+            }
         }
 
         Ok(post_state)
+    }
+
+    pub async fn replay_block_from_consensus_data(
+        &self,
+        start_hash: &StateHash,
+        block: &BlockMessage,
+        invalid_blocks: Option<HashMap<BlockHash, Validator>>,
+    ) -> Result<StateHash, CasperError> {
+        let is_genesis = block.header.parents_hash_list.is_empty();
+        let invalid_blocks = invalid_blocks.unwrap_or_default();
+        let deploys = if is_genesis {
+            if block
+                .body
+                .deploys
+                .iter()
+                .any(ProcessedDeploy::is_admission_rejected)
+            {
+                return Err(CasperError::ReplayFailure(
+                    ReplayFailure::replay_admission_mismatch(
+                        block.body.deploys.len(),
+                        0,
+                        0,
+                        block.body.deploys.len(),
+                        "genesis cannot contain funding-admission rejection records".to_string(),
+                    ),
+                ));
+            }
+            block.body.deploys.clone()
+        } else {
+            self.verify_state_bound_admission_partition(
+                start_hash,
+                &block.body.deploys,
+                &BlockData::from_block(block),
+                &invalid_blocks,
+            )
+            .await?
+        };
+
+        self.replay_compute_state(
+            start_hash,
+            deploys,
+            block.body.system_deploys.clone(),
+            &BlockData::from_block(block),
+            Some(invalid_blocks),
+            is_genesis,
+        )
+        .await
+    }
+
+    async fn verify_state_bound_admission_partition(
+        &self,
+        start_hash: &StateHash,
+        deploys: &[ProcessedDeploy],
+        block_data: &BlockData,
+        invalid_blocks: &HashMap<BlockHash, Validator>,
+    ) -> Result<Vec<ProcessedDeploy>, CasperError> {
+        let expected_admitted: Vec<ProcessedDeploy> = deploys
+            .iter()
+            .filter(|deploy| !deploy.is_admission_rejected())
+            .cloned()
+            .collect();
+        let expected_rejected: Vec<&ProcessedDeploy> = deploys
+            .iter()
+            .filter(|deploy| deploy.is_admission_rejected())
+            .collect();
+        if expected_rejected.is_empty() {
+            return Ok(expected_admitted);
+        }
+
+        let invalid_rejection = expected_rejected.iter().find(|deploy| {
+            !deploy.is_failed
+                || deploy.cost.cost != 0
+                || !deploy.deploy_log.is_empty()
+                || deploy.system_deploy_error.as_deref()
+                    != Some(ProcessedDeploy::FUNDING_ADMISSION_REJECTION)
+                || deploy.pre_state_hash != *start_hash
+                || deploy.post_state_hash != *start_hash
+                || deploy.authority_funding_certificate.is_some()
+                || deploy.authority_cost_witness.is_some()
+        });
+        if let Some(deploy) = invalid_rejection {
+            return Err(CasperError::ReplayFailure(
+                ReplayFailure::replay_admission_mismatch(
+                    expected_admitted.len(),
+                    0,
+                    expected_rejected.len(),
+                    0,
+                    format!(
+                        "malformed funding-admission rejection record for deploy {}",
+                        hex::encode(&deploy.deploy.sig)
+                    ),
+                ),
+            ));
+        }
+
+        let mut candidates = Vec::with_capacity(deploys.len());
+        for deploy in deploys {
+            candidates.push(deploy.to_cosigned().map_err(|detail| {
+                CasperError::ReplayFailure(ReplayFailure::replay_admission_mismatch(
+                    expected_admitted.len(),
+                    0,
+                    expected_rejected.len(),
+                    0,
+                    detail,
+                ))
+            })?);
+        }
+
+        let replay = self
+            .certify_state_bound_admission(start_hash, candidates, block_data, invalid_blocks)
+            .await
+            .map_err(|error| {
+                CasperError::ReplayFailure(ReplayFailure::replay_admission_mismatch(
+                    expected_admitted.len(),
+                    0,
+                    expected_rejected.len(),
+                    0,
+                    error.to_string(),
+                ))
+            })?;
+        let replay_admitted: Vec<_> = replay
+            .outcome()
+            .admitted
+            .iter()
+            .map(|deploy| deploy.primary().sig.clone())
+            .collect();
+        let expected_admitted_sigs: Vec<_> = expected_admitted
+            .iter()
+            .map(|deploy| deploy.deploy.sig.clone())
+            .collect();
+        let mut replay_rejected = replay.outcome().rejected.clone();
+        let mut expected_rejected_sigs: Vec<_> = expected_rejected
+            .iter()
+            .map(|deploy| deploy.deploy.sig.clone())
+            .collect();
+        replay_rejected.sort();
+        expected_rejected_sigs.sort();
+
+        if replay_admitted != expected_admitted_sigs || replay_rejected != expected_rejected_sigs {
+            return Err(CasperError::ReplayFailure(
+                ReplayFailure::replay_admission_mismatch(
+                    expected_admitted.len(),
+                    replay_admitted.len(),
+                    expected_rejected.len(),
+                    replay_rejected.len(),
+                    "block funding-admission partition differs from state-bound recomputation"
+                        .to_string(),
+                ),
+            ));
+        }
+
+        Ok(expected_admitted)
     }
 
     pub async fn capture_results(
@@ -1030,6 +1272,20 @@ impl RuntimeManager {
             .await
     }
 
+    pub async fn play_query_par_at_state_strict(
+        &self,
+        par: Par,
+        hash: &StateHash,
+    ) -> Result<Vec<Par>, CasperError> {
+        let mut runtime = self.spawn_runtime().await;
+        runtime
+            .reset(&Blake2b256Hash::from_bytes_prost(hash))
+            .await?;
+        RuntimeOps::new(runtime)
+            .play_query_par_current_strict(par)
+            .await
+    }
+
     pub async fn get_data(&self, hash: StateHash, channel: &Par) -> Result<Vec<Par>, CasperError> {
         let mut runtime = self.spawn_runtime().await;
 
@@ -1040,6 +1296,21 @@ impl RuntimeManager {
         let runtime_ops = RuntimeOps::new(runtime);
         let computed = runtime_ops.get_data_par(channel).await;
         Ok(computed)
+    }
+
+    pub async fn get_data_datums(
+        &self,
+        hash: StateHash,
+        channel: &Par,
+    ) -> Result<
+        Vec<rspace_plus_plus::rspace::internal::Datum<models::rhoapi::ListParWithRandom>>,
+        CasperError,
+    > {
+        let mut runtime = self.spawn_runtime().await;
+        runtime
+            .reset(&Blake2b256Hash::from_bytes_prost(&hash))
+            .await?;
+        Ok(RuntimeOps::new(runtime).get_data_datums(channel).await)
     }
 
     pub async fn get_continuation(
@@ -1081,10 +1352,10 @@ impl RuntimeManager {
         mergeable_chs: &Vec<NumberChannelsDiff>,
     ) -> Result<BlockIndex, CasperError> {
         if let Some(cached) = self.block_index_cache.get(block_hash) {
+            let cached = cached.clone();
             Self::touch_cache_key(&self.block_index_cache_order, block_hash);
-            metrics::gauge!(BLOCK_INDEX_CACHE_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
-                .set(self.block_index_cache.len() as f64);
-            return Ok(cached.clone());
+            self.record_block_index_cache_metrics();
+            return Ok(cached);
         }
 
         // Cache miss - compute the BlockIndex.
@@ -1101,24 +1372,87 @@ impl RuntimeManager {
 
         // Keep index cache bounded for long-running validators.
         // Avoid DashMap re-entrant calls while holding an entry guard.
+        let retained_bytes = block_index.retained_bytes();
         let max_entries = Self::max_block_index_cache_entries();
-        if self.block_index_cache.len() >= max_entries {
-            Self::evict_fifo_entry(&self.block_index_cache, &self.block_index_cache_order);
+        let max_bytes = Self::max_block_index_cache_bytes();
+        let _write_guard = self
+            .block_index_cache_write_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if let Some(cached) = self.block_index_cache.get(block_hash) {
+            let cached = cached.clone();
+            Self::touch_cache_key(&self.block_index_cache_order, block_hash);
+            self.record_block_index_cache_metrics();
+            return Ok(cached);
         }
 
-        self.block_index_cache
-            .insert(block_hash.clone(), block_index.clone());
-        Self::touch_cache_key(&self.block_index_cache_order, block_hash);
-        metrics::gauge!(BLOCK_INDEX_CACHE_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
-            .set(self.block_index_cache.len() as f64);
+        while self.block_index_cache.len() >= max_entries
+            || self
+                .block_index_cache_retained_bytes
+                .load(Ordering::Acquire)
+                .saturating_add(retained_bytes)
+                > max_bytes
+        {
+            if !self.evict_block_index_entry() {
+                break;
+            }
+        }
+
+        if retained_bytes <= max_bytes {
+            if let Some(previous) = self
+                .block_index_cache
+                .insert(block_hash.clone(), block_index.clone())
+            {
+                let previous_bytes = previous.retained_bytes();
+                let _ = self.block_index_cache_retained_bytes.fetch_update(
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                    |current| Some(current.saturating_sub(previous_bytes)),
+                );
+            }
+            self.block_index_cache_retained_bytes
+                .fetch_add(retained_bytes, Ordering::AcqRel);
+            Self::touch_cache_key(&self.block_index_cache_order, block_hash);
+        }
+        self.record_block_index_cache_metrics();
         Ok(block_index)
+    }
+
+    pub fn has_cached_block_index(&self, block_hash: &BlockHash) -> bool {
+        self.block_index_cache.contains_key(block_hash)
     }
 
     /// Remove BlockIndex from cache (used during finalization)
     pub fn remove_block_index_cache(&self, block_hash: &BlockHash) {
-        self.block_index_cache.remove(block_hash);
-        metrics::gauge!(BLOCK_INDEX_CACHE_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
-            .set(self.block_index_cache.len() as f64);
+        let _write_guard = self
+            .block_index_cache_write_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((_, removed)) = self.block_index_cache.remove(block_hash) {
+            let bytes = removed.retained_bytes();
+            let _ = self.block_index_cache_retained_bytes.fetch_update(
+                Ordering::AcqRel,
+                Ordering::Acquire,
+                |current| Some(current.saturating_sub(bytes)),
+            );
+        }
+        self.record_block_index_cache_metrics();
+    }
+
+    pub fn clear_block_index_cache(&self) {
+        let _write_guard = self
+            .block_index_cache_write_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.block_index_cache.clear();
+        self.block_index_cache_order
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+        self.block_index_cache_retained_bytes
+            .store(0, Ordering::Release);
+        self.record_block_index_cache_metrics();
     }
 
     pub fn get_cached_parents_post_state(
@@ -1279,27 +1613,15 @@ impl RuntimeManager {
         &self,
         block: &models::rust::casper::protocol::casper_message::BlockMessage,
         invalid_blocks: HashMap<BlockHash, Validator>,
-        // Shard funding config threaded from the caller so the mergeable-entry
-        // replay reproduces the block's canonical post-state (the funding-enforced
-        // settlement recompute is part of that post-state under cost accounting).
-        strict_funding_enforcement: bool,
-        client_fuel_allocations: &[(Vec<u8>, i64)],
     ) -> Result<(), CasperError> {
         if self.has_mergeable_entry(block)? {
             return Ok(());
         }
 
-        let block_data = BlockData::from_block(block);
-        let is_genesis = block.header.parents_hash_list.is_empty();
-        self.replay_compute_state(
+        self.replay_block_from_consensus_data(
             &block.body.state.pre_state_hash,
-            block.body.deploys.clone(),
-            block.body.system_deploys.clone(),
-            &block_data,
+            block,
             Some(invalid_blocks),
-            is_genesis,
-            strict_funding_enforcement,
-            client_fuel_allocations,
         )
         .await?;
 
@@ -1470,12 +1792,11 @@ impl RuntimeManager {
      * the time. For some situations, we can just use the value directly for better performance.
      */
     pub fn empty_state_hash_fixed() -> StateHash {
-        // Updated 2026-07-04 for the versioned registry FIP: Step 2 wires
-        // VersionedRegistry.rho into genesis, adding one more contract to
-        // the initial installed set and re-encoding the bootstrap
-        // registry's continuations. Coordinated upgrade required.
-        // (Prior update: 2026-04-29 by Phase 9 of where-clauses-and-match-guards.)
-        hex::decode("facf59ccc55ee2c04802c7399bcff0d15154f70e0d2bc40cf041aac0a89499c1")
+        // Updated 2026-08-13 for the authority-carrying RSpace schema used by
+        // persistent located cost regions. This is a coordinated state-format
+        // upgrade: even absent authority fields participate in canonical
+        // continuation and datum encoding.
+        hex::decode("b38db9a0203b6b9cf5987024f325b83da33be5c1b820b3f86fd979578f2985d5")
             .unwrap()
             .into()
     }
@@ -1504,6 +1825,8 @@ impl RuntimeManager {
             mergeable_tags,
             block_index_cache: Arc::new(DashMap::new()),
             block_index_cache_order: Arc::new(Mutex::new(VecDeque::new())),
+            block_index_cache_retained_bytes: Arc::new(AtomicUsize::new(0)),
+            block_index_cache_write_lock: Arc::new(Mutex::new(())),
             active_validators_cache: Arc::new(DashMap::new()),
             active_validators_cache_order: Arc::new(Mutex::new(VecDeque::new())),
             bonds_cache: Arc::new(DashMap::new()),
@@ -1584,6 +1907,7 @@ impl RuntimeManager {
 
 #[cfg(test)]
 mod tests {
+    use crypto::rust::hash::blake2b512_random::Blake2b512Random;
     use crypto::rust::public_key::PublicKey;
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
@@ -1591,6 +1915,7 @@ mod tests {
     use models::rust::casper::protocol::casper_message::{
         BlockMessage, Body, F1r3flyState, Header, ProduceEvent,
     };
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::*;
 
@@ -1601,6 +1926,7 @@ mod tests {
             valid_after_block_number: 0,
             shard_id: "root".to_string(),
             expiration_timestamp: None,
+            authority_presentations: Vec::new(),
         }
     }
 
@@ -1622,6 +1948,122 @@ mod tests {
         })
     }
 
+    fn state_bound_admission(block_data: BlockData) -> StateBoundAdmission {
+        StateBoundAdmission {
+            pre_state: vec![1; 32].into(),
+            block_data,
+            invalid_blocks: HashMap::new(),
+            outcome: crate::rust::util::rholang::acceptance::AdmissionOutcome::default(),
+            evidence: Arc::from(Vec::<ProcessedDeploy>::new()),
+            user_post_state: vec![1; 32].into(),
+            user_mergeable: Arc::from(Vec::<NumberChannelsEndVal>::new()),
+        }
+    }
+
+    #[test]
+    fn state_bound_admission_matches_only_its_exact_block_context() {
+        let block_data = BlockData {
+            time_stamp: 11,
+            block_number: 12,
+            sender: PublicKey::from_bytes(&[13, 14]),
+            seq_num: 15,
+        };
+        let admission = state_bound_admission(block_data.clone());
+        let invalid_blocks = HashMap::new();
+
+        assert!(admission.matches_context(&block_data, &invalid_blocks));
+
+        let mut changed = block_data.clone();
+        changed.time_stamp += 1;
+        assert!(!admission.matches_context(&changed, &invalid_blocks));
+
+        let mut changed = block_data.clone();
+        changed.block_number += 1;
+        assert!(!admission.matches_context(&changed, &invalid_blocks));
+
+        let mut changed = block_data.clone();
+        changed.sender = PublicKey::from_bytes(&[15, 16]);
+        assert!(!admission.matches_context(&changed, &invalid_blocks));
+
+        let mut changed = block_data.clone();
+        changed.seq_num += 1;
+        assert!(!admission.matches_context(&changed, &invalid_blocks));
+
+        let mut changed_invalid_blocks = HashMap::new();
+        changed_invalid_blocks.insert(vec![17; 32].into(), vec![18, 19].into());
+        assert!(!admission.matches_context(&block_data, &changed_invalid_blocks));
+    }
+
+    #[test]
+    fn state_bound_admission_preserves_its_exact_pre_state() {
+        let admission = state_bound_admission(BlockData::empty());
+
+        assert_eq!(admission.pre_state(), &StateHash::from(vec![1; 32]));
+        assert_ne!(admission.pre_state(), &StateHash::from(vec![2; 32]));
+    }
+
+    fn close() -> super::super::system_deploy_enum::SystemDeployEnum {
+        super::super::system_deploy_enum::SystemDeployEnum::Close(
+            crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy::new(
+                Blake2b512Random::create_from_bytes(&[1]),
+            ),
+        )
+    }
+
+    fn slash() -> super::super::system_deploy_enum::SystemDeployEnum {
+        super::super::system_deploy_enum::SystemDeployEnum::Slash(
+            crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy {
+                invalid_block_hash: vec![2; 32].into(),
+                pk: PublicKey::from_bytes(&[3]),
+                target_activation_epoch: 4,
+                initial_rand: Blake2b512Random::create_from_bytes(&[5]),
+            },
+        )
+    }
+
+    #[test]
+    fn ordinary_checkpoint_synthesizes_and_validates_terminal_close() {
+        let block_data = BlockData {
+            time_stamp: 1,
+            block_number: 2,
+            sender: PublicKey::from_bytes(&[3]),
+            seq_num: 4,
+        };
+        let mut empty = Vec::new();
+        ensure_terminal_close(&mut empty, &block_data).unwrap();
+        assert_eq!(empty.len(), 1);
+        assert!(empty[0].as_close().is_some());
+
+        let mut terminal = vec![slash(), close()];
+        ensure_terminal_close(&mut terminal, &block_data).unwrap();
+
+        let mut nonterminal = vec![close(), slash()];
+        assert!(ensure_terminal_close(&mut nonterminal, &block_data).is_err());
+
+        let mut duplicate = vec![close(), close()];
+        assert!(ensure_terminal_close(&mut duplicate, &block_data).is_err());
+    }
+
+    #[test]
+    fn state_bound_admission_retains_the_complete_execution_witness() {
+        let mut witness = processed_deploy(signed_deploy(), 3, vec![produce_event(1)]);
+        witness.pre_state_hash = vec![2; 32].into();
+        witness.post_state_hash = vec![3; 32].into();
+        let admission = StateBoundAdmission {
+            pre_state: vec![2; 32].into(),
+            block_data: BlockData::empty(),
+            invalid_blocks: HashMap::new(),
+            outcome: crate::rust::util::rholang::acceptance::AdmissionOutcome::default(),
+            evidence: Arc::from(vec![witness.clone()]),
+            user_post_state: witness.post_state_hash.clone(),
+            user_mergeable: Arc::from(vec![NumberChannelsEndVal::new()]),
+        };
+
+        assert_eq!(admission.evidence.as_ref(), std::slice::from_ref(&witness));
+        assert_eq!(admission.user_post_state, witness.post_state_hash);
+        assert_eq!(admission.user_mergeable.len(), 1);
+    }
+
     fn processed_deploy(
         deploy: Signed<DeployData>,
         cost: u64,
@@ -1637,6 +2079,9 @@ mod tests {
             cosigner_threshold: 0,
             pre_state_hash: Vec::<u8>::new().into(),
             post_state_hash: Vec::<u8>::new().into(),
+            authority_funding_certificate: None,
+            authority_cost_witness: None,
+            admission_status: Default::default(),
         }
     }
 
@@ -1682,6 +2127,97 @@ mod tests {
             pre_state_hash: Vec::<u8>::new().into(),
             post_state_hash: Vec::<u8>::new().into(),
         }
+    }
+
+    async fn test_runtime_manager() -> RuntimeManager {
+        let mut kvm = InMemoryStoreManager::new();
+        let store = kvm.r_space_stores().await.expect("rspace stores");
+        let mergeable_store = RuntimeManager::mergeable_store(&mut kvm)
+            .await
+            .expect("mergeable store");
+        RuntimeManager::create_with_history(
+            store,
+            mergeable_store,
+            Arc::new(HashMap::new()),
+            ExternalServices::noop(),
+        )
+        .0
+    }
+
+    fn compute_empty_index(manager: &RuntimeManager, block_hash: &BlockHash) -> BlockIndex {
+        let root = Blake2b256Hash::from_bytes(vec![0; 32]);
+        manager
+            .get_or_compute_block_index(
+                block_hash,
+                0,
+                &Vec::new(),
+                &Vec::new(),
+                &root,
+                &root,
+                &Vec::new(),
+            )
+            .expect("empty block index")
+    }
+
+    #[tokio::test]
+    async fn block_index_cache_enforces_entry_and_byte_accounting_invariants() {
+        let manager = test_runtime_manager().await;
+        let hashes: Vec<BlockHash> = (0..RuntimeManager::MAX_BLOCK_INDEX_CACHE_ENTRIES + 5)
+            .map(|index| index.to_le_bytes().to_vec().into())
+            .collect();
+
+        for hash in &hashes {
+            compute_empty_index(&manager, hash);
+        }
+
+        assert_eq!(
+            manager.block_index_cache.len(),
+            RuntimeManager::MAX_BLOCK_INDEX_CACHE_ENTRIES
+        );
+        assert!(!manager.has_cached_block_index(&hashes[0]));
+        assert!(manager.has_cached_block_index(hashes.last().expect("last hash")));
+        let retained = manager
+            .block_index_cache
+            .iter()
+            .map(|entry| entry.value().retained_bytes())
+            .sum::<usize>();
+        assert_eq!(
+            manager
+                .block_index_cache_retained_bytes
+                .load(Ordering::Acquire),
+            retained
+        );
+        assert!(retained <= RuntimeManager::MAX_BLOCK_INDEX_CACHE_BYTES);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_block_index_misses_commit_one_accounted_entry() {
+        let manager = Arc::new(test_runtime_manager().await);
+        let block_hash: BlockHash = vec![7; 32].into();
+        let tasks = (0..32)
+            .map(|_| {
+                let manager = manager.clone();
+                let block_hash = block_hash.clone();
+                tokio::spawn(async move { compute_empty_index(&manager, &block_hash) })
+            })
+            .collect::<Vec<_>>();
+
+        for task in tasks {
+            task.await.expect("cache task");
+        }
+
+        assert_eq!(manager.block_index_cache.len(), 1);
+        let retained = manager
+            .block_index_cache
+            .get(&block_hash)
+            .expect("cached block index")
+            .retained_bytes();
+        assert_eq!(
+            manager
+                .block_index_cache_retained_bytes
+                .load(Ordering::Acquire),
+            retained
+        );
     }
 
     #[derive(serde::Deserialize)]

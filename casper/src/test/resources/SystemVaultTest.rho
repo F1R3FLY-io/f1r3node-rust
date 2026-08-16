@@ -24,6 +24,7 @@ match (
       getDeployerId(`rho:test:deployerId:make`),
       setup,
       testFindOrCreateGenesisVault,
+      testFindExistingAndAbsentVaults,
       testDepositToGenesisCreatedVault,
       testBalanceInGenesisCreatedVault,
       testTransferInGenesisCreatedVault,
@@ -46,6 +47,7 @@ match (
         @RhoSpec!("testSuite", *setup,
           [
             ("Create genesis vault with expected balance", *testFindOrCreateGenesisVault),
+            ("Find existing vaults without creating absent vaults", *testFindExistingAndAbsentVaults),
             ("Return an error for invalid public key", *testCreateVaultFail),
             ("Create vault and see that it is secured", *testCreateVault),
             ("Transfer from genesis to Alice", *testTransfer),
@@ -75,6 +77,16 @@ match (
             // so far, access to genesisVault is not secured. This will be changd.
             @genesisVault!("balance", *balanceCh) |
             rhoSpec!("assert", (9000000, "== <-", *balanceCh), "balance is as expected", *ackCh)
+          }
+        }
+      } |
+
+      contract testFindExistingAndAbsentVaults(rhoSpec, SystemVault, ackCh) = {
+        new existingCh, absentCh, existingFoundCh in {
+          SystemVault!("find", genesisVaultAddress, *existingCh) |
+          SystemVault!("find", bobVaultAddress, *absentCh) |
+          for (@(true, _) <- existingCh) {
+            rhoSpec!("assert", ((false, "Vault not found"), "== <-", *absentCh), "absent vault is not created", *ackCh)
           }
         }
       } |

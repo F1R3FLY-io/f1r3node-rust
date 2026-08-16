@@ -23,6 +23,67 @@ use super::deploy_chain_index::DeployChainIndex;
 use crate::rust::errors::CasperError;
 use crate::rust::system_deploy::{is_slash_deploy_id, is_system_deploy_id};
 
+#[derive(Clone, Debug, Default)]
+pub struct MergeOccurrenceContext {
+    pub base_committed_sigs: HashSet<Bytes>,
+    pub scope_tombstones: BTreeMap<(Bytes, BlockHash), RejectedDeployReason>,
+    pub require_exact_effects: bool,
+}
+
+fn insert_rejection_reason(
+    reasons: &mut BTreeMap<(Bytes, BlockHash), RejectedDeployReason>,
+    key: (Bytes, BlockHash),
+    reason: RejectedDeployReason,
+) {
+    reasons
+        .entry(key)
+        .and_modify(|current| *current = current.canonical_join(reason))
+        .or_insert(reason);
+}
+
+fn filter_occurrence_chains(
+    chains: Vec<DeployChainIndex>,
+    context: &MergeOccurrenceContext,
+) -> (
+    Vec<DeployChainIndex>,
+    Vec<DeployChainIndex>,
+    Vec<RejectedDeploy>,
+) {
+    let (retained, dropped): (Vec<_>, Vec<_>) = chains.into_iter().partition(|chain| {
+        !chain.deploys_with_cost.0.iter().any(|deploy| {
+            !is_system_deploy_id(&deploy.deploy_id)
+                && (context.base_committed_sigs.contains(&deploy.deploy_id)
+                    || context
+                        .scope_tombstones
+                        .contains_key(&(deploy.deploy_id.clone(), chain.source_block_hash.clone())))
+        })
+    });
+    let mut rejections = Vec::new();
+    for chain in &dropped {
+        for deploy in &chain.deploys_with_cost.0 {
+            if is_system_deploy_id(&deploy.deploy_id) {
+                continue;
+            }
+            let exact_reason = context
+                .scope_tombstones
+                .get(&(deploy.deploy_id.clone(), chain.source_block_hash.clone()));
+            let reason = exact_reason.copied().unwrap_or_else(|| {
+                if context.base_committed_sigs.contains(&deploy.deploy_id) {
+                    RejectedDeployReason::DuplicateOccurrence
+                } else {
+                    RejectedDeployReason::CollateralChainDrop
+                }
+            });
+            rejections.push(RejectedDeploy::occurrence(
+                deploy.deploy_id.clone(),
+                chain.source_block_hash.clone(),
+                reason,
+            ));
+        }
+    }
+    (retained, dropped, rejections)
+}
+
 pub fn cost_optimal_rejection_alg() -> impl Fn(&DeployChainIndex) -> u64 {
     |deploy_chain_index: &DeployChainIndex| {
         let cost: u64 = deploy_chain_index
@@ -147,6 +208,156 @@ fn branch_mergeable_channels(
         }
     }
     Ok(branch_mergeable)
+}
+
+fn exact_state_depends(target: &DeployChainIndex, source: &DeployChainIndex) -> bool {
+    if !target.has_exact_state_witness || !source.has_exact_state_witness {
+        return false;
+    }
+
+    for target_entry in target.state_changes.datums_changes.iter() {
+        let channel = target_entry.key();
+        if target
+            .event_log_index
+            .number_channels_data
+            .contains_key(channel)
+            || source
+                .event_log_index
+                .number_channels_data
+                .contains_key(channel)
+        {
+            continue;
+        }
+        let Some(source_change) = source.state_changes.datums_changes.get(channel) else {
+            continue;
+        };
+        if target_entry
+            .value()
+            .removed
+            .iter()
+            .any(|removed| source_change.added.contains(removed))
+        {
+            return true;
+        }
+    }
+
+    for target_entry in target.state_changes.cont_changes.iter() {
+        let Some(source_change) = source.state_changes.cont_changes.get(target_entry.key()) else {
+            continue;
+        };
+        if target_entry
+            .value()
+            .removed
+            .iter()
+            .any(|removed| source_change.added.contains(removed))
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn add_exact_state_dependencies(
+    chains: &[DeployChainIndex],
+    result: &mut HashMap<DeployChainIndex, HashableSet<DeployChainIndex>>,
+) {
+    let mut datum_producers: HashMap<(Blake2b256Hash, &[u8]), Vec<usize>> = HashMap::new();
+    let mut continuation_producers: HashMap<(Vec<Blake2b256Hash>, &[u8]), Vec<usize>> =
+        HashMap::new();
+
+    for (index, chain) in chains.iter().enumerate() {
+        if !chain.has_exact_state_witness {
+            continue;
+        }
+        for entry in chain.state_changes.datums_changes.iter() {
+            if chain
+                .event_log_index
+                .number_channels_data
+                .contains_key(entry.key())
+            {
+                continue;
+            }
+            for added in &entry.value().added {
+                datum_producers
+                    .entry((entry.key().clone(), added.as_slice()))
+                    .or_default()
+                    .push(index);
+            }
+        }
+        for entry in chain.state_changes.cont_changes.iter() {
+            for added in &entry.value().added {
+                continuation_producers
+                    .entry((entry.key().clone(), added.as_slice()))
+                    .or_default()
+                    .push(index);
+            }
+        }
+    }
+
+    let mut pairs = HashSet::new();
+    for (target_index, target) in chains.iter().enumerate() {
+        if !target.has_exact_state_witness {
+            continue;
+        }
+        for entry in target.state_changes.datums_changes.iter() {
+            if target
+                .event_log_index
+                .number_channels_data
+                .contains_key(entry.key())
+            {
+                continue;
+            }
+            for removed in &entry.value().removed {
+                if let Some(sources) =
+                    datum_producers.get(&(entry.key().clone(), removed.as_slice()))
+                {
+                    for source_index in sources {
+                        if *source_index != target_index {
+                            pairs.insert((*source_index, target_index));
+                        }
+                    }
+                }
+            }
+        }
+        for entry in target.state_changes.cont_changes.iter() {
+            for removed in &entry.value().removed {
+                if let Some(sources) =
+                    continuation_producers.get(&(entry.key().clone(), removed.as_slice()))
+                {
+                    for source_index in sources {
+                        if *source_index != target_index {
+                            pairs.insert((*source_index, target_index));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for (source_index, target_index) in pairs {
+        let source = chains[source_index].clone();
+        let target = chains[target_index].clone();
+        result
+            .entry(source.clone())
+            .or_insert_with(|| HashableSet(HashSet::new()))
+            .0
+            .insert(target.clone());
+        result
+            .entry(target)
+            .or_insert_with(|| HashableSet(HashSet::new()))
+            .0
+            .insert(source);
+    }
+}
+
+fn block_lineage_rejection_roots(rejected: &HashableSet<DeployChainIndex>) -> HashSet<BlockHash> {
+    rejected
+        .0
+        .iter()
+        .filter(|chain| !chain.has_exact_state_witness)
+        .map(|chain| chain.source_block_hash.clone())
+        .collect()
 }
 
 fn split_unavailable_branch_consumes(
@@ -564,7 +775,8 @@ pub fn merge(
     rejection_cost_f: impl Fn(&DeployChainIndex) -> u64,
     scope: Option<HashSet<BlockHash>>,
     disable_late_block_filtering: bool,
-) -> Result<(Blake2b256Hash, Vec<RejectedDeploy>, Vec<(Bytes, BlockHash)>), CasperError> {
+    occurrence_context: MergeOccurrenceContext,
+) -> Result<(Blake2b256Hash, Vec<RejectedDeploy>), CasperError> {
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
         tracing::debug!(target: "f1r3fly.merge.step", step = "merge.ENTER",
             lfb = %hex::encode(&lfb[..]),
@@ -673,6 +885,14 @@ pub fn merge(
         late_set_vec.extend(indices);
     }
 
+    if occurrence_context.require_exact_effects {
+        for chain in actual_set_vec.iter().chain(&late_set_vec) {
+            chain
+                .validate_exact_projection()
+                .map_err(CasperError::HistoryError)?;
+        }
+    }
+
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
         tracing::debug!(target: "f1r3fly.merge.step", step = "merge.indices_loaded",
             n_actual_chains = actual_set_vec.len(), n_late_chains = late_set_vec.len());
@@ -683,6 +903,18 @@ pub fn merge(
     // deploys downstream — added to the rejected-deploy buffer so the
     // recovery path can re-propose them in a subsequent block.
     let mut dedup_rejections: Vec<RejectedDeploy> = Vec::new();
+    let mut forced_rejected_chains: Vec<DeployChainIndex> = Vec::new();
+
+    if !actual_set_vec.is_empty()
+        && (!occurrence_context.base_committed_sigs.is_empty()
+            || !occurrence_context.scope_tombstones.is_empty())
+    {
+        let (retained, dropped, rejections) =
+            filter_occurrence_chains(std::mem::take(&mut actual_set_vec), &occurrence_context);
+        actual_set_vec = retained;
+        dedup_rejections.extend(rejections);
+        forced_rejected_chains.extend(dropped);
+    }
 
     // Deploy de-duplication. When the same deploy ID appears in chains from
     // multiple blocks in scope — for example, because a previously-rejected
@@ -831,6 +1063,41 @@ pub fn merge(
                 dedup_rejections.len(),
             );
         }
+        forced_rejected_chains.extend(dropped);
+    }
+
+    if !forced_rejected_chains.is_empty() && !actual_set_vec.is_empty() {
+        let rejected_source_blocks: HashSet<BlockHash> = forced_rejected_chains
+            .iter()
+            .map(|chain| chain.source_block_hash.clone())
+            .collect();
+        let mut retained = Vec::new();
+        for chain in std::mem::take(&mut actual_set_vec) {
+            let mut stale = false;
+            for rejected_source in &rejected_source_blocks {
+                if rejected_source != &chain.source_block_hash
+                    && dag.is_dag_ancestor(rejected_source, &chain.source_block_hash)?
+                {
+                    stale = true;
+                    break;
+                }
+            }
+            if stale {
+                for deploy in &chain.deploys_with_cost.0 {
+                    if !is_system_deploy_id(&deploy.deploy_id) {
+                        dedup_rejections.push(RejectedDeploy::occurrence(
+                            deploy.deploy_id.clone(),
+                            chain.source_block_hash.clone(),
+                            RejectedDeployReason::CollateralChainDrop,
+                        ));
+                    }
+                }
+                forced_rejected_chains.push(chain);
+            } else {
+                retained.push(chain);
+            }
+        }
+        actual_set_vec = retained;
     }
 
     // Sort the deploy chain indices for deterministic iteration order
@@ -991,7 +1258,7 @@ pub fn merge(
                     .intersection(&target.event_log_index.consumes_produced.0)
                     .count());
         }
-        consume_dep
+        consume_dep || exact_state_depends(target, source)
     };
 
     let state_changes_fn = |chain: &DeployChainIndex| Ok(chain.state_changes.clone());
@@ -1256,6 +1523,8 @@ pub fn merge(
             #[allow(clippy::mutable_key_type)]
             let depends_map =
                 merging_logic::compute_depends_map_event_indexed(&chains_vec, &event_logs);
+            let mut depends_map = depends_map;
+            add_exact_state_dependencies(&chains_vec, &mut depends_map);
             let branches = merging_logic::gather_related_sets(&depends_map);
             if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
                 tracing::debug!(target: "f1r3fly.merge.step", step = "compute_branches_fn.ENTER",
@@ -1326,6 +1595,10 @@ pub fn merge(
     )
     .map_err(CasperError::HistoryError)?;
 
+    for chain in forced_rejected_chains {
+        resolved.rejected.0.insert(chain);
+    }
+
     if unavailable_rejected_count > 0 {
         tracing::debug!(
             target: "f1r3fly.merge.step",
@@ -1335,24 +1608,8 @@ pub fn merge(
         );
     }
 
-    // Rejection expansion over block lineage: a surviving chain whose source
-    // block DAG-descends from a rejected chain's source block was computed
-    // against a pre-state that materializes the rejected work. Applying its
-    // pre-computed diffs on a merge base WITHOUT that work is a stale-diff
-    // application — the descendant's effects appear while its ancestor's are
-    // absent, an internally inconsistent post-state. Reject the descendants'
-    // chains as well; recovery re-proposes them against the actual merged
-    // base. Event-log dependency expansion (inside conflict resolution)
-    // cannot catch this: the descendant may touch disjoint channels and still
-    // be state-lineage-dependent. Ancestry is transitive, so one pass covers
-    // deeper descendants.
     {
-        let rejected_blocks: HashSet<BlockHash> = resolved
-            .rejected
-            .0
-            .iter()
-            .map(|chain| chain.source_block_hash.clone())
-            .collect();
+        let rejected_blocks = block_lineage_rejection_roots(&resolved.rejected);
         if !rejected_blocks.is_empty() {
             let mut descends_cache: HashMap<BlockHash, bool> = HashMap::new();
             let mut descends_rejected = |block_hash: &BlockHash| -> Result<bool, CasperError> {
@@ -1514,12 +1771,10 @@ pub fn merge(
     let rejected = resolved.rejected;
 
     // Extract (rejected deploy ID, source block hash) pairs, split by kind.
-    // User deploys feed the rejected-deploy buffer for re-proposal. Slash
-    // deploys feed the block creator's dedup step so that the slash effect
-    // persists in the merge block's body regardless of cost-optimal rejection
-    // of the source chain. Non-slash system deploys (close block, heartbeat)
-    // are intentionally dropped here — they are atomic with their containing
-    // block and have no recovery semantics.
+    // User deploys feed the rejected-deploy buffer for re-proposal. Rejected
+    // slash deploys remain observable here, while the proposer reconstructs
+    // authorized slash work from the complete invalid-evidence index and the
+    // canonical merged pre-state. Other system deploys are block-atomic.
     let all_pairs: Vec<(Bytes, BlockHash)> = rejected
         .0
         .iter()
@@ -1546,13 +1801,18 @@ pub fn merge(
     let mut rejected_by_occurrence: BTreeMap<(Bytes, BlockHash), RejectedDeployReason> =
         BTreeMap::new();
     for (sig, source_block_hash) in rejected_user_pairs {
-        rejected_by_occurrence.insert(
+        insert_rejection_reason(
+            &mut rejected_by_occurrence,
             (sig, source_block_hash),
             RejectedDeployReason::MergeConflict,
         );
     }
     for rejected in dedup_rejections {
-        rejected_by_occurrence.insert((rejected.sig, rejected.source_block_hash), rejected.reason);
+        insert_rejection_reason(
+            &mut rejected_by_occurrence,
+            (rejected.sig, rejected.source_block_hash),
+            rejected.reason,
+        );
     }
     let rejected_user_deploys: Vec<RejectedDeploy> = rejected_by_occurrence
         .into_iter()
@@ -1605,15 +1865,15 @@ pub fn merge(
             n_rejected_slash = rejected_slashes.len());
     }
 
-    Ok((new_state, rejected_user_deploys, rejected_slashes))
+    Ok((new_state, rejected_user_deploys))
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, HashSet};
+    use std::collections::{BTreeMap, BTreeSet, HashSet};
 
     use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-    use dashmap::DashMap;
+    use proptest::prelude::*;
     use rholang::rust::interpreter::rho_type::RhoNumber;
     use rspace_plus_plus::rspace::hashing::stable_hash_provider;
     use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
@@ -1630,13 +1890,11 @@ mod tests {
         removed: Vec<Vec<u8>>,
         added: Vec<Vec<u8>>,
     ) -> StateChange {
-        let datums_changes = DashMap::new();
-        datums_changes.insert(channel, ChannelChange { added, removed });
-        StateChange {
-            datums_changes,
-            cont_changes: DashMap::new(),
-            consume_channels_to_join_serialized_map: DashMap::new(),
-        }
+        StateChange::from_parts(
+            HashMap::from([(channel, ChannelChange { added, removed })]),
+            HashMap::new(),
+            HashMap::new(),
+        )
     }
 
     fn chain(
@@ -1675,6 +1933,419 @@ mod tests {
         )
     }
 
+    fn exact_chain(
+        deploy_id: u8,
+        source_block_number: i64,
+        state_changes: StateChange,
+        event_log_index: EventLogIndex,
+    ) -> DeployChainIndex {
+        let mut chain = chain_with_event_log(
+            deploy_id,
+            1,
+            source_block_number,
+            state_changes.clone(),
+            event_log_index.clone(),
+        );
+        chain.effect_indices = BTreeSet::from([0]);
+        chain.has_exact_state_witness = true;
+        chain.exact_effect_changes.insert(
+            0,
+            (state_changes, event_log_index.number_channels_data.clone()),
+        );
+        chain
+    }
+
+    fn dependency_edges(
+        map: &HashMap<DeployChainIndex, HashableSet<DeployChainIndex>>,
+    ) -> BTreeSet<(u8, u8)> {
+        map.iter()
+            .flat_map(|(source, targets)| {
+                let source_id = source
+                    .deploys_with_cost
+                    .0
+                    .iter()
+                    .next()
+                    .expect("source deploy")
+                    .deploy_id[0];
+                targets.0.iter().map(move |target| {
+                    let target_id = target
+                        .deploys_with_cost
+                        .0
+                        .iter()
+                        .next()
+                        .expect("target deploy")
+                        .deploy_id[0];
+                    (source_id, target_id)
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn exact_state_dependency_uses_physical_datum_identity() {
+        let channel = Blake2b256Hash::from_bytes(vec![0x61; 32]);
+        let produced = vec![0xaa; 32];
+        let source = exact_chain(
+            1,
+            1,
+            datum_change(channel.clone(), Vec::new(), vec![produced.clone()]),
+            EventLogIndex::empty(),
+        );
+        let dependent = exact_chain(
+            2,
+            2,
+            datum_change(channel.clone(), vec![produced], vec![vec![0xbb; 32]]),
+            EventLogIndex::empty(),
+        );
+        let independent = exact_chain(
+            3,
+            2,
+            datum_change(channel, vec![vec![0xcc; 32]], vec![vec![0xdd; 32]]),
+            EventLogIndex::empty(),
+        );
+
+        assert!(exact_state_depends(&dependent, &source));
+        assert!(!exact_state_depends(&independent, &source));
+    }
+
+    #[test]
+    fn exact_state_dependency_uses_physical_continuation_identity() {
+        let channels = vec![Blake2b256Hash::from_bytes(vec![0x62; 32])];
+        let continuation = vec![0xee; 32];
+        let source_change = StateChange::from_parts(
+            HashMap::new(),
+            HashMap::from([(channels.clone(), ChannelChange {
+                added: vec![continuation.clone()],
+                removed: Vec::new(),
+            })]),
+            HashMap::new(),
+        );
+        let target_change = StateChange::from_parts(
+            HashMap::new(),
+            HashMap::from([(channels, ChannelChange {
+                added: Vec::new(),
+                removed: vec![continuation],
+            })]),
+            HashMap::new(),
+        );
+        let source = exact_chain(1, 1, source_change, EventLogIndex::empty());
+        let target = exact_chain(2, 2, target_change, EventLogIndex::empty());
+
+        assert!(exact_state_depends(&target, &source));
+    }
+
+    #[test]
+    fn exact_state_dependency_excludes_mergeable_materialization() {
+        let channel = Blake2b256Hash::from_bytes(vec![0x63; 32]);
+        let datum = vec![0xff; 32];
+        let mut mergeable = EventLogIndex::empty();
+        mergeable
+            .number_channels_data
+            .insert(channel.clone(), (1, merging_logic::MergeType::IntegerAdd));
+        let source = exact_chain(
+            1,
+            1,
+            datum_change(channel.clone(), Vec::new(), vec![datum.clone()]),
+            mergeable,
+        );
+        let target = exact_chain(
+            2,
+            2,
+            datum_change(channel, vec![datum], Vec::new()),
+            EventLogIndex::empty(),
+        );
+
+        assert!(!exact_state_depends(&target, &source));
+    }
+
+    #[test]
+    fn exact_state_dependency_excludes_mergeable_target() {
+        let channel = Blake2b256Hash::from_bytes(vec![0x66; 32]);
+        let datum = vec![0xfe; 32];
+        let source = exact_chain(
+            1,
+            1,
+            datum_change(channel.clone(), Vec::new(), vec![datum.clone()]),
+            EventLogIndex::empty(),
+        );
+        let mut mergeable = EventLogIndex::empty();
+        mergeable
+            .number_channels_data
+            .insert(channel.clone(), (1, merging_logic::MergeType::IntegerAdd));
+        let target = exact_chain(
+            2,
+            2,
+            datum_change(channel, vec![datum], Vec::new()),
+            mergeable,
+        );
+
+        assert!(!exact_state_depends(&target, &source));
+    }
+
+    #[test]
+    fn block_lineage_fallback_is_limited_to_legacy_rejections() {
+        let exact = exact_chain(1, 1, StateChange::empty(), EventLogIndex::empty());
+        let legacy = chain_with_event_log(2, 1, 1, StateChange::empty(), EventLogIndex::empty());
+        let rejected = HashableSet(HashSet::from([exact.clone(), legacy.clone()]));
+
+        assert_eq!(
+            block_lineage_rejection_roots(&rejected),
+            HashSet::from([legacy.source_block_hash])
+        );
+        assert!(exact.has_exact_state_witness);
+    }
+
+    #[test]
+    fn indexed_exact_dependencies_are_input_order_invariant() {
+        let channel = Blake2b256Hash::from_bytes(vec![0x64; 32]);
+        let datum = vec![0xab; 32];
+        let source = exact_chain(
+            1,
+            1,
+            datum_change(channel.clone(), Vec::new(), vec![datum.clone()]),
+            EventLogIndex::empty(),
+        );
+        let target = exact_chain(
+            2,
+            2,
+            datum_change(channel.clone(), vec![datum], Vec::new()),
+            EventLogIndex::empty(),
+        );
+        let independent = exact_chain(
+            3,
+            2,
+            datum_change(channel, vec![vec![0xcd; 32]], Vec::new()),
+            EventLogIndex::empty(),
+        );
+        let mut forward = HashMap::new();
+        let mut reverse = HashMap::new();
+        add_exact_state_dependencies(
+            &[source.clone(), target.clone(), independent.clone()],
+            &mut forward,
+        );
+        add_exact_state_dependencies(&[independent, target, source], &mut reverse);
+
+        assert_eq!(dependency_edges(&forward), BTreeSet::from([(1, 2), (2, 1)]));
+        assert_eq!(dependency_edges(&forward), dependency_edges(&reverse));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn exact_dependency_identity_is_value_sensitive(
+            produced in prop::collection::vec(any::<u8>(), 1..128),
+            unrelated in prop::collection::vec(any::<u8>(), 1..128),
+        ) {
+            prop_assume!(produced != unrelated);
+            let channel = Blake2b256Hash::from_bytes(vec![0x65; 32]);
+            let source = exact_chain(
+                1,
+                1,
+                datum_change(channel.clone(), Vec::new(), vec![produced.clone()]),
+                EventLogIndex::empty(),
+            );
+            let dependent = exact_chain(
+                2,
+                2,
+                datum_change(channel.clone(), vec![produced], Vec::new()),
+                EventLogIndex::empty(),
+            );
+            let independent = exact_chain(
+                3,
+                2,
+                datum_change(channel, vec![unrelated], Vec::new()),
+                EventLogIndex::empty(),
+            );
+
+            prop_assert!(exact_state_depends(&dependent, &source));
+            prop_assert!(!exact_state_depends(&independent, &source));
+        }
+
+        #[test]
+        fn indexed_exact_dependencies_match_pairwise_semantics(
+            values in prop::collection::btree_set(any::<u8>(), 1..16),
+        ) {
+            let channel = Blake2b256Hash::from_bytes(vec![0x67; 32]);
+            let mut chains: Vec<_> = values
+                .iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    exact_chain(
+                        (index + 1) as u8,
+                        1,
+                        datum_change(
+                            channel.clone(),
+                            Vec::new(),
+                            vec![vec![*value]],
+                        ),
+                        EventLogIndex::empty(),
+                    )
+                })
+                .collect();
+            let removed: Vec<_> = values
+                .iter()
+                .filter(|value| **value % 2 == 0)
+                .map(|value| vec![*value])
+                .collect();
+            chains.push(exact_chain(
+                250,
+                2,
+                datum_change(channel, removed, Vec::new()),
+                EventLogIndex::empty(),
+            ));
+            let mut indexed = HashMap::new();
+            add_exact_state_dependencies(&chains, &mut indexed);
+
+            for source in &chains {
+                for target in &chains {
+                    if source == target {
+                        continue;
+                    }
+                    let indexed_pair = indexed
+                        .get(source)
+                        .is_some_and(|neighbors| neighbors.0.contains(target));
+                    let pairwise = exact_state_depends(target, source)
+                        || exact_state_depends(source, target);
+                    prop_assert_eq!(indexed_pair, pairwise);
+                }
+            }
+        }
+    }
+
+    fn multi_deploy_chain(deploy_ids: &[u8], source: u8) -> DeployChainIndex {
+        let deploys_with_cost = HashableSet(
+            deploy_ids
+                .iter()
+                .map(|deploy_id| DeployIdWithCost {
+                    deploy_id: Bytes::from(vec![*deploy_id]),
+                    cost: 1,
+                })
+                .collect(),
+        );
+        DeployChainIndex::from_parts(
+            deploys_with_cost,
+            Blake2b256Hash::from_bytes(vec![source; 32]),
+            EventLogIndex::empty(),
+            StateChange::empty(),
+            Bytes::from(vec![source; 32]),
+            i64::from(source),
+        )
+    }
+
+    #[test]
+    fn base_committed_duplicate_rejects_complete_chain() {
+        let duplicate = Bytes::from(vec![1]);
+        let collateral = Bytes::from(vec![2]);
+        let context = MergeOccurrenceContext {
+            base_committed_sigs: HashSet::from([duplicate.clone()]),
+            scope_tombstones: BTreeMap::new(),
+            require_exact_effects: true,
+        };
+        let (retained, dropped, rejections) =
+            filter_occurrence_chains(vec![multi_deploy_chain(&[1, 2], 9)], &context);
+
+        assert!(retained.is_empty());
+        assert_eq!(dropped.len(), 1);
+        assert_eq!(rejections.len(), 2);
+        assert!(rejections.iter().any(|rejected| {
+            rejected.sig == duplicate
+                && rejected.reason == RejectedDeployReason::DuplicateOccurrence
+        }));
+        assert!(rejections.iter().any(|rejected| {
+            rejected.sig == collateral
+                && rejected.reason == RejectedDeployReason::CollateralChainDrop
+        }));
+    }
+
+    #[test]
+    fn exact_tombstone_rejects_complete_chain_and_preserves_reason() {
+        let source = Bytes::from(vec![7; 32]);
+        let named = Bytes::from(vec![3]);
+        let collateral = Bytes::from(vec![4]);
+        let context = MergeOccurrenceContext {
+            base_committed_sigs: HashSet::new(),
+            scope_tombstones: BTreeMap::from([(
+                (named.clone(), source),
+                RejectedDeployReason::MergeConflict,
+            )]),
+            require_exact_effects: true,
+        };
+        let (retained, dropped, rejections) =
+            filter_occurrence_chains(vec![multi_deploy_chain(&[3, 4], 7)], &context);
+
+        assert!(retained.is_empty());
+        assert_eq!(dropped.len(), 1);
+        assert!(rejections.iter().any(|rejected| {
+            rejected.sig == named && rejected.reason == RejectedDeployReason::MergeConflict
+        }));
+        assert!(rejections.iter().any(|rejected| {
+            rejected.sig == collateral
+                && rejected.reason == RejectedDeployReason::CollateralChainDrop
+        }));
+    }
+
+    #[test]
+    fn occurrence_filter_is_input_order_invariant() {
+        let context = MergeOccurrenceContext {
+            base_committed_sigs: HashSet::from([Bytes::from(vec![1])]),
+            scope_tombstones: BTreeMap::new(),
+            require_exact_effects: true,
+        };
+        let left = multi_deploy_chain(&[1, 2], 5);
+        let right = multi_deploy_chain(&[3], 6);
+        let first = filter_occurrence_chains(vec![left.clone(), right.clone()], &context);
+        let second = filter_occurrence_chains(vec![right, left], &context);
+
+        let mut retained_first = first.0;
+        let mut retained_second = second.0;
+        let mut dropped_first = first.1;
+        let mut dropped_second = second.1;
+        retained_first.sort();
+        retained_second.sort();
+        dropped_first.sort();
+        dropped_second.sort();
+        let rejected_first: std::collections::BTreeSet<_> = first.2.into_iter().collect();
+        let rejected_second: std::collections::BTreeSet<_> = second.2.into_iter().collect();
+
+        assert_eq!(retained_first, retained_second);
+        assert_eq!(dropped_first, dropped_second);
+        assert_eq!(rejected_first, rejected_second);
+    }
+
+    #[test]
+    fn rejected_body_reason_assembly_is_order_invariant() {
+        let key = (Bytes::from(vec![1]), Bytes::from(vec![2; 32]));
+        let mut first = BTreeMap::new();
+        insert_rejection_reason(
+            &mut first,
+            key.clone(),
+            RejectedDeployReason::DuplicateOccurrence,
+        );
+        insert_rejection_reason(
+            &mut first,
+            key.clone(),
+            RejectedDeployReason::CollateralChainDrop,
+        );
+        let mut second = BTreeMap::new();
+        insert_rejection_reason(
+            &mut second,
+            key.clone(),
+            RejectedDeployReason::CollateralChainDrop,
+        );
+        insert_rejection_reason(
+            &mut second,
+            key.clone(),
+            RejectedDeployReason::DuplicateOccurrence,
+        );
+
+        assert_eq!(first, second);
+        assert_eq!(
+            first.get(&key),
+            Some(&RejectedDeployReason::DuplicateOccurrence)
+        );
+    }
+
     fn mergeable_chain(
         deploy_id: u8,
         cost: u64,
@@ -1700,6 +2371,8 @@ mod tests {
         let par_with_rnd = ListParWithRandom {
             pars: vec![RhoNumber::create_par(num)],
             random_state: rnd.to_bytes(),
+            cost_authority: None,
+            cost_stack: None,
         };
         let data_hash =
             stable_hash_provider::hash_produce(channel_hash.bytes(), &par_with_rnd, false);

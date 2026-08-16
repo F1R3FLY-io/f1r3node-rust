@@ -1,9 +1,10 @@
 // See casper/src/main/scala/coop/rchain/casper/rholang/RuntimeReplaySyntax.scala
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::time::Instant;
 
+use crypto::rust::public_key::PublicKey;
 use models::rhoapi::Par;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
@@ -11,6 +12,9 @@ use models::rust::casper::protocol::casper_message::{
     Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
+use rholang::rust::interpreter::accounting::authority::{DemandBound, ResourceMultiset};
+use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::system_processes::{
@@ -19,6 +23,7 @@ use rholang::rust::interpreter::system_processes::{
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::merger::merging_logic::{MergeType, NumberChannelsEndVal};
+use rspace_plus_plus::rspace::trace::event::Event as RSpaceEvent;
 
 use super::runtime::{RuntimeOps, SysEvalResult};
 use crate::rust::errors::CasperError;
@@ -46,6 +51,52 @@ pub struct ReplayRuntimeOps {
     pub runtime_ops: RuntimeOps,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplayBlockKind {
+    Genesis,
+    Ordinary,
+}
+
+impl ReplayBlockKind {
+    fn requires_authority_settlement(self) -> bool { self == Self::Ordinary }
+}
+
+pub(crate) fn has_exactly_one_successful_terminal_close(
+    system_deploys: &[ProcessedSystemDeploy],
+) -> bool {
+    let close_positions = system_deploys
+        .iter()
+        .enumerate()
+        .filter_map(|(index, deploy)| {
+            matches!(deploy, ProcessedSystemDeploy::Succeeded {
+                system_deploy: SystemDeployData::CloseBlockSystemDeployData,
+                ..
+            })
+            .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    matches!(close_positions.as_slice(), [index] if *index + 1 == system_deploys.len())
+}
+
+fn certified_replay_capacity(allocation: &ResourceMultiset<[u8; 32]>) -> Result<Cost, CasperError> {
+    let capacity = allocation.0.values().try_fold(0_u64, |total, amount| {
+        total.checked_add(*amount).ok_or_else(|| {
+            CasperError::InvalidCostSettlement(
+                "certified authority replay capacity overflows u64".to_string(),
+            )
+        })
+    })?;
+    let capacity = i64::try_from(capacity).map_err(|_| {
+        CasperError::InvalidCostSettlement(
+            "certified authority replay capacity exceeds i64".to_string(),
+        )
+    })?;
+    Ok(Cost::create(
+        capacity,
+        "certified authority replay capacity",
+    ))
+}
+
 impl ReplayRuntimeOps {
     pub fn new(runtime_ops: RuntimeOps) -> Self { Self { runtime_ops } }
 
@@ -55,7 +106,7 @@ impl ReplayRuntimeOps {
         }
     }
 
-    fn validate_effect_pre_state(
+    pub(crate) fn validate_effect_pre_state(
         effect: &str,
         recorded_pre: &StateHash,
         recorded_post: &StateHash,
@@ -87,7 +138,7 @@ impl ReplayRuntimeOps {
         }
     }
 
-    fn validate_effect_post_state(
+    pub(crate) fn validate_effect_post_state(
         effect: &str,
         recorded_post: &StateHash,
         actual_post: &StateHash,
@@ -135,14 +186,8 @@ impl ReplayRuntimeOps {
         system_deploys: Vec<ProcessedSystemDeploy>,
         block_data: &BlockData,
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
-        is_genesis: bool, //FIXME have a better way of knowing this. Pass the replayDeploy function maybe? - OLD
-        // Task #13a: shard-genesis spec-strict acceptance-gate mode, threaded
-        // verbatim into the replay-side recompute (same constant as play).
-        strict_funding_enforcement: bool,
-        // Task #13b: shard-genesis client funding-slot allocations, threaded
-        // verbatim onto the reconstructed block-1 close deploy (same constant as
-        // the play-side proposer used).
-        client_fuel_allocations: &[(Vec<u8>, i64)],
+        is_genesis: bool,
+        runtime_manager: Option<&crate::rust::util::rholang::runtime_manager::RuntimeManager>,
     ) -> Result<(Blake2b256Hash, Vec<NumberChannelsEndVal>), CasperError> {
         let invalid_blocks = invalid_blocks.unwrap_or_default();
         if tracing::enabled!(target: "f1r3fly.casper.invalid_blocks", tracing::Level::DEBUG) {
@@ -168,14 +213,18 @@ impl ReplayRuntimeOps {
             .set_invalid_blocks(invalid_blocks)
             .await;
 
+        let block_kind = if is_genesis {
+            ReplayBlockKind::Genesis
+        } else {
+            ReplayBlockKind::Ordinary
+        };
         self.replay_deploys(
             start_hash,
             terms,
             system_deploys,
-            !is_genesis,
+            block_kind,
             block_data,
-            strict_funding_enforcement,
-            client_fuel_allocations,
+            runtime_manager,
         )
         .await
     }
@@ -190,20 +239,9 @@ impl ReplayRuntimeOps {
         start_hash: &StateHash,
         terms: Vec<ProcessedDeploy>,
         system_deploys: Vec<ProcessedSystemDeploy>,
-        with_cost_accounting: bool,
+        block_kind: ReplayBlockKind,
         block_data: &BlockData,
-        // Task #13a: the shard-genesis spec-strict acceptance-gate mode
-        // (`CasperShardConf::strict_funding_enforcement`), threaded from the
-        // validation caller so the replay-side recompute + re-verification use
-        // the SAME constant as the play-side gate (replay determinism).
-        strict_funding_enforcement: bool,
-        // Task #13b: the shard-genesis client funding-slot allocations
-        // (`CasperShardConf::client_fuel_allocations`, lowered to raw pk bytes),
-        // threaded from the validation caller onto the reconstructed block-1
-        // `CloseBlockDeploy` so its `Σ⟦c⟧` seed is byte-identical to the play
-        // side. Same shard constant as the proposer used (replay determinism);
-        // empty on default shards.
-        client_fuel_allocations: &[(Vec<u8>, i64)],
+        runtime_manager: Option<&crate::rust::util::rholang::runtime_manager::RuntimeManager>,
     ) -> Result<(Blake2b256Hash, Vec<NumberChannelsEndVal>), CasperError> {
         tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", start_hash = %hex::encode(&start_hash[..8.min(start_hash.len())]), n_user = terms.len(), n_system = system_deploys.len(), "replay.replay_deploys ENTER (reset to pre-state, then replay deploys vs recorded COMMs)");
         // Time reset phase - Span[F].traceI("reset") from Scala
@@ -215,42 +253,30 @@ impl ReplayRuntimeOps {
         metrics::histogram!(BLOCK_REPLAY_PHASE_RESET_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(reset_start.elapsed().as_secs_f64());
 
+        if block_kind.requires_authority_settlement()
+            && !has_exactly_one_successful_terminal_close(&system_deploys)
+        {
+            return Err(CasperError::ReplayFailure(
+                ReplayFailure::replay_admission_mismatch(
+                    terms.len(),
+                    terms.len(),
+                    0,
+                    0,
+                    "ordinary block must contain exactly one successful terminal close deploy"
+                        .to_string(),
+                ),
+            ));
+        }
         // ── WD-D2 replay-side acceptance recompute (CONSENSUS-CRITICAL) ──────
         // After the reset (the live store is now at `start_hash`, the block's
-        // pre-state) and BEFORE any deploy executes, recompute the settlement-
-        // debit map from `terms` (= `block.body.deploys`, the ADMITTED set) and
-        // re-verify admission. The debit map is fed to `post_eval_replay` so the
-        // close-block settlement debit is byte-identical to the play side; the
-        // re-verification asserts that for every PRESENT pool the admitted
-        // cumulative Δ_s does not exceed Σ_s (an over-admitting proposer ⇒
-        // double-spend, TM-CA-153). The reject direction is intentionally NOT
-        // re-derived here (rejected-deploy bodies are not in the block, only
-        // sigs) — a wrongly-rejected fundable deploy changes the admitted set and
-        // is caught by the post-state root check (wd-d2 §D2.4(b)).
-        // Cost-Accounted Rho WD-D2 + Stage D: RECOMPUTE the per-client COST debits
-        // AND the conserving FEE carve from the block alone — a single
-        // `recompute_and_verify_admission` pass over `terms` (= `block.body.deploys`,
-        // the ADMITTED set) that re-verifies admission. The COST debits feed the
-        // close-block settlement; the FEE debits (per-client, against each post-cost
-        // `Σ⟦c⟧`) build the FeeExtract carve credited to the proposing validator
-        // (`block_data.sender`). ONLY admitted CLIENT deploys are charged — the
-        // proposer's gate-exempt dummies carve no fee. Neither is serialized into
-        // the block; recomputing them here makes the closeBlock settlement debit +
-        // F_v carve byte-identical to the play side. Genesis / non-cost-accounted
-        // replay: no gate ran ⇒ empty debits, no carve.
-        let (replay_debits, replay_fee_carve) = if with_cost_accounting {
-            let recomputed = self
-                .recompute_and_verify_admission(&terms, strict_funding_enforcement)
-                .await?;
-            let fee_carve = crate::rust::util::rholang::acceptance::fee_carve(
-                block_data.sender.bytes.to_vec(),
-                recomputed.fee,
-            );
-            (recomputed.settlement, fee_carve)
-        } else {
-            (std::collections::BTreeMap::new(), None)
-        };
-
+        // pre-state) and BEFORE any deploy executes, recompute the certified
+        // reservation from `terms` (= the executed subset of `block.body.deploys`) and
+        // re-verify admission. The realized debit is derived from each
+        // replay-checked `ProcessedDeploy.cost`; the static check asserts that every
+        // purse dominates cumulative
+        // Δ_s^max (an over-admitting proposer ⇒
+        // double-spend, TM-CA-153). RuntimeManager has already re-derived the
+        // full executed/rejected partition before this replay begins.
         // Time user deploys phase
         tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", n_user = terms.len(), "replay.replay_deploys: USER-deploy phase");
         let user_deploys_start = Instant::now();
@@ -264,7 +290,26 @@ impl ReplayRuntimeOps {
                 &term.post_state_hash,
                 &current_root,
             )?;
-            let result = self.replay_deploy_e(with_cost_accounting, &term).await?;
+            let purse_snapshot = if block_kind.requires_authority_settlement() {
+                let runtime_manager = runtime_manager.ok_or_else(|| {
+                    CasperError::InvalidCostSettlement(
+                        "ordinary replay requires a committed-state purse reader".to_string(),
+                    )
+                })?;
+                let reader = crate::rust::util::rholang::acceptance::RuntimeManagerSupplyReader {
+                    runtime_manager,
+                    pre_state_hash: current_root.clone(),
+                };
+                Some(
+                    crate::rust::util::rholang::acceptance::replay_purse_snapshot(&term, &reader)
+                        .await?,
+                )
+            } else {
+                None
+            };
+            let result = self
+                .replay_deploy_e_with_snapshot(block_kind, &term, purse_snapshot.as_ref())
+                .await?;
             let checkpoint = self.runtime_ops.runtime.create_checkpoint().await;
             let actual_post = checkpoint.root.to_bytes_prost();
             if validate_witness {
@@ -290,13 +335,7 @@ impl ReplayRuntimeOps {
                 &current_root,
             )?;
             let result = self
-                .replay_block_system_deploy(
-                    block_data,
-                    &system_deploy,
-                    &replay_debits,
-                    &replay_fee_carve,
-                    client_fuel_allocations,
-                )
+                .replay_block_system_deploy(block_data, &system_deploy)
                 .await?;
             let checkpoint = self.runtime_ops.runtime.create_checkpoint().await;
             let actual_post = checkpoint.root.to_bytes_prost();
@@ -325,89 +364,15 @@ impl ReplayRuntimeOps {
         Ok((checkpoint.root, all_mergeable))
     }
 
-    /// WD-D2 replay-side acceptance recompute + verification (CONSENSUS-CRITICAL).
-    ///
-    /// Reconstructs the ADMITTED deploy envelopes from `terms`
-    /// (= `block.body.deploys`) via the SAME `ProcessedDeploy::to_cosigned` the
-    /// runtime install uses, recomputes the per-pool settlement-debit map from
-    /// the live store (already `reset` to the block's pre-state) via
-    /// [`acceptance::recompute_settlement_debits`], and re-verifies admission:
-    /// for every PRESENT pool, the admitted cumulative `Σ Δ_s` (= the recomputed
-    /// debit) MUST be `≤ Σ_s` (the pre-state balance). A proposer that admitted
-    /// more than a pool funds (a double-spend / oversubscription, TM-CA-153)
-    /// fails this check with a [`ReplayFailure::ReplayAdmissionMismatch`] — the
-    /// replay-side counterpart of the play-side in-pass residual.
-    ///
-    /// Returns the recomputed COST + FEE debits (a [`RecomputedDebits`]), fed to
-    /// `post_eval_replay` so the close-block settlement debit AND the conserving
-    /// FeeExtract carve are byte-identical to the play side.
-    async fn recompute_and_verify_admission(
-        &self,
-        terms: &[ProcessedDeploy],
-        strict_funding_enforcement: bool,
-    ) -> Result<crate::rust::util::rholang::acceptance::RecomputedDebits, CasperError> {
-        // Reconstruct the admitted envelopes (canonical pk-ascending per signer,
-        // identical to the play-side reconstruction and the runtime install).
-        let mut admitted = Vec::with_capacity(terms.len());
-        for term in terms {
-            admitted.push(term.to_cosigned().map_err(CasperError::RuntimeError)?);
-        }
-
-        let reader = crate::rust::util::rholang::acceptance::RuntimeOpsSupplyReader {
-            runtime_ops: &self.runtime_ops,
-        };
-        // Task #13a: thread the shard-genesis strict flag (same constant as the
-        // play side) into the recompute. Under `strict`, the recompute ALSO
-        // re-verifies that no admitted `Δ > 0` deploy targets an absent pool
-        // (a proposer that bypassed the spec-strict gate ⇒ invalid block).
-        let recomputed = crate::rust::util::rholang::acceptance::recompute_settlement_debits(
-            admitted,
-            &reader,
-            strict_funding_enforcement,
-        )
-        .await?;
-
-        // Re-verify admission: each PRESENT pool's admitted ΣΔ_s ≤ Σ_s. The
-        // recompute already restricted `debits` to present pools, so reading the
-        // present balance here and comparing catches an over-admitting proposer
-        // before the close-block settlement debit's `checked_sub` would (clearer
-        // diagnostic + fails the block at the gate boundary, not deep in
-        // closeBlock).
-        for (sig_key, debit) in &recomputed.settlement {
-            let balance =
-                crate::rust::util::rholang::supply::read_balance(&self.runtime_ops, &debit.channel)
-                    .await;
-            if debit.amount > balance {
-                return Err(CasperError::ReplayFailure(
-                    ReplayFailure::replay_admission_mismatch(
-                        terms.len(),
-                        terms.len(),
-                        0,
-                        0,
-                        format!(
-                            "admitted ΣΔ_s={} exceeds Σ_s={} for pool {} — proposer over-admitted \
-                             (double-spend / oversubscription)",
-                            debit.amount,
-                            balance,
-                            hex::encode(sig_key)
-                        ),
-                    ),
-                ));
-            }
-        }
-
-        Ok(recomputed)
-    }
-
     /**
      * REPLAY Evaluates deploy
      */
     pub async fn replay_deploy(
         &mut self,
-        with_cost_accounting: bool,
+        block_kind: ReplayBlockKind,
         processed_deploy: &ProcessedDeploy,
     ) -> Option<CasperError> {
-        self.replay_deploy_e(with_cost_accounting, processed_deploy)
+        self.replay_deploy_e(block_kind, processed_deploy)
             .await
             .err()
     }
@@ -419,10 +384,46 @@ impl ReplayRuntimeOps {
     )]
     pub async fn replay_deploy_e(
         &mut self,
-        with_cost_accounting: bool,
+        block_kind: ReplayBlockKind,
         processed_deploy: &ProcessedDeploy,
     ) -> Result<NumberChannelsEndVal, CasperError> {
+        self.replay_deploy_e_with_snapshot(block_kind, processed_deploy, None)
+            .await
+    }
+
+    pub(crate) async fn replay_deploy_e_with_snapshot(
+        &mut self,
+        block_kind: ReplayBlockKind,
+        processed_deploy: &ProcessedDeploy,
+        purse_snapshot: Option<&crate::rust::util::rholang::acceptance::ReplayPurseSnapshot>,
+    ) -> Result<NumberChannelsEndVal, CasperError> {
         let mut mergeable_channels: HashMap<Par, MergeType> = HashMap::new();
+        let execution_authority = if block_kind.requires_authority_settlement() {
+            let certificate =
+                crate::rust::util::rholang::acceptance::authority_certificate_from_proto(
+                    processed_deploy
+                        .authority_funding_certificate
+                        .as_ref()
+                        .ok_or_else(|| {
+                            CasperError::InvalidCostSettlement(
+                                "replay deploy is missing its authority certificate".to_string(),
+                            )
+                        })?,
+                )?;
+            let allocation = match certificate.demand {
+                DemandBound::Exact(allocation) => allocation,
+                DemandBound::FiniteUpperBound { bound, .. } => bound,
+                DemandBound::Unprovable(_) => {
+                    return Err(CasperError::InvalidCostSettlement(
+                        "replay deploy carries an unprovable authority demand".to_string(),
+                    ));
+                }
+            };
+            let capacity = certified_replay_capacity(&allocation)?;
+            Some((capacity, allocation))
+        } else {
+            None
+        };
 
         let dsig = if tracing::enabled!(target: "f1r3fly.casper.replay_rho_runtime", tracing::Level::DEBUG)
         {
@@ -436,11 +437,20 @@ impl ReplayRuntimeOps {
         metrics::histogram!(BLOCK_REPLAY_DEPLOY_RIG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(rig_start.elapsed().as_secs_f64());
 
-        let eval_successful = if with_cost_accounting {
-            self.process_deploy_with_cost_accounting(processed_deploy, &mut mergeable_channels)
-                .await?
+        let eval_successful = if block_kind.requires_authority_settlement() {
+            self.process_ordinary_deploy(
+                processed_deploy,
+                &mut mergeable_channels,
+                execution_authority,
+                purse_snapshot.ok_or_else(|| {
+                    CasperError::InvalidCostSettlement(
+                        "ordinary replay is missing its verified purse snapshot".to_string(),
+                    )
+                })?,
+            )
+            .await?
         } else {
-            self.process_deploy_without_cost_accounting(processed_deploy, &mut mergeable_channels)
+            self.process_genesis_deploy(processed_deploy, &mut mergeable_channels)
                 .await?
         };
         tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", deploy = %dsig, eval_successful, "replay.deploy eval done");
@@ -465,73 +475,373 @@ impl ReplayRuntimeOps {
         Ok(channels_data)
     }
 
-    /// Replay path mirror of [`RuntimeOps::play_deploy_with_cost_accounting_cosigned`].
+    /// Replay path mirror of [`RuntimeOps::play_ordinary_deploy_cosigned`].
     ///
-    /// D3 (DR-9, OD-1/OD-2): the escrow pre-charge / refund replay fan-out is
-    /// REMOVED. A deploy's fundedness was settled once against Σ⟦s⟧ by the
-    /// block's acceptance gate (recomputed deterministically on replay by
-    /// `recompute_settlement_debits`); there is no per-cosigner charge/refund to
-    /// re-run here. Replay simply re-evaluates the user deploy and asserts the
-    /// per-COMM cost matches the stored `processed_deploy.cost` (the
-    /// `replay_cost_mismatch` consensus check inside [`Self::run_user_deploy`]).
-    /// The user deploy runs UNMETERED-FOR-LIVENESS via `evaluate` (which the
-    /// play path's `evaluate_cosigned` mirrors with an `unsafe_max` budget), so
-    /// play and replay observe the same per-COMM `total_cost()`.
-    async fn process_deploy_with_cost_accounting(
+    /// D3 (DR-9, OD-1/OD-2): the escrow pre-charge/refund replay fan-out is
+    /// removed. Replay derives the finite execution capacity from the same
+    /// authenticated authority pre-state, reconstructs the complete cosigned
+    /// envelope, and rejects exhaustion. It then requires the per-COMM cost,
+    /// status, event log, post-state root, settlement, and fee carve to match the
+    /// state-bound evidence committed by the block.
+    async fn process_ordinary_deploy(
         &mut self,
         processed_deploy: &ProcessedDeploy,
         mergeable_channels: &mut HashMap<Par, MergeType>,
+        execution_authority: Option<(Cost, ResourceMultiset<[u8; 32]>)>,
+        purse_snapshot: &crate::rust::util::rholang::acceptance::ReplayPurseSnapshot,
     ) -> Result<bool, CasperError> {
-        let eval_successful = if processed_deploy.system_deploy_error.is_none() {
-            // Re-evaluate the user deploy. `run_user_deploy` owns the
-            // soft-checkpoint rollback for a failed deploy and the per-COMM
-            // `replay_cost_mismatch` consensus check.
-            let evaluate_start = Instant::now();
-            let (_, successful) = self
-                .run_user_deploy(processed_deploy, mergeable_channels)
-                .await?;
-            metrics::histogram!(BLOCK_REPLAY_DEPLOY_EVALUATE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
-                .record(evaluate_start.elapsed().as_secs_f64());
-            tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "deploy-eval-done");
-            successful
-        } else {
-            // If there was an expected failure in the system deploy, skip user deploy execution
-            true
-        };
+        if processed_deploy.system_deploy_error.is_some() {
+            return Err(CasperError::InvalidCostSettlement(
+                "admitted cost-accounted deploy carries a system-deploy error".to_string(),
+            ));
+        }
+        let cosigned = processed_deploy
+            .to_cosigned()
+            .map_err(CasperError::InvalidCostSettlement)?;
+        let certificate = crate::rust::util::rholang::acceptance::authority_certificate_from_proto(
+            processed_deploy
+                .authority_funding_certificate
+                .as_ref()
+                .ok_or_else(|| {
+                    CasperError::InvalidCostSettlement(
+                        "replay deploy is missing its authority certificate".to_string(),
+                    )
+                })?,
+        )?;
+        let witness = crate::rust::util::rholang::acceptance::authority_witness_from_proto(
+            processed_deploy
+                .authority_cost_witness
+                .as_ref()
+                .ok_or_else(|| {
+                    CasperError::InvalidCostSettlement(
+                        "replay deploy is missing its authority witness".to_string(),
+                    )
+                })?,
+            false,
+        )?;
+        if witness.certificate_id != certificate.certificate_id() {
+            return Err(CasperError::InvalidCostSettlement(
+                "replay authority witness is bound to a different certificate".to_string(),
+            ));
+        }
+        PublicKey::validate_secp256k1_bytes(&certificate.fee_recipient).map_err(|error| {
+            CasperError::InvalidCostSettlement(format!(
+                "authority certificate fee recipient is invalid: {error}"
+            ))
+        })?;
+        let fee_address =
+            rholang::rust::interpreter::util::vault_address::VaultAddress::from_public_key(
+                &PublicKey::from_bytes(&certificate.fee_recipient),
+            )
+            .ok_or_else(|| {
+                CasperError::InvalidCostSettlement(
+                    "authority certificate fee recipient has no canonical vault".to_string(),
+                )
+            })?
+            .to_base58();
+        let fee_event = crate::rust::util::rholang::acceptance::fee_authority_event(&cosigned)?;
+        let signatures = crate::rust::util::rholang::acceptance::authority_purse_signatures(
+            &cosigned, &witness,
+        )?;
+        let reserved_resources = certificate
+            .allocation
+            .checked_add(&certificate.fee_allocation)
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        let mut reserve_allocations = Vec::new();
+        for (key, amount) in &reserved_resources.0 {
+            let signature = signatures.get(key).ok_or_else(|| {
+                CasperError::InvalidCostSettlement(
+                    "vault reservation references an unresolved signature".to_string(),
+                )
+            })?;
+            let payer = crate::rust::util::rholang::costacc::vault_payer::vault_payer(signature)
+                .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+            reserve_allocations.push(
+                crate::rust::util::rholang::costacc::vault_cost_deploy::VaultAllocation::new(
+                    payer.address.to_base58(),
+                    i64::try_from(*amount).map_err(|_| {
+                        CasperError::InvalidCostSettlement(
+                            "vault reservation exceeds the platform range".to_string(),
+                        )
+                    })?,
+                )?,
+            );
+        }
+        reserve_allocations.push(
+            crate::rust::util::rholang::costacc::vault_cost_deploy::VaultAllocation::new(
+                fee_address.clone(),
+                crate::rust::util::rholang::costacc::VALIDATOR_HANDLER_COST_PER_DEPLOY,
+            )?,
+        );
+
+        let mut inventory =
+            rholang::rust::interpreter::accounting::authority::AuthorityPhysicalInventory::default(
+            );
+        let mut purse_stacks = BTreeMap::new();
+        for key in signatures.keys() {
+            let purse = purse_snapshot.get(key).ok_or_else(|| {
+                CasperError::InvalidCostSettlement(
+                    "verified replay purse snapshot is missing an authority lane".to_string(),
+                )
+            })?;
+            let balance = purse.balance.unwrap_or(0);
+            if balance < 0 {
+                return Err(CasperError::InvalidCostSettlement(
+                    "authority purse balance cannot be negative".to_string(),
+                ));
+            }
+            if balance > 0 {
+                inventory.balances.0.insert(
+                    *key,
+                    u64::try_from(balance).expect("non-negative authority balance"),
+                );
+            }
+            for stack in &purse.stacks {
+                if inventory
+                    .stacks
+                    .insert(stack.instance_id, stack.stack.cells.clone())
+                    .is_some()
+                    || purse_stacks
+                        .insert(stack.instance_id, stack.clone())
+                        .is_some()
+                {
+                    return Err(CasperError::InvalidCostSettlement(
+                        "authority inventory contains a duplicate stack identity".to_string(),
+                    ));
+                }
+            }
+        }
+        if purse_snapshot.len() != signatures.len() {
+            return Err(CasperError::InvalidCostSettlement(
+                "verified replay purse snapshot contains unexpected authority lanes".to_string(),
+            ));
+        }
+        let evaluate_start = Instant::now();
+        let (eval_result, successful, _user_log) = self
+            .run_user_deploy(processed_deploy, mergeable_channels, execution_authority)
+            .await?;
+        metrics::histogram!(BLOCK_REPLAY_DEPLOY_EVALUATE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .record(evaluate_start.elapsed().as_secs_f64());
+        let lifecycle_log = processed_deploy
+            .deploy_log
+            .iter()
+            .map(event_converter::to_rspace_event)
+            .collect::<Vec<_>>();
+        let actual_events = super::runtime::causal_authority_events_from_lifecycle_trace(
+            &lifecycle_log,
+            &eval_result.authority_events,
+        )?;
+        if actual_events != witness.events || eval_result.authority_realized != witness.realized {
+            return Err(CasperError::InvalidCostSettlement(
+                "replay authority trace differs from the committed witness".to_string(),
+            ));
+        }
+        let actual_born_stacks = self
+            .runtime_ops
+            .resolve_authority_stack_births(&eval_result.authority_stack_births)
+            .await?;
+        if actual_born_stacks != witness.born_stacks {
+            return Err(CasperError::InvalidCostSettlement(
+                "replay authority stack births differ from the committed witness".to_string(),
+            ));
+        }
+        for stack in self
+            .runtime_ops
+            .resolve_authority_born_purse_stacks(&witness.born_stacks)
+            .await?
+        {
+            let birth = witness
+                .born_stacks
+                .iter()
+                .find(|birth| birth.stack_id == stack.instance_id)
+                .ok_or_else(|| {
+                    CasperError::InvalidCostSettlement(
+                        "replay born stack is missing its witness presentation".to_string(),
+                    )
+                })?;
+            if inventory
+                .stacks
+                .insert(stack.instance_id, stack.stack.cells.clone())
+                .is_some()
+                || inventory
+                    .born_stacks
+                    .insert(stack.instance_id, birth.produce_hash)
+                    .is_some()
+                || purse_stacks.insert(stack.instance_id, stack).is_some()
+            {
+                return Err(CasperError::InvalidCostSettlement(
+                    "replay born stack collides with reserved inventory".to_string(),
+                ));
+            }
+        }
+        let physical_settlement =
+            rholang::rust::interpreter::accounting::authority::verify_physical_settlement(
+                &witness.events,
+                &signatures,
+                &inventory,
+                &witness.physical_draws,
+            )
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        if physical_settlement.balance_debit != witness.settlement
+            || !certificate
+                .allocation
+                .dominates(&physical_settlement.balance_debit)
+        {
+            return Err(CasperError::InvalidCostSettlement(
+                "replay physical settlement differs from its vault reservation".to_string(),
+            ));
+        }
+        let after_cost = inventory
+            .balances
+            .checked_sub(&physical_settlement.balance_debit)
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        let recomputed_fee =
+            rholang::rust::interpreter::accounting::authority::allocate_authority_events(
+                std::slice::from_ref(&fee_event),
+                &after_cost,
+            )
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        if recomputed_fee != certificate.fee_allocation {
+            return Err(CasperError::InvalidCostSettlement(
+                "replay fee allocation differs from its certificate".to_string(),
+            ));
+        }
+
+        crate::rust::util::rholang::supply::apply_stack_pops(
+            &mut self.runtime_ops,
+            &purse_stacks.into_values().collect::<Vec<_>>(),
+            &physical_settlement.stack_pops,
+        )
+        .await?;
+        self.runtime_ops.runtime.take_event_log().await;
+
+        let mut settlements = Vec::new();
+        for (key, reserved_amount) in &reserved_resources.0 {
+            let signature = signatures.get(key).ok_or_else(|| {
+                CasperError::InvalidCostSettlement(
+                    "vault settlement references an unresolved signature".to_string(),
+                )
+            })?;
+            let payer = crate::rust::util::rholang::costacc::vault_payer::vault_payer(signature)
+                .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+            let burn = physical_settlement.balance_debit.get(key);
+            let fee = certificate.fee_allocation.get(key);
+            if burn
+                .checked_add(fee)
+                .is_none_or(|total| total > *reserved_amount)
+            {
+                return Err(CasperError::InvalidCostSettlement(
+                    "replay vault settlement exceeds its reservation".to_string(),
+                ));
+            }
+            settlements.push(
+                crate::rust::util::rholang::costacc::vault_cost_deploy::VaultSettlement::new(
+                    payer.address.to_base58(),
+                    i64::try_from(burn).map_err(|_| {
+                        CasperError::InvalidCostSettlement(
+                            "vault burn exceeds the platform range".to_string(),
+                        )
+                    })?,
+                    i64::try_from(fee).map_err(|_| {
+                        CasperError::InvalidCostSettlement(
+                            "vault fee exceeds the platform range".to_string(),
+                        )
+                    })?,
+                )?,
+            );
+        }
+        settlements.push(
+            crate::rust::util::rholang::costacc::vault_cost_deploy::VaultSettlement::new(
+                fee_address.clone(),
+                crate::rust::util::rholang::costacc::VALIDATOR_HANDLER_COST_PER_DEPLOY,
+                0,
+            )?,
+        );
+        let mut apply =
+            crate::rust::util::rholang::costacc::vault_cost_deploy::ApplyCostDeploy::new(
+                certificate.reservation_id,
+                reserve_allocations,
+                settlements,
+                fee_address,
+                crate::rust::util::rholang::costacc::vault_cost_deploy::lifecycle_random(
+                    &certificate.reservation_id,
+                    1,
+                ),
+            )?;
+        let (_, mut apply_eval) = self
+            .replay_system_deploy_internal(&mut apply, &None)
+            .await?;
+        mergeable_channels.extend(apply_eval.mergeable.drain());
+        self.runtime_ops.runtime.take_event_log().await;
 
         tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "deploy-done");
-        Ok(eval_successful)
+        Ok(successful)
     }
 
-    async fn process_deploy_without_cost_accounting(
+    async fn process_genesis_deploy(
         &mut self,
         processed_deploy: &ProcessedDeploy,
         mergeable_channels: &mut HashMap<Par, MergeType>,
     ) -> Result<bool, CasperError> {
-        self.run_user_deploy(processed_deploy, mergeable_channels)
+        self.run_user_deploy(processed_deploy, mergeable_channels, None)
             .await
-            .map(|(_, eval_successful)| eval_successful)
+            .map(|(_, eval_successful, _)| eval_successful)
     }
 
     pub async fn run_user_deploy(
         &mut self,
         processed_deploy: &ProcessedDeploy,
         mergeable_channels: &mut HashMap<Par, MergeType>,
-    ) -> Result<(EvaluateResult, bool), CasperError> {
-        // Mirror RuntimeOps behavior: rollback failed user deploy via soft checkpoint
-        // so pre-charge context remains available for refund replay.
+        execution_authority: Option<(Cost, ResourceMultiset<[u8; 32]>)>,
+    ) -> Result<(EvaluateResult, bool, Vec<RSpaceEvent>), CasperError> {
+        // Mirror RuntimeOps behavior: rollback a failed user deploy while
+        // preserving the block-level authority reservation for settlement.
         let fallback = self.runtime_ops.runtime.create_soft_checkpoint().await;
 
         let deploy_data = SystemProcessDeployData::from_deploy(&processed_deploy.deploy);
         self.runtime_ops.runtime.set_deploy_data(deploy_data).await;
 
-        let mut user_eval_result = self.runtime_ops.evaluate(&processed_deploy.deploy).await?;
+        let mut user_eval_result = match execution_authority {
+            Some((budget, authority_allocation)) => {
+                let cosigned = processed_deploy
+                    .to_cosigned()
+                    .map_err(CasperError::InvalidCostSettlement)?;
+                self.runtime_ops
+                    .evaluate_cosigned_with_budget_and_authority(
+                        &cosigned,
+                        budget,
+                        Some(authority_allocation),
+                    )
+                    .await?
+            }
+            None => {
+                self.runtime_ops
+                    .evaluate_genesis(&processed_deploy.deploy)
+                    .await?
+            }
+        };
         let discard_start = Instant::now();
-        self.discard_event_log("user-deploy", false).await;
+        let user_log = self.runtime_ops.runtime.take_event_log().await;
         metrics::histogram!(BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE, "phase" => "user-deploy")
             .record(discard_start.elapsed().as_secs_f64());
 
         let eval_successful = user_eval_result.errors.is_empty();
+        if user_eval_result
+            .errors
+            .iter()
+            .any(|error| matches!(error, InterpreterError::OutOfPhlogistonsError))
+        {
+            return Err(CasperError::ReplayFailure(
+                ReplayFailure::replay_admission_mismatch(
+                    1,
+                    1,
+                    0,
+                    0,
+                    "admitted deploy exhausted its state-bound replay execution capacity"
+                        .to_string(),
+                ),
+            ));
+        }
 
         if !eval_successful {
             interpreter_util::print_deploy_errors(
@@ -567,7 +877,7 @@ impl ReplayRuntimeOps {
         // cost integrity is the conserved total cost (compared above) plus the
         // failed/OOP status (compared above) plus the post-state hash. See the
         // cost-accounting threat model (TM-CA-151) and the design doc.
-        Ok((user_eval_result, eval_successful))
+        Ok((user_eval_result, eval_successful, user_log))
     }
 
     /* REPLAY System deploy evaluators */
@@ -584,18 +894,6 @@ impl ReplayRuntimeOps {
         &mut self,
         block_data: &BlockData,
         processed_system_deploy: &ProcessedSystemDeploy,
-        settlement_debits: &std::collections::BTreeMap<
-            crate::rust::util::rholang::acceptance::SigKey,
-            crate::rust::util::rholang::acceptance::SettlementDebit,
-        >,
-        fee_carve: &Option<crate::rust::util::rholang::acceptance::FeeCarve>,
-        // Task #13b: the genesis client funding-slot allocations
-        // `[(client_pk_bytes, amount)]` reconstructed from the shard-genesis conf
-        // (the SAME constant the play-side proposer used), threaded onto the
-        // reconstructed `CloseBlockDeploy` so its block-1 `Σ⟦c⟧` seed is
-        // byte-identical to play. Empty on default shards (back-compat) and on
-        // every non-block-1 block (the credit is gated on `block_number == 1`).
-        client_fuel_allocations: &[(Vec<u8>, i64)],
     ) -> Result<NumberChannelsEndVal, CasperError> {
         let system_deploy = match processed_system_deploy {
             ProcessedSystemDeploy::Succeeded {
@@ -621,12 +919,6 @@ impl ReplayRuntimeOps {
                     ),
                 };
 
-                // Capture the pre-slash store root for the Stage-C supply
-                // `Σ⟦v⟧`-zero context (diagnostics / mismatch reporting); the
-                // supply read/write themselves target the live store.
-                let pre_state_hash: StateHash =
-                    self.runtime_ops.runtime.get_root().await.to_bytes_prost();
-
                 self.rig_system_deploy(processed_system_deploy).await?;
                 let mut slash_deploy_mut = slash_deploy.clone();
                 let (_, eval_result) = self
@@ -647,69 +939,19 @@ impl ReplayRuntimeOps {
                 self.check_replay_data_with_fix(eval_result.errors.is_empty())
                     .await?;
 
-                // Cost-Accounted Rho Stage-C (Decision 4 + 6.3): zero the
-                // offender's supply pool `Σ⟦offender⟧`, SYMMETRIC with the
-                // play-side `post_eval` auto-call in
-                // `RuntimeOps::play_system_deploy`. The offender pk is the one
-                // the Rholang `slash` contract published on `sys:casper:slashedPk`
-                // (re-resolved from the SAME `invalid_block_hash` on replay), so
-                // the zeroed datum is byte-identical play↔replay. Run AFTER the
-                // rig/replay-data check so the bare supply-produce event never
-                // enters the rigged event set; the write is captured by the final
-                // replay checkpoint. The replay path enables the
-                // `ReplaySupplyMismatch` write-readback guard.
-                slash_deploy
-                    .post_eval_replay(&mut self.runtime_ops, block_data, &pre_state_hash)
-                    .await?;
-
                 Ok(map)
             }
 
             SystemDeployData::CloseBlockSystemDeployData => {
-                let close_block_deploy = CloseBlockDeploy {
-                    initial_rand:
-                        system_deploy_util::generate_close_deploy_random_seed_from_validator(
-                            block_data.sender.bytes.clone(),
-                            block_data.seq_num,
-                        ),
-                    // Replay does NOT thread the play-side debit map (debits are
-                    // not serialized into the block); the settlement debit is
-                    // applied on replay via the RECOMPUTED map fed directly to
-                    // `post_eval_replay` (WD-D2, replay symmetry). The struct
-                    // field is left empty here.
-                    settlement_debits: Default::default(),
-                    // Cost-Accounted Rho Stage D: the conserving FeeExtract carve
-                    // RECOMPUTED in `replay_deploys` from `block.body.deploys` (the
-                    // per-client fee debits against each post-cost `Σ⟦c⟧`) + the
-                    // proposing validator (`block_data.sender`) as the recipient.
-                    // Threaded here so the closeBlock carve (client `Σ⟦c⟧` → `F_v`)
-                    // is byte-identical play↔replay.
-                    fee_carve: fee_carve.clone(),
-                    // Task #13b: the genesis client funding-slot allocations,
-                    // reconstructed from the shard-genesis conf (the SAME constant
-                    // the play-side proposer read). `dual_write_supply` credits
-                    // each `Σ⟦c⟧` ONLY at the block-1 close (gated on
-                    // `block_number == 1`); the per-allocation `random_state` is
-                    // derived from this close deploy's replay-stable `initial_rand`
-                    // advanced by the SORTED-pk index — so the block-1 `Σ⟦c⟧` seed
-                    // is byte-identical to the play side. Empty ⇒ no credit.
-                    client_fuel_allocations: client_fuel_allocations.to_vec(),
-                };
-
-                // Capture the pre-close store root for the Stage-B supply
-                // dual-write context (diagnostics / mismatch reporting); the
-                // supply read/write themselves target the live store.
-                let pre_state_hash: StateHash =
-                    self.runtime_ops.runtime.get_root().await.to_bytes_prost();
+                let close_block_deploy = CloseBlockDeploy::new(
+                    system_deploy_util::generate_close_deploy_random_seed_from_validator(
+                        block_data.sender.bytes.clone(),
+                        block_data.seq_num,
+                    ),
+                );
 
                 self.rig_system_deploy(processed_system_deploy).await?;
 
-                // (Stage D: the `fee_carve` set on `close_block_deploy` above —
-                // RECOMPUTED from `block.body.deploys` — is read by `post_eval_replay`
-                // below for the byte-identical conserving FeeExtract carve: each
-                // client's post-cost `Σ⟦c⟧` is debited and the total credited to the
-                // proposer's Rust fee pool `F_v`. No pre-eval Rholang seeding is
-                // involved. The protocol fee→`Σ⟦v⟧` conversion is removed (F-C).)
                 let mut close_block_deploy_mut = close_block_deploy.clone();
                 let (_, eval_result) = self
                     .replay_system_deploy_internal(&mut close_block_deploy_mut, &None)
@@ -730,27 +972,6 @@ impl ReplayRuntimeOps {
                 self.check_replay_data_with_fix(eval_result.errors.is_empty())
                     .await?;
 
-                // Cost-Accounted Rho Stage B (Decision 2.5/6.3) + WD-D2: mirror
-                // the closeBlock-published epoch/genesis-block-1 mint into `Σ⟦v⟧`
-                // AND apply the WD-D2 settlement debits (`post Σ⟦s⟧ = pre − ΣΔ`),
-                // SYMMETRIC with the play-side `post_eval` in
-                // `RuntimeOps::play_system_deploy`. The debit map is the one
-                // RECOMPUTED in `replay_deploys` from `block.body.deploys` (the
-                // play-side `settlement_debits` are not serialized into the
-                // block) — same map ⇒ byte-identical writes. Run AFTER the
-                // rig/replay-data check so the bare supply-produce events never
-                // enter the rigged event set; the writes are captured by the
-                // final replay checkpoint in `replay_deploys`. The replay path
-                // enables the `ReplaySupplyMismatch` write-readback guard.
-                close_block_deploy
-                    .post_eval_replay(
-                        &mut self.runtime_ops,
-                        block_data,
-                        &pre_state_hash,
-                        settlement_debits,
-                    )
-                    .await?;
-
                 Ok(map)
             }
 
@@ -769,8 +990,6 @@ impl ReplayRuntimeOps {
                 // DETERMINISTIC pure function of these fields, so replay re-derives
                 // the SAME `multiSigVerified` verdict as play — and the Rholang
                 // state transition replays via `replay_system_deploy_internal`.
-                // Redemption has NO supply `post_eval` (writes neither Σ⟦v⟧ nor
-                // @W_v), so there is no post-eval call here.
                 let outcome = match outcome_tag.as_str() {
                     "Vindicated" => RedemptionOutcome::Vindicated,
                     "Guilty" => RedemptionOutcome::Guilty { penalty: *penalty },
@@ -781,24 +1000,21 @@ impl ReplayRuntimeOps {
                         )));
                     }
                 };
-                let mut redeem_deploy = RedeemDeploy {
-                    validator_pk: validator_pk.to_vec(),
+                let mut redeem_deploy = RedeemDeploy::new(
+                    validator_pk.to_vec(),
                     outcome,
-                    pos_multi_sig_public_keys: pos_multi_sig_public_keys.clone(),
-                    pos_multi_sig_quorum: *pos_multi_sig_quorum,
-                    authorizations: authorizations
-                        .iter()
-                        .map(|a| RedemptionAuthorization {
-                            public_key: a.public_key.to_vec(),
-                            signature: a.signature.to_vec(),
-                        })
-                        .collect(),
-                    initial_rand: system_deploy_util::generate_redeem_deploy_random_seed(
-                        block_data.sender.bytes.clone(),
-                        block_data.seq_num,
-                        outcome_tag,
-                    ),
-                };
+                    pos_multi_sig_public_keys.clone(),
+                    *pos_multi_sig_quorum,
+                    block_data.sender.bytes.clone(),
+                    block_data.seq_num,
+                );
+                redeem_deploy.authorizations = authorizations
+                    .iter()
+                    .map(|a| RedemptionAuthorization {
+                        public_key: a.public_key.to_vec(),
+                        signature: a.signature.to_vec(),
+                    })
+                    .collect();
 
                 self.rig_system_deploy(processed_system_deploy).await?;
                 let (_, eval_result) = self
@@ -838,7 +1054,24 @@ impl ReplayRuntimeOps {
     ) -> Result<SysEvalResult<S>, CasperError> {
         // Time system deploy evaluation
         let eval_start = Instant::now();
-        let (result, eval_res) = self.runtime_ops.eval_system_deploy(system_deploy).await?;
+        let (result, eval_res) = match self.runtime_ops.eval_system_deploy(system_deploy).await {
+            Err(CasperError::SystemRuntimeError(
+                crate::rust::util::rholang::system_deploy_user_error::SystemDeployPlatformFailure::ConsumeFailed,
+            )) => {
+                let detail = self
+                    .runtime_ops
+                    .runtime
+                    .check_replay_data()
+                    .await
+                    .err()
+                    .map(|error| error.to_string())
+                    .unwrap_or_else(|| "replay data was fully consumed".to_string());
+                return Err(CasperError::ReplayFailure(ReplayFailure::internal_error(
+                    format!("system deploy result was not produced; {detail}"),
+                )));
+            }
+            result => result?,
+        };
         metrics::histogram!(BLOCK_REPLAY_SYSDEPLOY_EVAL_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(eval_start.elapsed().as_secs_f64());
 
@@ -995,7 +1228,49 @@ impl ReplayRuntimeOps {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
+
+    fn succeeded(system_deploy: SystemDeployData) -> ProcessedSystemDeploy {
+        ProcessedSystemDeploy::Succeeded {
+            event_list: Vec::new(),
+            system_deploy,
+            pre_state_hash: StateHash::new(),
+            post_state_hash: StateHash::new(),
+        }
+    }
+
+    fn failed() -> ProcessedSystemDeploy {
+        ProcessedSystemDeploy::Failed {
+            event_list: Vec::new(),
+            error_msg: "failed".to_string(),
+            pre_state_hash: StateHash::new(),
+            post_state_hash: StateHash::new(),
+        }
+    }
+
+    #[test]
+    fn ordinary_replay_requires_one_successful_terminal_close() {
+        let close = || succeeded(SystemDeployData::CloseBlockSystemDeployData);
+        let other = || succeeded(SystemDeployData::Empty);
+
+        assert!(has_exactly_one_successful_terminal_close(&[close()]));
+        assert!(has_exactly_one_successful_terminal_close(&[
+            other(),
+            close()
+        ]));
+        assert!(!has_exactly_one_successful_terminal_close(&[]));
+        assert!(!has_exactly_one_successful_terminal_close(&[failed()]));
+        assert!(!has_exactly_one_successful_terminal_close(&[
+            close(),
+            other()
+        ]));
+        assert!(!has_exactly_one_successful_terminal_close(&[
+            close(),
+            close()
+        ]));
+    }
 
     #[test]
     fn effect_state_witness_requires_complete_contiguous_boundaries() {
@@ -1013,5 +1288,25 @@ mod tests {
         assert!(ReplayRuntimeOps::validate_effect_pre_state("gap", &post, &pre, &pre).is_err());
         assert!(ReplayRuntimeOps::validate_effect_post_state("exact", &post, &post).is_ok());
         assert!(ReplayRuntimeOps::validate_effect_post_state("forged", &pre, &post).is_err());
+    }
+
+    #[test]
+    fn replay_capacity_is_the_checked_sum_of_certified_authority() {
+        let allocation = ResourceMultiset(BTreeMap::from([([1; 32], 2), ([2; 32], 3)]));
+
+        assert_eq!(certified_replay_capacity(&allocation).unwrap().value, 5);
+        assert_eq!(
+            certified_replay_capacity(&ResourceMultiset::default())
+                .unwrap()
+                .value,
+            0
+        );
+    }
+
+    #[test]
+    fn replay_capacity_rejects_overflow() {
+        let allocation = ResourceMultiset(BTreeMap::from([([1; 32], u64::MAX), ([2; 32], 1)]));
+
+        assert!(certified_replay_capacity(&allocation).is_err());
     }
 }

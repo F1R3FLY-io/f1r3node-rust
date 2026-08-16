@@ -8,6 +8,7 @@ use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use tokio::sync::RwLock;
 use tracing::{event, Level};
 
+use super::accounting::authority::{AuthorityEvent, AuthorityStackBirth, ResourceMultiset};
 use super::accounting::costs::Cost;
 use super::accounting::{RuntimeBudget, SignedProcess};
 use super::compiler::compiler::Compiler;
@@ -27,6 +28,9 @@ pub struct EvaluateResult {
     pub cost: Cost,
     pub errors: Vec<InterpreterError>,
     pub mergeable: HashMap<Par, MergeType>,
+    pub authority_events: Vec<AuthorityEvent<[u8; 32]>>,
+    pub authority_realized: ResourceMultiset<[u8; 32]>,
+    pub authority_stack_births: Vec<AuthorityStackBirth>,
 }
 
 #[allow(async_fn_in_trait)]
@@ -38,6 +42,7 @@ pub trait Interpreter {
         initial_phlo: Cost,
         normalizer_env: HashMap<String, Par>,
         rand: Blake2b512Random,
+        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
     ) -> Result<EvaluateResult, InterpreterError>;
 }
 
@@ -54,6 +59,7 @@ impl Interpreter for InterpreterImpl {
         initial_phlo: Cost,
         normalizer_env: HashMap<String, Par>,
         rand: Blake2b512Random,
+        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
     ) -> Result<EvaluateResult, InterpreterError> {
         // Using tracing events for async context
         // Scala spans: "set-initial-cost", "build-normalized-term", "reduce-term"
@@ -66,6 +72,9 @@ impl Interpreter for InterpreterImpl {
                     initial_phlo.value
                 ))],
                 mergeable: HashMap::new(),
+                authority_events: Vec::new(),
+                authority_realized: ResourceMultiset::default(),
+                authority_stack_births: Vec::new(),
             });
         }
 
@@ -120,6 +129,9 @@ impl Interpreter for InterpreterImpl {
                     u64::try_from(initial_phlo.value).unwrap_or(0),
                 );
                 self.c.reset_from_signed_process(&signed_process);
+                if let Some(allocation) = authority_allocation {
+                    self.c.install_authority_allocation(allocation);
+                }
                 event!(
                     Level::DEBUG,
                     mark = "finished-set-initial-cost",
@@ -138,6 +150,7 @@ impl Interpreter for InterpreterImpl {
             // Phase: reduce-term — execute the parsed AST through RSpace.
             let phase_start = Instant::now();
             event!(Level::DEBUG, mark = "started-reduce-term", "inj_attempt");
+            let _comm_accounting_scope = self.c.enter_comm_accounting_scope();
             let reduce_result = reducer.inj(parsed, rand).await;
             metrics::histogram!(
                 INJ_ATTEMPT_REDUCE_TERM_TIME_METRIC,
@@ -153,6 +166,9 @@ impl Interpreter for InterpreterImpl {
                         cost: self.c.total_cost(),
                         errors: Vec::new(),
                         mergeable: mergeable_channels,
+                        authority_events: self.c.authority_events(),
+                        authority_realized: self.c.authority_realized(),
+                        authority_stack_births: self.c.authority_stack_births(),
                     })
                 }
                 Err(e) => {
@@ -180,6 +196,9 @@ impl InterpreterImpl {
                 cost: Cost::create(0, "parse failure"),
                 errors: vec![error],
                 mergeable: HashMap::new(),
+                authority_events: self.c.authority_events(),
+                authority_realized: self.c.authority_realized(),
+                authority_stack_births: self.c.authority_stack_births(),
             }),
 
             // For Out Of Phlogistons error initial cost is used because evaluated cost can be higher
@@ -188,6 +207,9 @@ impl InterpreterImpl {
                 cost: self.c.total_cost(),
                 errors: vec![error],
                 mergeable: HashMap::new(),
+                authority_events: self.c.authority_events(),
+                authority_realized: self.c.authority_realized(),
+                authority_stack_births: self.c.authority_stack_births(),
             }),
 
             // User triggered abort - execution failed, return cost consumed so far
@@ -195,6 +217,9 @@ impl InterpreterImpl {
                 cost: self.c.total_cost(),
                 errors: vec![error],
                 mergeable: HashMap::new(),
+                authority_events: self.c.authority_events(),
+                authority_realized: self.c.authority_realized(),
+                authority_stack_births: self.c.authority_stack_births(),
             }),
 
             // Non-bool `if` condition - report actual consumed cost
@@ -202,6 +227,9 @@ impl InterpreterImpl {
                 cost: self.c.total_cost(),
                 errors: vec![error],
                 mergeable: HashMap::new(),
+                authority_events: self.c.authority_events(),
+                authority_realized: self.c.authority_realized(),
+                authority_stack_births: self.c.authority_stack_births(),
             }),
 
             // InterpreterError(s) - multiple errors are result of parallel execution
@@ -209,6 +237,9 @@ impl InterpreterImpl {
                 cost: self.c.total_cost(),
                 errors: interpreter_errors,
                 mergeable: HashMap::new(),
+                authority_events: self.c.authority_events(),
+                authority_realized: self.c.authority_realized(),
+                authority_stack_births: self.c.authority_stack_births(),
             }),
 
             // These malformed forms can escape parser classification and fail
@@ -221,6 +252,9 @@ impl InterpreterImpl {
                 cost: Cost::create(0, "parse failure"),
                 errors: vec![error],
                 mergeable: HashMap::new(),
+                authority_events: self.c.authority_events(),
+                authority_realized: self.c.authority_realized(),
+                authority_stack_births: self.c.authority_stack_births(),
             }),
 
             // Same admission boundary as OperatorNotDefined: no source-token
@@ -233,6 +267,9 @@ impl InterpreterImpl {
                 cost: Cost::create(0, "parse failure"),
                 errors: vec![error],
                 mergeable: HashMap::new(),
+                authority_events: self.c.authority_events(),
+                authority_realized: self.c.authority_realized(),
+                authority_stack_births: self.c.authority_stack_births(),
             }),
 
             // InterpreterError is returned as a result
@@ -240,6 +277,9 @@ impl InterpreterImpl {
                 cost: self.c.total_cost(),
                 errors: vec![error],
                 mergeable: HashMap::new(),
+                authority_events: self.c.authority_events(),
+                authority_realized: self.c.authority_realized(),
+                authority_stack_births: self.c.authority_stack_births(),
             }),
         }
     }

@@ -12,6 +12,10 @@ use casper::rust::util::rholang::costacc::check_balance::CheckBalance;
 use casper::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
 use casper::rust::util::rholang::costacc::redeem_deploy::{RedeemDeploy, RedemptionOutcome};
 use casper::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
+use casper::rust::util::rholang::costacc::vault_cost_deploy::{
+    ApplyCostDeploy, ProtocolBurnDeploy, ProtocolMintDeploy, VaultAllocation, VaultSettlement,
+};
+use casper::rust::util::rholang::costacc::vault_payer::balance_query_source;
 use casper::rust::util::rholang::replay_failure::ReplayFailure;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::system_deploy::SystemDeployTrait;
@@ -19,26 +23,35 @@ use casper::rust::util::rholang::system_deploy_result::SystemDeployResult;
 use casper::rust::util::rholang::system_deploy_user_error::SystemDeployUserError;
 use casper::rust::util::rholang::{acceptance, supply, system_deploy_util};
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
-use models::rhoapi::{PCost, Par};
+use models::rhoapi::{CostSignature, CostStack, ListParWithRandom, PCost, Par};
 use models::rust::block::state_hash::StateHash;
 use models::rust::casper::protocol::casper_message::{
-    DeployData, ProcessedDeploy, ProcessedSystemDeploy,
+    BlockMessage, Body, DeployData, Event, F1r3flyState, Header, ProcessedDeploy,
+    ProcessedSystemDeploy,
 };
+use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
+use models::rust::rholang::sorter::sortable::Sortable;
+use models::rust::utils::new_gstring_par;
+use rholang::rust::interpreter::accounting::authority::sig_to_cost_signature;
 use rholang::rust::interpreter::accounting::costs::Cost;
-use rholang::rust::interpreter::accounting::resource_logic::ResourceSignature;
 use rholang::rust::interpreter::accounting::{self, Sig};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
-use rholang::rust::interpreter::rho_type::{Extractor, RhoBoolean};
+use rholang::rust::interpreter::rho_type::{Extractor, RhoBoolean, RhoNumber, RhoString};
 use rholang::rust::interpreter::system_processes::BlockData;
 use rholang::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
+use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::history::history_reader::HistoryReader;
 use rspace_plus_plus::rspace::history::Either;
 
-use crate::util::genesis_builder::GenesisContext;
-use crate::util::rholang::resources::with_runtime_manager;
+use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
+use crate::util::rholang::resources::{self, with_runtime_manager};
 
 enum SystemDeployReplayResult<A> {
     ReplaySucceeded {
@@ -50,14 +63,549 @@ enum SystemDeployReplayResult<A> {
     },
 }
 
+async fn system_vault_balance(
+    runtime_manager: &RuntimeManager,
+    state_hash: &StateHash,
+    address: &VaultAddress,
+) -> i64 {
+    let (values, _) = runtime_manager
+        .play_exploratory_deploy(balance_query_source(address), state_hash, None)
+        .await
+        .unwrap();
+    assert_eq!(values.len(), 1);
+    RhoNumber::unapply(&values[0]).unwrap()
+}
+
+async fn pos_validator_bond(
+    runtime_manager: &RuntimeManager,
+    state_hash: &StateHash,
+    validator: &crypto::rust::public_key::PublicKey,
+) -> i64 {
+    let source = format!(
+        r#"
+        new return, poSCh, bondsCh,
+            rl(`rho:registry:lookup`)
+        in {{
+          rl!(`rho:system:pos`, *poSCh) |
+          for (@(_, PoS) <- poSCh) {{
+            @PoS!("getBonds", *bondsCh) |
+            for (@bonds <- bondsCh) {{
+              return!(bonds.getOrElse("{}".hexToBytes(), -1))
+            }}
+          }}
+        }}"#,
+        hex::encode(&validator.bytes)
+    );
+    let (values, _) = runtime_manager
+        .play_exploratory_deploy(source, state_hash, None)
+        .await
+        .unwrap();
+    assert_eq!(values.len(), 1);
+    RhoNumber::unapply(&values[0]).unwrap()
+}
+
+async fn pos_quarantined_stake(
+    runtime_manager: &RuntimeManager,
+    state_hash: &StateHash,
+    validator: &crypto::rust::public_key::PublicKey,
+) -> i64 {
+    let source = format!(
+        r#"
+        new return, poSCh, quarantineCh,
+            rl(`rho:registry:lookup`)
+        in {{
+          rl!(`rho:system:pos`, *poSCh) |
+          for (@(_, PoS) <- poSCh) {{
+            @PoS!("getQuarantinedStake", *quarantineCh) |
+            for (@quarantine <- quarantineCh) {{
+              return!(quarantine.getOrElse("{}".hexToBytes(), -1))
+            }}
+          }}
+        }}"#,
+        hex::encode(&validator.bytes)
+    );
+    let (values, _) = runtime_manager
+        .play_exploratory_deploy(source, state_hash, None)
+        .await
+        .unwrap();
+    assert_eq!(values.len(), 1);
+    RhoNumber::unapply(&values[0]).unwrap()
+}
+
+async fn pos_coop_vault_address(
+    runtime_manager: &RuntimeManager,
+    state_hash: &StateHash,
+) -> VaultAddress {
+    let source = r#"
+        new return, poSCh, coopCh,
+            rl(`rho:registry:lookup`)
+        in {
+          rl!(`rho:system:pos`, *poSCh) |
+          for (@(_, PoS) <- poSCh) {
+            @PoS!("getCoopVault", *coopCh) |
+            for (@(_, coopAddress, _) <- coopCh) {
+              return!(coopAddress)
+            }
+          }
+        }"#;
+    let (values, _) = runtime_manager
+        .play_exploratory_deploy(source.to_string(), state_hash, None)
+        .await
+        .unwrap();
+    assert_eq!(values.len(), 1);
+    VaultAddress::parse(&RhoString::unapply(&values[0]).unwrap()).unwrap()
+}
+
+async fn pos_stake_vault_address(
+    runtime_manager: &RuntimeManager,
+    state_hash: &StateHash,
+) -> VaultAddress {
+    let source = r#"
+        new return, poSCh, vaultCh,
+            rl(`rho:registry:lookup`)
+        in {
+          rl!(`rho:system:pos`, *poSCh) |
+          for (@(_, PoS) <- poSCh) {
+            @PoS!("getInitialPosVault", *vaultCh) |
+            for (@(vaultAddress, _) <- vaultCh) {
+              return!(vaultAddress)
+            }
+          }
+        }"#;
+    let (values, _) = runtime_manager
+        .play_exploratory_deploy(source.to_string(), state_hash, None)
+        .await
+        .unwrap();
+    assert_eq!(values.len(), 1);
+    VaultAddress::parse(&RhoString::unapply(&values[0]).unwrap()).unwrap()
+}
+
+async fn pos_epoch_length(runtime_manager: &RuntimeManager, state_hash: &StateHash) -> i64 {
+    let source = r#"
+        new return, poSCh, epochCh,
+            rl(`rho:registry:lookup`)
+        in {
+          rl!(`rho:system:pos`, *poSCh) |
+          for (@(_, PoS) <- poSCh) {
+            @PoS!("getEpochLength", *epochCh) |
+            for (@epochLength <- epochCh) {
+              return!(epochLength)
+            }
+          }
+        }"#;
+    let (values, _) = runtime_manager
+        .play_exploratory_deploy(source.to_string(), state_hash, None)
+        .await
+        .unwrap();
+    assert_eq!(values.len(), 1);
+    RhoNumber::unapply(&values[0]).unwrap()
+}
+
+fn successful_system_state(result: SystemDeployResult<()>) -> StateHash {
+    match result {
+        SystemDeployResult::PlaySucceeded { state_hash, .. } => state_hash,
+        SystemDeployResult::PlayFailed { .. } => panic!("system deploy unexpectedly failed"),
+    }
+}
+
+async fn protocol_mint_to_vault(
+    runtime_manager: &RuntimeManager,
+    state_hash: &StateHash,
+    address: &VaultAddress,
+    amount: i64,
+    seed: u8,
+) -> StateHash {
+    let runtime = runtime_manager.spawn_runtime().await;
+    let mut ops = RuntimeOps::new(runtime);
+    successful_system_state(
+        ops.play_system_deploy(
+            state_hash,
+            &mut ProtocolMintDeploy::new(
+                address.to_base58(),
+                amount,
+                Blake2b512Random::create_from_bytes(&[seed]),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap(),
+    )
+}
+
+async fn play_close(
+    runtime_manager: &RuntimeManager,
+    state_hash: &StateHash,
+    block_data: BlockData,
+) -> StateHash {
+    let runtime = runtime_manager.spawn_runtime().await;
+    runtime.set_block_data(block_data.clone()).await;
+    let mut ops = RuntimeOps::new(runtime);
+    let mut close = CloseBlockDeploy::new(
+        system_deploy_util::generate_close_deploy_random_seed_from_pk(
+            block_data.sender,
+            block_data.seq_num,
+        ),
+    );
+    match ops
+        .play_system_deploy(state_hash, &mut close)
+        .await
+        .unwrap()
+    {
+        SystemDeployResult::PlaySucceeded { state_hash, .. } => state_hash,
+        SystemDeployResult::PlayFailed {
+            processed_system_deploy,
+        } => panic!("close failed: {processed_system_deploy:?}"),
+    }
+}
+
+fn system_event_list(processed: &ProcessedSystemDeploy) -> &[Event] {
+    match processed {
+        ProcessedSystemDeploy::Succeeded { event_list, .. }
+        | ProcessedSystemDeploy::Failed { event_list, .. } => event_list,
+    }
+}
+
+fn recorded_removal_pair_count(events: &[Event]) -> usize {
+    events
+        .windows(2)
+        .filter(|pair| {
+            matches!(
+                (&pair[0], &pair[1]),
+                (Event::Consume(consume), Event::Comm(comm)) if consume == &comm.consume
+            )
+        })
+        .count()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn system_vault_atomic_cost_application_is_conservative_and_rolls_back() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let address_a =
+                VaultAddress::from_public_key(&genesis_context.genesis_vaults[0].1).unwrap();
+            let address_b =
+                VaultAddress::from_public_key(&genesis_context.genesis_vaults[1].1).unwrap();
+            let fee_address =
+                VaultAddress::from_unforgeable(&models::rhoapi::GPrivate { id: vec![0xD4; 32] });
+            let genesis_state = genesis_block.body.state.post_state_hash.clone();
+            let initial_a =
+                system_vault_balance(&runtime_manager, &genesis_state, &address_a).await;
+            let initial_b =
+                system_vault_balance(&runtime_manager, &genesis_state, &address_b).await;
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &genesis_state, &fee_address).await,
+                0
+            );
+
+            let runtime = runtime_manager.spawn_runtime().await;
+            runtime
+                .set_block_data(BlockData {
+                    time_stamp: 11,
+                    block_number: 7,
+                    sender: genesis_context.validator_pks()[0].clone(),
+                    seq_num: 3,
+                })
+                .await;
+            let mut runtime_ops = RuntimeOps::new(runtime);
+            let settled_state = successful_system_state(
+                runtime_ops
+                    .play_system_deploy(
+                        &genesis_state,
+                        &mut ApplyCostDeploy::new(
+                            [0x31; 32],
+                            vec![
+                                VaultAllocation::new(address_b.to_base58(), 200).unwrap(),
+                                VaultAllocation::new(address_a.to_base58(), 100).unwrap(),
+                            ],
+                            vec![
+                                VaultSettlement::new(address_b.to_base58(), 120, 20).unwrap(),
+                                VaultSettlement::new(address_a.to_base58(), 60, 10).unwrap(),
+                            ],
+                            fee_address.to_base58(),
+                            Blake2b512Random::create_from_bytes(&[0x31]),
+                        )
+                        .unwrap(),
+                    )
+                    .await
+                    .unwrap(),
+            );
+            let settled_a =
+                system_vault_balance(&runtime_manager, &settled_state, &address_a).await;
+            let settled_b =
+                system_vault_balance(&runtime_manager, &settled_state, &address_b).await;
+            let settled_fee =
+                system_vault_balance(&runtime_manager, &settled_state, &fee_address).await;
+            assert_eq!(settled_a, initial_a - 70);
+            assert_eq!(settled_b, initial_b - 140);
+            assert_eq!(settled_fee, 30);
+            assert_eq!(
+                settled_a + settled_b + settled_fee,
+                initial_a + initial_b - 180
+            );
+
+            let minted_state = successful_system_state(
+                runtime_ops
+                    .play_system_deploy(
+                        &settled_state,
+                        &mut ProtocolMintDeploy::new(
+                            fee_address.to_base58(),
+                            50,
+                            Blake2b512Random::create_from_bytes(&[0x35]),
+                        )
+                        .unwrap(),
+                    )
+                    .await
+                    .unwrap(),
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &minted_state, &fee_address).await,
+                80
+            );
+
+            let (low_address, low_balance, high_address, high_balance) =
+                if address_a.to_base58() < address_b.to_base58() {
+                    (address_a.clone(), settled_a, address_b.clone(), settled_b)
+                } else {
+                    (address_b.clone(), settled_b, address_a.clone(), settled_a)
+                };
+            let failed_application = runtime_ops
+                .play_system_deploy(
+                    &minted_state,
+                    &mut ApplyCostDeploy::new(
+                        [0x41; 32],
+                        vec![
+                            VaultAllocation::new(low_address.to_base58(), 10).unwrap(),
+                            VaultAllocation::new(high_address.to_base58(), high_balance + 1)
+                                .unwrap(),
+                        ],
+                        vec![
+                            VaultSettlement::new(low_address.to_base58(), 5, 0).unwrap(),
+                            VaultSettlement::new(high_address.to_base58(), 1, 0).unwrap(),
+                        ],
+                        fee_address.to_base58(),
+                        Blake2b512Random::create_from_bytes(&[0x41]),
+                    )
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(matches!(
+                failed_application,
+                SystemDeployResult::PlayFailed { .. }
+            ));
+            let failed_application_state = runtime_ops
+                .runtime
+                .create_checkpoint()
+                .await
+                .root
+                .to_bytes_prost();
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &failed_application_state, &low_address)
+                    .await,
+                low_balance
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &failed_application_state, &high_address)
+                    .await,
+                high_balance
+            );
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stack_settlement_preserves_balance_and_releases_the_tail() {
+    with_runtime_manager(
+        |runtime_manager, _genesis_context, genesis_block| async move {
+            use models::rhoapi::cost_signature::Value;
+
+            let head = CostSignature {
+                value: Some(Value::Ground(b"stack-head".to_vec())),
+            };
+            let tail = CostSignature {
+                value: Some(Value::Ground(b"stack-tail".to_vec())),
+            };
+            let head_channel = supply::supply_channel(&Sig::Ground(b"stack-head".to_vec()));
+            let tail_channel = supply::supply_channel(&Sig::Ground(b"stack-tail".to_vec()));
+            let final_cell = CostSignature {
+                value: Some(Value::Ground(b"final-cell".to_vec())),
+            };
+            let final_channel = supply::supply_channel(&Sig::Ground(b"final-cell".to_vec()));
+            let runtime = runtime_manager.spawn_runtime().await;
+            let mut runtime_ops = RuntimeOps::new(runtime);
+            runtime_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(
+                    &genesis_block.body.state.post_state_hash,
+                ))
+                .await
+                .unwrap();
+            runtime_ops
+                .runtime
+                .reducer
+                .space
+                .produce(
+                    final_channel.clone(),
+                    ListParWithRandom {
+                        pars: Vec::new(),
+                        random_state: vec![9; 64],
+                        cost_authority: None,
+                        cost_stack: Some(CostStack {
+                            cells: vec![final_cell.clone()],
+                        }),
+                    },
+                    false,
+                )
+                .await
+                .unwrap();
+            runtime_ops
+                .runtime
+                .reducer
+                .space
+                .produce(
+                    head_channel.clone(),
+                    ListParWithRandom {
+                        pars: Vec::new(),
+                        random_state: vec![7; 64],
+                        cost_authority: None,
+                        cost_stack: Some(CostStack {
+                            cells: vec![head.clone(), tail.clone()],
+                        }),
+                    },
+                    false,
+                )
+                .await
+                .unwrap();
+            let pre_settlement = runtime_ops.runtime.create_checkpoint().await;
+
+            let inventory = supply::decode_purse_inventory(
+                &runtime_ops.get_data_datums(&head_channel).await,
+                &head,
+            )
+            .unwrap();
+            assert_eq!(inventory.balance, None);
+            assert_eq!(inventory.stacks.len(), 1);
+            let stack_id = inventory.stacks[0].instance_id;
+            let final_inventory = supply::decode_purse_inventory(
+                &runtime_ops.get_data_datums(&final_channel).await,
+                &final_cell,
+            )
+            .unwrap();
+            assert_eq!(final_inventory.stacks.len(), 1);
+            let final_stack_id = final_inventory.stacks[0].instance_id;
+            let stacks = inventory
+                .stacks
+                .iter()
+                .chain(final_inventory.stacks.iter())
+                .cloned()
+                .collect::<Vec<_>>();
+            supply::apply_stack_pops(
+                &mut runtime_ops,
+                &stacks,
+                &std::collections::BTreeMap::from([(stack_id, 1), (final_stack_id, 1)]),
+            )
+            .await
+            .unwrap();
+
+            let settlement_log = runtime_ops.runtime.take_event_log().await;
+            assert_eq!(settlement_log.len(), 5);
+            assert_eq!(
+                settlement_log
+                    .iter()
+                    .filter(|event| matches!(
+                        event,
+                        rspace_plus_plus::rspace::trace::event::Event::IoEvent(
+                            rspace_plus_plus::rspace::trace::event::IOEvent::Consume(_)
+                        )
+                    ))
+                    .count(),
+                2
+            );
+            assert_eq!(
+                settlement_log
+                    .iter()
+                    .filter(|event| matches!(
+                        event,
+                        rspace_plus_plus::rspace::trace::event::Event::Comm(_)
+                    ))
+                    .count(),
+                2
+            );
+            assert_eq!(
+                settlement_log
+                    .iter()
+                    .filter(|event| matches!(
+                        event,
+                        rspace_plus_plus::rspace::trace::event::Event::IoEvent(
+                            rspace_plus_plus::rspace::trace::event::IOEvent::Produce(_)
+                        )
+                    ))
+                    .count(),
+                1
+            );
+            let post_settlement = runtime_ops.runtime.create_checkpoint().await;
+            let history = runtime_manager.get_history_repo();
+            let pre_reader = history
+                .get_history_reader_struct(&pre_settlement.root)
+                .unwrap();
+            let post_reader = history
+                .get_history_reader_struct(&post_settlement.root)
+                .unwrap();
+            let event_index = rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::new(
+                settlement_log,
+                |produce| {
+                    pre_reader
+                        .get_data(&produce.channel_hash)
+                        .is_ok_and(|data| data.iter().any(|datum| datum.source == *produce))
+                },
+                |_| false,
+                std::collections::BTreeMap::new(),
+            );
+            let state_change = rspace_plus_plus::rspace::merger::state_change::StateChange::new(
+                pre_reader,
+                post_reader,
+                &event_index,
+            )
+            .unwrap();
+            let head_hash =
+                rspace_plus_plus::rspace::hashing::stable_hash_provider::hash(&head_channel);
+            let head_change = state_change.datums_changes.get(&head_hash).unwrap();
+            assert_eq!(head_change.removed.len(), 1);
+            let final_hash =
+                rspace_plus_plus::rspace::hashing::stable_hash_provider::hash(&final_channel);
+            let final_change = state_change.datums_changes.get(&final_hash).unwrap();
+            assert_eq!(final_change.removed.len(), 1);
+            assert!(
+                rspace_plus_plus::rspace::merger::merging_logic::are_conflicting(
+                    &event_index,
+                    &event_index
+                )
+            );
+
+            assert!(runtime_ops.get_data_datums(&final_channel).await.is_empty());
+            let tail_inventory = supply::decode_purse_inventory(
+                &runtime_ops.get_data_datums(&tail_channel).await,
+                &tail,
+            )
+            .unwrap();
+            assert_eq!(tail_inventory.stacks.len(), 1);
+            assert_eq!(tail_inventory.stacks[0].stack.cells, vec![tail]);
+        },
+    )
+    .await
+    .unwrap();
+}
+
 async fn compute_state(
     runtime_manager: &mut RuntimeManager,
     genesis_context: &GenesisContext,
     deploy: Signed<DeployData>,
     state_hash: &StateHash,
-) -> (StateHash, ProcessedDeploy) {
+) -> (StateHash, ProcessedDeploy, Vec<ProcessedSystemDeploy>) {
     let time_stamp = deploy.data.time_stamp;
-    let (new_state_hash, processed_deploys, _extra) = runtime_manager
+    let (new_state_hash, processed_deploys, processed_system_deploys) = runtime_manager
         .compute_state(
             state_hash,
             vec![deploy],
@@ -74,13 +622,14 @@ async fn compute_state(
         .unwrap();
 
     let result = processed_deploys.into_iter().next().unwrap();
-    (new_state_hash, result)
+    (new_state_hash, result, processed_system_deploys)
 }
 
 async fn replay_compute_state(
     runtime_manager: &mut RuntimeManager,
     genesis_context: &GenesisContext,
     processed_deploy: ProcessedDeploy,
+    processed_system_deploys: Vec<ProcessedSystemDeploy>,
     state_hash: &StateHash,
 ) -> Result<StateHash, CasperError> {
     let time_stamp = processed_deploy.deploy.data.time_stamp;
@@ -88,7 +637,7 @@ async fn replay_compute_state(
         .replay_compute_state(
             state_hash,
             vec![processed_deploy],
-            Vec::new(),
+            processed_system_deploys,
             &BlockData {
                 time_stamp,
                 block_number: 0,
@@ -97,8 +646,6 @@ async fn replay_compute_state(
             },
             None,
             false,
-            false, // strict_funding_enforcement (#13a)
-            &[],   // client_fuel_allocations (#13b)
         )
         .await
 }
@@ -129,7 +676,7 @@ async fn comput_state_should_charge_for_deploys() {
             )
             .unwrap();
 
-            let (new_state_hash, processed_deploy) = compute_state(
+            let (new_state_hash, processed_deploy, processed_system_deploys) = compute_state(
                 &mut runtime_manager,
                 &genesis_context,
                 deploy,
@@ -137,29 +684,53 @@ async fn comput_state_should_charge_for_deploys() {
             )
             .await;
 
+            let caller = Sig::Ground(construct_deploy::DEFAULT_PUB.bytes.to_vec());
+            let witness = processed_deploy
+                .authority_cost_witness
+                .as_ref()
+                .expect("admitted user deploy must carry authority evidence");
+            let witnessed_signatures = witness
+                .events
+                .iter()
+                .flat_map(|event| {
+                    event
+                        .authority
+                        .as_ref()
+                        .expect("authority event must carry its regions")
+                        .regions
+                        .iter()
+                })
+                .map(|region| {
+                    rholang::rust::interpreter::accounting::authority::cost_signature_to_sig(
+                        region
+                            .signature
+                            .as_ref()
+                            .expect("authority region must carry its signature"),
+                    )
+                    .unwrap()
+                })
+                .collect::<Vec<_>>();
+            assert!(witnessed_signatures.contains(&caller));
+            assert!(
+                witnessed_signatures
+                    .iter()
+                    .all(|signature| signature == &Sig::Unit || signature == &caller),
+                "blessed contracts must contribute only unit authority to later user interactions"
+            );
+
             let replay_state_hash = replay_compute_state(
                 &mut runtime_manager,
                 &genesis_context,
                 processed_deploy,
+                processed_system_deploys,
                 &gen_post_state,
             )
             .await
             .unwrap();
 
-            // DR-9/D3 (OD-2): the per-deploy escrow pre-charge / refund system
-            // deploys are REMOVED (casper `costacc/mod.rs`; `runtime.rs` "No
-            // pre-charge / refund fan-out"). Those writes to the payer's
-            // per-validator vault used to mutate the post-state hash. This
-            // deploy is otherwise side-effect-free (a registry lookup that
-            // binds `x` and discards it to `Nil`), so with the charge/refund
-            // gone the post-state hash now EQUALS the pre-state hash
-            // (verified: new == gen). The consensus-critical invariant the
-            // test guards — replay reproduces play EXACTLY — still holds
-            // (verified: replay == new), so there is NO replay divergence.
-            assert_eq!(
+            assert_ne!(
                 new_state_hash, gen_post_state,
-                "D3: with precharge/refund removed, a side-effect-free deploy leaves the \
-                 post-state hash unchanged"
+                "terminal settlement must commit the realized cost and fee"
             );
             assert_eq!(
                 replay_state_hash, new_state_hash,
@@ -288,24 +859,6 @@ async fn exec_replay_system_deploy<S: SystemDeployTrait>(
 
     match (value, eval_res) {
         (Either::Right(result), _) => {
-            // Cost-Accounted Rho Stage B: mirror the production replay path
-            // (`replay_block_system_deploy`) by running the system deploy's
-            // `post_eval` settlement hook on the LIVE replay runtime AFTER the
-            // replay-data check, BEFORE the checkpoint — symmetric with the
-            // play-side `play_system_deploy`. For `CloseBlockDeploy` this writes
-            // `Σ⟦v⟧`; for every other system deploy it is a no-op. Without this,
-            // the harness would diverge from play for an epoch/block-1 close.
-            let block_data = replay_runtime_ops
-                .runtime_ops
-                .runtime
-                .block_data_ref
-                .read()
-                .await
-                .clone();
-            system_deploy
-                .post_eval(&mut replay_runtime_ops.runtime_ops, &block_data, state_hash)
-                .await?;
-
             let checkpoint = replay_runtime_ops
                 .runtime_ops
                 .runtime
@@ -371,24 +924,20 @@ async fn close_block_replay_should_fail_with_different_random_seed() {
     .unwrap();
 }
 
-/// CONSENSUS-CRITICAL play/replay determinism test for the Cost-Accounted Rho
-/// Stage B supply mint (Decision 2.5/6). Plays a `CloseBlockDeploy` at an epoch
-/// boundary (block 0 ⇒ `0 % epochLength == 0`) whose `closeBlock` fold mints
-/// `epochPhlogiston` into every active genesis validator's draw wallet @W_v and
-/// publishes the mint list; the play-side `post_eval` mirrors each amount into
-/// the supply pool `Σ⟦v⟧ = from_sig(Ground(pk))`. It then replays the SAME block
-/// through the PRODUCTION `replay_block_system_deploy` path (which runs
-/// `post_eval_replay`, including the `ReplaySupplyMismatch` write-readback
-/// guard) and asserts the post-state root is BYTE-IDENTICAL — i.e. the Rust
-/// mint-set recompute + `Σ⟦v⟧` dual-write are play/replay-symmetric. The test is
-/// non-vacuous: it independently asserts that `Σ⟦v⟧` actually carries the minted
-/// `epochPhlogiston` balance in the play post-state.
+/// Consensus-critical play/replay determinism test for epoch minting. At an
+/// epoch boundary, `closeBlock` credits each eligible validator's canonical
+/// SystemVault through the authenticated protocol-mint operation. Replaying the
+/// same processed system deploy must produce the identical post-state root and
+/// the exact expected vault credit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn close_block_supply_mint_is_play_replay_deterministic() {
+async fn close_block_protocol_mint_is_play_replay_deterministic() {
     with_runtime_manager(
         |runtime_manager, genesis_context, genesis_block| async move {
             let start_state = genesis_block.body.state.post_state_hash.clone();
             let sender = genesis_context.validator_pks()[0].clone();
+            let sender_address = VaultAddress::from_public_key(&sender).unwrap();
+            let initial_balance =
+                system_vault_balance(&runtime_manager, &start_state, &sender_address).await;
             let block_data = BlockData {
                 time_stamp: 0,
                 block_number: 0,
@@ -423,19 +972,12 @@ async fn close_block_supply_mint_is_play_replay_deterministic() {
                 } => panic!("close-block play failed: {:?}", processed_system_deploy),
             };
 
-            // Non-vacuity: Σ⟦v⟧ for an active genesis validator must carry the
-            // minted epochPhlogiston balance in the play post-state.
-            play_ops
-                .runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(&final_play_state_hash))
-                .await
-                .unwrap();
-            let supply_chan = supply::supply_channel(&Sig::Ground(sender.bytes.to_vec()));
-            let play_balance = supply::read_balance(&play_ops, &supply_chan).await;
-            assert!(
-                play_balance > 0,
-                "expected a positive Σ⟦v⟧ supply balance after the epoch mint, got {}",
-                play_balance
+            let play_balance =
+                system_vault_balance(&runtime_manager, &final_play_state_hash, &sender_address);
+            let play_balance = play_balance.await;
+            assert_eq!(
+                play_balance,
+                initial_balance + casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON
             );
 
             // ---- REPLAY (production path: replay_block_system_deploy) ----
@@ -450,16 +992,7 @@ async fn close_block_supply_mint_is_play_replay_deterministic() {
                 .unwrap();
 
             replay_ops
-                .replay_block_system_deploy(
-                    &block_data,
-                    &processed_system_deploy,
-                    // This is a pure Stage-B mint test (no WD-D2 settlement debit).
-                    &std::collections::BTreeMap::new(),
-                    // No Stage-D fee credit in this mint test.
-                    &None,
-                    // #13b: no genesis client funding slots in this mint test.
-                    &[],
-                )
+                .replay_block_system_deploy(&block_data, &processed_system_deploy)
                 .await
                 .unwrap();
 
@@ -473,14 +1006,9 @@ async fn close_block_supply_mint_is_play_replay_deterministic() {
                 "play and replay post-state hashes diverged on the Stage-B supply mint"
             );
 
-            // And the replayed Σ⟦v⟧ balance matches the play-time balance.
-            replay_ops
-                .runtime_ops
-                .runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(&final_replay_state_hash))
-                .await
-                .unwrap();
-            let replay_balance = supply::read_balance(&replay_ops.runtime_ops, &supply_chan).await;
+            let replay_balance =
+                system_vault_balance(&runtime_manager, &final_replay_state_hash, &sender_address)
+                    .await;
             assert_eq!(
                 play_balance, replay_balance,
                 "Σ⟦v⟧ balance diverged between play and replay"
@@ -491,551 +1019,87 @@ async fn close_block_supply_mint_is_play_replay_deterministic() {
     .unwrap()
 }
 
-/// #13b consensus bar (a) + (c): the genesis-block-1 CLIENT funding-slot seed.
-/// CONSENSUS-CRITICAL. Plays a `CloseBlockDeploy` at the GENESIS-BLOCK-1 close
-/// (`block_number == 1`, the StageB genesis-bonded-set funding point) carrying a
-/// `client_fuel_allocations` list `[(client_pk, amount)]`; the play-side
-/// `post_eval` SEEDS each client supply pool `Σ⟦c⟧ = from_sig(Ground(client_pk))`
-/// with its amount (§5.7/§7.5 genesis/system write). It then replays the SAME
-/// block through the PRODUCTION `replay_block_system_deploy` path (which
-/// RECONSTRUCTS the close deploy with the SAME allocations and runs
-/// `post_eval_replay`, including the `ReplaySupplyMismatch` write-readback guard)
-/// and asserts the post-state root is BYTE-IDENTICAL — i.e. the Rust client-seed
-/// dual-write is play/replay-symmetric. Non-vacuous: it independently asserts
-/// `Σ⟦c⟧` carries the seeded balance in BOTH the play and replay post-states.
-///
-/// The (c) back-compat half is asserted INLINE: a SECOND close deploy with an
-/// EMPTY `client_fuel_allocations` at the SAME block-1 pre-state produces a
-/// post-state with NO `Σ⟦c⟧` datum for the client (the seed is purely additive,
-/// so an empty list leaves every client pool absent — byte-identical to pre-#13b).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn client_fuel_allocation_credits_sigma_c_at_genesis() {
-    with_runtime_manager(
-        |runtime_manager, genesis_context, genesis_block| async move {
-            let start_state = genesis_block.body.state.post_state_hash.clone();
-            // The close-block proposer (any genesis validator); its identity only
-            // seeds the close-deploy RNG, NOT the client pool under test.
-            let sender = genesis_context.validator_pks()[0].clone();
-            // A CLIENT public key that is NOT a genesis validator — so its `Σ⟦c⟧`
-            // is provisioned ONLY by the #13b client seed (never by the validator
-            // mint). Deterministic non-validator bytes.
-            let client_pk_bytes: Vec<u8> = vec![0xC1; 32];
-            const CLIENT_ALLOC: i64 = 750_000;
+async fn block_one_initial_draw_does_not_double_genesis_supply() {
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3));
+    parameters.2.proof_of_stake.epoch_length = 1;
+    parameters.2.proof_of_stake.initial_phlogiston = 11;
+    parameters.2.proof_of_stake.epoch_phlogiston = 7;
+    let genesis_context = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .unwrap();
+    let genesis_block = genesis_context.genesis_block.clone();
+    let mut kvm = resources::mk_test_rnode_store_manager_from_genesis(&genesis_context);
+    let (runtime_manager, _history) =
+        resources::mk_runtime_manager_with_history_at(&mut *kvm).await;
 
-            // GENESIS-BLOCK-1 close (the credit gate is `block_number == 1`).
-            let block_data = BlockData {
-                time_stamp: 0,
-                block_number: 1,
-                sender: sender.clone(),
-                seq_num: 0,
-            };
+    let start_state = genesis_block.body.state.post_state_hash.clone();
+    let sender = genesis_context.validator_pks()[0].clone();
+    let sender_address = VaultAddress::from_public_key(&sender).unwrap();
+    let genesis_balance =
+        system_vault_balance(&runtime_manager, &start_state, &sender_address).await;
+    assert_eq!(genesis_balance, 11);
 
-            // ---- PLAY (with a populated client funding-slot list) ----
-            let play_runtime = runtime_manager.spawn_runtime().await;
-            play_runtime.set_block_data(block_data.clone()).await;
-            let mut play_ops = RuntimeOps::new(play_runtime);
-
-            let mut play_close = CloseBlockDeploy::new(
-                system_deploy_util::generate_close_deploy_random_seed_from_pk(
-                    sender.clone(),
-                    block_data.seq_num,
-                ),
-            );
-            play_close.client_fuel_allocations = vec![(client_pk_bytes.clone(), CLIENT_ALLOC)];
-
-            let play_result = play_ops
-                .play_system_deploy(&start_state, &mut play_close)
-                .await
-                .unwrap();
-            let (final_play_state_hash, processed_system_deploy) = match play_result {
-                SystemDeployResult::PlaySucceeded {
-                    state_hash,
-                    processed_system_deploy,
-                    ..
-                } => (state_hash, processed_system_deploy),
-                SystemDeployResult::PlayFailed {
-                    processed_system_deploy,
-                } => panic!("close-block play failed: {:?}", processed_system_deploy),
-            };
-
-            // Non-vacuity: Σ⟦c⟧ for the client must carry EXACTLY the seeded amount.
-            let client_chan = supply::supply_channel(&Sig::Ground(client_pk_bytes.clone()));
-            play_ops
-                .runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(&final_play_state_hash))
-                .await
-                .unwrap();
-            let play_client_balance = supply::read_balance(&play_ops, &client_chan).await;
-            assert_eq!(
-                play_client_balance, CLIENT_ALLOC,
-                "Σ⟦c⟧ must hold exactly the seeded client allocation after block-1 close"
-            );
-
-            // ---- REPLAY (production path; SAME allocations threaded in) ----
-            let replay_runtime = runtime_manager.spawn_replay_runtime().await;
-            replay_runtime.set_block_data(block_data.clone()).await;
-            let mut replay_ops = ReplayRuntimeOps::new_from_runtime(replay_runtime);
-            replay_ops
-                .runtime_ops
-                .runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(&start_state))
-                .await
-                .unwrap();
-            replay_ops
-                .replay_block_system_deploy(
-                    &block_data,
-                    &processed_system_deploy,
-                    &std::collections::BTreeMap::new(),
-                    &None,
-                    // #13b: the SAME shard-constant client allocations the play
-                    // side used (the reconstructed close re-seeds Σ⟦c⟧ identically).
-                    &[(client_pk_bytes.clone(), CLIENT_ALLOC)],
-                )
-                .await
-                .unwrap();
-            let replay_checkpoint = replay_ops.runtime_ops.runtime.create_checkpoint().await;
-            let final_replay_state_hash = replay_checkpoint.root.to_bytes_prost();
-
-            // CONSENSUS-CRITICAL: byte-identical post-state (incl. Σ⟦c⟧).
-            assert_eq!(
-                final_play_state_hash, final_replay_state_hash,
-                "play and replay post-state hashes diverged on the #13b client funding-slot seed"
-            );
-            replay_ops
-                .runtime_ops
-                .runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(&final_replay_state_hash))
-                .await
-                .unwrap();
-            let replay_client_balance =
-                supply::read_balance(&replay_ops.runtime_ops, &client_chan).await;
-            assert_eq!(
-                play_client_balance, replay_client_balance,
-                "Σ⟦c⟧ balance diverged between play and replay"
-            );
-
-            // ---- (c) BACK-COMPAT: EMPTY allocations ⇒ no Σ⟦c⟧ datum ----
-            // The same block-1 close with an EMPTY client list must leave the
-            // client pool ABSENT (the seed is purely additive). `read_balance`
-            // folds absent ⇒ 0; `read_balance_present` distinguishes absent
-            // (`None`) from present-zero (`Some(0)`) — we assert ABSENT.
-            let empty_runtime = runtime_manager.spawn_runtime().await;
-            empty_runtime.set_block_data(block_data.clone()).await;
-            let mut empty_ops = RuntimeOps::new(empty_runtime);
-            let mut empty_close = CloseBlockDeploy::new(
-                system_deploy_util::generate_close_deploy_random_seed_from_pk(
-                    sender.clone(),
-                    block_data.seq_num,
-                ),
-            );
-            // client_fuel_allocations defaults EMPTY (new()).
-            assert!(empty_close.client_fuel_allocations.is_empty());
-            let empty_result = empty_ops
-                .play_system_deploy(&start_state, &mut empty_close)
-                .await
-                .unwrap();
-            let empty_state_hash = match empty_result {
-                SystemDeployResult::PlaySucceeded { state_hash, .. } => state_hash,
-                SystemDeployResult::PlayFailed {
-                    processed_system_deploy,
-                } => {
-                    panic!(
-                        "empty-alloc close-block play failed: {:?}",
-                        processed_system_deploy
-                    )
-                }
-            };
-            empty_ops
-                .runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(&empty_state_hash))
-                .await
-                .unwrap();
-            let empty_client_present = supply::read_balance_present(&empty_ops, &client_chan).await;
-            assert_eq!(
-                empty_client_present, None,
-                "empty client_fuel_allocations must leave Σ⟦c⟧ ABSENT (back-compat, no seed)"
-            );
-        },
-    )
-    .await
-    .unwrap()
+    let block_data = BlockData {
+        time_stamp: 0,
+        block_number: 1,
+        sender: sender.clone(),
+        seq_num: 0,
+    };
+    let play_runtime = runtime_manager.spawn_runtime().await;
+    play_runtime.set_block_data(block_data.clone()).await;
+    let mut play_ops = RuntimeOps::new(play_runtime);
+    let mut close = CloseBlockDeploy::new(
+        system_deploy_util::generate_close_deploy_random_seed_from_pk(sender, 0),
+    );
+    let (play_root, processed) = match play_ops
+        .play_system_deploy(&start_state, &mut close)
+        .await
+        .unwrap()
+    {
+        SystemDeployResult::PlaySucceeded {
+            state_hash,
+            processed_system_deploy,
+            ..
+        } => (state_hash, processed_system_deploy),
+        SystemDeployResult::PlayFailed {
+            processed_system_deploy,
+        } => panic!("block-one close failed: {processed_system_deploy:?}"),
+    };
+    assert_eq!(
+        system_vault_balance(&runtime_manager, &play_root, &sender_address).await,
+        genesis_balance + 7
+    );
+    let replay_runtime = runtime_manager.spawn_replay_runtime().await;
+    replay_runtime.set_block_data(block_data.clone()).await;
+    let mut replay_ops = ReplayRuntimeOps::new_from_runtime(replay_runtime);
+    replay_ops
+        .runtime_ops
+        .runtime
+        .reset(&Blake2b256Hash::from_bytes_prost(&start_state))
+        .await
+        .unwrap();
+    replay_ops
+        .replay_block_system_deploy(&block_data, &processed)
+        .await
+        .unwrap();
+    let replay_root = replay_ops
+        .runtime_ops
+        .runtime
+        .create_checkpoint()
+        .await
+        .root
+        .to_bytes_prost();
+    assert_eq!(replay_root, play_root);
 }
 
-/// CONSENSUS-CRITICAL play/replay determinism test for the Cost-Accounted Rho
-/// Stage-D conserving FEE carve + per-epoch fee→v conversion (the validator
-/// economic loop; spec "Fee conversion" tex:3061-3100). Plays a
-/// `CloseBlockDeploy` at an epoch boundary (block 0 ⇒ `0 % epochLength == 0`)
-/// carrying a `FeeCarve` that CARVES one token per admitted deploy from the
-/// client's OWN supply pool `Σ⟦c⟧` (a supply-CONSERVING transfer, NOT a mint —
-/// the F-C/F-D fix) into the proposing genesis validator's fee channel `F_v`:
-/// `closeBlock` (1) DEBITS `Σ⟦c⟧` by the carve and CREDITS the proposer's `F_v`
-/// (phase 3), then (2) at the epoch boundary CONVERTS `F_v` 1:1 into `Σ⟦v⟧`
-/// (phase 3b — UNCHANGED by F-C/F-D; the fix BACKS the convert with the carve,
-/// it does not remove it), recording `convertedEpochs`. The full conserving flow
-/// is `Σ⟦c⟧ → F_v → Σ⟦v⟧`. It then replays the SAME block through the PRODUCTION
-/// `replay_block_system_deploy` path (with the SAME `fee_carve` fed in, mirroring
-/// how the play side threads it; `post_eval_replay`'s `ReplaySupplyMismatch`
-/// readback guard active) and asserts the post-state root is BYTE-IDENTICAL —
-/// i.e. the carve + the fee-convert `Σ⟦v⟧` mirror are play/replay-symmetric
-/// (TM-CA-160). Non-vacuous: `Σ⟦c⟧` is debited by the carve AND `Σ⟦v⟧` carries
-/// BOTH the epoch mint AND the converted fee in the play post-state.
+/// Consensus-critical play/replay determinism test for slash quarantine. It
+/// first gives the offender a nonzero canonical vault balance through epoch
+/// minting, then verifies that slash play and replay quarantine the same exact
+/// amount, halt future minting, and produce byte-identical state roots.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fee_collection_and_convert_is_play_replay_deterministic() {
-    with_runtime_manager(
-        |runtime_manager, genesis_context, genesis_block| async move {
-            let start_state = genesis_block.body.state.post_state_hash.clone();
-            let sender = genesis_context.validator_pks()[0].clone();
-            let block_data = BlockData {
-                time_stamp: 0,
-                block_number: 0, // 0 % epochLength == 0 ⇒ epoch boundary (convert fires)
-                sender: sender.clone(),
-                seq_num: 0,
-            };
-            // A carve of 3 tokens (the spec's FeeExtract for a 3-deploy block),
-            // CARVED from the client's own Σ⟦c⟧ into the proposing genesis
-            // validator's F_v (conserving: Σ⟦c⟧ debited == F_v credited, no mint).
-            let fee_amount: i64 = 3;
-
-            // ---- SEED: a fresh CLIENT pool Σ⟦c⟧ = 10 in a SHARED pre-state ----
-            // The carve draws `fee_amount` from this pool; seeding it once (before
-            // the play/replay split, into a checkpoint reused as the pre-state for
-            // BOTH paths) is what makes the conserving Σ⟦c⟧ → F_v → Σ⟦v⟧ flow
-            // exercisable and play/replay-symmetric. Any deterministic
-            // `random_state` works (a one-time pre-state seed); we reuse the
-            // settlement test's `mint_random_state` shape.
-            let client_pk: Vec<u8> = vec![0xC1u8; 32];
-            let client_sig = Sig::Ground(client_pk.clone());
-            let client_chan = supply::supply_channel(&client_sig);
-            const CLIENT_SEED: i64 = 10;
-            let seed_runtime = runtime_manager.spawn_runtime().await;
-            let mut seed_ops = RuntimeOps::new(seed_runtime);
-            seed_ops
-                .runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(&start_state))
-                .await
-                .unwrap();
-            supply::produce_balance(
-                &mut seed_ops,
-                &client_chan,
-                CLIENT_SEED,
-                supply::mint_random_state(&Blake2b512Random::create_from_bytes(&[0xC1u8; 1]), 0),
-            )
-            .await
-            .unwrap();
-            let seeded_state = seed_ops
-                .runtime
-                .create_checkpoint()
-                .await
-                .root
-                .to_bytes_prost();
-
-            // The conserving FeeCarve: carve `fee_amount` from the client's own
-            // Σ⟦c⟧ into the proposer's F_v (the play side threads it; replay feeds
-            // the SAME carve below — there is no `recompute_fee_credits` anymore,
-            // the per-client amounts ride the recompute-from-block discipline).
-            let fee_carve = Some(casper::rust::util::rholang::acceptance::FeeCarve {
-                recipient_pk: sender.bytes.to_vec(),
-                debits: std::collections::BTreeMap::from([(
-                    client_sig.key(),
-                    casper::rust::util::rholang::acceptance::SettlementDebit {
-                        channel: client_chan.clone(),
-                        amount: fee_amount,
-                    },
-                )]),
-            });
-
-            // ---- PLAY ----
-            let play_runtime = runtime_manager.spawn_runtime().await;
-            play_runtime.set_block_data(block_data.clone()).await;
-            let mut play_ops = RuntimeOps::new(play_runtime);
-
-            let mut play_close = CloseBlockDeploy {
-                initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
-                    sender.clone(),
-                    block_data.seq_num,
-                ),
-                settlement_debits: std::collections::BTreeMap::new(),
-                fee_carve: fee_carve.clone(),
-                // #13b: no genesis client funding slots in this fixture.
-                client_fuel_allocations: Vec::new(),
-            };
-            let play_result = play_ops
-                .play_system_deploy(&seeded_state, &mut play_close)
-                .await
-                .unwrap();
-
-            let (final_play_state_hash, processed_system_deploy) = match play_result {
-                SystemDeployResult::PlaySucceeded {
-                    state_hash,
-                    processed_system_deploy,
-                    ..
-                } => (state_hash, processed_system_deploy),
-                SystemDeployResult::PlayFailed {
-                    processed_system_deploy,
-                } => panic!(
-                    "fee-convert close play failed: {:?}",
-                    processed_system_deploy
-                ),
-            };
-
-            // Non-vacuity: Σ⟦v⟧ for the proposing validator must be positive in the
-            // play post-state (it carries the epoch mint PLUS the converted fee).
-            play_ops
-                .runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(&final_play_state_hash))
-                .await
-                .unwrap();
-            let supply_chan = supply::supply_channel(&Sig::Ground(sender.bytes.to_vec()));
-            let play_balance = supply::read_balance(&play_ops, &supply_chan).await;
-            assert!(
-                play_balance > 0,
-                "expected a positive Σ⟦v⟧ after epoch mint + fee convert, got {}",
-                play_balance
-            );
-
-            // Conservation (the F-C/F-D carve, NOT a mint): the client's Σ⟦c⟧ was
-            // DEBITED by exactly `fee_amount` (10 − 3 = 7) — the source half of the
-            // conserving Σ⟦c⟧ → F_v → Σ⟦v⟧ flow.
-            let play_client_balance = supply::read_balance(&play_ops, &client_chan).await;
-            assert_eq!(
-                play_client_balance,
-                CLIENT_SEED - fee_amount,
-                "play: the fee carve must DEBIT Σ⟦c⟧ by the carved amount (10 − 3 = 7)"
-            );
-
-            // ---- REPLAY (production path, fed the SAME conserving fee carve) ----
-            let replay_runtime = runtime_manager.spawn_replay_runtime().await;
-            replay_runtime.set_block_data(block_data.clone()).await;
-            let mut replay_ops = ReplayRuntimeOps::new_from_runtime(replay_runtime);
-            replay_ops
-                .runtime_ops
-                .runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(&seeded_state))
-                .await
-                .unwrap();
-
-            // The replay path is fed the SAME `fee_carve` the play side threaded
-            // (mirroring how this test fed `fee_credits` before the F-C/F-D
-            // refactor). On the real replay path the per-client carve amounts are
-            // RECOMPUTED from `block.body.deploys` via
-            // `recompute_settlement_debits(...).fee` (the recompute-from-block
-            // discipline, exercised by the WD-D2 settlement test); here, feeding
-            // the identical carve isolates the convert's play/replay byte-identity.
-            replay_ops
-                .replay_block_system_deploy(
-                    &block_data,
-                    &processed_system_deploy,
-                    &std::collections::BTreeMap::new(),
-                    &fee_carve,
-                    // #13b: no genesis client funding slots in this fixture.
-                    &[],
-                )
-                .await
-                .unwrap();
-
-            let replay_checkpoint = replay_ops.runtime_ops.runtime.create_checkpoint().await;
-            let final_replay_state_hash = replay_checkpoint.root.to_bytes_prost();
-
-            // The consensus-critical assertion: byte-identical post-state between
-            // play and replay (every Σ⟦v⟧ balance, every F_v carrier, the @W_v
-            // purses, the convertedEpochs/mintedEpochs ledgers).
-            assert_eq!(
-                final_play_state_hash, final_replay_state_hash,
-                "play and replay post-state hashes diverged on the Stage-D fee collect+convert"
-            );
-
-            // And the replayed Σ⟦v⟧ matches the play-time balance.
-            replay_ops
-                .runtime_ops
-                .runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(&final_replay_state_hash))
-                .await
-                .unwrap();
-            let replay_balance = supply::read_balance(&replay_ops.runtime_ops, &supply_chan).await;
-            assert_eq!(
-                play_balance, replay_balance,
-                "Σ⟦v⟧ balance diverged between play and replay on the fee convert"
-            );
-        },
-    )
-    .await
-    .unwrap()
-}
-
-/// `convertedEpochs` IDEMPOTENCY / determinism (DR-4 / spec tex:3095-3100). The
-/// `convertedEpochs: Set[(Pk,Int)]` ledger is the EXACT structural sibling of the
-/// Stage-B `mintedEpochs` ledger: `convertFeesToValidators`'s fold guard
-/// `convertedEpochs.contains((pk, epochIdx)) == false` mirrors the mint fold's
-/// `mintedEpochs.contains((pk, epochIdx)) == false`, recorded the same way
-/// (`.add((pk, epochIdx))`) in the SAME runMVar state transition. Under a
-/// multi-parent merge the content-addressed merge engine dedups the two parents'
-/// identical `(v, E)` records so the conversion credit lands once — the same
-/// mechanism (and the same `mintedEpochs` guard) the Stage-B epoch mint already
-/// relies on (proven in MintingInjection.v `epoch_mint_idempotent_on_balance`,
-/// EvalScheduling.tla `SupplyOnlyFromMint`, and the supply Sage model's
-/// no-double-credit-under-merge property; this Stage adds the fee-ledger
-/// analogues `fee_convert_credit_is_backed` / `Inv_FeeConvertConserves`).
-///
-/// Here we pin the consensus-observable foundation idempotency rests on: the
-/// epoch fee conversion is DETERMINISTIC — two INDEPENDENT plays of the same
-/// epoch close from the SAME pre-state produce BYTE-IDENTICAL post-states
-/// (identical `convertedEpochs`, identical Σ⟦v⟧, identical F_v / @W_v). Combined
-/// with the merge engine's `(v,E)`-keyed dedup, this IS the idempotency
-/// guarantee. (A NOTE on scope: a sequential re-close of the SAME block height is
-/// not a production scenario — block numbers are monotonic — and, exactly like
-/// the Stage-B mint, is not what the per-epoch ledger guards; the guard fires
-/// when a merged pre-state ALREADY carries `(v,E)`, which the merge dedup
-/// establishes.)
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fee_convert_converted_epochs_idempotent_deterministic() {
-    with_runtime_manager(
-        |runtime_manager, genesis_context, genesis_block| async move {
-            let start_state = genesis_block.body.state.post_state_hash.clone();
-            let sender = genesis_context.validator_pks()[0].clone();
-            let block_data = BlockData {
-                time_stamp: 0,
-                block_number: 0, // epoch boundary, epochIdx 0
-                sender: sender.clone(),
-                seq_num: 0,
-            };
-
-            // SEED a fresh CLIENT pool Σ⟦c⟧ = 10 in a SHARED pre-state so the
-            // conserving carve (Σ⟦c⟧ → F_v → Σ⟦v⟧) has a funded source; both
-            // independent plays run from this identical seeded pre-state.
-            let client_pk: Vec<u8> = vec![0xC1u8; 32];
-            let client_sig = Sig::Ground(client_pk.clone());
-            let client_chan = supply::supply_channel(&client_sig);
-            const CLIENT_SEED: i64 = 10;
-            let seed_runtime = runtime_manager.spawn_runtime().await;
-            let mut seed_ops = RuntimeOps::new(seed_runtime);
-            seed_ops
-                .runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(&start_state))
-                .await
-                .unwrap();
-            supply::produce_balance(
-                &mut seed_ops,
-                &client_chan,
-                CLIENT_SEED,
-                supply::mint_random_state(&Blake2b512Random::create_from_bytes(&[0xC1u8; 1]), 0),
-            )
-            .await
-            .unwrap();
-            let seeded_state = seed_ops
-                .runtime
-                .create_checkpoint()
-                .await
-                .root
-                .to_bytes_prost();
-
-            // The conserving FeeCarve: carve 5 tokens from the client's own Σ⟦c⟧
-            // into the proposer's F_v (then the epoch convert mirrors F_v → Σ⟦v⟧).
-            let fee_carve = Some(casper::rust::util::rholang::acceptance::FeeCarve {
-                recipient_pk: sender.bytes.to_vec(),
-                debits: std::collections::BTreeMap::from([(
-                    client_sig.key(),
-                    casper::rust::util::rholang::acceptance::SettlementDebit {
-                        channel: client_chan.clone(),
-                        amount: 5,
-                    },
-                )]),
-            });
-
-            // PLAY the SAME epoch close twice, INDEPENDENTLY from the same
-            // pre-state. Both must yield the byte-identical post-state — the
-            // determinism the `(v,E)` merge dedup builds on.
-            async fn play_close(
-                runtime_manager: &RuntimeManager,
-                from_state: &StateHash,
-                block_data: &BlockData,
-                sender: &crypto::rust::public_key::PublicKey,
-                fee_carve: &Option<casper::rust::util::rholang::acceptance::FeeCarve>,
-            ) -> StateHash {
-                let rt = runtime_manager.spawn_runtime().await;
-                rt.set_block_data(block_data.clone()).await;
-                let mut ops = RuntimeOps::new(rt);
-                let mut close = CloseBlockDeploy {
-                    initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
-                        sender.clone(),
-                        block_data.seq_num,
-                    ),
-                    settlement_debits: std::collections::BTreeMap::new(),
-                    fee_carve: fee_carve.clone(),
-                    // #13b: no genesis client funding slots in this fixture.
-                    client_fuel_allocations: Vec::new(),
-                };
-                match ops
-                    .play_system_deploy(from_state, &mut close)
-                    .await
-                    .unwrap()
-                {
-                    SystemDeployResult::PlaySucceeded { state_hash, .. } => state_hash,
-                    SystemDeployResult::PlayFailed {
-                        processed_system_deploy,
-                    } => {
-                        panic!("epoch close play failed: {:?}", processed_system_deploy)
-                    }
-                }
-            }
-
-            let post_a = play_close(
-                &runtime_manager,
-                &seeded_state,
-                &block_data,
-                &sender,
-                &fee_carve,
-            )
-            .await;
-            let post_b = play_close(
-                &runtime_manager,
-                &seeded_state,
-                &block_data,
-                &sender,
-                &fee_carve,
-            )
-            .await;
-
-            assert_eq!(
-                post_a, post_b,
-                "the epoch fee conversion + convertedEpochs record must be deterministic \
-                 (identical post-state across independent plays) — the foundation of the \
-                 (v,E)-keyed merge idempotency"
-            );
-
-            // Non-vacuity: the conversion actually credited Σ⟦v⟧ (mint + the
-            // converted fee), exactly once in the single close.
-            let supply_chan = supply::supply_channel(&Sig::Ground(sender.bytes.to_vec()));
-            let rt = runtime_manager.spawn_runtime().await;
-            let mut ops = RuntimeOps::new(rt);
-            ops.runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(&post_a))
-                .await
-                .unwrap();
-            let bal = supply::read_balance(&ops, &supply_chan).await;
-            assert!(
-                bal > 0,
-                "Σ⟦v⟧ must be funded after the epoch convert+mint (non-vacuous), got {}",
-                bal
-            );
-        },
-    )
-    .await
-    .unwrap()
-}
-
-/// CONSENSUS-CRITICAL play/replay determinism test for the Cost-Accounted Rho
-/// Stage-C two-effect slash `Σ⟦v⟧`-zero (Decision 4 / 6.3). First funds an
-/// offender's supply pool with an epoch mint (so the zero is NON-vacuous), then
-/// PLAYS a `SlashDeploy` against that offender — whose `slash` contract resolves
-/// the offender from the seeded `invalidBlocks` index, publishes it on
-/// `sys:casper:slashedPk`, and whose play-side `post_eval` zeros
-/// `Σ⟦offender⟧ = from_sig(Ground(pk))`. It then REPLAYS the SAME slash through
-/// the PRODUCTION `replay_block_system_deploy` `Slash` branch (which runs
-/// `post_eval_replay`, including the `ReplaySupplyMismatch` write-readback guard)
-/// and asserts the post-state root is BYTE-IDENTICAL and `Σ⟦offender⟧ == 0` on
-/// both paths — i.e. the offender resolution + `Σ⟦v⟧`-zero are play/replay-symmetric.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn slash_zeros_supply_is_play_replay_deterministic() {
+async fn slash_drains_validator_vault_is_play_replay_deterministic() {
     use rholang::rust::interpreter::rho_runtime::RhoRuntime as _;
 
     with_runtime_manager(
@@ -1071,13 +1135,9 @@ async fn slash_zeros_supply_is_play_replay_deterministic() {
                 SystemDeployResult::PlayFailed { .. } => panic!("epoch-mint close failed"),
             };
 
-            let supply_chan = supply::supply_channel(&Sig::Ground(offender.bytes.to_vec()));
-            mint_ops
-                .runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(&funded_state))
-                .await
-                .unwrap();
-            let pre_slash_balance = supply::read_balance(&mint_ops, &supply_chan).await;
+            let offender_address = VaultAddress::from_public_key(&offender).unwrap();
+            let pre_slash_balance =
+                system_vault_balance(&runtime_manager, &funded_state, &offender_address).await;
             assert!(
                 pre_slash_balance > 0,
                 "non-vacuity: offender Σ⟦v⟧ must be positive before slash, got {}",
@@ -1130,13 +1190,9 @@ async fn slash_zeros_supply_is_play_replay_deterministic() {
                 } => panic!("slash play failed: {:?}", processed_system_deploy),
             };
 
-            // The offender's Σ⟦v⟧ must be ZERO in the play post-state.
-            play_ops
-                .runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(&final_play_state_hash))
-                .await
-                .unwrap();
-            let play_post_balance = supply::read_balance(&play_ops, &supply_chan).await;
+            let play_post_balance =
+                system_vault_balance(&runtime_manager, &final_play_state_hash, &offender_address)
+                    .await;
             assert_eq!(
                 play_post_balance, 0,
                 "slash must zero Σ⟦offender⟧ on play, got {}",
@@ -1159,14 +1215,7 @@ async fn slash_zeros_supply_is_play_replay_deterministic() {
                 .await
                 .unwrap();
             replay_ops
-                .replay_block_system_deploy(
-                    &slash_block_data,
-                    &processed_slash,
-                    &std::collections::BTreeMap::new(),
-                    &None,
-                    // #13b: no genesis client funding slots in this slash fixture.
-                    &[],
-                )
+                .replay_block_system_deploy(&slash_block_data, &processed_slash)
                 .await
                 .unwrap();
             let replay_checkpoint = replay_ops.runtime_ops.runtime.create_checkpoint().await;
@@ -1178,15 +1227,12 @@ async fn slash_zeros_supply_is_play_replay_deterministic() {
                 "play and replay post-state hashes diverged on the Stage-C slash Σ⟦v⟧-zero"
             );
 
-            // And the replayed Σ⟦offender⟧ is also zero.
-            replay_ops
-                .runtime_ops
-                .runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(&final_replay_state_hash))
-                .await
-                .unwrap();
-            let replay_post_balance =
-                supply::read_balance(&replay_ops.runtime_ops, &supply_chan).await;
+            let replay_post_balance = system_vault_balance(
+                &runtime_manager,
+                &final_replay_state_hash,
+                &offender_address,
+            )
+            .await;
             assert_eq!(
                 replay_post_balance, 0,
                 "Σ⟦offender⟧ must be zero on replay too, got {}",
@@ -1291,6 +1337,20 @@ async fn redeem_outcomes_and_multisig_gate() {
                 SystemDeployResult::PlaySucceeded { state_hash, .. } => state_hash,
                 SystemDeployResult::PlayFailed { .. } => panic!("epoch mint failed"),
             };
+            let offender_address = VaultAddress::from_public_key(&offender).unwrap();
+            let coop_address = pos_coop_vault_address(&runtime_manager, &funded_state).await;
+            let stake_vault_address =
+                pos_stake_vault_address(&runtime_manager, &funded_state).await;
+            let original_fuel =
+                system_vault_balance(&runtime_manager, &funded_state, &offender_address).await;
+            let original_bond =
+                pos_validator_bond(&runtime_manager, &funded_state, &offender).await;
+            let original_coop_fuel =
+                system_vault_balance(&runtime_manager, &funded_state, &coop_address).await;
+            let original_stake_vault_balance =
+                system_vault_balance(&runtime_manager, &funded_state, &stake_vault_address).await;
+            assert!(original_fuel > 0);
+            assert!(original_bond > 0);
 
             let slashed_state = play_one_slash(
                 &runtime_manager,
@@ -1301,6 +1361,18 @@ async fn redeem_outcomes_and_multisig_gate() {
                 1,
             )
             .await;
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &slashed_state, &offender_address).await,
+                0
+            );
+            assert_eq!(
+                pos_validator_bond(&runtime_manager, &slashed_state, &offender).await,
+                0
+            );
+            assert_eq!(
+                pos_quarantined_stake(&runtime_manager, &slashed_state, &offender).await,
+                original_bond
+            );
 
             // Build a custom 3-key multisig set (quorum 2) and its secrets. The
             // RedeemDeploy carries its own keyset/quorum (replay-stable); the
@@ -1314,30 +1386,27 @@ async fn redeem_outcomes_and_multisig_gate() {
                 .collect();
             let keyset: Vec<String> = keypairs.iter().map(|(_, pk)| hex::encode(pk)).collect();
 
-            let make_redeem = |n_signers: usize, seq: i32| -> RedeemDeploy {
-                let mut d = RedeemDeploy {
-                    validator_pk: offender.bytes.to_vec(),
-                    outcome: RedemptionOutcome::Vindicated,
-                    pos_multi_sig_public_keys: keyset.clone(),
-                    pos_multi_sig_quorum: 2,
-                    authorizations: Vec::new(),
-                    initial_rand: system_deploy_util::generate_redeem_deploy_random_seed(
+            let make_redeem =
+                |n_signers: usize, seq: i32, outcome: RedemptionOutcome| -> RedeemDeploy {
+                    let mut d = RedeemDeploy::new(
+                        offender.bytes.to_vec(),
+                        outcome,
+                        keyset.clone(),
+                        2,
                         proposer.bytes.clone(),
                         seq,
-                        "Vindicated",
-                    ),
+                    );
+                    let digest = d.auth_digest();
+                    d.authorizations = keypairs
+                        .iter()
+                        .take(n_signers)
+                        .map(|(sk, pk)| RedemptionAuthorization {
+                            public_key: pk.clone(),
+                            signature: secp.sign(&digest, sk),
+                        })
+                        .collect();
+                    d
                 };
-                let digest = d.auth_digest();
-                d.authorizations = keypairs
-                    .iter()
-                    .take(n_signers)
-                    .map(|(sk, pk)| RedemptionAuthorization {
-                        public_key: pk.clone(),
-                        signature: secp.sign(&digest, sk),
-                    })
-                    .collect();
-                d
-            };
 
             let redeem_block_data = BlockData {
                 time_stamp: 0,
@@ -1354,7 +1423,7 @@ async fn redeem_outcomes_and_multisig_gate() {
                 .set_block_data(redeem_block_data.clone())
                 .await;
             let mut under_ops = RuntimeOps::new(under_runtime);
-            let mut under_redeem = make_redeem(1, 2);
+            let mut under_redeem = make_redeem(1, 2, RedemptionOutcome::Vindicated);
             assert!(
                 !under_redeem.verify_multisig_quorum(),
                 "1-of-2 must be under quorum"
@@ -1377,12 +1446,28 @@ async fn redeem_outcomes_and_multisig_gate() {
                 pos_validator_is_halted(&mut under_ops2, &under_post_state, &offender).await,
                 "under-quorum redemption must NOT restore: offender stays halted"
             );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &under_post_state, &offender_address).await,
+                0
+            );
+            assert_eq!(
+                pos_validator_bond(&runtime_manager, &under_post_state, &offender).await,
+                0
+            );
+            assert_eq!(
+                pos_quarantined_stake(&runtime_manager, &under_post_state, &offender).await,
+                original_bond
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &under_post_state, &coop_address).await,
+                original_coop_fuel
+            );
 
             // ── (2) valid quorum (2-of-2) Vindicated ⇒ restore + un-halt ──────
             let ok_runtime = runtime_manager.spawn_runtime().await;
             ok_runtime.set_block_data(redeem_block_data.clone()).await;
             let mut ok_ops = RuntimeOps::new(ok_runtime);
-            let mut ok_redeem = make_redeem(2, 2);
+            let mut ok_redeem = make_redeem(2, 2, RedemptionOutcome::Vindicated);
             assert!(
                 ok_redeem.verify_multisig_quorum(),
                 "2-of-2 must meet quorum"
@@ -1408,23 +1493,155 @@ async fn redeem_outcomes_and_multisig_gate() {
                 !pos_validator_is_halted(&mut ok_ops2, &ok_post_state, &offender).await,
                 "valid-quorum vindicated redemption must un-halt the offender"
             );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &ok_post_state, &offender_address).await,
+                original_fuel
+            );
+            assert_eq!(
+                pos_validator_bond(&runtime_manager, &ok_post_state, &offender).await,
+                original_bond
+            );
+            assert_eq!(
+                pos_quarantined_stake(&runtime_manager, &ok_post_state, &offender).await,
+                -1
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &ok_post_state, &coop_address).await,
+                original_coop_fuel
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &ok_post_state, &stake_vault_address).await,
+                original_stake_vault_balance
+            );
+            let epoch_length = pos_epoch_length(&runtime_manager, &ok_post_state).await;
+            let same_epoch_state = play_close(&runtime_manager, &ok_post_state, BlockData {
+                time_stamp: 0,
+                block_number: 0,
+                sender: proposer.clone(),
+                seq_num: 9,
+            })
+            .await;
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &same_epoch_state, &offender_address).await,
+                original_fuel
+            );
+            let next_epoch_state = play_close(&runtime_manager, &same_epoch_state, BlockData {
+                time_stamp: 0,
+                block_number: epoch_length,
+                sender: proposer.clone(),
+                seq_num: 10,
+            })
+            .await;
+            let next_epoch_fuel =
+                system_vault_balance(&runtime_manager, &next_epoch_state, &offender_address).await;
+            assert!(next_epoch_fuel > original_fuel);
+            let repeated_epoch_state = play_close(&runtime_manager, &next_epoch_state, BlockData {
+                time_stamp: 0,
+                block_number: epoch_length,
+                sender: proposer.clone(),
+                seq_num: 11,
+            })
+            .await;
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &repeated_epoch_state, &offender_address)
+                    .await,
+                next_epoch_fuel
+            );
+
+            let guilty_penalty = 7;
+            let guilty_runtime = runtime_manager.spawn_runtime().await;
+            guilty_runtime
+                .set_block_data(redeem_block_data.clone())
+                .await;
+            let mut guilty_ops = RuntimeOps::new(guilty_runtime);
+            let mut guilty_redeem = make_redeem(2, 3, RedemptionOutcome::Guilty {
+                penalty: guilty_penalty,
+            });
+            let guilty_state = match guilty_ops
+                .play_system_deploy(&slashed_state, &mut guilty_redeem)
+                .await
+                .unwrap()
+            {
+                SystemDeployResult::PlaySucceeded { state_hash, .. } => state_hash,
+                SystemDeployResult::PlayFailed {
+                    processed_system_deploy,
+                } => panic!("valid-quorum guilty redeem failed: {processed_system_deploy:?}"),
+            };
+            let stake_penalty = guilty_penalty.min(original_bond);
+            let fuel_penalty = stake_penalty.min(original_fuel);
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &guilty_state, &offender_address).await,
+                original_fuel - fuel_penalty
+            );
+            assert_eq!(
+                pos_validator_bond(&runtime_manager, &guilty_state, &offender).await,
+                original_bond - stake_penalty
+            );
+            assert_eq!(
+                pos_quarantined_stake(&runtime_manager, &guilty_state, &offender).await,
+                -1
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &guilty_state, &coop_address).await,
+                original_coop_fuel + fuel_penalty + stake_penalty
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &guilty_state, &stake_vault_address).await,
+                original_stake_vault_balance - stake_penalty
+            );
+            let guilty_check_runtime = runtime_manager.spawn_runtime().await;
+            let mut guilty_check_ops = RuntimeOps::new(guilty_check_runtime);
+            assert!(
+                !pos_validator_is_halted(&mut guilty_check_ops, &guilty_state, &offender).await
+            );
+
+            let burned_runtime = runtime_manager.spawn_runtime().await;
+            burned_runtime
+                .set_block_data(redeem_block_data.clone())
+                .await;
+            let mut burned_ops = RuntimeOps::new(burned_runtime);
+            let mut burned_redeem = make_redeem(2, 4, RedemptionOutcome::Burned);
+            let burned_state = match burned_ops
+                .play_system_deploy(&slashed_state, &mut burned_redeem)
+                .await
+                .unwrap()
+            {
+                SystemDeployResult::PlaySucceeded { state_hash, .. } => state_hash,
+                SystemDeployResult::PlayFailed {
+                    processed_system_deploy,
+                } => panic!("valid-quorum burned redeem failed: {processed_system_deploy:?}"),
+            };
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &burned_state, &offender_address).await,
+                0
+            );
+            assert_eq!(
+                pos_validator_bond(&runtime_manager, &burned_state, &offender).await,
+                0
+            );
+            assert_eq!(
+                pos_quarantined_stake(&runtime_manager, &burned_state, &offender).await,
+                -1
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &burned_state, &coop_address).await,
+                original_coop_fuel
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &burned_state, &stake_vault_address).await,
+                original_stake_vault_balance - original_bond
+            );
+            let burned_check_runtime = runtime_manager.spawn_runtime().await;
+            let mut burned_check_ops = RuntimeOps::new(burned_check_runtime);
+            assert!(pos_validator_is_halted(&mut burned_check_ops, &burned_state, &offender).await);
         },
     )
     .await
     .unwrap()
 }
 
-/// CONSENSUS-CRITICAL Stage-C redemption play/replay determinism (DR-7/DR-12).
-/// The slash Σ⟦v⟧-zero has `slash_zeros_supply_is_play_replay_deterministic`; this
-/// is its redemption analogue. A Vindicated `redeemSlashed` (un-halt + restore
-/// bond + clear quarantine + drop stale mintedEpochs) is a pure PoS-state
-/// transition with NO supply `post_eval` — redemption writes neither Σ⟦v⟧ nor
-/// @W_v; re-funding is deferred to the next epoch mint (spec tex:2382-2383). This
-/// pins that the transition is byte-identical on play and replay: a proposer that
-/// redeems and a validator that replays the block reach the same post-state root,
-/// so redemption cannot fork consensus.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn redeem_vindicated_is_play_replay_deterministic() {
+async fn redeem_outcomes_are_play_replay_deterministic() {
     use casper::rust::util::rholang::costacc::redeem_deploy::RedemptionAuthorization;
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
@@ -1438,7 +1655,6 @@ async fn redeem_vindicated_is_play_replay_deterministic() {
             let invalid_block_hash: prost::bytes::Bytes =
                 prost::bytes::Bytes::from_static(b"redeem-replay-invalid-block");
 
-            // ── fund Σ⟦offender⟧ then slash to reach a quarantined/halted state ──
             let mint_block_data = BlockData {
                 time_stamp: 0,
                 block_number: 0,
@@ -1469,7 +1685,6 @@ async fn redeem_vindicated_is_play_replay_deterministic() {
             )
             .await;
 
-            // ── build a VALID 2-of-2 Vindicated RedeemDeploy ──────────────────
             let secp = Secp256k1;
             let keypairs: Vec<(Vec<u8>, Vec<u8>)> = (0..3)
                 .map(|_| {
@@ -1478,105 +1693,88 @@ async fn redeem_vindicated_is_play_replay_deterministic() {
                 })
                 .collect();
             let keyset: Vec<String> = keypairs.iter().map(|(_, pk)| hex::encode(pk)).collect();
-            let mut redeem = RedeemDeploy {
-                validator_pk: offender.bytes.to_vec(),
-                outcome: RedemptionOutcome::Vindicated,
-                pos_multi_sig_public_keys: keyset.clone(),
-                pos_multi_sig_quorum: 2,
-                authorizations: Vec::new(),
-                initial_rand: system_deploy_util::generate_redeem_deploy_random_seed(
-                    proposer.bytes.clone(),
+            let outcomes = [
+                RedemptionOutcome::Vindicated,
+                RedemptionOutcome::Guilty { penalty: 7 },
+                RedemptionOutcome::Burned,
+            ];
+            for (index, outcome) in outcomes.into_iter().enumerate() {
+                let seq_num = i32::try_from(index).unwrap() + 2;
+                let label = format!("{outcome:?}");
+                let mut redeem = RedeemDeploy::new(
+                    offender.bytes.to_vec(),
+                    outcome.clone(),
+                    keyset.clone(),
                     2,
-                    "Vindicated",
-                ),
-            };
-            let digest = redeem.auth_digest();
-            redeem.authorizations = keypairs
-                .iter()
-                .take(2)
-                .map(|(sk, pk)| RedemptionAuthorization {
-                    public_key: pk.clone(),
-                    signature: secp.sign(&digest, sk),
-                })
-                .collect();
-            assert!(redeem.verify_multisig_quorum(), "2-of-2 must meet quorum");
+                    proposer.bytes.clone(),
+                    seq_num,
+                );
+                let digest = redeem.auth_digest();
+                redeem.authorizations = keypairs
+                    .iter()
+                    .take(2)
+                    .map(|(sk, pk)| RedemptionAuthorization {
+                        public_key: pk.clone(),
+                        signature: secp.sign(&digest, sk),
+                    })
+                    .collect();
+                assert!(redeem.verify_multisig_quorum());
 
-            let redeem_block_data = BlockData {
-                time_stamp: 0,
-                block_number: 2,
-                sender: proposer.clone(),
-                seq_num: 2,
-            };
+                let redeem_block_data = BlockData {
+                    time_stamp: 0,
+                    block_number: 2,
+                    sender: proposer.clone(),
+                    seq_num,
+                };
+                let play_runtime = runtime_manager.spawn_runtime().await;
+                play_runtime.set_block_data(redeem_block_data.clone()).await;
+                let mut play_ops = RuntimeOps::new(play_runtime);
+                let (play_state, processed) = match play_ops
+                    .play_system_deploy(&slashed_state, &mut redeem)
+                    .await
+                    .unwrap()
+                {
+                    SystemDeployResult::PlaySucceeded {
+                        state_hash,
+                        processed_system_deploy,
+                        ..
+                    } => (state_hash, processed_system_deploy),
+                    SystemDeployResult::PlayFailed {
+                        processed_system_deploy,
+                    } => panic!("{label} redemption failed: {processed_system_deploy:?}"),
+                };
 
-            // ── PLAY the Vindicated redeem ────────────────────────────────────
-            let play_runtime = runtime_manager.spawn_runtime().await;
-            play_runtime.set_block_data(redeem_block_data.clone()).await;
-            let mut play_ops = RuntimeOps::new(play_runtime);
-            let play_result = play_ops
-                .play_system_deploy(&slashed_state, &mut redeem)
-                .await
-                .unwrap();
-            let (final_play_state_hash, processed_redeem) = match play_result {
-                SystemDeployResult::PlaySucceeded {
-                    state_hash,
-                    processed_system_deploy,
-                    ..
-                } => (state_hash, processed_system_deploy),
-                SystemDeployResult::PlayFailed {
-                    processed_system_deploy,
-                } => panic!(
-                    "vindicated redeem play failed: {:?}",
-                    processed_system_deploy
-                ),
-            };
+                let replay_runtime = runtime_manager.spawn_replay_runtime().await;
+                replay_runtime
+                    .set_block_data(redeem_block_data.clone())
+                    .await;
+                let mut replay_ops = ReplayRuntimeOps::new_from_runtime(replay_runtime);
+                replay_ops
+                    .runtime_ops
+                    .runtime
+                    .reset(&Blake2b256Hash::from_bytes_prost(&slashed_state))
+                    .await
+                    .unwrap();
+                replay_ops
+                    .replay_block_system_deploy(&redeem_block_data, &processed)
+                    .await
+                    .unwrap();
+                let replay_state = replay_ops
+                    .runtime_ops
+                    .runtime
+                    .create_checkpoint()
+                    .await
+                    .root
+                    .to_bytes_prost();
+                assert_eq!(play_state, replay_state, "{label} play/replay mismatch");
 
-            // offender un-halted on play
-            let chk_runtime = runtime_manager.spawn_runtime().await;
-            let mut chk_ops = RuntimeOps::new(chk_runtime);
-            assert!(
-                !pos_validator_is_halted(&mut chk_ops, &final_play_state_hash, &offender).await,
-                "vindicated redeem must un-halt the offender on play"
-            );
-
-            // ── REPLAY the Vindicated redeem (production path) ────────────────
-            let replay_runtime = runtime_manager.spawn_replay_runtime().await;
-            replay_runtime
-                .set_block_data(redeem_block_data.clone())
-                .await;
-            let mut replay_ops = ReplayRuntimeOps::new_from_runtime(replay_runtime);
-            replay_ops
-                .runtime_ops
-                .runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(&slashed_state))
-                .await
-                .unwrap();
-            replay_ops
-                .replay_block_system_deploy(
-                    &redeem_block_data,
-                    &processed_redeem,
-                    &std::collections::BTreeMap::new(),
-                    &None,
-                    // #13b: no genesis client funding slots in this redeem fixture.
-                    &[],
-                )
-                .await
-                .unwrap();
-            let replay_checkpoint = replay_ops.runtime_ops.runtime.create_checkpoint().await;
-            let final_replay_state_hash = replay_checkpoint.root.to_bytes_prost();
-
-            // The consensus-critical assertion: byte-identical post-state.
-            assert_eq!(
-                final_play_state_hash, final_replay_state_hash,
-                "play and replay post-state hashes diverged on the Stage-C Vindicated redemption"
-            );
-
-            // offender un-halted on replay too
-            let chk_runtime2 = runtime_manager.spawn_runtime().await;
-            let mut chk_ops2 = RuntimeOps::new(chk_runtime2);
-            assert!(
-                !pos_validator_is_halted(&mut chk_ops2, &final_replay_state_hash, &offender).await,
-                "vindicated redeem must un-halt the offender on replay too"
-            );
+                let check_runtime = runtime_manager.spawn_runtime().await;
+                let mut check_ops = RuntimeOps::new(check_runtime);
+                assert_eq!(
+                    pos_validator_is_halted(&mut check_ops, &replay_state, &offender).await,
+                    matches!(outcome, RedemptionOutcome::Burned)
+                );
+            }
         },
     )
     .await
@@ -1633,66 +1831,554 @@ async fn pos_validator_is_halted(
         .expect("getMintingHalted membership query must return a boolean")
 }
 
-/// CONSENSUS-CRITICAL WD-D2 gate-decision replay determinism. Exercises the
-/// settlement-debit play↔replay symmetry directly: PLAY applies the gate's
-/// threaded `AdmissionOutcome.debits` via `CloseBlockDeploy::post_eval`; REPLAY
-/// RECOMPUTES the identical debit map from the admitted deploys via
-/// `acceptance::recompute_settlement_debits` and applies it via
-/// `post_eval_replay`. Asserts (a) the recomputed map EQUALS the gate's play-side
-/// map, (b) the post-state root is BYTE-IDENTICAL, and (c) every `Σ⟦s⟧` balance
-/// matches — i.e. `post = pre − ΣΔ_admitted` holds identically on both paths.
-///
-/// The scenario provisions ONE signer's pool (PRESENT ⇒ enforced + debited) and
-/// leaves a second signer's pool ABSENT (admitted unenforced ⇒ no debit), so the
-/// test also pins the per-pool presence activation across the play/replay seam.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn gate_decision_replay_determinism() {
+async fn state_bound_settlement_charges_the_realized_branch_and_replays_identically() {
     with_runtime_manager(
-        |runtime_manager, _genesis_context, genesis_block| async move {
+        |runtime_manager, genesis_context, genesis_block| async move {
             let start_state = genesis_block.body.state.post_state_hash.clone();
-
-            // Two real signed deploys with known token demand. `@0!(0) | @0!(0)`
-            // ⇒ Δ = 2 (two sends); `@0!(0)` ⇒ Δ = 1.
-            let d_funded = construct_deploy::source_deploy_now_full(
-                "@0!(0) | @0!(0)".to_string(),
-                Some(1),
+            let payer_key = genesis_context.genesis_vaults[0].0.clone();
+            let payer_address =
+                VaultAddress::from_public_key(&genesis_context.genesis_vaults[0].1).unwrap();
+            let proposer_address =
+                VaultAddress::from_public_key(&genesis_context.validator_pks()[0]).unwrap();
+            let initial_payer =
+                system_vault_balance(&runtime_manager, &start_state, &payer_address).await;
+            let initial_proposer =
+                system_vault_balance(&runtime_manager, &start_state, &proposer_address).await;
+            let deploy = construct_deploy::source_deploy(
+                "if (true) { new x in { x!(0) | for(@0 <- x){ Nil } } } else { new x, y, z in { x!(0) | for(@0 <- x){ Nil } | y!(1) | for(@1 <- y){ Nil } | z!(2) | for(@2 <- z){ Nil } } }".to_string(),
+                1,
                 None,
                 None,
-                None,
-                Some(genesis_block.shard_id.clone()),
-            )
-            .unwrap();
-            let d_absent = construct_deploy::source_deploy_now_full(
-                "@0!(0)".to_string(),
-                Some(1),
-                None,
-                Some(construct_deploy::DEFAULT_SEC2.clone()),
+                Some(payer_key),
                 None,
                 Some(genesis_block.shard_id.clone()),
             )
             .unwrap();
+            let cosigned =
+                crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy).unwrap();
 
-            let funded_cosigned =
-                crypto::rust::signatures::signed::Cosigned::from_single_signer(d_funded.clone())
-                    .unwrap();
-            let absent_cosigned =
-                crypto::rust::signatures::signed::Cosigned::from_single_signer(d_absent.clone())
-                    .unwrap();
+            let block_data = BlockData {
+                time_stamp: 2,
+                block_number: 2,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 2,
+            };
+            let admission = runtime_manager
+                .certify_state_bound_admission(
+                    &start_state,
+                    vec![cosigned],
+                    &block_data,
+                    &HashMap::new(),
+                )
+                .await
+                .unwrap();
+            let admitted_realized = admission
+                .outcome()
+                .debits
+                .values()
+                .map(|debit| debit.amount)
+                .sum::<i64>();
+            assert!(admitted_realized > 0);
+            assert_eq!(
+                admission
+                    .outcome()
+                    .fee_debits
+                    .values()
+                    .map(|debit| debit.amount)
+                    .sum::<i64>(),
+                1
+            );
+            assert!(admission.outcome().stack_pops.is_empty());
 
-            // The funded signer's supply pool channel — keyed by the signer's
-            // GROUND PUBLIC KEY `Σ⟦Ground(pk)⟧` (the genesis-seeded wallet), the
-            // SAME `funding_sig` the gate now keys by (§D2.9 — `Σ⟦signer⟧ ==
-            // Σ⟦wallet⟧`), NOT the per-deploy wire-signature pool.
-            let funded_env = accounting::funding_sig(&funded_cosigned);
-            let funded_chan = supply::supply_channel(&funded_env);
-            let absent_env = accounting::funding_sig(&absent_cosigned);
-            let absent_chan = supply::supply_channel(&absent_env);
-            // Distinct signers ⇒ distinct pubkeys ⇒ distinct pools.
-            assert_ne!(funded_chan, absent_chan);
+            let close = CloseBlockDeploy::new(
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                    block_data.sender.clone(),
+                    block_data.seq_num,
+                ),
+            );
 
-            // ---- SEED: provision the funded signer's pool with Σ = 5 ----
-            // (Δ_funded = 2 ⇒ after the debit Σ = 3.) Leave the absent pool unset.
-            const SEED_BALANCE: i64 = 5;
+            let (play_post, processed, processed_system, _) = runtime_manager
+                .compute_state_with_bonds_cosigned_admitted(admission, vec![
+                    casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(close),
+                ])
+                .await
+                .unwrap();
+            assert_eq!(processed.len(), 1);
+            assert_eq!(processed[0].cost.cost, 1);
+
+            let replay_post = runtime_manager
+                .replay_compute_state(
+                    &start_state,
+                    processed.clone(),
+                    processed_system,
+                    &block_data,
+                    None,
+                    false,
+                )
+                .await
+                .unwrap();
+            assert_eq!(play_post, replay_post);
+            let certificate = processed[0]
+                .authority_funding_certificate
+                .as_ref()
+                .unwrap();
+            let witness = processed[0].authority_cost_witness.as_ref().unwrap();
+            let reserved = certificate
+                .allocation
+                .iter()
+                .map(|resource| resource.amount)
+                .sum::<u64>();
+            let realized = witness
+                .settlement
+                .iter()
+                .map(|resource| resource.amount)
+                .sum::<u64>();
+            let fee = certificate
+                .fee_allocation
+                .iter()
+                .map(|resource| resource.amount)
+                .sum::<u64>();
+            assert!(reserved >= realized);
+            assert_eq!(u64::try_from(admitted_realized).unwrap(), realized);
+            assert_eq!(fee, 1);
+            assert_eq!(certificate.fee_recipient, block_data.sender.bytes);
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &play_post, &payer_address).await,
+                initial_payer - i64::try_from(realized + fee).unwrap()
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &play_post, &proposer_address).await,
+                initial_proposer + i64::try_from(fee).unwrap()
+                    - casper::rust::util::rholang::costacc::VALIDATOR_HANDLER_COST_PER_DEPLOY
+            );
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn state_bound_execution_observes_the_authenticated_pre_reservation_vault_balance() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let payer_key = genesis_context.genesis_vaults[0].0.clone();
+            let payer_address =
+                VaultAddress::from_public_key(&genesis_context.genesis_vaults[0].1).unwrap();
+            let initial_payer =
+                system_vault_balance(&runtime_manager, &start_state, &payer_address).await;
+            let source = format!(
+                r#"
+                new rl(`rho:registry:lookup`), systemVaultCh, vaultCh, balanceCh in {{
+                  rl!(`rho:vault:system`, *systemVaultCh) |
+                  for (@(_, systemVault) <- systemVaultCh) {{
+                    @systemVault!("find", "{}", *vaultCh) |
+                    for (@result <- vaultCh) {{
+                      match result {{
+                        (true, vault) => {{
+                          @vault!("balance", *balanceCh) |
+                          for (@balance <- balanceCh) {{
+                            @"observed-pre-reservation-balance"!(balance)
+                          }}
+                        }}
+                        _ => {{ @"observed-pre-reservation-balance"!(-1) }}
+                      }}
+                    }}
+                  }}
+                }}
+                "#,
+                payer_address.to_base58()
+            );
+            let deploy = construct_deploy::source_deploy(
+                source,
+                1,
+                None,
+                None,
+                Some(payer_key),
+                None,
+                Some(genesis_block.shard_id.clone()),
+            )
+            .unwrap();
+            let cosigned =
+                crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy).unwrap();
+            let block_data = BlockData {
+                time_stamp: 3,
+                block_number: 2,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 2,
+            };
+            let admission = runtime_manager
+                .certify_state_bound_admission(
+                    &start_state,
+                    vec![cosigned],
+                    &block_data,
+                    &HashMap::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(admission.outcome().admitted.len(), 1);
+            let close = CloseBlockDeploy::new(
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                    block_data.sender.clone(),
+                    block_data.seq_num,
+                ),
+            );
+            let (play_post, processed, processed_system, _) = runtime_manager
+                .compute_state_with_bonds_cosigned_admitted(admission, vec![
+                    casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(close),
+                ])
+                .await
+                .unwrap();
+            let observed = runtime_manager
+                .get_data(
+                    play_post.clone(),
+                    &new_gstring_par(
+                        "observed-pre-reservation-balance".to_string(),
+                        Vec::new(),
+                        false,
+                    ),
+                )
+                .await
+                .unwrap();
+            assert_eq!(observed.len(), 1);
+            assert_eq!(RhoNumber::unapply(&observed[0]), Some(initial_payer));
+
+            let witness = processed[0].authority_cost_witness.as_ref().unwrap();
+            let certificate = processed[0].authority_funding_certificate.as_ref().unwrap();
+            let realized = witness
+                .settlement
+                .iter()
+                .map(|resource| resource.amount)
+                .sum::<u64>();
+            let fee = certificate
+                .fee_allocation
+                .iter()
+                .map(|resource| resource.amount)
+                .sum::<u64>();
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &play_post, &payer_address).await,
+                initial_payer - i64::try_from(realized + fee).unwrap()
+            );
+
+            let replay_post = runtime_manager
+                .replay_compute_state(
+                    &start_state,
+                    processed,
+                    processed_system,
+                    &block_data,
+                    None,
+                    false,
+                )
+                .await
+                .unwrap();
+            assert_eq!(play_post, replay_post);
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn state_bound_reservation_failure_rolls_back_the_retained_user_execution() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let payer_key = genesis_context.genesis_vaults[0].0.clone();
+            let payer_address =
+                VaultAddress::from_public_key(&genesis_context.genesis_vaults[0].1).unwrap();
+            let target_address =
+                VaultAddress::from_public_key(&genesis_context.genesis_vaults[1].1).unwrap();
+            let proposer_address =
+                VaultAddress::from_public_key(&genesis_context.validator_pks()[0]).unwrap();
+            let initial_payer =
+                system_vault_balance(&runtime_manager, &start_state, &payer_address).await;
+            let initial_target =
+                system_vault_balance(&runtime_manager, &start_state, &target_address).await;
+            let initial_proposer =
+                system_vault_balance(&runtime_manager, &start_state, &proposer_address).await;
+            let source = format!(
+                r#"
+                new rl(`rho:registry:lookup`), systemVaultCh,
+                    payerCh, targetCh, authKeyCh, transferCh,
+                    deployerId(`rho:system:deployerId`) in {{
+                  rl!(`rho:vault:system`, *systemVaultCh) |
+                  for (@(_, systemVault) <- systemVaultCh) {{
+                    @systemVault!("find", "{}", *payerCh) |
+                    @systemVault!("find", "{}", *targetCh) |
+                    @systemVault!("deployerAuthKey", *deployerId, *authKeyCh) |
+                    for (@(true, payer) <- payerCh & @(true, _) <- targetCh & key <- authKeyCh) {{
+                      @payer!("transfer", "{}", {}, *key, *transferCh) |
+                      for (@result <- transferCh) {{
+                        match result {{
+                          (true, _) => {{ @"rolled-back-cost-reservation"!(true) }}
+                          _ => {{ @"rolled-back-cost-reservation"!(false) }}
+                        }}
+                      }}
+                    }}
+                  }}
+                }}
+                "#,
+                payer_address.to_base58(),
+                target_address.to_base58(),
+                target_address.to_base58(),
+                initial_payer
+            );
+            let deploy = construct_deploy::source_deploy(
+                source,
+                1,
+                None,
+                None,
+                Some(payer_key),
+                None,
+                Some(genesis_block.shard_id.clone()),
+            )
+            .unwrap();
+            let cosigned =
+                crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy).unwrap();
+            let block_data = BlockData {
+                time_stamp: 4,
+                block_number: 2,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 2,
+            };
+            let admission = runtime_manager
+                .certify_state_bound_admission(
+                    &start_state,
+                    vec![cosigned],
+                    &block_data,
+                    &HashMap::new(),
+                )
+                .await
+                .unwrap();
+            assert!(admission.outcome().admitted.is_empty());
+            assert_eq!(admission.outcome().rejected.len(), 1);
+
+            let close = CloseBlockDeploy::new(
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                    block_data.sender.clone(),
+                    block_data.seq_num,
+                ),
+            );
+            let (play_post, processed, processed_system, _) = runtime_manager
+                .compute_state_with_bonds_cosigned_admitted(admission, vec![
+                    casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(close),
+                ])
+                .await
+                .unwrap();
+            assert!(processed.is_empty());
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &play_post, &payer_address).await,
+                initial_payer
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &play_post, &target_address).await,
+                initial_target
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &play_post, &proposer_address).await,
+                initial_proposer
+            );
+            let markers = runtime_manager
+                .get_data(
+                    play_post.clone(),
+                    &new_gstring_par(
+                        "rolled-back-cost-reservation".to_string(),
+                        Vec::new(),
+                        false,
+                    ),
+                )
+                .await
+                .unwrap();
+            assert!(markers.is_empty());
+
+            let replay_post = runtime_manager
+                .replay_compute_state(
+                    &start_state,
+                    processed,
+                    processed_system,
+                    &block_data,
+                    None,
+                    false,
+                )
+                .await
+                .unwrap();
+            assert_eq!(play_post, replay_post);
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn same_deploy_stack_transfer_is_vault_backed_consumed_and_replayed() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let payer_key = genesis_context.genesis_vaults[0].0.clone();
+            let payer_address =
+                VaultAddress::from_public_key(&genesis_context.genesis_vaults[0].1).unwrap();
+            let initial_payer =
+                system_vault_balance(&runtime_manager, &start_state, &payer_address).await;
+            let source = r#"t :: t :: () | {% for(_ <- @"x"){ Nil } %}[ t ] | @"x"!(0)"#;
+            let deploy = construct_deploy::source_deploy(
+                source.to_string(),
+                1,
+                None,
+                None,
+                Some(payer_key),
+                None,
+                Some(genesis_block.shard_id.clone()),
+            )
+            .unwrap();
+            let cosigned =
+                crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy).unwrap();
+            let block_data = BlockData {
+                time_stamp: 2,
+                block_number: 2,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 2,
+            };
+            let prepare_runtime = runtime_manager.spawn_runtime().await;
+            let mut prepare_ops = RuntimeOps::new(prepare_runtime);
+            prepare_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(&start_state))
+                .await
+                .unwrap();
+            let reader = acceptance::RuntimeOpsSupplyReader {
+                runtime_ops: &prepare_ops,
+                pre_state_root: start_state.as_ref().try_into().unwrap(),
+            };
+            let canonical = Compiler::source_to_adt(source).unwrap();
+            let plan = rholang::rust::interpreter::accounting::delta_sigma::static_authority_plan(
+                &canonical,
+                &accounting::funding_sig(&cosigned),
+            )
+            .unwrap();
+            assert_eq!(plan.external_reservation.0.len(), 1, "{plan:?}");
+            assert_eq!(
+                plan.external_reservation.0.values().sum::<u64>(),
+                3,
+                "{plan:?}"
+            );
+            let prepared = acceptance::prepare_authority_reservation(
+                &cosigned,
+                &reader,
+                &block_data.sender.bytes,
+            )
+            .await
+            .unwrap();
+            assert_eq!(prepared.certificate.allocation.0.values().sum::<u64>(), 3);
+            let admission = runtime_manager
+                .certify_state_bound_admission(
+                    &start_state,
+                    vec![cosigned],
+                    &block_data,
+                    &HashMap::new(),
+                )
+                .await
+                .unwrap();
+            let close = CloseBlockDeploy::new(
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                    block_data.sender.clone(),
+                    block_data.seq_num,
+                ),
+            );
+            let (play_post, processed, processed_system, _) = runtime_manager
+                .compute_state_with_bonds_cosigned_admitted(admission, vec![
+                    casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(close),
+                ])
+                .await
+                .unwrap();
+            assert_eq!(processed.len(), 1);
+            assert!(!processed[0].is_failed);
+            let certificate = processed[0].authority_funding_certificate.as_ref().unwrap();
+            let witness = processed[0].authority_cost_witness.as_ref().unwrap();
+            assert_eq!(witness.born_stacks.len(), 1);
+            let born_id = witness.born_stacks[0].stack_id.clone();
+            assert!(witness
+                .physical_draws
+                .iter()
+                .any(|draw| draw.stack_ids.iter().any(|stack_id| stack_id == &born_id)));
+            assert!(certificate
+                .stack_reservations
+                .iter()
+                .all(|reservation| reservation.stack_id != born_id));
+            let reserved = certificate
+                .allocation
+                .iter()
+                .map(|resource| resource.amount)
+                .sum::<u64>();
+            let burned = witness
+                .settlement
+                .iter()
+                .map(|resource| resource.amount)
+                .sum::<u64>();
+            let fee = certificate
+                .fee_allocation
+                .iter()
+                .map(|resource| resource.amount)
+                .sum::<u64>();
+            assert_eq!(reserved, 3);
+            assert_eq!(burned, 3);
+            assert_eq!(fee, 1);
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &play_post, &payer_address).await,
+                initial_payer - 4
+            );
+
+            let replay_post = runtime_manager
+                .replay_compute_state(
+                    &start_state,
+                    processed,
+                    processed_system,
+                    &block_data,
+                    None,
+                    false,
+                )
+                .await
+                .unwrap();
+            assert_eq!(play_post, replay_post);
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn physical_rejection_rolls_back_before_later_state_bound_execution() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let rejected = construct_deploy::source_deploy(
+                r#"new x in { x!(0) | for(@0 <- x){ @"rollback-proof"!(1) } }"#.to_string(),
+                1,
+                None,
+                None,
+                Some(PrivateKey::from_bytes(&[0x51; 32])),
+                None,
+                Some(genesis_block.shard_id.clone()),
+            )
+            .unwrap();
+            let accepted = construct_deploy::source_deploy(
+                r#"new x in { x!(0) | for(@0 <- x){ @"accepted-proof"!(1) } }"#.to_string(),
+                2,
+                None,
+                None,
+                Some(genesis_context.genesis_vaults[0].0.clone()),
+                None,
+                Some(genesis_block.shard_id.clone()),
+            )
+            .unwrap();
+            let rejected =
+                crypto::rust::signatures::signed::Cosigned::from_single_signer(rejected).unwrap();
+            let accepted =
+                crypto::rust::signatures::signed::Cosigned::from_single_signer(accepted).unwrap();
+            let rejected_funding = accounting::funding_sig(&rejected);
+            let rejected_signature = sig_to_cost_signature(&rejected_funding).unwrap();
+            let rejected_funding_channel = supply::supply_channel(&rejected_funding);
+
             let seed_runtime = runtime_manager.spawn_runtime().await;
             let mut seed_ops = RuntimeOps::new(seed_runtime);
             seed_ops
@@ -1700,172 +2386,1287 @@ async fn gate_decision_replay_determinism() {
                 .reset(&Blake2b256Hash::from_bytes_prost(&start_state))
                 .await
                 .unwrap();
-            supply::produce_balance(
-                &mut seed_ops,
-                &funded_chan,
-                SEED_BALANCE,
-                supply::mint_random_state(&Blake2b512Random::create_from_bytes(&[123_u8; 1]), 0),
-            )
-            .await
-            .unwrap();
+            seed_ops
+                .runtime
+                .reducer
+                .space
+                .produce(
+                    rejected_funding_channel,
+                    ListParWithRandom {
+                        pars: Vec::new(),
+                        random_state: vec![41; 64],
+                        cost_authority: None,
+                        cost_stack: Some(CostStack {
+                            cells: vec![
+                                rejected_signature.clone(),
+                                rejected_signature.clone(),
+                                rejected_signature,
+                            ],
+                        }),
+                    },
+                    false,
+                )
+                .await
+                .unwrap();
             let seeded_state = seed_ops
                 .runtime
                 .create_checkpoint()
                 .await
                 .root
                 .to_bytes_prost();
-
-            // ---- GATE (play side) against the seeded pre-state ----
-            let reader = acceptance::RuntimeManagerSupplyReader {
-                runtime_manager: &runtime_manager,
-                pre_state_hash: seeded_state.clone(),
+            let block_data = BlockData {
+                time_stamp: 3,
+                block_number: 2,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 2,
             };
-            let outcome = acceptance::admit_by_funding(
-                vec![funded_cosigned.clone(), absent_cosigned.clone()],
-                &reader,
-                /* margin */ 0,
-                // strict = false: this test exercises the TRANSITIONAL gate
-                // (one present pool enforced + debited, one absent pool admitted
-                // unenforced) and the play↔replay symmetry of that path.
-                /* strict */
-                false,
-            )
-            .await
-            .unwrap();
-            // Both admitted (funded: Σ=5 ≥ Δ=2; absent: unenforced).
-            assert_eq!(outcome.admitted.len(), 2, "both deploys admitted");
-            assert!(outcome.rejected.is_empty());
-            // Exactly one debit: the funded pool, amount Δ=2. The absent pool is
-            // not debited (presence gate).
-            let funded_key = accounting::delta_sigma::sig_key(&funded_env);
-            let absent_key = accounting::delta_sigma::sig_key(&absent_env);
-            assert_eq!(outcome.debits.get(&funded_key).map(|d| d.amount), Some(2));
-            assert!(
-                !outcome.debits.contains_key(&absent_key),
-                "absent pool must not be debited"
+            let rejected_sig = rejected.primary().sig.clone();
+            let accepted_sig = accepted.primary().sig.clone();
+            let rejected_record =
+                ProcessedDeploy::admission_rejected(&rejected, seeded_state.clone());
+            let admission = runtime_manager
+                .certify_state_bound_admission(
+                    &seeded_state,
+                    vec![accepted.clone(), rejected],
+                    &block_data,
+                    &HashMap::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                admission
+                    .outcome()
+                    .admitted
+                    .iter()
+                    .map(|deploy| deploy.primary().sig.clone())
+                    .collect::<Vec<_>>(),
+                vec![accepted_sig.clone()]
             );
+            assert_eq!(admission.outcome().rejected, vec![rejected_sig]);
+
+            let close = CloseBlockDeploy::new(
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                    block_data.sender.clone(),
+                    block_data.seq_num,
+                ),
+            );
+            let (play_post, mut processed, processed_system, _) = runtime_manager
+                .compute_state_with_bonds_cosigned_admitted(admission, vec![
+                    casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(close),
+                ])
+                .await
+                .unwrap();
+            assert_eq!(processed.len(), 1);
+            assert_eq!(processed[0].deploy.sig, accepted_sig);
+            processed.push(rejected_record);
+
+            let rollback_channel = ParBuilderUtil::mk_term(r#""rollback-proof""#).unwrap();
+            let accepted_channel = ParBuilderUtil::mk_term(r#""accepted-proof""#).unwrap();
+            assert!(runtime_manager
+                .get_data(play_post.clone(), &rollback_channel)
+                .await
+                .unwrap()
+                .is_empty());
+            assert_eq!(
+                runtime_manager
+                    .get_data(play_post.clone(), &accepted_channel)
+                    .await
+                    .unwrap(),
+                vec![ParBuilderUtil::mk_term("1").unwrap()]
+            );
+
+            let block = BlockMessage {
+                block_hash: vec![31; 32].into(),
+                header: Header {
+                    parents_hash_list: vec![vec![30; 32].into()],
+                    timestamp: block_data.time_stamp,
+                    version: genesis_block.header.version,
+                    extra_bytes: Vec::<u8>::new().into(),
+                },
+                body: Body {
+                    state: F1r3flyState {
+                        pre_state_hash: seeded_state.clone(),
+                        post_state_hash: play_post.clone(),
+                        bonds: Vec::new(),
+                        block_number: block_data.block_number,
+                    },
+                    deploys: processed,
+                    rejected_deploys: Vec::new(),
+                    system_deploys: processed_system,
+                    extra_bytes: Vec::<u8>::new().into(),
+                },
+                justifications: Vec::new(),
+                sender: block_data.sender.bytes.clone(),
+                seq_num: block_data.seq_num,
+                sig: Vec::<u8>::new().into(),
+                sig_algorithm: String::new(),
+                shard_id: genesis_block.shard_id.clone(),
+                extra_bytes: Vec::<u8>::new().into(),
+            };
+            let replay_post = runtime_manager
+                .replay_block_from_consensus_data(&seeded_state, &block, None)
+                .await
+                .unwrap();
+            assert_eq!(play_post, replay_post);
+
+            let mut forged = block;
+            forged.body.deploys = vec![ProcessedDeploy::admission_rejected(
+                &accepted,
+                seeded_state.clone(),
+            )];
+            let forged_result = runtime_manager
+                .replay_block_from_consensus_data(&seeded_state, &forged, None)
+                .await;
+            assert!(matches!(
+                forged_result,
+                Err(CasperError::ReplayFailure(
+                    ReplayFailure::ReplayAdmissionMismatch { .. }
+                ))
+            ));
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn candidate_minted_stack_cannot_fund_its_own_state_bound_settlement() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let payer_key = PrivateKey::from_bytes(&[0x53; 32]);
+            let payer_address =
+                VaultAddress::from_public_key(&Secp256k1.to_public(&payer_key)).unwrap();
+            let deploy = construct_deploy::source_deploy(
+                r#"minted :: minted :: () | {% new x in { x!(0) | for(@0 <- x){ @"uncommitted"!(1) } } %}[ minted ]"#.to_string(),
+                1,
+                None,
+                None,
+                Some(payer_key),
+                None,
+                Some(genesis_block.shard_id.clone()),
+            )
+            .unwrap();
+            let deploy =
+                crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy).unwrap();
+            let deploy_sig = deploy.primary().sig.clone();
+            let seeded_state =
+                protocol_mint_to_vault(&runtime_manager, &start_state, &payer_address, 2, 43).await;
 
             let block_data = BlockData {
-                time_stamp: 1,
-                block_number: 1, // non-epoch ⇒ no mint, isolating the debit
-                sender: _genesis_context.validator_pks()[0].clone(),
-                seq_num: 1,
+                time_stamp: 2,
+                block_number: 2,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 2,
             };
-            let close_rand = system_deploy_util::generate_close_deploy_random_seed_from_pk(
-                block_data.sender.clone(),
-                block_data.seq_num,
+            let admission = runtime_manager
+                .certify_state_bound_admission(
+                    &seeded_state,
+                    vec![deploy],
+                    &block_data,
+                    &HashMap::new(),
+                )
+                .await
+                .unwrap();
+            assert!(admission.outcome().admitted.is_empty());
+            assert_eq!(admission.outcome().rejected, vec![deploy_sig]);
+
+            let close = CloseBlockDeploy::new(
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                    block_data.sender.clone(),
+                    block_data.seq_num,
+                ),
+            );
+            let (play_post, processed, processed_system, _) = runtime_manager
+                .compute_state_with_bonds_cosigned_admitted(admission, vec![
+                    casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(close),
+                ])
+                .await
+                .unwrap();
+            assert!(processed.is_empty());
+
+            let minted = Sig::Ground(
+                rholang::rust::interpreter::compiler::normalizer::cost_accounting::sig::canon_ground(
+                    "minted",
+                ),
+            );
+            assert!(runtime_manager
+                .get_data(play_post.clone(), &supply::supply_channel(&minted))
+                .await
+                .unwrap()
+                .is_empty());
+            assert!(runtime_manager
+                .get_data(
+                    play_post.clone(),
+                    &ParBuilderUtil::mk_term(r#""uncommitted""#).unwrap(),
+                )
+                .await
+                .unwrap()
+                .is_empty());
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &play_post, &payer_address).await,
+                2
             );
 
-            // ---- PLAY: apply the gate's threaded debit map via post_eval ----
-            let play_runtime = runtime_manager.spawn_runtime().await;
-            play_runtime.set_block_data(block_data.clone()).await;
-            let mut play_ops = RuntimeOps::new(play_runtime);
-            play_ops
-                .runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(&seeded_state))
+            let replay_post = runtime_manager
+                .replay_compute_state(
+                    &seeded_state,
+                    processed,
+                    processed_system,
+                    &block_data,
+                    None,
+                    false,
+                )
                 .await
                 .unwrap();
-            let mut play_close = CloseBlockDeploy::new(close_rand.clone());
-            play_close.settlement_debits = outcome.debits.clone();
-            play_close
-                .post_eval(&mut play_ops, &block_data, &seeded_state)
+            assert_eq!(play_post, replay_post);
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn exactly_funded_stack_transfer_commits_and_replays_conservatively() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            use models::rhoapi::cost_signature::Value;
+
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let payer_key = PrivateKey::from_bytes(&[0x54; 32]);
+            let payer_address =
+                VaultAddress::from_public_key(&Secp256k1.to_public(&payer_key)).unwrap();
+            let deploy = construct_deploy::source_deploy(
+                r#"a :: b :: () | @"committed-stack-transfer"!(1)"#.to_string(),
+                1,
+                None,
+                None,
+                Some(payer_key),
+                None,
+                Some(genesis_block.shard_id.clone()),
+            )
+            .unwrap();
+            let deploy =
+                crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy).unwrap();
+            let seeded_state =
+                protocol_mint_to_vault(&runtime_manager, &start_state, &payer_address, 3, 54).await;
+            let block_data = BlockData {
+                time_stamp: 3,
+                block_number: 2,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 2,
+            };
+            let admission = runtime_manager
+                .certify_state_bound_admission(
+                    &seeded_state,
+                    vec![deploy],
+                    &block_data,
+                    &HashMap::new(),
+                )
                 .await
                 .unwrap();
-            let play_post = play_ops
-                .runtime
-                .create_checkpoint()
+            assert_eq!(admission.outcome().admitted.len(), 1);
+            assert!(admission.outcome().stack_pops.is_empty());
+            let close = CloseBlockDeploy::new(
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                    block_data.sender.clone(),
+                    block_data.seq_num,
+                ),
+            );
+            let (play_post, processed, processed_system, _) = runtime_manager
+                .compute_state_with_bonds_cosigned_admitted(admission, vec![
+                    casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(close),
+                ])
                 .await
-                .root
-                .to_bytes_prost();
-            play_ops
+                .unwrap();
+            assert_eq!(processed.len(), 1);
+            assert_eq!(
+                processed[0]
+                    .authority_cost_witness
+                    .as_ref()
+                    .unwrap()
+                    .events
+                    .len(),
+                2
+            );
+
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &play_post, &payer_address).await,
+                0
+            );
+            let a = CostSignature {
+                value: Some(Value::Ground(
+                    rholang::rust::interpreter::compiler::normalizer::cost_accounting::sig::canon_ground(
+                        "a",
+                    ),
+                )),
+            };
+            let inventory = supply::decode_purse_inventory(
+                &runtime_manager
+                    .get_data_datums(
+                        play_post.clone(),
+                        &supply::supply_channel(&Sig::Ground(
+                            rholang::rust::interpreter::compiler::normalizer::cost_accounting::sig::canon_ground(
+                                "a",
+                            ),
+                        )),
+                    )
+                    .await
+                    .unwrap(),
+                &a,
+            )
+            .unwrap();
+            assert_eq!(inventory.stacks.len(), 1);
+            assert_eq!(inventory.stacks[0].stack.cells.len(), 2);
+            assert_eq!(
+                runtime_manager
+                    .get_data(
+                        play_post.clone(),
+                        &new_gstring_par(
+                            "committed-stack-transfer".to_string(),
+                            Vec::new(),
+                            false,
+                        ),
+                    )
+                    .await
+                    .unwrap()
+                    .len(),
+                1
+            );
+
+            let replay_post = runtime_manager
+                .replay_compute_state(
+                    &seeded_state,
+                    processed,
+                    processed_system,
+                    &block_data,
+                    None,
+                    false,
+                )
+                .await
+                .unwrap();
+            assert_eq!(play_post, replay_post);
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parallel_equal_stack_literals_have_distinct_conserving_transfers() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            use models::rhoapi::cost_signature::Value;
+
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let payer_key = PrivateKey::from_bytes(&[0x55; 32]);
+            let payer_address =
+                VaultAddress::from_public_key(&Secp256k1.to_public(&payer_key)).unwrap();
+            let deploy = construct_deploy::source_deploy(
+                r#"a :: b :: () | a :: b :: ()"#.to_string(),
+                1,
+                None,
+                None,
+                Some(payer_key),
+                None,
+                Some(genesis_block.shard_id.clone()),
+            )
+            .unwrap();
+            let deploy =
+                crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy).unwrap();
+            let seeded_state =
+                protocol_mint_to_vault(&runtime_manager, &start_state, &payer_address, 5, 55).await;
+            let block_data = BlockData {
+                time_stamp: 4,
+                block_number: 2,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 2,
+            };
+            let admission = runtime_manager
+                .certify_state_bound_admission(
+                    &seeded_state,
+                    vec![deploy],
+                    &block_data,
+                    &HashMap::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(admission.outcome().admitted.len(), 1);
+            assert!(admission.outcome().stack_pops.is_empty());
+            let close = CloseBlockDeploy::new(
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                    block_data.sender.clone(),
+                    block_data.seq_num,
+                ),
+            );
+            let (play_post, processed, processed_system, _) = runtime_manager
+                .compute_state_with_bonds_cosigned_admitted(admission, vec![
+                    casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(close),
+                ])
+                .await
+                .unwrap();
+            assert_eq!(processed.len(), 1);
+            let events = &processed[0]
+                .authority_cost_witness
+                .as_ref()
+                .unwrap()
+                .events;
+            assert_eq!(events.len(), 4);
+            assert_eq!(
+                events
+                    .iter()
+                    .map(|event| event.event_id.clone())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len(),
+                4
+            );
+
+            let query_runtime = runtime_manager.spawn_runtime().await;
+            let mut query_ops = RuntimeOps::new(query_runtime);
+            query_ops
                 .runtime
                 .reset(&Blake2b256Hash::from_bytes_prost(&play_post))
                 .await
                 .unwrap();
-            let play_funded_balance = supply::read_balance(&play_ops, &funded_chan).await;
             assert_eq!(
-                play_funded_balance,
-                SEED_BALANCE - 2,
-                "play: post Σ⟦s⟧ = pre − ΣΔ = 5 − 2 = 3"
+                system_vault_balance(&runtime_manager, &play_post, &payer_address).await,
+                0
             );
-
-            // ---- REPLAY: recompute the debit map, apply via post_eval_replay ----
-            let replay_runtime = runtime_manager.spawn_replay_runtime().await;
-            replay_runtime.set_block_data(block_data.clone()).await;
-            let mut replay_ops = ReplayRuntimeOps::new_from_runtime(replay_runtime);
-            replay_ops
-                .runtime_ops
-                .runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(&seeded_state))
-                .await
-                .unwrap();
-            let recompute_reader = acceptance::RuntimeOpsSupplyReader {
-                runtime_ops: &replay_ops.runtime_ops,
+            let a = CostSignature {
+                value: Some(Value::Ground(
+                    rholang::rust::interpreter::compiler::normalizer::cost_accounting::sig::canon_ground(
+                        "a",
+                    ),
+                )),
             };
-            let recomputed = acceptance::recompute_settlement_debits(
-                vec![funded_cosigned.clone(), absent_cosigned.clone()],
-                &recompute_reader,
-                // strict = false: same transitional path as the play side above
-                // (absent pool unenforced ⇒ no admission re-verification error).
-                false,
+            let inventory = supply::decode_purse_inventory(
+                &query_ops
+                    .get_data_datums(&supply::supply_channel(&Sig::Ground(
+                        rholang::rust::interpreter::compiler::normalizer::cost_accounting::sig::canon_ground(
+                            "a",
+                        ),
+                    )))
+                    .await,
+                &a,
             )
-            .await
             .unwrap();
-            // (a) the recomputed COST settlement map EQUALS the gate's play-side
-            // map (`recompute_settlement_debits` now returns `RecomputedDebits`
-            // with `.settlement` (cost) and `.fee` (carve) — this test exercises
-            // the cost debit; the fee carve is `.fee`, empty here as no fee carve
-            // is threaded).
-            assert_eq!(
-                recomputed.settlement, outcome.debits,
-                "replay-recomputed debit map must equal the play-side gate map"
-            );
+            assert_eq!(inventory.stacks.len(), 2);
+            assert!(inventory
+                .stacks
+                .iter()
+                .all(|stack| stack.stack.cells.len() == 2));
 
-            let replay_close = CloseBlockDeploy::new(close_rand);
-            replay_close
-                .post_eval_replay(
-                    &mut replay_ops.runtime_ops,
-                    &block_data,
+            let replay_post = runtime_manager
+                .replay_compute_state(
                     &seeded_state,
-                    &recomputed.settlement,
+                    processed,
+                    processed_system,
+                    &block_data,
+                    None,
+                    false,
                 )
                 .await
                 .unwrap();
-            let replay_post = replay_ops
-                .runtime_ops
+            assert_eq!(play_post, replay_post);
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn certified_execution_settles_split_surfaces_from_persistent_stacks() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            use models::rhoapi::cost_signature::Value;
+
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let payer_key = PrivateKey::from_bytes(&[0x56; 32]);
+            let payer_address =
+                VaultAddress::from_public_key(&Secp256k1.to_public(&payer_key)).unwrap();
+            let deploy = construct_deploy::source_deploy_now_full(
+                "new x in { x!(0) | for(@0 <- x){ Nil } }".to_string(),
+                Some(1),
+                None,
+                Some(payer_key),
+                None,
+                Some(genesis_block.shard_id.clone()),
+            )
+            .unwrap();
+            let cosigned =
+                crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy).unwrap();
+            let funding = accounting::funding_sig(&cosigned);
+            let signature = sig_to_cost_signature(&funding).unwrap();
+            let funding_channel = supply::supply_channel(&funding);
+            let funded_state =
+                protocol_mint_to_vault(&runtime_manager, &start_state, &payer_address, 1, 33).await;
+            let first_tail = CostSignature {
+                value: Some(Value::Ground(b"first-tail".to_vec())),
+            };
+            let second_tail = CostSignature {
+                value: Some(Value::Ground(b"second-tail".to_vec())),
+            };
+            let seed_runtime = runtime_manager.spawn_runtime().await;
+            let mut seed_ops = RuntimeOps::new(seed_runtime);
+            seed_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(&funded_state))
+                .await
+                .unwrap();
+            for (tail, random_state) in [
+                (first_tail.clone(), vec![31; 64]),
+                (second_tail.clone(), vec![32; 64]),
+            ] {
+                seed_ops
+                    .runtime
+                    .reducer
+                    .space
+                    .produce(
+                        funding_channel.clone(),
+                        ListParWithRandom {
+                            pars: Vec::new(),
+                            random_state,
+                            cost_authority: None,
+                            cost_stack: Some(CostStack {
+                                cells: vec![signature.clone(), tail],
+                            }),
+                        },
+                        false,
+                    )
+                    .await
+                    .unwrap();
+            }
+            let seeded_state = seed_ops
                 .runtime
                 .create_checkpoint()
                 .await
                 .root
                 .to_bytes_prost();
-
-            // (b) byte-identical post-state root.
             assert_eq!(
-                play_post, replay_post,
-                "play and replay post-state roots diverged on the WD-D2 settlement debit"
+                system_vault_balance(&runtime_manager, &seeded_state, &payer_address).await,
+                1
             );
 
-            // (c) every Σ⟦s⟧ balance matches.
-            replay_ops
-                .runtime_ops
-                .runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(&replay_post))
+            let block_data = BlockData {
+                time_stamp: 2,
+                block_number: 2,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 2,
+            };
+            let admission = runtime_manager
+                .certify_state_bound_admission(
+                    &seeded_state,
+                    vec![cosigned],
+                    &block_data,
+                    &HashMap::new(),
+                )
                 .await
                 .unwrap();
-            let replay_funded_balance =
-                supply::read_balance(&replay_ops.runtime_ops, &funded_chan).await;
+            assert_eq!(admission.outcome().admitted.len(), 1);
+            assert!(admission.outcome().debits.is_empty());
             assert_eq!(
-                play_funded_balance, replay_funded_balance,
-                "Σ⟦s⟧ balance diverged between play and replay after the settlement debit"
+                admission
+                    .outcome()
+                    .fee_debits
+                    .values()
+                    .map(|debit| debit.amount)
+                    .sum::<i64>(),
+                1
             );
-            // The absent pool stays absent on both paths (never written).
-            let replay_absent_balance =
-                supply::read_balance(&replay_ops.runtime_ops, &absent_chan).await;
-            assert_eq!(replay_absent_balance, 0, "absent pool untouched");
+            assert_eq!(admission.outcome().stack_pops.len(), 2);
+            assert_eq!(
+                admission
+                    .outcome()
+                    .stack_pops
+                    .values()
+                    .copied()
+                    .sum::<u64>(),
+                2
+            );
+
+            let close = CloseBlockDeploy::new(
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                    block_data.sender.clone(),
+                    block_data.seq_num,
+                ),
+            );
+            let (play_post, processed, processed_system, _) = runtime_manager
+                .compute_state_with_bonds_cosigned_admitted(admission, vec![
+                    casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(close),
+                ])
+                .await
+                .unwrap();
+            assert_eq!(processed_system.len(), 1);
+            assert!(recorded_removal_pair_count(&processed[0].deploy_log) >= 2);
+            let replay_post = runtime_manager
+                .replay_compute_state(
+                    &seeded_state,
+                    processed,
+                    processed_system,
+                    &block_data,
+                    None,
+                    false,
+                )
+                .await
+                .unwrap();
+            assert_eq!(play_post, replay_post);
+
+            let query_runtime = runtime_manager.spawn_runtime().await;
+            let mut query_ops = RuntimeOps::new(query_runtime);
+            query_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(&play_post))
+                .await
+                .unwrap();
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &play_post, &payer_address).await,
+                0
+            );
+            for tail in [first_tail, second_tail] {
+                let tail_sig = match tail.value.as_ref().unwrap() {
+                    Value::Ground(bytes) => Sig::Ground(bytes.clone()),
+                    _ => unreachable!(),
+                };
+                let inventory = supply::decode_purse_inventory(
+                    &query_ops
+                        .get_data_datums(&supply::supply_channel(&tail_sig))
+                        .await,
+                    &tail,
+                )
+                .unwrap();
+                assert_eq!(inventory.stacks.len(), 1);
+                assert_eq!(inventory.stacks[0].stack.cells, vec![tail]);
+            }
         },
     )
     .await
-    .unwrap()
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn token_stack_persists_across_deploys_and_replays_before_consumption() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            use models::rhoapi::cost_signature::Value;
+
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let signer = genesis_context.genesis_vaults[0].0.clone();
+            let payer_address =
+                VaultAddress::from_public_key(&genesis_context.genesis_vaults[0].1).unwrap();
+            let initial_payer =
+                system_vault_balance(&runtime_manager, &start_state, &payer_address).await;
+            let deposit = construct_deploy::source_deploy(
+                r#"new slot in { {% for(_ <- @"trigger"){ new x in { x!(0) | for(@0 <- x){ Nil } } } %}[ a -o slot ] | a :: () | slot :: slot :: () | @"slot-registry"!(*slot) }"#
+                    .to_string(),
+                1,
+                None,
+                None,
+                Some(signer.clone()),
+                None,
+                Some(genesis_block.shard_id.clone()),
+            )
+            .unwrap();
+            let consume = construct_deploy::source_deploy(
+                r#"@"trigger"!(0)"#.to_string(),
+                2,
+                None,
+                None,
+                Some(signer),
+                None,
+                Some(genesis_block.shard_id.clone()),
+            )
+            .unwrap();
+            let deposit =
+                crypto::rust::signatures::signed::Cosigned::from_single_signer(deposit).unwrap();
+            let consume =
+                crypto::rust::signatures::signed::Cosigned::from_single_signer(consume).unwrap();
+            let funding = accounting::funding_sig(&deposit);
+            assert_eq!(funding, accounting::funding_sig(&consume));
+
+            let deposit_block = BlockData {
+                time_stamp: 1,
+                block_number: 2,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 2,
+            };
+            let prepare_runtime = runtime_manager.spawn_runtime().await;
+            let mut prepare_ops = RuntimeOps::new(prepare_runtime);
+            prepare_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(&start_state))
+                .await
+                .unwrap();
+            let prepare_reader = acceptance::RuntimeOpsSupplyReader {
+                runtime_ops: &prepare_ops,
+                pre_state_root: start_state.as_ref().try_into().unwrap(),
+            };
+            let prepared = acceptance::prepare_authority_reservation(
+                &deposit,
+                &prepare_reader,
+                &deposit_block.sender.bytes,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                prepared
+                    .certificate
+                    .allocation
+                    .0
+                    .values()
+                    .copied()
+                    .sum::<u64>(),
+                4
+            );
+            let deposit_admission = runtime_manager
+                .certify_state_bound_admission(
+                    &start_state,
+                    vec![deposit],
+                    &deposit_block,
+                    &HashMap::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(deposit_admission.outcome().admitted.len(), 1);
+            assert!(deposit_admission.outcome().stack_pops.is_empty());
+            let deposit_close = CloseBlockDeploy::new(
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                    deposit_block.sender.clone(),
+                    deposit_block.seq_num,
+                ),
+            );
+            let (deposited_state, deposited, deposited_system, _) = runtime_manager
+                .compute_state_with_bonds_cosigned_admitted(deposit_admission, vec![
+                    casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
+                        deposit_close,
+                    ),
+                ])
+                .await
+                .unwrap();
+            let replayed_deposit = runtime_manager
+                .replay_compute_state(
+                    &start_state,
+                    deposited,
+                    deposited_system,
+                    &deposit_block,
+                    None,
+                    false,
+                )
+                .await
+                .unwrap();
+            assert_eq!(deposited_state, replayed_deposit);
+
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &deposited_state, &payer_address).await,
+                initial_payer - 4
+            );
+
+            let published = runtime_manager
+                .get_data(
+                    deposited_state.clone(),
+                    &new_gstring_par("slot-registry".to_string(), Vec::new(), false),
+                )
+                .await
+                .unwrap();
+            assert_eq!(published.len(), 1);
+            let slot = ParSortMatcher::sort_match(&published[0]).term;
+            let signature = CostSignature {
+                value: Some(Value::Name(slot)),
+            };
+            let signature_sig =
+                rholang::rust::interpreter::accounting::authority::cost_signature_to_sig(
+                    &signature,
+                )
+                .unwrap();
+            let purse_channel = supply::supply_channel(&signature_sig);
+            let deposited_inventory = supply::decode_purse_inventory(
+                &runtime_manager
+                    .get_data_datums(deposited_state.clone(), &purse_channel)
+                    .await
+                    .unwrap(),
+                &signature,
+            )
+            .unwrap();
+            assert_eq!(deposited_inventory.stacks.len(), 1);
+            assert_eq!(deposited_inventory.stacks[0].stack.cells.len(), 2);
+            let persistent_stack_id = deposited_inventory.stacks[0].instance_id;
+
+            let consume_block = BlockData {
+                time_stamp: 2,
+                block_number: 3,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 3,
+            };
+            let consume_admission = runtime_manager
+                .certify_state_bound_admission(
+                    &deposited_state,
+                    vec![consume],
+                    &consume_block,
+                    &HashMap::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(consume_admission.outcome().admitted.len(), 1);
+            let admission_stack_pops = consume_admission.outcome().stack_pops.clone();
+            assert_eq!(
+                admission_stack_pops.get(&persistent_stack_id),
+                Some(&1)
+            );
+            assert_eq!(admission_stack_pops.len(), 2);
+            assert!(admission_stack_pops.keys().all(|stack_id| consume_admission
+                .outcome()
+                .purse_stacks
+                .contains_key(stack_id)));
+            let consume_close = CloseBlockDeploy::new(
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                    consume_block.sender.clone(),
+                    consume_block.seq_num,
+                ),
+            );
+            let (consumed_state, consumed, consumed_system, _) = runtime_manager
+                .compute_state_with_bonds_cosigned_admitted(consume_admission, vec![
+                    casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
+                        consume_close,
+                    ),
+                ])
+                .await
+                .unwrap();
+            let witness = consumed[0].authority_cost_witness.as_ref().unwrap();
+            let certificate = consumed[0]
+                .authority_funding_certificate
+                .as_ref()
+                .unwrap();
+            assert_eq!(certificate.stack_reservations.len(), 2);
+            for reservation in &certificate.stack_reservations {
+                let stack_id: [u8; 32] = reservation.stack_id.as_ref().try_into().unwrap();
+                assert_eq!(
+                    admission_stack_pops.get(&stack_id),
+                    Some(&reservation.pop_count)
+                );
+            }
+            assert_eq!(
+                witness
+                    .physical_draws
+                    .iter()
+                    .map(|draw| draw.stack_ids.len() as u64)
+                    .sum::<u64>(),
+                2
+            );
+            assert_eq!(consumed_system.len(), 1);
+            assert!(recorded_removal_pair_count(system_event_list(
+                &consumed_system[0]
+            )) >= 1);
+            let replayed_consume = runtime_manager
+                .replay_compute_state(
+                    &deposited_state,
+                    consumed,
+                    consumed_system,
+                    &consume_block,
+                    None,
+                    false,
+                )
+                .await
+                .unwrap();
+            assert_eq!(consumed_state, replayed_consume);
+
+            let consumed_inventory = supply::decode_purse_inventory(
+                &runtime_manager
+                    .get_data_datums(consumed_state.clone(), &purse_channel)
+                    .await
+                    .unwrap(),
+                &signature,
+            )
+            .unwrap();
+            assert_eq!(consumed_inventory.stacks.len(), 1);
+            assert_eq!(consumed_inventory.stacks[0].stack.cells.len(), 1);
+
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &consumed_state, &payer_address).await,
+                initial_payer - 6
+            );
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn wallet_funded_lollipop_slot_settles_across_deploys_and_replays() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let installer_key = genesis_context.genesis_vaults[0].0.clone();
+            let sponsor_key = genesis_context.genesis_vaults[1].0.clone();
+            let sponsor_address =
+                VaultAddress::from_public_key(&genesis_context.genesis_vaults[1].1).unwrap();
+            let gateway_key = genesis_context.genesis_vaults[2].0.clone();
+            let gateway_public_key = hex::encode(&genesis_context.genesis_vaults[2].1.bytes);
+            let installer_source = r#"new entry, slot, slotAddressCh,
+                VaultAddress(`rho:vault:address`),
+                DeployerIdOps(`rho:system:deployerId:ops`) in {
+              for (@request, deployerId <= @"agent-trigger") {
+                new publicKeyCh in {
+                  DeployerIdOps!("pubKeyBytes", *deployerId, *publicKeyCh) |
+                  for (@publicKey <- publicKeyCh) {
+                    if (publicKey == "GATEWAY_PUBLIC_KEY".hexToBytes()) {
+                      entry!(request)
+                    }
+                  }
+                }
+              } |
+              {% for(@request <- entry){
+                new x in { x!(0) | for(@0 <- x){ @"agent-ran"!(true) } }
+              } %}[ entry -o slot ] |
+              entry :: () |
+              VaultAddress!("fromUnforgeable", *slot, *slotAddressCh) |
+              for (@slotAddress <- slotAddressCh) {
+                @"agent-slot-address"!!(slotAddress)
+              }
+            }"#
+            .replace("GATEWAY_PUBLIC_KEY", &gateway_public_key);
+            let installer = construct_deploy::source_deploy(
+                installer_source,
+                1,
+                None,
+                None,
+                Some(installer_key.clone()),
+                None,
+                Some(genesis_block.shard_id.clone()),
+            )
+            .unwrap();
+            let installer =
+                crypto::rust::signatures::signed::Cosigned::from_single_signer(installer).unwrap();
+            let install_block = BlockData {
+                time_stamp: 1,
+                block_number: 2,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 2,
+            };
+            let install_admission = runtime_manager
+                .certify_state_bound_admission(
+                    &start_state,
+                    vec![installer],
+                    &install_block,
+                    &HashMap::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(install_admission.outcome().admitted.len(), 1);
+            let install_close = CloseBlockDeploy::new(
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                    install_block.sender.clone(),
+                    install_block.seq_num,
+                ),
+            );
+            let (installed_state, installed, installed_system, _) = runtime_manager
+                .compute_state_with_bonds_cosigned_admitted(install_admission, vec![
+                    casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
+                        install_close,
+                    ),
+                ])
+                .await
+                .unwrap();
+            let replayed_install = runtime_manager
+                .replay_compute_state(
+                    &start_state,
+                    installed,
+                    installed_system,
+                    &install_block,
+                    None,
+                    false,
+                )
+                .await
+                .unwrap();
+            assert_eq!(installed_state, replayed_install);
+
+            let published_address = runtime_manager
+                .get_data(
+                    installed_state.clone(),
+                    &new_gstring_par("agent-slot-address".to_string(), Vec::new(), false),
+                )
+                .await
+                .unwrap();
+            assert_eq!(published_address.len(), 1);
+            let slot_address =
+                VaultAddress::parse(&RhoString::unapply(&published_address[0]).unwrap()).unwrap();
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &installed_state, &slot_address).await,
+                0
+            );
+
+            let initial_sponsor =
+                system_vault_balance(&runtime_manager, &installed_state, &sponsor_address).await;
+            let funding_source = format!(
+                r#"
+                new rl(`rho:registry:lookup`), systemVaultCh,
+                    payerCh, slotCh, authKeyCh, transferCh,
+                    deployerId(`rho:system:deployerId`) in {{
+                  rl!(`rho:vault:system`, *systemVaultCh) |
+                  for (@(_, systemVault) <- systemVaultCh) {{
+                    @systemVault!("find", "{}", *payerCh) |
+                    @systemVault!("findOrCreate", "{}", *slotCh) |
+                    @systemVault!("deployerAuthKey", *deployerId, *authKeyCh) |
+                    for (@(true, payer) <- payerCh & @(true, _) <- slotCh & key <- authKeyCh) {{
+                      @payer!("transfer", "{}", 2, *key, *transferCh) |
+                      for (@result <- transferCh) {{
+                        @"agent-slot-funded"!(result)
+                      }}
+                    }}
+                  }}
+                }}
+                "#,
+                sponsor_address.to_base58(),
+                slot_address.to_base58(),
+                slot_address.to_base58(),
+            );
+            let funding = construct_deploy::source_deploy(
+                funding_source,
+                2,
+                None,
+                None,
+                Some(sponsor_key),
+                None,
+                Some(genesis_block.shard_id.clone()),
+            )
+            .unwrap();
+            let funding =
+                crypto::rust::signatures::signed::Cosigned::from_single_signer(funding).unwrap();
+            let funding_block = BlockData {
+                time_stamp: 2,
+                block_number: 3,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 3,
+            };
+            let funding_admission = runtime_manager
+                .certify_state_bound_admission(
+                    &installed_state,
+                    vec![funding],
+                    &funding_block,
+                    &HashMap::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(funding_admission.outcome().admitted.len(), 1);
+            let funding_close = CloseBlockDeploy::new(
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                    funding_block.sender.clone(),
+                    funding_block.seq_num,
+                ),
+            );
+            let (funded_state, funded, funded_system, _) = runtime_manager
+                .compute_state_with_bonds_cosigned_admitted(funding_admission, vec![
+                    casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
+                        funding_close,
+                    ),
+                ])
+                .await
+                .unwrap();
+            assert_eq!(funded.len(), 1);
+            let funding_witness = funded[0].authority_cost_witness.as_ref().unwrap();
+            let funding_certificate = funded[0].authority_funding_certificate.as_ref().unwrap();
+            let funding_cost = funding_witness
+                .settlement
+                .iter()
+                .map(|resource| resource.amount)
+                .sum::<u64>();
+            let funding_fee = funding_certificate
+                .fee_allocation
+                .iter()
+                .map(|resource| resource.amount)
+                .sum::<u64>();
+            let replayed_funding = runtime_manager
+                .replay_compute_state(
+                    &installed_state,
+                    funded,
+                    funded_system,
+                    &funding_block,
+                    None,
+                    false,
+                )
+                .await
+                .unwrap();
+            assert_eq!(funded_state, replayed_funding);
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &funded_state, &slot_address).await,
+                2
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &funded_state, &sponsor_address).await,
+                initial_sponsor - 2 - i64::try_from(funding_cost + funding_fee).unwrap()
+            );
+            let funding_markers = runtime_manager
+                .get_data(
+                    funded_state.clone(),
+                    &new_gstring_par("agent-slot-funded".to_string(), Vec::new(), false),
+                )
+                .await
+                .unwrap();
+            assert_eq!(funding_markers.len(), 1);
+
+            let trigger_source = r#"new deployerId(`rho:system:deployerId`) in {
+              @"agent-trigger"!(0, *deployerId)
+            }"#
+            .to_string();
+            let unauthorized_trigger = construct_deploy::source_deploy(
+                trigger_source.clone(),
+                3,
+                None,
+                None,
+                Some(installer_key),
+                None,
+                Some(genesis_block.shard_id.clone()),
+            )
+            .unwrap();
+            let unauthorized_trigger =
+                crypto::rust::signatures::signed::Cosigned::from_single_signer(
+                    unauthorized_trigger,
+                )
+                .unwrap();
+            let unauthorized_block = BlockData {
+                time_stamp: 3,
+                block_number: 4,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 4,
+            };
+            let unauthorized_admission = runtime_manager
+                .certify_state_bound_admission(
+                    &funded_state,
+                    vec![unauthorized_trigger],
+                    &unauthorized_block,
+                    &HashMap::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(unauthorized_admission.outcome().admitted.len(), 1);
+            assert_eq!(
+                unauthorized_admission
+                    .outcome()
+                    .stack_pops
+                    .values()
+                    .copied()
+                    .sum::<u64>(),
+                0
+            );
+            let unauthorized_close = CloseBlockDeploy::new(
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                    unauthorized_block.sender.clone(),
+                    unauthorized_block.seq_num,
+                ),
+            );
+            let (unauthorized_state, unauthorized_processed, unauthorized_system, _) =
+                runtime_manager
+                    .compute_state_with_bonds_cosigned_admitted(unauthorized_admission, vec![
+                        casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
+                            unauthorized_close,
+                        ),
+                    ])
+                    .await
+                    .unwrap();
+            let replayed_unauthorized = runtime_manager
+                .replay_compute_state(
+                    &funded_state,
+                    unauthorized_processed,
+                    unauthorized_system,
+                    &unauthorized_block,
+                    None,
+                    false,
+                )
+                .await
+                .unwrap();
+            assert_eq!(unauthorized_state, replayed_unauthorized);
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &unauthorized_state, &slot_address).await,
+                2
+            );
+            assert!(runtime_manager
+                .get_data(
+                    unauthorized_state.clone(),
+                    &new_gstring_par("agent-ran".to_string(), Vec::new(), false),
+                )
+                .await
+                .unwrap()
+                .is_empty());
+
+            let trigger = construct_deploy::source_deploy(
+                trigger_source,
+                4,
+                None,
+                None,
+                Some(gateway_key),
+                None,
+                Some(genesis_block.shard_id.clone()),
+            )
+            .unwrap();
+            let trigger =
+                crypto::rust::signatures::signed::Cosigned::from_single_signer(trigger).unwrap();
+            let trigger_block = BlockData {
+                time_stamp: 4,
+                block_number: 5,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 5,
+            };
+            let trigger_admission = runtime_manager
+                .certify_state_bound_admission(
+                    &unauthorized_state,
+                    vec![trigger],
+                    &trigger_block,
+                    &HashMap::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(trigger_admission.outcome().admitted.len(), 1);
+            assert_eq!(trigger_admission.outcome().stack_pops.len(), 1);
+            assert_eq!(
+                trigger_admission
+                    .outcome()
+                    .stack_pops
+                    .values()
+                    .copied()
+                    .sum::<u64>(),
+                1
+            );
+            let trigger_close = CloseBlockDeploy::new(
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                    trigger_block.sender.clone(),
+                    trigger_block.seq_num,
+                ),
+            );
+            let (triggered_state, triggered, triggered_system, _) = runtime_manager
+                .compute_state_with_bonds_cosigned_admitted(trigger_admission, vec![
+                    casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
+                        trigger_close,
+                    ),
+                ])
+                .await
+                .unwrap();
+            let replayed_trigger = runtime_manager
+                .replay_compute_state(
+                    &unauthorized_state,
+                    triggered,
+                    triggered_system,
+                    &trigger_block,
+                    None,
+                    false,
+                )
+                .await
+                .unwrap();
+            assert_eq!(triggered_state, replayed_trigger);
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &triggered_state, &slot_address).await,
+                1
+            );
+            let ran = runtime_manager
+                .get_data(
+                    triggered_state,
+                    &new_gstring_par("agent-ran".to_string(), Vec::new(), false),
+                )
+                .await
+                .unwrap();
+            assert_eq!(ran.len(), 1);
+            assert_eq!(RhoBoolean::unapply(&ran[0]), Some(true));
+        },
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2036,8 +3837,6 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
                     },
                     None,
                     false,
-                    false, // strict_funding_enforcement (#13a)
-                    &[],   // client_fuel_allocations (#13b)
                 )
                 .await
                 .unwrap();
@@ -2094,8 +3893,6 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
                     },
                     None,
                     false,
-                    false, // strict_funding_enforcement (#13a)
-                    &[],   // client_fuel_allocations (#13b)
                 )
                 .await
                 .unwrap();
@@ -2334,10 +4131,10 @@ async fn empty_state_hash_should_not_remember_previous_hot_store_state() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn compute_state_should_be_replayed_by_replay_compute_state() {
+async fn deployer_id_system_vault_query_should_replay_from_state_bound_checkpoint() {
     with_runtime_manager(
         |runtime_manager, genesis_context, genesis_block| async move {
-            let deploy = construct_deploy::source_deploy_now_full(
+            let deploy = construct_deploy::source_deploy(
                 r#"
                   new deployerId(`rho:system:deployerId`),
                   rl(`rho:registry:lookup`),
@@ -2354,15 +4151,15 @@ async fn compute_state_should_be_replayed_by_replay_compute_state() {
                     }
                   }
                 }
-              }
-            }
+                }
                 "#
                 .to_string(),
+                1,
                 None,
                 None,
+                Some(genesis_context.genesis_vaults[0].0.clone()),
                 None,
-                None,
-                None,
+                Some(genesis_block.shard_id.clone()),
             )
             .unwrap();
 
@@ -2408,8 +4205,6 @@ async fn compute_state_should_be_replayed_by_replay_compute_state() {
                     &block_data,
                     Some(invalid_blocks),
                     false,
-                    false, // strict_funding_enforcement (#13a)
-                    &[],   // client_fuel_allocations (#13b)
                 )
                 .await
                 .unwrap();
@@ -2428,7 +4223,7 @@ async fn compute_state_should_charge_deploys_separately() {
             fn deploy_cost(p: &[ProcessedDeploy]) -> u64 { p.iter().map(|d| d.cost.cost).sum() }
 
             let deploy0 = construct_deploy::source_deploy(
-                r#"for(@x <- @"w") { @"z"!("Got x") } "#.to_string(),
+                r#"new w, z in { w!("World") | for(@x <- w) { z!("Got x") } } "#.to_string(),
                 123,
                 None,
                 None,
@@ -2439,7 +4234,7 @@ async fn compute_state_should_charge_deploys_separately() {
             .unwrap();
 
             let deploy1 = construct_deploy::source_deploy(
-                r#"for(@x <- @"x" & @y <- @"y"){ @"xy"!(x + y) | @"x"!(1) | @"y"!(10) } "#
+                r#"for(@x <- @"x" & @y <- @"y"){ @"xy"!(x + y) } | @"x"!(1) | @"y"!(10) "#
                     .to_string(),
                 123,
                 None,
@@ -2468,7 +4263,8 @@ async fn compute_state_should_charge_deploys_separately() {
                 .compute_state(
                     &genesis_post_state,
                     vec![construct_deploy::source_deploy(
-                        r#"for(@x <- @"w") { @"z"!("Got x") } "#.to_string(),
+                        r#"new w, z in { w!("World") | for(@x <- w) { z!("Got x") } } "#
+                            .to_string(),
                         123,
                         None,
                         None,
@@ -2497,7 +4293,7 @@ async fn compute_state_should_charge_deploys_separately() {
                 .compute_state(
                     &genesis_post_state,
                     vec![construct_deploy::source_deploy(
-                        r#"for(@x <- @"x" & @y <- @"y"){ @"xy"!(x + y) | @"x"!(1) | @"y"!(10) } "#
+                        r#"for(@x <- @"x" & @y <- @"y"){ @"xy"!(x + y) } | @"x"!(1) | @"y"!(10) "#
                             .to_string(),
                         123,
                         None,
@@ -2551,6 +4347,9 @@ async fn compute_state_should_charge_deploys_separately() {
             let second_deploy_cost = deploy_cost(&second_deploy);
             let compound_deploy_cost = deploy_cost(&compound_deploy);
 
+            assert_eq!(first_deploy_cost, 1);
+            assert_eq!(second_deploy_cost, 1);
+            assert_eq!(compound_deploy_cost, 2);
             assert!(first_deploy_cost < compound_deploy_cost);
             assert!(second_deploy_cost < compound_deploy_cost);
 
@@ -2754,8 +4553,8 @@ async fn compute_state_should_just_work() {
       // i64::MAX limit would fail pre-charge with "Insufficient funds". This
       // budget is affordable and amply covers the parallel fan-out below.
       let deploy = construct_deploy::source_deploy_now_full(source, Some(9_000_000), None, None, None, None).unwrap();
-      let (play_state_hash1, processed_deploy) = compute_state(&mut runtime_manager, &genesis_context, deploy, &gen_post_state).await;
-      let replay_compute_state_result = replay_compute_state(&mut runtime_manager, &genesis_context, processed_deploy, &gen_post_state).await.unwrap();
+      let (play_state_hash1, processed_deploy, processed_system_deploys) = compute_state(&mut runtime_manager, &genesis_context, deploy, &gen_post_state).await;
+      let replay_compute_state_result = replay_compute_state(&mut runtime_manager, &genesis_context, processed_deploy, processed_system_deploys, &gen_post_state).await.unwrap();
       assert!(play_state_hash1 == replay_compute_state_result);
       assert!(play_state_hash1 != gen_post_state);
     })
@@ -2828,8 +4627,6 @@ async fn invalid_replay(source: String) -> Result<StateHash, CasperError> {
                     &block_data,
                     Some(invalid_blocks),
                     false,
-                    false, // strict_funding_enforcement (#13a)
-                    &[],   // client_fuel_allocations (#13b)
                 )
                 .await;
 
@@ -2840,11 +4637,13 @@ async fn invalid_replay(source: String) -> Result<StateHash, CasperError> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn mixed_success_and_oop_deploys_keep_isolated_cost_traces() {
+async fn matched_and_unmatched_deploys_keep_isolated_cost_traces() {
     with_runtime_manager(
         |runtime_manager, genesis_context, genesis_block| async move {
+            let matched_source = "@0!(0) | for(@0 <- @0){ Nil }";
+            let unmatched_source = "@1!(1)";
             let success = construct_deploy::source_deploy_now_full(
-                "@0!(0) | for(@0 <- @0){ Nil }".to_string(),
+                matched_source.to_string(),
                 Some(10000),
                 None,
                 None,
@@ -2852,14 +4651,8 @@ async fn mixed_success_and_oop_deploys_keep_isolated_cost_traces() {
                 None,
             )
             .unwrap();
-            // D3 (DR-9): `@1!(1)` is a SINGLE send = exactly ONE COMM. Under the
-            // pre-D3 per-op model a 1-phlo budget OOP'd this deploy; under D3
-            // one COMM exactly fits a 1-token budget, so it SUCCEEDS (it is no
-            // longer "oop"). The 1-token `phlo_limit` is advisory only —
-            // accepted deploys run unmetered-for-liveness — and is kept here
-            // purely to preserve the original mixed-budget fixture.
-            let single_comm = construct_deploy::source_deploy_now_full(
-                "@1!(1)".to_string(),
+            let unmatched = construct_deploy::source_deploy_now_full(
+                unmatched_source.to_string(),
                 Some(1),
                 None,
                 None,
@@ -2882,7 +4675,7 @@ async fn mixed_success_and_oop_deploys_keep_isolated_cost_traces() {
             let (play_state, processed_deploys, processed_system_deploys) = runtime_manager
                 .compute_state(
                     &gen_post_state,
-                    vec![success, single_comm],
+                    vec![success, unmatched],
                     Vec::new(),
                     block_data.clone(),
                     None,
@@ -2891,29 +4684,29 @@ async fn mixed_success_and_oop_deploys_keep_isolated_cost_traces() {
                 .unwrap();
 
             assert_eq!(processed_deploys.len(), 2);
-            // D3 (DR-9): BOTH deploys succeed. Per-op metering is diagnostic and
-            // does not gate liveness; the only liveness gate is the per-COMM
-            // budget, and `@1!(1)` is one COMM under a 1-token budget (it fits).
-            // So no deploy is failed (pre-D3 this count was 1).
             assert_eq!(
                 processed_deploys
                     .iter()
                     .filter(|deploy| deploy.is_failed)
                     .count(),
                 0,
-                "D3: a single-COMM deploy under a 1-token budget no longer OOPs"
+                "matched and unmatched deployments both complete within their certified capacities"
             );
-            // The test's real intent — ISOLATED cost traces: each deploy carries
-            // its OWN per-COMM consensus cost, not a shared/summed total.
-            //   `@0!(0) | for(@0 <- @0){ Nil }` = 1 send + 1 receive = 2 COMMs.
-            //   `@1!(1)`                         = 1 send             = 1 COMM.
+            let matched = processed_deploys
+                .iter()
+                .find(|deploy| deploy.deploy.data.term == matched_source)
+                .expect("matched deployment must be present in the execution evidence");
+            let unmatched = processed_deploys
+                .iter()
+                .find(|deploy| deploy.deploy.data.term == unmatched_source)
+                .expect("unmatched deployment must be present in the execution evidence");
             assert_eq!(
-                processed_deploys[0].cost.cost, 2,
-                "first deploy's isolated cost = its 2 COMMs"
+                matched.cost.cost, 1,
+                "the complete send/receive match is one atomic COMM"
             );
             assert_eq!(
-                processed_deploys[1].cost.cost, 1,
-                "second deploy's isolated cost = its 1 COMM (not contaminated by the first)"
+                unmatched.cost.cost, 0,
+                "the unmatched send is an introduction, not a COMM"
             );
 
             let replay_state = runtime_manager
@@ -2924,8 +4717,6 @@ async fn mixed_success_and_oop_deploys_keep_isolated_cost_traces() {
                     &block_data,
                     None,
                     false,
-                    false, // strict_funding_enforcement (#13a)
-                    &[],   // client_fuel_allocations (#13b)
                 )
                 .await
                 .unwrap();
@@ -2949,8 +4740,8 @@ async fn replaycomputestate_should_catch_discrepancies_in_initial_and_replay_cos
             // The test corrupts the recorded deploy cost by one token. Exact
             // totals belong to the reducer's source-token schedule, while the
             // replay contract here is that the mismatch is detected exactly.
-            assert!(initial_cost > 0);
-            assert_eq!(replay_cost, initial_cost + 1);
+            assert_eq!(initial_cost, 0);
+            assert_eq!(replay_cost, 1);
         }
         _ => panic!("Expected ReplayCostMismatch error"),
     }
@@ -2967,8 +4758,8 @@ async fn replaycomputestate_should_not_catch_discrepancies_in_initial_and_replay
         })) => {
             // User execution errors are rollback-safe, but replay must still
             // reject a processed deploy whose charged token count was forged.
-            assert!(initial_cost > 0);
-            assert_eq!(replay_cost, initial_cost + 1);
+            assert_eq!(initial_cost, 0);
+            assert_eq!(replay_cost, 1);
         }
         _ => panic!("Expected ReplayCostMismatch error"),
     }
@@ -3031,8 +4822,6 @@ async fn joins_should_be_replayed_correctly() {
                     &block_data,
                     Some(invalid_blocks),
                     false,
-                    false, // strict_funding_enforcement (#13a)
-                    &[],   // client_fuel_allocations (#13b)
                 )
                 .await
                 .unwrap();
@@ -3044,14 +4833,14 @@ async fn joins_should_be_replayed_correctly() {
     .unwrap();
 }
 
-/// Reproduce ReplayCostMismatch with duplicate channel sends (bridge.rho pattern).
+/// Reproduce ReplayCostMismatch with duplicate channel sends in bridge contracts.
 ///
 /// Uses two independent RuntimeManagers sharing the same genesis RSpace scope.
 /// The first plays the deploy (hot store populated from execution).
 /// The second replays with a fresh hot store (loads from history).
 /// This simulates the block creator vs replayer divergence.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn replay_on_independent_runtime_should_match_play_cost_for_duplicate_sends() {
+async fn replay_on_independent_runtime_should_match_play_cost_for_bridge_contracts() {
     use crate::util::rholang::resources::{
         mk_runtime_manager_with_history_at, mk_test_rnode_store_manager_from_genesis,
     };
@@ -3063,82 +4852,182 @@ async fn replay_on_independent_runtime_should_match_play_cost_for_duplicate_send
     let genesis_block = genesis_context.genesis_block.clone();
     let genesis_post_state = genesis_block.body.state.post_state_hash.clone();
 
-    let bridge_rho = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/resources/bridge.rho"),
-    )
-    .expect("Failed to read bridge.rho");
+    let fixtures = ["bridge.rho", "bridge-v2.rho"];
 
     let mut failures = Vec::new();
-    for attempt in 0..10 {
-        let mut kvm_play = mk_test_rnode_store_manager_from_genesis(&genesis_context);
-        let (rm_play, _) = mk_runtime_manager_with_history_at(&mut *kvm_play).await;
-
-        let deploy = construct_deploy::source_deploy_now_full(
-            bridge_rho.clone(),
-            None,
-            None,
-            None,
-            None,
-            None,
+    for fixture in fixtures {
+        let source = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/resources")
+                .join(fixture),
         )
-        .unwrap();
+        .unwrap_or_else(|error| panic!("failed to read {fixture}: {error}"));
 
-        let play_block_data = BlockData {
-            time_stamp: deploy.data.time_stamp,
-            block_number: 1,
-            sender: genesis_context.validator_pks()[0].clone(),
-            seq_num: 1,
-        };
+        for attempt in 0..10 {
+            let mut kvm_play = mk_test_rnode_store_manager_from_genesis(&genesis_context);
+            let (rm_play, _) = mk_runtime_manager_with_history_at(&mut *kvm_play).await;
 
-        let (_play_post, play_deploys, play_sys_deploys) = rm_play
-            .compute_state(
-                &genesis_post_state,
-                vec![deploy],
-                Vec::new(),
-                play_block_data.clone(),
+            let deploy = construct_deploy::source_deploy_now_full(
+                source.clone(),
+                None,
+                None,
+                None,
+                None,
                 None,
             )
-            .await
             .unwrap();
 
-        let play_cost = play_deploys[0].cost.cost;
+            let play_block_data = BlockData {
+                time_stamp: deploy.data.time_stamp,
+                block_number: 1,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 1,
+            };
 
-        let mut kvm_replay = mk_test_rnode_store_manager_from_genesis(&genesis_context);
-        let (rm_replay, _) = mk_runtime_manager_with_history_at(&mut *kvm_replay).await;
+            let (play_post, play_deploys, play_sys_deploys) = rm_play
+                .compute_state(
+                    &genesis_post_state,
+                    vec![deploy],
+                    Vec::new(),
+                    play_block_data.clone(),
+                    None,
+                )
+                .await
+                .unwrap();
 
-        let replay_result = rm_replay
-            .replay_compute_state(
-                &genesis_post_state,
-                play_deploys,
-                play_sys_deploys,
-                &play_block_data,
-                None,
-                false,
-                false, // strict_funding_enforcement (#13a)
-                &[],   // client_fuel_allocations (#13b)
-            )
-            .await;
+            let play_cost = play_deploys[0].cost.cost;
 
-        match replay_result {
-            Ok(_) => {}
-            Err(CasperError::ReplayFailure(ref failure)) => {
-                failures.push(format!(
-                    "attempt {}: play_cost={}, {:?}",
-                    attempt, play_cost, failure
-                ));
-            }
-            Err(e) => {
-                failures.push(format!("attempt {}: {:?}", attempt, e));
+            let mut kvm_replay = mk_test_rnode_store_manager_from_genesis(&genesis_context);
+            let (rm_replay, _) = mk_runtime_manager_with_history_at(&mut *kvm_replay).await;
+
+            let replay_result = rm_replay
+                .replay_compute_state(
+                    &genesis_post_state,
+                    play_deploys,
+                    play_sys_deploys,
+                    &play_block_data,
+                    None,
+                    false,
+                )
+                .await;
+
+            match replay_result {
+                Ok(replay_post) if replay_post == play_post => {}
+                Ok(replay_post) => failures.push(format!(
+                    "{fixture} attempt {attempt}: play_cost={play_cost}, play_post={}, replay_post={}",
+                    hex::encode(play_post),
+                    hex::encode(replay_post)
+                )),
+                Err(CasperError::ReplayFailure(ref failure)) => {
+                    failures.push(format!(
+                        "{fixture} attempt {attempt}: play_cost={play_cost}, {failure:?}"
+                    ));
+                }
+                Err(error) => {
+                    failures.push(format!("{fixture} attempt {attempt}: {error:?}"));
+                }
             }
         }
     }
 
     assert!(
         failures.is_empty(),
-        "ReplayCostMismatch in {}/10 attempts:\n{}",
+        "play/replay divergence in {}/20 attempts:\n{}",
         failures.len(),
         failures.join("\n")
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn independent_validator_materializes_intermediate_roots_before_reading_purses() {
+    use crate::util::rholang::resources::{
+        generate_scope_id, mk_runtime_manager_with_history_at,
+        mk_test_rnode_store_manager_from_genesis, mk_test_rnode_store_manager_shared,
+    };
+
+    crate::init_logger();
+    let genesis_context = crate::util::rholang::resources::genesis_context()
+        .await
+        .unwrap();
+    let genesis_post_state = genesis_context
+        .genesis_block
+        .body
+        .state
+        .post_state_hash
+        .clone();
+    let first = construct_deploy::source_deploy_now_full(
+        "@0!(0) | for(@0 <- @0){ Nil }".to_string(),
+        Some(10000),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let second = construct_deploy::source_deploy_now_full(
+        "@1!(1)".to_string(),
+        Some(10000),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let block_data = BlockData {
+        time_stamp: first.data.time_stamp.max(second.data.time_stamp),
+        block_number: 1,
+        sender: genesis_context.validator_pks()[0].clone(),
+        seq_num: 1,
+    };
+
+    let mut producer_store = mk_test_rnode_store_manager_from_genesis(&genesis_context);
+    let (producer, _) = mk_runtime_manager_with_history_at(&mut *producer_store).await;
+    let (expected_post, processed, system_deploys) = producer
+        .compute_state(
+            &genesis_post_state,
+            vec![first, second],
+            Vec::new(),
+            block_data.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(processed.len(), 2);
+    assert_eq!(processed[0].pre_state_hash, genesis_post_state);
+    assert_eq!(processed[1].pre_state_hash, processed[0].post_state_hash);
+
+    let intermediate = Blake2b256Hash::from_bytes_prost(&processed[1].pre_state_hash);
+    let mut validator_store = mk_test_rnode_store_manager_shared(generate_scope_id());
+    let (validator, _) = mk_runtime_manager_with_history_at(&mut *validator_store).await;
+    let genesis_pre_state = genesis_context
+        .genesis_block
+        .body
+        .state
+        .pre_state_hash
+        .clone();
+    let replayed_genesis = validator
+        .replay_block_from_consensus_data(&genesis_pre_state, &genesis_context.genesis_block, None)
+        .await
+        .unwrap();
+    assert_eq!(replayed_genesis, genesis_post_state);
+    let genesis_root = Blake2b256Hash::from_bytes_prost(&genesis_post_state);
+    assert!(validator.has_root(&genesis_root).unwrap());
+    assert!(!validator.has_root(&intermediate).unwrap());
+
+    let actual_post = validator
+        .replay_compute_state(
+            &genesis_post_state,
+            processed,
+            system_deploys,
+            &block_data,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(actual_post, expected_post);
+    assert!(validator.has_root(&intermediate).unwrap());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3565,7 +5454,7 @@ async fn bridge_query_survives_multi_parent_merge() {
         Some(genesis_state.clone()),
         Some(StateHash::default()),
         Some(validator.clone()),
-        Some(1),
+        Some(genesis_block.header.version),
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
@@ -3654,7 +5543,7 @@ async fn bridge_query_survives_multi_parent_merge() {
         Some(genesis_state.clone()),
         Some(StateHash::default()),
         Some(validator.clone()),
-        Some(1),
+        Some(genesis_block.header.version),
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
@@ -3702,7 +5591,7 @@ async fn bridge_query_survives_multi_parent_merge() {
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (merged_state, rejected, rejected_slashes) = compute_parents_post_state(
+    let (merged_state, rejected) = compute_parents_post_state(
         &block_store,
         parents,
         &snapshot_merge,
@@ -3719,14 +5608,6 @@ async fn bridge_query_survives_multi_parent_merge() {
         "Merge rejected deploys: {:?}",
         rejected
     );
-    // Non-slash merge scenario must surface an empty rejected_slashes list so
-    // the block creator's dedup step runs as a no-op.
-    assert!(
-        rejected_slashes.is_empty(),
-        "Merge rejected slashes unexpectedly populated: count={}",
-        rejected_slashes.len()
-    );
-
     // --- Query getNonce from merged state ---
     let get_nonce_rho = format!(
         r#"
@@ -3754,7 +5635,7 @@ in {{
         Some(merged_state.clone()),
         Some(StateHash::default()),
         Some(validator.clone()),
-        Some(1),
+        Some(genesis_block.header.version),
         Some(now_millis()),
         Some(vec![block_a.block_hash.clone(), block_b.block_hash.clone()]),
         Some(Vec::new()),
@@ -3956,7 +5837,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
             Some(genesis_state.clone()),
             Some(StateHash::default()),
             Some(validator.clone()),
-            Some(1),
+            Some(genesis_block.header.version),
             Some(now_millis()),
             Some(vec![genesis_hash.clone()]),
             Some(Vec::new()),
@@ -4022,7 +5903,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
             Some(genesis_state.clone()),
             Some(StateHash::default()),
             Some(validator.clone()),
-            Some(1),
+            Some(genesis_block.header.version),
             Some(now_millis()),
             Some(vec![genesis_hash.clone()]),
             Some(Vec::new()),
@@ -4175,7 +6056,11 @@ async fn concurrent_registry_inserts_should_not_conflict() {
                             if racing_channels.contains(&ch) {
                                 tracing::info!(
                                     "  A event[{}] COMM: consume_channels={:?}, produce_channels={:?}, peeks={:?}, persistent_consume={}",
-                                    idx, consume_channels, produce_channels, comm.peeks, comm.consume.persistent,
+                                    idx,
+                                    consume_channels,
+                                    produce_channels,
+                                    comm.peeks,
+                                    comm.consume.persistent,
                                 );
                             }
                         }
@@ -4263,7 +6148,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (merged_state, rejected, _rejected_slashes) = compute_parents_post_state(
+    let (merged_state, rejected) = compute_parents_post_state(
         &block_store,
         parents,
         &snapshot_merge,
@@ -4579,8 +6464,6 @@ async fn parallel_replay_determinism() {
                     &block_data,
                     None,
                     false,
-                    false, // strict_funding_enforcement (#13a)
-                    &[], // client_fuel_allocations (#13b)
                 )
                 .await;
 
@@ -4759,7 +6642,7 @@ new deployId(`rho:system:deployId`) in {
         Some(genesis_state.clone()),
         Some(StateHash::default()),
         Some(validator.clone()),
-        Some(1),
+        Some(genesis_block.header.version),
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
@@ -4816,7 +6699,7 @@ new deployId(`rho:system:deployId`) in {
         Some(genesis_state.clone()),
         Some(StateHash::default()),
         Some(validator.clone()),
-        Some(1),
+        Some(genesis_block.header.version),
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
@@ -4873,7 +6756,7 @@ new deployId(`rho:system:deployId`) in {
         Some(post_state_a.clone()),
         Some(StateHash::default()),
         Some(validator.clone()),
-        Some(1),
+        Some(genesis_block.header.version),
         Some(now_millis()),
         Some(vec![block_a.block_hash.clone()]),
         Some(Vec::new()),
@@ -4924,7 +6807,7 @@ new deployId(`rho:system:deployId`) in {
         Some(post_state_b.clone()),
         Some(StateHash::default()),
         Some(validator.clone()),
-        Some(1),
+        Some(genesis_block.header.version),
         Some(now_millis()),
         Some(vec![block_b.block_hash.clone()]),
         Some(Vec::new()),
@@ -4973,7 +6856,7 @@ new deployId(`rho:system:deployId`) in {
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (merged_state, rejected, _rejected_slashes) = compute_parents_post_state(
+    let (merged_state, rejected) = compute_parents_post_state(
         &block_store,
         vec![block_c.clone(), block_d.clone()],
         &snapshot_cd,
@@ -5069,17 +6952,15 @@ new deployId(`rho:system:deployId`) in {
 }
 
 // =====================================================================
-// Cost-Accounted Rho — Stage A: per-validator phlogiston wallet @W_v +
-// sysAuthToken-gated PoS!("mintPhlogiston", ...). (spec Appendix B; DR-13)
+// Cost-Accounted Rho — authenticated protocol mint into canonical SystemVault
+// custody.
 //
 // `mintPhlogiston(@validatorPk, @amount, @sysAuthToken, return)` is gated by
 // `sysAuthTokenOps!("check", ...)`: true iff `sysAuthToken` is a
 // `GSysAuthToken`, which is constructible ONLY by Rust system deploys via
 // `mk_sys_auth_token` (system_deploy.rs). On a valid token the contract mints
-// a MakeMint purse of `amount` and deposits it onto the validator's draw
-// wallet @W_v := @(*walletTag, validatorPk), then `return!(true)`; on an
-// invalid/absent token it deposits NOTHING and `return!((false,
-// "unauthorized mint"))`. These tests exercise both authorization outcomes.
+// `amount` into the vault derived from `validatorPk`, then `return!(true)`; on
+// an invalid token it changes no balance and returns an authorization error.
 // =====================================================================
 
 /// Minimal `SystemDeployTrait` that drives `PoS!("mintPhlogiston", ...)` with
@@ -5087,8 +6968,8 @@ new deployId(`rho:system:deployId`) in {
 /// validator pubkey bytes are injected via a dedicated fixed channel binding
 /// (`sys:casper:mintValidatorPk`) and forwarded as the `@validatorPk` argument.
 /// On success the contract returns the bare boolean `true`, so the deploy's
-/// `Output` is `RhoBoolean`. This is a TEST harness for the Stage A accept
-/// path — it is NOT the production epoch/bond mint deploy (a later stage).
+/// `Output` is `RhoBoolean`. This harness directly exercises the same
+/// authenticated PoS mint entry point used by epoch processing.
 struct MintPhlogistonDeploy {
     validator_pk: crypto::rust::public_key::PublicKey,
     amount: i64,
@@ -5160,18 +7041,17 @@ impl SystemDeployTrait for MintPhlogistonDeploy {
     }
 }
 
-/// ACCEPT path: a system deploy that holds a real `GSysAuthToken` mints into
-/// @W_v and the contract returns `true`. The success return is emitted in the
-/// SAME `for(purse <- purseCh){ @(*walletTag, validatorPk)!(*purse) |
-/// return!(true) }` block as the wallet deposit, so `true` is the observable
-/// witness that the MakeMint purse was deposited onto @W_v. (@W_v itself is
-/// built from the unforgeable private `walletTag` and so — by design — cannot
-/// be named or read from Rust, the same unforgeability that protects Σ⟦v⟧.)
+/// Accept path: a system deploy holding a real `GSysAuthToken` credits exactly
+/// the requested amount to the validator's canonical SystemVault.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn mintphlogiston_accepts_valid_sys_auth_token_and_deposits_to_wallet() {
+async fn mintphlogiston_accepts_valid_sys_auth_token_and_credits_canonical_vault() {
     with_runtime_manager(
         |runtime_manager, genesis_context, genesis_block| async move {
             let validator_pk = genesis_context.validator_pks()[0].clone();
+            let validator_address = VaultAddress::from_public_key(&validator_pk).unwrap();
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let balance_before =
+                system_vault_balance(&runtime_manager, &start_state, &validator_address).await;
 
             let runtime = runtime_manager.spawn_runtime().await;
             runtime
@@ -5185,28 +7065,30 @@ async fn mintphlogiston_accepts_valid_sys_auth_token_and_deposits_to_wallet() {
             let mut runtime_ops = RuntimeOps::new(runtime);
 
             let result = runtime_ops
-                .play_system_deploy(
-                    &genesis_block.body.state.post_state_hash,
-                    &mut MintPhlogistonDeploy {
-                        validator_pk,
-                        amount: 1_000,
-                        rand: Blake2b512Random::create_from_bytes(&[0xA1]),
-                    },
-                )
+                .play_system_deploy(&start_state, &mut MintPhlogistonDeploy {
+                    validator_pk: validator_pk.clone(),
+                    amount: 1_000,
+                    rand: Blake2b512Random::create_from_bytes(&[0xA1]),
+                })
                 .await
                 .expect("mintPhlogiston system deploy must play");
 
-            match result {
-                SystemDeployResult::PlaySucceeded { result, .. } => assert!(
-                    result,
-                    "an authorized mint (real GSysAuthToken) must return true \
-                     (and, co-located, deposit the purse onto @W_v)"
-                ),
+            let state_hash = match result {
+                SystemDeployResult::PlaySucceeded {
+                    state_hash, result, ..
+                } => {
+                    assert!(result, "an authorized mint must return true");
+                    state_hash
+                }
                 other => panic!(
                     "authorized mintPhlogiston must succeed as a system deploy; got {:?}",
                     std::mem::discriminant(&other)
                 ),
-            }
+            };
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &state_hash, &validator_address).await,
+                balance_before + 1_000
+            );
         },
     )
     .await
@@ -5216,8 +7098,8 @@ async fn mintphlogiston_accepts_valid_sys_auth_token_and_deposits_to_wallet() {
 /// REJECT path: an exploratory (user) deploy cannot bind the `sys:casper:*`
 /// fixed channels, so it cannot fabricate a `GSysAuthToken`. Passing any
 /// non-token value to `mintPhlogiston` drives the authorization check to
-/// false; the contract returns `(false, "unauthorized mint")` and deposits
-/// NOTHING onto @W_v. `play_exploratory_deploy` captures the data sent on the
+/// false; the contract returns `(false, "unauthorized mint")` and changes no
+/// vault balance. `play_exploratory_deploy` captures the data sent on the
 /// FIRST private name created in the term (our `return` channel).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mintphlogiston_rejects_forged_or_absent_sys_auth_token() {
@@ -5265,62 +7147,104 @@ async fn mintphlogiston_rejects_forged_or_absent_sys_auth_token() {
     .unwrap()
 }
 
-/// `@W_v := @(*walletTag, validatorPk)` determinism: the content-addressed
-/// channel `@(*tag, pk)` is identical regardless of the order in which the two
-/// references to it are constructed. We build a fixed private `tag`, then
-/// produce on `@(*tag, pk)` and consume on `@(*tag, pk)` derived through two
-/// independent (interleaved) construction orders; the consume firing proves
-/// both orders denote the SAME channel — the replay-stability property @W_v
-/// relies on. (Injectivity in `pk` is proved in WalletNaming.v
-/// `wallet_name_injective`; this exercises the runtime side.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn wallet_channel_derivation_is_order_independent() {
+async fn protocol_burn_debits_canonical_vault_and_rejects_overburn() {
     with_runtime_manager(
-        |runtime_manager, _genesis_context, genesis_block| async move {
-            // `return` is the FIRST private name (captured by exploratory
-            // deploy). `tag` models `walletTag`; `pk` models `validatorPk`.
-            // Two interleaved orders: order A produces FIRST then the consume
-            // is set up; order B sets up a second producer with the channel
-            // rebuilt independently. If `@(*tag, pk)` were not a deterministic
-            // function of (tag, pk), the second producer would land on a
-            // different channel and the join below could not see both.
-            let term = r#"
-                new return, tag, ackA, ackB in {
-                  // Build the SAME channel @(*tag, pk) two independent ways and
-                  // confirm a value produced via one is observable via the
-                  // other — i.e. the derivation is order/instance independent.
-                  @(*tag, "DEADBEEF".hexToBytes())!("A") |
-                  @(*tag, "DEADBEEF".hexToBytes())!("B") |
-                  for (@v1 <- @(*tag, "DEADBEEF".hexToBytes())) {
-                    for (@v2 <- @(*tag, "DEADBEEF".hexToBytes())) {
-                      // Both messages were delivered on the identical channel,
-                      // regardless of which producer/consumer pairing fired
-                      // first — the channel is a deterministic function of
-                      // (*tag, pk). Also confirm a DIFFERENT pk yields a
-                      // DIFFERENT channel (injectivity): a consume on
-                      // @(*tag, other_pk) must NOT see these messages.
-                      return!((true, [v1, v2]))
-                    }
-                  }
-                }"#
-            .to_string();
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let validator = genesis_context.validator_pks()[0].clone();
+            let address = VaultAddress::from_public_key(&validator).unwrap();
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let initial = system_vault_balance(&runtime_manager, &start_state, &address).await;
+            assert!(initial > 17);
 
-            let (results, _cost) = runtime_manager
+            let runtime = runtime_manager.spawn_runtime().await;
+            runtime
+                .set_block_data(BlockData {
+                    time_stamp: 0,
+                    block_number: 0,
+                    sender: validator.clone(),
+                    seq_num: 20,
+                })
+                .await;
+            let mut ops = RuntimeOps::new(runtime);
+            let mut burn = ProtocolBurnDeploy::new(
+                address.to_base58(),
+                17,
+                Blake2b512Random::create_from_bytes(&[0xB1]),
+            )
+            .unwrap();
+            let burned_state = match ops
+                .play_system_deploy(&start_state, &mut burn)
+                .await
+                .unwrap()
+            {
+                SystemDeployResult::PlaySucceeded { state_hash, .. } => state_hash,
+                SystemDeployResult::PlayFailed {
+                    processed_system_deploy,
+                } => panic!("authorized protocol burn failed: {processed_system_deploy:?}"),
+            };
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &burned_state, &address).await,
+                initial - 17
+            );
+
+            let overburn_runtime = runtime_manager.spawn_runtime().await;
+            overburn_runtime
+                .set_block_data(BlockData {
+                    time_stamp: 0,
+                    block_number: 0,
+                    sender: validator,
+                    seq_num: 21,
+                })
+                .await;
+            let mut overburn_ops = RuntimeOps::new(overburn_runtime);
+            let mut overburn = ProtocolBurnDeploy::new(
+                address.to_base58(),
+                initial - 16,
+                Blake2b512Random::create_from_bytes(&[0xB2]),
+            )
+            .unwrap();
+            assert!(matches!(
+                overburn_ops
+                    .play_system_deploy(&burned_state, &mut overburn)
+                    .await
+                    .unwrap(),
+                SystemDeployResult::PlayFailed { .. }
+            ));
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &burned_state, &address).await,
+                initial - 17
+            );
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn protocol_burn_rejects_forged_system_authority() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let address =
+                VaultAddress::from_public_key(&genesis_context.validator_pks()[0]).unwrap();
+            let term = format!(
+                r#"
+                new return, systemVaultCh, forgedToken,
+                    rl(`rho:registry:lookup`)
+                in {{
+                  rl!(`rho:vault:system`, *systemVaultCh) |
+                  for (@(_, SystemVault) <- systemVaultCh) {{
+                    @SystemVault!("protocolBurn", "{}", 1, *forgedToken, *return)
+                  }}
+                }}"#,
+                address.to_base58()
+            );
+            let (results, _) = runtime_manager
                 .play_exploratory_deploy(term, &genesis_block.body.state.post_state_hash, None)
                 .await
-                .expect("wallet-channel determinism term must execute");
-
-            assert!(
-                !results.is_empty(),
-                "the join over the two-order-built channel must fire and return a result"
-            );
-            let printed = format!("{:?}", results);
-            assert!(
-                printed.contains("true"),
-                "both producers must land on the identical content-addressed \
-                 channel @(*tag, pk) irrespective of construction order; got: {}",
-                printed
-            );
+                .unwrap();
+            assert!(!results.is_empty());
+            assert!(format!("{results:?}").contains("Unauthorized or invalid protocol burn"));
         },
     )
     .await

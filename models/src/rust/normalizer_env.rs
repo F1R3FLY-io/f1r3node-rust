@@ -190,6 +190,7 @@ mod tests {
                 valid_after_block_number: 0,
                 shard_id: "root".to_string(),
                 expiration_timestamp: None,
+                authority_presentations: Vec::new(),
             },
             pk: PublicKey::from_bytes(&[1, 2, 3, 4]),
             sig: Bytes::from(vec![5, 6, 7, 8]),
@@ -278,6 +279,7 @@ mod tests {
             valid_after_block_number: 0,
             shard_id: "root".to_string(),
             expiration_timestamp: None,
+            authority_presentations: Vec::new(),
         };
         let serialized = data.to_message().encode_to_vec();
         let hash = Signed::<DeployData>::signature_hash(&Secp256k1::name(), serialized);

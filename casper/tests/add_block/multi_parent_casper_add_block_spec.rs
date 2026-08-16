@@ -752,6 +752,9 @@ async fn multi_parent_casper_should_prepare_to_slash_a_block_that_includes_an_in
             cosigner_threshold: 0,
             pre_state_hash: Vec::<u8>::new().into(),
             post_state_hash: Vec::<u8>::new().into(),
+            authority_funding_certificate: None,
+            authority_cost_witness: None,
+            admission_status: Default::default(),
         })
         .collect();
 

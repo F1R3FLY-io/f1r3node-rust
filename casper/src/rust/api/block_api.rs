@@ -372,9 +372,7 @@ impl BlockAPI {
         engine_cell: &EngineCell,
         d: Signed<DeployData>,
         trigger_propose: &Option<Arc<ProposeFunction>>,
-        // D3 (DR-9, D.5): retained for API/caller signature stability and as the
-        // shard's gate margin upstream; NO LONGER an admission check here (the
-        // per-deploy `validate_phlo` was removed).
+        // Retained for API compatibility; authority reservation does not use it.
         _min_phlo_price: i64,
         is_node_read_only: bool,
         shard_id: &str,
@@ -511,10 +509,8 @@ impl BlockAPI {
                     Ok(())
                 }
             })
-            // D3 (DR-9, D.5): the per-deploy `validate_phlo` submission check is
-            // REMOVED — there is no phlo price/limit on a deploy. `min_phlo_price`
-            // is RETAINED only as the block-assembly gate's safety margin
-            // (acceptance.rs / block_creator.rs), not an API admission check.
+            // Deploys have no phlo price or limit; this endpoint does not apply a
+            // price admission check.
             .and_then(|_| {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -573,9 +569,7 @@ impl BlockAPI {
         engine_cell: &EngineCell,
         cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
         trigger_propose: &Option<Arc<ProposeFunction>>,
-        // D3 (DR-9, D.5): retained for API/caller signature stability and as the
-        // shard's gate margin upstream; NO LONGER an admission check here (the
-        // per-deploy `validate_phlo` was removed).
+        // Retained for API compatibility; authority reservation does not use it.
         _min_phlo_price: i64,
         is_node_read_only: bool,
         shard_id: &str,
@@ -1950,7 +1944,7 @@ impl BlockAPI {
                             .iter()
                             .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
                             .collect();
-                        let (merged_state_hash, _rejected, _rejected_slashes) =
+                        let (merged_state_hash, _rejected) =
                             crate::rust::util::rholang::interpreter_util::compute_parents_post_state(
                                 casper.block_store(),
                                 parents.clone(),

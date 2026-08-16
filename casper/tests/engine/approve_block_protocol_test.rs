@@ -636,6 +636,37 @@ async fn should_send_unapproved_block_message_to_peers_at_every_interval() {
 
 #[tokio::test]
 #[serial]
+async fn should_wait_for_many_intervals_without_recursive_growth() {
+    let secp256k1 = Secp256k1;
+    let key_pairs = vec![secp256k1.new_key_pair()];
+    let fixture = TestFixture::new(
+        2,
+        Duration::from_secs(60),
+        Duration::from_micros(1),
+        key_pairs,
+    )
+    .await;
+
+    let protocol = fixture.protocol.clone();
+    let protocol_handle = tokio::spawn(async move {
+        let _ = protocol.run().await;
+    });
+
+    assert!(
+        wait_for(
+            || fixture.transport.request_count() >= 512,
+            Duration::from_secs(5)
+        )
+        .await,
+        "approval protocol did not complete 512 iterative broadcast rounds"
+    );
+    assert!(!protocol_handle.is_finished());
+
+    abort_protocol(protocol_handle).await;
+}
+
+#[tokio::test]
+#[serial]
 async fn should_send_approved_block_message_to_peers_once_approved_block_is_created() {
     let secp256k1 = Secp256k1;
     let key_pair = secp256k1.new_key_pair();

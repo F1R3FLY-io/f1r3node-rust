@@ -13,10 +13,11 @@ use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    BindPattern, Bundle, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus,
-    EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ETuple, EVar,
-    EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, ListParWithRandom, Match, MatchCase,
-    New, Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
+    BindPattern, Bundle, CostAuthority, CostSignedTerm, CostStack, EAnd, EDiv, EEq, EGt, EGte,
+    EList, ELt, ELte, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap,
+    EPercentPercent, EPlus, EPlusPlus, ETuple, EVar, EZipper, Expr, GUnforgeable, If, KeyValuePair,
+    ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom, Receive, ReceiveBind, Send,
+    TaggedContinuation, Var,
 };
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
@@ -33,9 +34,14 @@ use models::rust::utils::{
 };
 use prost::Message;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
+use rspace_plus_plus::rspace::trace::event::Produce;
 use rspace_plus_plus::rspace::util::unpack_option_with_peek;
 use tokio::sync::RwLock;
 
+use super::accounting::authority::{
+    cost_region, cost_signature_to_sig, extend_authority, sig_to_cost_signature,
+    stack_transfer_event_id,
+};
 use super::accounting::costs::{
     bigint_comparison_cost, bigint_division_cost, bigint_modulo_cost, bigint_multiplication_cost,
     bigint_negation_cost, bigint_subtraction_cost, bigint_sum_cost, bigrat_comparison_cost,
@@ -59,10 +65,9 @@ use super::metrics_constants::{
     REDUCER_EVAL_SEND_CALLS_METRIC, REDUCER_EVAL_SEND_TIME_NS_METRIC, RHOLANG_METRICS_SOURCE,
 };
 use super::rho_runtime::RhoISpace;
-use super::rho_type::{RhoExpression, RhoUnforgeable};
 use super::substitute::Substitute;
 use super::unwrap_option_safe;
-use super::util::GeneratedMessage;
+use super::util::{allocate_new_bindings, evaluation_random, evaluation_terms, GeneratedMessage};
 use crate::rust::interpreter::accounting::costs::{
     add_cost, bytes_to_hex_cost, diff_cost, hex_to_bytes_cost, interpolate_cost, keys_method_cost,
     length_method_cost, lookup_cost, match_eval_cost, nth_method_call_cost, remove_cost,
@@ -162,7 +167,23 @@ impl DebruijnInterpreter {
         >,
     > {
         Box::pin(StackGrowingFuture {
-            inner: self.eval_inner(par, env, rand),
+            inner: self.eval_inner(par, env, rand, CostAuthority::default()),
+        })
+    }
+
+    pub(crate) fn eval_with_authority<'a>(
+        &'a self,
+        par: Par,
+        env: &'a Env<Par>,
+        rand: Blake2b512Random,
+        authority: CostAuthority,
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'a,
+        >,
+    > {
+        Box::pin(StackGrowingFuture {
+            inner: self.eval_inner(par, env, rand, authority),
         })
     }
 
@@ -171,68 +192,14 @@ impl DebruijnInterpreter {
         par: Par,
         env: &Env<Par>,
         rand: Blake2b512Random,
+        authority: CostAuthority,
     ) -> Result<(), InterpreterError> {
-        let terms: Vec<GeneratedMessage> = vec![
-            par.sends
-                .into_iter()
-                .map(GeneratedMessage::Send)
-                .collect::<Vec<_>>(),
-            par.receives
-                .into_iter()
-                .map(GeneratedMessage::Receive)
-                .collect(),
-            par.news.into_iter().map(GeneratedMessage::New).collect(),
-            par.matches
-                .into_iter()
-                .map(GeneratedMessage::Match)
-                .collect(),
-            par.conditionals
-                .into_iter()
-                .map(GeneratedMessage::If)
-                .collect(),
-            par.bundles
-                .into_iter()
-                .map(GeneratedMessage::Bundle)
-                .collect(),
-            par.exprs
-                .into_iter()
-                .filter(|expr| match &expr.expr_instance {
-                    Some(expr_instance) => match expr_instance {
-                        ExprInstance::EVarBody(_) => true,
-                        ExprInstance::EMethodBody(_) => true,
-                        _ => false,
-                    },
-                    None => false,
-                })
-                .collect::<Vec<Expr>>()
-                .into_iter()
-                .map(GeneratedMessage::Expr)
-                .collect(),
-        ]
-        .into_iter()
-        .filter(|vec| !vec.is_empty())
-        .flatten()
-        .collect();
-        fn split(
-            id: i32,
-            terms: &Vec<GeneratedMessage>,
-            rand: Blake2b512Random,
-        ) -> Blake2b512Random {
-            if terms.len() == 1 {
-                rand
-            } else if terms.len() > 256 {
-                rand.split_short(id.try_into().unwrap())
-            } else {
-                rand.split_byte(id.try_into().unwrap())
-            }
-        }
-
-        let term_split_limit = i16::MAX;
-        if terms.len() > term_split_limit.try_into().unwrap() {
+        let terms = evaluation_terms(&par);
+        if terms.len() > i16::MAX as usize {
             Err(InterpreterError::ReduceError(format!(
                 "The number of terms in the Par is {}, which exceeds the limit of {}",
                 terms.len(),
-                term_split_limit
+                i16::MAX
             )))
         } else {
             // Collect errors from all parallel execution paths (pars)
@@ -252,10 +219,17 @@ impl DebruijnInterpreter {
                     let self_clone = self.with_metering_child(index);
                     let term_clone = term.clone();
                     let env_clone = env.clone();
-                    let rand_split = split(index.try_into().unwrap(), &terms, rand.clone());
+                    let authority_clone = authority.clone();
+                    let rand_split = evaluation_random(&rand, index, terms.len())
+                        .expect("term count and index were validated");
                     Box::pin(async move {
                         self_clone
-                            .generated_message_eval(&term_clone, &env_clone, rand_split)
+                            .generated_message_eval(
+                                &term_clone,
+                                &env_clone,
+                                rand_split,
+                                &authority_clone,
+                            )
                             .await
                     })
                         as Pin<
@@ -403,6 +377,7 @@ impl DebruijnInterpreter {
         persistent: bool,
         peek: bool,
         guard: Option<Par>,
+        authority: CostAuthority,
     ) -> Pin<
         Box<
             dyn std::future::Future<Output = Result<DispatchType, InterpreterError>>
@@ -411,7 +386,7 @@ impl DebruijnInterpreter {
         >,
     > {
         Box::pin(StackGrowingFuture {
-            inner: self.consume_inner(binds, body, persistent, peek, guard),
+            inner: self.consume_inner(binds, body, persistent, peek, guard, authority),
         })
     }
 
@@ -422,6 +397,7 @@ impl DebruijnInterpreter {
         persistent: bool,
         peek: bool,
         guard: Option<Par>,
+        authority: CostAuthority,
     ) -> Result<DispatchType, InterpreterError> {
         let (patterns, sources): (Vec<BindPattern>, Vec<Par>) = binds.clone().into_iter().unzip();
 
@@ -438,6 +414,7 @@ impl DebruijnInterpreter {
                 TaggedContinuation {
                     tagged_cont: Some(TaggedCont::ParBody(body.clone())),
                     guard: guard.clone(),
+                    cost_authority: (!authority.regions.is_empty()).then_some(authority.clone()),
                 },
                 persistent,
                 if peek {
@@ -458,6 +435,7 @@ impl DebruijnInterpreter {
             is_replay,
             Vec::new(),
             guard,
+            authority,
         )
         .await
     }
@@ -595,6 +573,7 @@ impl DebruijnInterpreter {
         is_replay: bool,
         previous_output: Vec<Vec<u8>>,
         guard: Option<Par>,
+        authority: CostAuthority,
     ) -> Result<DispatchType, InterpreterError> {
         let previous_output_as_par = previous_output
             .into_iter()
@@ -618,6 +597,7 @@ impl DebruijnInterpreter {
                     let peek_flag = peek;
                     let is_replay_flag = is_replay;
                     let guard_clone = guard.clone();
+                    let authority_clone = authority.clone();
 
                     let mut futures: Vec<
                         Pin<
@@ -655,6 +635,7 @@ impl DebruijnInterpreter {
                                 persistent_flag,
                                 peek_flag,
                                 guard_clone,
+                                authority_clone,
                             )
                             .await
                     })
@@ -914,13 +895,14 @@ impl DebruijnInterpreter {
         term: &GeneratedMessage,
         env: &Env<Par>,
         rand: Blake2b512Random,
+        authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
         match term {
             GeneratedMessage::Send(term) => {
                 metrics::counter!(REDUCER_EVAL_SEND_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(1);
                 let start = std::time::Instant::now();
-                let result = self.eval_send(term, env, rand).await;
+                let result = self.eval_send(term, env, rand, authority).await;
                 metrics::counter!(REDUCER_EVAL_SEND_TIME_NS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(start.elapsed().as_nanos() as u64);
                 result
@@ -929,7 +911,7 @@ impl DebruijnInterpreter {
                 metrics::counter!(REDUCER_EVAL_RECEIVE_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(1);
                 let start = std::time::Instant::now();
-                let result = self.eval_receive(term, env, rand).await;
+                let result = self.eval_receive(term, env, rand, authority).await;
                 metrics::counter!(REDUCER_EVAL_RECEIVE_TIME_NS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(start.elapsed().as_nanos() as u64);
                 result
@@ -938,7 +920,7 @@ impl DebruijnInterpreter {
                 metrics::counter!(REDUCER_EVAL_NEW_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(1);
                 let start = std::time::Instant::now();
-                let result = self.eval_new(term, env.clone(), rand).await;
+                let result = self.eval_new(term, env.clone(), rand, authority).await;
                 metrics::counter!(REDUCER_EVAL_NEW_TIME_NS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(start.elapsed().as_nanos() as u64);
                 result
@@ -947,18 +929,25 @@ impl DebruijnInterpreter {
                 metrics::counter!(REDUCER_EVAL_MATCH_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(1);
                 let start = std::time::Instant::now();
-                let result = self.eval_match(term, env, rand).await;
+                let result = self.eval_match(term, env, rand, authority).await;
                 metrics::counter!(REDUCER_EVAL_MATCH_TIME_NS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(start.elapsed().as_nanos() as u64);
                 result
             }
-            GeneratedMessage::If(term) => self.eval_if(term, env, rand).await,
-            GeneratedMessage::Bundle(term) => self.eval_bundle(term, env, rand).await,
+            GeneratedMessage::If(term) => self.eval_if(term, env, rand, authority).await,
+            GeneratedMessage::Bundle(term) => self.eval_bundle(term, env, rand, authority).await,
+            GeneratedMessage::CostSignedTerm(term) => {
+                self.eval_cost_signed_term(term, env, rand, authority).await
+            }
+            GeneratedMessage::CostStack(term) => {
+                self.eval_cost_stack(term, env, rand, authority).await
+            }
             GeneratedMessage::Expr(term) => match &term.expr_instance {
                 Some(expr_instance) => match expr_instance {
                     ExprInstance::EVarBody(e) => {
                         let res = self.eval_var(&e.clone().v.unwrap(), env)?;
-                        self.eval(res, env, rand).await
+                        self.eval_with_authority(res, env, rand, authority.clone())
+                            .await
                     }
                     ExprInstance::EMethodBody(e) => {
                         let res = self.eval_expr_to_par(
@@ -967,7 +956,8 @@ impl DebruijnInterpreter {
                             },
                             env,
                         )?;
-                        self.eval(res, env, rand).await
+                        self.eval_with_authority(res, env, rand, authority.clone())
+                            .await
                     }
                     other => Err(InterpreterError::BugFoundError(format!(
                         "Undefined term: {:?}",
@@ -998,11 +988,20 @@ impl DebruijnInterpreter {
         send: &Send,
         env: &Env<Par>,
         rand: Blake2b512Random,
+        authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
-        // D3 (DR-9, OD-3): a send is a token-consuming COMM — the consensus
-        // cost unit (one token per COMM). `send_eval_cost` is the diagnostic
-        // weight; only the COMM count gates consensus.
-        self.metering.reserve_comm(send_eval_cost())?;
+        self.metering.reserve_primitive(send_eval_cost())?;
+        let authority =
+            if authority.regions.is_empty() && self.metering.budget().has_comm_accounting_scope() {
+                let signature = sig_to_cost_signature(&self.metering.budget().signature())
+                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                let region = cost_region(&signature, &rand.to_bytes(), 0)
+                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                extend_authority(authority, region)
+                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+            } else {
+                authority.clone()
+            };
         let eval_chan = self.eval_expr(&unwrap_option_safe(send.chan.clone())?, env)?;
         let sub_chan = self.substitute.substitute_and_charge(&eval_chan, 0, env)?;
         let unbundled = match single_bundle(&sub_chan) {
@@ -1018,12 +1017,6 @@ impl DebruijnInterpreter {
             None => sub_chan,
         };
 
-        // W1 Phase 3: per-redex located-stack attribution. The COMM was already
-        // charged (scalar, to the envelope) above; this records the per-lane VIEW
-        // if the resolved channel is a signer supply channel `Σ⟦sᵢ⟧`. No-op on the
-        // single-signer fast path (gated by `any_signed_regions`).
-        self.metering.note_channel_lane(&unbundled);
-
         let subst_data = send
             .data
             .iter()
@@ -1038,6 +1031,8 @@ impl DebruijnInterpreter {
             ListParWithRandom {
                 pars: subst_data,
                 random_state: rand.to_bytes(),
+                cost_authority: (!authority.regions.is_empty()).then_some(authority),
+                cost_stack: None,
             },
             send.persistent,
         )
@@ -1050,11 +1045,56 @@ impl DebruijnInterpreter {
         receive: &Receive,
         env: &Env<Par>,
         rand: Blake2b512Random,
+        authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
-        // D3 (DR-9, OD-3): a receive is a token-consuming COMM — the consensus
-        // cost unit (one token per COMM). `receive_eval_cost` is the diagnostic
-        // weight; only the COMM count gates consensus.
-        self.metering.reserve_comm(receive_eval_cost())?;
+        self.metering.reserve_primitive(receive_eval_cost())?;
+        let entropy = rand.to_bytes();
+        let signed_binds = receive
+            .binds
+            .iter()
+            .filter(|bind| bind.cost_signature.is_some())
+            .count();
+        if signed_binds != 0 && signed_binds != receive.binds.len() {
+            return Err(InterpreterError::ReduceError(
+                "cost-accounting: a join must sign either every receive clause or none".to_string(),
+            ));
+        }
+        let authority = if authority.regions.is_empty()
+            && signed_binds == 0
+            && self.metering.budget().has_comm_accounting_scope()
+        {
+            let signature = sig_to_cost_signature(&self.metering.budget().signature())
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+            let region = cost_region(&signature, &entropy, 0)
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+            extend_authority(authority, region)
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+        } else {
+            authority.clone()
+        };
+        let receive_authority =
+            receive
+                .binds
+                .iter()
+                .enumerate()
+                .try_fold(authority, |authority, (index, bind)| {
+                    match bind.cost_signature.as_ref() {
+                        Some(signature) => {
+                            let signature = self.substitute.substitute_cost_signature(
+                                signature.clone(),
+                                0,
+                                env,
+                            )?;
+                            let region = cost_region(&signature, &entropy, (index + 1) as u32)
+                                .map_err(|error| {
+                                    InterpreterError::ReduceError(error.to_string())
+                                })?;
+                            extend_authority(&authority, region)
+                                .map_err(|error| InterpreterError::ReduceError(error.to_string()))
+                        }
+                        None => Ok(authority),
+                    }
+                })?;
 
         // Optional `where`-clause guard. Substituted at depth=1 so any
         // variables in scope at the receive site (but not pattern-bound)
@@ -1092,15 +1132,6 @@ impl DebruijnInterpreter {
             })
             .collect::<Result<Vec<_>, InterpreterError>>()?;
 
-        // W1 Phase 3: per-redex located-stack attribution. A receive is ONE COMM
-        // (already charged scalar to the envelope above); record the per-lane VIEW
-        // keyed on the FIRST bind's resolved source channel — the SAME bind
-        // `delta_sigma::demand_by_sig` attributes on, so the static dual and the
-        // runtime agree COMM-for-COMM. No-op on the single-signer fast path.
-        if let Some((_, first_channel)) = binds.first() {
-            self.metering.note_channel_lane(first_channel);
-        }
-
         // TODO: Allow for the environment to be stored with the body in the Tuplespace - OLD
         let subst_body = self.substitute.substitute_no_sort_and_charge(
             receive.body.as_ref().unwrap(),
@@ -1117,6 +1148,7 @@ impl DebruijnInterpreter {
             receive.persistent,
             receive.peek,
             subst_guard,
+            receive_authority,
         )
         .await?;
         Ok(())
@@ -1160,6 +1192,7 @@ impl DebruijnInterpreter {
         mat: &Match,
         env: &Env<Par>,
         rand: Blake2b512Random,
+        authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
         fn add_to_env(env: &Env<Par>, free_map: BTreeMap<i32, Par>, free_count: i32) -> Env<Par> {
             (0..free_count).fold(env.clone(), |mut acc, e| {
@@ -1221,13 +1254,14 @@ impl DebruijnInterpreter {
                                         continue;
                                     }
 
-                                    self.eval(
+                                    self.eval_with_authority(
                                         single_case
                                             .source
                                             .clone()
                                             .expect("MatchCase.source: protobuf no_box invariant"),
                                         &case_env,
                                         rand,
+                                        authority.clone(),
                                     )
                                     .await?;
 
@@ -1262,6 +1296,7 @@ impl DebruijnInterpreter {
         conditional: &If,
         env: &Env<Par>,
         rand: Blake2b512Random,
+        authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
         // D3 (DR-9, OD-3): `if` is a non-COMM structural reduction —
         // DIAGNOSTIC only (metered for fidelity, 0 toward consensus cost).
@@ -1279,24 +1314,26 @@ impl DebruijnInterpreter {
 
         match extract_bool(&subst_cond) {
             Some(true) => {
-                self.eval(
+                self.eval_with_authority(
                     conditional
                         .if_true
                         .clone()
                         .expect("If.if_true: normalizer post-condition"),
                     env,
                     rand,
+                    authority.clone(),
                 )
                 .await
             }
             Some(false) => {
-                self.eval(
+                self.eval_with_authority(
                     conditional
                         .if_false
                         .clone()
                         .expect("If.if_false: normalizer post-condition"),
                     env,
                     rand,
+                    authority.clone(),
                 )
                 .await
             }
@@ -1316,98 +1353,23 @@ impl DebruijnInterpreter {
         new: &New,
         env: Env<Par>,
         mut rand: Blake2b512Random,
+        authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
-        let mut alloc = |count: usize, urns: Vec<String>| {
-            let simple_news =
-                (0..(count - urns.len()))
-                    .into_iter()
-                    .fold(env.clone(), |mut _env: Env<Par>, _| {
-                        let addr: Par = Par::default().with_unforgeables(vec![GUnforgeable {
-                            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
-                                id: rand.next().iter().map(|&x| x as u8).collect::<Vec<u8>>(),
-                            })),
-                        }]);
-                        _env.put(addr)
-                    });
-
-            let add_urn = |new_env: &mut Env<Par>, urn: String| {
-                if !self.urn_map.contains_key(&urn) {
-                    // TODO: Injections (from normalizer) are not used currently, see [[NormalizerEnv]].
-                    // If `urn` can't be found in `urnMap`, it must be referencing an injection - OLD
-                    match new.injections.get(&urn) {
-                        Some(p) => {
-                            if let Some(gunf) = RhoUnforgeable::unapply(p) {
-                                if let Some(instance) = gunf.unf_instance {
-                                    Ok(new_env.put(Par::default().with_unforgeables(vec![
-                                        GUnforgeable {
-                                            unf_instance: Some(instance),
-                                        },
-                                    ])))
-                                } else {
-                                    Err(InterpreterError::BugFoundError(
-                                        "unf_instance field is None".to_string(),
-                                    ))
-                                }
-                            } else if let Some(expr) = RhoExpression::unapply(p) {
-                                if let Some(instance) = expr.expr_instance {
-                                    Ok(new_env.put(Par::default().with_exprs(vec![Expr {
-                                        expr_instance: Some(instance),
-                                    }])))
-                                } else {
-                                    Err(InterpreterError::BugFoundError(
-                                        "expr_instance field is None".to_string(),
-                                    ))
-                                }
-                            } else {
-                                Err(InterpreterError::BugFoundError(
-                                    "invalid injection".to_string(),
-                                ))
-                            }
-                        }
-                        None => Err(InterpreterError::BugFoundError(format!(
-                            "No value set for {}. This is a bug in the normalizer or on the path from it.",
-                            urn
-                        ))),
-                    }
-                } else {
-                    match self.urn_map.get(&urn) {
-                        Some(p) => {
-                            if urn == "rho:system:bitmaskMergeableTag" {
-                                use prost::Message;
-                                let bytes = p.encode_to_vec();
-                                let hex: String =
-                                    bytes.iter().map(|b| format!("{:02x}", b)).collect();
-                                tracing::info!(
-                                    target: "f1r3fly.merge.tag_check.validation",
-                                    "URI lookup at deploy: rho:system:bitmaskMergeableTag -> Par hex={}",
-                                    hex,
-                                );
-                            }
-                            Ok(new_env.put(p.clone()))
-                        }
-                        None => Err(InterpreterError::ReduceError(format!(
-                            "Unknown urn for new: {}",
-                            urn
-                        ))),
-                    }
-                }
-            };
-
-            urns.iter().try_fold(simple_news, |mut acc, urn| {
-                add_urn(&mut acc, urn.to_string())
-            })
-        };
-
         // D3 (DR-9, OD-3): `new` (name allocation) is a non-COMM structural
         // reduction — DIAGNOSTIC only (metered for fidelity, 0 toward the
         // consensus consumed cost). §7.4 re-pins 9→8 precisely because the
         // `new` no longer counts toward the per-COMM consensus cost.
         self.metering
             .reserve_reduction(new_bindings_cost(new.bind_count as i64))?;
-        match alloc(new.bind_count as usize, new.uri.clone()) {
+        match allocate_new_bindings(new, &env, &mut rand, &self.urn_map) {
             Ok(env) => {
-                self.eval(unwrap_option_safe(new.p.clone())?, &env, rand)
-                    .await
+                self.eval_with_authority(
+                    unwrap_option_safe(new.p.clone())?,
+                    &env,
+                    rand,
+                    authority.clone(),
+                )
+                .await
             }
             Err(e) => Err(e),
         }
@@ -1438,9 +1400,102 @@ impl DebruijnInterpreter {
         bundle: &Bundle,
         env: &Env<Par>,
         rand: Blake2b512Random,
+        authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
-        self.eval(unwrap_option_safe(bundle.body.clone())?, env, rand)
+        self.eval_with_authority(
+            unwrap_option_safe(bundle.body.clone())?,
+            env,
+            rand,
+            authority.clone(),
+        )
+        .await
+    }
+
+    async fn eval_cost_signed_term(
+        &self,
+        term: &CostSignedTerm,
+        env: &Env<Par>,
+        rand: Blake2b512Random,
+        authority: &CostAuthority,
+    ) -> Result<(), InterpreterError> {
+        let signature = self.substitute.substitute_cost_signature(
+            unwrap_option_safe(term.signature.clone())?,
+            0,
+            env,
+        )?;
+        let region = cost_region(&signature, &rand.to_bytes(), 0)
+            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        let authority = extend_authority(authority, region)
+            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        self.eval_with_authority(unwrap_option_safe(term.body.clone())?, env, rand, authority)
             .await
+    }
+
+    async fn eval_cost_stack(
+        &self,
+        stack: &CostStack,
+        env: &Env<Par>,
+        rand: Blake2b512Random,
+        authority: &CostAuthority,
+    ) -> Result<(), InterpreterError> {
+        let stack = CostStack {
+            cells: stack
+                .cells
+                .iter()
+                .cloned()
+                .map(|signature| self.substitute.substitute_cost_signature(signature, 0, env))
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        let head = stack.cells.first().ok_or_else(|| {
+            InterpreterError::ReduceError("cost-accounting: empty token stack".to_string())
+        })?;
+        for cell in &stack.cells {
+            if cost_signature_to_sig(cell)
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+                == super::accounting::Sig::Unit
+            {
+                return Err(InterpreterError::ReduceError(
+                    "cost-accounting: unit cannot be stored as a token-stack cell".to_string(),
+                ));
+            }
+        }
+        let signature = cost_signature_to_sig(head)
+            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        let authority =
+            if authority.regions.is_empty() && self.metering.budget().has_comm_accounting_scope() {
+                let signature = sig_to_cost_signature(&self.metering.budget().signature())
+                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                let region = cost_region(&signature, &rand.to_bytes(), 0)
+                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                extend_authority(authority, region)
+                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+            } else {
+                authority.clone()
+            };
+        let channel = super::accounting::SignatureChannel::from_sig(&signature).par;
+        let datum = ListParWithRandom {
+            pars: Vec::new(),
+            random_state: rand.to_bytes(),
+            cost_authority: None,
+            cost_stack: Some(stack),
+        };
+        let produce_hash: [u8; 32] = Produce::create(&channel, &datum, false)
+            .hash
+            .bytes()
+            .try_into()
+            .expect("RSpace produce hash length");
+        let identities = (0..datum.cost_stack.as_ref().expect("cost stack").cells.len())
+            .map(|cell_index| stack_transfer_event_id(&produce_hash, cell_index as u64))
+            .collect::<Vec<_>>();
+        let cells = datum.cost_stack.as_ref().expect("cost stack").cells.clone();
+        self.metering
+            .budget()
+            .reserve_stack_transfer_authority_identities(&identities, &authority)?;
+        self.produce(channel, datum, false).await?;
+        self.metering
+            .budget()
+            .record_authority_stack_birth(produce_hash, cells)?;
+        Ok(())
     }
 
     // Public here for testing purposes

@@ -86,7 +86,7 @@ impl<'de> Deserialize<'de> for Box<dyn SignaturesAlg> {
             where E: de::Error {
                 match value {
                     "secp256k1" => Ok(Box::new(Secp256k1)),
-                    "secp256k1-eth" => Ok(Box::new(Secp256k1Eth)),
+                    Secp256k1Eth::NAME | Secp256k1Eth::LEGACY_NAME => Ok(Box::new(Secp256k1Eth)),
                     #[cfg(feature = "schnorr_secp256k1_experimental")]
                     "schnorr-secp256k1" => Ok(Box::new(SchnorrSecp256k1)),
                     #[cfg(feature = "schnorr_secp256k1_experimental")]
@@ -111,12 +111,29 @@ impl SignaturesAlgFactory {
             // https://rchain.atlassian.net/browse/RCHAIN-3560
             // case Ed25519.name => Some(Ed25519)
             "secp256k1" => Some(Box::new(Secp256k1)),
-            "secp256k1-eth" => Some(Box::new(Secp256k1Eth)),
+            Secp256k1Eth::NAME | Secp256k1Eth::LEGACY_NAME => Some(Box::new(Secp256k1Eth)),
             #[cfg(feature = "schnorr_secp256k1_experimental")]
             "schnorr-secp256k1" => Some(Box::new(SchnorrSecp256k1)),
             #[cfg(feature = "schnorr_secp256k1_experimental")]
             "frost-secp256k1" => Some(Box::new(FrostSecp256k1)),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Secp256k1Eth, SignaturesAlgFactory};
+
+    #[test]
+    fn secp256k1_eth_canonical_name_roundtrips_through_factory() {
+        let algorithm = SignaturesAlgFactory::apply(Secp256k1Eth::NAME).unwrap();
+        assert_eq!(algorithm.name(), Secp256k1Eth::NAME);
+    }
+
+    #[test]
+    fn secp256k1_eth_legacy_name_decodes_to_canonical_name() {
+        let algorithm = SignaturesAlgFactory::apply(Secp256k1Eth::LEGACY_NAME).unwrap();
+        assert_eq!(algorithm.name(), Secp256k1Eth::NAME);
     }
 }

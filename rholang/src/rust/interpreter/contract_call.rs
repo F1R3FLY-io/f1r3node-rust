@@ -47,9 +47,10 @@ impl ContractCall {
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Option<(Producer, bool, Vec<Par>, Vec<Par>)> {
         if contract_args.0.len() == 1 {
-            let (args, rand, is_replay, previous) = (
+            let (args, rand, authority, is_replay, previous) = (
                 contract_args.0[0].pars.clone(),
                 contract_args.0[0].random_state.clone(),
+                contract_args.0[0].cost_authority.clone(),
                 contract_args.1,
                 contract_args.2,
             );
@@ -59,6 +60,7 @@ impl ContractCall {
             let produce = Box::new(move |values: &[Par], ch: &Par| {
                 let space = space.clone();
                 let rand = rand.clone();
+                let authority = authority.clone();
                 // clone inputs locally to satisfy ownership of underlying APIs
                 let values_vec: Vec<Par> = values.to_vec();
                 let ch_cloned: Par = ch.clone();
@@ -69,6 +71,8 @@ impl ContractCall {
                             ListParWithRandom {
                                 pars: values_vec,
                                 random_state: rand,
+                                cost_authority: authority,
+                                cost_stack: None,
                             },
                             false,
                         )

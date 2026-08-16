@@ -18,11 +18,22 @@
 //! the Rust glue + wire format).
 
 use casper::rust::genesis::contracts::standard_deploys;
+use casper::rust::rholang::runtime::RuntimeOps;
+use casper::rust::util::construct_deploy;
 use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::registry::registry::Registry;
+use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+use rholang::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+use crate::util::rholang::resources::with_runtime_manager;
+
+const CAPABILITIES_REGISTRY_SHORTHAND_URI: &str =
+    "rho:id:bm117qf6d3j7z8mhcgr86ezrwf1cgmjfjhyoiuyjxhiqpt6q3wrhj1";
 
 #[test]
 fn capabilities_registry_pubkey_resolves_to_deterministic_uri() {
@@ -43,6 +54,9 @@ fn capabilities_registry_pubkey_resolves_to_deterministic_uri() {
     let uri2 = Registry::build_uri(&hash2);
     assert_eq!(uri1, uri2, "URI derivation must be deterministic");
     assert!(uri1.starts_with("rho:id:"), "URI must use rho:id: prefix");
+    assert_eq!(uri1, CAPABILITIES_REGISTRY_SHORTHAND_URI);
+    assert!(casper::rust::genesis::contracts::embedded_rho::REGISTRY
+        .contains(CAPABILITIES_REGISTRY_SHORTHAND_URI));
 }
 
 #[test]
@@ -255,4 +269,64 @@ fn capabilities_registry_rhox_template_contains_all_four_rpcs() {
         template.contains("CapabilitiesRegistry"),
         "must use canonical contract name"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn capabilities_registry_shorthand_registers_and_invokes_a_bounded_lollipop() {
+    with_runtime_manager(
+        |runtime_manager, _genesis_context, genesis_block| async move {
+            let source = r#"
+            new return, rl(`rho:registry:lookup`), capabilitiesCh,
+                deployerId(`rho:system:deployerId`), transformer,
+                sourceCh, registerCh, invokeCh in {
+              contract transformer(fromCh, toCh) = {
+                for (@value <- fromCh) { toCh!(value + 1) }
+              } |
+              rl!(`rho:system:capabilities`, *capabilitiesCh) |
+              for (@(_, Capabilities) <- capabilitiesCh) {
+                @Capabilities!(
+                  "register",
+                  "01".hexToBytes(),
+                  "02".hexToBytes(),
+                  bundle+{*transformer},
+                  1,
+                  *deployerId,
+                  *registerCh
+                ) |
+                for (@(true, handle) <- registerCh) {
+                  sourceCh!(41) |
+                  @Capabilities!("invoke", handle, *sourceCh, *invokeCh) |
+                  for (@(true, value) <- invokeCh) { return!(value) }
+                }
+              }
+            }
+            "#;
+            Compiler::source_to_adt(source).unwrap();
+            let deploy = construct_deploy::source_deploy_now_full(
+                source.to_string(),
+                Some(500_000),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let runtime = runtime_manager.spawn_runtime().await;
+            let mut runtime_ops = RuntimeOps::new(runtime);
+            runtime_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(
+                    &genesis_block.body.state.post_state_hash,
+                ))
+                .await
+                .unwrap();
+            let results = runtime_ops
+                .capture_results(&genesis_block.body.state.post_state_hash, &deploy)
+                .await
+                .unwrap();
+            assert_eq!(results, vec![ParBuilderUtil::mk_term("42").unwrap()]);
+        },
+    )
+    .await
+    .unwrap();
 }

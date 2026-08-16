@@ -39,6 +39,18 @@ pub fn sub_pars(
         max.bundles as isize,
         par.bundles.len() as isize - min_prune.bundles as isize,
     );
+    let conditional_max = std::cmp::min(
+        max.conditionals as isize,
+        par.conditionals.len() as isize - min_prune.conditionals as isize,
+    );
+    let cost_signed_term_max = std::cmp::min(
+        max.cost_signed_terms as isize,
+        par.cost_signed_terms.len() as isize - min_prune.cost_signed_terms as isize,
+    );
+    let cost_stack_max = std::cmp::min(
+        max.cost_stacks as isize,
+        par.cost_stacks.len() as isize - min_prune.cost_stacks as isize,
+    );
 
     let send_min = std::cmp::max(
         min.sends as isize,
@@ -67,6 +79,18 @@ pub fn sub_pars(
     let bundle_min = std::cmp::max(
         min.bundles as isize,
         par.bundles.len() as isize - max_prune.bundles as isize,
+    );
+    let conditional_min = std::cmp::max(
+        min.conditionals as isize,
+        par.conditionals.len() as isize - max_prune.conditionals as isize,
+    );
+    let cost_signed_term_min = std::cmp::max(
+        min.cost_signed_terms as isize,
+        par.cost_signed_terms.len() as isize - max_prune.cost_signed_terms as isize,
+    );
+    let cost_stack_min = std::cmp::max(
+        min.cost_stacks as isize,
+        par.cost_stacks.len() as isize - max_prune.cost_stacks as isize,
     );
 
     // This ideally should return type 'Iterator' instead of type 'Vec'
@@ -164,10 +188,36 @@ pub fn sub_pars(
         .cartesian_product(min_max_subsets(&par.matches, match_min, match_max).into_iter())
         .cartesian_product(min_max_subsets(&par.unforgeables, unf_min, unf_max).into_iter())
         .cartesian_product(min_max_subsets(&par.bundles, bundle_min, bundle_max).into_iter())
+        .cartesian_product(
+            min_max_subsets(&par.conditionals, conditional_min, conditional_max).into_iter(),
+        )
+        .cartesian_product(
+            min_max_subsets(
+                &par.cost_signed_terms,
+                cost_signed_term_min,
+                cost_signed_term_max,
+            )
+            .into_iter(),
+        )
+        .cartesian_product(
+            min_max_subsets(&par.cost_stacks, cost_stack_min, cost_stack_max).into_iter(),
+        )
         .map(
             |(
-                (((((sub_sends, sub_receives), sub_news), sub_exprs), sub_matches), sub_unfs),
-                sub_bundles,
+                (
+                    (
+                        (
+                            (
+                                ((((sub_sends, sub_receives), sub_news), sub_exprs), sub_matches),
+                                sub_unfs,
+                            ),
+                            sub_bundles,
+                        ),
+                        sub_conditionals,
+                    ),
+                    sub_cost_signed_terms,
+                ),
+                sub_cost_stacks,
             )| {
                 (
                     Par {
@@ -179,9 +229,11 @@ pub fn sub_pars(
                         unforgeables: sub_unfs.0,
                         bundles: sub_bundles.0,
                         connectives: Vec::default(),
-                        conditionals: Vec::default(),
+                        conditionals: sub_conditionals.0,
                         locally_free: Vec::default(),
                         connective_used: false,
+                        cost_signed_terms: sub_cost_signed_terms.0,
+                        cost_stacks: sub_cost_stacks.0,
                     },
                     Par {
                         sends: sub_sends.1,
@@ -192,9 +244,11 @@ pub fn sub_pars(
                         unforgeables: sub_unfs.1,
                         bundles: sub_bundles.1,
                         connectives: Vec::default(),
-                        conditionals: Vec::default(),
+                        conditionals: sub_conditionals.1,
                         locally_free: Vec::default(),
                         connective_used: false,
+                        cost_signed_terms: sub_cost_signed_terms.1,
+                        cost_stacks: sub_cost_stacks.1,
                     },
                 )
             },

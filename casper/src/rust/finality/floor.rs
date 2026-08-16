@@ -29,6 +29,100 @@ pub struct Floor {
     pub block_number: i64,
 }
 
+fn covering_parent(
+    dag: &KeyValueDagRepresentation,
+    parents: &[BlockHash],
+) -> Result<Option<BlockHash>, CasperError> {
+    for candidate in parents {
+        let mut covers_all = true;
+        for parent in parents {
+            if parent != candidate && !dag.is_dag_ancestor(parent, candidate)? {
+                covers_all = false;
+                break;
+            }
+        }
+        if covers_all {
+            return Ok(Some(candidate.clone()));
+        }
+    }
+    Ok(None)
+}
+
+pub fn state_base_from_cached_floor(
+    dag: &KeyValueDagRepresentation,
+    block_hash: &BlockHash,
+) -> Result<BlockHash, CasperError> {
+    let metadata = dag.lookup_unsafe(block_hash)?;
+    if metadata.parents.is_empty() {
+        return Ok(block_hash.clone());
+    }
+    let floor = dag.get_cached_floor(block_hash)?.ok_or_else(|| {
+        CasperError::Other(format!(
+            "state-base floor is not materialized for block {}",
+            PrettyPrinter::build_string_bytes(block_hash)
+        ))
+    })?;
+    if let Some(parent) = covering_parent(dag, &metadata.parents)? {
+        if floor == parent || is_state_ancestor_from_cached_floors(dag, &floor, &parent)? {
+            return Ok(parent);
+        }
+    }
+    Ok(floor)
+}
+
+pub fn is_state_ancestor_from_cached_floors(
+    dag: &KeyValueDagRepresentation,
+    ancestor: &BlockHash,
+    descendant: &BlockHash,
+) -> Result<bool, CasperError> {
+    let ancestor_number = dag.block_number_unsafe(ancestor)?;
+    let mut current = descendant.clone();
+    loop {
+        if current == *ancestor {
+            return Ok(true);
+        }
+        if dag.block_number_unsafe(&current)? <= ancestor_number {
+            return Ok(false);
+        }
+        let next = state_base_from_cached_floor(dag, &current)?;
+        if next == current {
+            return Ok(false);
+        }
+        current = next;
+    }
+}
+
+pub async fn materialize_state_lineage(
+    dag: &KeyValueDagRepresentation,
+    block_hash: &BlockHash,
+    ftt: FtThreshold,
+) -> Result<(), CasperError> {
+    floor_of_block(dag, block_hash, ftt).await?;
+    Ok(())
+}
+
+fn state_safe_frontier(
+    dag: &KeyValueDagRepresentation,
+    raw_frontier: Floor,
+) -> Result<Floor, CasperError> {
+    let mut chain = vec![raw_frontier.hash];
+    while let Some(parent) = dag.main_parent(chain.last().expect("state frontier chain")) {
+        chain.push(parent);
+    }
+    chain.reverse();
+
+    let mut best_hash = chain[0].clone();
+    for candidate in chain.into_iter().skip(1) {
+        if is_state_ancestor_from_cached_floors(dag, &best_hash, &candidate)? {
+            best_hash = candidate;
+        }
+    }
+    Ok(Floor {
+        block_number: dag.block_number_unsafe(&best_hash)?,
+        hash: best_hash,
+    })
+}
+
 /// The active committee derived from a finalized-floor block's post-state: the
 /// PoS bonds at that state, filtered to the currently-active validator set.
 ///
@@ -122,6 +216,7 @@ async fn derive_floor(
         ));
     }
 
+    let inherited_floors = inherited.clone();
     let mut candidates = inherited;
     let inherited_max = candidates.iter().map(|f| f.block_number).max();
     let mut frontiers: Vec<Floor> = Vec::with_capacity(parents.len());
@@ -161,6 +256,18 @@ async fn derive_floor(
 
     let mut chosen: Option<Floor> = None;
     for cand in ordered {
+        let mut preserves_inherited_state = true;
+        for inherited_floor in &inherited_floors {
+            if cand.block_number >= inherited_floor.block_number
+                && !is_state_ancestor_from_cached_floors(dag, &inherited_floor.hash, &cand.hash)?
+            {
+                preserves_inherited_state = false;
+                break;
+            }
+        }
+        if !preserves_inherited_state {
+            continue;
+        }
         // Case A: general-ancestor of every parent.
         let mut covers_all_parents = true;
         for parent in parents {
@@ -363,7 +470,7 @@ async fn parent_frontier(
                 "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
             )
             .increment(1);
-            return Ok(frontier);
+            return state_safe_frontier(dag, frontier);
         }
     }
     metrics::counter!(
@@ -371,7 +478,8 @@ async fn parent_frontier(
         "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
     )
     .increment(1);
-    cold_parent_frontier(dag, parent, latest_messages, ftt).await
+    let frontier = cold_parent_frontier(dag, parent, latest_messages, ftt).await?;
+    state_safe_frontier(dag, frontier)
 }
 
 /// Warm frontier: resolve `parent`'s frontier over the (larger) `latest_messages`
@@ -724,6 +832,79 @@ mod frontier_determinism_tests {
         );
     }
 
+    #[tokio::test]
+    async fn stale_dag_descendant_cannot_advance_inherited_state_floor() {
+        let v = h(50);
+        let (g, funding, sibling, stale) = (h(0), h(1), h(2), h(3));
+        let wm = || vec![(v.clone(), 1)];
+        let dag = build_dag(vec![
+            md_wm(g.clone(), vec![], 0, &v, wm()),
+            md_wm(funding.clone(), vec![g.clone()], 1, &v, wm()),
+            md_wm(sibling.clone(), vec![g.clone()], 1, &v, wm()),
+            md_wm(stale.clone(), vec![funding.clone(), sibling], 2, &v, wm()),
+        ]);
+        let threshold = FtThreshold::from_f32_lossy(-1.0);
+        materialize_state_lineage(&dag, &stale, threshold)
+            .await
+            .unwrap();
+        assert!(dag.is_dag_ancestor(&funding, &stale).unwrap());
+        assert!(!is_state_ancestor_from_cached_floors(&dag, &funding, &stale).unwrap());
+
+        let latest_messages = BTreeMap::from([(v, stale.clone())]);
+        let inherited = vec![Floor {
+            hash: funding.clone(),
+            block_number: 1,
+        }];
+        let (floor, _) = derive_floor(
+            &dag,
+            std::slice::from_ref(&stale),
+            &latest_messages,
+            threshold,
+            inherited,
+        )
+        .await
+        .unwrap();
+        assert_eq!(floor.hash, funding);
+    }
+
+    #[test]
+    fn state_frontier_skips_stale_descendant_and_accepts_rebase() {
+        let v = h(50);
+        let (g, funding, sibling, stale, rebased) = (h(0), h(1), h(2), h(3), h(4));
+        let wm = || vec![(v.clone(), 1)];
+        let dag = build_dag(vec![
+            md_wm(g.clone(), vec![], 0, &v, wm()),
+            md_wm(funding.clone(), vec![g.clone()], 1, &v, wm()),
+            md_wm(sibling.clone(), vec![g.clone()], 1, &v, wm()),
+            md_wm(stale.clone(), vec![funding.clone(), sibling], 2, &v, wm()),
+            md_wm(rebased.clone(), vec![stale.clone()], 3, &v, wm()),
+        ]);
+        dag.put_cached_floor(g.clone(), g.clone()).unwrap();
+        dag.put_cached_floor(funding.clone(), g.clone()).unwrap();
+        dag.put_cached_floor(stale.clone(), g).unwrap();
+        dag.put_cached_floor(rebased.clone(), funding.clone())
+            .unwrap();
+
+        assert_eq!(
+            state_safe_frontier(&dag, Floor {
+                hash: stale,
+                block_number: 2,
+            },)
+            .unwrap()
+            .hash,
+            funding
+        );
+        assert_eq!(
+            state_safe_frontier(&dag, Floor {
+                hash: rebased.clone(),
+                block_number: 3,
+            },)
+            .unwrap()
+            .hash,
+            rebased
+        );
+    }
+
     // ---- Phase-7 W7.2: guard-trip, Case-B soundness, incompatible-fork Err ----
 
     fn md_wm(
@@ -793,6 +974,15 @@ mod frontier_determinism_tests {
         }
     }
 
+    fn seed_state_floors(
+        dag: &KeyValueDagRepresentation,
+        floors: impl IntoIterator<Item = (Bytes, Bytes)>,
+    ) {
+        for (block, floor) in floors {
+            dag.put_cached_floor(block, floor).unwrap();
+        }
+    }
+
     /// Guard-trip: a committee CHANGE inside the band (a bonding / re-stake between
     /// the pivot and the parent) breaks L-ANC's constant-committee premise. The warm
     /// up-walk MUST decline (`Ok(None)`) rather than serve a frontier computed under
@@ -810,6 +1000,12 @@ mod frontier_determinism_tests {
             md_wm(b1.clone(), vec![g.clone()], 1, &v, vec![(v.clone(), 1)]),
             md_wm(b2.clone(), vec![b1.clone()], 2, &v, vec![(v.clone(), 2)]),
             md_wm(b3.clone(), vec![b2.clone()], 3, &v, vec![(v.clone(), 2)]),
+        ]);
+        seed_state_floors(&dag, [
+            (g.clone(), g.clone()),
+            (b1.clone(), g),
+            (b2.clone(), b1.clone()),
+            (b3.clone(), b2.clone()),
         ]);
         let mut j = BTreeMap::new();
         j.insert(v.clone(), b2.clone());
@@ -852,6 +1048,13 @@ mod frontier_determinism_tests {
             md_wm(c.clone(), vec![t.clone()], 2, &v, wm()),
             md_wm(p1.clone(), vec![c.clone()], 3, &v, wm()),
             md_wm(p2.clone(), vec![t.clone()], 2, &w, wm()),
+        ]);
+        seed_state_floors(&dag, [
+            (g.clone(), g.clone()),
+            (t.clone(), g.clone()),
+            (c.clone(), t.clone()),
+            (p1.clone(), c.clone()),
+            (p2.clone(), t.clone()),
         ]);
         let mut j = BTreeMap::new();
         j.insert(v.clone(), c.clone()); // v's frozen latest is c (before it made p1)
@@ -942,6 +1145,13 @@ mod frontier_determinism_tests {
             md_wm(c.clone(), vec![t.clone()], 2, &v, wm()),
             md_wm(p1.clone(), vec![c.clone()], 3, &v, wm()),
             md_wm(p2.clone(), vec![c.clone()], 3, &w, wm()),
+        ]);
+        seed_state_floors(&dag, [
+            (g.clone(), g.clone()),
+            (t.clone(), g.clone()),
+            (c.clone(), t.clone()),
+            (p1.clone(), c.clone()),
+            (p2.clone(), c.clone()),
         ]);
         let mut j = BTreeMap::new();
         j.insert(v.clone(), c.clone());
@@ -1093,6 +1303,13 @@ mod frontier_determinism_tests {
         }
     }
 
+    prop_compose! {
+        fn state_lineage_scenario()(stale_len in 1usize..=8, safe_len in 0usize..=8)
+            -> (usize, usize) {
+            (stale_len, safe_len)
+        }
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig { cases: 24, max_shrink_iters: 8, ..ProptestConfig::default() })]
 
@@ -1115,6 +1332,11 @@ mod frontier_determinism_tests {
                 }
                 let dag = build_dag(blocks);
                 let parent = h(depth as u8);
+                seed_state_floors(
+                    &dag,
+                    std::iter::once((h(0), h(0)))
+                        .chain((1..=depth).map(|i| (h(i as u8), h((i - 1) as u8)))),
+                );
 
                 // frontier(parent over {v:b_k}) = b_k (single-validator chain).
                 let mut j = BTreeMap::new();
@@ -1151,6 +1373,103 @@ mod frontier_determinism_tests {
                 );
                 Ok::<(), TestCaseError>(())
             })?;
+        }
+
+        #[test]
+        fn state_safe_frontier_is_monotone_across_stale_merges_and_rebases(
+            (stale_len, safe_len) in state_lineage_scenario()
+        ) {
+            let validator = h(50);
+            let genesis = h(0);
+            let funding = h(1);
+            let mut blocks = vec![
+                md_wm(genesis.clone(), Vec::new(), 0, &validator, vec![(validator.clone(), 1)]),
+                md_wm(
+                    funding.clone(),
+                    vec![genesis.clone()],
+                    1,
+                    &validator,
+                    vec![(validator.clone(), 1)],
+                ),
+            ];
+            let mut previous = funding.clone();
+            let mut stale_hashes = Vec::with_capacity(stale_len);
+            for offset in 0..stale_len {
+                let side = h((100 + offset) as u8);
+                let stale = h((2 + offset) as u8);
+                blocks.push(md_wm(
+                    side.clone(),
+                    vec![genesis.clone()],
+                    1,
+                    &validator,
+                    vec![(validator.clone(), 1)],
+                ));
+                blocks.push(md_wm(
+                    stale.clone(),
+                    vec![previous, side],
+                    (2 + offset) as i64,
+                    &validator,
+                    vec![(validator.clone(), 1)],
+                ));
+                previous = stale.clone();
+                stale_hashes.push(stale);
+            }
+            let rebased = h((2 + stale_len) as u8);
+            blocks.push(md_wm(
+                rebased.clone(),
+                vec![previous],
+                (2 + stale_len) as i64,
+                &validator,
+                vec![(validator.clone(), 1)],
+            ));
+            let mut safe_hashes = vec![rebased.clone()];
+            let mut previous = rebased;
+            for offset in 0..safe_len {
+                let safe = h((3 + stale_len + offset) as u8);
+                blocks.push(md_wm(
+                    safe.clone(),
+                    vec![previous],
+                    (3 + stale_len + offset) as i64,
+                    &validator,
+                    vec![(validator.clone(), 1)],
+                ));
+                previous = safe.clone();
+                safe_hashes.push(safe);
+            }
+
+            let dag = build_dag(blocks);
+            dag.put_cached_floor(genesis.clone(), genesis.clone()).unwrap();
+            dag.put_cached_floor(funding.clone(), genesis.clone()).unwrap();
+            for stale in &stale_hashes {
+                dag.put_cached_floor(stale.clone(), genesis.clone()).unwrap();
+            }
+            for safe in &safe_hashes {
+                dag.put_cached_floor(safe.clone(), funding.clone()).unwrap();
+            }
+
+            for (offset, stale) in stale_hashes.iter().enumerate() {
+                let frontier = state_safe_frontier(
+                    &dag,
+                    Floor {
+                        hash: stale.clone(),
+                        block_number: (2 + offset) as i64,
+                    },
+                )
+                .unwrap();
+                prop_assert_eq!(frontier.hash, funding.clone());
+            }
+            for (offset, safe) in safe_hashes.iter().enumerate() {
+                let frontier = state_safe_frontier(
+                    &dag,
+                    Floor {
+                        hash: safe.clone(),
+                        block_number: (2 + stale_len + offset) as i64,
+                    },
+                )
+                .unwrap();
+                prop_assert_eq!(frontier.hash, safe.clone());
+                prop_assert!(is_state_ancestor_from_cached_floors(&dag, &funding, safe).unwrap());
+            }
         }
     }
 }

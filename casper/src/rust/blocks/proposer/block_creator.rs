@@ -59,6 +59,7 @@ pub struct PreparedUserDeploys {
     pub selected_retry_count: usize,
     pub selected_ordinary_count: usize,
     pub selected_in_scope_recovery_count: usize,
+    pub selected_retry_sigs: HashSet<Bytes>,
     pub selected_in_scope_recovery_sigs: HashSet<Bytes>,
     pub already_in_scope_count: usize,
     pub selected_user_deploy_bytes: usize,
@@ -379,15 +380,12 @@ async fn prepare_user_deploys_with_policy(
             HashSet::new()
         };
 
-    let mut buffered_deploys: HashSet<Signed<DeployData>> =
-        if allow_ordinary_deploys || allow_in_scope_recovery || allow_recovered_deploys {
-            let buffer_guard = rejected_deploy_buffer
-                .lock()
-                .map_err(|e| CasperError::LockError(e.to_string()))?;
-            buffer_guard.read_all()?
-        } else {
-            HashSet::new()
-        };
+    let mut buffered_deploys: HashSet<Signed<DeployData>> = {
+        let buffer_guard = rejected_deploy_buffer
+            .lock()
+            .map_err(|e| CasperError::LockError(e.to_string()))?;
+        buffer_guard.read_all()?
+    };
     let parent_hashes: Vec<BlockHash> = casper_snapshot
         .parents
         .iter()
@@ -397,7 +395,10 @@ async fn prepare_user_deploys_with_policy(
         block_number - casper_snapshot.on_chain_state.shard_conf.deploy_lifespan;
     let expired_buffered: Vec<Signed<DeployData>> = buffered_deploys
         .iter()
-        .filter(|deploy| deploy.data.is_expired_at(current_time_millis))
+        .filter(|deploy| {
+            !not_expired_deploy(earliest_block_number, &deploy.data)
+                || deploy.data.is_expired_at(current_time_millis)
+        })
         .cloned()
         .collect();
     if !expired_buffered.is_empty() {
@@ -455,6 +456,7 @@ async fn prepare_user_deploys_with_policy(
             &casper_snapshot.last_finalized_block,
             &parent_hashes,
             buffer_scan_floor,
+            casper_snapshot.on_chain_state.shard_conf.casper_version,
         )?;
         buffered_deploys
             .iter()
@@ -480,7 +482,13 @@ async fn prepare_user_deploys_with_policy(
     }
 
     let canonical_won_buffer_sigs = if allow_recovered_deploys && !buffered_deploys.is_empty() {
-        interpreter_util::canonical_won_sigs(block_store, &parent_hashes, buffer_scan_floor)?
+        interpreter_util::canonical_won_sigs_at_floor(
+            block_store,
+            &casper_snapshot.last_finalized_block,
+            &parent_hashes,
+            buffer_scan_floor,
+            casper_snapshot.on_chain_state.shard_conf.casper_version,
+        )?
     } else {
         HashSet::new()
     };
@@ -590,11 +598,7 @@ async fn prepare_user_deploys_with_policy(
         .collect();
     let block_expired_deploys: Vec<_> = unfinalized
         .iter()
-        .filter(|d| {
-            !recovered_sigs.contains(&d.sig)
-                && !casper_snapshot.rejected_in_scope.contains(&d.sig)
-                && !not_expired_deploy(earliest_block_number, &d.data)
-        })
+        .filter(|d| !not_expired_deploy(earliest_block_number, &d.data))
         .collect();
     let time_expired_deploys: Vec<_> = unfinalized
         .iter()
@@ -605,12 +609,8 @@ async fn prepare_user_deploys_with_policy(
     let valid: HashSet<Signed<DeployData>> = unfinalized
         .iter()
         .filter(|deploy| {
-            let rejected_ready_for_retry = casper_snapshot.rejected_in_scope.contains(&deploy.sig)
-                && !casper_snapshot.deploys_in_scope.contains(&deploy.sig);
             not_future_deploy(block_number, &deploy.data)
-                && (recovered_sigs.contains(&deploy.sig)
-                    || rejected_ready_for_retry
-                    || not_expired_deploy(earliest_block_number, &deploy.data))
+                && not_expired_deploy(earliest_block_number, &deploy.data)
                 && !deploy.data.is_expired_at(current_time_millis)
         })
         .cloned()
@@ -618,8 +618,13 @@ async fn prepare_user_deploys_with_policy(
 
     let valid_count = valid.len();
 
-    let canonical_won =
-        interpreter_util::canonical_won_sigs(block_store, &parent_hashes, canonical_scan_floor)?;
+    let canonical_won = interpreter_util::canonical_won_sigs_at_floor(
+        block_store,
+        &casper_snapshot.last_finalized_block,
+        &parent_hashes,
+        canonical_scan_floor,
+        casper_snapshot.on_chain_state.shard_conf.casper_version,
+    )?;
 
     let recovered_canonical_wins: Vec<Signed<DeployData>> = valid
         .iter()
@@ -735,6 +740,11 @@ async fn prepare_user_deploys_with_policy(
         in_scope_recovery_selection.count_capped || in_scope_recovery_selection.byte_capped;
     let selected_in_scope_recovery = in_scope_recovery_selection.deploys;
     let selected_in_scope_recovery_sigs: HashSet<Bytes> = selected_in_scope_recovery
+        .iter()
+        .map(|deploy| deploy.sig.clone())
+        .collect();
+    let selected_retry_sigs: HashSet<Bytes> = retry_selection
+        .deploys
         .iter()
         .map(|deploy| deploy.sig.clone())
         .collect();
@@ -875,59 +885,6 @@ async fn prepare_user_deploys_with_policy(
         }
     }
 
-    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
-        for d in &future_deploys {
-            tracing::debug!(
-                target: "f1r3fly.merge.step",
-                step = "prepare_user_deploys.FILTER",
-                deploy = %hex::encode(&d.sig[..8.min(d.sig.len())]),
-                decision = "filtered",
-                reason = "future",
-                "merge.step: deploy filter decision"
-            );
-        }
-        for d in &block_expired_deploys {
-            tracing::debug!(
-                target: "f1r3fly.merge.step",
-                step = "prepare_user_deploys.FILTER",
-                deploy = %hex::encode(&d.sig[..8.min(d.sig.len())]),
-                decision = "filtered",
-                reason = "block-expired",
-                "merge.step: deploy filter decision"
-            );
-        }
-        for d in &time_expired_deploys {
-            tracing::debug!(
-                target: "f1r3fly.merge.step",
-                step = "prepare_user_deploys.FILTER",
-                deploy = %hex::encode(&d.sig[..8.min(d.sig.len())]),
-                decision = "filtered",
-                reason = "time-expired",
-                "merge.step: deploy filter decision"
-            );
-        }
-        for d in &already_in_scope {
-            tracing::debug!(
-                target: "f1r3fly.merge.step",
-                step = "prepare_user_deploys.FILTER",
-                deploy = %hex::encode(&d.sig[..8.min(d.sig.len())]),
-                decision = "filtered",
-                reason = "already-in-scope (repeat_deploy / deploys_in_scope, non-stale)",
-                "merge.step: deploy filter decision"
-            );
-        }
-        for d in &valid_unique {
-            tracing::debug!(
-                target: "f1r3fly.merge.step",
-                step = "prepare_user_deploys.FILTER",
-                deploy = %hex::encode(&d.sig[..8.min(d.sig.len())]),
-                decision = "selected-candidate",
-                reason = "passed expiry + scope filters",
-                "merge.step: deploy filter decision"
-            );
-        }
-    }
-
     // Log deploy selection details when there are any deploys in the pool
     if !unfinalized.is_empty() || !casper_snapshot.deploys_in_scope.is_empty() {
         tracing::info!(
@@ -1041,6 +998,7 @@ async fn prepare_user_deploys_with_policy(
         selected_retry_count,
         selected_ordinary_count,
         selected_in_scope_recovery_count,
+        selected_retry_sigs,
         selected_in_scope_recovery_sigs,
         already_in_scope_count,
         selected_user_deploy_bytes,
@@ -1128,9 +1086,9 @@ fn collect_self_chain_deploy_sigs(
     let max_depth = std::cmp::max(casper_snapshot.on_chain_state.shard_conf.deploy_lifespan, 1);
 
     for _ in 0..(max_depth as usize) {
-        let Some(block) = block_store.get(&current_hash)? else {
-            break;
-        };
+        let block = block_store.get(&current_hash)?.ok_or_else(|| {
+            missing_block_error("collecting self-chain deploy signatures", &current_hash)
+        })?;
 
         for processed in &block.body.deploys {
             deploy_sigs.insert(processed.deploy.sig.clone());
@@ -1164,7 +1122,15 @@ fn self_chain_has_unfinalized_user_deploys(
 
     let last_finalized_block_number = block_store
         .get(&casper_snapshot.last_finalized_block)?
-        .map(|block| block.body.state.block_number);
+        .ok_or_else(|| {
+            missing_block_error(
+                "reading the finalized boundary for self-chain recovery",
+                &casper_snapshot.last_finalized_block,
+            )
+        })?
+        .body
+        .state
+        .block_number;
     let max_depth = std::cmp::max(casper_snapshot.on_chain_state.shard_conf.deploy_lifespan, 1);
 
     for _ in 0..(max_depth as usize) {
@@ -1174,14 +1140,11 @@ fn self_chain_has_unfinalized_user_deploys(
             break;
         }
 
-        let Some(block) = block_store.get(&current_hash)? else {
-            break;
-        };
+        let block = block_store.get(&current_hash)?.ok_or_else(|| {
+            missing_block_error("scanning self-chain recovery state", &current_hash)
+        })?;
 
-        if last_finalized_block_number
-            .map(|lfb_number| block.body.state.block_number <= lfb_number)
-            .unwrap_or(false)
-        {
+        if block.body.state.block_number <= last_finalized_block_number {
             break;
         }
 
@@ -1204,7 +1167,15 @@ fn scope_has_unfinalized_user_deploys(
 ) -> Result<bool, CasperError> {
     let last_finalized_block_number = block_store
         .get(&casper_snapshot.last_finalized_block)?
-        .map(|block| block.body.state.block_number);
+        .ok_or_else(|| {
+            missing_block_error(
+                "reading the finalized boundary for parent-scope recovery",
+                &casper_snapshot.last_finalized_block,
+            )
+        })?
+        .body
+        .state
+        .block_number;
     let current_block_number = casper_snapshot
         .max_block_num
         .checked_add(1)
@@ -1231,13 +1202,11 @@ fn scope_has_unfinalized_user_deploys(
             continue;
         }
 
-        let Some(block) = block_store.get(&block_hash)? else {
-            continue;
-        };
+        let block = block_store.get(&block_hash)?.ok_or_else(|| {
+            missing_block_error("scanning parent-scope recovery state", &block_hash)
+        })?;
 
-        if last_finalized_block_number
-            .map(|lfb_number| block.body.state.block_number <= lfb_number)
-            .unwrap_or(false)
+        if block.body.state.block_number <= last_finalized_block_number
             || block.body.state.block_number <= earliest_block_number
         {
             continue;
@@ -1291,13 +1260,12 @@ fn collect_branch_user_deploy_sigs(
             continue;
         }
 
-        let Some(block) = block_store.get(&block_hash)? else {
-            continue;
-        };
+        let block = block_store.get(&block_hash)?.ok_or_else(|| {
+            missing_block_error("collecting visible branch deploy signatures", &block_hash)
+        })?;
 
         if last_finalized_block_number
-            .map(|lfb_number| block.body.state.block_number <= lfb_number)
-            .unwrap_or(false)
+            .is_some_and(|lfb_number| block.body.state.block_number <= lfb_number)
             || block.body.state.block_number <= earliest_block_number
         {
             continue;
@@ -1325,9 +1293,9 @@ fn classify_branch_deploy_info(
     earliest_block_number: i64,
     last_finalized_block_number: Option<i64>,
 ) -> Result<BranchDeployInfo, CasperError> {
-    let Some(block) = block_store.get(&info.block_hash)? else {
-        return Ok(info);
-    };
+    let block = block_store.get(&info.block_hash)?.ok_or_else(|| {
+        missing_block_error("classifying branch deploy progress", &info.block_hash)
+    })?;
     let deploy_sigs: HashSet<Bytes> = block
         .body
         .deploys
@@ -1364,7 +1332,15 @@ fn branch_unfinalized_user_deploy_info(
 ) -> Result<Option<BranchDeployInfo>, CasperError> {
     let last_finalized_block_number = block_store
         .get(&casper_snapshot.last_finalized_block)?
-        .map(|block| block.body.state.block_number);
+        .ok_or_else(|| {
+            missing_block_error(
+                "reading the finalized boundary for branch deploy progress",
+                &casper_snapshot.last_finalized_block,
+            )
+        })?
+        .body
+        .state
+        .block_number;
     let current_block_number = casper_snapshot
         .max_block_num
         .checked_add(1)
@@ -1388,13 +1364,11 @@ fn branch_unfinalized_user_deploy_info(
             continue;
         }
 
-        let Some(block) = block_store.get(&block_hash)? else {
-            continue;
-        };
+        let block = block_store
+            .get(&block_hash)?
+            .ok_or_else(|| missing_block_error("scanning branch deploy progress", &block_hash))?;
 
-        if last_finalized_block_number
-            .map(|lfb_number| block.body.state.block_number <= lfb_number)
-            .unwrap_or(false)
+        if block.body.state.block_number <= last_finalized_block_number
             || block.body.state.block_number <= earliest_block_number
         {
             continue;
@@ -1422,7 +1396,7 @@ fn branch_unfinalized_user_deploy_info(
                 casper_snapshot,
                 block_store,
                 earliest_block_number,
-                last_finalized_block_number,
+                Some(last_finalized_block_number),
             )
         })
         .transpose()
@@ -1442,53 +1416,10 @@ fn storage_has_unresolved_in_scope_deploys(
     Ok(false)
 }
 
-/// Pure-function filter extracted for unit testing. Keeps an
-/// invalid-latest-message entry only if the equivocator is still
-/// slashable in the parent post-state — i.e., bonded with positive
-/// stake AND in the PoS active-validator set. The active-validator
-/// check matters when bond floor > 0: a validator slashed in a parent
-/// retains stake at the floor, satisfying the bonded check, but PoS
-/// has removed them from active_validators so they shouldn't be
-/// re-slashed. Without this, the proposer emits a redundant SlashDeploy
-/// every block until the equivocator's invalid latest message ages
-/// out of the DAG view, saved by PoS slash idempotency but inflating
-/// body and wasting execution.
-///
-/// Merge of dev (EPOCH-004) into feature/slashing: production callers
-/// of this filter were replaced by `slashing_authorization::
-/// authorized_slash_candidates`, which is the full T-9.8 conjunctive
-/// predicate (bonded-target ∧ active-validator ∧ epoch-match ∧
-/// evidence-epoch-match). This helper is retained under
-/// `#[cfg(test)]` because the test suite below pins the
-/// `bonded ∧ active` subset of T-9.8 directly — a regression catch for
-/// any future refactor of `authorized_slash_candidates` that drops one
-/// of those clauses.
-#[cfg(test)]
-fn filter_slashable_invalid_messages(
-    invalid_latest_messages: HashMap<Validator, BlockHash>,
-    bonds_map: &HashMap<Validator, i64>,
-    active_validators: &[Validator],
-) -> Vec<(Validator, BlockHash)> {
-    invalid_latest_messages
-        .into_iter()
-        .filter(|(validator, _)| {
-            bonds_map.get(validator).copied().unwrap_or(0) > 0
-                && active_validators.contains(validator)
-        })
-        .collect()
-}
-
-/// Build one `SlashDeploy` from its offender evidence. BOTH proposer-side slash
-/// paths — the freshly-detected `prepare_slashing_deploys` and the merge-rejected
-/// `recovered_rejected_slashes` recovery in `create_block` — previously constructed the
-/// deploy with two byte-identical inline copies. This single seam is where the deploy's
-/// `initial_rand` seed is wired, and by MainTheorem T-Slash
-/// (`main_TSlash_deploy_seed_uses_invalid_block_hash`,
-/// formal/rocq/slashing/theories/MainTheorem.v:302) that seed MUST be a pure function of
-/// `(proposer pubkey, seq_num, invalid_block_hash)` — deriving it from the offender's OWN
-/// `invalid_block_hash` is what lets every node and the replay path recompute the identical
-/// randomness. Extracting the copies removes the standing risk that a future edit to one
-/// silently diverges the seed-wiring (mirrors `finality::floor::floor_committee`).
+/// Build one `SlashDeploy` from its canonical offender evidence. The deploy's
+/// `initial_rand` seed is a pure function of `(proposer pubkey, seq_num,
+/// invalid_block_hash)`, allowing every node and the replay path to recompute
+/// identical randomness for the candidate selected by `prepare_slashing_deploys`.
 fn build_slash_deploy(
     invalid_block_hash: &BlockHash,
     proposer_public_key: &PublicKey,
@@ -1512,6 +1443,7 @@ async fn prepare_slashing_deploys(
     casper_snapshot: &CasperSnapshot,
     validator_identity: &ValidatorIdentity,
     seq_num: i32,
+    bonds_map: &HashMap<Validator, i64>,
 ) -> Result<Vec<SlashDeploy>, CasperError> {
     let self_id = Bytes::copy_from_slice(&validator_identity.public_key.bytes);
 
@@ -1535,17 +1467,12 @@ async fn prepare_slashing_deploys(
     // the epoch/evidence-epoch matches that dev's filter omitted. The
     // proposer-side authorization here therefore strictly extends, not
     // replaces, dev's filter.
-    let proposer_bond = casper_snapshot
-        .on_chain_state
-        .bonds_map
-        .get(&self_id)
-        .copied()
-        .unwrap_or(0);
+    let proposer_bond = bonds_map.get(&self_id).copied().unwrap_or(0);
     if proposer_bond <= 0 {
         return Ok(Vec::new());
     }
 
-    let slash_candidates = authorized_slash_candidates(casper_snapshot)?;
+    let slash_candidates = authorized_slash_candidates(casper_snapshot, bonds_map)?;
 
     // `authorized_slash_candidates` documents an at-most-one-per-offender
     // invariant via its `BTreeMap<Validator, …>` accumulator
@@ -1783,28 +1710,53 @@ fn current_proposal_validators(casper_snapshot: &CasperSnapshot) -> Vec<Validato
                 .collect()
         };
     validators.sort();
+    validators.dedup();
     validators
 }
 
-fn recovered_deploy_leader(casper_snapshot: &CasperSnapshot) -> Option<Validator> {
+fn recovered_deploy_leader(
+    casper_snapshot: &CasperSnapshot,
+) -> Result<Option<Validator>, CasperError> {
     let validators = current_proposal_validators(casper_snapshot);
-    if let Some(parent) = casper_snapshot.parents.first() {
-        if !parent.sender.is_empty()
-            && (validators.is_empty() || validators.iter().any(|v| v == &parent.sender))
-        {
-            return Some(parent.sender.clone());
-        }
+    if validators.is_empty() {
+        return Ok(None);
     }
-    validators.first().cloned()
+    let finalized_height = casper_snapshot
+        .dag
+        .lookup_unsafe(&casper_snapshot.last_finalized_block)?
+        .block_number
+        .max(0) as usize;
+    Ok(validators.get(finalized_height % validators.len()).cloned())
 }
 
 fn is_recovered_deploy_leader(
     casper_snapshot: &CasperSnapshot,
     validator_identity: &ValidatorIdentity,
-) -> bool {
-    recovered_deploy_leader(casper_snapshot)
+) -> Result<bool, CasperError> {
+    Ok(recovered_deploy_leader(casper_snapshot)?
         .map(|leader| leader == validator_identity.public_key.bytes)
-        .unwrap_or(true)
+        .unwrap_or(false))
+}
+
+fn filter_self_chain_deploys(
+    deploys: &mut HashSet<Signed<DeployData>>,
+    self_chain_deploy_sigs: &HashSet<Bytes>,
+    selected_recovery_sigs: &HashSet<Bytes>,
+) -> usize {
+    let before = deploys.len();
+    deploys.retain(|deploy| {
+        !self_chain_deploy_sigs.contains(&deploy.sig)
+            || selected_recovery_sigs.contains(&deploy.sig)
+    });
+    before.saturating_sub(deploys.len())
+}
+
+fn missing_block_error(context: &str, block_hash: &BlockHash) -> CasperError {
+    CasperError::RuntimeError(format!(
+        "Missing block {} while {}",
+        pretty_printer::PrettyPrinter::build_string_bytes(block_hash),
+        context
+    ))
 }
 
 fn finalized_ancestor_deploy_sigs(
@@ -1812,6 +1764,24 @@ fn finalized_ancestor_deploy_sigs(
     block_store: &KeyValueBlockStore,
     earliest_block_number: i64,
 ) -> Result<HashSet<Bytes>, CasperError> {
+    block_store
+        .get(&casper_snapshot.last_finalized_block)?
+        .ok_or_else(|| {
+            missing_block_error(
+                "scanning finalized deploy ancestry",
+                &casper_snapshot.last_finalized_block,
+            )
+        })?;
+    if casper_snapshot.on_chain_state.shard_conf.casper_version
+        >= interpreter_util::EXACT_REJECTION_PROTOCOL_VERSION
+    {
+        return interpreter_util::canonical_won_sigs(
+            block_store,
+            std::slice::from_ref(&casper_snapshot.last_finalized_block),
+            earliest_block_number,
+        );
+    }
+
     let mut sigs = HashSet::new();
     let mut stack = vec![casper_snapshot.last_finalized_block.clone()];
     let mut seen: HashSet<BlockHash> = HashSet::new();
@@ -1821,9 +1791,9 @@ fn finalized_ancestor_deploy_sigs(
             continue;
         }
 
-        let Some(block) = block_store.get(&block_hash)? else {
-            continue;
-        };
+        let block = block_store.get(&block_hash)?.ok_or_else(|| {
+            missing_block_error("scanning finalized deploy ancestry", &block_hash)
+        })?;
 
         if block.body.state.block_number < earliest_block_number {
             continue;
@@ -1864,7 +1834,7 @@ fn deploy_inclusion_progress(
         {
             Some(info.sender.clone())
         } else {
-            recovered_deploy_leader(casper_snapshot)
+            recovered_deploy_leader(casper_snapshot)?
         };
         return Ok(DeployInclusionProgress {
             leader,
@@ -1874,7 +1844,7 @@ fn deploy_inclusion_progress(
 
     if scope_has_unfinalized_user_deploys(casper_snapshot, block_store)? {
         return Ok(DeployInclusionProgress {
-            leader: recovered_deploy_leader(casper_snapshot),
+            leader: recovered_deploy_leader(casper_snapshot)?,
             latest_deploy: None,
         });
     }
@@ -1963,8 +1933,13 @@ fn fresh_local_deploy_stats(
         .min()
         .map(|h| h.min(earliest_block_number))
         .unwrap_or(earliest_block_number);
-    let canonical_won =
-        interpreter_util::canonical_won_sigs(block_store, &parent_hashes, canonical_scan_floor)?;
+    let canonical_won = interpreter_util::canonical_won_sigs_at_floor(
+        block_store,
+        &casper_snapshot.last_finalized_block,
+        &parent_hashes,
+        canonical_scan_floor,
+        casper_snapshot.on_chain_state.shard_conf.casper_version,
+    )?;
     let mut count = 0usize;
     let mut oldest_time = None;
     for deploy in candidates {
@@ -2032,8 +2007,13 @@ fn in_scope_local_deploy_stats(
         .iter()
         .map(|p| p.block_hash.clone())
         .collect();
-    let canonical_won =
-        interpreter_util::canonical_won_sigs(block_store, &parent_hashes, canonical_scan_floor)?;
+    let canonical_won = interpreter_util::canonical_won_sigs_at_floor(
+        block_store,
+        &casper_snapshot.last_finalized_block,
+        &parent_hashes,
+        canonical_scan_floor,
+        casper_snapshot.on_chain_state.shard_conf.casper_version,
+    )?;
     let finalized_won =
         finalized_ancestor_deploy_sigs(casper_snapshot, block_store, canonical_scan_floor)?;
     let mut count = 0usize;
@@ -2068,8 +2048,7 @@ fn in_scope_local_deploy_stats(
 /// inside `compute_snapshot`, before the snapshot's `deploys_in_scope` /
 /// `rejected_in_scope` sets exist, so it can only approximate with the
 /// block-number window. This copy runs after snapshot completion and refines
-/// with the scope sets (clean-in-scope deploys excluded; rejected-in-scope
-/// deploys keep recovery eligibility past the window). Disagreements are
+/// with the scope sets (clean-in-scope deploys excluded). Disagreements are
 /// benign by construction: the snapshot copy only drives the parent-narrowing
 /// heuristic, never admission. Do NOT "harmonize" the filters.
 ///
@@ -2111,7 +2090,7 @@ fn rejected_buffer_has_recoverable_deploys(
             !clean_in_scope
                 && not_future_deploy(block_number, &deploy.data)
                 && !deploy.data.is_expired_at(current_time_millis)
-                && (rejected_in_scope || not_expired_deploy(earliest_block_number, &deploy.data))
+                && not_expired_deploy(earliest_block_number, &deploy.data)
         })
         .collect();
     if candidates.is_empty() {
@@ -2123,28 +2102,17 @@ fn rejected_buffer_has_recoverable_deploys(
         .min()
         .map(|h| h.min(earliest_block_number))
         .unwrap_or(earliest_block_number);
-    let canonical_won =
-        interpreter_util::canonical_won_sigs(block_store, &parent_hashes, scan_floor)?;
+    let canonical_won = interpreter_util::canonical_won_sigs_at_floor(
+        block_store,
+        &casper_snapshot.last_finalized_block,
+        &parent_hashes,
+        scan_floor,
+        casper_snapshot.on_chain_state.shard_conf.casper_version,
+    )?;
 
     Ok(candidates
         .iter()
         .any(|deploy| !canonical_won.contains(&deploy.sig)))
-}
-
-fn should_skip_empty_recovery_heartbeat(
-    suppress_empty_recovery_block_by_non_leader: bool,
-    user_work_in_flight: bool,
-    finality_work_in_flight: bool,
-    has_user_or_dummy_deploys: bool,
-    has_slashing_deploys: bool,
-    has_recovered_rejected_slashes: bool,
-) -> bool {
-    suppress_empty_recovery_block_by_non_leader
-        && !user_work_in_flight
-        && !finality_work_in_flight
-        && !has_user_or_dummy_deploys
-        && !has_slashing_deploys
-        && !has_recovered_rejected_slashes
 }
 
 fn finality_lag_stats(
@@ -2153,8 +2121,15 @@ fn finality_lag_stats(
 ) -> Result<FinalityLagStats, CasperError> {
     let last_finalized_block = block_store
         .get(&casper_snapshot.last_finalized_block)?
-        .map(|block| block.body.state.block_number)
-        .unwrap_or(-1);
+        .ok_or_else(|| {
+            missing_block_error(
+                "computing finality-lag admission state",
+                &casper_snapshot.last_finalized_block,
+            )
+        })?
+        .body
+        .state
+        .block_number;
     let dag_tip = casper_snapshot.max_block_num;
     Ok(FinalityLagStats {
         dag_tip,
@@ -2486,24 +2461,6 @@ fn record_deploy_admission_metrics(
     .set(metric_bool(inclusion_staleness.missing_deploy_metadata));
 }
 
-fn parent_frontier_extends_lfb(
-    casper_snapshot: &CasperSnapshot,
-    block_store: &KeyValueBlockStore,
-) -> Result<bool, CasperError> {
-    let Some(last_finalized_block_number) = block_store
-        .get(&casper_snapshot.last_finalized_block)?
-        .map(|block| block.body.state.block_number)
-    else {
-        return Ok(false);
-    };
-
-    Ok(casper_snapshot.parents.iter().any(|parent| {
-        parent.body.state.block_number > last_finalized_block_number
-            && parent.block_hash != casper_snapshot.last_finalized_block
-            && !casper_snapshot.dag.is_finalized(&parent.block_hash)
-    }))
-}
-
 pub async fn create(
     casper_snapshot: &CasperSnapshot,
     validator_identity: &ValidatorIdentity,
@@ -2591,14 +2548,7 @@ pub async fn create(
     let shard_id = casper_snapshot.on_chain_state.shard_conf.shard_name.clone();
 
     // Prepare deploys
-    let (
-        user_deploys,
-        _,
-        _,
-        suppress_empty_recovery_block_by_non_leader,
-        user_work_in_flight,
-        finality_work_in_flight,
-    ) = {
+    let user_deploys = {
         let t = std::time::Instant::now();
         let user_deploys_in_scope =
             scope_has_unfinalized_user_deploys(casper_snapshot, block_store)?;
@@ -2615,37 +2565,10 @@ pub async fn create(
         let stale_in_scope_work =
             user_deploys_in_scope || storage_deploys_in_scope || self_chain_user_deploys;
         let user_work_in_flight = stale_in_scope_work;
-        let finality_work_in_flight = parent_frontier_extends_lfb(casper_snapshot, block_store)?;
         let self_chain_deploy_sigs =
             collect_self_chain_deploy_sigs(casper_snapshot, validator_identity, block_store)?;
-        let self_chain_rejected_buffered = if self_chain_deploy_sigs.is_empty() {
-            false
-        } else {
-            let buffer_guard = rejected_deploy_buffer
-                .lock()
-                .map_err(|e| CasperError::LockError(e.to_string()))?;
-            let mut found = false;
-            for sig in &self_chain_deploy_sigs {
-                if casper_snapshot.rejected_in_scope.contains(sig)
-                    && buffer_guard
-                        .contains_sig(sig)
-                        .map_err(CasperError::KvStoreError)?
-                {
-                    found = true;
-                    break;
-                }
-            }
-            found
-        };
-        // Self-chain recovery exemption: a validator may always replay its OWN
-        // merge-rejected work (sigs from its self-chain sitting in the rejected
-        // buffer) without waiting to become the validator-set recovered-deploy
-        // leader. Owner replay is deterministic and duplicate-safe — if another
-        // validator re-proposes the same sig, the merge's keep-one dedup picks
-        // exactly one copy by (block_number, hash).
         let allow_recovered_deploys =
-            is_recovered_deploy_leader(casper_snapshot, validator_identity)
-                || self_chain_rejected_buffered;
+            is_recovered_deploy_leader(casper_snapshot, validator_identity)?;
         let inclusion_progress = deploy_inclusion_progress(casper_snapshot, block_store)?;
         let allow_deploy_inclusion = inclusion_progress
             .leader
@@ -2703,13 +2626,6 @@ pub async fn create(
             inclusion_staleness,
             finality_lag_stats,
         );
-        if self_chain_rejected_buffered && !allow_recovered_deploys {
-            tracing::debug!(
-                target: "f1r3fly.casper.recovery",
-                "Recovered deploy selection deferred to validator-set leader for block #{}",
-                next_block_num
-            );
-        }
         if user_work_in_flight && !allow_deploy_inclusion && !admission_policy.allow_ordinary {
             tracing::info!(
                 target: "f1r3fly.casper.recovery",
@@ -2785,33 +2701,22 @@ pub async fn create(
             admission_policy,
             &prepared,
         );
-        let selected_in_scope_recovery_sigs = prepared.selected_in_scope_recovery_sigs.clone();
+        let selected_recovery_sigs: HashSet<Bytes> = prepared
+            .selected_retry_sigs
+            .iter()
+            .chain(prepared.selected_in_scope_recovery_sigs.iter())
+            .cloned()
+            .collect();
         let mut v = prepared.deploys;
         if !self_chain_deploy_sigs.is_empty() {
-            let before = v.len();
-            v.retain(|deploy| {
-                !self_chain_deploy_sigs.contains(&deploy.sig)
-                    || casper_snapshot.rejected_in_scope.contains(&deploy.sig)
-                    || selected_in_scope_recovery_sigs.contains(&deploy.sig)
-            });
-            let skipped = before.saturating_sub(v.len());
+            let skipped =
+                filter_self_chain_deploys(&mut v, &self_chain_deploy_sigs, &selected_recovery_sigs);
             if skipped > 0 {
                 tracing::info!(
                     "Filtered {} deploy(s) already present in self latest-message chain",
                     skipped
                 );
             }
-        }
-        let suppress_empty_recovery_block_by_non_leader = rejected_buffer_non_empty
-            && !allow_recovered_deploys
-            && v.is_empty()
-            && !user_work_in_flight;
-        if suppress_empty_recovery_block_by_non_leader {
-            tracing::debug!(
-                target: "f1r3fly.casper.recovery",
-                "Empty recovery-context proposal deferred to validator-set leader for block #{} because no user deploy work is in flight",
-                next_block_num
-            );
         }
         tracing::debug!(
             target: "f1r3fly.block_creator.timing",
@@ -2823,14 +2728,7 @@ pub async fn create(
         );
         metrics::histogram!(BLOCK_CREATOR_PREPARE_USER_DEPLOYS_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(t.elapsed().as_secs_f64());
-        (
-            v,
-            prepared.effective_cap,
-            prepared.cap_hit,
-            suppress_empty_recovery_block_by_non_leader,
-            user_work_in_flight,
-            finality_work_in_flight,
-        )
+        v
     };
     let dummy_deploys = {
         let t = std::time::Instant::now();
@@ -2843,37 +2741,11 @@ pub async fn create(
         );
         v
     };
-    let slashing_deploys = {
-        let t = std::time::Instant::now();
-        let v = prepare_slashing_deploys(casper_snapshot, validator_identity, next_seq_num).await?;
-        tracing::debug!(
-            target: "f1r3fly.block_creator.timing",
-            "prepare_slashing_deploys_ms={}, slashing_deploys_count={}",
-            t.elapsed().as_millis(),
-            v.len()
-        );
-        v
-    };
-
     // The user deploys (gated by the WD-D2 acceptance gate below) are kept
-    // SEPARATE from the proposer's own dummy deploys: the gate funds only
-    // `user_deploys` (per-signature funding obligation, §7.6); the proposer's
-    // dummy/heartbeat deploys are exempt and always included. `prepare_user_deploys`
-    // already removed deploys in scope.
+    // `prepare_user_deploys` already removed deploys in scope. User and
+    // validator-heartbeat deploys enter the same funding gate below.
     let user_deploys: HashSet<Signed<DeployData>> = user_deploys;
 
-    // Merge the parents once up front. Two reasons to do this before the
-    // empty-block skip check below:
-    //   1. To discover slashes that were rejected by cost-optimal merge
-    //      resolution — those slashes must be re-issued by this proposer
-    //      so the slash effect lands in the merge block regardless of the
-    //      merge's rejection decision.
-    //   2. To include rejected-slash recovery in the "do we have work?"
-    //      decision. A heartbeat-disabled proposer that wakes with no user
-    //      deploys and no own-detected slashes would otherwise skip,
-    //      stranding any merge-rejected slashes from parent merging.
-    // The merge result is cached so the downstream compute_deploys_checkpoint
-    // call hits the cache.
     let __merge_pre_t = std::time::Instant::now();
     let latest_messages: BTreeMap<Validator, BlockHash> = casper_snapshot
         .justifications
@@ -2895,273 +2767,42 @@ pub async fn create(
         "source" => CASPER_METRICS_SOURCE
     )
     .record(__merge_pre_t.elapsed().as_secs_f64());
-    let (pre_state, _rejected_user_sigs, rejected_slashes) = merge_pre_info;
+    let (pre_state, _rejected_user_sigs) = merge_pre_info;
 
-    // ── WD-D2 acceptance gate (cost-accounted-rho §7.6/§7.7) ─────────────────
-    // Reconstruct the canonical Cosigned envelopes for the user deploys (the
-    // same uplift the runtime install + replay perform, so the envelope `Sig`
-    // that keys each supply pool `Σ⟦s⟧` is byte-identical across all paths).
-    let cosigner_sidecar_for_gate: std::collections::HashMap<
-        prost::bytes::Bytes,
-        crate::rust::engine::multi_parent_casper::types::PendingCosignerMetadata,
-    > = pending_cosigner_metadata.lock().clone();
-    let user_cosigned_for_gate: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>> =
-        user_deploys
+    let needs_slash_authority = !casper_snapshot.dag.invalid_blocks().is_empty();
+    let pre_state_bonds: HashMap<Validator, i64> = if needs_slash_authority {
+        runtime_manager
+            .compute_bonds(&pre_state)
+            .await?
             .into_iter()
-            .map(|signed| reconstruct_cosigned(signed, &cosigner_sidecar_for_gate))
-            .collect::<Result<Vec<_>, CasperError>>()?;
-
-    // Run the per-signature funding gate on the user deploys against the merged
-    // pre-state, BEFORE any execution (gate-before-execute, tex 1726-1729). The
-    // gate re-imposes the consensus-canonical deploy order on the
-    // nondeterministically-ordered HashSet, groups by supply channel `Σ⟦s⟧`, and
-    // admits the largest canonical-order prefix per group whose cumulative Δ_s
-    // fits Σ_s (rejecting the first unfunded candidate and all after it).
-    //
-    // ACTIVATION is PER-POOL by SUPPLY PRESENCE (reported grounding refinement —
-    // see `supply::read_balance_present`): the per-signature pools the gate reads
-    // are provisioned by the Cost-Accounted Rho ECONOMIC producer (Workstream C),
-    // which lands AFTER D2 ("B core → C economic → D acceptance"). StageB
-    // (landed) mints only per-VALIDATOR pools, NOT the per-deploy-signature pools
-    // the gate reads, so until C provisions a signer's pool that pool is ABSENT —
-    // and the gate admits its deploys UNENFORCED + UNDEBITED (pre-C /
-    // non-cost-accounted operation, bit-for-bit). A PRESENT pool (including a
-    // drained `Some(0)`) is enforced. The margin is the on-chain
-    // `min_phlo_price` (D2.5).
-    //
-    // Task #13a: the per-pool-presence activation above is the TRANSITIONAL
-    // default. The shard-genesis `strict_funding_enforcement` flag (off by
-    // default = back-compat) switches the gate to SPEC-STRICT (§7.6 step 5):
-    // an absent pool is then treated as present-zero, so an underfunded deploy
-    // is rejected rather than admitted unenforced. The same shard constant is
-    // threaded into the replay-side recompute, so play and replay agree.
-    let gate_margin = casper_snapshot.on_chain_state.shard_conf.min_phlo_price;
-    let strict_funding_enforcement = casper_snapshot
-        .on_chain_state
-        .shard_conf
-        .strict_funding_enforcement;
-    let gate_outcome = {
+            .map(|bond| (bond.validator, bond.stake))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+    let slashing_deploys = {
         let t = std::time::Instant::now();
-        let reader = crate::rust::util::rholang::acceptance::RuntimeManagerSupplyReader {
-            runtime_manager,
-            pre_state_hash: pre_state.clone(),
-        };
-        let outcome = crate::rust::util::rholang::acceptance::admit_by_funding(
-            user_cosigned_for_gate,
-            &reader,
-            gate_margin,
-            strict_funding_enforcement,
+        let v = prepare_slashing_deploys(
+            casper_snapshot,
+            validator_identity,
+            next_seq_num,
+            &pre_state_bonds,
         )
         .await?;
         tracing::debug!(
             target: "f1r3fly.block_creator.timing",
-            "acceptance_gate_ms={}, admitted={}, gate_rejected={}, debit_pools={}",
+            "prepare_slashing_deploys_ms={}, slashing_deploys_count={}",
             t.elapsed().as_millis(),
-            outcome.admitted.len(),
-            outcome.rejected.len(),
-            outcome.debits.len()
+            v.len()
         );
-        outcome
+        v
     };
-    let gate_rejected_sigs: Vec<Bytes> = gate_outcome.rejected.clone();
-    let settlement_debits = gate_outcome.debits.clone();
-    // Cost-Accounted Rho Stage D (F-D conserving carve): the per-client FEE
-    // debits computed by the gate against each client's POST-COST `Σ⟦c⟧` (one
-    // token per admitted deploy, apportioned across compound components by the
-    // same policy as the cost). Captured before `gate_outcome.admitted` is moved.
-    let fee_debits = gate_outcome.fee_debits.clone();
-    let admitted_user_cosigned = gate_outcome.admitted;
-    // Whether there is any user work surviving the gate (drives the post-gate
-    // empty-block skip below).
-    let has_admitted_user_deploys = !admitted_user_cosigned.is_empty();
 
-    // Union own slashes with merge-rejected slashes, dedup by
-    // `invalid_block_hash`. Own detections take priority — any
-    // merge-rejected slash for an equivocator already covered by
-    // prepare_slashing_deploys is dropped. `filter_recoverable` also
-    // collapses multiple rejected slashes for the same equivocator
-    // (e.g., from different original issuers) down to a single entry,
-    // then the evidence filter drops stale or no-longer-invalid hashes.
-    let own_invalid_block_hashes = slashing_deploys
-        .iter()
-        .map(|sd| sd.invalid_block_hash.clone());
-    let epoch_length = casper_snapshot.on_chain_state.shard_conf.epoch_length;
-    let candidate_recovered_rejected_slashes =
-        crate::rust::merging::rejected_slash::filter_recoverable(
-            rejected_slashes,
-            own_invalid_block_hashes,
-        );
-    let (recovered_target_activation_epoch, recovered_rejected_slashes) =
-        if candidate_recovered_rejected_slashes.is_empty() {
-            (None, Vec::new())
-        } else {
-            let recovered_target_activation_epoch =
-                crate::rust::slashing_authorization::epoch_for_block_number(
-                    next_block_num,
-                    epoch_length,
-                )
-                .map_err(|e| {
-                    CasperError::RuntimeError(format!(
-                        "Failed to compute current epoch for recovered slash deploy: {:?}",
-                        e
-                    ))
-                })?
-                .get();
-            let recovered_rejected_slashes =
-                crate::rust::merging::rejected_slash::filter_recoverable_with_evidence(
-                    candidate_recovered_rejected_slashes,
-                    Vec::<BlockHash>::new(),
-                    |invalid_block_hash| {
-                        let Some(metadata) = casper_snapshot
-                            .dag
-                            .lookup(invalid_block_hash)
-                            .map_err(CasperError::KvStoreError)?
-                        else {
-                            return Ok::<bool, CasperError>(false);
-                        };
-                        if !metadata.invalid {
-                            return Ok::<bool, CasperError>(false);
-                        }
-                        let evidence_epoch =
-                            crate::rust::slashing_authorization::epoch_for_block_number(
-                                metadata.block_number,
-                                epoch_length,
-                            )
-                            .map_err(|e| {
-                                CasperError::from(
-                                    crate::rust::slashing_authorization::SlashAuthError::from(e),
-                                )
-                            })?;
-                        Ok::<bool, CasperError>(
-                            evidence_epoch.get() == recovered_target_activation_epoch,
-                        )
-                    },
-                )?;
-            (
-                Some(recovered_target_activation_epoch),
-                recovered_rejected_slashes,
-            )
-        };
-
-    // Check if we have any new work to process.
-    // If empty blocks are disabled, skip closeBlock-only proposals to avoid no-op checkpoint cost.
-    // If empty blocks are enabled (heartbeat/liveness mode), continue and emit closeBlock.
-    // Recovered rejected slashes count as work — without this check, a
-    // heartbeat-disabled proposer would silently drop merge-rejected slashes
-    // on a wake with no other pending work.
     let has_slashing_deploys = !slashing_deploys.is_empty();
-    let has_recovered_rejected_slashes = !recovered_rejected_slashes.is_empty();
-    // POST-GATE empty-block skip: a block is worth proposing iff something
-    // survives the WD-D2 funding gate (an admitted user deploy), or there is a
-    // dummy/heartbeat deploy, or a slash to issue/recover. If every user deploy
-    // was rejected by the gate (unfunded) and there is no other work, skip —
-    // the gate-rejected sigs are not force-packed into an otherwise-empty block
-    // (they remain in storage for a later cycle when supply may be available).
-    // `has_user_or_dummy_deploys` is deliberately computed AFTER the funding
-    // gate: gate-rejected (unfunded) deploys must not count as user work.
-    let has_user_or_dummy_deploys = has_admitted_user_deploys || !dummy_deploys.is_empty();
-    if !has_user_or_dummy_deploys && !has_slashing_deploys && !has_recovered_rejected_slashes {
-        if should_skip_empty_recovery_heartbeat(
-            suppress_empty_recovery_block_by_non_leader,
-            user_work_in_flight,
-            finality_work_in_flight,
-            has_user_or_dummy_deploys,
-            has_slashing_deploys,
-            has_recovered_rejected_slashes,
-        ) {
-            tracing::info!(
-                target: "f1r3fly.casper.recovery",
-                "Skipping empty recovery-context block creation: rejected deploy recovery is deferred to validator-set leader"
-            );
-            return Ok(BlockCreatorResult::RecoveryDeferred);
-        }
-        if !allow_empty_blocks {
-            tracing::info!(
-                "Skipping empty block creation: no funded user deploys (gate-admitted={}, gate-rejected={}), no dummy deploys, no slashing deploys, no merge-rejected slashes to recover",
-                admitted_user_cosigned.len(),
-                gate_rejected_sigs.len()
-            );
-            return Ok(BlockCreatorResult::NoNewDeploys);
-        }
-    }
-
-    // Make sure closeBlock is the last system Deploy
-    let mut system_deploys_converted: Vec<SystemDeployEnum> = Vec::new();
-
-    // Add own-detected slashes
-    for slash_deploy in slashing_deploys {
-        system_deploys_converted.push(SystemDeployEnum::Slash(slash_deploy));
-    }
-
-    // Re-issue slashes that the merge dropped. The proposer signs these
-    // under its own identity, matching the existing slashing convention.
-    // Per T-9.8, `target_activation_epoch` must equal the *current* epoch
-    // of the block carrying the slash — for recovered slashes the current
-    // epoch is the one that will be assigned to the block we are creating,
-    // i.e. `epoch_for_block_number(next_block_num, epoch_length)`.
-    if let Some(recovered_target_activation_epoch) = recovered_target_activation_epoch {
-        for rs in &recovered_rejected_slashes {
-            let slash_deploy = build_slash_deploy(
-                &rs.invalid_block_hash,
-                &validator_identity.public_key,
-                recovered_target_activation_epoch,
-                next_seq_num,
-            );
-            tracing::info!(
-                "Recovering merge-rejected slash: invalid_block={}, original_issuer={}, target_activation_epoch={}",
-                pretty_printer::PrettyPrinter::build_string_bytes(&rs.invalid_block_hash),
-                hex::encode(&rs.issuer_public_key.bytes),
-                recovered_target_activation_epoch
-            );
-            system_deploys_converted.push(SystemDeployEnum::Slash(slash_deploy));
-        }
-    }
-
-    // Add the actual close block deploy. It carries the WD-D2 settlement debits
-    // computed by the acceptance gate above: closeBlock is always the LAST
-    // system deploy, so by the time its `dual_write_supply` runs every admitted
-    // user deploy has executed, and it then subtracts ΣΔ_s from each pool
-    // `Σ⟦s⟧` (`post = pre − ΣΔ_admitted`). On replay these debits are RECOMPUTED
-    // from `block.body.deploys` — they are NOT serialized into the block — so the
-    // play-side map is purely a play-path optimization.
-    //
-    // Cost-Accounted Rho Stage D (F-D conserving carve): it ALSO carries the
-    // FeeExtract carve (cost-accounted-rho.tex:3637 "one client token consumed as
-    // fee") for the PROPOSING validator. The fee is CARVED from each admitted
-    // client's OWN post-cost `Σ⟦c⟧` (a supply-conserving transfer, NOT a mint)
-    // and credited to the proposer's `F_v`. The per-client amounts come from the
-    // gate (`fee_debits`), so ONLY admitted CLIENT deploys are charged — the
-    // proposer's own gate-exempt dummy deploys carve NO fee (they have no client
-    // pool). On replay the SAME carve is RECOMPUTED from `block.body.deploys`.
-    // cost ≠ fee (D.0): a TRANSFERRED token, distinct from the burned cost debit.
-    // `None` when nothing was carved (empty block) ⇒ no fee write at closeBlock.
-    // The fee carve and the Close deploy itself are assembled INSIDE the
-    // checkpoint retry loop below: `settlement_debits`/`fee_carve` are
-    // functions of the admitted user set actually packaged, and the retry
-    // loop may shrink that set (see the R2 note at the loop).
-    //
-    // Task #13b: thread the genesis client funding-slot allocations onto the
-    // close deploy from the shard-genesis conf (the SAME constant replay reads).
-    // Credited only at the block-1 close (gated on `block_number == 1` inside
-    // `dual_write_supply`); on every other block it rides along but the gate
-    // skips the credit. Lowered to raw pk bytes (the basis `Sig::Ground` uses).
-    // Default-empty shards leave this empty ⇒ byte-identical to pre-#13b.
-    // Prefix-independent, so computed once here and cloned per attempt.
-    let client_fuel_allocations: Vec<(Vec<u8>, i64)> = casper_snapshot
-        .on_chain_state
-        .shard_conf
-        .client_fuel_allocations
-        .iter()
-        .map(|(pk, amount)| (pk.bytes.to_vec(), *amount))
+    let system_deploys_converted: Vec<SystemDeployEnum> = slashing_deploys
+        .into_iter()
+        .map(SystemDeployEnum::Slash)
         .collect();
-
-    // Use the adjusted `now_millis` captured at the start of create for block timestamp.
-    // The value is clamped to the max parent timestamp to avoid InvalidTimestamp from clock skew.
-    // This ensures the same time is used for deploy filtering and block creation.
-    // Invalid-blocks map (hash -> sender) for the PoS slash deploys: derived from
-    // this block's own slash targets so it is byte-identical at creation and
-    // replay (see proto_util::slashed_block_senders). A DAG-derived view is
-    // node-view-dependent and makes the slash deploy fail replay (ConsumeFailed).
     let slashed_hashes: Vec<models::rust::block_hash::BlockHash> = system_deploys_converted
         .iter()
         .filter_map(|sd| sd.as_slash().map(|s| s.invalid_block_hash.clone()))
@@ -3177,27 +2818,107 @@ pub async fn create(
         seq_num: next_seq_num,
     };
 
+    // ── WD-D2 acceptance gate (cost-accounted-rho §7.6/§7.7) ─────────────────
+    // Reconstruct the canonical Cosigned envelopes for the user deploys (the
+    // same uplift the runtime install + replay perform, so each funding
+    // authority lane is byte-identical across all paths).
+    let cosigner_sidecar_for_gate: std::collections::HashMap<
+        prost::bytes::Bytes,
+        crate::rust::engine::multi_parent_casper::types::PendingCosignerMetadata,
+    > = pending_cosigner_metadata.lock().clone();
+    let user_deploys_for_gate: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>> =
+        user_deploys
+            .into_iter()
+            .map(|signed| reconstruct_cosigned(signed, &cosigner_sidecar_for_gate))
+            .collect::<Result<Vec<_>, CasperError>>()?;
+    let mut deploys_for_gate = user_deploys_for_gate.clone();
+    let dummy_sigs: std::collections::BTreeSet<Bytes> = dummy_deploys
+        .iter()
+        .map(|deploy| deploy.sig.clone())
+        .collect();
+    deploys_for_gate.extend(
+        dummy_deploys
+            .iter()
+            .cloned()
+            .map(|signed| reconstruct_cosigned(signed, &cosigner_sidecar_for_gate))
+            .collect::<Result<Vec<_>, CasperError>>()?,
+    );
+
+    // Run the state-bound funding proof on every signed deploy against the merged
+    // pre-state before settlement. The bounded execution re-imposes canonical
+    // order, records the exact root/cost chain, rejects capacity exhaustion,
+    // and iterates after underfunded removals until its evidence describes the
+    // exact retained sequence. The final retained execution is the block's user
+    // transition; checkpoint construction continues from its witnessed root.
+    let gate_admission = {
+        let t = std::time::Instant::now();
+        let admission = runtime_manager
+            .certify_state_bound_admission(
+                &pre_state,
+                deploys_for_gate,
+                &block_data,
+                &invalid_blocks,
+            )
+            .await?;
+        tracing::debug!(
+            target: "f1r3fly.block_creator.timing",
+            "acceptance_gate_ms={}, admitted={}, gate_rejected={}, debit_pools={}",
+            t.elapsed().as_millis(),
+            admission.outcome().admitted.len(),
+            admission.outcome().rejected.len(),
+            admission.outcome().debits.len()
+        );
+        admission
+    };
+    let gate_outcome = gate_admission.outcome().clone();
+    let gate_rejected_sigs: Vec<Bytes> = gate_outcome
+        .rejected
+        .iter()
+        .filter(|sig| !dummy_sigs.contains(*sig))
+        .cloned()
+        .collect();
+    let gate_rejected_sig_set: HashSet<Bytes> = gate_rejected_sigs.iter().cloned().collect();
+    let gate_rejected_user_cosigned: Vec<_> = user_deploys_for_gate
+        .iter()
+        .filter(|deploy| gate_rejected_sig_set.contains(&deploy.primary().sig))
+        .cloned()
+        .collect();
+    let (admitted_dummy_cosigned, admitted_user_cosigned): (Vec<_>, Vec<_>) = gate_outcome
+        .admitted
+        .into_iter()
+        .partition(|deploy| dummy_sigs.contains(&deploy.primary().sig));
+    // Whether there is any user work surviving the gate (drives the post-gate
+    // empty-block skip below).
+    let has_admitted_user_deploys = !admitted_user_cosigned.is_empty();
+
+    // Check if we have any new work to process.
+    // If empty blocks are disabled, skip closeBlock-only proposals to avoid no-op checkpoint cost.
+    // If empty blocks are enabled (heartbeat/liveness mode), continue and emit closeBlock.
+    // POST-GATE empty-block skip: a terminal funding-rejection record is user
+    // work even when no deploy executes, so clients can observe a finalized
+    // rejection instead of polling Pending until expiry.
+    let has_user_or_dummy_deploys = has_admitted_user_deploys
+        || !gate_rejected_user_cosigned.is_empty()
+        || !admitted_dummy_cosigned.is_empty();
+    if !has_user_or_dummy_deploys && !has_slashing_deploys && !allow_empty_blocks {
+        tracing::info!(
+            "Skipping empty block creation: no funded user deploys (gate-admitted={}, gate-rejected={}), no dummy deploys, no authorized slashing deploys",
+            admitted_user_cosigned.len(),
+            gate_rejected_sigs.len()
+        );
+        return Ok(BlockCreatorResult::NoNewDeploys);
+    }
+
+    // Use the adjusted `now_millis` captured at the start of create for block timestamp.
+    // The value is clamped to the max parent timestamp to avoid InvalidTimestamp from clock skew.
+    // This ensures the same time is used for deploy filtering and block creation.
     // Compute checkpoint data — route through the multi-sig-aware path
     // (compute_deploys_checkpoint_cosigned) so cosigner data survives from
     // submission through execution. The deploys fed to execution are the
-    // WD-D2-GATE-ADMITTED user envelopes (already reconstructed as
+    // WD-D2-GATE-ADMITTED envelopes (already reconstructed as
     // Cosigned<DeployData> by `admit_by_funding`, in canonical order — only
-    // funded deploys execute, gate-before-execute per tex 1726-1729) PLUS the
-    // proposer's own dummy deploys (exempt from the gate), uplifted via the same
-    // `reconstruct_cosigned` (legacy single-sig ⇒ byte-identical one-element
-    // envelope; multi-sig ⇒ canonical per-signer-reverified envelope).
+    // funded deploys execute, gate-before-execute per tex 1726-1729).
     let checkpoint_started = std::time::Instant::now();
-    // R2 (play/replay): `settlement_debits`/`fee_carve` on the Close deploy
-    // are functions of the ADMITTED USER SET actually packaged, and replay
-    // recomputes them from `block.body.deploys` (`recompute_settlement_debits`).
-    // When this retry loop shrinks the admitted prefix, the Close assembly is
-    // therefore recomputed INSIDE the loop for that prefix — a truncated
-    // prefix carrying full-set debits would fail the proposer's own
-    // play≠replay equality. Admission is prefix-closed (canonical order,
-    // per-lane prefix sums), so re-gating an admitted prefix re-admits it in
-    // full; anything else is a hard error (fail loudly, never package
-    // diverged debits). Deploys truncated out of an attempt are NOT recorded
-    // in `rejected_deploys` — they stay in deploy storage for a later block.
     let original_admitted_user_deploys = admitted_user_cosigned.len();
     let mut user_deploy_limit = original_admitted_user_deploys;
     let mut retry_count = 0usize;
@@ -3208,23 +2929,27 @@ pub async fn create(
                 .take(user_deploy_limit)
                 .cloned()
                 .collect();
-        let (attempt_settlement_debits, attempt_fee_debits) = if user_deploy_limit
+        let (attempt_deploys, attempt_admission) = if user_deploy_limit
             == original_admitted_user_deploys
         {
-            (settlement_debits.clone(), fee_debits.clone())
+            let mut deploys = attempt_admitted.clone();
+            deploys.extend(admitted_dummy_cosigned.iter().cloned());
+            crate::rust::util::rholang::acceptance::canonical_sort(&mut deploys);
+            (deploys, gate_admission.clone())
         } else {
-            let reader = crate::rust::util::rholang::acceptance::RuntimeManagerSupplyReader {
-                runtime_manager,
-                pre_state_hash: pre_state.clone(),
-            };
-            let prefix_outcome = crate::rust::util::rholang::acceptance::admit_by_funding(
-                attempt_admitted.clone(),
-                &reader,
-                gate_margin,
-                strict_funding_enforcement,
-            )
-            .await?;
-            if prefix_outcome.admitted.len() != attempt_admitted.len()
+            let mut prefix_deploys = attempt_admitted.clone();
+            prefix_deploys.extend(admitted_dummy_cosigned.iter().cloned());
+            let prefix_admission = runtime_manager
+                .certify_state_bound_admission(
+                    &pre_state,
+                    prefix_deploys,
+                    &block_data,
+                    &invalid_blocks,
+                )
+                .await?;
+            let prefix_outcome = prefix_admission.outcome();
+            if prefix_outcome.admitted.len()
+                != attempt_admitted.len() + admitted_dummy_cosigned.len()
                 || !prefix_outcome.rejected.is_empty()
             {
                 return Err(CasperError::RuntimeError(format!(
@@ -3234,35 +2959,20 @@ pub async fn create(
                         prefix_outcome.rejected.len()
                     )));
             }
-            (prefix_outcome.debits, prefix_outcome.fee_debits)
+            (prefix_outcome.admitted.clone(), prefix_admission)
         };
-        let attempt_fee_carve = crate::rust::util::rholang::acceptance::fee_carve(
-            validator_identity.public_key.bytes.to_vec(),
-            attempt_fee_debits,
-        );
         let mut attempt_system_deploys = system_deploys_converted.clone();
-        attempt_system_deploys.push(SystemDeployEnum::Close(CloseBlockDeploy {
-            initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
+        attempt_system_deploys.push(SystemDeployEnum::Close(CloseBlockDeploy::new(
+            system_deploy_util::generate_close_deploy_random_seed_from_pk(
                 validator_identity.public_key.clone(),
                 next_seq_num,
             ),
-            settlement_debits: attempt_settlement_debits,
-            fee_carve: attempt_fee_carve,
-            client_fuel_allocations: client_fuel_allocations.clone(),
-        }));
-        let mut cosigned_deploys: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>> =
-            Vec::with_capacity(attempt_admitted.len() + dummy_deploys.len());
-        cosigned_deploys.extend(attempt_admitted);
-        for dummy in dummy_deploys.iter() {
-            cosigned_deploys.push(reconstruct_cosigned(
-                dummy.clone(),
-                &cosigner_sidecar_for_gate,
-            )?);
-        }
+        )));
+        let cosigned_deploys = attempt_deploys;
         let attempted_user_deploys = user_deploy_limit;
         let attempted_total_deploys = cosigned_deploys.len();
 
-        match interpreter_util::compute_deploys_checkpoint_cosigned(
+        match interpreter_util::compute_deploys_checkpoint_cosigned_admitted(
             block_store,
             parents.clone(),
             cosigned_deploys,
@@ -3272,6 +2982,7 @@ pub async fn create(
             block_data.clone(),
             invalid_blocks.clone(),
             Some(&rejected_deploy_buffer),
+            attempt_admission,
         )
         .await
         {
@@ -3355,11 +3066,21 @@ pub async fn create(
     let (
         pre_state_hash,
         post_state_hash,
-        processed_deploys,
+        mut processed_deploys,
         rejected_deploys,
         processed_system_deploys,
         new_bonds,
     ) = checkpoint_data;
+    let packaged_gate_rejections = if user_deploy_limit == original_admitted_user_deploys {
+        gate_rejected_user_cosigned
+    } else {
+        Vec::new()
+    };
+    processed_deploys.extend(
+        packaged_gate_rejections
+            .iter()
+            .map(|deploy| ProcessedDeploy::admission_rejected(deploy, pre_state_hash.clone())),
+    );
     let block_bonds = {
         let parent_hashes: Vec<BlockHash> = parents.iter().map(|p| p.block_hash.clone()).collect();
         let latest_messages: BTreeMap<Validator, BlockHash> = casper_snapshot
@@ -3442,13 +3163,10 @@ pub async fn create(
     metrics::gauge!(BLOCK_CREATOR_PACKED_BLOCK_BYTES_METRIC, "source" => CASPER_METRICS_SOURCE)
         .set(signed_block_bytes as f64);
 
-    // Drain by the GATE-ADMITTED prefix actually packaged into the block (the
-    // legacy-signed view of each admitted envelope), not the pre-gate ordered
-    // set: gate-rejected (unfunded) deploys were never packaged, so they must
-    // not be drained from ordinary deploy storage here.
     let selected_user_deploys_for_buffer_drain: Vec<Signed<DeployData>> = admitted_user_cosigned
         .iter()
         .take(user_deploy_limit)
+        .chain(packaged_gate_rejections.iter())
         .map(|cosigned| cosigned.as_legacy_signed_ref())
         .collect();
     let removed_recovered_from_storage = drain_selected_recovered_deploys_from_deploy_storage(
@@ -3586,6 +3304,23 @@ mod tests {
             })
             .expect("insert finalized metadata");
         snapshot.last_finalized_block = hash;
+    }
+
+    fn seed_empty_last_finalized_block(
+        snapshot: &mut CasperSnapshot,
+        block_store: &KeyValueBlockStore,
+    ) {
+        let block = test_block(
+            invalid_block_hash(0xf0),
+            validator(1),
+            Vec::new(),
+            0,
+            Vec::new(),
+        );
+        block_store
+            .put_block_message(&block)
+            .expect("store last finalized block");
+        snapshot.last_finalized_block = block.block_hash;
     }
 
     fn test_block(
@@ -3927,10 +3662,11 @@ mod tests {
     }
 
     #[test]
-    fn recovered_deploy_leader_prefers_main_parent_sender() {
+    fn recovered_deploy_leader_is_independent_of_parent_order_and_sender() {
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
         snapshot.on_chain_state.active_validators = vec![validator(3), validator(1), validator(2)];
+        set_last_finalized_height(&mut snapshot, 0);
         snapshot.parents = vec![test_block(
             invalid_block_hash(9),
             validator(3),
@@ -3939,80 +3675,39 @@ mod tests {
             Vec::new(),
         )];
 
-        assert!(!is_recovered_deploy_leader(
-            &snapshot,
-            &validator_identity(1)
-        ));
-        assert!(!is_recovered_deploy_leader(
-            &snapshot,
-            &validator_identity(2)
-        ));
-        assert!(is_recovered_deploy_leader(
-            &snapshot,
-            &validator_identity(3)
-        ));
+        assert!(is_recovered_deploy_leader(&snapshot, &validator_identity(1)).expect("leader"));
+        assert!(!is_recovered_deploy_leader(&snapshot, &validator_identity(2)).expect("leader"));
+        assert!(!is_recovered_deploy_leader(&snapshot, &validator_identity(3)).expect("leader"));
 
         snapshot.parents[0].sender = validator(9);
-        assert!(is_recovered_deploy_leader(
-            &snapshot,
-            &validator_identity(1)
-        ));
-        assert!(!is_recovered_deploy_leader(
-            &snapshot,
-            &validator_identity(3)
-        ));
+        assert!(is_recovered_deploy_leader(&snapshot, &validator_identity(1)).expect("leader"));
+        assert!(!is_recovered_deploy_leader(&snapshot, &validator_identity(3)).expect("leader"));
     }
 
     #[test]
-    fn recovered_deploy_leader_falls_back_to_stable_validator_set_floor() {
+    fn recovered_deploy_leader_rotates_by_finalized_height() {
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
         snapshot.on_chain_state.active_validators = vec![validator(3), validator(1), validator(2)];
+        set_last_finalized_height(&mut snapshot, 0);
 
-        assert!(is_recovered_deploy_leader(
-            &snapshot,
-            &validator_identity(1)
-        ));
-        assert!(!is_recovered_deploy_leader(
-            &snapshot,
-            &validator_identity(2)
-        ));
-        assert!(!is_recovered_deploy_leader(
-            &snapshot,
-            &validator_identity(3)
-        ));
+        assert!(is_recovered_deploy_leader(&snapshot, &validator_identity(1)).expect("leader"));
+        assert!(!is_recovered_deploy_leader(&snapshot, &validator_identity(2)).expect("leader"));
+        assert!(!is_recovered_deploy_leader(&snapshot, &validator_identity(3)).expect("leader"));
 
         set_last_finalized_height(&mut snapshot, 0);
-        assert!(is_recovered_deploy_leader(
-            &snapshot,
-            &validator_identity(1)
-        ));
+        assert!(is_recovered_deploy_leader(&snapshot, &validator_identity(1)).expect("leader"));
 
         set_last_finalized_height(&mut snapshot, 1);
-        assert!(is_recovered_deploy_leader(
-            &snapshot,
-            &validator_identity(1)
-        ));
-        assert!(!is_recovered_deploy_leader(
-            &snapshot,
-            &validator_identity(2)
-        ));
+        assert!(is_recovered_deploy_leader(&snapshot, &validator_identity(2)).expect("leader"));
+        assert!(!is_recovered_deploy_leader(&snapshot, &validator_identity(1)).expect("leader"));
 
         set_last_finalized_height(&mut snapshot, 2);
-        assert!(is_recovered_deploy_leader(
-            &snapshot,
-            &validator_identity(1)
-        ));
-        assert!(!is_recovered_deploy_leader(
-            &snapshot,
-            &validator_identity(3)
-        ));
+        assert!(is_recovered_deploy_leader(&snapshot, &validator_identity(3)).expect("leader"));
+        assert!(!is_recovered_deploy_leader(&snapshot, &validator_identity(1)).expect("leader"));
 
         set_last_finalized_height(&mut snapshot, 3);
-        assert!(is_recovered_deploy_leader(
-            &snapshot,
-            &validator_identity(1)
-        ));
+        assert!(is_recovered_deploy_leader(&snapshot, &validator_identity(1)).expect("leader"));
     }
 
     #[test]
@@ -4023,25 +3718,93 @@ mod tests {
         snapshot.on_chain_state.bonds_map.insert(validator(1), 0);
         snapshot.on_chain_state.bonds_map.insert(validator(2), 10);
         snapshot.on_chain_state.bonds_map.insert(validator(3), 10);
+        set_last_finalized_height(&mut snapshot, 0);
 
-        assert!(is_recovered_deploy_leader(
-            &snapshot,
-            &validator_identity(2)
-        ));
-        assert!(!is_recovered_deploy_leader(
-            &snapshot,
-            &validator_identity(1)
-        ));
+        assert!(is_recovered_deploy_leader(&snapshot, &validator_identity(2)).expect("leader"));
+        assert!(!is_recovered_deploy_leader(&snapshot, &validator_identity(1)).expect("leader"));
 
         set_last_finalized_height(&mut snapshot, 1);
-        assert!(is_recovered_deploy_leader(
-            &snapshot,
-            &validator_identity(2)
-        ));
-        assert!(!is_recovered_deploy_leader(
-            &snapshot,
-            &validator_identity(3)
-        ));
+        assert!(is_recovered_deploy_leader(&snapshot, &validator_identity(3)).expect("leader"));
+        assert!(!is_recovered_deploy_leader(&snapshot, &validator_identity(2)).expect("leader"));
+    }
+
+    #[test]
+    fn recovered_deploy_leader_fails_closed_without_an_eligible_validator() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        set_last_finalized_height(&mut snapshot, 0);
+
+        assert_eq!(recovered_deploy_leader(&snapshot).expect("leader"), None);
+        assert!(!is_recovered_deploy_leader(&snapshot, &validator_identity(1)).expect("leader"));
+    }
+
+    #[test]
+    fn recovered_deploy_leadership_is_unique_within_each_finalized_view() {
+        let validators = vec![validator(3), validator(1), validator(2), validator(2)];
+        for height in 0..12 {
+            let mut snapshot =
+                crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+            snapshot.on_chain_state.active_validators = validators.clone();
+            set_last_finalized_height(&mut snapshot, height);
+
+            let elected: Vec<_> = (1..=3)
+                .filter(|byte| {
+                    is_recovered_deploy_leader(&snapshot, &validator_identity(*byte))
+                        .expect("leader")
+                })
+                .collect();
+            assert_eq!(elected.len(), 1, "finalized view {height}");
+            assert_eq!(elected[0], (height % 3 + 1) as u8);
+        }
+    }
+
+    #[test]
+    fn self_chain_filter_keeps_only_selected_recoveries() {
+        let recovered = construct_deploy::basic_deploy_data(51, None, Some("test".to_string()))
+            .expect("recovered deploy");
+        let ordinary = construct_deploy::basic_deploy_data(52, None, Some("test".to_string()))
+            .expect("ordinary deploy");
+        let unrelated = construct_deploy::basic_deploy_data(53, None, Some("test".to_string()))
+            .expect("unrelated deploy");
+        let mut deploys = HashSet::from([recovered.clone(), ordinary.clone(), unrelated.clone()]);
+        let self_chain = HashSet::from([recovered.sig.clone(), ordinary.sig.clone()]);
+        let selected_recoveries = HashSet::from([recovered.sig.clone()]);
+
+        let removed = filter_self_chain_deploys(&mut deploys, &self_chain, &selected_recoveries);
+
+        assert_eq!(removed, 1);
+        assert!(deploys.contains(&recovered));
+        assert!(!deploys.contains(&ordinary));
+        assert!(deploys.contains(&unrelated));
+    }
+
+    #[tokio::test]
+    async fn recovery_ancestry_scans_fail_closed_on_missing_committed_bodies() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.last_finalized_block = invalid_block_hash(0xa1);
+
+        let finalized_error = finalized_ancestor_deploy_sigs(&snapshot, &block_store, 0)
+            .expect_err("missing finalized body");
+        assert!(finalized_error
+            .to_string()
+            .contains("scanning finalized deploy ancestry"));
+
+        let scope_error = scope_has_unfinalized_user_deploys(&snapshot, &block_store)
+            .expect_err("missing finalized boundary body");
+        assert!(scope_error
+            .to_string()
+            .contains("reading the finalized boundary for parent-scope recovery"));
+
+        let lag_error = finality_lag_stats(&snapshot, &block_store)
+            .expect_err("missing finalized body for finality lag");
+        assert!(lag_error
+            .to_string()
+            .contains("computing finality-lag admission state"));
     }
 
     #[tokio::test]
@@ -4108,31 +3871,6 @@ mod tests {
             progress.leader,
             Some(validator_identity(3).public_key.bytes)
         );
-    }
-
-    #[test]
-    fn empty_recovery_heartbeat_skip_requires_no_other_work() {
-        assert!(should_skip_empty_recovery_heartbeat(
-            true, false, false, false, false, false
-        ));
-        assert!(!should_skip_empty_recovery_heartbeat(
-            false, false, false, false, false, false
-        ));
-        assert!(!should_skip_empty_recovery_heartbeat(
-            true, true, false, false, false, false
-        ));
-        assert!(!should_skip_empty_recovery_heartbeat(
-            true, false, true, false, false, false
-        ));
-        assert!(!should_skip_empty_recovery_heartbeat(
-            true, false, false, true, false, false
-        ));
-        assert!(!should_skip_empty_recovery_heartbeat(
-            true, false, false, false, true, false
-        ));
-        assert!(!should_skip_empty_recovery_heartbeat(
-            true, false, false, false, false, true
-        ));
     }
 
     #[test]
@@ -4715,134 +4453,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn parent_frontier_above_lfb_requires_empty_vote() {
-        let mut kvm = InMemoryStoreManager::new();
-        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
-            .await
-            .expect("block store");
-        let mut snapshot =
-            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-        let validator_id = validator(1);
-        let lfb_hash = invalid_block_hash(0x61);
-        let parent_hash = invalid_block_hash(0x62);
-        let lfb = test_block(
-            lfb_hash.clone(),
-            validator_id.clone(),
-            Vec::new(),
-            34,
-            Vec::new(),
-        );
-        let parent = test_block(
-            parent_hash.clone(),
-            validator_id,
-            vec![lfb_hash.clone()],
-            37,
-            Vec::new(),
-        );
-        block_store.put_block_message(&lfb).expect("put lfb");
-        block_store.put_block_message(&parent).expect("put parent");
-        snapshot.last_finalized_block = lfb_hash;
-        snapshot.parents = vec![parent.clone()];
-
-        assert!(parent_frontier_extends_lfb(&snapshot, &block_store).expect("frontier check"));
-
-        snapshot
-            .dag
-            .finalized_blocks_set
-            .insert(parent_hash.clone());
-        assert!(!parent_frontier_extends_lfb(&snapshot, &block_store).expect("finalized parent"));
-        snapshot.dag.finalized_blocks_set.remove(&parent_hash);
-
-        snapshot.last_finalized_block = parent_hash;
-        assert!(!parent_frontier_extends_lfb(&snapshot, &block_store).expect("lfb parent"));
-    }
-
-    /// A bonded validator that PoS still considers active is slashable
-    /// when their latest message is invalid. Baseline behavior.
-    #[test]
-    fn bonded_active_equivocator_is_slashable() {
-        let equivocator = validator(0xAA);
-        let invalid_block = invalid_block_hash(0x11);
-
-        let mut invalid_latest_messages = HashMap::new();
-        invalid_latest_messages.insert(equivocator.clone(), invalid_block.clone());
-
-        let mut bonds_map = HashMap::new();
-        bonds_map.insert(equivocator.clone(), 5);
-
-        let active_validators = vec![equivocator.clone()];
-
-        let out = filter_slashable_invalid_messages(
-            invalid_latest_messages,
-            &bonds_map,
-            &active_validators,
-        );
-
-        assert_eq!(out.len(), 1, "bonded active equivocator must be slashable");
-        assert_eq!(out[0].0, equivocator);
-        assert_eq!(out[0].1, invalid_block);
-    }
-
-    /// An equivocator with stake 0 is excluded by the bonded check,
-    /// regardless of active-validator membership. Existing behavior.
-    #[test]
-    fn unbonded_equivocator_filtered_out() {
-        let equivocator = validator(0xBB);
-        let invalid_block = invalid_block_hash(0x22);
-
-        let mut invalid_latest_messages = HashMap::new();
-        invalid_latest_messages.insert(equivocator.clone(), invalid_block);
-
-        let mut bonds_map = HashMap::new();
-        bonds_map.insert(equivocator.clone(), 0);
-
-        let active_validators = vec![equivocator];
-
-        let out = filter_slashable_invalid_messages(
-            invalid_latest_messages,
-            &bonds_map,
-            &active_validators,
-        );
-
-        assert!(out.is_empty(), "stake-0 equivocator must not be slashable");
-    }
-
-    /// An equivocator already slashed in a parent block retains stake
-    /// at the bond floor (e.g., 1 in production), satisfying the
-    /// stake > 0 check, but PoS removes them from active_validators.
-    /// The active-validator filter is what stops the proposer from
-    /// emitting redundant SlashDeploys block after block.
-    #[test]
-    fn bonded_but_already_slashed_equivocator_filtered_out() {
-        let equivocator = validator(0xCC);
-        let invalid_block = invalid_block_hash(0x33);
-
-        let mut invalid_latest_messages = HashMap::new();
-        invalid_latest_messages.insert(equivocator.clone(), invalid_block);
-
-        // Bond floor > 0 — equivocator's stake stays at 1 after slash.
-        let mut bonds_map = HashMap::new();
-        bonds_map.insert(equivocator.clone(), 1);
-
-        // PoS has removed the slashed validator from the active set.
-        let active_validators: Vec<Validator> = vec![];
-
-        let out = filter_slashable_invalid_messages(
-            invalid_latest_messages,
-            &bonds_map,
-            &active_validators,
-        );
-
-        assert!(
-            out.is_empty(),
-            "already-slashed equivocator (not in active_validators) must not be \
-             re-slashed even when bond floor > 0 keeps their stake nonzero. If this \
-             fires, prepare_slashing_deploys will emit redundant SlashDeploys every \
-             block until the invalid latest message ages out of the DAG view."
-        );
-    }
-
     /// T-Slash seed-wiring (MainTheorem.v:302, `main_TSlash_deploy_seed_uses_invalid_block_hash`).
     ///
     /// The emitted `SlashDeploy`'s `initial_rand` MUST derive from the offender's OWN
@@ -5079,6 +4689,8 @@ mod tests {
             .expect("block store");
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.parents.clear();
+        seed_empty_last_finalized_block(&mut snapshot, &block_store);
         snapshot
             .on_chain_state
             .shard_conf
@@ -5136,6 +4748,7 @@ mod tests {
             .expect("block store");
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        seed_empty_last_finalized_block(&mut snapshot, &block_store);
         snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -5163,10 +4776,18 @@ mod tests {
             Some("test".to_string()),
         )
         .expect("future deploy");
+        let boundary = construct_deploy::source_deploy_now(
+            "@boundary-buffer!(0)".to_string(),
+            None,
+            Some(-30),
+            Some("test".to_string()),
+        )
+        .expect("boundary deploy");
+        snapshot.rejected_in_scope.insert(boundary.sig.clone());
         rejected_deploy_buffer
             .lock()
             .expect("rejected buffer lock")
-            .add(vec![expired, old, future])
+            .add(vec![expired, old, future, boundary])
             .expect("seed rejected buffer");
 
         assert!(!rejected_buffer_has_recoverable_deploys(
@@ -5219,6 +4840,7 @@ mod tests {
             .expect("block store");
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        seed_empty_last_finalized_block(&mut snapshot, &block_store);
         snapshot
             .on_chain_state
             .shard_conf
@@ -5291,6 +4913,7 @@ mod tests {
             .expect("block store");
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        seed_empty_last_finalized_block(&mut snapshot, &block_store);
         snapshot
             .on_chain_state
             .shard_conf
@@ -5350,6 +4973,7 @@ mod tests {
             .expect("block store");
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        seed_empty_last_finalized_block(&mut snapshot, &block_store);
         snapshot
             .on_chain_state
             .shard_conf
@@ -5423,6 +5047,7 @@ mod tests {
             .expect("block store");
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        seed_empty_last_finalized_block(&mut snapshot, &block_store);
         snapshot
             .on_chain_state
             .shard_conf
@@ -5505,6 +5130,7 @@ mod tests {
             .expect("block store");
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        seed_empty_last_finalized_block(&mut snapshot, &block_store);
         snapshot
             .on_chain_state
             .shard_conf
@@ -5596,6 +5222,7 @@ mod tests {
             .expect("block store");
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        seed_empty_last_finalized_block(&mut snapshot, &block_store);
         snapshot
             .on_chain_state
             .shard_conf
@@ -6004,6 +5631,8 @@ mod tests {
             .expect("block store");
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.parents.clear();
+        seed_empty_last_finalized_block(&mut snapshot, &block_store);
         snapshot
             .on_chain_state
             .shard_conf
@@ -6139,6 +5768,8 @@ mod tests {
             .expect("block store");
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.parents.clear();
+        seed_empty_last_finalized_block(&mut snapshot, &block_store);
         snapshot
             .on_chain_state
             .shard_conf
@@ -6195,6 +5826,8 @@ mod tests {
             .expect("block store");
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.parents.clear();
+        seed_empty_last_finalized_block(&mut snapshot, &block_store);
         snapshot
             .on_chain_state
             .shard_conf
@@ -6236,7 +5869,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recovered_buffered_deploy_is_selected_after_block_expiry() {
+    async fn recovered_buffered_deploy_is_purged_after_block_expiry() {
         let mut kvm = InMemoryStoreManager::new();
         let deploy_storage = Arc::new(parking_lot::Mutex::new(
             KeyValueDeployStorage::new(&mut kvm)
@@ -6253,6 +5886,7 @@ mod tests {
             .expect("block store");
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        seed_empty_last_finalized_block(&mut snapshot, &block_store);
         snapshot
             .on_chain_state
             .shard_conf
@@ -6280,8 +5914,8 @@ mod tests {
             &snapshot,
             20,
             recovered.data.time_stamp,
-            deploy_storage,
-            rejected_deploy_buffer,
+            deploy_storage.clone(),
+            rejected_deploy_buffer.clone(),
             &block_store,
             true,
             true,
@@ -6289,11 +5923,18 @@ mod tests {
         .await
         .expect("prepare deploys");
 
-        assert_eq!(prepared.deploys.len(), 1);
-        assert!(prepared
-            .deploys
+        assert!(prepared.deploys.is_empty());
+        assert!(!deploy_storage
+            .lock()
+            .read_all()
+            .expect("read deploy storage")
             .iter()
             .any(|deploy| deploy.sig == recovered.sig));
+        assert!(!rejected_deploy_buffer
+            .lock()
+            .expect("rejected buffer lock")
+            .contains_sig(&recovered.sig)
+            .expect("rejected buffer contains"));
     }
 
     // A canonical-but-unfinalized win purges only the ordinary-storage copy;

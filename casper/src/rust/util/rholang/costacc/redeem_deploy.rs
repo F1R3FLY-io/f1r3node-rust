@@ -10,14 +10,6 @@
 // `redeemSlashed` is double-gated (`sysAuthToken` AND this `multiSigVerified`
 // boolean); a false verdict rejects with no state change (no restore).
 //
-// Redemption writes NEITHER `Σ⟦v⟧` NOR `@W_v` directly (so there is NO supply
-// `post_eval` here, unlike `SlashDeploy`/`CloseBlockDeploy`): its entire effect is
-// the PoS Rholang state transition (un-halt / restore / penalty-to-coop / clear
-// quarantine + stale epochs), captured by the normal system-deploy checkpoint and
-// replayed via `replay_system_deploy_internal`. A restored validator is re-funded
-// by the NORMAL next-epoch mint (all phlogiston creation stays on the single
-// authorized path; `MintingHalt.v` `halted_validator_supply_not_increased`).
-
 use std::collections::{HashMap, HashSet};
 
 use crypto::rust::hash::blake2b256::Blake2b256;
@@ -26,12 +18,14 @@ use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use models::rhoapi::Par;
 use models::rust::utils::{new_gbool_par, new_gint_par, new_gstring_par};
+use models::rust::validator::Validator;
 use rholang::rust::interpreter::rho_type::{Extractor, RhoBoolean, RhoNil, RhoString};
 use rspace_plus_plus::rspace::history::Either;
 
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::system_deploy::SystemDeployTrait;
 use crate::rust::util::rholang::system_deploy_user_error::SystemDeployUserError;
+use crate::rust::util::rholang::system_deploy_util;
 
 /// Domain-separation tag for the redemption-authorization digest. Binds a
 /// signature to "this is a Cost-Accounted Rho validator-redemption authorization"
@@ -124,10 +118,33 @@ pub struct RedeemDeploy {
     pub pos_multi_sig_quorum: u32,
     /// The cosigner authorizations over [`RedeemDeploy::auth_digest`].
     pub authorizations: Vec<RedemptionAuthorization>,
-    pub initial_rand: Blake2b512Random,
+    initial_rand: Blake2b512Random,
 }
 
 impl RedeemDeploy {
+    pub fn new(
+        validator_pk: Vec<u8>,
+        outcome: RedemptionOutcome,
+        pos_multi_sig_public_keys: Vec<String>,
+        pos_multi_sig_quorum: u32,
+        proposer: Validator,
+        seq_num: i32,
+    ) -> Self {
+        let initial_rand = system_deploy_util::generate_redeem_deploy_random_seed(
+            proposer,
+            seq_num,
+            outcome.tag(),
+        );
+        Self {
+            validator_pk,
+            outcome,
+            pos_multi_sig_public_keys,
+            pos_multi_sig_quorum,
+            authorizations: Vec::new(),
+            initial_rand,
+        }
+    }
+
     /// The canonical redemption-authorization digest the cosigners sign:
     /// `Blake2b256(DOMAIN ++ validatorPk ++ outcomeTag ++ penalty_le_bytes)`.
     /// Domain-separated and outcome-bound, so a signature authorizes exactly THIS
@@ -311,14 +328,14 @@ mod tests {
             keypairs.iter().map(|(_, pk)| hex::encode(pk)).collect();
 
         // Construct the deploy WITHOUT authorizations first to compute the digest.
-        let mut deploy = RedeemDeploy {
+        let mut deploy = RedeemDeploy::new(
             validator_pk,
             outcome,
             pos_multi_sig_public_keys,
-            pos_multi_sig_quorum: quorum,
-            authorizations: Vec::new(),
-            initial_rand: Blake2b512Random::create_from_bytes(&[3_u8; 128]),
-        };
+            quorum,
+            prost::bytes::Bytes::from_static(b"redemption-test-proposer"),
+            1,
+        );
         let digest = deploy.auth_digest();
 
         // Sign with the first `n_signers` authority keys.
@@ -432,5 +449,23 @@ mod tests {
         for p in [&v, &g, &b] {
             assert_eq!(p.exprs.len(), 1, "outcome par is a single tuple expr");
         }
+    }
+
+    #[test]
+    fn redemption_seed_uses_the_serialized_outcome_tag() {
+        let proposer = prost::bytes::Bytes::from_static(b"seed-test-proposer");
+        let deploy = RedeemDeploy::new(
+            b"validator".to_vec(),
+            RedemptionOutcome::Guilty { penalty: 7 },
+            Vec::new(),
+            1,
+            proposer.clone(),
+            9,
+        );
+        assert_eq!(
+            deploy.rand().to_bytes(),
+            system_deploy_util::generate_redeem_deploy_random_seed(proposer, 9, "Guilty")
+                .to_bytes()
+        );
     }
 }

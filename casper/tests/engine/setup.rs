@@ -383,7 +383,7 @@ impl TestFixture {
         casper_shard_conf.synchrony_constraint_threshold = 0.0;
         casper_shard_conf.height_constraint_threshold = i64::MAX;
         casper_shard_conf.deploy_lifespan = 50;
-        casper_shard_conf.casper_version = 1;
+        casper_shard_conf.casper_version = casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION;
         casper_shard_conf.config_version = 1;
         casper_shard_conf.bond_minimum = genesis_params.proof_of_stake.minimum_bond;
         casper_shard_conf.bond_maximum = genesis_params.proof_of_stake.maximum_bond;
@@ -448,6 +448,8 @@ impl TestFixture {
             genesis_params.proof_of_stake.max_cosigners_per_deploy,
             genesis_params.proof_of_stake.initial_phlogiston,
             genesis_params.proof_of_stake.epoch_phlogiston,
+            casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+            genesis_params.client_fuel_allocations.clone(),
             genesis_params.native_token_name.clone(),
             genesis_params.native_token_symbol.clone(),
             genesis_params.native_token_decimals,

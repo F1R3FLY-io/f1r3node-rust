@@ -386,6 +386,7 @@ mod tests {
                     source: Some(Par::default()),
                     remainder: None,
                     free_count: 1,
+                    cost_signature: None,
                 }],
                 body: Some(Par::default().prepend_match(Match {
                     target: Some(new_boundvar_par(0, create_bit_vector(&[0]), false)),
@@ -506,6 +507,7 @@ mod tests {
                 }],
                 source: Some(Par::default()),
                 remainder: None,
+                cost_signature: None,
                 free_count: 2,
             }],
             body: Some(Par::default()),

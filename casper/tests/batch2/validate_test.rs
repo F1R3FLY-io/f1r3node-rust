@@ -21,7 +21,7 @@ use crypto::rust::signatures::signed::Signed;
 use models::rust::block_implicits::get_random_block;
 use models::rust::casper::protocol::casper_message;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Bond, DeployData, ProcessedDeploy, RejectedDeploy,
+    BlockMessage, Bond, DeployData, ProcessedDeploy, RejectedDeploy, RejectedDeployReason,
 };
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
@@ -943,6 +943,35 @@ async fn repeat_deploy_validation_should_return_valid_for_empty_blocks() {
     .await
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_validation_rejects_duplicate_signatures_within_one_block() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let block = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![deploy.clone(), deploy]),
+            None,
+            None,
+            None,
+            None,
+        );
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut casper_snapshot = mk_casper_snapshot(dag);
+
+        assert_eq!(
+            Validate::repeat_deploy(&block, &mut casper_snapshot, &block_store, 50),
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
+        );
+    })
+    .await
+}
+
 //Test 18: "Repeat deploy validation" should "not accept blocks with a repeated deploy"
 // +
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1081,11 +1110,11 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
             None,
             None,
         );
-        block_m.body.rejected_deploys = vec![
-            models::rust::casper::protocol::casper_message::RejectedDeploy::legacy(
-                deploy_sig.clone(),
-            ),
-        ];
+        block_m.body.rejected_deploys = vec![RejectedDeploy::occurrence(
+            deploy_sig.clone(),
+            block_x.block_hash.clone(),
+            RejectedDeployReason::MergeConflict,
+        )];
         block_store
             .put(block_m.block_hash.clone(), &block_m)
             .unwrap();
@@ -2442,7 +2471,10 @@ async fn block_version_validation_should_work() {
         let result = Validate::version(&genesis, -1);
         assert!(!result);
 
-        let result = Validate::version(&genesis, 1);
+        let result = Validate::version(
+            &genesis,
+            casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+        );
         assert!(result);
     })
     .await

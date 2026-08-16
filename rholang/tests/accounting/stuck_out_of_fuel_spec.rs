@@ -29,7 +29,7 @@
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
 use rholang::rust::interpreter::accounting::costs::Cost;
-use rholang::rust::interpreter::accounting::BillableKind;
+use rholang::rust::interpreter::accounting::{BillableKind, Sig};
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::test_utils::resources::create_runtimes;
@@ -64,6 +64,10 @@ async fn cell_values(runtime: &RhoRuntimeImpl, name: &str) -> Vec<i64> {
 }
 
 async fn eval(runtime: &mut RhoRuntimeImpl, contract: &str) -> EvaluateResult {
+    runtime.cost.set_deploy_signature_funded(
+        b"stuck-out-of-fuel-spec-deploy",
+        Sig::Ground(b"stuck-out-of-fuel-spec-payer".to_vec()),
+    );
     runtime
         .evaluate_with_phlo(contract, Cost::create(1_000_000, "stuck_out_of_fuel_spec"))
         .await
@@ -151,13 +155,13 @@ async fn stuck_gate_is_isolated_from_a_concurrent_runnable_process() {
 /// contains a full COMM interaction contributes ZERO completed body interactions
 /// while parked. We compare the gate's COMM tally to the SAME body run UNGATED:
 /// ungated the body's interaction completes (its extra COMMs fire + its effect
-/// lands); gated-and-stuck it does not. The only COMM the stuck term bills is the
-/// gate receiver's own install — the body's interaction never advances.
+/// lands); gated-and-stuck it does not. An unmatched gate receiver is free, so
+/// the stuck term bills no COMM.
 #[tokio::test]
 async fn stuck_gate_body_consumes_nothing_versus_ungated_baseline() {
     // BASELINE: the body run UNGATED — a self-contained interaction that moves 5
-    // onto "out". It runs to completion: `inner!(5)` send + `for(@v <- inner)`
-    // receive + the body's `@"out"!(v)` send = 3 COMMs, and "out" ends holding 5.
+    // onto "out". The inner send and receive form one atomic COMM; the final
+    // output is unmatched and therefore free.
     let mut baseline_rt = fresh_runtime().await;
     const UNGATED_BODY: &str = r#"new inner in { inner!(5) | for(@v <- inner){ @"out"!(v) } }"#;
     let baseline = eval(&mut baseline_rt, UNGATED_BODY).await;
@@ -165,8 +169,8 @@ async fn stuck_gate_body_consumes_nothing_versus_ungated_baseline() {
     let baseline_comms = comm_count(&baseline_rt);
     let baseline_out = cell_values(&baseline_rt, "out").await;
     assert_eq!(
-        baseline_comms, 3,
-        "the ungated body completes its full interaction (3 COMMs)"
+        baseline_comms, 1,
+        "the ungated body completes one atomic interaction"
     );
     assert_eq!(
         baseline_out,
@@ -175,9 +179,8 @@ async fn stuck_gate_body_consumes_nothing_versus_ungated_baseline() {
     );
 
     // STUCK: the SAME body, now GATED behind an empty supply channel. The gate
-    // receiver installs (1 COMM) but never fires, so the body's inner
-    // interaction never advances — it consumes none of its COMMs and "out" stays
-    // empty.
+    // receiver parks without a match, so it costs zero and the body's inner
+    // interaction never advances.
     let mut stuck_rt = fresh_runtime().await;
     const GATED_BODY: &str = r#"new sigma_s in {
         for(t <- sigma_s){ *t | new inner in { inner!(5) | for(@v <- inner){ @"out"!(v) } } }
@@ -197,16 +200,14 @@ async fn stuck_gate_body_consumes_nothing_versus_ungated_baseline() {
         "the gated body must consume nothing while stuck (found {:?})",
         stuck_out
     );
-    // The stuck term bills strictly FEWER COMMs than the completed baseline — the
-    // body's interaction (the baseline's 2 COMMs) never advanced; only the gate
-    // receiver's own install is billed.
+    // The stuck term bills strictly fewer COMMs than the completed baseline.
     assert!(
         stuck_comms < baseline_comms,
         "the stuck body must advance strictly fewer COMMs than the completed baseline \
          (stuck={stuck_comms}, baseline={baseline_comms})"
     );
     assert_eq!(
-        stuck_comms, 1,
-        "only the stuck gate receiver's own install bills a COMM; the body advances none"
+        stuck_comms, 0,
+        "an unmatched gate receiver is free and the body advances none"
     );
 }

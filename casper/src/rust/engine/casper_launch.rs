@@ -159,23 +159,18 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             synchrony_constraint_threshold: conf.synchrony_constraint_threshold,
             height_constraint_threshold: conf.height_constraint_threshold,
             deploy_lifespan: 50,
-            casper_version: 1,
+            casper_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
             config_version: 1,
             bond_minimum: conf.genesis_block_data.bond_minimum,
             bond_maximum: conf.genesis_block_data.bond_maximum,
             epoch_length: conf.genesis_block_data.epoch_length,
             quarantine_length: conf.genesis_block_data.quarantine_length,
             min_phlo_price: conf.min_phlo_price,
-            // Task #13a: spec-strict acceptance-gate activation, wired from the
-            // shard-genesis `CasperConf` (default OFF = back-compat). Same
-            // shard constant on every node ⇒ the gate verdict is
-            // replay-deterministic (mirrors `min_phlo_price` directly above).
-            strict_funding_enforcement: conf.strict_funding_enforcement,
             // Task #13b: genesis client funding-slot allocations, wired from the
             // shard-genesis `GenesisBlockData` (default EMPTY = back-compat) and
             // hex-lowered once here so a malformed key fails fast at launch. Same
-            // shard constant on every node ⇒ the block-1 client seed is
-            // replay-deterministic (mirrors `strict_funding_enforcement` above).
+            // shard constant on every node ⇒ the genesis client seed is
+            // replay-deterministic.
             client_fuel_allocations: conf
                 .genesis_block_data
                 .lowered_client_fuel_allocations()
@@ -204,7 +199,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             // (`FINALIZER_BLOCKING_TIMEOUT = 15s`,
             // `MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES = 4096`). When CasperConf
             // gains corresponding fields, plumb them through here.
-            finalizer_blocking_timeout: std::time::Duration::from_secs(15),
             active_validators_cache_max_entries: 4096,
         };
 
@@ -378,6 +372,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         let genesis_post_state_hash = ab.body.state.post_state_hash.clone();
 
         let casper = self.create_casper(validator_id.clone(), ab).await?;
+        let adopted_casper_shard_conf = casper.casper_shard_conf().clone();
         let casper_arc = Arc::new(casper);
 
         // Scala equivalent: init = for { _ <- askPeersForForkChoiceTips; _ <- sendBufferPendantsToCasper(casper); _ <- proposeFOpt.traverse(...) } yield ()
@@ -461,7 +456,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                 engine_cell: self.engine_cell.clone(),
                 runtime_manager: self.runtime_manager.clone(),
                 estimator: self.estimator.clone(),
-                casper_shard_conf: self.casper_shard_conf.clone(),
+                casper_shard_conf: adopted_casper_shard_conf,
                 heartbeat_signal_ref: self.heartbeat_signal_ref.clone(),
             }),
             &self.engine_cell,
@@ -552,6 +547,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.max_cosigners_per_deploy,
             self.conf.genesis_block_data.initial_phlogiston,
             self.conf.genesis_block_data.epoch_phlogiston,
+            self.casper_shard_conf.casper_version,
+            self.casper_shard_conf.client_fuel_allocations.clone(),
             self.conf.genesis_block_data.native_token_name.clone(),
             self.conf.genesis_block_data.native_token_symbol.clone(),
             self.conf.genesis_block_data.native_token_decimals,
@@ -653,6 +650,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.max_cosigners_per_deploy,
             self.conf.genesis_block_data.initial_phlogiston,
             self.conf.genesis_block_data.epoch_phlogiston,
+            self.casper_shard_conf.casper_version,
+            self.casper_shard_conf.client_fuel_allocations.clone(),
             self.conf.genesis_block_data.native_token_name.clone(),
             self.conf.genesis_block_data.native_token_symbol.clone(),
             self.conf.genesis_block_data.native_token_decimals,

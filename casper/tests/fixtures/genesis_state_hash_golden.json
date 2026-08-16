@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "purpose": "Phase 4.14 — golden record of the post-Map-in-MVar genesis empty state hash and the Phase 1-3 multi-sig domain-separator constants. Companion to `RuntimeManager::empty_state_hash_fixed()` (in-code) and `runtime_spec.rs::empty_state_hash_should_be_the_same_as_hard_coded_cached_value`.",
-  "recorded_at": "2026-05-25",
+  "recorded_at": "2026-08-13",
   "recorded_for_branch": "feature/cost-accounted-rho",
-  "empty_state_hash_hex": "cb7480d13e774ef931c0d22379cbe4deb6fed0f096d7ff93d507a2b3276d7efe",
-  "empty_state_hash_origin": "RuntimeManager::empty_state_hash_fixed() at casper/src/rust/util/rholang/runtime_manager.rs:1328",
+  "empty_state_hash_hex": "b38db9a0203b6b9cf5987024f325b83da33be5c1b820b3f86fd979578f2985d5",
+  "empty_state_hash_origin": "RuntimeManager::empty_state_hash_fixed() at casper/src/rust/util/rholang/runtime_manager.rs",
   "domain_separators": {
     "legacy_single_signature_v1": "f1r3node:cost-accounted-rho:deploy-signature:v1",
     "compound_multi_signature_v1": "f1r3node:cost-accounted-rho:compound-deploy-signature:v1",
@@ -25,5 +25,9 @@
     "description": "rho:system:capabilities (Phase 4.16) is bootstrapped at genesis via standard_deploys::capabilities_registry. Its registry URI is content-addressed from the pubkey hash; changing the CAPABILITIES_REGISTRY_PK constant will drift this golden.",
     "registry_uri_origin": "Registry::build_uri(&Blake2b256::hash(pub_key.bytes))",
     "pub_key_hex_in_standard_deploys": "0c93f4a9b25d6e1f378203f4b09e8c43d17ab2c4e5f6a18b3294c02765a1f450"
+  },
+  "authority_state_schema": {
+    "description": "CostAuthority and CostStack fields on persisted RSpace continuations and data provide consensus-visible located-resource identity. Their canonical encoding changes the empty state root even when optional authority is absent.",
+    "protocol_version": 4
   }
 }

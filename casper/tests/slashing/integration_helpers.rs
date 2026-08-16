@@ -7,22 +7,102 @@
 
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
-use casper::rust::casper::Casper;
+use casper::rust::casper::{Casper, CasperSnapshot};
 use casper::rust::errors::CasperError;
 use casper::rust::util::proto_util;
 use casper::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
 use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
 use casper::rust::util::rholang::{interpreter_util, system_deploy_util};
-use crypto::rust::signatures::signed::Signed;
-use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
+use crypto::rust::signatures::signed::{Cosigned, Signed};
+use models::rust::block::state_hash::StateHash;
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::protocol::casper_message::{
+    BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy,
+};
+use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::system_processes::BlockData;
 
 use super::production_adapter::SlashingProductionAdapter;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisContext;
+
+type CostAccountedCheckpoint = (
+    StateHash,
+    StateHash,
+    Vec<ProcessedDeploy>,
+    Vec<RejectedDeploy>,
+    Vec<ProcessedSystemDeploy>,
+    Vec<Bond>,
+);
+
+async fn compute_cost_accounted_checkpoint(
+    producing_node: &mut TestNode,
+    snapshot: &CasperSnapshot,
+    parents: Vec<BlockMessage>,
+    deploys: Vec<Signed<DeployData>>,
+    block_data: BlockData,
+    invalid_blocks: HashMap<BlockHash, Validator>,
+) -> Result<CostAccountedCheckpoint, CasperError> {
+    let latest_messages: BTreeMap<Validator, BlockHash> = snapshot
+        .justifications
+        .iter()
+        .map(|justification| {
+            (
+                justification.validator.clone(),
+                justification.latest_block_hash.clone(),
+            )
+        })
+        .collect();
+    let (pre_state, _) = interpreter_util::compute_parents_post_state(
+        &producing_node.block_store,
+        parents.clone(),
+        snapshot,
+        &producing_node.runtime_manager,
+        &latest_messages,
+        None,
+        Some(&producing_node.rejected_deploy_buffer),
+    )
+    .await?;
+    let cosigned = deploys
+        .into_iter()
+        .map(Cosigned::from_single_signer)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+    let admission = producing_node
+        .runtime_manager
+        .certify_state_bound_admission(&pre_state, cosigned, &block_data, &invalid_blocks)
+        .await?;
+    let outcome = admission.outcome();
+    if !outcome.rejected.is_empty() {
+        return Err(CasperError::InvalidCostSettlement(format!(
+            "test checkpoint rejected {} deploys during state-bound admission",
+            outcome.rejected.len()
+        )));
+    }
+    let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy::new(
+        system_deploy_util::generate_close_deploy_random_seed_from_pk(
+            block_data.sender.clone(),
+            block_data.seq_num,
+        ),
+    ))];
+
+    interpreter_util::compute_deploys_checkpoint_cosigned_admitted(
+        &mut producing_node.block_store,
+        parents,
+        outcome.admitted.clone(),
+        system_deploys,
+        snapshot,
+        &producing_node.runtime_manager,
+        block_data,
+        invalid_blocks,
+        Some(&producing_node.rejected_deploy_buffer),
+        admission,
+    )
+    .await
+}
 
 /// Capture a production-tier snapshot at the post-state hash of
 /// `block`. Reads bonds and active set from the node's
@@ -169,43 +249,14 @@ pub async fn equivocate_block(
         seq_num: next_seq_num,
     };
 
-    // System deploys: just CloseBlock. No SlashDeploys (this is the
-    // Byzantine validator's first-equivocation block — it would not
-    // self-slash).
-    // Cost-Accounted Rho Stage D (F-D carve): this helper replicates
-    // `block_creator::create`'s close deploy MANUALLY. The conserving FeeExtract is
-    // now a per-CLIENT carve from each funded client's `Σ⟦c⟧` (not a mint), which
-    // replay RECOMPUTES from the block's admitted client deploys. These slashing
-    // fixtures provision NO funded cost-accounted client pools for `alt_deploys`
-    // (they exercise the slash path), so the recomputed carve is empty ⇒ `None` on
-    // BOTH play and replay — byte-identical (no fee write at closeBlock).
-    let close_fee_carve: Option<casper::rust::util::rholang::acceptance::FeeCarve> = None;
-    let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy {
-        initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
-            validator_identity.public_key.clone(),
-            next_seq_num,
-        ),
-        settlement_debits: Default::default(),
-        fee_carve: close_fee_carve,
-        // Task #13b: slashing-flow test fixtures provision no genesis client
-        // funding slots (these helpers exercise the slash path, not block 1).
-        client_fuel_allocations: Vec::new(),
-    })];
-
     let invalid_blocks = snapshot.invalid_blocks.clone();
-
-    // Compute checkpoint via the real interpreter — this is what
-    // gives us a post-state hash that matches replay.
-    let checkpoint = interpreter_util::compute_deploys_checkpoint(
-        &mut producing_node.block_store,
+    let checkpoint = compute_cost_accounted_checkpoint(
+        producing_node,
+        &snapshot,
         parents.clone(),
         alt_deploys,
-        system_deploys,
-        &snapshot,
-        &producing_node.runtime_manager,
         block_data.clone(),
         invalid_blocks,
-        Some(&producing_node.rejected_deploy_buffer),
     )
     .await?;
 
@@ -327,31 +378,14 @@ pub async fn propose_with_explicit_justifications(
     // fixtures provision NO funded cost-accounted client pools for `alt_deploys`
     // (they exercise the slash path), so the recomputed carve is empty ⇒ `None` on
     // BOTH play and replay — byte-identical (no fee write at closeBlock).
-    let close_fee_carve: Option<casper::rust::util::rholang::acceptance::FeeCarve> = None;
-    let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy {
-        initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
-            validator_identity.public_key.clone(),
-            next_seq_num,
-        ),
-        settlement_debits: Default::default(),
-        fee_carve: close_fee_carve,
-        // Task #13b: slashing-flow test fixtures provision no genesis client
-        // funding slots (these helpers exercise the slash path, not block 1).
-        client_fuel_allocations: Vec::new(),
-    })];
-
     let invalid_blocks = snapshot.invalid_blocks.clone();
-
-    let checkpoint = interpreter_util::compute_deploys_checkpoint(
-        &mut producing_node.block_store,
+    let checkpoint = compute_cost_accounted_checkpoint(
+        producing_node,
+        &snapshot,
         parents.clone(),
         alt_deploys,
-        system_deploys,
-        &snapshot,
-        &producing_node.runtime_manager,
         block_data.clone(),
         invalid_blocks,
-        Some(&producing_node.rejected_deploy_buffer),
     )
     .await?;
 
@@ -507,31 +541,14 @@ pub async fn propose_with_block_mutation(
     // fixtures provision NO funded cost-accounted client pools for `alt_deploys`
     // (they exercise the slash path), so the recomputed carve is empty ⇒ `None` on
     // BOTH play and replay — byte-identical (no fee write at closeBlock).
-    let close_fee_carve: Option<casper::rust::util::rholang::acceptance::FeeCarve> = None;
-    let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy {
-        initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
-            validator_identity.public_key.clone(),
-            next_seq_num,
-        ),
-        settlement_debits: Default::default(),
-        fee_carve: close_fee_carve,
-        // Task #13b: slashing-flow test fixtures provision no genesis client
-        // funding slots (these helpers exercise the slash path, not block 1).
-        client_fuel_allocations: Vec::new(),
-    })];
-
     let invalid_blocks = snapshot.invalid_blocks.clone();
-
-    let checkpoint = interpreter_util::compute_deploys_checkpoint(
-        &mut producing_node.block_store,
+    let checkpoint = compute_cost_accounted_checkpoint(
+        producing_node,
+        &snapshot,
         parents.clone(),
         alt_deploys,
-        system_deploys,
-        &snapshot,
-        &producing_node.runtime_manager,
         block_data.clone(),
         invalid_blocks,
-        Some(&producing_node.rejected_deploy_buffer),
     )
     .await?;
 
@@ -662,31 +679,14 @@ pub async fn propose_neglecting_block(
     // fixtures provision NO funded cost-accounted client pools for `alt_deploys`
     // (they exercise the slash path), so the recomputed carve is empty ⇒ `None` on
     // BOTH play and replay — byte-identical (no fee write at closeBlock).
-    let close_fee_carve: Option<casper::rust::util::rholang::acceptance::FeeCarve> = None;
-    let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy {
-        initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
-            validator_identity.public_key.clone(),
-            next_seq_num,
-        ),
-        settlement_debits: Default::default(),
-        fee_carve: close_fee_carve,
-        // Task #13b: slashing-flow test fixtures provision no genesis client
-        // funding slots (these helpers exercise the slash path, not block 1).
-        client_fuel_allocations: Vec::new(),
-    })];
-
     let invalid_blocks = snapshot.invalid_blocks.clone();
-
-    let checkpoint = interpreter_util::compute_deploys_checkpoint(
-        &mut producing_node.block_store,
+    let checkpoint = compute_cost_accounted_checkpoint(
+        producing_node,
+        &snapshot,
         parents.clone(),
         alt_deploys,
-        system_deploys,
-        &snapshot,
-        &producing_node.runtime_manager,
         block_data.clone(),
         invalid_blocks,
-        Some(&producing_node.rejected_deploy_buffer),
     )
     .await?;
 

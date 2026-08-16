@@ -49,7 +49,7 @@ fn mk_casper_snapshot(
         synchrony_constraint_threshold: 0.0,
         height_constraint_threshold: 0,
         deploy_lifespan: 50,
-        casper_version: 1,
+        casper_version: casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
         config_version: 1,
         bond_minimum: 0,
         bond_maximum: i64::MAX,

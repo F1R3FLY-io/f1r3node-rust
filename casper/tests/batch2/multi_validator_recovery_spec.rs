@@ -197,7 +197,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
         Some(genesis_state.clone()),
         Some(StateHash::default()),
         Some(validator_0.clone()),
-        Some(1),
+        Some(casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION),
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
@@ -249,7 +249,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
         Some(genesis_state.clone()),
         Some(StateHash::default()),
         Some(validator_1.clone()),
-        Some(1),
+        Some(casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION),
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
@@ -316,7 +316,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (_merged_state, rejected_sigs, rejected_slashes) = compute_parents_post_state(
+    let (_merged_state, rejected_sigs) = compute_parents_post_state(
         &block_store,
         vec![r0.clone(), r1.clone()],
         &snapshot,
@@ -327,13 +327,6 @@ for(@_v <- @"multi-validator-shared") { Nil }
     )
     .await
     .expect("compute_parents_post_state over [R0, R1]");
-
-    assert!(
-        rejected_slashes.is_empty(),
-        "no system slashes are involved in this fixture; rejected_slashes \
-         must be empty (got {} entries)",
-        rejected_slashes.len()
-    );
 
     let rejected_set: HashSet<prost::bytes::Bytes> = rejected_sigs
         .iter()

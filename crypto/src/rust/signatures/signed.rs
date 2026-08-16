@@ -171,7 +171,7 @@ impl<A: std::fmt::Debug + serde::Serialize + ToMessage> Cosigned<A> {
 
         // Verify each signer against the canonical message hash. Each
         // signer's algorithm dictates the hash function (Blake2b256 for
-        // most; Keccak256 with Ethereum prefix for secp256k1-eth; etc.).
+        // most; Keccak256 with Ethereum prefix for secp256k1:eth; etc.).
         let serialized_data = data.to_message().encode_to_vec();
         for (i, signer) in canonical.iter().enumerate() {
             let hash =
@@ -675,6 +675,29 @@ mod cosigned_tests {
             }
             other => panic!("expected InvalidQuorumThreshold, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn cosigned_threshold_rejects_empty_signer_list() {
+        let payload = TestPayload {
+            term: "threshold_empty".to_string(),
+            nonce: 100,
+        };
+        let err = Cosigned::from_signed_data_threshold(payload, vec![], 1)
+            .expect_err("empty threshold signer list must reject");
+        assert!(matches!(err, CosignedError::EmptySignerList));
+    }
+
+    #[test]
+    fn cosigned_threshold_rejects_duplicate_signer() {
+        let payload = TestPayload {
+            term: "threshold_duplicate".to_string(),
+            nonce: 100,
+        };
+        let signer = fresh_signer_for(&payload);
+        let err = Cosigned::from_signed_data_threshold(payload, vec![signer.clone(), signer], 1)
+            .expect_err("duplicate threshold signer must reject");
+        assert!(matches!(err, CosignedError::DuplicateSigner { .. }));
     }
 
     #[test]

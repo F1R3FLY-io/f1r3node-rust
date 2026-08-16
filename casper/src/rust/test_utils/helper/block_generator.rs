@@ -12,7 +12,7 @@ use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Bond, Justification, ProcessedDeploy,
+    BlockMessage, Bond, Justification, ProcessedDeploy, ProcessedSystemDeploy,
 };
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::system_processes::BlockData;
@@ -35,13 +35,14 @@ pub async fn step(
     block: &BlockMessage,
 ) -> Result<(), CasperError> {
     let dag = block_dag_storage.get_representation()?;
-    let (pre_state_hash, post_state_hash, processed_deploys) = compute_block_checkpoint(
-        block_store,
-        block,
-        &mk_casper_snapshot(dag),
-        runtime_manager,
-    )
-    .await?;
+    let (pre_state_hash, post_state_hash, processed_deploys, processed_system_deploys) =
+        compute_block_checkpoint(
+            block_store,
+            block,
+            &mk_casper_snapshot(dag),
+            runtime_manager,
+        )
+        .await?;
 
     inject_state_hashes(
         block_store,
@@ -50,6 +51,7 @@ pub async fn step(
         pre_state_hash,
         post_state_hash,
         processed_deploys,
+        processed_system_deploys,
     )
 }
 
@@ -58,27 +60,41 @@ async fn compute_block_checkpoint(
     block: &BlockMessage,
     casper_snapshot: &CasperSnapshot,
     runtime_manager: &mut RuntimeManager,
-) -> Result<(StateHash, StateHash, Vec<ProcessedDeploy>), CasperError> {
+) -> Result<
+    (
+        StateHash,
+        StateHash,
+        Vec<ProcessedDeploy>,
+        Vec<ProcessedSystemDeploy>,
+    ),
+    CasperError,
+> {
     let parents = proto_util::get_parents(block_store, block);
     let deploys = proto_util::deploys(block)
         .into_iter()
         .map(|d| d.deploy)
         .collect();
 
-    let (pre_state_hash, post_state_hash, processed_deploys, _, _, _) = compute_deploys_checkpoint(
-        block_store,
-        parents,
-        deploys,
-        Vec::<SystemDeployEnum>::new(),
-        casper_snapshot,
-        runtime_manager,
-        BlockData::from_block(block),
-        HashMap::new(),
-        None,
-    )
-    .await?;
+    let (pre_state_hash, post_state_hash, processed_deploys, _, processed_system_deploys, _) =
+        compute_deploys_checkpoint(
+            block_store,
+            parents,
+            deploys,
+            Vec::<SystemDeployEnum>::new(),
+            casper_snapshot,
+            runtime_manager,
+            BlockData::from_block(block),
+            HashMap::new(),
+            None,
+        )
+        .await?;
 
-    Ok((pre_state_hash, post_state_hash, processed_deploys))
+    Ok((
+        pre_state_hash,
+        post_state_hash,
+        processed_deploys,
+        processed_system_deploys,
+    ))
 }
 
 fn inject_state_hashes(
@@ -88,11 +104,13 @@ fn inject_state_hashes(
     pre_state_hash: StateHash,
     post_state_hash: StateHash,
     processed_deploys: Vec<ProcessedDeploy>,
+    processed_system_deploys: Vec<ProcessedSystemDeploy>,
 ) -> Result<(), CasperError> {
     let mut updated_block = block.clone();
     updated_block.body.state.pre_state_hash = pre_state_hash;
     updated_block.body.state.post_state_hash = post_state_hash;
     updated_block.body.deploys = processed_deploys;
+    updated_block.body.system_deploys = processed_system_deploys;
     block_store.put(block.block_hash.clone(), &updated_block)?;
     block_dag_storage.insert(
         &updated_block,
@@ -113,6 +131,34 @@ pub fn build_block(
     pre_state_hash: Option<StateHash>,
     seq_num: Option<i32>,
 ) -> BlockMessage {
+    build_block_with_system_deploys(
+        parents_hash_list,
+        creator,
+        now,
+        bonds,
+        justifications,
+        deploys,
+        post_state_hash,
+        shard_id,
+        pre_state_hash,
+        seq_num,
+        None,
+    )
+}
+
+pub fn build_block_with_system_deploys(
+    parents_hash_list: Vec<BlockHash>,
+    creator: Option<Validator>,
+    now: i64,
+    bonds: Option<Vec<Bond>>,
+    justifications: Option<Vec<Justification>>,
+    deploys: Option<Vec<ProcessedDeploy>>,
+    post_state_hash: Option<StateHash>,
+    shard_id: Option<String>,
+    pre_state_hash: Option<StateHash>,
+    seq_num: Option<i32>,
+    system_deploys: Option<Vec<ProcessedSystemDeploy>>,
+) -> BlockMessage {
     let creator = creator.unwrap_or_default();
     let bonds = bonds.unwrap_or_default();
     let justifications = justifications.unwrap_or_default();
@@ -121,6 +167,7 @@ pub fn build_block(
     let shard_id = shard_id.unwrap_or("root".to_string());
     let pre_state_hash = pre_state_hash.unwrap_or_default();
     let seq_num = seq_num.unwrap_or(0);
+    let system_deploys = system_deploys.unwrap_or_default();
 
     block_implicits::get_random_block(
         None,
@@ -128,12 +175,12 @@ pub fn build_block(
         Some(pre_state_hash),
         Some(post_state_hash),
         Some(creator),
-        None,
+        Some(crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION),
         Some(now),
         Some(parents_hash_list),
         Some(justifications),
         Some(deploys),
-        None,
+        Some(system_deploys),
         Some(bonds),
         Some(shard_id),
         None,
@@ -205,6 +252,40 @@ pub fn create_block(
     seq_num: Option<i32>,
     invalid: Option<bool>,
 ) -> BlockMessage {
+    create_block_with_system_deploys(
+        block_store,
+        indexed_block_dag_storage,
+        parents_hash_list,
+        genesis,
+        creator,
+        bonds,
+        justifications,
+        deploys,
+        post_state_hash,
+        shard_id,
+        pre_state_hash,
+        seq_num,
+        invalid,
+        None,
+    )
+}
+
+pub fn create_block_with_system_deploys(
+    block_store: &mut KeyValueBlockStore,
+    indexed_block_dag_storage: &mut IndexedBlockDagStorage,
+    parents_hash_list: Vec<BlockHash>,
+    genesis: &BlockMessage,
+    creator: Option<Validator>,
+    bonds: Option<Vec<Bond>>,
+    justifications: Option<std::collections::HashMap<Validator, BlockHash>>,
+    deploys: Option<Vec<ProcessedDeploy>>,
+    post_state_hash: Option<StateHash>,
+    shard_id: Option<String>,
+    pre_state_hash: Option<StateHash>,
+    seq_num: Option<i32>,
+    invalid: Option<bool>,
+    system_deploys: Option<Vec<ProcessedSystemDeploy>>,
+) -> BlockMessage {
     let creator = creator.unwrap_or_default();
     let bonds = bonds.unwrap_or_default();
     let justifications = justifications
@@ -227,7 +308,7 @@ pub fn create_block(
         .unwrap()
         .as_millis() as i64;
 
-    let block = build_block(
+    let block = build_block_with_system_deploys(
         parents_hash_list,
         Some(creator),
         now,
@@ -238,6 +319,7 @@ pub fn create_block(
         Some(shard_id),
         Some(pre_state_hash),
         Some(seq_num),
+        system_deploys,
     );
 
     let modified_block = indexed_block_dag_storage

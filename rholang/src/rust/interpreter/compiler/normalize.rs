@@ -419,7 +419,7 @@ pub fn normalize_ann_proc<'ast>(
             });
             if has_signed_bind {
                 use crate::rust::interpreter::compiler::normalizer::cost_accounting::recognize::recognize_signed_join;
-                recognize_signed_join(receipts, *continuation, proc.span, input, _env, parser)
+                recognize_signed_join(receipts, continuation, input, _env, parser)
             } else {
                 use crate::rust::interpreter::compiler::normalizer::processes::p_input_normalizer::normalize_p_input;
                 normalize_p_input(receipts, continuation, input, _env, parser)

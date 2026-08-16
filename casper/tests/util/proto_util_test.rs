@@ -3,8 +3,11 @@
 use std::collections::HashSet;
 
 use casper::rust::util::{construct_deploy, proto_util};
-use models::rust::block_implicits::block_element_gen;
+use crypto::rust::public_key::PublicKey;
+use models::rust::block_implicits::{block_element_gen, block_hash_gen};
+use models::rust::casper::protocol::casper_message::{ProcessedSystemDeploy, SystemDeployData};
 use proptest::prelude::*;
+use proptest::strategy::ValueTree;
 use prost::bytes::Bytes;
 
 use crate::helper::test_node::TestNode;
@@ -12,9 +15,36 @@ use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
 proptest! {
     #[test]
-    fn dependencies_hashes_of_should_return_hashes_of_all_justifications_and_parents_of_a_block(
-        block in block_element_gen(None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+    fn dependencies_hashes_of_returns_exact_block_dependency_set(
+        mut block in block_element_gen(None, None, None, None, None, None, None, None, None, None, None, None, None, None),
+        slash_hashes in prop::collection::vec(block_hash_gen(), 0..5),
     ) {
+        block.body.system_deploys = slash_hashes
+            .iter()
+            .cloned()
+            .map(|invalid_block_hash| ProcessedSystemDeploy::Succeeded {
+                event_list: vec![],
+                system_deploy: SystemDeployData::Slash {
+                    invalid_block_hash,
+                    issuer_public_key: PublicKey::from_bytes(&[]),
+                    target_activation_epoch: 0,
+                },
+                pre_state_hash: Bytes::new(),
+                post_state_hash: Bytes::new(),
+            })
+            .chain(std::iter::once(ProcessedSystemDeploy::Succeeded {
+                event_list: vec![],
+                system_deploy: SystemDeployData::CloseBlockSystemDeployData,
+                pre_state_hash: Bytes::new(),
+                post_state_hash: Bytes::new(),
+            }))
+            .chain(std::iter::once(ProcessedSystemDeploy::Failed {
+                event_list: vec![],
+                error_msg: "failed".to_string(),
+                pre_state_hash: Bytes::new(),
+                post_state_hash: Bytes::new(),
+            }))
+            .collect();
         let result = proto_util::dependencies_hashes_of(&block);
 
         let justifications_hashes: Vec<Bytes> = block
@@ -37,9 +67,77 @@ proptest! {
         let expected: HashSet<Bytes> = justifications_hashes
             .into_iter()
             .chain(parents_hashes.into_iter())
+            .chain(slash_hashes.into_iter())
             .collect();
 
         prop_assert_eq!(result_set, expected);
+    }
+}
+
+#[test]
+fn slash_evidence_dependency_is_deduplicated_with_parent_and_justification() {
+    let evidence_hash = Bytes::from_static(b"evidence");
+    let slash = ProcessedSystemDeploy::Succeeded {
+        event_list: vec![],
+        system_deploy: SystemDeployData::Slash {
+            invalid_block_hash: evidence_hash.clone(),
+            issuer_public_key: PublicKey::from_bytes(&[]),
+            target_activation_epoch: 0,
+        },
+        pre_state_hash: Bytes::new(),
+        post_state_hash: Bytes::new(),
+    };
+    let block = block_element_gen(
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(vec![evidence_hash.clone()]),
+        Some(vec![
+            models::rust::casper::protocol::casper_message::Justification {
+                validator: Bytes::from_static(b"validator"),
+                latest_block_hash: evidence_hash.clone(),
+            },
+        ]),
+        None,
+        Some(vec![slash]),
+        None,
+        None,
+        None,
+    )
+    .new_tree(&mut proptest::test_runner::TestRunner::default())
+    .expect("block")
+    .current();
+
+    assert_eq!(proto_util::dependencies_hashes_of(&block), vec![
+        evidence_hash
+    ]);
+}
+
+#[test]
+fn dependency_sources_have_complete_slash_evidence_truth_table() {
+    for is_slash_evidence in [false, true] {
+        for in_dag in [false, true] {
+            for in_equivocation_tracker in [false, true] {
+                for in_invalid_index in [false, true] {
+                    let expected = in_dag
+                        || in_invalid_index
+                        || (in_equivocation_tracker && !is_slash_evidence);
+                    assert_eq!(
+                        proto_util::dependency_source_satisfies(
+                            is_slash_evidence,
+                            in_dag,
+                            in_equivocation_tracker,
+                            in_invalid_index,
+                        ),
+                        expected
+                    );
+                }
+            }
+        }
     }
 }
 

@@ -1,14 +1,24 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
-use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-use casper::rust::blocks::block_processor::BlockProcessorDependencies;
+use block_storage::rust::dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, InsertMode};
+use casper::rust::blocks::block_processor::{BlockProcessor, BlockProcessorDependencies};
+use casper::rust::casper::test_helpers::TestCasperWithSnapshot;
+use casper::rust::casper::{
+    Casper, CURRENT_CASPER_PROTOCOL_VERSION, LEGACY_CASPER_PROTOCOL_VERSION,
+};
 use casper::rust::engine::block_retriever::BlockRetriever;
+use comm::rust::errors::CommError;
 use comm::rust::rp::connect::{Connections, ConnectionsCell};
 use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
+use crypto::rust::public_key::PublicKey;
 use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::{BlockMessage, Bond, Header};
+use models::rust::casper::protocol::casper_message::{
+    BlockMessage, Bond, Header, ProcessedSystemDeploy, SystemDeployData,
+};
+use models::rust::equivocation_record::EquivocationRecord;
+use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
@@ -17,6 +27,8 @@ use crate::engine::setup;
 use crate::helper::block_dag_storage_fixture::with_storage;
 use crate::helper::block_generator::create_genesis_block;
 use crate::helper::block_util::generate_validator;
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::GenesisBuilder;
 
 struct TestFixture {
     dependencies: BlockProcessorDependencies<TransportLayerStub>,
@@ -123,6 +135,27 @@ impl TestFixture {
     }
 
     fn reset_transport(&self) { self.dependencies.transport().reset(); }
+}
+
+#[tokio::test]
+async fn peer_admission_uses_the_running_protocol_version() {
+    let fixture = TestFixture::new().await;
+    let mut approved = fixture.genesis.clone();
+    approved.header.version = LEGACY_CASPER_PROTOCOL_VERSION;
+    let mut current = fixture.test_block.clone();
+    current.header.version = CURRENT_CASPER_PROTOCOL_VERSION;
+    current.shard_id = approved.shard_id.clone();
+    let mut legacy = current.clone();
+    legacy.header.version = LEGACY_CASPER_PROTOCOL_VERSION;
+    let mut snapshot = TestCasperWithSnapshot::create_empty_snapshot();
+    snapshot.on_chain_state.shard_conf.casper_version = CURRENT_CASPER_PROTOCOL_VERSION;
+    let casper = Arc::new(TestCasperWithSnapshot::new(snapshot, approved));
+    let processor = BlockProcessor::new(fixture.dependencies);
+
+    assert!(processor
+        .check_if_of_interest(casper.clone(), &current)
+        .unwrap());
+    assert!(!processor.check_if_of_interest(casper, &legacy).unwrap());
 }
 
 #[tokio::test]
@@ -257,6 +290,102 @@ async fn remove_from_buffer_should_remove_block() {
 }
 
 #[tokio::test]
+async fn local_validation_fault_recovery_removes_pendant_before_rerequest() {
+    let fixture = TestFixture::new().await;
+    fixture
+        .dependencies
+        .commit_to_buffer(&fixture.test_block, None)
+        .await
+        .expect("commit pendant");
+    fixture.reset_transport();
+
+    fixture
+        .dependencies
+        .recover_after_local_validation_fault(&fixture.test_block.block_hash)
+        .await
+        .expect("defer local fault");
+
+    let block_hash =
+        models::rust::block_hash::BlockHashSerde(fixture.test_block.block_hash.clone());
+    assert!(!fixture.dependencies.casper_buffer().contains(&block_hash));
+    assert!(!fixture.dependencies.casper_buffer().is_pendant(&block_hash));
+    assert_eq!(fixture.dependencies.transport().request_count(), 1);
+}
+
+#[tokio::test]
+async fn local_validation_fault_recovery_never_restores_ready_pendant_after_transport_failure() {
+    let fixture = TestFixture::new().await;
+    fixture
+        .dependencies
+        .commit_to_buffer(&fixture.test_block, None)
+        .await
+        .expect("commit pendant");
+    fixture.reset_transport();
+    fixture
+        .dependencies
+        .transport()
+        .set_responses(|_, _| Err(CommError::TimeOut));
+
+    let result = fixture
+        .dependencies
+        .recover_after_local_validation_fault(&fixture.test_block.block_hash)
+        .await;
+
+    let block_hash =
+        models::rust::block_hash::BlockHashSerde(fixture.test_block.block_hash.clone());
+    assert!(result.is_err());
+    assert!(!fixture.dependencies.casper_buffer().contains(&block_hash));
+    assert!(!fixture.dependencies.casper_buffer().is_pendant(&block_hash));
+    assert_eq!(fixture.dependencies.transport().request_count(), 1);
+}
+
+#[tokio::test]
+async fn descendant_remains_blocked_after_locally_faulted_parent_leaves_ready_queue() {
+    let mut genesis_builder = GenesisBuilder::new();
+    let parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    let genesis = genesis_builder
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("genesis");
+    let node = TestNode::standalone(genesis).await.expect("node");
+    let mut parent = node.genesis.clone();
+    parent.block_hash = Bytes::from(vec![0xd1; 32]);
+    parent.header.parents_hash_list = vec![node.genesis.block_hash.clone()];
+    let mut child = parent.clone();
+    child.block_hash = Bytes::from(vec![0xd2; 32]);
+    child.header.parents_hash_list = vec![parent.block_hash.clone()];
+    node.block_store
+        .put_block_message(&parent)
+        .expect("store parent");
+    node.block_store
+        .put_block_message(&child)
+        .expect("store child");
+
+    let parent_hash = models::rust::block_hash::BlockHashSerde(parent.block_hash.clone());
+    let child_hash = models::rust::block_hash::BlockHashSerde(child.block_hash.clone());
+    node.casper
+        .casper_buffer_storage
+        .put_pendant(parent_hash.clone())
+        .expect("buffer parent");
+    node.casper
+        .casper_buffer_storage
+        .add_relation(parent_hash.clone(), child_hash)
+        .expect("buffer child");
+    node.casper
+        .casper_buffer_storage
+        .remove(parent_hash)
+        .expect("defer parent");
+
+    let ready = node
+        .casper
+        .get_dependency_free_from_buffer()
+        .expect("resolve buffer");
+    assert!(ready
+        .iter()
+        .all(|block| block.block_hash != child.block_hash));
+}
+
+#[tokio::test]
 async fn buffer_manager_should_handle_concurrent_operations() {
     use tokio::task;
 
@@ -360,4 +489,95 @@ async fn block_processor_components_should_work_together() {
 
     // All operations should complete successfully
     assert!(true, "All components should work together");
+}
+
+#[tokio::test]
+async fn slash_evidence_is_fetched_before_block_validation() {
+    let mut genesis_builder = GenesisBuilder::new();
+    let parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    let genesis = genesis_builder
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("genesis");
+    let node = TestNode::standalone(genesis).await.expect("node");
+    let evidence_hash = Bytes::from(vec![0xa5; 32]);
+    let mut incoming = node.genesis.clone();
+    incoming.block_hash = Bytes::from(vec![0xb6; 32]);
+    incoming.header.parents_hash_list = vec![node.genesis.block_hash.clone()];
+    incoming.body.system_deploys = vec![ProcessedSystemDeploy::Succeeded {
+        event_list: vec![],
+        system_deploy: SystemDeployData::Slash {
+            invalid_block_hash: evidence_hash.clone(),
+            issuer_public_key: PublicKey::from_bytes(&incoming.sender),
+            target_activation_epoch: 0,
+        },
+        pre_state_hash: Bytes::new(),
+        post_state_hash: Bytes::new(),
+    }];
+    node.block_dag_storage
+        .access_equivocations_tracker(|tracker| {
+            tracker.add(EquivocationRecord::new(
+                incoming.sender.clone(),
+                0,
+                BTreeSet::from([evidence_hash.clone()]),
+            ))
+        })
+        .expect("tracker evidence");
+
+    let ready = node
+        .block_processor
+        .check_dependencies_with_effects(node.casper.clone(), &incoming)
+        .await
+        .expect("dependency check");
+    assert!(!ready);
+    assert!(node
+        .requested_blocks
+        .lock()
+        .expect("requested blocks")
+        .contains_key(&evidence_hash));
+
+    let mut evidence = node.genesis.clone();
+    evidence.block_hash = evidence_hash;
+    node.block_store
+        .put_block_message(&evidence)
+        .expect("store evidence");
+    node.block_dag_storage
+        .insert(&evidence, InsertMode::Invalid)
+        .expect("index invalid evidence");
+
+    let ready = node
+        .block_processor
+        .check_dependencies_with_effects(node.casper.clone(), &incoming)
+        .await
+        .expect("dependency check after evidence");
+    assert!(ready);
+}
+
+#[tokio::test]
+async fn tracker_witness_alone_does_not_suppress_block_admission() {
+    let mut genesis_builder = GenesisBuilder::new();
+    let parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    let genesis = genesis_builder
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("genesis");
+    let node = TestNode::standalone(genesis).await.expect("node");
+    let tracker_only_hash = Bytes::from(vec![0xc7; 32]);
+    let mut incoming = node.genesis.clone();
+    incoming.block_hash = tracker_only_hash.clone();
+    node.block_dag_storage
+        .access_equivocations_tracker(|tracker| {
+            tracker.add(EquivocationRecord::new(
+                incoming.sender.clone(),
+                0,
+                BTreeSet::from([tracker_only_hash.clone()]),
+            ))
+        })
+        .expect("tracker witness");
+
+    assert!(!node.casper.contains(&tracker_only_hash));
+    assert!(node
+        .block_processor
+        .check_if_of_interest(node.casper.clone(), &incoming)
+        .expect("interest check"));
 }

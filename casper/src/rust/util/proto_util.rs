@@ -14,7 +14,7 @@ use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, Bond, DeployData, Header, Justification, ProcessedDeploy,
-    ProcessedSystemDeploy,
+    ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::deploy_parameters::DeployParameters;
@@ -438,16 +438,43 @@ pub fn get_rholang_deploy_params(dd: &Signed<DeployData>) -> DeployParameters {
 }
 
 pub fn dependencies_hashes_of(b: &BlockMessage) -> Vec<BlockHash> {
-    let missing_parents: HashSet<BlockHash> = parent_hashes(b).into_iter().collect();
-    let missing_justifications: HashSet<BlockHash> = b
-        .justifications
-        .iter()
-        .map(|j| j.latest_block_hash.clone())
-        .collect();
-
-    (missing_parents.union(&missing_justifications))
-        .cloned()
+    parent_hashes(b)
+        .into_iter()
+        .chain(
+            b.justifications
+                .iter()
+                .map(|justification| justification.latest_block_hash.clone()),
+        )
+        .chain(slash_evidence_hashes_of(b))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
         .collect()
+}
+
+pub fn slash_evidence_hashes_of(b: &BlockMessage) -> HashSet<BlockHash> {
+    b.body
+        .system_deploys
+        .iter()
+        .filter_map(|deploy| match deploy {
+            ProcessedSystemDeploy::Succeeded {
+                system_deploy:
+                    SystemDeployData::Slash {
+                        invalid_block_hash, ..
+                    },
+                ..
+            } => Some(invalid_block_hash.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+pub fn dependency_source_satisfies(
+    is_slash_evidence: bool,
+    in_dag: bool,
+    in_equivocation_tracker: bool,
+    in_invalid_index: bool,
+) -> bool {
+    in_dag || in_invalid_index || (in_equivocation_tracker && !is_slash_evidence)
 }
 
 // Return hashes of all blocks that are yet to be seen by the passed in block

@@ -63,6 +63,7 @@ pub fn source_deploy(
         valid_after_block_number,
         shard_id,
         expiration_timestamp: None,
+        authority_presentations: Vec::new(),
     };
 
     Signed::create(data, Box::new(Secp256k1), sec).map_err(|e| CasperError::SigningError(e))
@@ -130,5 +131,8 @@ pub fn basic_processed_deploy(
         cosigner_threshold: 0,
         pre_state_hash: prost::bytes::Bytes::new(),
         post_state_hash: prost::bytes::Bytes::new(),
+        authority_funding_certificate: None,
+        authority_cost_witness: None,
+        admission_status: Default::default(),
     })
 }

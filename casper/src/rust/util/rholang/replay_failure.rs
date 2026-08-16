@@ -27,50 +27,13 @@ pub enum ReplayFailure {
         actual: String,
     },
 
-    /// Cost-Accounted Rho Stage B (Decision 6.3): the per-validator supply
-    /// balance `Σ⟦v⟧` written by `CloseBlockDeploy::post_eval` on replay did not
-    /// match the expected `new_n` (write-readback integrity). A divergence here
-    /// signals a non-deterministic supply mint between play and replay — a
-    /// consensus fork — and is a sibling of [`ReplayFailure::ReplayCostMismatch`].
-    ReplaySupplyMismatch {
-        validator: String,
-        expected_balance: i64,
-        replay_balance: i64,
-    },
-
-    /// Cost-Accounted Rho item 2494 (overflow → deterministic rejection): a
-    /// per-validator / per-client supply CREDIT in
-    /// `CloseBlockDeploy::dual_write_supply` (the `Σ⟦v⟧` mint, the fee-carve
-    /// running total, the `F_v` collection credit, the fee→`Σ⟦v⟧` convert, or the
-    /// genesis client `Σ⟦c⟧` funding-slot seed) overflowed the `i64` phlogiston
-    /// ceiling — `old_balance + addend` would exceed `i64::MAX`. The `i64` bound
-    /// IS the supply cap (no economic `SUPPLY_MAX` parameter); a `checked_add`
-    /// that would wrap is a DETERMINISTIC block rejection — every node computes the
-    /// same sum from the same block + pre-state, so all nodes reject identically —
-    /// NEVER a panic (a panic is non-deterministic across nodes ⇒ network halt).
-    /// This is the OVERFLOW-side sibling of the underflow / write-readback guards
-    /// [`ReplayFailure::ReplayAdmissionMismatch`] / [`ReplayFailure::ReplaySupplyMismatch`]:
-    /// the ledger sum is conserved OR the block is deterministically rejected on
-    /// overflow (mirrored formally by `MintingInjection`/`BoundedLedger`
-    /// `supply_credit_conserved_or_rejected`). Returned on BOTH the play
-    /// (block-creation) and replay (validation) paths — the overflow is a pure
-    /// function of the block, so both reject the same block the same way.
-    ReplaySupplyOverflow {
-        channel: String,
-        old_balance: i64,
-        addend: i64,
-    },
-
     /// Cost-Accounted Rho WD-D2 (acceptance gate): the per-signature acceptance
     /// gate RECOMPUTED on replay (over `block.body.deploys` against the block's
     /// start state) disagreed with what the block actually committed. A
     /// divergence here means a proposer admitted a deploy the funding gate would
     /// reject (a double-spend / oversubscription — TM-CA-153), or the recomputed
     /// settlement-debit total differs from what the block applied — either of
-    /// which is a CONSENSUS FORK. Sibling of [`ReplayFailure::ReplayCostMismatch`]
-    /// / [`ReplayFailure::ReplaySupplyMismatch`]; the three guard the three views
-    /// of the supply quantity (pre-state read, in-pass residual, post-state
-    /// balance). `detail` carries a human-readable cause; the counts pin the
+    /// which is a CONSENSUS FORK. `detail` carries a human-readable cause; the counts pin the
     /// admitted/rejected set sizes for diagnosis.
     ReplayAdmissionMismatch {
         expected_admitted: usize,
@@ -116,26 +79,6 @@ impl ReplayFailure {
             boundary,
             expected,
             actual,
-        }
-    }
-
-    pub fn replay_supply_mismatch(
-        validator: String,
-        expected_balance: i64,
-        replay_balance: i64,
-    ) -> Self {
-        ReplayFailure::ReplaySupplyMismatch {
-            validator,
-            expected_balance,
-            replay_balance,
-        }
-    }
-
-    pub fn replay_supply_overflow(channel: String, old_balance: i64, addend: i64) -> Self {
-        ReplayFailure::ReplaySupplyOverflow {
-            channel,
-            old_balance,
-            addend,
         }
     }
 
@@ -202,29 +145,6 @@ impl std::fmt::Display for ReplayFailure {
                 "Effect state mismatch: effect={}, boundary={}, expected={}, actual={}",
                 effect, boundary, expected, actual
             ),
-            ReplayFailure::ReplaySupplyMismatch {
-                validator,
-                expected_balance,
-                replay_balance,
-            } => {
-                write!(
-                    f,
-                    "Replay supply mismatch for validator {}: expected_balance={}, replay_balance={}",
-                    validator, expected_balance, replay_balance
-                )
-            }
-            ReplayFailure::ReplaySupplyOverflow {
-                channel,
-                old_balance,
-                addend,
-            } => {
-                write!(
-                    f,
-                    "Phlogiston supply overflow on {}: balance {} + {} exceeds i64::MAX \
-                     (deterministic block rejection, not a panic)",
-                    channel, old_balance, addend
-                )
-            }
             ReplayFailure::ReplayAdmissionMismatch {
                 expected_admitted,
                 replay_admitted,

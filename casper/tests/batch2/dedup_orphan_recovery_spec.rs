@@ -201,7 +201,7 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         Some(genesis_state.clone()),
         Some(StateHash::default()),
         Some(validator.clone()),
-        Some(1),
+        Some(casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION),
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
@@ -255,7 +255,7 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         Some(genesis_state.clone()),
         Some(StateHash::default()),
         Some(validator.clone()),
-        Some(1),
+        Some(casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION),
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
@@ -321,7 +321,7 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (_merged_state, rejected_sigs, rejected_slashes) = compute_parents_post_state(
+    let (_merged_state, rejected_sigs) = compute_parents_post_state(
         &block_store,
         vec![block_a.clone(), block_b.clone()],
         &snapshot,
@@ -332,13 +332,6 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
     )
     .await
     .expect("compute_parents_post_state over [block_a, block_b]");
-
-    assert!(
-        rejected_slashes.is_empty(),
-        "no system slashes are involved in this fixture; rejected_slashes \
-         must be empty (got {} entries)",
-        rejected_slashes.len()
-    );
 
     let rejected_set: HashSet<prost::bytes::Bytes> = rejected_sigs
         .iter()

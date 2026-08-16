@@ -246,7 +246,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                 [
                                   ((finalBonds, "==", initialBonds), "user is not in the bond map after withdraw"),
                                   ((finalRewards, "==", initialRewards.set(userPubKey, 0)), "rewards don't change for bonding"),
-                                  ((finalUserBalance, "==", initialUserBalance - bondAmt), "user balance should change by bond amount"),
+                                  ((finalUserBalance, "==", initialUserBalance - bondAmt + $$initialPhlogiston$$), "bonding mints initial validator phlogiston exactly once"),
                                   ((finalPosBalance, "==", initialPosBalance + bondAmt), "pos balance should change by bond amount"),
                                   ((true, "==", withdrawers.contains(userPubKey)), "withdrawer is moved to withdrawers map"),
                                   (((bondAmt, quarantinePeriod), "==", withdrawers.get(userPubKey)), "withdrawer state has correct quarantine period and bonds after withdrawing from pos")
@@ -756,13 +756,9 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
           } |
 
           contract closeBlock(ackCh) = {
-            // Cost-Accounted Rho closeBlock is 4-ary: the contract publishes the
-            // epoch mint list and the fee-conversion list on the two extra
-            // channels (consumed by the CloseBlockDeploy system-deploy driver in
-            // production; ignored by this spec, which only asserts completion).
-            new ackCh0, mintListCh, feeConvertListCh, activeValidatorsCh,
+            new ackCh0, activeValidatorsCh,
                 setBlockData(`rho:test:block:data:set`), blockDataSet in {
-              @PoS!("closeBlock", sysAuthToken, *mintListCh, *feeConvertListCh, *ackCh0) |
+              @PoS!("closeBlock", sysAuthToken, *ackCh0) |
               for (@ack              <- ackCh0) {
                 @PoS!("getActiveValidators", *activeValidatorsCh) |
                 for (@activeValidators <- activeValidatorsCh){
@@ -842,7 +838,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
             new setInvalidBlocks(`rho:test:casper:invalidBlocks:set`),
                 computeHash(`rho:crypto:keccak256Hash`), hashCh, invalidBlocksSetCh,
                 initialCoopBalanceCh, finalCoopBalanceCh,
-                setupCh, slashCh, slashedPkCh, activeValidatorsCh, finalActiveValidatorsCh,
+                setupCh, slashCh, activeValidatorsCh, finalActiveValidatorsCh,
                 initialPosBalanceCh, finalPosBalanceCh,
                 finalRewardsCh,
                 initialBondsCh, finalBondsCh
@@ -863,8 +859,8 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                         setInvalidBlocks!({hash : slashedValidator}, *invalidBlocksSetCh) |
                         for (_                  <- invalidBlocksSetCh &
                              @initialPosBalance <- initialPosBalanceCh) {
-                          @PoS!("slash", userDeployerId, hash, sysAuthToken, *slashedPkCh, *slashCh) |
-                          for (@(true, _) <- slashCh & @slashedPk <- slashedPkCh) {
+                          @PoS!("slash", userDeployerId, hash, sysAuthToken, *slashCh) |
+                          for (@(true, _) <- slashCh) {
                             @PoS!("getBonds", *finalBondsCh) |
                             getPosBalance!(*finalPosBalanceCh) |
                             @PoS!("getRewards", *finalRewardsCh) |
@@ -882,8 +878,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                   ((0, "==", finalRewards.getOrElse(slashedValidator, 0)), "Slashed validator retains no reward balance (committedRewards deleted; zero-bond epoch share)"),
                                   ((false, "==", finalActiveValidators.contains(slashedValidator)), "Slashed validator leaves the active set"),
                                   ((finalPosBalance, "==", initialPosBalance), "Stake is quarantined in-state; no funds leave the PoS vault at slash"),
-                                  ((finalCoopBalance, "==", initialCoopBalance), "No Coop transfer at slash; forfeiture resolves via the redemption flow"),
-                                  ((slashedPk, "==", slashedValidator), "slash publishes the resolved per-target offender pk")
+                                  ((finalCoopBalance, "==", initialCoopBalance), "No Coop transfer at slash; forfeiture resolves via the redemption flow")
                                 ],
                                 *ackCh
                               )

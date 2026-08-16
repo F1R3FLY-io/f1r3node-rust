@@ -1,6 +1,6 @@
 // See rspace/src/main/scala/coop/rchain/rspace/merger/ChannelChange.scala
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ChannelChange<A> {
     pub added: Vec<A>,
     pub removed: Vec<A>,

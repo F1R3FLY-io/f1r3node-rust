@@ -10,7 +10,7 @@ use super::errors::RSpaceError;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::internal::{Datum, ProduceCandidate, Row, WaitingContinuation};
 use super::trace::Log;
-use super::trace::event::Produce;
+use super::trace::event::{COMM, Produce};
 use crate::rspace::checkpoint::SoftCheckpoint;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq, Hash)]
@@ -36,6 +36,16 @@ pub type MaybeConsumeResult<C, P, A, K> = Option<(ContResult<C, P, K>, Vec<RSpac
 pub type MaybeProduceResult<C, P, A, K> =
     Option<(ContResult<C, P, K>, Vec<RSpaceResult<C, A>>, Produce)>;
 
+pub trait CommObserver<A, K>: Send + Sync {
+    fn observe(
+        &self,
+        comm: &COMM,
+        continuation: &K,
+        continuation_persistent: bool,
+        data: &[(&A, bool)],
+    ) -> Result<(), RSpaceError>;
+}
+
 /** The interface for RSpace
  *
  * @tparam C a type representing a channel
@@ -55,6 +65,8 @@ pub trait ISpace<
     K: Clone + Send + Sync,
 >: Send + Sync
 {
+    fn set_comm_observer(&self, observer: Option<std::sync::Arc<dyn CommObserver<A, K>>>);
+
     /** Creates a checkpoint.
      *
      * @return A [[Checkpoint]]
@@ -68,6 +80,15 @@ pub trait ISpace<
     async fn get_joins(&self, channel: C) -> Vec<Vec<C>>;
 
     async fn remove_all_data(&self, channel: &C) -> Result<(), RSpaceError>;
+
+    async fn remove_data_at(&self, channel: &C, index: i32) -> Result<(), RSpaceError>;
+
+    async fn remove_data_at_recorded(
+        &self,
+        channel: &C,
+        index: i32,
+        operation_id: &[u8],
+    ) -> Result<(), RSpaceError>;
 
     async fn remove_all_continuations(&self, channels: Vec<C>) -> Result<(), RSpaceError>;
 

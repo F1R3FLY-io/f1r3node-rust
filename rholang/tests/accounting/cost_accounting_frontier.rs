@@ -351,18 +351,10 @@ fn generated_event(index: u64, event: &GeneratedEvent) -> BillableTokenEvent {
 }
 
 fn trace_digest_field_names() -> Vec<String> {
-    [
-        "deploy_id",
-        "source_path",
-        "redex_id",
-        "local_index",
-        "billable_kind",
-        "primitive_descriptor",
-        "weight",
-    ]
-    .into_iter()
-    .map(String::from)
-    .collect()
+    ["deploy_id", "billable_kind", "weight"]
+        .into_iter()
+        .map(String::from)
+        .collect()
 }
 
 fn embedded_generated_fixtures() -> Vec<GeneratedFixture> {
@@ -905,18 +897,11 @@ fn event_weight_sum(events: &[GeneratedEvent]) -> i64 {
     events.iter().map(|event| event.weight as i64).sum()
 }
 
-fn mutate_replay_identity(events: &[GeneratedEvent]) -> Vec<GeneratedEvent> {
+fn mutate_consensus_trace(events: &[GeneratedEvent]) -> Option<Vec<GeneratedEvent>> {
     let mut mutated = events.to_vec();
-    if let Some(index) = mutated.iter().position(|event| event.kind == "primitive") {
-        if let Some(primitive_descriptor) = &mut mutated[index].primitive_descriptor {
-            primitive_descriptor.push_str("-mutated");
-        } else {
-            mutated[index].descriptor.push_str("-mutated");
-        }
-    } else if let Some(first) = mutated.first_mut() {
-        first.path.push(255);
-    }
-    mutated
+    let event = mutated.iter_mut().find(|event| event.kind == "source")?;
+    event.deploy = event.deploy.wrapping_add(1);
+    Some(mutated)
 }
 
 fn replay_identity_field_mutations(
@@ -927,9 +912,19 @@ fn replay_identity_field_mutations(
         return variants;
     }
 
-    let mut deploy = events.to_vec();
-    deploy[0].deploy = deploy[0].deploy.wrapping_add(1);
-    variants.push(("deploy_id", deploy));
+    if let Some(index) = events.iter().position(|event| event.kind == "source") {
+        let mut deploy = events.to_vec();
+        deploy[index].deploy = deploy[index].deploy.wrapping_add(1);
+        variants.push(("deploy_id", deploy));
+
+        let mut kind = events.to_vec();
+        kind[index].kind = "substitution".to_string();
+        variants.push(("billable_kind", kind));
+
+        let mut weight = events.to_vec();
+        weight[index].weight += 1;
+        variants.push(("weight", weight));
+    }
 
     let mut source_path = events.to_vec();
     source_path[0].path.push(255);
@@ -958,14 +953,6 @@ fn replay_identity_field_mutations(
     local_index[0].local_index = Some(next_local_index);
     variants.push(("local_index", local_index));
 
-    let mut kind = events.to_vec();
-    kind[0].kind = if kind[0].kind == "source" {
-        "substitution".to_string()
-    } else {
-        "source".to_string()
-    };
-    variants.push(("billable_kind", kind));
-
     if let Some(index) = events.iter().position(|event| event.kind == "primitive") {
         let mut descriptor = events.to_vec();
         if let Some(primitive_descriptor) = &mut descriptor[index].primitive_descriptor {
@@ -975,10 +962,6 @@ fn replay_identity_field_mutations(
         }
         variants.push(("primitive_descriptor", descriptor));
     }
-
-    let mut weight = events.to_vec();
-    weight[0].weight += 1;
-    variants.push(("weight", weight));
 
     variants
 }
@@ -1134,24 +1117,36 @@ fn generated_frontier_differential_fixtures_hold() {
                 fixture.id
             );
 
-            let mutated = mutate_replay_identity(&fixture.events);
-            let mutated_digest =
-                trace_digest_with_budget(&mutated, budget).expect("valid fixture mutated trace");
-            assert_ne!(
-                forward, mutated_digest,
-                "fixture {} replay identity mutation must affect trace evidence",
-                fixture.id
-            );
+            if let Some(mutated) = mutate_consensus_trace(&fixture.events) {
+                let mutated_digest = trace_digest_with_budget(&mutated, budget)
+                    .expect("valid fixture mutated trace");
+                assert_ne!(
+                    forward, mutated_digest,
+                    "fixture {} consensus trace mutation must affect trace evidence",
+                    fixture.id
+                );
+            }
 
             for (field, mutated) in replay_identity_field_mutations(&fixture.events) {
                 let mutated_budget = event_weight_sum(&mutated) + 16;
                 let mutated_digest = trace_digest_with_budget(&mutated, mutated_budget)
                     .expect("valid fixture field-mutated trace");
-                assert_ne!(
-                    forward, mutated_digest,
-                    "fixture {} {} mutation must affect trace evidence",
-                    fixture.id, field
-                );
+                if matches!(
+                    field,
+                    "source_path" | "redex_id" | "local_index" | "primitive_descriptor"
+                ) {
+                    assert_eq!(
+                        forward, mutated_digest,
+                        "fixture {} non-consensus {} must not affect consensus evidence",
+                        fixture.id, field
+                    );
+                } else {
+                    assert_ne!(
+                        forward, mutated_digest,
+                        "fixture {} stable {} mutation must affect trace evidence",
+                        fixture.id, field
+                    );
+                }
             }
         }
     }
@@ -1222,17 +1217,28 @@ fn generated_frontier_metamorphic_fixtures_hold() {
     let mut renamed = events.clone();
     renamed[1].primitive_descriptor = Some("parallel-primitive-renamed".to_string());
     let renamed_digest = trace_digest_for(&renamed);
-    assert_ne!(forward_digest, renamed_digest);
+    assert_eq!(forward_digest, renamed_digest);
 
     for (field, mutated) in replay_identity_field_mutations(&events) {
         let mutated_budget = event_weight_sum(&mutated) + 16;
         let mutated_digest = trace_digest_with_budget(&mutated, mutated_budget)
             .expect("field-mutated metamorphic event");
-        assert_ne!(
-            forward_digest, mutated_digest,
-            "{} mutation must affect trace evidence",
-            field
-        );
+        if matches!(
+            field,
+            "source_path" | "redex_id" | "local_index" | "primitive_descriptor"
+        ) {
+            assert_eq!(
+                forward_digest, mutated_digest,
+                "non-consensus {} must not affect consensus evidence",
+                field
+            );
+        } else {
+            assert_ne!(
+                forward_digest, mutated_digest,
+                "stable {} mutation must affect trace evidence",
+                field
+            );
+        }
     }
 }
 
@@ -1437,6 +1443,7 @@ fn deploy_data_from_fixture(_fixture: &GeneratedFixture) -> DeployData {
         valid_after_block_number: 0,
         shard_id: "root".to_string(),
         expiration_timestamp: None,
+        authority_presentations: Vec::new(),
     }
 }
 

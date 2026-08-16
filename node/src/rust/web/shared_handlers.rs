@@ -304,6 +304,12 @@ fn classify_casper_error(err: &CasperError) -> (StatusCode, &'static str, String
         DuplicateCosignerCharge { .. } => {
             (S::BAD_REQUEST, "duplicate_cosigner_charge", err.to_string())
         }
+        InvalidCostSettlement(_) => (
+            S::UNPROCESSABLE_ENTITY,
+            "invalid_cost_settlement",
+            err.to_string(),
+        ),
+        UnsupportedProtocolVersion { .. } => internal("unsupported_protocol_version"),
 
         SigningError(_) => internal("signing_error"),
         KvStoreError(_) => internal("kv_store_error"),
@@ -593,5 +599,30 @@ where
     {
         Ok(inner) => inner,
         Err(join_err) => Err(eyre::eyre!("handler task panicked: {}", join_err)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_cost_settlement_is_an_objective_client_error() {
+        let error = CasperError::InvalidCostSettlement("realized cost exceeds bound".to_string());
+        let (status, kind, detail) = classify_casper_error(&error);
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(kind, "invalid_cost_settlement");
+        assert!(detail.contains("realized cost exceeds bound"));
+    }
+
+    #[test]
+    fn unsupported_protocol_version_is_an_internal_compatibility_error() {
+        let error = CasperError::UnsupportedProtocolVersion { version: 1 };
+        let (status, kind, detail) = classify_casper_error(&error);
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(kind, "unsupported_protocol_version");
+        assert!(detail.contains("Unsupported Casper protocol version: 1"));
     }
 }

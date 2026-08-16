@@ -6,14 +6,13 @@
 
 #![allow(dead_code)]
 
-use crypto::rust::public_key::PublicKey;
+use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1_eth::Secp256k1Eth;
 use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::PCost;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, DeployData, F1r3flyState, Header, ProcessedDeploy,
 };
-use prost::bytes::Bytes;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::{
     BillableKind, BillableTokenEvent, RedexId, RuntimeBudget, SourcePath,
@@ -71,16 +70,19 @@ pub fn deploy_data() -> DeployData {
         valid_after_block_number: 0,
         shard_id: "root".to_string(),
         expiration_timestamp: None,
+        authority_presentations: Vec::new(),
     }
 }
 
 pub fn signed_deploy(seed: u8) -> Signed<DeployData> {
-    Signed {
-        data: deploy_data(),
-        pk: PublicKey::from_bytes(&[seed; 65]),
-        sig: Bytes::from(vec![seed.wrapping_add(1); 64]),
-        sig_algorithm: Box::new(Secp256k1Eth),
-    }
+    let mut data = deploy_data();
+    data.time_stamp = i64::from(seed);
+    Signed::create(
+        data,
+        Box::new(Secp256k1Eth),
+        PrivateKey::from_bytes(&[1; 32]),
+    )
+    .expect("fixed secp256k1 private key must sign")
 }
 
 pub fn processed_deploy(seed: u8, cost: u64, failed: bool) -> ProcessedDeploy {
@@ -94,6 +96,9 @@ pub fn processed_deploy(seed: u8, cost: u64, failed: bool) -> ProcessedDeploy {
         cosigner_threshold: 0,
         pre_state_hash: Vec::<u8>::new().into(),
         post_state_hash: Vec::<u8>::new().into(),
+        authority_funding_certificate: None,
+        authority_cost_witness: None,
+        admission_status: Default::default(),
     }
 }
 
@@ -112,6 +117,7 @@ pub fn block_with_deploy(deploy: ProcessedDeploy) -> BlockMessage {
                 post_state_hash: vec![1; 32].into(),
                 bonds: Vec::new(),
                 block_number: 0,
+                genesis_supply: Vec::new(),
             },
             deploys: vec![deploy],
             rejected_deploys: Vec::new(),

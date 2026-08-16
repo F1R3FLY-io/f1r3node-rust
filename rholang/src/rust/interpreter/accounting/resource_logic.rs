@@ -7,9 +7,9 @@
 //! logic whose judgments ARE funding proofs; the static analysis is a proof
 //! search in this logic, and the validator is a proof checker." A validator —
 //! the built-in one or a customer's custom validator (DR-12) — is therefore a
-//! proof checker for the funding judgment `Σ_s ≥ Δ_s`: it computes the demand
-//! `Δ_s` of a (desugared) deploy body and admits iff the effective supply `Σ_s`
-//! funds that demand (plus the shard's safety margin; Thm 20 over-approximation).
+//! proof checker for the funding judgment `Σ_s ≥ Δ_s`: it computes a certified
+//! finite upper bound `Δ_s` for a desugared deploy body and admits iff the
+//! effective supply `Σ_s` funds that reservation. Unprovable demand is rejected.
 //!
 //! This trait is the contract surface for that obligation. The built-in
 //! [`DefaultResourceLogic`] delegates to the already-verified pure analyzer
@@ -25,6 +25,7 @@
 
 use models::rhoapi::Par;
 
+use super::authority::{DemandBound, ResourceMultiset, UnprovableDemand};
 use super::delta_sigma::{self, DemandEntry};
 use super::Sig;
 
@@ -54,11 +55,49 @@ pub trait GsltPresentation {
 pub trait OslfResourceLogic<G: GsltPresentation> {
     fn demand(&self, canonical: &G::CanonicalProgram, deploy_sig: &G::Signature) -> DemandEntry;
 
-    /// The funding judgment / proof check (Def 19, Thm 20): the demand is funded
-    /// iff the effective supply `effective_supply_s` (`Σ_s`) meets or exceeds the
-    /// demand's known lower bound plus the shard `margin`. This is the decidable
-    /// `funds Σ Δ := Δ ≤ Σ` of the OSLF resource logic.
-    fn is_funded(&self, analysis: &DemandEntry, effective_supply_s: i64, margin: i64) -> bool;
+    fn demand_bound(
+        &self,
+        canonical: &G::CanonicalProgram,
+        deploy_sig: &G::Signature,
+    ) -> DemandBound<<G::Signature as ResourceSignature>::Key> {
+        let demand = self.demand(canonical, deploy_sig);
+        if demand.unknown {
+            DemandBound::Unprovable(UnprovableDemand::RecursiveDequotation)
+        } else {
+            DemandBound::FiniteUpperBound {
+                bound: ResourceMultiset::singleton(
+                    deploy_sig.key(),
+                    u64::try_from(demand.certified_upper_bound).unwrap_or(u64::MAX),
+                ),
+                proof: b"rho-native-structural-upper-bound-v1".to_vec(),
+            }
+        }
+    }
+
+    fn verify_demand_bound(
+        &self,
+        _canonical: &G::CanonicalProgram,
+        _deploy_sig: &G::Signature,
+        bound: &DemandBound<<G::Signature as ResourceSignature>::Key>,
+    ) -> Option<ResourceMultiset<<G::Signature as ResourceSignature>::Key>> {
+        match bound {
+            DemandBound::Exact(reservation) => Some(reservation.clone()),
+            _ => None,
+        }
+    }
+
+    fn is_funded_bound(
+        &self,
+        canonical: &G::CanonicalProgram,
+        deploy_sig: &G::Signature,
+        analysis: &DemandBound<<G::Signature as ResourceSignature>::Key>,
+        effective_supply: &ResourceMultiset<<G::Signature as ResourceSignature>::Key>,
+    ) -> bool {
+        self.verify_demand_bound(canonical, deploy_sig, analysis)
+            .is_some_and(|reservation| effective_supply.dominates(&reservation))
+    }
+
+    fn is_funded(&self, analysis: &DemandEntry, effective_supply_s: i64) -> bool;
 }
 
 /// The Rholang specialization kept for existing validator integrations.
@@ -111,9 +150,43 @@ impl OslfResourceLogic<RhoGslt> for DefaultResourceLogic {
         delta_sigma::demand(canonical, deploy_sig)
     }
 
+    fn demand_bound(&self, canonical: &Par, deploy_sig: &Sig) -> DemandBound<delta_sigma::SigKey> {
+        delta_sigma::demand_bound(canonical, deploy_sig)
+    }
+
+    fn verify_demand_bound(
+        &self,
+        canonical: &Par,
+        deploy_sig: &Sig,
+        bound: &DemandBound<delta_sigma::SigKey>,
+    ) -> Option<ResourceMultiset<delta_sigma::SigKey>> {
+        let expected = delta_sigma::demand_bound(canonical, deploy_sig);
+        let expected_bound = match &expected {
+            DemandBound::Exact(reservation) => reservation,
+            DemandBound::FiniteUpperBound { bound, .. } => bound,
+            DemandBound::Unprovable(_) => return None,
+        };
+        let valid = match (bound, &expected) {
+            (DemandBound::Exact(reservation), _) => reservation == expected_bound,
+            (
+                DemandBound::FiniteUpperBound { bound, proof },
+                DemandBound::FiniteUpperBound {
+                    bound: expected_bound,
+                    proof: expected_proof,
+                },
+            ) => bound == expected_bound && proof == expected_proof,
+            _ => false,
+        };
+        if valid {
+            Some(expected_bound.clone())
+        } else {
+            None
+        }
+    }
+
     #[inline]
-    fn is_funded(&self, analysis: &DemandEntry, effective_supply_s: i64, margin: i64) -> bool {
-        delta_sigma::is_funded(analysis, effective_supply_s, margin)
+    fn is_funded(&self, analysis: &DemandEntry, effective_supply_s: i64) -> bool {
+        delta_sigma::is_funded(analysis, effective_supply_s)
     }
 }
 
@@ -276,8 +349,8 @@ impl<G: GsltPresentation> ApportionmentPolicy<G> for DefaultApportionment {
 /// fee"; design OD-3 "flat one token per admitted client deploy"; Rocq
 /// `TokenConservation.fee_collect`'s flat single-pool `f`), so a COMPOUND deploy
 /// owes 1, not 2. Reusing the cost policy for the fee over-charged multi-sig
-/// deploys up to 2× (red-team F-1); this policy fixes that while staying conserving
-/// (the carved total still equals the sum of client debits == `F_v` credit).
+/// deploys up to 2× (red-team F-1); this policy fixes that while staying
+/// conserving (the carved total equals the credit to the proposer SystemVault).
 ///
 /// The single component is the canonical-first (`left`, `SigKey`-ascending) —
 /// deterministic play↔replay. The admission bound `effectiveΣ = combined +
@@ -343,62 +416,50 @@ mod resource_logic_conformance {
     //! re-running these laws with its type substituted for `R`.
     use super::*;
 
-    fn resolvable(lower: i64) -> DemandEntry {
+    fn resolvable(bound: i64) -> DemandEntry {
         DemandEntry {
-            known_lower_bound: lower,
+            certified_upper_bound: bound,
             unknown: false,
         }
     }
 
-    fn unresolvable(lower: i64) -> DemandEntry {
+    fn unresolvable(bound: i64) -> DemandEntry {
         DemandEntry {
-            known_lower_bound: lower,
+            certified_upper_bound: bound,
             unknown: true,
         }
     }
 
-    /// Law (sound proof-checker, BOTH regimes — F-B): for RESOLVABLE demand the
-    /// funds judgment is EXACTLY Def 19 `Σ ≥ Δ` (the economic margin is inert — it
-    /// is not folded into the resolvable-demand correctness gate); for
-    /// OVER-APPROXIMATED (`unknown`) demand the Thm 20 safety margin applies,
-    /// `Σ ≥ Δ + margin`.
+    /// Law (sound proof-checker): certified finite demand is funded exactly when
+    /// `Σ ≥ Δ`; unprovable demand is rejected for every finite supply.
     fn law_sound<G, R>(rl: &R)
     where
         G: GsltPresentation,
         R: OslfResourceLogic<G>,
     {
-        for &lower in &[0i64, 1, 5, 100] {
+        for &bound in &[0i64, 1, 5, 100] {
             for &supply in &[0i64, 1, 5, 100, 101] {
-                for &margin in &[0i64, 1, 10] {
-                    // Resolvable: Def 19 `Σ ≥ Δ` — margin NOT applied.
-                    let resolved = rl.is_funded(&resolvable(lower), supply, margin);
-                    assert_eq!(
-                        resolved,
-                        i128::from(supply) >= i128::from(lower),
-                        "resolvable funds judgment must be Σ ≥ Δ (lower={lower}, supply={supply}, margin={margin})"
-                    );
-                    // Over-approximated: Thm 20 `Σ ≥ Δ + margin`.
-                    let over = rl.is_funded(&unresolvable(lower), supply, margin);
-                    assert_eq!(
-                        over,
-                        i128::from(supply) >= i128::from(lower) + i128::from(margin),
-                        "unknown funds judgment must be Σ ≥ Δ + margin (lower={lower}, supply={supply}, margin={margin})"
-                    );
-                }
+                let resolved = rl.is_funded(&resolvable(bound), supply);
+                assert_eq!(
+                    resolved,
+                    i128::from(supply) >= i128::from(bound),
+                    "resolvable funds judgment must be Σ ≥ Δ (bound={bound}, supply={supply})"
+                );
+                assert!(!rl.is_funded(&unresolvable(bound), supply));
             }
         }
     }
 
-    /// Law (reject underfunded): a positive demand against zero supply (an absent
-    /// pool) at zero margin is rejected — the Rust mirror of
+    /// Law (reject underfunded): a positive demand against zero supply is
+    /// rejected — the Rust mirror of
     /// `strict_reject_when_underfunded`.
     fn law_reject_underfunded<G, R>(rl: &R)
     where
         G: GsltPresentation,
         R: OslfResourceLogic<G>,
     {
-        assert!(!rl.is_funded(&resolvable(1), 0, 0));
-        assert!(!rl.is_funded(&resolvable(7), 0, 0));
+        assert!(!rl.is_funded(&resolvable(1), 0));
+        assert!(!rl.is_funded(&resolvable(7), 0));
     }
 
     /// Law (no contraction / supply monotone): increasing the supply never turns
@@ -411,14 +472,12 @@ mod resource_logic_conformance {
         R: OslfResourceLogic<G>,
     {
         for &lower in &[0i64, 3, 50] {
-            for &margin in &[0i64, 2] {
-                for supply in 0i64..60 {
-                    if rl.is_funded(&resolvable(lower), supply, margin) {
-                        assert!(
-                            rl.is_funded(&resolvable(lower), supply + 1, margin),
-                            "is_funded must be monotone in supply (lower={lower}, supply={supply}, margin={margin})"
-                        );
-                    }
+            for supply in 0i64..60 {
+                if rl.is_funded(&resolvable(lower), supply) {
+                    assert!(
+                        rl.is_funded(&resolvable(lower), supply + 1),
+                        "is_funded must be monotone in supply (lower={lower}, supply={supply})"
+                    );
                 }
             }
         }
@@ -431,7 +490,7 @@ mod resource_logic_conformance {
         G: GsltPresentation,
         R: OslfResourceLogic<G>,
     {
-        let _verdict: bool = rl.is_funded(&resolvable(3), 5, 0);
+        let _verdict: bool = rl.is_funded(&resolvable(3), 5);
     }
 
     #[test]
@@ -493,16 +552,25 @@ mod resource_logic_conformance {
             deploy_sig: &<FakeGslt as GsltPresentation>::Signature,
         ) -> DemandEntry {
             DemandEntry {
-                known_lower_bound: (*canonical as i64) + i64::from(deploy_sig.key()),
+                certified_upper_bound: (*canonical as i64) + i64::from(deploy_sig.key()),
                 unknown: false,
             }
         }
 
-        fn is_funded(&self, analysis: &DemandEntry, effective_supply_s: i64, margin: i64) -> bool {
-            // Two-regime (F-B): the margin applies only to over-approximated demand.
-            let applied_margin = if analysis.unknown { margin } else { 0 };
-            i128::from(effective_supply_s)
-                >= i128::from(analysis.known_lower_bound) + i128::from(applied_margin)
+        fn demand_bound(
+            &self,
+            canonical: &<FakeGslt as GsltPresentation>::CanonicalProgram,
+            deploy_sig: &<FakeGslt as GsltPresentation>::Signature,
+        ) -> DemandBound<u8> {
+            DemandBound::Exact(ResourceMultiset::singleton(
+                deploy_sig.key(),
+                u64::try_from(self.demand(canonical, deploy_sig).certified_upper_bound).unwrap(),
+            ))
+        }
+
+        fn is_funded(&self, analysis: &DemandEntry, effective_supply_s: i64) -> bool {
+            !analysis.unknown
+                && i128::from(effective_supply_s) >= i128::from(analysis.certified_upper_bound)
         }
     }
 
@@ -516,9 +584,9 @@ mod resource_logic_conformance {
         let mut decompositions = Vec::new();
         sig.split_join_decompositions(&mut decompositions);
         assert_eq!(canonical, 14);
-        assert_eq!(demand.known_lower_bound, 17);
-        assert!(logic.is_funded(&demand, 17, 0));
-        assert!(!logic.is_funded(&demand, 16, 0));
+        assert_eq!(demand.certified_upper_bound, 17);
+        assert!(logic.is_funded(&demand, 17));
+        assert!(!logic.is_funded(&demand, 16));
         assert_eq!(decompositions, vec![ResourceDecomposition {
             compound: 3,
             left: 2,
@@ -643,6 +711,36 @@ mod apportionment_conformance {
     #[test]
     fn default_apportionment_conserves_and_never_overdraws() {
         check_compound_laws(&DefaultApportionment);
+    }
+
+    #[test]
+    fn built_in_single_pool_policies_cover_positive_zero_and_negative_costs() {
+        let shape = || GroupShape::Single {
+            own: PoolResidual {
+                key: KL,
+                residual: 0,
+            },
+        };
+        for amount in [0, -1] {
+            assert!(ApportionmentPolicy::<RhoGslt>::apportion(
+                &DefaultApportionment,
+                shape(),
+                amount,
+            )
+            .is_empty());
+            assert!(ApportionmentPolicy::<RhoGslt>::apportion(
+                &FlatFeeApportionment,
+                shape(),
+                amount,
+            )
+            .is_empty());
+        }
+        for policy_draws in [
+            ApportionmentPolicy::<RhoGslt>::apportion(&DefaultApportionment, shape(), 3),
+            ApportionmentPolicy::<RhoGslt>::apportion(&FlatFeeApportionment, shape(), 3),
+        ] {
+            assert_eq!(policy_draws, vec![PoolDraw { key: KL, amount: 3 }]);
+        }
     }
 
     /// Stage-D FEE policy (red-team F-1): a compound deploy's fee is FLAT — one

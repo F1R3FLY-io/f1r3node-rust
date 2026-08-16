@@ -26,8 +26,6 @@ struct Input {
     demand: i64,
     /// `Σ_s` effective supply.
     supply: i64,
-    /// Genesis safety margin.
-    margin: i64,
 }
 
 fuzz_target!(|input: Input| {
@@ -44,13 +42,13 @@ fuzz_target!(|input: Input| {
     // (= the COMM demand) never underflows the supply, and the gate decision is
     // monotone in supply and demand.
     let analysis = DemandEntry {
-        known_lower_bound: input.demand,
+        certified_upper_bound: input.demand,
         unknown: false,
     };
-    let funded = is_funded(&analysis, input.supply, input.margin);
+    let funded = is_funded(&analysis, input.supply);
 
-    if funded && input.margin >= 0 {
-        let residual = i128::from(input.supply) - i128::from(analysis.known_lower_bound);
+    if funded {
+        let residual = i128::from(input.supply) - i128::from(analysis.certified_upper_bound);
         assert!(
             residual >= 0,
             "funded ⇒ settlement debit (= Δ COMMs) must not underflow Σ⟦s⟧"
@@ -60,7 +58,7 @@ fuzz_target!(|input: Input| {
     // Monotone in supply: more supply keeps a funded deploy funded.
     if funded {
         if let Some(more) = input.supply.checked_add(1) {
-            assert!(is_funded(&analysis, more, input.margin));
+            assert!(is_funded(&analysis, more));
         }
     }
 });

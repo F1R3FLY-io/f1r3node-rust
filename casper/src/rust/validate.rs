@@ -153,6 +153,16 @@ impl Validate {
     }
 
     pub fn approved_block(approved_block: &ApprovedBlock) -> bool {
+        if !crate::rust::casper::is_supported_casper_protocol_version(
+            approved_block.candidate.block.header.version,
+        ) {
+            tracing::warn!(
+                version = approved_block.candidate.block.header.version,
+                "Received ApprovedBlock with unsupported Casper protocol version."
+            );
+            return false;
+        }
+
         let candidate_bytes_digest =
             Blake2b256::hash(approved_block.clone().candidate.to_proto().encode_to_vec());
         let required_signatures = approved_block.candidate.required_sigs;
@@ -368,73 +378,6 @@ impl Validate {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
-        tracing::debug!(target: "f1r3fly.casper", "before-slash-deploy-authorization-validation");
-        // The slash-authorization predicate (T-9.8) requires "target is
-        // currently bonded". For a received block whose `body.system_deploys`
-        // contains a SlashDeploy, "currently bonded" semantically means
-        // bonded at the BLOCK'S pre-state — i.e., in the bonds map carried
-        // by the block's actual parents (per `block.header.parents_hash_list`),
-        // not in whatever `s.on_chain_state.bonds_map` the validator's
-        // current snapshot picked from its independent `valid_latest_msgs`.
-        //
-        // These can diverge in multi-parent merge scenarios: the snapshot's
-        // chosen parents may include a sibling that has already applied the
-        // same slash (and so reports the target at stake 0), while the
-        // block-being-validated's actual parents may all be from a chain
-        // where the slash hadn't landed yet (so the target's stake is
-        // still positive). Without this rebind, slash-recovery proposals
-        // are spuriously rejected as `UnauthorizedSlashDeploy`.
-        //
-        // We rebind a transient bonds_map view from the block's actual
-        // parents (looked up via block_store) before delegating to
-        // `slash_deploy_authorization`, then restore the original. Using
-        // the union of validator stakes (max across parents) keeps the
-        // most-lenient view, which matches the proposer-side
-        // `authorized_slash_candidates` snapshot context.
-        let _saved_bonds_map = if block.body.system_deploys.iter().any(|sd| {
-            matches!(sd, ProcessedSystemDeploy::Succeeded {
-                system_deploy: SystemDeployData::Slash { .. },
-                ..
-            })
-        }) {
-            let mut parent_bonds: std::collections::HashMap<Validator, i64> =
-                std::collections::HashMap::new();
-            for parent_hash in &block.header.parents_hash_list {
-                let parent_block = match block_store.get(parent_hash) {
-                    Ok(Some(parent_block)) => parent_block,
-                    Ok(None) => return Either::Left(BlockError::MissingBlocks),
-                    Err(err) => {
-                        return Either::Left(BlockError::BlockException(CasperError::from(err)));
-                    }
-                };
-                for bond in &parent_block.body.state.bonds {
-                    parent_bonds
-                        .entry(bond.validator.clone())
-                        .and_modify(|existing| {
-                            if bond.stake > *existing {
-                                *existing = bond.stake;
-                            }
-                        })
-                        .or_insert(bond.stake);
-                }
-            }
-            if parent_bonds.is_empty() {
-                None
-            } else {
-                let saved = std::mem::replace(&mut s.on_chain_state.bonds_map, parent_bonds);
-                Some(saved)
-            }
-        } else {
-            None
-        };
-        let slash_auth_outcome = Self::slash_deploy_authorization(block, s);
-        if let Some(saved) = _saved_bonds_map {
-            s.on_chain_state.bonds_map = saved;
-        }
-        match slash_auth_outcome {
-            Either::Left(err) => return Either::Left(err),
-            Either::Right(_) => {}
-        }
         tracing::debug!(target: "f1r3fly.casper", "before-future-transaction-validation");
         match __step!(
             BLOCK_VALIDATION_FUTURE_TRANSACTION_TIME_METRIC,
@@ -539,6 +482,16 @@ impl Validate {
     ) -> ValidBlockProcessing {
         if block.body.deploys.is_empty() {
             return Either::Right(ValidBlock::Valid);
+        }
+
+        let mut block_sigs = HashSet::new();
+        if block
+            .body
+            .deploys
+            .iter()
+            .any(|deploy| !block_sigs.insert(deploy.deploy.sig.clone()))
+        {
+            return Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy));
         }
 
         let block_metadata = BlockMetadata::from_block(block, false, None, None);
@@ -1210,8 +1163,12 @@ impl Validate {
     pub fn slash_deploy_authorization(
         block: &BlockMessage,
         s: &CasperSnapshot,
+        bonds_map: &HashMap<Validator, i64>,
     ) -> ValidBlockProcessing {
-        Self::route_slash_validation_outcome(block, validate_received_slash_deploys(block, s))
+        Self::route_slash_validation_outcome(
+            block,
+            validate_received_slash_deploys(block, s, bonds_map),
+        )
     }
 
     /// Routes the outcome of `validate_received_slash_deploys` into the
@@ -1496,7 +1453,8 @@ impl Validate {
     // carry valid phlo terms and a price ≥ minPhloPrice) is REMOVED — deploys
     // carry no phlo price/limit. Funding is enforced at block assembly by the
     // per-signature acceptance gate (`util/rholang/acceptance.rs`) against
-    // Σ⟦s⟧, with `min_phlo_price` repurposed as that gate's safety margin.
+    // Σ⟦s⟧. `min_phlo_price` remains economic configuration and cannot certify
+    // an otherwise unprovable finite demand bound.
 
     pub async fn bonds_cache_from_floor(
         b: &BlockMessage,
@@ -1591,7 +1549,7 @@ mod merge_recovery_validation_tests {
     use crypto::rust::public_key::PublicKey;
     use models::rust::block_metadata::BlockMetadata;
     use models::rust::casper::protocol::casper_message::{
-        Body, Bond, F1r3flyState, Header, Justification,
+        ApprovedBlock, ApprovedBlockCandidate, Body, Bond, F1r3flyState, Header, Justification,
     };
 
     use super::*;
@@ -1599,6 +1557,26 @@ mod merge_recovery_validation_tests {
     fn validator(byte: u8) -> Validator { Bytes::from(vec![byte; models::rust::validator::LENGTH]) }
 
     fn hash(byte: u8) -> BlockHash { Bytes::from(vec![byte; 32]) }
+
+    #[test]
+    fn approved_block_rejects_noncurrent_protocol_versions() {
+        for version in [
+            crate::rust::casper::LEGACY_CASPER_PROTOCOL_VERSION,
+            crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION + 1,
+        ] {
+            let mut block = models::rust::block_implicits::get_random_block_default();
+            block.header.version = version;
+            let approved = ApprovedBlock {
+                candidate: ApprovedBlockCandidate {
+                    block,
+                    required_sigs: 0,
+                },
+                sigs: Vec::new(),
+            };
+
+            assert!(!Validate::approved_block(&approved));
+        }
+    }
 
     fn add_metadata(
         snapshot: &mut CasperSnapshot,

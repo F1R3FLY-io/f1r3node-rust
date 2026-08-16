@@ -70,6 +70,7 @@ pub fn signed_deploy_data_gen() -> impl Strategy<Value = Signed<DeployData>> {
                 term,
                 shard_id,
                 expiration_timestamp: None,
+                authority_presentations: Vec::new(),
             },
             Box::new(secp256k1),
             sec,
@@ -90,6 +91,9 @@ pub fn processed_deploy_gen() -> impl Strategy<Value = ProcessedDeploy> {
         cosigner_threshold: 0,
         pre_state_hash: ByteString::new(),
         post_state_hash: ByteString::new(),
+        authority_funding_certificate: None,
+        authority_cost_witness: None,
+        admission_status: Default::default(),
     })
 }
 

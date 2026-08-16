@@ -5,7 +5,9 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, KeyValueDagRepresentation,
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+use casper::rust::casper::{
+    CasperShardConf, CasperSnapshot, OnChainCasperState, CURRENT_CASPER_PROTOCOL_VERSION,
+};
 use casper::rust::errors::CasperError;
 use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use casper::rust::genesis::contracts::validator::Validator as GenesisValidator;
@@ -23,6 +25,7 @@ use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond, ProcessedDeploy};
+use models::rust::utils::new_gstring_par;
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::external_services::ExternalServices;
@@ -82,7 +85,7 @@ fn build_empty_block(
         Some(pre_state_hash),
         Some(StateHash::default()),
         Some(creator),
-        Some(1),
+        Some(CURRENT_CASPER_PROTOCOL_VERSION),
         Some(now_millis()),
         Some(parent_hashes),
         Some(Vec::new()),
@@ -118,23 +121,31 @@ async fn step_block(
         .map(|d| d.deploy)
         .collect::<Vec<_>>();
 
-    let (_, post_state_hash, processed_deploys, _, processed_system_deploys, bonds) =
-        compute_deploys_checkpoint(
-            block_store,
-            parents,
-            deploys,
-            Vec::<SystemDeployEnum>::new(),
-            &snapshot,
-            runtime_manager,
-            BlockData::from_block(block),
-            HashMap::new(),
-            None,
-        )
-        .await?;
+    let (
+        pre_state_hash,
+        post_state_hash,
+        processed_deploys,
+        rejected_deploys,
+        processed_system_deploys,
+        bonds,
+    ) = compute_deploys_checkpoint(
+        block_store,
+        parents,
+        deploys,
+        Vec::<SystemDeployEnum>::new(),
+        &snapshot,
+        runtime_manager,
+        BlockData::from_block(block),
+        HashMap::new(),
+        None,
+    )
+    .await?;
 
     let mut updated = block.clone();
+    updated.body.state.pre_state_hash = pre_state_hash;
     updated.body.state.post_state_hash = post_state_hash;
     updated.body.deploys = processed_deploys;
+    updated.body.rejected_deploys = rejected_deploys;
     updated.body.system_deploys = processed_system_deploys;
     updated.body.state.bonds = bonds;
 
@@ -229,8 +240,9 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
             epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
         },
         vaults: Vec::new(),
+        client_fuel_allocations: Vec::new(),
         supply: i64::MAX,
-        version: 1,
+        version: CURRENT_CASPER_PROTOCOL_VERSION,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
@@ -329,21 +341,20 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (state_without_skew, rejected_without_skew, _rejected_slashes) =
-        compute_parents_post_state(
-            &block_store,
-            parents.clone(),
-            &snapshot_without_skew,
-            &runtime_manager,
-            &latest_messages_without_skew,
-            None,
-            None,
-        )
-        .await
-        .expect("Failed to compute parents post-state without finalized skew");
+    let (state_without_skew, rejected_without_skew) = compute_parents_post_state(
+        &block_store,
+        parents.clone(),
+        &snapshot_without_skew,
+        &runtime_manager,
+        &latest_messages_without_skew,
+        None,
+        None,
+    )
+    .await
+    .expect("Failed to compute parents post-state without finalized skew");
 
     runtime_manager.parents_post_state_cache.clear();
-    runtime_manager.block_index_cache.clear();
+    runtime_manager.clear_block_index_cache();
 
     let mut snapshot_with_skew = mk_snapshot(
         dag_storage
@@ -364,7 +375,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (state_with_skew, rejected_with_skew, _rejected_slashes) = compute_parents_post_state(
+    let (state_with_skew, rejected_with_skew) = compute_parents_post_state(
         &block_store,
         parents,
         &snapshot_with_skew,
@@ -394,21 +405,20 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
     // are siblings, so the descendant fast-paths are skipped and the genuine
     // DAG merge runs in both orders.)
     runtime_manager.parents_post_state_cache.clear();
-    runtime_manager.block_index_cache.clear();
+    runtime_manager.clear_block_index_cache();
 
     let reversed_parents = vec![b3.clone(), b2.clone()];
-    let (state_reversed_order, rejected_reversed_order, _rejected_slashes) =
-        compute_parents_post_state(
-            &block_store,
-            reversed_parents,
-            &snapshot_without_skew,
-            &runtime_manager,
-            &latest_messages_without_skew,
-            None,
-            None,
-        )
-        .await
-        .expect("Failed to compute parents post-state with reversed parent order");
+    let (state_reversed_order, rejected_reversed_order) = compute_parents_post_state(
+        &block_store,
+        reversed_parents,
+        &snapshot_without_skew,
+        &runtime_manager,
+        &latest_messages_without_skew,
+        None,
+        None,
+    )
+    .await
+    .expect("Failed to compute parents post-state with reversed parent order");
 
     assert_eq!(
         state_without_skew, state_reversed_order,
@@ -421,7 +431,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
 }
 
 #[test]
-fn compute_parents_post_state_should_fast_path_when_parent_dag_covers_secondary_parent() {
+fn compute_parents_post_state_fast_paths_only_when_the_cover_preserves_the_floor() {
     let stack_bytes = std::env::var("F1R3_COMPUTE_PARENTS_REGRESSION_STACK_BYTES")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
@@ -505,8 +515,12 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
                 .expect("Failed to create default deployer vault address"),
             initial_balance: 9_000_000,
         }],
+        client_fuel_allocations: vec![(
+            (*construct_deploy::DEFAULT_PUB).clone(),
+            casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
+        )],
         supply: i64::MAX,
-        version: 1,
+        version: CURRENT_CASPER_PROTOCOL_VERSION,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
@@ -529,14 +543,30 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
     let genesis_state = proto_util::post_state_hash(&genesis_block);
     let genesis_bonds = genesis_block.body.state.bonds.clone();
 
-    let main_raw = build_empty_block(
-        1,
-        1,
-        validator.clone(),
-        vec![genesis_hash.clone()],
-        genesis_state.clone(),
-        genesis_bonds.clone(),
-        shard_name.clone(),
+    let main_deploy = construct_deploy::source_deploy_now_full(
+        r#"@"secondary-parent-fast-path"!!(2)"#.to_string(),
+        None,
+        Some(1),
+        Some(construct_deploy::DEFAULT_SEC.clone()),
+        None,
+        Some(shard_name.clone()),
+    )
+    .expect("Failed to build main deploy");
+    let main_raw = block_implicits::get_random_block(
+        Some(1),
+        Some(1),
+        Some(genesis_state.clone()),
+        Some(StateHash::default()),
+        Some(validator.clone()),
+        Some(CURRENT_CASPER_PROTOCOL_VERSION),
+        Some(now_millis()),
+        Some(vec![genesis_hash.clone()]),
+        Some(Vec::new()),
+        Some(vec![ProcessedDeploy::empty(main_deploy)]),
+        Some(Vec::new()),
+        Some(genesis_bonds.clone()),
+        Some(shard_name.clone()),
+        None,
     );
     let main = step_block(
         &mut block_store,
@@ -565,7 +595,7 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         Some(genesis_state.clone()),
         Some(StateHash::default()),
         Some(validator.clone()),
-        Some(1),
+        Some(CURRENT_CASPER_PROTOCOL_VERSION),
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
@@ -636,6 +666,44 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
     .await
     .expect("Failed to step cover block");
 
+    assert_eq!(cover.body.rejected_deploys.len(), 1);
+    let rejected_source = cover.body.rejected_deploys[0].source_block_hash.clone();
+    let (finalized_branch, other_branch) = if rejected_source == main.block_hash {
+        (main.clone(), side.clone())
+    } else {
+        assert_eq!(rejected_source, side.block_hash);
+        (side.clone(), main.clone())
+    };
+
+    let stale_raw = build_empty_block(
+        2,
+        4,
+        validator.clone(),
+        vec![
+            finalized_branch.block_hash.clone(),
+            other_branch.block_hash.clone(),
+        ],
+        proto_util::post_state_hash(&finalized_branch),
+        finalized_branch.body.state.bonds.clone(),
+        shard_name.clone(),
+    );
+    let stale = step_block(
+        &mut block_store,
+        &dag_storage,
+        &mut runtime_manager,
+        &stale_raw,
+        validator.clone(),
+        shard_name.clone(),
+        genesis_hash.clone(),
+    )
+    .await
+    .expect("Failed to step stale merge block");
+    assert!(stale
+        .body
+        .rejected_deploys
+        .iter()
+        .any(|rejected| rejected.source_block_hash == finalized_branch.block_hash));
+
     let mut snapshot = mk_snapshot(
         dag_storage
             .get_representation()
@@ -644,13 +712,13 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         shard_name,
         genesis_hash.clone(),
     );
-    snapshot.dag.last_finalized_block_hash = genesis_hash;
+    snapshot.dag.last_finalized_block_hash = genesis_hash.clone();
     let mut latest_messages = std::collections::BTreeMap::new();
-    latest_messages.insert(validator, cover.block_hash.clone());
+    latest_messages.insert(validator.clone(), genesis_hash.clone());
     runtime_manager.parents_post_state_cache.clear();
-    runtime_manager.block_index_cache.clear();
+    runtime_manager.clear_block_index_cache();
 
-    let (merged_state, rejected, _rejected_slashes) = compute_parents_post_state(
+    let (merged_state, rejected) = compute_parents_post_state(
         &block_store,
         vec![cover.clone(), side.clone()],
         &snapshot,
@@ -675,6 +743,60 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         runtime_manager.parents_post_state_cache.is_empty(),
         "DAG-covering parent fast path should not populate the merge cache"
     );
+
+    snapshot
+        .dag
+        .put_cached_floor(genesis_hash.clone(), genesis_hash.clone())
+        .expect("Failed to cache genesis floor");
+    snapshot
+        .dag
+        .put_cached_floor(main.block_hash.clone(), genesis_hash.clone())
+        .expect("Failed to cache main floor");
+    snapshot
+        .dag
+        .put_cached_floor(side.block_hash.clone(), genesis_hash.clone())
+        .expect("Failed to cache side floor");
+    snapshot
+        .dag
+        .put_cached_floor(stale.block_hash.clone(), genesis_hash)
+        .expect("Failed to cache stale floor");
+    let latest_messages = std::collections::BTreeMap::from([(validator, stale.block_hash.clone())]);
+    runtime_manager.parents_post_state_cache.clear();
+    runtime_manager.clear_block_index_cache();
+
+    let (rebased_state, rebased_rejected) = compute_parents_post_state(
+        &block_store,
+        vec![stale.clone()],
+        &snapshot,
+        &runtime_manager,
+        &latest_messages,
+        None,
+        None,
+    )
+    .await
+    .expect("Failed to rebase the stale merge on its finalized state floor");
+
+    assert!(rebased_rejected
+        .iter()
+        .all(|rejected| rejected.source_block_hash != finalized_branch.block_hash));
+    assert_ne!(rebased_state, proto_util::post_state_hash(&stale));
+    assert!(!runtime_manager.parents_post_state_cache.is_empty());
+    let channel = new_gstring_par("secondary-parent-fast-path".to_string(), Vec::new(), false);
+    let finalized_data = runtime_manager
+        .get_data(proto_util::post_state_hash(&finalized_branch), &channel)
+        .await
+        .expect("Failed to read the finalized branch effect");
+    let stale_data = runtime_manager
+        .get_data(proto_util::post_state_hash(&stale), &channel)
+        .await
+        .expect("Failed to read the stale merge effect");
+    let rebased_data = runtime_manager
+        .get_data(rebased_state, &channel)
+        .await
+        .expect("Failed to read the rebased finalized effect");
+    assert!(!finalized_data.is_empty());
+    assert_ne!(stale_data, finalized_data);
+    assert_eq!(rebased_data, finalized_data);
 }
 
 #[test]
@@ -755,8 +877,9 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
             epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
         },
         vaults: Vec::new(),
+        client_fuel_allocations: Vec::new(),
         supply: i64::MAX,
-        version: 1,
+        version: CURRENT_CASPER_PROTOCOL_VERSION,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
@@ -990,8 +1113,9 @@ async fn run_visible_blocks_scope_test() {
             epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
         },
         vaults: Vec::new(),
+        client_fuel_allocations: Vec::new(),
         supply: i64::MAX,
-        version: 1,
+        version: CURRENT_CASPER_PROTOCOL_VERSION,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,

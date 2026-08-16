@@ -1556,7 +1556,8 @@ fn validate_and_decode_pubkey(pubkey_hex: &str) -> Result<Vec<u8>> {
 fn lookup_sig_algorithm(name: &str) -> Result<Box<dyn SignaturesAlg>> {
     match name {
         "secp256k1" => Ok(Box::new(crypto::rust::signatures::secp256k1::Secp256k1)),
-        "secp256k1-eth" => Ok(Box::new(
+        crypto::rust::signatures::secp256k1_eth::Secp256k1Eth::NAME
+        | crypto::rust::signatures::secp256k1_eth::Secp256k1Eth::LEGACY_NAME => Ok(Box::new(
             crypto::rust::signatures::secp256k1_eth::Secp256k1Eth,
         )),
         "ed25519" => Ok(Box::new(crypto::rust::signatures::ed25519::Ed25519)),
@@ -2098,6 +2099,7 @@ mod tests {
                 valid_after_block_number: 0,
                 shard_id: "".to_string(),
                 expiration_timestamp: None,
+                authority_presentations: Vec::new(),
             },
             deployer: "0123456789abcdef".to_string(),
             signature: "fedcba9876543210".to_string(),

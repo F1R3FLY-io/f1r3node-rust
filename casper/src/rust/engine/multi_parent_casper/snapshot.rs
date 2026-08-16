@@ -78,10 +78,7 @@ fn branch_unfinalized_user_deploy_score(
     root_hash: &BlockHash,
     last_finalized_block: &BlockHash,
 ) -> Result<Option<DeployBranchScore>, CasperError> {
-    let last_finalized_number = dag
-        .lookup(last_finalized_block)?
-        .map(|meta| meta.block_number)
-        .unwrap_or(-1);
+    let last_finalized_number = dag.lookup_unsafe(last_finalized_block)?.block_number;
     let root_meta = dag.lookup_unsafe(root_hash)?;
     let mut stack = vec![root_hash.clone()];
     let mut seen: HashSet<BlockHash> = HashSet::new();
@@ -101,16 +98,20 @@ fn branch_unfinalized_user_deploy_score(
             continue;
         }
 
-        if let Some(sigs) = block_store.deploy_sigs(&block_hash)? {
-            if !sigs.is_empty() {
-                latest_deploy_block_number = Some(
-                    latest_deploy_block_number
-                        .map(|current| current.max(block_meta.block_number))
-                        .unwrap_or(block_meta.block_number),
-                );
-                for sig in sigs {
-                    deploy_sigs.insert(sig.into());
-                }
+        let sigs = block_store.deploy_sigs(&block_hash)?.ok_or_else(|| {
+            CasperError::RuntimeError(format!(
+                "Missing block {} while scoring deploy-support branches",
+                PrettyPrinter::build_string_bytes(&block_hash)
+            ))
+        })?;
+        if !sigs.is_empty() {
+            latest_deploy_block_number = Some(
+                latest_deploy_block_number
+                    .map(|current| current.max(block_meta.block_number))
+                    .unwrap_or(block_meta.block_number),
+            );
+            for sig in sigs {
+                deploy_sigs.insert(sig.into());
             }
         }
 
@@ -243,10 +244,12 @@ fn prune_dag_covered_parents(
 fn local_rejected_buffer_has_recoverable_deploys(
     block_store: &KeyValueBlockStore,
     rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    finalized_floor: &BlockHash,
     parent_hashes: &[BlockHash],
     current_block_number: i64,
     current_time_millis: i64,
     deploy_lifespan: i64,
+    protocol_version: i64,
 ) -> Result<bool, CasperError> {
     let buffered_deploys: HashSet<Signed<DeployData>> = {
         let buffer_guard = rejected_deploy_buffer
@@ -279,8 +282,13 @@ fn local_rejected_buffer_has_recoverable_deploys(
         .min()
         .map(|height| height.min(earliest_block_number))
         .unwrap_or(earliest_block_number);
-    let canonical_won =
-        interpreter_util::canonical_won_sigs(block_store, parent_hashes, scan_floor)?;
+    let canonical_won = interpreter_util::canonical_won_sigs_at_floor(
+        block_store,
+        finalized_floor,
+        parent_hashes,
+        scan_floor,
+        protocol_version,
+    )?;
 
     Ok(candidates
         .iter()
@@ -442,10 +450,12 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         local_rejected_buffer_has_recoverable_deploys(
             &this.block_store,
             &this.rejected_deploy_buffer,
+            &dag.last_finalized_block(),
             &sorted_parent_hashes,
             candidate_block_number,
             now_millis,
             this.casper_shard_conf.deploy_lifespan,
+            this.casper_shard_conf.casper_version,
         )?
     };
 
@@ -650,7 +660,6 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             let traversal_result = dag_ops::try_bf_traverse(parent_metas, neighbor_fn)?;
 
             let all_deploys = Arc::new(dashmap::DashSet::new());
-            let all_rejected = Arc::new(dashmap::DashSet::new());
             for block_metadata in traversal_result {
                 let block_deploy_sigs = this
                     .block_store
@@ -664,20 +673,17 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
                 for deploy_sig in block_deploy_sigs {
                     all_deploys.insert(deploy_sig.into());
                 }
-                // Merge of dev: a deploy that was executed in this block
-                // and rejected by a descendant merge contributes to the
-                // rejected_in_scope set. The block creator and validator
-                // intersect this with deploys_in_scope to decide
-                // re-inclusion eligibility for merge-rejected deploys.
-                if let Some(rejected_sigs) = this
-                    .block_store
-                    .rejected_deploy_sigs(&block_metadata.block_hash)?
-                {
-                    for sig in rejected_sigs {
-                        all_rejected.insert(sig.into());
-                    }
-                }
             }
+
+            let (_, canonical_rejected) = interpreter_util::canonical_disposition_sets_at_floor(
+                &this.block_store,
+                &snapshot_lfb_hash,
+                &parent_hashes,
+                earliest_block_number,
+                this.casper_shard_conf.casper_version,
+            )?;
+            let all_rejected: Arc<dashmap::DashSet<Bytes>> =
+                Arc::new(canonical_rejected.into_iter().collect());
 
             // C16: parking_lot::Mutex — no poison propagation.
             let mut cache_guard = this.deploys_in_scope_cache.lock();
@@ -856,6 +862,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deploy_support_scoring_fails_closed_on_missing_committed_inputs() {
+        let mut kvm = InMemoryStoreManager::new();
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let genesis = block_implicits::get_random_block(
+            Some(0),
+            Some(0),
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let child = block_implicits::get_random_block(
+            Some(1),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(vec![genesis.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        dag_storage
+            .insert(&genesis, InsertMode::Approved)
+            .expect("insert genesis");
+        dag_storage
+            .insert(&child, InsertMode::Normal)
+            .expect("insert child");
+        block_store
+            .put_block_message(&genesis)
+            .expect("store genesis");
+        let dag = dag_storage.get_representation().expect("dag");
+
+        let body_error = branch_unfinalized_user_deploy_score(
+            &dag,
+            &block_store,
+            &child.block_hash,
+            &genesis.block_hash,
+        )
+        .expect_err("missing child body");
+        assert!(body_error
+            .to_string()
+            .contains("scoring deploy-support branches"));
+
+        let missing_lfb = prost::bytes::Bytes::from_static(b"missing-lfb");
+        assert!(branch_unfinalized_user_deploy_score(
+            &dag,
+            &block_store,
+            &child.block_hash,
+            &missing_lfb,
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
     async fn parent_selection_prunes_dag_covered_parents() {
         let mut kvm = InMemoryStoreManager::new();
         let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
@@ -1004,6 +1083,23 @@ mod tests {
                 .await
                 .expect("rejected deploy buffer"),
         ));
+        let floor = block_implicits::get_random_block(
+            Some(0),
+            Some(0),
+            None,
+            None,
+            None,
+            Some(crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION),
+            Some(0),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        block_store.put_block_message(&floor).expect("store floor");
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .expect("time")
@@ -1039,10 +1135,12 @@ mod tests {
         assert!(!local_rejected_buffer_has_recoverable_deploys(
             &block_store,
             &rejected_deploy_buffer,
+            &floor.block_hash,
             &[],
             20,
             now,
-            50
+            50,
+            crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
         )
         .expect("check unselectable backlog"));
 
@@ -1062,10 +1160,12 @@ mod tests {
         assert!(local_rejected_buffer_has_recoverable_deploys(
             &block_store,
             &rejected_deploy_buffer,
+            &floor.block_hash,
             &[],
             20,
             now,
-            50
+            50,
+            crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
         )
         .expect("check selectable backlog"));
     }
@@ -1120,10 +1220,12 @@ mod tests {
         assert!(!local_rejected_buffer_has_recoverable_deploys(
             &block_store,
             &rejected_deploy_buffer,
+            &parent.block_hash,
             std::slice::from_ref(&parent.block_hash),
             20,
             now,
-            50
+            50,
+            crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
         )
         .expect("check canonical backlog"));
     }
@@ -1183,10 +1285,12 @@ mod tests {
         assert!(!local_rejected_buffer_has_recoverable_deploys(
             &block_store,
             &rejected_deploy_buffer,
+            &rejected.block_hash,
             std::slice::from_ref(&rejected.block_hash),
             2,
             i64::MAX,
-            50
+            50,
+            1,
         )
         .expect("empty backlog"));
     }

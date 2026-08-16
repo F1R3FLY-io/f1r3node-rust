@@ -17,12 +17,14 @@
  *         v-carrier datum are present (DR-4 — no one-sided mint). Modelled
  *         here as a persistent `contract` keyed on a swap handle, whose body
  *         joins the two per-handle carrier channels.
- *   OD-2  the operands are ordinary COUNT-DATUM CARRIER channels: a carrier
- *         holds a bare integer count `k`. `Σ⟦Ground(pk)⟧` is UNNAMEABLE from
- *         Rholang (no bytes→GPrivate surface primitive), so Exchange operates
- *         on carriers; the `Σ⟦v⟧` credit that backs a fee conversion is the
- *         Rust `supply::produce_balance` mirror (close_block_deploy.rs
- *         `dual_write_supply`, phase 3), NOT written here.
+ *   OD-2  the operands are ordinary carrier channels. A carrier may hold an
+ *         integer fee count or a first-class `CostStack` term. The join treats
+ *         the payload opaquely, so an exchanged stack retains its exact cells,
+ *         order, and signature tags. `Σ⟦Ground(pk)⟧` balance datums are
+ *         UNNAMEABLE from Rholang (no bytes→GPrivate surface primitive), so the
+ *         contract cannot directly debit or credit a native purse. Executing a
+ *         received `CostStack` materializes it through the separately checked,
+ *         conserving native stack-transfer path.
  *   OD-5  the peg is 1:1: the swap moves the carrier counts across without a
  *         rate parameter. More sophisticated AMMs are expressible (variable
  *         remainders) but are out of StageD scope.
@@ -41,10 +43,11 @@
  *     `swap` call. DR-4: it blocks until BOTH carriers carry a datum (no
  *     one-sided fire).
  *
- * The closeBlock per-epoch fee→v conversion (PoS.rhox `convertFeesToValidators`)
- * is the production CALLER of this 1:1 swap at the validator-economic layer;
- * clients acquiring `v`-fuel for their `c`-fees (#13, orthogonal to StageD)
- * are its public callers.
+ * Native REV fee settlement linearizes the paper's collect-then-convert trace
+ * as one conserving transfer from the payer's reserved SystemVault purse to the
+ * proposer's SystemVault. This contract only swaps already-existing carrier
+ * data. It can transport a first-class stack to code that later materializes it,
+ * but it cannot directly credit or debit SystemVault custody.
  *
  * Genesis-deployment derivation table (regenerated whenever sk/timestamp change):
  *

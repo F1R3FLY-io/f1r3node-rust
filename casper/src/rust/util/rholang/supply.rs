@@ -1,41 +1,119 @@
-// Per-signature token-supply read/write helpers (Cost-Accounted Rho Calculus).
-//
-// Realizes DR-13 and [supply-realization-c-d-handoff.md] Decision 5 +
-// [stageb-minting-halt-interface.md] Decision 5: the per-signature supply pool
-// `Σ⟦s⟧` is a SINGLE balance-carrying datum `(TOKEN_TAG, n)` on the unforgeable
-// channel `SignatureChannel::from_sig(s)` (`supply(s) = n`, 0 if absent). The
-// channel is content-addressed and UNNAMEABLE from Rholang (no bytes→GPrivate
-// surface primitive — handoff Decision 1), so the ONLY writer is this Rust
-// module, riding a `GSysAuthToken`-bearing system deploy (handoff Decision 3).
-//
-// These helpers are shared by BOTH ends of the C↔D handoff:
-//   * the supply PRODUCER (`CloseBlockDeploy::post_eval`, Stage B) — mints into
-//     `Σ⟦v⟧` via [`produce_balance`];
-//   * the WD-D2 acceptance-gate CONSUMER — reads `Σ⟦s⟧` via [`read_balance`] /
-//     [`decode_balance_datum`] (NOT a second decoder — handoff Decision 5).
-//
-// INTEGRATION INVARIANT (handoff Coordination): [`supply_channel`] and WD-D0's
-// `Sig::lane_hash` (accounting/mod.rs:1448-1459) MUST be anchored to the SAME
-// `from_sig` basis so a deploy's lane key and its supply channel never drift.
-// We realize that by deriving both from the single function
-// `SignatureChannel::from_sig`; asserted by `supply_channel_equals_lane_pool_channel`.
-
-use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{ETuple, Expr, ListParWithRandom, Par};
-use models::rust::block::state_hash::StateHash;
+use models::rhoapi::{CostSignature, CostStack, ListParWithRandom, Par};
+use prost::Message;
+use rholang::rust::interpreter::accounting::authority::{
+    canonical_cost_signature, cost_signature_to_sig,
+};
 use rholang::rust::interpreter::accounting::{Sig, SignatureChannel};
+use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+use rspace_plus_plus::rspace::internal::Datum;
 
 use crate::rust::errors::CasperError;
 use crate::rust::rholang::runtime::RuntimeOps;
 
-/// Fixed, genesis-scoped discriminator distinguishing a supply balance datum
-/// from any other datum that might (in principle) reside on a signature
-/// channel. The supply datum is `Σ⟦s⟧!( (TOKEN_TAG, n) )` with `n: Long` the
-/// available `s`-layer count (spec Def 17 is a layer COUNT). Only Rust writes
-/// the channel, so `TOKEN_TAG` confusion is structurally impossible (handoff
-/// Decision 6 / TM-CA "TOKEN_TAG confusion" row), but the tag keeps the datum
-/// self-describing and the decoder total.
-pub const TOKEN_TAG: &str = "phlo";
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PurseStack {
+    pub instance_id: [u8; 32],
+    pub source_hash: [u8; 32],
+    pub channel: Par,
+    pub datum_index: i32,
+    pub random_state: Vec<u8>,
+    pub persistent: bool,
+    pub stack: CostStack,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PurseInventory {
+    pub balance: Option<i64>,
+    pub stacks: Vec<PurseStack>,
+}
+
+pub fn decode_purse_inventory(
+    data: &[Datum<ListParWithRandom>],
+    expected_head: &CostSignature,
+) -> Result<PurseInventory, CasperError> {
+    let expected_head = canonical_cost_signature(expected_head)
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+    let expected_key = cost_signature_to_sig(&expected_head)
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?
+        .lane_hash();
+    let channel = supply_channel(
+        &cost_signature_to_sig(&expected_head)
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?,
+    );
+    let mut stored = Vec::new();
+    for (datum_index, datum) in data.iter().enumerate() {
+        if let Some(stack) = &datum.a.cost_stack {
+            if !datum.a.pars.is_empty() || datum.a.cost_authority.is_some() {
+                return Err(CasperError::InvalidCostSettlement(
+                    "cost stack datum contains unrelated payload or authority".to_string(),
+                ));
+            }
+            let head = stack.cells.first().ok_or_else(|| {
+                CasperError::InvalidCostSettlement(
+                    "authority purse contains an empty cost stack".to_string(),
+                )
+            })?;
+            let head = canonical_cost_signature(head)
+                .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+            let head_key = cost_signature_to_sig(&head)
+                .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?
+                .lane_hash();
+            if head_key != expected_key {
+                return Err(CasperError::InvalidCostSettlement(
+                    "cost stack is stored on a channel different from its head signature"
+                        .to_string(),
+                ));
+            }
+            let mut canonical = Vec::with_capacity(stack.cells.len());
+            for cell in &stack.cells {
+                canonical.push(
+                    canonical_cost_signature(cell)
+                        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?,
+                );
+            }
+            stored.push((
+                <[u8; 32]>::try_from(datum.source.hash.bytes())
+                    .expect("RSpace produce identity length"),
+                datum_index as i32,
+                datum.a.random_state.clone(),
+                datum.persist,
+                CostStack { cells: canonical },
+            ));
+        } else if !datum.a.pars.is_empty() || datum.a.cost_authority.is_some() {
+            return Err(CasperError::InvalidCostSettlement(
+                "authority purse channel contains a non-stack datum".to_string(),
+            ));
+        }
+    }
+    stored.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    let mut occurrences = std::collections::BTreeMap::<[u8; 32], u64>::new();
+    let stacks = stored
+        .into_iter()
+        .map(|(source, datum_index, random_state, persistent, stack)| {
+            let occurrence = occurrences.entry(source.clone()).or_default();
+            let mut identity = Vec::with_capacity(source.len() + 8 + 48);
+            identity.extend_from_slice(b"f1r3node:cost-accounted-rho:purse-stack:v1");
+            identity.extend_from_slice(&source);
+            identity.extend_from_slice(&occurrence.to_le_bytes());
+            *occurrence += 1;
+            PurseStack {
+                instance_id: crypto::rust::hash::blake2b256::Blake2b256::hash(identity)
+                    .try_into()
+                    .expect("Blake2b-256 digest length"),
+                source_hash: source,
+                channel: channel.clone(),
+                datum_index,
+                random_state,
+                persistent,
+                stack,
+            }
+        })
+        .collect();
+    Ok(PurseInventory {
+        balance: None,
+        stacks,
+    })
+}
 
 /// The ONE channel-keying function: `Σ⟦s⟧ ≜ SignatureChannel::from_sig(s).par`.
 ///
@@ -69,390 +147,141 @@ pub fn supply_channel(sig: &Sig) -> Par {
     SignatureChannel::from_sig(sig).par
 }
 
-/// Stage-D fee-collection domain: domain-separates the per-validator FEE pool
-/// `F_v` from the supply pool `Σ⟦v⟧` (both are content-addressed `GPrivate`s
-/// keyed by the validator pk, so without this prefix they would COLLIDE). A
-/// validator's collected fees and its gate-pool balance MUST live on distinct
-/// channels (D.2: `F_v` is distinct from `Σ⟦v⟧`).
-const FEE_COLLECTION_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:fee-collection:v1";
-
-/// `F_v ≜` the per-validator FEE-COLLECTION pool — a Rust-nameable,
-/// content-addressed `GPrivate` keyed by `Blake2b256(FEE_COLLECTION_DOMAIN ‖ pk)`.
-/// Holds the validator's accumulated collected-fee COUNT as a `(TOKEN_TAG, n)`
-/// balance datum (same encoding as `Σ⟦v⟧`, read/written by the SAME
-/// [`read_balance`] / [`produce_balance`] helpers). DISTINCT from `Σ⟦v⟧ =
-/// from_sig(Ground(pk))` (different domain ⇒ different `GPrivate` id) and from
-/// `@W_v` (a PoS-private Rholang channel). Unnameable from Rholang (DR-13: no
-/// bytes→GPrivate surface primitive), so the ONLY writer is this Rust module on
-/// `CloseBlockDeploy::post_eval` (the FeeExtract collection credit + the
-/// per-epoch convert zero).
-pub fn fee_collection_channel(pk: &[u8]) -> Par {
-    let mut domain_separated = Vec::with_capacity(FEE_COLLECTION_DOMAIN.len() + pk.len());
-    domain_separated.extend_from_slice(FEE_COLLECTION_DOMAIN);
-    domain_separated.extend_from_slice(pk);
-    Par::default().with_unforgeables(vec![models::rhoapi::GUnforgeable {
-        unf_instance: Some(models::rhoapi::g_unforgeable::UnfInstance::GPrivateBody(
-            models::rhoapi::GPrivate {
-                id: crypto::rust::hash::blake2b256::Blake2b256::hash(domain_separated),
-            },
-        )),
-    }])
-}
-
-/// Pure decoder: extract the balance `n` from a channel's resident pars.
-///
-/// Finds the single `(GString(TOKEN_TAG), GInt(n))` tuple datum and returns
-/// `n`; returns `0` when no such datum is present (the spec's `supply(s) = 0`
-/// for an absent pool). Total over arbitrary `&[Par]`: any par that is not a
-/// well-formed `(TOKEN_TAG, GInt)` tuple is skipped. The single-datum
-/// invariant maintained by [`produce_balance`] means at most one tuple matches;
-/// if several were present (they never are) the first in iteration order wins,
-/// which is deterministic for a given channel's stored ordering.
-pub fn decode_balance_datum(data: &[Par]) -> i64 {
-    for par in data {
-        if let Some(n) = decode_one_balance_par(par) {
-            return n;
-        }
-    }
-    0
-}
-
-/// Decode a single par as a `(TOKEN_TAG, n)` balance tuple, if it is one.
-fn decode_one_balance_par(par: &Par) -> Option<i64> {
-    // A balance datum is a single ETuple expr of arity 2: (GString TOKEN_TAG, GInt n).
-    let expr = par.exprs.first()?;
-    let ETuple { ps, .. } = match expr.expr_instance.as_ref()? {
-        ExprInstance::ETupleBody(etuple) => etuple,
-        _ => return None,
-    };
-    if ps.len() != 2 {
-        return None;
-    }
-    let tag = match ps[0].exprs.first()?.expr_instance.as_ref()? {
-        ExprInstance::GString(s) => s.as_str(),
-        _ => return None,
-    };
-    if tag != TOKEN_TAG {
-        return None;
-    }
-    match ps[1].exprs.first()?.expr_instance.as_ref()? {
-        ExprInstance::GInt(n) => Some(*n),
-        _ => None,
-    }
-}
-
-/// Build the single balance datum par `(TOKEN_TAG, n)`.
-pub fn balance_datum(n: i64) -> Par {
-    let tag = Par::default().with_exprs(vec![Expr {
-        expr_instance: Some(ExprInstance::GString(TOKEN_TAG.to_string())),
-    }]);
-    let count = Par::default().with_exprs(vec![Expr {
-        expr_instance: Some(ExprInstance::GInt(n)),
-    }]);
-    Par::default().with_exprs(vec![Expr {
-        expr_instance: Some(ExprInstance::ETupleBody(ETuple {
-            ps: vec![tag, count],
-            locally_free: Vec::new(),
-            connective_used: false,
-        })),
-    }])
-}
-
-/// Read `supply(s) = n` from the LIVE hot store on `chan` (0 if absent).
-///
-/// Non-destructive (`get_data_par` reads the store without mutating it). This
-/// is §7.6 step 3 "compute `Σ_c` from the available token stack" (tex
-/// 1633-1634) and the read-half of [`produce_balance`]'s read-modify-replace.
-pub async fn read_balance(runtime_ops: &RuntimeOps, chan: &Par) -> i64 {
-    let data = runtime_ops.get_data_par(chan).await;
-    decode_balance_datum(&data)
-}
-
-/// Read the supply balance, DISTINGUISHING an ABSENT pool from a present
-/// zero-balance pool: returns `Some(n)` iff a `(TOKEN_TAG, n)` datum is resident
-/// on `chan` (even `n == 0`), and `None` iff no balance datum exists at all.
-///
-/// This is the WD-D2 acceptance-gate ACTIVATION discriminator (reported grounding
-/// refinement of the design's uniform "0 if absent"): a signer whose pool is
-/// ABSENT (`None`) is not yet under cost-accounting funding — the Cost-Accounted
-/// Rho ECONOMIC producer (Workstream C) has not provisioned its pool — so the
-/// gate admits it WITHOUT funding enforcement and WITHOUT a settlement debit
-/// (preserving pre-C / non-cost-accounted behavior bit-for-bit). A signer whose
-/// pool is PRESENT (`Some(n)`, including a drained `Some(0)`) IS under
-/// cost-accounting, so the gate enforces `Σ_s ≥ Δ_s + margin` and the §7.7
-/// reject-both discipline (a drained pool correctly rejects further spends — the
-/// spec's duplicate-deploy example, tex 1677-1687). `decode_balance_datum`
-/// cannot make this distinction (it folds absent and present-zero both to 0), so
-/// this presence probe is a separate, intentional read.
-pub async fn read_balance_present(runtime_ops: &RuntimeOps, chan: &Par) -> Option<i64> {
-    let data = runtime_ops.get_data_par(chan).await;
-    decode_balance_present(&data)
-}
-
-/// Like [`decode_balance_datum`] but returns `None` when NO `(TOKEN_TAG, n)`
-/// datum is present (vs `Some(n)` for a resident balance, including `Some(0)`).
-/// Total over arbitrary `&[Par]`; the first matching tuple wins (the
-/// single-datum invariant means at most one matches).
-pub fn decode_balance_present(data: &[Par]) -> Option<i64> {
-    for par in data {
-        if let Some(n) = decode_one_balance_par(par) {
-            return Some(n);
-        }
-    }
-    None
-}
-
-/// Write the supply balance `n` to `chan` as the SINGLE datum `(TOKEN_TAG, n)`.
-///
-/// Read-modify-**replace**: any existing balance datum on `chan` is removed
-/// first (`remove_all_data`) so the channel holds exactly one datum (handoff
-/// Decision 2 / Stage B Decision 5 single-datum invariant). Because the
-/// produce is a bare data write on a channel with no waiting continuation
-/// (Rholang cannot name `Σ⟦v⟧`), it stores the datum directly (no COMM) — the
-/// resulting trie leaf is determined solely by `(chan, datum, persist=false)`.
-///
-/// CONSENSUS NOTE (play/replay symmetry): `random_state` participates in the
-/// stored datum's identity (`hash_produce` over the bincode-serialized datum,
-/// stable_hash_provider.rs:63-76), hence in the post-state trie ROOT. Callers
-/// therefore MUST pass a `random_state` that is byte-identical on play and
-/// replay (e.g. derived from the close-block deploy's replay-stable
-/// `initial_rand`). See [`CloseBlockDeploy::post_eval`].
-pub async fn produce_balance(
+pub async fn apply_stack_pops(
     runtime_ops: &mut RuntimeOps,
-    chan: &Par,
-    n: i64,
-    random_state: Vec<u8>,
+    stacks: &[PurseStack],
+    stack_pops: &std::collections::BTreeMap<[u8; 32], u64>,
 ) -> Result<(), CasperError> {
-    // Drain any prior balance datum so the channel carries exactly one.
-    runtime_ops
-        .runtime
-        .reducer
-        .space
-        .remove_all_data(chan)
-        .await
-        .map_err(|e| CasperError::RuntimeError(format!("supply remove_all_data failed: {}", e)))?;
+    let by_id = stacks
+        .iter()
+        .map(|stack| (stack.instance_id, stack))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    if by_id.len() != stacks.len() {
+        return Err(CasperError::InvalidCostSettlement(
+            "authority inventory contains duplicate stack identities".to_string(),
+        ));
+    }
 
-    let data = ListParWithRandom {
-        pars: vec![balance_datum(n)],
-        random_state,
-    };
+    let mut removals =
+        std::collections::BTreeMap::<Vec<u8>, (Par, Vec<(i32, [u8; 32], ListParWithRandom)>)>::new(
+        );
+    let mut tails = Vec::<([u8; 32], Par, ListParWithRandom, bool)>::new();
+    for (stack_id, pop_count) in stack_pops {
+        if *pop_count == 0 {
+            return Err(CasperError::InvalidCostSettlement(
+                "authority stack settlement contains a zero pop count".to_string(),
+            ));
+        }
+        let stack = by_id.get(stack_id).ok_or_else(|| {
+            CasperError::InvalidCostSettlement(
+                "authority stack settlement references an unknown stack".to_string(),
+            )
+        })?;
+        let pop_count = usize::try_from(*pop_count).map_err(|_| {
+            CasperError::InvalidCostSettlement(
+                "authority stack pop count exceeds the platform range".to_string(),
+            )
+        })?;
+        if pop_count > stack.stack.cells.len() {
+            return Err(CasperError::InvalidCostSettlement(
+                "authority stack settlement exceeds the stack length".to_string(),
+            ));
+        }
+        let original = ListParWithRandom {
+            pars: Vec::new(),
+            random_state: stack.random_state.clone(),
+            cost_authority: None,
+            cost_stack: Some(stack.stack.clone()),
+        };
+        removals
+            .entry(stack.channel.encode_to_vec())
+            .or_insert_with(|| (stack.channel.clone(), Vec::new()))
+            .1
+            .push((stack.datum_index, *stack_id, original));
 
-    // Bare data write (no continuation on Σ⟦v⟧ ⇒ no COMM, just store_data).
-    runtime_ops
-        .runtime
-        .reducer
-        .space
-        .produce(chan.clone(), data, false)
-        .await
-        .map_err(|e| CasperError::RuntimeError(format!("supply produce failed: {}", e)))?;
+        let remaining = stack.stack.cells[pop_count..].to_vec();
+        if let Some(head) = remaining.first() {
+            let signature = cost_signature_to_sig(head)
+                .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+            tails.push((
+                *stack_id,
+                supply_channel(&signature),
+                ListParWithRandom {
+                    pars: Vec::new(),
+                    random_state: stack.random_state.clone(),
+                    cost_authority: None,
+                    cost_stack: Some(CostStack { cells: remaining }),
+                },
+                stack.persistent,
+            ));
+        }
+    }
 
+    for (_, channel_removals) in removals.values_mut() {
+        channel_removals.sort_by(|left, right| right.0.cmp(&left.0));
+    }
+    for (channel, channel_removals) in removals.values() {
+        let live = runtime_ops.runtime.reducer.space.get_data(channel).await;
+        for (index, _stack_id, expected) in channel_removals {
+            let datum = usize::try_from(*index)
+                .ok()
+                .and_then(|index| live.get(index))
+                .ok_or_else(|| {
+                    CasperError::InvalidCostSettlement(
+                        "authority stack moved before atomic settlement".to_string(),
+                    )
+                })?;
+            if &datum.a != expected {
+                return Err(CasperError::InvalidCostSettlement(
+                    "authority stack changed before atomic settlement".to_string(),
+                ));
+            }
+        }
+    }
+    let checkpoint = runtime_ops.runtime.create_soft_checkpoint().await;
+    let mutation = async {
+        for (_channel_key, (channel, channel_removals)) in removals {
+            for (index, stack_id, _) in channel_removals {
+                runtime_ops
+                    .runtime
+                    .reducer
+                    .space
+                    .remove_data_at_recorded(&channel, index, &stack_id)
+                    .await
+                    .map_err(|error| {
+                        CasperError::RuntimeError(format!(
+                            "authority stack removal failed: {error}"
+                        ))
+                    })?;
+            }
+        }
+
+        tails.sort_by_key(|tail| tail.0);
+        for (_, channel, datum, persistent) in tails {
+            runtime_ops
+                .runtime
+                .reducer
+                .space
+                .produce(channel, datum, persistent)
+                .await
+                .map_err(|error| {
+                    CasperError::RuntimeError(format!(
+                        "authority stack tail release failed: {error}"
+                    ))
+                })?;
+        }
+        Ok::<(), CasperError>(())
+    }
+    .await;
+    if let Err(error) = mutation {
+        runtime_ops
+            .runtime
+            .revert_to_soft_checkpoint(checkpoint)
+            .await;
+        return Err(error);
+    }
     Ok(())
 }
-
-/// Deterministic per-mint `random_state` for a supply produce.
-///
-/// Anchored to the close-block deploy's replay-stable `initial_rand`
-/// (`generate_close_deploy_random_seed_from_*`, identical on play and replay)
-/// advanced by `index` (the validator's position in the SORTED mint set). The
-/// sorted order makes the derivation independent of fold/iteration order, so it
-/// is byte-identical play/replay regardless of how the mint set was assembled.
-pub fn mint_random_state(
-    close_rand: &crypto::rust::hash::blake2b512_random::Blake2b512Random,
-    index: i64,
-) -> Vec<u8> {
-    // `split_byte` takes an i8 path tag; clamp the per-validator index into a
-    // stable byte and fold the high bits into the seed via a second split so we
-    // never alias two validators' produce random states even past 127 mints.
-    let lo = (index & 0x7f) as i8;
-    let hi = ((index >> 7) & 0x7f) as i8;
-    close_rand.split_byte(lo).split_byte(hi).to_bytes()
-}
-
-/// Deterministic per-DEBIT `random_state` for a WD-D2 settlement-debit produce,
-/// on a RNG path DISJOINT from both the mint loop ([`mint_random_state`]) and the
-/// close-block mint-list channel (`split_byte(0x2a)`). A validator may BOTH be
-/// minted (its `Σ⟦v⟧` credited at an epoch boundary) AND have a pool debited in
-/// the same close block; routing the debit through a distinct fixed
-/// `DEBIT_RNG_PATH` prefix split before the per-index splits guarantees the mint
-/// and debit produce DISTINCT datum identities even when they target the same
-/// channel — so the read-modify-replace leaves a single, deterministic datum and
-/// the post-state trie root is byte-identical on play and replay.
-///
-/// Anchored to the same close-block deploy `initial_rand` the mint uses
-/// (`generate_close_deploy_random_seed_from_*`, identical on play and replay) and
-/// advanced by the debit's position in the SORTED debit set — so the derivation
-/// is independent of fold/iteration order and byte-identical play/replay.
-pub fn debit_random_state(
-    close_rand: &crypto::rust::hash::blake2b512_random::Blake2b512Random,
-    index: i64,
-) -> Vec<u8> {
-    // Fixed domain split distinct from the mint's index-derived first split
-    // (lo ∈ [0, 127]) and from the mint-list channel path (0x2a = 42): a
-    // negative tag is unreachable by the non-negative `index & 0x7f`, so the
-    // debit stream can never alias the mint stream.
-    const DEBIT_RNG_PATH: i8 = -0x2b; // disjoint from mint (lo≥0) and 0x2a
-    let lo = (index & 0x7f) as i8;
-    let hi = ((index >> 7) & 0x7f) as i8;
-    close_rand
-        .split_byte(DEBIT_RNG_PATH)
-        .split_byte(lo)
-        .split_byte(hi)
-        .to_bytes()
-}
-
-/// Deterministic `random_state` for the Cost-Accounted Rho Stage-C slash
-/// `Σ⟦v⟧`-zero produce ([`SlashDeploy::post_eval`]), on a RNG path DISJOINT from
-/// the close-block mint ([`mint_random_state`], `lo ∈ [0,127]`), the WD-D2
-/// settlement debit ([`debit_random_state`], `-0x2b`), and the close-block
-/// mint-list channel (`0x2a`). A slash deploy has at most ONE offender pool to
-/// zero per deploy, so there is no per-index stream here — a single fixed
-/// domain split off the slash deploy's `initial_rand` suffices. Anchored to the
-/// slash deploy's replay-stable seed (`generate_slash_deploy_random_seed`,
-/// byte-identical play/replay for the same proposer + seq_num + invalid block
-/// hash), so the zeroed datum's identity — hence the post-state trie root — is
-/// byte-identical on play and replay (the consensus-critical symmetry).
-pub fn slash_random_state(
-    slash_rand: &crypto::rust::hash::blake2b512_random::Blake2b512Random,
-) -> Vec<u8> {
-    // Fixed domain split distinct from the mint (lo≥0), debit (-0x2b), and
-    // mint-list (0x2a) paths: a slash-zero produce can never alias a mint or
-    // debit produce even when they target the same channel in different deploys.
-    const SLASH_RNG_PATH: i8 = -0x2c;
-    slash_rand.split_byte(SLASH_RNG_PATH).to_bytes()
-}
-
-/// Deterministic per-CONVERT `random_state` for the Cost-Accounted Rho Stage-D
-/// fee→v conversion `Σ⟦v⟧`-credit produce ([`CloseBlockDeploy::post_eval`]
-/// phase 3), on a RNG path DISJOINT from the mint loop ([`mint_random_state`],
-/// `lo ∈ [0,127]`), the WD-D2 settlement debit ([`debit_random_state`],
-/// `-0x2b`), the slash zero ([`slash_random_state`], `-0x2c`), and the
-/// close-block mint-list channel (`0x2a`). At an epoch boundary a validator may
-/// BOTH be epoch-minted (its `Σ⟦v⟧` credited in the mint loop) AND have its
-/// collected fees converted into `Σ⟦v⟧` in the SAME close block; routing the
-/// fee-convert credit through this distinct fixed `FEE_CONVERT_RNG_PATH` prefix
-/// split before the per-index splits guarantees the mint and the fee-convert
-/// produce DISTINCT datum identities even when they target the same channel —
-/// so the read-modify-replace leaves a single, deterministic datum and the
-/// post-state trie root is byte-identical on play and replay.
-///
-/// Anchored to the same close-block deploy `initial_rand` the mint uses
-/// (`generate_close_deploy_random_seed_from_*`, identical on play and replay)
-/// and advanced by the convert's position in the SORTED fee-convert set — so the
-/// derivation is independent of fold/iteration order and byte-identical
-/// play/replay.
-pub fn fee_convert_random_state(
-    close_rand: &crypto::rust::hash::blake2b512_random::Blake2b512Random,
-    index: i64,
-) -> Vec<u8> {
-    // Fixed domain split distinct from the mint (lo≥0), debit (-0x2b), slash
-    // (-0x2c), and mint-list (0x2a) paths: a fee-convert credit can never alias
-    // a mint / debit / slash produce even when they target the same channel.
-    const FEE_CONVERT_RNG_PATH: i8 = -0x2d;
-    let lo = (index & 0x7f) as i8;
-    let hi = ((index >> 7) & 0x7f) as i8;
-    close_rand
-        .split_byte(FEE_CONVERT_RNG_PATH)
-        .split_byte(lo)
-        .split_byte(hi)
-        .to_bytes()
-}
-
-/// Deterministic `random_state` for the Cost-Accounted Rho Stage-D fee
-/// COLLECTION credit to `F_v` ([`CloseBlockDeploy::post_eval`] phase 3a: the
-/// proposer's per-block FeeExtract credit). On a RNG path DISJOINT from the mint
-/// (`lo ∈ [0,127]`), debit (`-0x2b`), slash (`-0x2c`), fee-convert (`-0x2d`),
-/// and the mint-list channel (`0x2a`). A single fixed domain split off the
-/// close-block deploy's replay-stable `initial_rand` suffices (one collection
-/// credit per close block — to the single proposer's `F_v`). Anchored to
-/// `generate_close_deploy_random_seed_from_*` (byte-identical play/replay for the
-/// same proposer + seq_num), so the credited datum's identity — hence the
-/// post-state — is byte-identical on play and replay.
-pub fn fee_collect_random_state(
-    close_rand: &crypto::rust::hash::blake2b512_random::Blake2b512Random,
-) -> Vec<u8> {
-    const FEE_COLLECT_RNG_PATH: i8 = -0x2e;
-    close_rand.split_byte(FEE_COLLECT_RNG_PATH).to_bytes()
-}
-
-/// Deterministic per-ALLOCATION `random_state` for the Cost-Accounted Rho task
-/// #13b genesis-block-1 client funding-slot credit
-/// ([`CloseBlockDeploy::post_eval`] phase 4: the §5.7/§7.5 client `Σ⟦c⟧` seed),
-/// on a RNG path DISJOINT from the mint loop ([`mint_random_state`],
-/// `lo ∈ [0,127]`), the WD-D2 settlement debit ([`debit_random_state`],
-/// `-0x2b`), the slash zero ([`slash_random_state`], `-0x2c`), the fee-convert
-/// credit ([`fee_convert_random_state`], `-0x2d`), the fee-collect credit
-/// ([`fee_collect_random_state`], `-0x2e`), and the close-block mint-list channel
-/// (`0x2a`). The genesis-block-1 close may BOTH mint the genesis validator set
-/// into `Σ⟦v⟧` (the mint loop) AND seed the genesis client set into `Σ⟦c⟧` (this
-/// loop) in the SAME close block; routing the client credit through this distinct
-/// fixed `CLIENT_ALLOC_RNG_PATH` prefix split before the per-index splits
-/// guarantees the mint and the client-alloc produce DISTINCT datum identities
-/// even when (in principle) they target the same channel — so the
-/// read-modify-replace leaves a single, deterministic datum and the post-state
-/// trie root is byte-identical on play and replay.
-///
-/// Anchored to the same close-block deploy `initial_rand` the mint uses
-/// (`generate_close_deploy_random_seed_from_*`, identical on play and replay) and
-/// advanced by the allocation's position in the SORTED (pk-ascending) client set
-/// — so the derivation is independent of the genesis-config list order and
-/// byte-identical play/replay.
-pub fn client_alloc_random_state(
-    close_rand: &crypto::rust::hash::blake2b512_random::Blake2b512Random,
-    index: i64,
-) -> Vec<u8> {
-    // Fixed domain split distinct from the mint (lo≥0), debit (-0x2b), slash
-    // (-0x2c), fee-convert (-0x2d), fee-collect (-0x2e), and mint-list (0x2a)
-    // paths: a client-alloc credit can never alias a mint / debit / slash /
-    // fee produce even when they target the same channel.
-    const CLIENT_ALLOC_RNG_PATH: i8 = -0x2f;
-    let lo = (index & 0x7f) as i8;
-    let hi = ((index >> 7) & 0x7f) as i8;
-    close_rand
-        .split_byte(CLIENT_ALLOC_RNG_PATH)
-        .split_byte(lo)
-        .split_byte(hi)
-        .to_bytes()
-}
-
-/// Deterministic per-CLIENT `random_state` for the Cost-Accounted Rho Stage-D
-/// FEE CARVE (the spec's FeeExtract, cost-accounted-rho.tex:3637 "one client
-/// token consumed as fee"): the supply-CONSERVING per-client `Σ⟦c⟧` DEBIT that
-/// carves one token per admitted deploy from the client's OWN post-cost pool
-/// ([`CloseBlockDeploy::post_eval`] phase 3, before the `F_v` collect credit). On
-/// a RNG path DISJOINT from the mint (`lo ∈ [0,127]`), the WD-D2 COST settlement
-/// debit ([`debit_random_state`], `-0x2b`), the slash zero (`-0x2c`), fee-convert
-/// (`-0x2d`), fee-collect (`-0x2e`), client-alloc (`-0x2f`), and the mint-list
-/// channel (`0x2a`). A client's `Σ⟦c⟧` is hit by BOTH the cost debit and the fee
-/// carve in the SAME close block; routing the carve through this distinct fixed
-/// `FEE_CARVE_RNG_PATH` prefix split before the per-index splits guarantees the
-/// cost debit and the fee carve produce DISTINCT datum identities on the same
-/// channel — so the read-modify-replace leaves a single, deterministic datum and
-/// the post-state trie root is byte-identical on play and replay.
-///
-/// Anchored to the same close-block deploy `initial_rand` the mint uses
-/// (`generate_close_deploy_random_seed_from_*`, identical on play and replay) and
-/// advanced by the client's position in the SORTED (SigKey-ascending) fee-carve
-/// map — so the derivation is independent of iteration order and byte-identical
-/// play/replay.
-pub fn fee_carve_random_state(
-    close_rand: &crypto::rust::hash::blake2b512_random::Blake2b512Random,
-    index: i64,
-) -> Vec<u8> {
-    const FEE_CARVE_RNG_PATH: i8 = -0x30;
-    let lo = (index & 0x7f) as i8;
-    let hi = ((index >> 7) & 0x7f) as i8;
-    close_rand
-        .split_byte(FEE_CARVE_RNG_PATH)
-        .split_byte(lo)
-        .split_byte(hi)
-        .to_bytes()
-}
-
-/// Read the pre-state hash the supply read/write operate against. The supply
-/// channel read/write target the LIVE hot store, which for `post_eval` is the
-/// post-closeBlock state; the `pre_state_hash` is carried only for diagnostics
-/// / the `ReplaySupplyMismatch` cross-check context.
-pub fn pre_state_hash_hex(pre_state_hash: &StateHash) -> String { hex::encode(pre_state_hash) }
 
 #[cfg(test)]
 mod tests {
@@ -512,107 +341,89 @@ mod tests {
     }
 
     #[test]
-    fn decode_balance_datum_absent_is_zero() {
-        assert_eq!(decode_balance_datum(&[]), 0);
-        // A non-balance par (bare GInt) is not a balance datum.
-        let bare = RhoNumberLikePar(7).into();
-        assert_eq!(decode_balance_datum(std::slice::from_ref(&bare)), 0);
+    fn purse_inventory_preserves_stack_multiplicity_and_order() {
+        use models::rhoapi::cost_signature::Value;
+
+        let head = CostSignature {
+            value: Some(Value::Ground(b"head".to_vec())),
+        };
+        let tail = CostSignature {
+            value: Some(Value::Ground(b"tail".to_vec())),
+        };
+        let channel = supply_channel(&Sig::Ground(b"head".to_vec()));
+        let stack = CostStack {
+            cells: vec![head.clone(), tail],
+        };
+        let stack_datum = ListParWithRandom {
+            pars: Vec::new(),
+            random_state: vec![1],
+            cost_authority: None,
+            cost_stack: Some(stack.clone()),
+        };
+        let data = vec![
+            Datum::create(&channel, stack_datum.clone(), false),
+            Datum::create(&channel, stack_datum, false),
+        ];
+
+        let inventory = decode_purse_inventory(&data, &head).unwrap();
+        assert_eq!(inventory.balance, None);
+        assert_eq!(inventory.stacks.len(), 2);
+        assert_eq!(inventory.stacks[0].stack, stack);
+        assert_eq!(inventory.stacks[1].stack, stack);
+        assert_ne!(
+            inventory.stacks[0].instance_id,
+            inventory.stacks[1].instance_id
+        );
     }
 
     #[test]
-    fn decode_balance_datum_roundtrip() {
-        for n in [0_i64, 1, 42, 1_000_000, i64::MAX] {
-            let datum = balance_datum(n);
-            assert_eq!(decode_balance_datum(std::slice::from_ref(&datum)), n);
-        }
+    fn purse_inventory_rejects_a_stack_on_the_wrong_head_channel() {
+        use models::rhoapi::cost_signature::Value;
+
+        let expected = CostSignature {
+            value: Some(Value::Ground(b"expected".to_vec())),
+        };
+        let wrong = CostSignature {
+            value: Some(Value::Ground(b"wrong".to_vec())),
+        };
+        let channel = supply_channel(&Sig::Ground(b"expected".to_vec()));
+        let datum = Datum::create(
+            &channel,
+            ListParWithRandom {
+                pars: Vec::new(),
+                random_state: vec![1],
+                cost_authority: None,
+                cost_stack: Some(CostStack { cells: vec![wrong] }),
+            },
+            false,
+        );
+
+        assert!(decode_purse_inventory(&[datum], &expected).is_err());
     }
 
     #[test]
-    fn decode_balance_datum_wrong_tag_is_zero() {
-        // A correctly-shaped tuple with the WRONG tag is ignored.
-        let tag = Par::default().with_exprs(vec![Expr {
-            expr_instance: Some(ExprInstance::GString("rev".to_string())),
-        }]);
-        let count = Par::default().with_exprs(vec![Expr {
-            expr_instance: Some(ExprInstance::GInt(99)),
-        }]);
-        let wrong = Par::default().with_exprs(vec![Expr {
-            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
-                ps: vec![tag, count],
-                locally_free: Vec::new(),
-                connective_used: false,
-            })),
-        }]);
-        assert_eq!(decode_balance_datum(std::slice::from_ref(&wrong)), 0);
-    }
+    fn purse_inventory_rejects_a_parallel_integer_wallet_datum() {
+        use models::rhoapi::cost_signature::Value;
+        use models::rhoapi::expr::ExprInstance;
+        use models::rhoapi::Expr;
 
-    #[test]
-    fn mint_random_state_is_deterministic_and_distinct_per_index() {
-        use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-        let rand = Blake2b512Random::create_from_bytes(&[7_u8; 128]);
-        let a0 = mint_random_state(&rand, 0);
-        let a0_again = mint_random_state(&rand, 0);
-        let a1 = mint_random_state(&rand, 1);
-        let a200 = mint_random_state(&rand, 200);
-        assert_eq!(a0, a0_again, "same index ⇒ byte-identical random_state");
-        assert_ne!(a0, a1, "distinct indices ⇒ distinct random_state");
-        assert_ne!(
-            a1, a200,
-            "distinct indices past 127 ⇒ distinct random_state"
-        );
-    }
-
-    /// #13b — the genesis-block-1 client-allocation `random_state` is
-    /// deterministic, per-index distinct, AND on a RNG path DISJOINT from every
-    /// other supply produce stream (mint / debit / slash / fee-convert /
-    /// fee-collect). Disjointness is what lets a genesis-block-1 close BOTH mint
-    /// `Σ⟦v⟧` and seed `Σ⟦c⟧` without two produces aliasing the same datum
-    /// identity (which would break the single-datum read-modify-replace and the
-    /// play/replay post-state root equality).
-    #[test]
-    fn client_alloc_random_state_is_deterministic_distinct_and_disjoint() {
-        use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-        let rand = Blake2b512Random::create_from_bytes(&[7_u8; 128]);
-        let c0 = client_alloc_random_state(&rand, 0);
-        let c0_again = client_alloc_random_state(&rand, 0);
-        let c1 = client_alloc_random_state(&rand, 1);
-        let c200 = client_alloc_random_state(&rand, 200);
-        assert_eq!(c0, c0_again, "same index ⇒ byte-identical random_state");
-        assert_ne!(c0, c1, "distinct indices ⇒ distinct random_state");
-        assert_ne!(
-            c1, c200,
-            "distinct indices past 127 ⇒ distinct random_state"
+        let expected = CostSignature {
+            value: Some(Value::Ground(b"expected".to_vec())),
+        };
+        let channel = supply_channel(&Sig::Ground(b"expected".to_vec()));
+        let datum = Datum::create(
+            &channel,
+            ListParWithRandom {
+                pars: vec![Par::default().with_exprs(vec![Expr {
+                    expr_instance: Some(ExprInstance::GInt(7)),
+                }])],
+                random_state: vec![1],
+                cost_authority: None,
+                cost_stack: None,
+            },
+            false,
         );
 
-        // Disjoint from every sibling stream at the SAME index (the genesis
-        // block-1 close runs the mint loop and the client-alloc loop on the same
-        // close-block `initial_rand`).
-        assert_ne!(c0, mint_random_state(&rand, 0), "disjoint from mint");
-        assert_ne!(
-            c0,
-            debit_random_state(&rand, 0),
-            "disjoint from settlement debit"
-        );
-        assert_ne!(
-            c0,
-            fee_convert_random_state(&rand, 0),
-            "disjoint from fee-convert"
-        );
-        assert_ne!(c0, slash_random_state(&rand), "disjoint from slash zero");
-        assert_ne!(
-            c0,
-            fee_collect_random_state(&rand),
-            "disjoint from fee-collect"
-        );
-    }
-
-    // Tiny helper to make a bare GInt par for the absent-is-zero test.
-    struct RhoNumberLikePar(i64);
-    impl From<RhoNumberLikePar> for Par {
-        fn from(v: RhoNumberLikePar) -> Par {
-            Par::default().with_exprs(vec![Expr {
-                expr_instance: Some(ExprInstance::GInt(v.0)),
-            }])
-        }
+        assert!(decode_purse_inventory(&[datum], &expected).is_err());
     }
 }

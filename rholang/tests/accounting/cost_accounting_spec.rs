@@ -32,6 +32,13 @@ use rspace_plus_plus::rspace::rspace::{RSpace, RSpaceStore};
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
+fn install_test_payer(runtime: &RhoRuntimeImpl) {
+    runtime.cost.set_deploy_signature_funded(
+        b"cost-accounting-spec-deploy",
+        Sig::Ground(b"cost-accounting-spec-payer".to_vec()),
+    );
+}
+
 async fn evaluate_with_cost_log(
     initial_phlo: i64,
     contract: String,
@@ -42,6 +49,7 @@ async fn evaluate_with_cost_log(
     let store = kvm.r_space_stores().await.unwrap();
     let (mut runtime, _, _) =
         create_runtimes_with_cost_log(store, Some(false), Some(&mut Vec::new())).await;
+    install_test_payer(&runtime);
 
     let eval_result = runtime
         .evaluate_with_phlo(
@@ -67,6 +75,7 @@ async fn evaluate_with_cost_trace_digest(
     let store = kvm.r_space_stores().await.unwrap();
     let (mut runtime, _, _) =
         create_runtimes_with_cost_log(store, Some(false), Some(&mut Vec::new())).await;
+    install_test_payer(&runtime);
 
     let eval_result = runtime
         .evaluate_with_phlo(
@@ -77,6 +86,25 @@ async fn evaluate_with_cost_trace_digest(
         .expect("cost trace digest evaluation");
 
     (eval_result, runtime.cost.cost_trace_digest())
+}
+
+async fn evaluate_with_cost_events(
+    initial_phlo: i64,
+    contract: String,
+) -> (EvaluateResult, Vec<Cost>, Vec<BillableTokenEvent>) {
+    let mut kvm = InMemoryStoreManager::new();
+    let store = kvm.r_space_stores().await.unwrap();
+    let (mut runtime, _, _) =
+        create_runtimes_with_cost_log(store, Some(false), Some(&mut Vec::new())).await;
+    install_test_payer(&runtime);
+    let result = runtime
+        .evaluate_with_phlo(
+            &contract,
+            Cost::create(initial_phlo, "cost event evaluation"),
+        )
+        .await
+        .expect("cost event evaluation");
+    (result, runtime.get_cost_log(), runtime.get_cost_event_log())
 }
 
 async fn create_runtimes_with_cost_log(
@@ -148,6 +176,8 @@ async fn evaluate_and_replay(initial_phlo: Cost, term: String) -> (EvaluateResul
             >,
         >,
     ) = create_runtimes(store, false, &mut Vec::new()).await;
+    install_test_payer(&runtime);
+    install_test_payer(&replay_runtime);
 
     let rand = Blake2b512Random::create_from_bytes(&[]);
 
@@ -564,7 +594,7 @@ fn empty_cost_trace_still_has_consensus_digest() {
 }
 
 #[test]
-fn cost_trace_digest_canonicalizes_success_order() {
+fn cost_trace_digest_canonicalizes_comm_order_and_excludes_diagnostics() {
     let forward = RuntimeBudget::new(Cost::create(20, "forward trace"));
     let reverse = RuntimeBudget::new(Cost::create(20, "reverse trace"));
     let events = vec![
@@ -587,15 +617,14 @@ fn cost_trace_digest_canonicalizes_success_order() {
         reverse.reserve_canonical(event.clone()).unwrap();
     }
 
-    // `get_event_log` now returns the canonical (sorted) committed set, so it
-    // is order-independent: identical regardless of reservation order.
     assert_eq!(forward.get_event_log(), reverse.get_event_log());
     assert_eq!(forward.cost_trace_digest(), reverse.cost_trace_digest());
-    assert_eq!(forward.cost_trace_event_count(), 3);
+    assert_eq!(forward.cost_trace_event_count(), 1);
+    assert_eq!(forward.get_event_log().len(), 3);
 }
 
 #[test]
-fn cost_trace_digest_changes_when_descriptor_or_oop_boundary_changes() {
+fn cost_trace_digest_changes_with_cost_shape_but_not_causal_oop_identity() {
     let base = RuntimeBudget::new(Cost::create(5, "base trace"));
     base.reserve_canonical(token_event_with(1, vec![0], 0, 0, BillableKind::Comm, 2))
         .unwrap();
@@ -613,9 +642,6 @@ fn cost_trace_digest_changes_when_descriptor_or_oop_boundary_changes() {
     assert_ne!(base.cost_trace_digest(), changed_weight.cost_trace_digest());
     assert_ne!(base.cost_trace_digest(), changed_deploy.cost_trace_digest());
 
-    // D3 (DR-9): a COMM costs ONE token. A 1-COMM budget admits the first COMM
-    // and OOPs on the second; the OOP descriptor (source_path 1 vs 2) makes the
-    // two digests differ.
     let oop_left = RuntimeBudget::new(Cost::create(1, "oop left"));
     let oop_right = RuntimeBudget::new(Cost::create(1, "oop right"));
     oop_left.reserve_canonical(token_event(0, 2)).unwrap();
@@ -625,11 +651,11 @@ fn cost_trace_digest_changes_when_descriptor_or_oop_boundary_changes() {
 
     assert_eq!(oop_left.cost_trace_event_count(), 2);
     assert_eq!(oop_right.cost_trace_event_count(), 2);
-    assert_ne!(oop_left.cost_trace_digest(), oop_right.cost_trace_digest());
+    assert_eq!(oop_left.cost_trace_digest(), oop_right.cost_trace_digest());
 }
 
 #[test]
-fn cost_trace_digest_domain_separates_event_kind_path_redex_index_and_multiplicity() {
+fn cost_trace_digest_domain_separates_cost_kind_weight_and_multiplicity() {
     let base = RuntimeBudget::new(Cost::create(20, "base descriptor trace"));
     base.reserve_canonical(token_event_with(1, vec![0, 1], 2, 3, BillableKind::Comm, 4))
         .unwrap();
@@ -670,9 +696,9 @@ fn cost_trace_digest_domain_separates_event_kind_path_redex_index_and_multiplici
         .unwrap();
 
     assert_ne!(base.cost_trace_digest(), changed_kind.cost_trace_digest());
-    assert_ne!(base.cost_trace_digest(), changed_path.cost_trace_digest());
-    assert_ne!(base.cost_trace_digest(), changed_redex.cost_trace_digest());
-    assert_ne!(
+    assert_eq!(base.cost_trace_digest(), changed_path.cost_trace_digest());
+    assert_eq!(base.cost_trace_digest(), changed_redex.cost_trace_digest());
+    assert_eq!(
         base.cost_trace_digest(),
         changed_local_index.cost_trace_digest()
     );
@@ -1052,7 +1078,7 @@ fn max_sized_trace_descriptors_are_admitted_at_boundary() {
     assert_eq!(budget.total_cost().value, 1);
     assert_eq!(budget.remaining().value, 2);
     assert_eq!(budget.get_event_log().len(), 2);
-    assert_eq!(budget.cost_trace_event_count(), 2);
+    assert_eq!(budget.cost_trace_event_count(), 1);
 }
 
 #[test]
@@ -1193,9 +1219,9 @@ fn runtime_budget_records_typed_billable_events_without_legacy_compat() {
     ]);
     // D3 (DR-9, OD-3): consensus cost = the COMM count. Only the `Comm` counts
     // (=1); the diagnostic Primitive / Substitution contribute 0. (All three
-    // still appear in the event log / digest.)
+    // still appear in the bounded diagnostic event log.)
     assert_eq!(budget.total_cost().value, 1);
-    assert_eq!(budget.cost_trace_event_count(), 3);
+    assert_eq!(budget.cost_trace_event_count(), 1);
     assert!(!budget.cost_trace_digest().digest.is_empty());
 }
 
@@ -1205,9 +1231,13 @@ async fn evaluation_records_only_typed_billable_events() {
     let store = kvm.r_space_stores().await.unwrap();
     let (mut runtime, _, _) =
         create_runtimes_with_cost_log(store, Some(false), Some(&mut Vec::new())).await;
+    install_test_payer(&runtime);
 
     let result = runtime
-        .evaluate_with_phlo("@0!(2)", Cost::create(1000, "typed event eval"))
+        .evaluate_with_phlo(
+            "@0!(2) | for (_ <- @0) { Nil }",
+            Cost::create(1000, "typed event eval"),
+        )
         .await
         .unwrap();
 
@@ -1221,6 +1251,55 @@ async fn evaluation_records_only_typed_billable_events() {
     assert!(event_log
         .iter()
         .any(|event| matches!(event.kind, BillableKind::Substitution)));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unmatched_io_consumes_no_comm_tokens() {
+    for contract in ["@0!(2)", "for (_ <- @0) { Nil }"] {
+        let (result, _, events) = evaluate_with_cost_events(1000, contract.to_string()).await;
+        assert!(result.errors.is_empty());
+        assert_eq!(result.cost.value, 0);
+        assert!(events.iter().all(|event| event.kind != BillableKind::Comm));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn comm_cost_is_trigger_side_symmetric() {
+    for contract in [
+        "@0!(2) | for (_ <- @0) { Nil }",
+        "for (_ <- @0) { Nil } | @0!(2)",
+    ] {
+        let (result, _, events) = evaluate_with_cost_events(1000, contract.to_string()).await;
+        assert!(result.errors.is_empty());
+        assert_eq!(result.cost.value, 1);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == BillableKind::Comm)
+                .count(),
+            1
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_contract_output_comm_is_charged_at_rspace_commit() {
+    let contract = "new ret, keccak256Hash(`rho:crypto:keccak256Hash`) in {
+        keccak256Hash!(\"TEST\".toByteArray(), *ret) |
+        for (_ <- ret) { Nil }
+    }";
+    for _ in 0..20 {
+        let (result, _, events) = evaluate_with_cost_events(1000, contract.to_string()).await;
+        assert!(result.errors.is_empty());
+        assert_eq!(result.cost.value, 2);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == BillableKind::Comm)
+                .count(),
+            2
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1857,14 +1936,12 @@ async fn structurally_equivalent_parallel_order_has_same_token_cost() {
 /// because per-op gas is DIAGNOSTIC only and does not gate consensus.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn consensus_cost_excludes_per_op_gas() {
-    // 1 send (1 COMM), trivial payload.
-    let plain = evaluate_with_cost_log(100_000, "@0!(1)".to_string())
+    let plain = evaluate_with_cost_log(100_000, "@0!(1) | for (_ <- @0) { Nil }".to_string())
         .await
         .0;
-    // 1 send (1 COMM), but a payload that charges many arithmetic Primitives.
     let heavy = evaluate_with_cost_log(
         100_000,
-        "@0!(1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10)".to_string(),
+        "@0!(1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10) | for (_ <- @0) { Nil }".to_string(),
     )
     .await
     .0;
@@ -1880,8 +1957,6 @@ async fn consensus_cost_excludes_per_op_gas() {
         heavy.errors
     );
 
-    // Both are exactly ONE COMM, so the consensus cost is identical (= 1),
-    // regardless of the heavy term's much larger per-op diagnostic gas.
     assert_eq!(
         plain.cost.value, heavy.cost.value,
         "per-op gas must NOT change the per-COMM consensus cost (plain={}, heavy={})",
@@ -1889,7 +1964,7 @@ async fn consensus_cost_excludes_per_op_gas() {
     );
     assert_eq!(
         plain.cost.value, 1,
-        "a single send is exactly one COMM token"
+        "one committed send/receive match is exactly one COMM token"
     );
 }
 
@@ -1905,27 +1980,24 @@ async fn consensus_cost_excludes_per_op_gas() {
 async fn consensus_cost_is_per_comm_count_with_diagnostic_log_populated() {
     for contract in contracts() {
         let initial_phlo = 10000i64;
-        let (eval_result, cost_log) = evaluate_with_cost_log(initial_phlo, contract.clone()).await;
+        let (eval_result, cost_log, event_log) =
+            evaluate_with_cost_events(initial_phlo, contract.clone()).await;
         assert_eq!(
             eval_result.errors,
             Vec::new(),
             "Contract errored: {}",
             contract
         );
-        // Consensus cost = per-COMM count > 0 for a non-empty metered contract.
-        assert!(
-            eval_result.cost.value > 0,
-            "Non-empty metered contract should consume ≥ 1 COMM token: {}",
-            contract
-        );
-        // The diagnostic per-op log is still recorded (D3 keeps it for fidelity).
+        let comm_count = event_log
+            .iter()
+            .filter(|event| event.kind == BillableKind::Comm)
+            .count() as i64;
+        assert_eq!(eval_result.cost.value, comm_count, "Contract: {contract}");
         assert!(
             !cost_log.is_empty(),
             "diagnostic cost log must remain populated: {}",
             contract
         );
-        // The per-COMM consensus cost never exceeds the diagnostic event count
-        // (each billable event is at most one COMM; non-COMM events are 0).
         assert!(
             eval_result.cost.value <= cost_log.len() as i64,
             "per-COMM cost ({}) must not exceed diagnostic event count ({}) for '{}'",
@@ -2023,9 +2095,26 @@ async fn cost_should_be_repeatable_when_generated() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn running_out_of_phlogistons_should_stop_evaluation_upon_cost_depletion_in_a_single_execution_branch(
 ) {
-    // D3 (DR-9, OD-3): `@1!(1)` is ONE COMM (cost 1). A 0-COMM budget OOPs on it
-    // (1 COMM exceeds 0); consumed clamps to the COMM budget (0).
-    check_phlo_limit_exceeded("@1!(1)".to_string(), 0).await;
+    check_phlo_limit_exceeded("@1!(1) | for (_ <- @1) { Nil }".to_string(), 0).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rejected_comm_does_not_mutate_rspace() {
+    let mut kvm = InMemoryStoreManager::new();
+    let store = kvm.r_space_stores().await.unwrap();
+    let (mut runtime, _, _) =
+        create_runtimes_with_cost_log(store, Some(false), Some(&mut Vec::new())).await;
+    install_test_payer(&runtime);
+    let before = runtime.get_hot_changes().await;
+    let result = runtime
+        .evaluate_with_phlo(
+            "@1!(1) | for (_ <- @1) { Nil }",
+            Cost::create(0, "zero COMM budget"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.errors, vec![InterpreterError::OutOfPhlogistonsError]);
+    assert_eq!(runtime.get_hot_changes().await, before);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2041,9 +2130,9 @@ async fn malformed_source_should_not_consume_tokens_before_metered_state_exists(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn parallel_out_of_phlo_use_cases_commit_exact_budget() {
     let variants = vec![
-        "@1!(1) | @2!(2) | @3!(3)",
-        "@3!(3) | @2!(2) | @1!(1)",
-        "@2!(2) | @1!(1) | @3!(3)",
+        "@1!(1) | @2!(2) | @3!(3) | for (_ <- @1) { Nil } | for (_ <- @2) { Nil } | for (_ <- @3) { Nil }",
+        "for (_ <- @3) { Nil } | @3!(3) | for (_ <- @2) { Nil } | @2!(2) | for (_ <- @1) { Nil } | @1!(1)",
+        "@2!(2) | for (_ <- @1) { Nil } | @1!(1) | for (_ <- @3) { Nil } | @3!(3) | for (_ <- @2) { Nil }",
     ];
 
     for contract in variants {
@@ -2055,8 +2144,12 @@ async fn parallel_out_of_phlo_use_cases_commit_exact_budget() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn should_stop_the_evaluation_of_all_execution_branches_when_one_of_them_runs_out_of_phlo() {
-    // D3 (DR-9, OD-3): 3 sends = 3 COMMs; a 2-COMM budget OOPs on the third.
-    check_phlo_limit_exceeded("@1!(1) | @2!(2) | @3!(3)".to_string(), 2).await;
+    check_phlo_limit_exceeded(
+        "@1!(1) | @2!(2) | @3!(3) | for (_ <- @1) { Nil } | for (_ <- @2) { Nil } | for (_ <- @3) { Nil }"
+            .to_string(),
+        2,
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

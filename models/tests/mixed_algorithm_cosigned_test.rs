@@ -24,6 +24,7 @@ fn payload(time_stamp: i64) -> DeployData {
         valid_after_block_number: 0,
         shard_id: "root".to_string(),
         expiration_timestamp: None,
+        authority_presentations: Vec::new(),
     }
 }
 

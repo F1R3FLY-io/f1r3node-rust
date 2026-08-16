@@ -358,6 +358,7 @@ fn bfs_finalized_window(
         // in pathological dedup paths; we still only bump latest_event
         // once for that sig at this height).
         let mut seen_sigs_here: HashSet<Bytes> = HashSet::new();
+        let mut rejected_sigs_here: HashSet<Bytes> = HashSet::new();
 
         for pd in &candidate_block.body.deploys {
             if active_sigs.contains(&pd.deploy.sig) {
@@ -390,6 +391,7 @@ fn bfs_finalized_window(
         for rd in &candidate_block.body.rejected_deploys {
             if active_sigs.contains(&rd.sig) {
                 seen_sigs_here.insert(rd.sig.clone());
+                rejected_sigs_here.insert(rd.sig.clone());
                 let state = per_sig
                     .get_mut(&rd.sig)
                     .expect("active_sigs and per_sig must agree on key set");
@@ -404,7 +406,6 @@ fn bfs_finalized_window(
                         .legacy_rejections
                         .push((height, candidate_hash.clone()));
                 }
-                state.rejection_count = state.rejection_count.saturating_add(1);
                 if state
                     .latest_rejected_event
                     .as_ref()
@@ -414,6 +415,12 @@ fn bfs_finalized_window(
                     state.latest_rejected_event = Some((height, candidate_hash.clone()));
                 }
             }
+        }
+        for sig in &rejected_sigs_here {
+            let state = per_sig
+                .get_mut(sig)
+                .expect("rejected_sigs_here is drawn from active_sigs / per_sig");
+            state.rejection_count = state.rejection_count.saturating_add(1);
         }
         for sig in &seen_sigs_here {
             let state = per_sig
@@ -520,12 +527,12 @@ fn finalize_sig_state(
 
     if !state.source_aware_rejections.is_empty() {
         let mut rejected_sources = HashSet::new();
-        let mut rejection_count = 0u32;
+        let mut canonical_rejection_blocks = HashSet::new();
         let mut latest_rejection: Option<(i64, BlockHash)> = None;
         for (height, recording_block, source_block) in &state.source_aware_rejections {
             if canonical_block(recording_block)? {
                 rejected_sources.insert(source_block.clone());
-                rejection_count = rejection_count.saturating_add(1);
+                canonical_rejection_blocks.insert(recording_block.clone());
                 if latest_rejection
                     .as_ref()
                     .is_none_or(|(current_height, current_hash)| {
@@ -545,7 +552,7 @@ fn finalize_sig_state(
                     latest_legacy_rejection_height
                         .map_or(*height, |current: i64| current.max(*height)),
                 );
-                rejection_count = rejection_count.saturating_add(1);
+                canonical_rejection_blocks.insert(recording_block.clone());
                 if latest_rejection
                     .as_ref()
                     .is_none_or(|(current_height, current_hash)| {
@@ -592,6 +599,7 @@ fn finalize_sig_state(
             .map(|(_, hash, _)| hash.clone())
             .or_else(|| latest_rejection.map(|(_, hash)| hash))
             .or_else(|| Some(state.first_seen_block_hash));
+        let rejection_count = canonical_rejection_blocks.len().min(u32::MAX as usize) as u32;
 
         return Ok(DeployFinalizationStatus {
             state: final_state,

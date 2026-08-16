@@ -1,6 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/finality/Finalizer.scala
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
@@ -9,6 +9,10 @@ use models::rust::block_metadata::BlockMetadata;
 use models::rust::validator::Validator;
 use shared::rust::store::key_value_store::KvStoreError;
 
+use crate::rust::errors::CasperError;
+use crate::rust::finality::floor::{
+    is_state_ancestor_from_cached_floors, materialize_state_lineage,
+};
 use crate::rust::safety::clique_oracle::{ft_decides_exact, CliqueOracle, FtThreshold};
 
 /// Block can be recorded as last finalized block (LFB) if Safety oracle outputs fault tolerance (FT)
@@ -23,17 +27,15 @@ use crate::rust::safety::clique_oracle::{ft_decides_exact, CliqueOracle, FtThres
 /// for each block. Also its computationally ineffective.
 ///
 /// But we know that scope of search for potential next LFB is constrained. Block A can be finalized only
-/// if it has more then half of total stake in bonds map of A translated from tips throughout main parent chain.
-/// IMPORTANT: only main parent relation gives weight to potentially finalized block.
+/// if it has more then half of total stake in bonds map of A translated from tips throughout main parent ancestry.
 ///
 /// Therefore: Finalizer should seek for next LFB going through 2 steps:
-///   1. Find messages in scope of search that have more then half of the stake translated through main parent chain
+///   1. Find messages in scope of search that have more then half of the stake translated through main parent ancestry
 ///     from tips down to the message.
 ///   2. Execute [`CliqueOracle::compute_output`] on these targets.
 ///   3. First message passing FT threshold becomes the next LFB.
 pub struct Finalizer;
 const FINALIZER_CATCHUP_LAG_THRESHOLD_BLOCKS: i64 = 1_024;
-const MAX_CLIQUE_CANDIDATES: usize = 128;
 
 type WeightMap = HashMap<Validator, i64>;
 type SharedWeightMap = Arc<WeightMap>;
@@ -141,7 +143,7 @@ impl Finalizer {
         curr_lfb_height: i64,
         mut new_lfb_found_effect: F,
         finalizer_conf: &crate::rust::casper_conf::FinalizerConf,
-    ) -> Result<Option<(BlockHash, f32)>, KvStoreError>
+    ) -> Result<Option<(BlockHash, f32)>, CasperError>
     where
         F: FnMut((BlockHash, f32)) -> Fut,
         Fut: std::future::Future<Output = Result<(), KvStoreError>>,
@@ -149,30 +151,32 @@ impl Finalizer {
         let total_started = std::time::Instant::now();
         let lfb_lag = dag.latest_block_number().saturating_sub(curr_lfb_height);
         let catchup_mode = lfb_lag > FINALIZER_CATCHUP_LAG_THRESHOLD_BLOCKS;
-        let work_budget = if catchup_mode {
-            finalizer_conf.catchup_work_budget
+        let yield_interval = if catchup_mode {
+            finalizer_conf.catchup_yield_interval
         } else {
-            finalizer_conf.work_budget
+            finalizer_conf.yield_interval
         };
-        let step_timeout = if catchup_mode {
-            finalizer_conf.catchup_step_timeout
-        } else {
-            finalizer_conf.step_timeout
-        };
-        let max_clique_candidates = MAX_CLIQUE_CANDIDATES;
         /*
          * Stream of agreements passed down from all latest messages to main parents.
          * Starts with agreements of latest message on themselves.
          *
          * The goal here is to create stream of agreements breadth first, so on each step agreements by all
-         * validator are recorded, and only after that next level of main parents is visited.
+         * validator are recorded, and only after that the next level of main parents is visited.
          */
         let lms = dag.latest_messages()?;
         let latest_messages_count = lms.len();
+        let latest_messages_snapshot = lms
+            .iter()
+            .map(|(validator, message)| (validator.clone(), message.block_hash.clone()))
+            .collect::<std::collections::BTreeMap<_, _>>();
 
         // sort latest messages by agreeing validator to ensure random ordering does not change output
         let mut sorted_latest_messages: Vec<(Validator, BlockMetadata)> = lms.into_iter().collect();
         sorted_latest_messages.sort_by(|(v1, _), (v2, _)| v1.cmp(v2));
+        let mut scheduled_agreements: HashSet<(Validator, BlockHash)> = sorted_latest_messages
+            .iter()
+            .map(|(validator, message)| (validator.clone(), message.block_hash.clone()))
+            .collect();
 
         // Step 1: Traverse agreement layers and aggregate agreements per target block.
         // This avoids materializing a large stream of duplicate (message, weight-map, agreement)
@@ -182,7 +186,7 @@ impl Finalizer {
             (BlockMetadata, SharedWeightMap, WeightMap),
         > = HashMap::new();
         let mut message_weight_map_cache: HashMap<BlockHash, SharedWeightMap> = HashMap::new();
-        let mut main_parent_cache: HashMap<BlockHash, Option<BlockMetadata>> = HashMap::new();
+        let mut parent_cache: HashMap<BlockHash, BlockMetadata> = HashMap::new();
         let mut message_weight_map_cache_hit: usize = 0;
         let mut message_weight_map_cache_miss: usize = 0;
         let mut message_weight_map_error_count: usize = 0;
@@ -190,25 +194,21 @@ impl Finalizer {
         let mut main_parent_cache_miss: usize = 0;
         let mut current_layer = sorted_latest_messages;
         let mut layers_visited: usize = 0;
-        let mut budget_exhausted = false;
         let mut agreements_count: usize = 0;
         let mut weight_map_phase_ns: u128 = 0;
         let mut agreement_record_phase_ns: u128 = 0;
         let mut parent_lookup_phase_ns: u128 = 0;
         let mut next_layer_push_phase_ns: u128 = 0;
 
+        let mut last_yield = std::time::Instant::now();
         loop {
-            if total_started.elapsed() >= work_budget {
-                budget_exhausted = true;
-                break;
-            }
             layers_visited += 1;
             let mut next_layer: Vec<(Validator, BlockMetadata)> = Vec::new();
 
             for (agreeing_validator, message) in current_layer.into_iter() {
-                if total_started.elapsed() >= work_budget {
-                    budget_exhausted = true;
-                    break;
+                if last_yield.elapsed() >= yield_interval {
+                    tokio::task::yield_now().await;
+                    last_yield = std::time::Instant::now();
                 }
                 let phase_t = std::time::Instant::now();
                 let message_weight_map = if let Some(cached) =
@@ -218,19 +218,9 @@ impl Finalizer {
                     cached
                 } else {
                     message_weight_map_cache_miss += 1;
-                    let fetched = match Self::message_weight_map_f(&message, dag).await {
-                        Ok(fetched) => fetched,
-                        Err(err) => {
-                            message_weight_map_error_count += 1;
-                            tracing::warn!(
-                                target: "f1r3fly.finalizer",
-                                "Finalizer candidate skipped: unable to load message weight map for hash={:?}: {:?}",
-                                message.block_hash,
-                                err
-                            );
-                            continue;
-                        }
-                    };
+                    let fetched = Self::message_weight_map_f(&message, dag)
+                        .await
+                        .inspect_err(|_| message_weight_map_error_count += 1)?;
                     let fetched = Arc::new(fetched);
                     message_weight_map_cache.insert(message.block_hash.clone(), fetched.clone());
                     fetched
@@ -264,32 +254,28 @@ impl Finalizer {
                 }
                 agreement_record_phase_ns += phase_t.elapsed().as_nanos();
 
-                if let Some(main_parent_hash) = message.parents.first() {
+                if let Some(parent_hash) = message.parents.first() {
                     let phase_t = std::time::Instant::now();
-                    let parent_meta = if let Some(cached) = main_parent_cache.get(main_parent_hash)
-                    {
+                    let parent_meta = if let Some(cached) = parent_cache.get(parent_hash) {
                         main_parent_cache_hit += 1;
                         cached.clone()
                     } else {
                         main_parent_cache_miss += 1;
-                        let fetched = dag.lookup_unsafe(main_parent_hash).ok();
-                        main_parent_cache.insert(main_parent_hash.clone(), fetched.clone());
+                        let fetched = dag.lookup_unsafe(parent_hash)?;
+                        parent_cache.insert(parent_hash.clone(), fetched.clone());
                         fetched
                     };
                     parent_lookup_phase_ns += phase_t.elapsed().as_nanos();
 
                     let phase_t = std::time::Instant::now();
-                    if let Some(next_message) =
-                        parent_meta.filter(|meta| meta.block_number > curr_lfb_height)
+                    if parent_meta.block_number > curr_lfb_height
+                        && scheduled_agreements
+                            .insert((agreeing_validator.clone(), parent_hash.clone()))
                     {
-                        next_layer.push((agreeing_validator, next_message));
+                        next_layer.push((agreeing_validator.clone(), parent_meta));
                     }
                     next_layer_push_phase_ns += phase_t.elapsed().as_nanos();
                 }
-            }
-
-            if budget_exhausted {
-                break;
             }
 
             if next_layer.is_empty() {
@@ -337,14 +323,12 @@ impl Finalizer {
             },
         );
         let deduped_filtered_agreements_count = deduped_filtered_agreements.len();
-        let candidate_capped = deduped_filtered_agreements_count > max_clique_candidates;
-        let capped_agreements: Vec<(BlockMetadata, SharedWeightMap, WeightMap)> =
+        let ordered_agreements: Vec<(BlockMetadata, SharedWeightMap, WeightMap)> =
             deduped_filtered_agreements
                 .into_iter()
                 .map(|(message, message_weight_map, agreeing_weight_map, _, _)| {
                     (message, message_weight_map, agreeing_weight_map)
                 })
-                .take(max_clique_candidates)
                 .collect();
 
         // Compute fault tolerance lazily and stop at the first candidate that satisfies
@@ -355,23 +339,17 @@ impl Finalizer {
         // Snapshot the DAG's latest messages once for this finalization pass; the
         // FT computation reads agreement from this frozen snapshot, matching the
         // node-deterministic `ft_witnessed` parametrization.
-        let latest_messages_snapshot = dag
-            .latest_message_hashes()
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>();
         let mut clique_eval_count: usize = 0;
         let mut upper_bound_pruned_count: usize = 0;
         let mut upper_bound_passed_count: usize = 0;
         let mut max_ft_upper_bound: f64 = f64::MIN;
         let mut lfb_result: Option<(BlockHash, f32)> = None;
-        for (message, message_weight_map, agreeing_weight_map) in capped_agreements {
-            if total_started.elapsed() >= work_budget {
-                budget_exhausted = true;
-                break;
+        for (message, message_weight_map, agreeing_weight_map) in ordered_agreements {
+            if last_yield.elapsed() >= yield_interval {
+                tokio::task::yield_now().await;
+                last_yield = std::time::Instant::now();
             }
-            if message.block_hash == *curr_lfb_hash
-                || !dag.is_in_main_chain(curr_lfb_hash, &message.block_hash)?
-            {
+            if message.block_hash == *curr_lfb_hash {
                 continue;
             }
             let ft_upper_bound =
@@ -403,50 +381,30 @@ impl Finalizer {
             }
             upper_bound_passed_count += 1;
             clique_eval_count += 1;
-            let ft_result = tokio::time::timeout(
-                step_timeout,
-                // A9 atomic activation: the LFB finalizer uses the EXACT STRICT
-                // (`strict=true` ⇒ > θ) decision, distinct from the floor path's ≥.
-                // This exact decision replaces `fault_tolerance > threshold_f32` and
-                // activates atomically with the unreleased branch (all validators
-                // upgrade together; no mixed-version window; no on-chain flag). The
-                // returned f32 is the (2q−S)/S DISPLAY value only.
-                CliqueOracle::compute_decision_with_cache(
-                    &message.block_hash,
-                    &message_weight_map,
-                    &agreeing_weight_map,
-                    dag,
-                    &mut clique_run_cache,
-                    &latest_messages_snapshot,
-                    ftt.num,
-                    ftt.den,
-                    true,
-                ),
+            let (finalized, ft_value) = CliqueOracle::compute_decision_with_cache(
+                &message.block_hash,
+                &message_weight_map,
+                &agreeing_weight_map,
+                dag,
+                &mut clique_run_cache,
+                &latest_messages_snapshot,
+                ftt.num,
+                ftt.den,
+                true,
             )
-            .await;
-            let (finalized, ft_value) = match ft_result {
-                Ok(Ok(value)) => value,
-                Ok(Err(err)) => {
-                    tracing::debug!(
-                        target: "f1r3fly.finalizer.timing",
-                        "Finalizer candidate skipped due to clique error: hash={:?}, err={:?}",
-                        message.block_hash,
-                        err
-                    );
-                    continue;
-                }
-                Err(_) => {
-                    tracing::debug!(
-                        target: "f1r3fly.finalizer.timing",
-                        "Finalizer candidate skipped due to clique timeout: hash={:?}, timeout_ms={}",
-                        message.block_hash,
-                        step_timeout.as_millis()
-                    );
-                    continue;
-                }
-            };
+            .await?;
 
             if finalized {
+                materialize_state_lineage(dag, &message.block_hash, ftt).await?;
+                if !is_state_ancestor_from_cached_floors(dag, curr_lfb_hash, &message.block_hash)? {
+                    tracing::debug!(
+                        target: "f1r3fly.finalizer",
+                        candidate = %hex::encode(&message.block_hash[..]),
+                        current_lfb = %hex::encode(&curr_lfb_hash[..]),
+                        "Finalizer candidate does not preserve the current LFB state lineage"
+                    );
+                    continue;
+                }
                 let lfb_hash = message.block_hash.clone();
                 new_lfb_found_effect((lfb_hash.clone(), ft_value)).await?;
                 lfb_result = Some((lfb_hash, ft_value));
@@ -464,7 +422,7 @@ impl Finalizer {
         }
         tracing::debug!(
             target: "f1r3fly.finalizer.timing",
-            "Finalizer timing: latest_messages={}, layers_visited={}, agreements={}, filtered_agreements={}, deduped_filtered_agreements={}, message_weight_map_cache_hit={}, message_weight_map_cache_miss={}, message_weight_map_errors={}, main_parent_cache_hit={}, main_parent_cache_miss={}, candidate_cap={}, ranking_strategy={}, candidate_capped={}, upper_bound_pruned={}, upper_bound_passed={}, max_ft_upper_bound={:.6}, clique_evals={}, clique_ms={}, total_ms={}, budget_ms={}, step_timeout_ms={}, budget_exhausted={}, lfb_lag={}, catchup_mode={}, found_new_lfb={}, weight_map_ns={}, agreement_ns={}, parent_ns={}, next_push_ns={}",
+            "Finalizer timing: latest_messages={}, layers_visited={}, agreements={}, filtered_agreements={}, deduped_filtered_agreements={}, message_weight_map_cache_hit={}, message_weight_map_cache_miss={}, message_weight_map_errors={}, main_parent_cache_hit={}, main_parent_cache_miss={}, ranking_strategy={}, upper_bound_pruned={}, upper_bound_passed={}, max_ft_upper_bound={:.6}, clique_evals={}, clique_ms={}, total_ms={}, yield_interval_ms={}, lfb_lag={}, catchup_mode={}, found_new_lfb={}, weight_map_ns={}, agreement_ns={}, parent_ns={}, next_push_ns={}",
             latest_messages_count,
             layers_visited,
             agreements_count,
@@ -475,18 +433,14 @@ impl Finalizer {
             message_weight_map_error_count,
             main_parent_cache_hit,
             main_parent_cache_miss,
-            max_clique_candidates,
             "recency_stake",
-            candidate_capped,
             upper_bound_pruned_count,
             upper_bound_passed_count,
             max_ft_upper_bound,
             clique_eval_count,
             clique_started.elapsed().as_millis(),
             total_started.elapsed().as_millis(),
-            work_budget.as_millis(),
-            step_timeout.as_millis(),
-            budget_exhausted,
+            yield_interval.as_millis(),
             lfb_lag,
             catchup_mode,
             lfb_result.is_some(),

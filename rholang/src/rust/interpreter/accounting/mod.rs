@@ -14,8 +14,8 @@
 //!  - linear no-double-spend    ↔ the resource-logic / Δσ discipline
 //!    (`CATypeDiscipline.ca_linear_no_contraction`).
 
-use std::collections::{BTreeMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use costs::Cost;
@@ -23,7 +23,7 @@ use crossbeam_queue::SegQueue;
 use crypto::rust::hash::blake2b256::Blake2b256;
 use dashmap::DashMap;
 use models::rhoapi::g_unforgeable::UnfInstance;
-use models::rhoapi::{GPrivate, GUnforgeable, Par};
+use models::rhoapi::{CostAuthority, CostSignature, GPrivate, GUnforgeable, Par};
 use models::rust::rholang::implicits::concatenate_pars;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
@@ -34,7 +34,9 @@ pub mod cost_accounting;
 pub mod costs;
 pub mod delta_sigma;
 pub mod has_cost;
+pub mod lexical;
 pub mod resource_logic;
+pub mod authority;
 
 const DEPLOY_SIGNATURE_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:deploy-signature:v1";
 /// Domain separator for compound (multi-signer) deploy signatures. Distinct
@@ -55,7 +57,6 @@ const COST_TRACE_DIGEST_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:cost-trace
 /// channel is a `GPrivate`-keyed `Par`; both are pure functions of the same
 /// canonical bytes.
 const SIGNATURE_LANE_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:signature-lane:v1";
-pub const MAX_COST_TRACE_EVENTS: u64 = 1_048_576;
 pub const MAX_COST_TRACE_PRIMITIVE_DESCRIPTOR_BYTES: usize = 512;
 pub const MAX_COST_TRACE_SOURCE_PATH_COMPONENTS: usize = 1024;
 
@@ -84,6 +85,10 @@ pub struct RuntimeBudget {
     // scheduling. See `formal/tlaplus/cost_accounted_rho/RuntimeBudgetReplay.tla`
     // and `formal/rocq/cost_accounted_rho/theories/RuntimeBudgetRefinement.v`.
     attempt_queue: Arc<SegQueue<AttemptRecord>>,
+    diagnostic_record_count: Arc<AtomicU64>,
+    canonical_comm_attempts: Arc<Mutex<CanonicalAttemptWindow>>,
+    attempt_generation: Arc<AtomicU64>,
+    reconciled_generation: Arc<AtomicU64>,
     // Internal reconciliation accumulator. Drained-into from
     // `attempt_queue` by `reconcile()` and re-walked to compute the
     // canonical reconciliation. Touched ONLY inside `reconcile`/`reset`
@@ -100,6 +105,7 @@ pub struct RuntimeBudget {
     canonical_reconciliation: Arc<Mutex<Option<CanonicalReconciliation>>>,
     max_log_entries: usize,
     unmetered: Arc<AtomicU64>,
+    comm_accounting_scopes: Arc<AtomicUsize>,
     // Per-signature token pool (spec §4.6 spectral decomposition into
     // per-signature pools; §7.6 "no interleaving" is PER-SIGNATURE, not
     // global). The N=1 (single-signature) FAST PATH keeps this map EMPTY:
@@ -115,16 +121,16 @@ pub struct RuntimeBudget {
     // `Sig::lane_hash` — the same canonical basis as the supply channel
     // `SignatureChannel::from_sig` (integration invariant).
     lanes: Arc<DashMap<[u8; 32], Lane>>,
-    // --- W1 Phase 3: per-redex located-stack attribution (channel match) ---
+    // --- Legacy per-redex signer-channel projection ---
     //
     // These three are DIAGNOSTIC/forward-infra and NEVER feed the consensus
     // reconciliation (`reconcile`/`total_cost`/the supply pools): they record a
-    // per-signer-LANE projection of the COMM count so a multi-signer deploy's
-    // per-lane demand can be read back and cross-checked against the static
-    // [`delta_sigma::demand_by_sig`] dual. Under the s₀ collapse every COMM is on
-    // a DATA channel (never a `Σ⟦s⟧` supply channel — the §5 no-alias audit), so
-    // `lane_comm_counts` stays EMPTY, `per_lane_demand` collapses to the singleton
-    // `{envelope: total}`, and the scalar fast path is byte-identical.
+    // per-signer-LANE projection of realized atomic-COMM cost. The static
+    // [`delta_sigma::demand_by_sig`] projection uses the same channel mapping but
+    // is only a conservative structural reservation. Native `CostSignedTerm`
+    // regions are accounted independently by `authority_state`; ordinary data
+    // channels therefore leave this compatibility projection empty and place
+    // its diagnostic remainder on the envelope lane.
     //
     /// `true` iff the installed envelope decomposes into MORE THAN ONE signer
     /// channel (a multi-signer cosigned deploy). The cheap per-COMM gate for the
@@ -136,8 +142,26 @@ pub struct RuntimeBudget {
     /// deploy by [`install_signer_channels`](RuntimeBudget::install_signer_channels).
     signer_channels: Arc<Mutex<Vec<(Vec<u8>, [u8; 32])>>>,
     /// Per-signer-LANE COMM tally for COMMs that matched a NON-envelope signer
-    /// channel (a `Σ⟦sᵢ⟧` rendezvous). Diagnostic only; empty under s₀.
+    /// channel (a `Σ⟦sᵢ⟧` rendezvous). Diagnostic only; explicit native
+    /// authority regions are recorded in `authority_state` instead.
     lane_comm_counts: Arc<DashMap<[u8; 32], i64>>,
+    authority_state: Arc<Mutex<AuthorityRuntimeState>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct AuthorityRuntimeState {
+    allocation: authority::ResourceMultiset<[u8; 32]>,
+    enforce_allocation: bool,
+    events: BTreeMap<[u8; 32], AuthorityRuntimeEvent>,
+    realized: authority::ResourceMultiset<[u8; 32]>,
+    frontier: BTreeMap<[u8; 32], CostAuthority>,
+    stack_births: BTreeMap<[u8; 32], authority::AuthorityStackBirth>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct AuthorityRuntimeEvent {
+    authority: CostAuthority,
+    debit: authority::ResourceMultiset<[u8; 32]>,
 }
 
 /// One per-signature token pool entry (spec §4.6). Structurally mirrors the
@@ -178,6 +202,7 @@ struct Lane {
     /// lane (wait-free MPMC `SegQueue`), drained into `accumulator` by the
     /// lane reconciliation. Mirrors the scalar `attempt_queue`.
     attempt_queue: SegQueue<AttemptRecord>,
+    attempt_record_count: AtomicU64,
     /// Reconciliation accumulator for this lane. Drained-into from
     /// `attempt_queue` and re-walked by `reconcile_lane`. Touched only at lane
     /// finalization, so the per-event path stays lock-free. Mirrors the scalar
@@ -198,6 +223,7 @@ impl Lane {
             initial_tokens: AtomicI64::new(initial),
             consumed_tokens: AtomicI64::new(0),
             attempt_queue: SegQueue::new(),
+            attempt_record_count: AtomicU64::new(0),
             accumulator: Mutex::new(Vec::new()),
             reconciliation: Mutex::new(None),
         }
@@ -214,6 +240,64 @@ impl Lane {
 struct AttemptRecord {
     event: BillableTokenEvent,
     amount: Option<Cost>,
+}
+
+#[derive(Default)]
+struct CanonicalAttemptWindow {
+    records: BTreeMap<BillableTokenEvent, Vec<Option<Cost>>>,
+    len: u64,
+}
+
+impl CanonicalAttemptWindow {
+    fn insert(&mut self, record: AttemptRecord, limit: u64) {
+        if limit == 0 {
+            return;
+        }
+        let event = record.event;
+        if self.len < limit {
+            self.records.entry(event).or_default().push(record.amount);
+            self.len += 1;
+            return;
+        }
+        let Some(largest) = self.records.keys().next_back().cloned() else {
+            return;
+        };
+        if event > largest {
+            return;
+        }
+        self.records.entry(event).or_default().push(record.amount);
+        let remove_key = self
+            .records
+            .keys()
+            .next_back()
+            .cloned()
+            .expect("non-empty canonical attempt window");
+        let remove_entry = self
+            .records
+            .get_mut(&remove_key)
+            .expect("canonical attempt key");
+        remove_entry.pop();
+        if remove_entry.is_empty() {
+            self.records.remove(&remove_key);
+        }
+    }
+
+    fn attempts(&self) -> Vec<AttemptRecord> {
+        self.records
+            .iter()
+            .flat_map(|(event, amounts)| {
+                amounts.iter().cloned().map(|amount| AttemptRecord {
+                    event: event.clone(),
+                    amount,
+                })
+            })
+            .collect()
+    }
+
+    fn clear(&mut self) {
+        self.records.clear();
+        self.len = 0;
+    }
 }
 
 /// Pure-function output of `reconcile()`: the canonical, schedule-
@@ -291,10 +375,10 @@ pub struct RedexId(pub u64);
 /// The kind of a billable token event. D3 (DR-9, OD-3) splits the former
 /// single `SourceStep` into two CONSENSUS-relevant-vs-diagnostic kinds:
 ///
-///   * [`BillableKind::Comm`] — a token-consuming COMM reduction (send /
-///     receive). THIS is the consensus cost unit: the spec's "one token per
-///     COMM" (cost-accounted-rho §3.6 Rules 1-5, §7.2). `reconcile_lane`
-///     counts each committed `Comm` as exactly 1 toward `consumed_units`.
+///   * [`BillableKind::Comm`] — one successful atomic RSpace match. THIS is the
+///     consensus cost unit: the spec's "one token per COMM"
+///     (cost-accounted-rho §3.6 Rules 1-5, §7.2). `reconcile_lane` counts each
+///     committed `Comm` as exactly 1 toward `consumed_units`.
 ///   * [`BillableKind::Reduction`] — a non-COMM structural reduction
 ///     (`new` / `match` / `if`). Metered for DIAGNOSTIC fidelity (it walks
 ///     into the event log + digest with its per-op weight) but contributes
@@ -306,7 +390,7 @@ pub struct RedexId(pub u64);
 /// tallies the per-COMM consensus cost vs. the diagnostic stream.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BillableKind {
-    /// Token-consuming COMM reduction (send / receive). Consensus cost = 1.
+    /// Successful atomic RSpace match. Consensus cost = 1.
     Comm,
     /// Non-COMM structural reduction (new / match / if). Diagnostic; cost = 0.
     Reduction,
@@ -359,10 +443,15 @@ impl RuntimeBudget {
             log: Arc::new(Mutex::new(VecDeque::with_capacity(initial_capacity))),
             event_log: Arc::new(Mutex::new(VecDeque::with_capacity(initial_capacity))),
             attempt_queue: Arc::new(SegQueue::new()),
+            diagnostic_record_count: Arc::new(AtomicU64::new(0)),
+            canonical_comm_attempts: Arc::new(Mutex::new(CanonicalAttemptWindow::default())),
+            attempt_generation: Arc::new(AtomicU64::new(0)),
+            reconciled_generation: Arc::new(AtomicU64::new(0)),
             attempt_accumulator: Arc::new(Mutex::new(Vec::new())),
             canonical_reconciliation: Arc::new(Mutex::new(None)),
             max_log_entries,
             unmetered: Arc::new(AtomicU64::new(0)),
+            comm_accounting_scopes: Arc::new(AtomicUsize::new(0)),
             // N=1 fast path: the lane pool starts empty and stays empty for
             // every legacy single-signature deploy (mirrors `rspace.rs`
             // `phase_a_locks` construction).
@@ -372,6 +461,7 @@ impl RuntimeBudget {
             any_signed_regions: Arc::new(AtomicBool::new(false)),
             signer_channels: Arc::new(Mutex::new(Vec::new())),
             lane_comm_counts: Arc::new(DashMap::new()),
+            authority_state: Arc::new(Mutex::new(AuthorityRuntimeState::default())),
         }
     }
 
@@ -403,6 +493,198 @@ impl RuntimeBudget {
             AttemptOutcome::Granted => Ok(()),
             AttemptOutcome::Oop => Err(InterpreterError::OutOfPhlogistonsError),
         }
+    }
+
+    pub fn reserve_comm_identity(&self, identity: [u8; 32]) -> Result<(), InterpreterError> {
+        if !self.has_comm_accounting_scope() {
+            return Ok(());
+        }
+        let source_path = SourcePath(
+            identity
+                .chunks_exact(4)
+                .map(|chunk| u32::from_le_bytes(chunk.try_into().expect("COMM identity chunk")))
+                .collect(),
+        );
+        let redex_id = RedexId(u64::from_le_bytes(
+            identity[..8].try_into().expect("COMM redex identity"),
+        ));
+        let local_index =
+            u64::from_le_bytes(identity[24..].try_into().expect("COMM local identity"));
+        self.reserve_canonical_with_cost(
+            BillableTokenEvent {
+                deploy_id: self.deploy_id(),
+                sig_hash: self.signature().lane_hash(),
+                source_path,
+                redex_id,
+                local_index,
+                kind: BillableKind::Comm,
+                weight: 1,
+            },
+            Cost::create(1, "COMM reduction"),
+        )
+    }
+
+    pub fn install_authority_allocation(&self, allocation: authority::ResourceMultiset<[u8; 32]>) {
+        let mut state = self.authority_state.lock().expect("authority state");
+        state.allocation = allocation;
+        state.enforce_allocation = true;
+        state.events.clear();
+        state.realized = authority::ResourceMultiset::default();
+        state.frontier.clear();
+        state.stack_births.clear();
+    }
+
+    pub fn reserve_comm_authority_identity(
+        &self,
+        identity: [u8; 32],
+        cost_authority: &CostAuthority,
+    ) -> Result<(), InterpreterError> {
+        self.reserve_authority_identities(&[identity], cost_authority, true, true)
+    }
+
+    pub fn reserve_stack_transfer_authority_identities(
+        &self,
+        identities: &[[u8; 32]],
+        cost_authority: &CostAuthority,
+    ) -> Result<(), InterpreterError> {
+        self.reserve_authority_identities(identities, cost_authority, false, false)
+    }
+
+    fn reserve_authority_identities(
+        &self,
+        identities: &[[u8; 32]],
+        cost_authority: &CostAuthority,
+        charge_comm: bool,
+        existing_is_idempotent: bool,
+    ) -> Result<(), InterpreterError> {
+        if !self.has_comm_accounting_scope() {
+            return Ok(());
+        }
+        let canonical_authority = authority::canonical_authority(cost_authority)
+            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        if canonical_authority.regions.is_empty() {
+            return Err(InterpreterError::ReduceError(
+                authority::AuthorityError::MissingAuthority.to_string(),
+            ));
+        }
+        let mut state = self.authority_state.lock().expect("authority state");
+        let mut unique_identities = BTreeSet::new();
+        for identity in identities {
+            if !unique_identities.insert(*identity) {
+                return Err(InterpreterError::ReduceError(
+                    authority::AuthorityError::EventIdentityConflict.to_string(),
+                ));
+            }
+            if let Some(existing) = state.events.get(identity) {
+                if !existing_is_idempotent || existing.authority != canonical_authority {
+                    return Err(InterpreterError::ReduceError(
+                        authority::AuthorityError::EventIdentityConflict.to_string(),
+                    ));
+                }
+                unique_identities.remove(identity);
+            }
+        }
+        let demand = authority::authority_demand(&canonical_authority)
+            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        let aggregate_demand = unique_identities
+            .iter()
+            .try_fold(authority::ResourceMultiset::default(), |aggregate, _| {
+                aggregate.checked_add(&demand)
+            })
+            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        let next_realized = state
+            .realized
+            .checked_add(&aggregate_demand)
+            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        if state.enforce_allocation && !state.allocation.dominates(&next_realized) {
+            for identity in unique_identities {
+                state.frontier.insert(identity, canonical_authority.clone());
+            }
+            return Err(InterpreterError::OutOfPhlogistonsError);
+        }
+        if charge_comm && !demand.0.is_empty() {
+            for identity in &unique_identities {
+                if let Err(error) = self.reserve_comm_identity(*identity) {
+                    state
+                        .frontier
+                        .insert(*identity, canonical_authority.clone());
+                    return Err(error);
+                }
+            }
+        }
+        for identity in unique_identities {
+            state.events.insert(identity, AuthorityRuntimeEvent {
+                authority: canonical_authority.clone(),
+                debit: demand.clone(),
+            });
+        }
+        state.realized = next_realized;
+        Ok(())
+    }
+
+    pub fn authority_realized(&self) -> authority::ResourceMultiset<[u8; 32]> {
+        self.authority_state
+            .lock()
+            .expect("authority state")
+            .realized
+            .clone()
+    }
+
+    pub fn authority_events(&self) -> Vec<authority::AuthorityEvent<[u8; 32]>> {
+        self.authority_state
+            .lock()
+            .expect("authority state")
+            .events
+            .iter()
+            .map(|(event_id, event)| authority::AuthorityEvent {
+                event_id: *event_id,
+                authority: event.authority.clone(),
+                debit: event.debit.clone(),
+            })
+            .collect()
+    }
+
+    pub fn record_authority_stack_birth(
+        &self,
+        produce_hash: [u8; 32],
+        cells: Vec<CostSignature>,
+    ) -> Result<(), InterpreterError> {
+        if cells.is_empty() {
+            return Err(InterpreterError::ReduceError(
+                authority::AuthorityError::MissingSignature.to_string(),
+            ));
+        }
+        let birth = authority::AuthorityStackBirth {
+            produce_hash,
+            cells,
+        };
+        let mut state = self.authority_state.lock().expect("authority state");
+        if state.stack_births.insert(produce_hash, birth).is_some() {
+            return Err(InterpreterError::ReduceError(
+                authority::AuthorityError::EventIdentityConflict.to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn authority_stack_births(&self) -> Vec<authority::AuthorityStackBirth> {
+        self.authority_state
+            .lock()
+            .expect("authority state")
+            .stack_births
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    pub fn authority_frontier(&self) -> Vec<CostAuthority> {
+        self.authority_state
+            .lock()
+            .expect("authority state")
+            .frontier
+            .values()
+            .cloned()
+            .collect()
     }
 
     // The per-event `append_cost_log` / `append_event_log` helpers were
@@ -492,17 +774,6 @@ impl RuntimeBudget {
             return AttemptOutcome::Granted;
         }
 
-        // Record the attempt for the canonical reconciliation. Pushed
-        // lock-free before the CAS so the reconciliation sees every
-        // attempt even if the CAS race grants nothing. The reconciliation
-        // cache is NOT invalidated here — `reconcile()` recomputes
-        // whenever it drains newly-enqueued attempts, keeping the hot
-        // path free of the cache Mutex.
-        self.attempt_queue.push(AttemptRecord {
-            event: event.clone(),
-            amount,
-        });
-
         let initial = self.initial_tokens.load(Ordering::Acquire);
         // D3 (DR-9, OD-3): the liveness gate is PER-COMM, coherent with the
         // consensus tally in `reconcile_lane`. A COMM costs ONE token; a
@@ -513,8 +784,34 @@ impl RuntimeBudget {
 
         // A zero-cost event always proceeds (it does not touch the budget).
         if cost_unit == 0 {
+            if self.max_log_entries > 0
+                && self
+                    .diagnostic_record_count
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                        (count < self.max_log_entries as u64).then_some(count + 1)
+                    })
+                    .is_ok()
+            {
+                self.attempt_queue.push(AttemptRecord { event, amount });
+                self.attempt_generation.fetch_add(1, Ordering::AcqRel);
+            }
             return AttemptOutcome::Granted;
         }
+
+        let record_limit = u64::try_from(initial.max(0))
+            .unwrap_or_default()
+            .saturating_add(1);
+        self.canonical_comm_attempts
+            .lock()
+            .expect("canonical COMM attempt window")
+            .insert(
+                AttemptRecord {
+                    event: event.clone(),
+                    amount,
+                },
+                record_limit,
+            );
+        self.attempt_generation.fetch_add(1, Ordering::AcqRel);
 
         // Lock-free CAS loop for a COMM (cost_unit == 1). On overflow, return
         // Oop without writing the clamp — the canonical reconciliation
@@ -650,9 +947,8 @@ impl RuntimeBudget {
             }
         }
 
-        // Idempotent fast path: nothing new drained and a prior result
-        // is cached → return it without re-walking.
-        if !drained_any {
+        let generation = self.attempt_generation.load(Ordering::Acquire);
+        if !drained_any && self.reconciled_generation.load(Ordering::Acquire) == generation {
             if let Some(rec) = cache.as_ref() {
                 return rec.clone();
             }
@@ -664,13 +960,19 @@ impl RuntimeBudget {
         // (`reconcile_lane`): scalar and per-lane reconciliation run the SAME
         // pure walk over (initial, attempts), so the N=1 scalar path stays
         // byte-identical to the pre-D0 implementation.
-        let attempts: Vec<AttemptRecord> = {
+        let mut attempts: Vec<AttemptRecord> = {
             let accumulator = self
                 .attempt_accumulator
                 .lock()
                 .expect("attempt accumulator poisoned");
             accumulator.clone()
         };
+        attempts.extend(
+            self.canonical_comm_attempts
+                .lock()
+                .expect("canonical COMM attempt window")
+                .attempts(),
+        );
         let rec = Self::reconcile_lane(initial, &attempts);
 
         // Repopulate the diagnostic `event_log` / `log` mirrors from the
@@ -679,9 +981,11 @@ impl RuntimeBudget {
         // `attempt_one`) and onto finalization, so `get_event_log` /
         // `get_log` now reflect the canonical committed set rather than a
         // schedule-dependent record of CAS-race winners.
-        self.repopulate_diagnostic_logs(&rec.committed, &rec.cost_amounts);
+        self.repopulate_diagnostic_logs(&attempts, &rec.committed, &rec.cost_amounts);
 
         *cache = Some(rec.clone());
+        self.reconciled_generation
+            .store(generation, Ordering::Release);
         rec
     }
 
@@ -712,25 +1016,17 @@ impl RuntimeBudget {
         // COMMs, then OOPs on the next COMM. Zero-cost (non-COMM) events never
         // trigger OOP — they commit freely for diagnostic fidelity.
         //
-        // The pre-D3 `initial`-rank K-window truncation assumed every event
-        // cost >= 1; that no longer holds (only COMMs cost 1), so the walk is
-        // bounded only by the hard `MAX_COST_TRACE_EVENTS` cap (the attempt
-        // count is bounded upstream by `reduce.rs::eval_inner`'s term-count
-        // limit). Accepted user deploys run with `initial == i64::MAX`
-        // (unmetered-for-liveness, OD-1), so the boundary never fires and
-        // `consumed_units` is the exact total COMM count.
-        let k_bound = MAX_COST_TRACE_EVENTS as usize;
-
         // Canonical sort key is the derived Ord on BillableTokenEvent.
         // Multiplicity is preserved: a deploy that re-attempts the same
         // logical event (e.g. through a loop) MUST see the repeated
         // attempt contribute, just as it did under the pre-Option-E
         // commit_lock contract.
-        let mut attempts: Vec<AttemptRecord> = attempts.to_vec();
+        let mut attempts: Vec<AttemptRecord> = attempts
+            .iter()
+            .filter(|attempt| matches!(attempt.event.kind, BillableKind::Comm))
+            .cloned()
+            .collect();
         attempts.sort_by(|a, b| a.event.cmp(&b.event));
-        if attempts.len() > k_bound {
-            attempts.truncate(k_bound);
-        }
 
         // Simulate the canonical commit walk, counting COMMs as the consensus
         // cost. `cost_unit_of` is 1 for a COMM, 0 otherwise.
@@ -766,7 +1062,7 @@ impl RuntimeBudget {
     }
 
     /// The per-event CONSENSUS cost contribution (DR-9 one-token-per-COMM):
-    /// `1` for a token-consuming COMM (send / receive), `0` for every
+    /// `1` for a successful atomic RSpace match, `0` for every
     /// diagnostic kind (new / match / if Reductions, Primitives,
     /// Substitutions). This is the single source of truth for the per-COMM
     /// consensus tally used by [`Self::reconcile_lane`].
@@ -811,14 +1107,6 @@ impl RuntimeBudget {
             .entry(key)
             .or_insert_with(|| Lane::new(sig.clone(), initial));
 
-        // Record the attempt for the lane's canonical reconciliation, pushed
-        // lock-free before the CAS so the reconciliation sees every attempt
-        // even if the CAS race grants nothing (scalar `attempt_one` contract).
-        lane.attempt_queue.push(AttemptRecord {
-            event: event.clone(),
-            amount,
-        });
-
         let lane_initial = lane.initial_tokens.load(Ordering::Acquire);
         // D3 (DR-9, OD-3): per-COMM liveness gate (identical to the scalar
         // `attempt_one`). A diagnostic (cost 0) event always proceeds; only a
@@ -827,6 +1115,23 @@ impl RuntimeBudget {
         if cost_unit == 0 {
             return AttemptOutcome::Granted;
         }
+
+        let record_limit = u64::try_from(lane_initial.max(0))
+            .unwrap_or_default()
+            .saturating_add(1);
+        if lane
+            .attempt_record_count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < record_limit).then_some(count + 1)
+            })
+            .is_err()
+        {
+            return AttemptOutcome::Oop;
+        }
+        lane.attempt_queue.push(AttemptRecord {
+            event: event.clone(),
+            amount,
+        });
 
         // Lock-free CAS loop for a COMM, identical to the scalar `attempt_one`.
         let mut current = lane.consumed_tokens.load(Ordering::Acquire);
@@ -910,24 +1215,42 @@ impl RuntimeBudget {
     /// from the canonical committed set. Called only from `reconcile()`
     /// (under the cache lock) at finalization. The ring buffers retain at
     /// most `max_log_entries` of the lowest-rank committed events/costs.
-    fn repopulate_diagnostic_logs(&self, committed: &[BillableTokenEvent], cost_amounts: &[Cost]) {
+    fn repopulate_diagnostic_logs(
+        &self,
+        attempts: &[AttemptRecord],
+        committed: &[BillableTokenEvent],
+        cost_amounts: &[Cost],
+    ) {
         if self.max_log_entries == 0 {
             return;
         }
         {
             let mut event_log = self.event_log.lock().expect("event log");
             event_log.clear();
-            let skip = committed.len().saturating_sub(self.max_log_entries);
-            for event in committed.iter().skip(skip) {
-                event_log.push_back(event.clone());
+            let mut events = attempts
+                .iter()
+                .filter(|attempt| !matches!(attempt.event.kind, BillableKind::Comm))
+                .map(|attempt| attempt.event.clone())
+                .chain(committed.iter().cloned())
+                .collect::<Vec<_>>();
+            events.sort();
+            events.truncate(self.max_log_entries);
+            for event in events {
+                event_log.push_back(event);
             }
         }
         {
             let mut log = self.log.lock().expect("cost log");
             log.clear();
-            let skip = cost_amounts.len().saturating_sub(self.max_log_entries);
-            for amount in cost_amounts.iter().skip(skip) {
-                log.push_back(amount.clone());
+            let mut amounts = attempts
+                .iter()
+                .filter(|attempt| !matches!(attempt.event.kind, BillableKind::Comm))
+                .filter_map(|attempt| attempt.amount.clone())
+                .chain(cost_amounts.iter().cloned())
+                .collect::<Vec<_>>();
+            amounts.truncate(self.max_log_entries);
+            for amount in amounts {
+                log.push_back(amount);
             }
         }
     }
@@ -944,6 +1267,14 @@ impl RuntimeBudget {
     pub fn set(&self, new_value: Cost) {
         let token = Token::coalesced(self.signature(), cost_value_to_token_count(new_value.value));
         self.reset_from_token(&token);
+    }
+
+    pub fn reset_for_system_deploy(&self) {
+        *self.deploy_id.lock().expect("deploy id lock") = [0; 32];
+        self.reset_from_token(&Token::coalesced(
+            Sig::Unit,
+            cost_value_to_token_count(Cost::unsafe_max().value),
+        ));
     }
 
     pub fn reset_from_signed_process(&self, signed: &SignedProcess) {
@@ -968,6 +1299,13 @@ impl RuntimeBudget {
         self.initial_tokens
             .store(token.remaining_units_i64(), Ordering::Release);
         self.consumed_tokens.store(0, Ordering::Release);
+        self.diagnostic_record_count.store(0, Ordering::Release);
+        self.canonical_comm_attempts
+            .lock()
+            .expect("canonical COMM attempt window")
+            .clear();
+        self.attempt_generation.store(0, Ordering::Release);
+        self.reconciled_generation.store(0, Ordering::Release);
         let token_sig = token.signature();
         *self.signature.lock().expect("signature lock") = token_sig.clone();
         // W1 Phase 3: refresh the per-redex channel-match state for the reused
@@ -986,6 +1324,15 @@ impl RuntimeBudget {
         // Clear the per-signature lane pool so the reused budget starts on the
         // N=1 scalar fast path again (mirrors `rspace.rs` `phase_a_locks.clear`).
         self.lanes.clear();
+        {
+            let mut authority = self.authority_state.lock().expect("authority state");
+            authority.allocation = authority::ResourceMultiset::default();
+            authority.enforce_allocation = false;
+            authority.events.clear();
+            authority.realized = authority::ResourceMultiset::default();
+            authority.frontier.clear();
+            authority.stack_births.clear();
+        }
         *cache = None;
     }
 
@@ -1159,24 +1506,25 @@ impl RuntimeBudget {
     }
 
     /// Tally one COMM that matched a NON-envelope signer lane (a `Σ⟦sᵢ⟧`
-    /// rendezvous). Diagnostic only; never reached under s₀.
+    /// rendezvous). Diagnostic only; native authority settlement does not read
+    /// this compatibility projection.
     pub fn note_lane_comm(&self, lane: [u8; 32]) {
         *self.lane_comm_counts.entry(lane).or_insert(0) += 1;
     }
 
-    /// The per-signer-LANE projection of this deploy's COMM demand: each
-    /// non-envelope signer lane that received COMMs (from [`note_lane_comm`]), plus
-    /// the envelope lane carrying the remaining COMMs (total committed COMM count
-    /// minus the matched-lane tallies). The STATIC dual is
-    /// [`delta_sigma::demand_by_sig`]; the two agree COMM-for-COMM because both use
-    /// the SAME channel→lane decision ([`delta_sigma::match_channel_to_lane`]).
-    /// Under the s₀ collapse the tally is empty, so this is the singleton
-    /// `{ envelope: total }` and agrees with [`delta_sigma::demand`].
+    /// The per-signer-LANE projection of this deploy's realized atomic-COMM cost:
+    /// each non-envelope signer lane that received committed matches, plus the
+    /// envelope lane carrying the remainder. [`delta_sigma::demand_by_sig`] is a
+    /// structural reservation projected with the same channel→lane decision; it
+    /// bounds but does not equal this realized map. If no signer-supply channel
+    /// participates, the result is the singleton `{ envelope: total }`. Native
+    /// authority realization is available through [`authority_realized`].
     ///
     /// [`note_lane_comm`]: RuntimeBudget::note_lane_comm
     /// [`delta_sigma::demand_by_sig`]: super::delta_sigma::demand_by_sig
     /// [`delta_sigma::match_channel_to_lane`]: super::delta_sigma::match_channel_to_lane
     /// [`delta_sigma::demand`]: super::delta_sigma::demand
+    /// [`authority_realized`]: RuntimeBudget::authority_realized
     pub fn per_lane_demand(&self) -> BTreeMap<[u8; 32], i64> {
         let envelope = self.signature().lane_hash();
         let total = self.total_cost().value;
@@ -1208,6 +1556,17 @@ impl RuntimeBudget {
             budget: self.clone(),
             previous,
         }
+    }
+
+    pub fn enter_comm_accounting_scope(&self) -> CommAccountingScope {
+        self.comm_accounting_scopes.fetch_add(1, Ordering::AcqRel);
+        CommAccountingScope {
+            budget: self.clone(),
+        }
+    }
+
+    pub fn has_comm_accounting_scope(&self) -> bool {
+        self.comm_accounting_scopes.load(Ordering::Acquire) != 0
     }
 
     /// Consensus-relevant consumed cost. Reads the canonical reconciliation
@@ -1312,12 +1671,7 @@ impl RuntimeBudget {
         fn feed_event(update: &mut dyn FnMut(&[u8]), tag: u8, event: &BillableTokenEvent) {
             update(&[tag]);
             update(&event.deploy_id);
-            update(&(event.source_path.0.len() as u64).to_le_bytes());
-            for component in &event.source_path.0 {
-                update(&component.to_le_bytes());
-            }
-            update(&event.redex_id.0.to_le_bytes());
-            update(&event.local_index.to_le_bytes());
+            update(&event.sig_hash);
             // D3 (OD-3): kind tag — `Primitive` and `Substitution` keep their
             // legacy tags (1, 2); the former `SourceStep` tag (0) is RETIRED
             // and split into `Comm` (3) and `Reduction` (4). All tags remain
@@ -1353,7 +1707,12 @@ impl RuntimeBudget {
         // call is defensive (preserves the prior contract that the
         // digest is over a (tag, event)-sorted list).
         tagged_events.sort_by(|(left_tag, left), (right_tag, right)| {
-            left_tag.cmp(right_tag).then_with(|| left.cmp(right))
+            left_tag
+                .cmp(right_tag)
+                .then_with(|| left.deploy_id.cmp(&right.deploy_id))
+                .then_with(|| left.sig_hash.cmp(&right.sig_hash))
+                .then_with(|| left.kind.cmp(&right.kind))
+                .then_with(|| left.weight.cmp(&right.weight))
         });
 
         let digest = Blake2b256::hash_stream(|update| {
@@ -1374,6 +1733,20 @@ impl RuntimeBudget {
 pub struct UnmeteredBudgetScope {
     budget: RuntimeBudget,
     previous: u64,
+}
+
+pub struct CommAccountingScope {
+    budget: RuntimeBudget,
+}
+
+impl Drop for CommAccountingScope {
+    fn drop(&mut self) {
+        let previous = self
+            .budget
+            .comm_accounting_scopes
+            .fetch_sub(1, Ordering::AcqRel);
+        assert!(previous != 0, "comm-accounting scope underflow");
+    }
 }
 
 impl Drop for UnmeteredBudgetScope {
@@ -1521,10 +1894,10 @@ pub fn envelope_sig_compound(signatures: &[&[u8]]) -> Sig {
 /// legacy `Sig::Quote` over `DEPLOY_SIGNATURE_DOMAIN`; a compound is the
 /// left-associated `Sig::And` fold over `COMPOUND_DEPLOY_SIGNATURE_DOMAIN`.
 ///
-/// Under the s₀ collapse the envelope `Sig` drives ONLY the deploy's `sig_key`
-/// (= [`Sig::lane_hash`]) and hence its supply channel `Σ⟦s⟧`; getting it wrong
-/// mis-keys the pool. Anchoring gate + install + replay to this single function
-/// is the no-drift guarantee.
+/// The envelope `Sig` drives the deploy's default unsigned authority and its
+/// stable supply lookup. Explicit `CostSignedTerm` regions carry their own
+/// authority, but gate, runtime, and replay must still derive the envelope key
+/// identically. Anchoring those paths to this function is the no-drift guarantee.
 pub fn envelope_sig<A>(cosigned: &crypto::rust::signatures::signed::Cosigned<A>) -> Sig
 where A: std::fmt::Debug + serde::Serialize + crypto::rust::signatures::signed::ToMessage {
     if cosigned.is_compound() {
@@ -1862,16 +2235,13 @@ impl Sig {
     /// `And`-fold + `compute_settlement_debits` component draws (DR-13 — no new
     /// pool-write path).
     ///
-    /// This is the installed signer set the per-redex channel match (W1 Phase 3,
-    /// located stacks / funding slots, cost-accounted-rho.tex §"Funding slots as
-    /// located stacks") resolves a COMM channel against. Under the s₀ collapse
-    /// every COMM is on a DATA channel (never a `Σ⟦s⟧` supply channel — the §5
-    /// no-alias audit), so the match always resolves to the envelope and the
-    /// spectral split stays collapsed ("the prism … collapses the spectrum back to
-    /// white light"). Non-funding connectives never reach here (the envelope is
-    /// funding-former by construction — F-A / [`is_funding_former`]); a non-`And`
-    /// shape is treated as a single signer channel, which is correct for the
-    /// funding grammar `g | #P | s ∘ s`.
+    /// This is the signer set used by the legacy per-redex channel-match
+    /// diagnostic. Consensus settlement of located stacks and funding slots
+    /// instead consumes native `CostAuthority` regions and does not infer
+    /// authority from a data channel. Non-funding connectives never reach here
+    /// (the envelope is funding-former by construction — F-A /
+    /// [`is_funding_former`]); a non-`And` shape is treated as a single signer
+    /// channel, which is correct for the funding grammar `g | #P | s ∘ s`.
     ///
     /// [`is_funding_former`]: Sig::is_funding_former
     pub fn signer_channels(&self) -> Vec<(Par, [u8; 32])> {
@@ -2202,12 +2572,8 @@ mod d0_lane_pool_tests {
         assert_eq!(budget.total_cost().value, initial);
     }
 
-    /// D3 (DR-9, OD-3): a diagnostic `Reduction` event COMMITS (it appears in
-    /// the committed set / event log) but contributes ZERO to the per-COMM
-    /// consensus consumed cost, and never triggers an OOP boundary. A budget of
-    /// 1 COMM token admits ONE COMM plus arbitrarily many Reductions.
     #[test]
-    fn reduction_events_are_diagnostic_and_cost_zero() {
+    fn reduction_events_do_not_enter_the_forced_redex_trace() {
         let budget = RuntimeBudget::new(Cost::create(1, "one-comm budget"));
         // One COMM (cost 1) interleaved with three Reductions (cost 0 each).
         let attempts = vec![
@@ -2223,14 +2589,11 @@ mod d0_lane_pool_tests {
             );
         }
         let rec = budget.reconcile();
-        // All four events commit (the single COMM fits the 1-token budget; the
-        // Reductions cost 0), and none is an OOP boundary.
-        assert_eq!(rec.committed.len(), 4, "COMM + 3 Reductions all commit");
+        assert_eq!(rec.committed.len(), 1);
         assert!(
             rec.oop.is_none(),
             "no OOP — only the COMM costs, and it fits"
         );
-        // Consensus consumed cost is the COMM count = 1, NOT the weight sum.
         assert_eq!(rec.consumed_units, 1);
         assert_eq!(budget.total_cost().value, 1);
     }
@@ -2253,13 +2616,32 @@ mod d0_lane_pool_tests {
             );
         }
         let rec = budget.reconcile();
-        // The first COMM and the Reduction commit; the second COMM OOPs.
-        assert_eq!(rec.committed.len(), 2);
+        assert_eq!(rec.committed.len(), 1);
         assert!(
             rec.oop.is_some(),
             "the second COMM exceeds the 1-token budget"
         );
         assert_eq!(rec.consumed_units, 1, "consumed clamps to the COMM budget");
+    }
+
+    #[test]
+    fn attempted_comm_trace_is_bounded_by_finite_capacity_plus_oop() {
+        let budget = RuntimeBudget::new(Cost::create(2, "two-comm budget"));
+        for index in 0..100 {
+            let _ = budget.reserve_canonical(attempt(index, 1).event);
+        }
+
+        let rec = budget.reconcile();
+        assert_eq!(rec.committed.len(), 2);
+        assert!(rec.oop.is_some());
+        assert_eq!(
+            budget
+                .canonical_comm_attempts
+                .lock()
+                .expect("canonical COMM attempt window")
+                .len,
+            3
+        );
     }
 
     /// The per-signature pool's `total_cost` is the order-independent SUM of
@@ -2412,6 +2794,314 @@ mod d0_lane_pool_tests {
             "reset must clear the lane pool back to the scalar fast path"
         );
         assert_eq!(budget.lane_pool_total_cost(), None);
+    }
+
+    #[test]
+    fn system_deploy_reset_removes_prior_user_authority_identity() {
+        let budget = RuntimeBudget::new(Cost::create(7, "user deploy"));
+        budget.set_deploy_signature_funded(b"wire signature", Sig::Ground(b"payer".to_vec()));
+        budget.install_authority_allocation(authority::ResourceMultiset::singleton(
+            Sig::Ground(b"payer".to_vec()).lane_hash(),
+            7,
+        ));
+
+        budget.reset_for_system_deploy();
+
+        assert_eq!(budget.signature(), Sig::Unit);
+        assert_eq!(budget.deploy_id(), [0; 32]);
+        assert!(budget.authority_realized().0.is_empty());
+        assert!(budget.lanes.is_empty());
+        assert!(!budget.any_signed_regions());
+    }
+
+    #[test]
+    fn a_region_is_debited_for_each_distinct_comm() {
+        use models::rhoapi::cost_signature::Value;
+        use models::rhoapi::{CostAuthority, CostSignature};
+
+        let signature = CostSignature {
+            value: Some(Value::Ground(b"payer".to_vec())),
+        };
+        let region = authority::cost_region(&signature, b"wrapper", 0).unwrap();
+        let authority = CostAuthority {
+            regions: vec![region],
+        };
+        let lane = authority::cost_signature_to_sig(&signature)
+            .unwrap()
+            .lane_hash();
+        let budget = RuntimeBudget::new(Cost::create(2, "two comms"));
+        let _scope = budget.enter_comm_accounting_scope();
+        budget.install_authority_allocation(authority::ResourceMultiset::singleton(lane, 2));
+
+        budget
+            .reserve_comm_authority_identity([1; 32], &authority)
+            .unwrap();
+        budget
+            .reserve_comm_authority_identity([2; 32], &authority)
+            .unwrap();
+
+        assert_eq!(budget.authority_realized().get(&lane), 2);
+        let events = budget.authority_events();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].debit.get(&lane) + events[1].debit.get(&lane), 2);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn stack_transfer_reserves_exactly_one_authority_cell_per_output(
+            cells in 1usize..65,
+            slack in 0u64..65,
+        ) {
+            use models::rhoapi::cost_signature::Value;
+            use models::rhoapi::{CostAuthority, CostSignature};
+
+            let signature = CostSignature {
+                value: Some(Value::Ground(b"payer".to_vec())),
+            };
+            let authority = CostAuthority {
+                regions: vec![authority::cost_region(&signature, b"stack", 0).unwrap()],
+            };
+            let lane = authority::cost_signature_to_sig(&signature)
+                .unwrap()
+                .lane_hash();
+            let cells = u64::try_from(cells).unwrap();
+            let budget = RuntimeBudget::new(Cost::create(0, "stack transfer"));
+            let _scope = budget.enter_comm_accounting_scope();
+            budget.install_authority_allocation(authority::ResourceMultiset::singleton(
+                lane,
+                cells + slack,
+            ));
+            let identities = (0..cells)
+                .map(|index| {
+                    let mut identity = [0; 32];
+                    identity[..8].copy_from_slice(&index.to_le_bytes());
+                    identity
+                })
+                .collect::<Vec<_>>();
+
+            budget
+                .reserve_stack_transfer_authority_identities(&identities, &authority)
+                .unwrap();
+
+            proptest::prop_assert_eq!(budget.authority_realized().get(&lane), cells);
+            proptest::prop_assert_eq!(budget.authority_events().len(), cells as usize);
+            proptest::prop_assert_eq!(budget.total_cost().value, 0);
+        }
+    }
+
+    #[test]
+    fn underfunded_stack_transfer_reservation_is_atomic() {
+        use models::rhoapi::cost_signature::Value;
+        use models::rhoapi::{CostAuthority, CostSignature};
+
+        let signature = CostSignature {
+            value: Some(Value::Ground(b"payer".to_vec())),
+        };
+        let authority = CostAuthority {
+            regions: vec![authority::cost_region(&signature, b"stack", 0).unwrap()],
+        };
+        let lane = authority::cost_signature_to_sig(&signature)
+            .unwrap()
+            .lane_hash();
+        let budget = RuntimeBudget::new(Cost::create(0, "stack transfer"));
+        let _scope = budget.enter_comm_accounting_scope();
+        budget.install_authority_allocation(authority::ResourceMultiset::singleton(lane, 2));
+
+        assert_eq!(
+            budget.reserve_stack_transfer_authority_identities(
+                &[[1; 32], [2; 32], [3; 32]],
+                &authority,
+            ),
+            Err(InterpreterError::OutOfPhlogistonsError)
+        );
+        assert!(budget.authority_realized().0.is_empty());
+        assert!(budget.authority_events().is_empty());
+        assert_eq!(budget.total_cost().value, 0);
+    }
+
+    #[test]
+    fn repeated_stack_transfer_identity_is_rejected_without_an_extra_debit() {
+        use models::rhoapi::cost_signature::Value;
+        use models::rhoapi::{CostAuthority, CostSignature};
+
+        let signature = CostSignature {
+            value: Some(Value::Ground(b"payer".to_vec())),
+        };
+        let authority = CostAuthority {
+            regions: vec![authority::cost_region(&signature, b"stack", 0).unwrap()],
+        };
+        let lane = authority::cost_signature_to_sig(&signature)
+            .unwrap()
+            .lane_hash();
+        let budget = RuntimeBudget::new(Cost::create(0, "stack transfer"));
+        let _scope = budget.enter_comm_accounting_scope();
+        budget.install_authority_allocation(authority::ResourceMultiset::singleton(lane, 2));
+
+        budget
+            .reserve_stack_transfer_authority_identities(&[[1; 32]], &authority)
+            .unwrap();
+        assert!(matches!(
+            budget.reserve_stack_transfer_authority_identities(&[[1; 32]], &authority),
+            Err(InterpreterError::ReduceError(message))
+                if message == authority::AuthorityError::EventIdentityConflict.to_string()
+        ));
+        assert_eq!(budget.authority_realized().get(&lane), 1);
+        assert_eq!(budget.authority_events().len(), 1);
+    }
+
+    #[test]
+    fn duplicate_comm_identity_requires_identical_authority() {
+        use models::rhoapi::cost_signature::Value;
+        use models::rhoapi::{CostAuthority, CostSignature};
+
+        let first = CostSignature {
+            value: Some(Value::Ground(b"first".to_vec())),
+        };
+        let second = CostSignature {
+            value: Some(Value::Ground(b"second".to_vec())),
+        };
+        let first = CostAuthority {
+            regions: vec![authority::cost_region(&first, b"wrapper", 0).unwrap()],
+        };
+        let second = CostAuthority {
+            regions: vec![authority::cost_region(&second, b"wrapper", 0).unwrap()],
+        };
+        let budget = RuntimeBudget::new(Cost::create(2, "two comms"));
+        let _scope = budget.enter_comm_accounting_scope();
+
+        budget
+            .reserve_comm_authority_identity([3; 32], &first)
+            .unwrap();
+        assert!(matches!(
+            budget.reserve_comm_authority_identity([3; 32], &second),
+            Err(InterpreterError::ReduceError(message))
+                if message == authority::AuthorityError::EventIdentityConflict.to_string()
+        ));
+    }
+
+    #[test]
+    fn exhausted_comm_exposes_authority_without_committing_a_debit() {
+        use models::rhoapi::cost_signature::Value;
+        use models::rhoapi::{CostAuthority, CostSignature};
+
+        let signature = CostSignature {
+            value: Some(Value::Ground(b"frontier".to_vec())),
+        };
+        let authority = CostAuthority {
+            regions: vec![authority::cost_region(&signature, b"frontier", 0).unwrap()],
+        };
+        let budget = RuntimeBudget::new(Cost::create(0, "frontier"));
+        let _scope = budget.enter_comm_accounting_scope();
+
+        assert_eq!(
+            budget.reserve_comm_authority_identity([4; 32], &authority),
+            Err(InterpreterError::OutOfPhlogistonsError)
+        );
+        assert_eq!(budget.authority_frontier(), vec![authority]);
+        assert!(budget.authority_events().is_empty());
+        assert!(budget.authority_realized().0.is_empty());
+    }
+
+    #[test]
+    fn allocation_exhaustion_exposes_authority_without_committing_a_debit() {
+        use models::rhoapi::cost_signature::Value;
+        use models::rhoapi::{CostAuthority, CostSignature};
+
+        let signature = CostSignature {
+            value: Some(Value::Ground(b"frontier".to_vec())),
+        };
+        let authority = CostAuthority {
+            regions: vec![authority::cost_region(&signature, b"frontier", 0).unwrap()],
+        };
+        let budget = RuntimeBudget::new(Cost::create(1, "frontier"));
+        let _scope = budget.enter_comm_accounting_scope();
+        budget.install_authority_allocation(authority::ResourceMultiset::default());
+
+        assert_eq!(
+            budget.reserve_comm_authority_identity([5; 32], &authority),
+            Err(InterpreterError::OutOfPhlogistonsError)
+        );
+        assert_eq!(budget.authority_frontier(), vec![authority]);
+        assert!(budget.authority_events().is_empty());
+        assert!(budget.authority_realized().0.is_empty());
+        assert_eq!(budget.total_cost().value, 0);
+    }
+
+    #[test]
+    fn unit_authority_records_the_comm_without_consuming_capacity() {
+        use models::rhoapi::{CostAuthority, CostSignature};
+
+        let signature = CostSignature {
+            value: Some(models::rhoapi::cost_signature::Value::Unit(true)),
+        };
+        let authority = CostAuthority {
+            regions: vec![authority::cost_region(&signature, b"unit", 0).unwrap()],
+        };
+        let budget = RuntimeBudget::new(Cost::create(0, "unit authority"));
+        let _scope = budget.enter_comm_accounting_scope();
+        budget.install_authority_allocation(authority::ResourceMultiset::default());
+
+        budget
+            .reserve_comm_authority_identity([6; 32], &authority)
+            .unwrap();
+
+        assert_eq!(budget.total_cost().value, 0);
+        assert!(budget.authority_realized().0.is_empty());
+        let events = budget.authority_events();
+        assert_eq!(events.len(), 1);
+        assert!(events[0].debit.0.is_empty());
+    }
+
+    #[test]
+    fn installing_an_allocation_starts_a_fresh_region_ledger() {
+        use models::rhoapi::cost_signature::Value;
+        use models::rhoapi::{CostAuthority, CostSignature};
+
+        let signature = CostSignature {
+            value: Some(Value::Ground(b"payer".to_vec())),
+        };
+        let authority = CostAuthority {
+            regions: vec![authority::cost_region(&signature, b"wrapper", 0).unwrap()],
+        };
+        let lane = authority::cost_signature_to_sig(&signature)
+            .unwrap()
+            .lane_hash();
+        let allocation = authority::ResourceMultiset::singleton(lane, 1);
+        let budget = RuntimeBudget::new(Cost::create(2, "two executions"));
+        let _scope = budget.enter_comm_accounting_scope();
+
+        budget.install_authority_allocation(allocation.clone());
+        budget
+            .reserve_comm_authority_identity([4; 32], &authority)
+            .unwrap();
+        assert_eq!(budget.authority_realized().get(&lane), 1);
+
+        budget.install_authority_allocation(allocation);
+        budget
+            .reserve_comm_authority_identity([5; 32], &authority)
+            .unwrap();
+        assert_eq!(budget.authority_realized().get(&lane), 1);
+    }
+
+    #[test]
+    fn overlapping_comm_accounting_scopes_remain_active_until_the_last_exit() {
+        let budget = RuntimeBudget::new(Cost::create(1, "scope"));
+        let outer = budget.enter_comm_accounting_scope();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (exit_tx, exit_rx) = std::sync::mpsc::channel();
+        let worker_budget = budget.clone();
+        let worker = std::thread::spawn(move || {
+            let _overlap = worker_budget.enter_comm_accounting_scope();
+            entered_tx.send(()).unwrap();
+            exit_rx.recv().unwrap();
+        });
+
+        entered_rx.recv().unwrap();
+        drop(outer);
+        assert!(budget.has_comm_accounting_scope());
+        exit_tx.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(!budget.has_comm_accounting_scope());
     }
 }
 

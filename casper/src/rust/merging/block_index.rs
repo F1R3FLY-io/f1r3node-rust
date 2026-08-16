@@ -23,6 +23,15 @@ pub struct BlockIndex {
     pub deploy_chains: Vec<DeployChainIndex>,
 }
 
+impl BlockIndex {
+    pub fn retained_bytes(&self) -> usize {
+        self.deploy_chains.iter().fold(
+            std::mem::size_of::<Self>().saturating_add(self.block_hash.len()),
+            |total, chain| total.saturating_add(chain.retained_bytes()),
+        )
+    }
+}
+
 pub fn create_event_log_index(
     events: &[Event],
     history_repository: RhoHistoryRepository,

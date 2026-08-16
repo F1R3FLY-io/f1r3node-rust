@@ -4,6 +4,7 @@ use std::collections::HashSet;
 
 use models::rhoapi::{expr, Expr, Par};
 use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::accounting::Sig;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
@@ -293,19 +294,17 @@ async fn interpreter_should_capture_parsing_errors_without_token_charge() {
 // D3 (DR-9, OD-3) RENAME: was `interpreter_should_exhaust_budget_on_first_metered_reduction`.
 // Under D3 per-op metering (Reduction/Primitive/Substitution weights in
 // costs.rs) is DIAGNOSTIC only and contributes ZERO to the liveness budget;
-// the budget is denominated in COMMs — a send/receive reduction costs exactly
-// ONE token (`reduce.rs::eval_send`/`eval_receive` -> `reserve_comm`), every
-// other reduction costs zero (`accounting/mod.rs::consensus_cost_unit`,
-// `reconcile_lane`). So a budget is NEVER exhausted "on the first metered
-// reduction"; it is exhausted only when the COMM COUNT exceeds the token
-// budget. This test now exercises that per-COMM gate.
+// the budget is denominated in successful atomic RSpace matches. Unmatched I/O
+// costs zero; every completed binary or join match costs one. This test
+// exercises that boundary directly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn interpreter_should_exhaust_budget_when_comm_count_exceeds_token_budget() {
     with_runtime("metered-comm-spec-", |mut runtime| async move {
-        // BOUNDARY (not exhaustion): a single send is exactly ONE COMM, so a
-        // 1-token budget admits it and DOES NOT OOP. Under the pre-D3 per-op
-        // model this same term exhausted the budget on its first reduction.
-        let one_comm = "@{0}!(0)";
+        runtime.cost.set_deploy_signature_funded(
+            b"interpreter-metered-comm-deploy",
+            Sig::Ground(b"interpreter-metered-comm-payer".to_vec()),
+        );
+        let one_comm = "new x in { x!(0) | for (_ <- x) { Nil } }";
         let one_token = Cost::create(1, "single token budget");
         let admitted = runtime
             .evaluate_with_phlo(one_comm, one_token.clone())
@@ -319,10 +318,8 @@ async fn interpreter_should_exhaust_budget_when_comm_count_exceeds_token_budget(
         // Consensus cost = COMM count = 1 (`total_cost` == consumed_units).
         assert_eq!(admitted.cost.value, 1);
 
-        // EXHAUSTION: two parallel sends are TWO COMMs; the second exceeds the
-        // 1-token budget, so reconcile_lane fires the OOP boundary
-        // (`cost_unit > 0 && next > initial`) -> OutOfPhlogistonsError.
-        let two_comms = "@{0}!(0) | @{1}!(1)";
+        let two_comms =
+            "new x, y in { x!(0) | for (_ <- x) { Nil } | y!(1) | for (_ <- y) { Nil } }";
         let exhausted = runtime
             .evaluate_with_phlo(two_comms, one_token.clone())
             .await

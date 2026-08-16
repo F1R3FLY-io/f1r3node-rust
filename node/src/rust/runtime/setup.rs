@@ -856,16 +856,13 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             synchrony_constraint_threshold: conf.casper.synchrony_constraint_threshold,
             height_constraint_threshold: conf.casper.height_constraint_threshold,
             deploy_lifespan: 50,
-            casper_version: 1,
+            casper_version: casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
             config_version: 1,
             bond_minimum: conf.casper.genesis_block_data.bond_minimum,
             bond_maximum: conf.casper.genesis_block_data.bond_maximum,
             epoch_length: conf.casper.genesis_block_data.epoch_length,
             quarantine_length: conf.casper.genesis_block_data.quarantine_length,
             min_phlo_price: conf.casper.min_phlo_price,
-            // Task #13a: thread the spec-strict gate flag onto this GC-path
-            // shard conf from the same shard-genesis config (default OFF).
-            strict_funding_enforcement: conf.casper.strict_funding_enforcement,
             // Task #13b: this GC-path shard conf drives mergeable-channel GC
             // sizing, NOT block creation, so the genesis client funding-slot list
             // is inert here — default EMPTY (the authoritative wiring is in
@@ -889,11 +886,6 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             native_token_name: conf.casper.genesis_block_data.native_token_name.clone(),
             native_token_symbol: conf.casper.genesis_block_data.native_token_symbol.clone(),
             native_token_decimals: conf.casper.genesis_block_data.native_token_decimals,
-            // Phase 13 defaults centralized as named consts in
-            // `casper::rust::casper`. When `CasperConf` gains corresponding
-            // fields, plumb them through here; the consts are then the
-            // documented fallback.
-            finalizer_blocking_timeout: casper::rust::casper::FINALIZER_BLOCKING_TIMEOUT_DEFAULT,
             active_validators_cache_max_entries:
                 casper::rust::casper::ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT,
         };

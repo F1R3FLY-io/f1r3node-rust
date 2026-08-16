@@ -7,8 +7,9 @@ use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::{Blob, TransportLayer};
 use crypto::rust::hash::blake2b256::Blake2b256;
+use crypto::rust::public_key::PublicKey;
 use models::rust::casper::protocol::casper_message::{
-    ApprovedBlockCandidate, BlockApproval, ProcessedDeploy, ProcessedSystemDeploy, UnapprovedBlock,
+    ApprovedBlockCandidate, BlockApproval, ProcessedDeploy, UnapprovedBlock,
 };
 use models::rust::casper::protocol::packet_type_tag::ToPacket;
 use prost::bytes::Bytes;
@@ -19,6 +20,7 @@ use crate::rust::errors::CasperError;
 use crate::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use crate::rust::genesis::contracts::validator::Validator;
 use crate::rust::genesis::contracts::vault::Vault;
+use crate::rust::genesis::genesis::Genesis;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
@@ -43,6 +45,8 @@ pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
     pub max_cosigners_per_deploy: u32,
     pub initial_phlogiston: i64,
     pub epoch_phlogiston: i64,
+    pub protocol_version: i64,
+    pub client_fuel_allocations: Vec<(PublicKey, i64)>,
     pub native_token_name: String,
     pub native_token_symbol: String,
     pub native_token_decimals: u32,
@@ -71,12 +75,16 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         max_cosigners_per_deploy: u32,
         initial_phlogiston: i64,
         epoch_phlogiston: i64,
+        protocol_version: i64,
+        client_fuel_allocations: Vec<(PublicKey, i64)>,
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
         transport: Arc<T>,
         conf: Arc<RPConf>,
     ) -> Result<Self, CasperError> {
+        crate::rust::casper::ensure_supported_casper_protocol_version(protocol_version)?;
+
         tracing::info!(
             required_sigs = required_sigs,
             "Validator configured required_sigs"
@@ -112,6 +120,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             max_cosigners_per_deploy,
             initial_phlogiston,
             epoch_phlogiston,
+            protocol_version,
+            client_fuel_allocations,
             native_token_name,
             native_token_symbol,
             native_token_decimals,
@@ -170,6 +180,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         max_cosigners_per_deploy: u32,
         initial_phlogiston: i64,
         epoch_phlogiston: i64,
+        protocol_version: i64,
+        client_fuel_allocations: &[(PublicKey, i64)],
         native_token_name: &str,
         native_token_symbol: &str,
         native_token_decimals: u32,
@@ -183,6 +195,12 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         }
 
         let block = &candidate.block;
+        if block.header.version != protocol_version {
+            return Err(format!(
+                "Candidate protocol version mismatch: expected {}, got {}",
+                protocol_version, block.header.version
+            ));
+        }
         if !block.body.system_deploys.is_empty() {
             return Err("Candidate must not contain system deploys.".to_string());
         }
@@ -226,6 +244,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             initial_phlogiston,
             epoch_phlogiston,
         };
+        let funded_vaults =
+            Genesis::vaults_with_protocol_funding(&pos_params, vaults, client_fuel_allocations)
+                .map_err(|error| error.to_string())?;
 
         tracing::info!(
             shard_id = %shard_id,
@@ -238,16 +259,15 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         );
 
         // Expected blessed contracts
-        let genesis_blessed_contracts =
-            crate::rust::genesis::genesis::Genesis::default_blessed_terms(
-                &pos_params,
-                vaults,
-                i64::MAX,
-                shard_id,
-                native_token_name,
-                native_token_symbol,
-                native_token_decimals,
-            );
+        let genesis_blessed_contracts = Genesis::default_blessed_terms(
+            &pos_params,
+            &funded_vaults,
+            i64::MAX,
+            shard_id,
+            native_token_name,
+            native_token_symbol,
+            native_token_decimals,
+        );
 
         let block_deploys: &Vec<ProcessedDeploy> = &block.body.deploys;
 
@@ -282,23 +302,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         // State hash checks
         let empty_state_hash = RuntimeManager::empty_state_hash_fixed();
         let state_hash = runtime_manager
-            .replay_compute_state(
-                &empty_state_hash,
-                block_deploys.clone(),
-                Vec::<ProcessedSystemDeploy>::new(),
-                &rholang::rust::interpreter::system_processes::BlockData::from_block(block),
-                None,
-                true,
-                // Task #13a: genesis-candidate replay runs with cost-accounting
-                // OFF (`is_genesis = true`), so the strict flag is inert — the
-                // acceptance recompute is skipped entirely. Pass `false`.
-                false,
-                // Task #13b: genesis-candidate replay (block 0, cost-accounting
-                // OFF) performs no close-deploy client credit (the credit is
-                // gated on `block_number == 1` AND genesis runs no close
-                // post_eval), so the allocation list is inert here. Pass empty.
-                &[],
-            )
+            .replay_block_from_consensus_data(&empty_state_hash, block, None)
             .await
             .map_err(|e| format!("Failed status during replay: {:?}.", e))?;
 
@@ -352,6 +356,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             self.max_cosigners_per_deploy,
             self.initial_phlogiston,
             self.epoch_phlogiston,
+            self.protocol_version,
+            &self.client_fuel_allocations,
             &self.native_token_name,
             &self.native_token_symbol,
             self.native_token_decimals,

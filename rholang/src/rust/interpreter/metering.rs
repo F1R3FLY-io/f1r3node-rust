@@ -88,11 +88,10 @@ impl MeteredMachine {
         }
     }
 
-    /// Charge a token-consuming COMM reduction (send / receive). D3 (DR-9,
-    /// OD-3): this is THE consensus cost unit — `reconcile_lane` counts each
-    /// committed `Comm` as 1. `amount` is the per-op diagnostic weight (still
-    /// recorded in the event log/digest), but only the COMM COUNT gates
-    /// consensus.
+    /// Reserve one synthetic atomic-COMM event. Production evaluation records
+    /// these through the RSpace match observer; this method remains for focused
+    /// budget and attribution tests. `amount` is diagnostic, while each
+    /// committed `Comm` contributes exactly one consensus unit.
     pub fn reserve_comm(&self, amount: Cost) -> Result<(), InterpreterError> {
         self.reserve_cost(BillableKind::Comm, amount)
     }

@@ -1,4 +1,5 @@
 mod concurrent_rspace_test;
+mod comm_observer_tests;
 mod export_import_tests;
 mod history;
 mod hot_store_spec;

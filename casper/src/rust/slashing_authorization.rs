@@ -27,7 +27,7 @@
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 use std::collections::btree_map::Entry;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
@@ -261,6 +261,7 @@ fn evidence_epoch(metadata: &BlockMetadata, epoch_length: i32) -> Result<Epoch, 
 /// the new block will land in. Slashing decisions belong to that epoch.
 pub fn authorized_slash_candidates(
     snapshot: &CasperSnapshot,
+    bonds_map: &HashMap<Validator, i64>,
 ) -> Result<Vec<AuthorizedSlashCandidate>, CasperError> {
     let epoch_length = snapshot.on_chain_state.shard_conf.epoch_length;
     // P2-9: surface overflow on `max_block_num + 1` as a typed error.
@@ -308,12 +309,7 @@ pub fn authorized_slash_candidates(
         if target_activation_epoch != current_epoch {
             continue;
         }
-        let bond = snapshot
-            .on_chain_state
-            .bonds_map
-            .get(&metadata.sender)
-            .copied()
-            .unwrap_or(0);
+        let bond = bonds_map.get(&metadata.sender).copied().unwrap_or(0);
         if bond <= 0 {
             continue;
         }
@@ -358,6 +354,7 @@ pub fn authorized_slash_candidates(
 pub fn validate_received_slash_deploys(
     block: &BlockMessage,
     snapshot: &CasperSnapshot,
+    bonds_map: &HashMap<Validator, i64>,
 ) -> Result<(), CasperError> {
     let has_slash_deploy = block.body.system_deploys.iter().any(|system_deploy| {
         matches!(system_deploy, ProcessedSystemDeploy::Succeeded {
@@ -466,12 +463,7 @@ pub fn validate_received_slash_deploys(
             .into());
         }
 
-        let bond = snapshot
-            .on_chain_state
-            .bonds_map
-            .get(&metadata.sender)
-            .copied()
-            .unwrap_or(0);
+        let bond = bonds_map.get(&metadata.sender).copied().unwrap_or(0);
         if bond <= 0 {
             return Err(SlashAuthError::TargetNotBonded {
                 validator: hex::encode(&metadata.sender),

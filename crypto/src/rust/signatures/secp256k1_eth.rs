@@ -10,7 +10,10 @@ use crate::rust::signatures::signatures_alg::SignaturesAlg;
 pub struct Secp256k1Eth;
 
 impl Secp256k1Eth {
-    pub fn name() -> String { format!("{}:eth", Secp256k1::name()) }
+    pub const LEGACY_NAME: &'static str = "secp256k1-eth";
+    pub const NAME: &'static str = "secp256k1:eth";
+
+    pub fn name() -> String { Self::NAME.to_string() }
 }
 
 //TODO need review
@@ -34,7 +37,7 @@ impl SignaturesAlg for Secp256k1Eth {
 
     fn new_key_pair(&self) -> (PrivateKey, PublicKey) { Secp256k1.new_key_pair() }
 
-    fn name(&self) -> String { format!("{}:eth", Secp256k1.name()) }
+    fn name(&self) -> String { Self::NAME.to_string() }
 
     fn sig_length(&self) -> usize { Secp256k1.sig_length() }
 

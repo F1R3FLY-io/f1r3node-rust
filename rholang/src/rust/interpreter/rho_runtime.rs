@@ -6,7 +6,9 @@ use std::time::Instant;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::expr::ExprInstance::{EMapBody, GByteArray};
 use models::rhoapi::tagged_continuation::TaggedCont;
-use models::rhoapi::{BindPattern, Bundle, Expr, ListParWithRandom, Par, TaggedContinuation, Var};
+use models::rhoapi::{
+    BindPattern, Bundle, CostAuthority, Expr, ListParWithRandom, Par, TaggedContinuation, Var,
+};
 use models::rust::block_hash::BlockHash;
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
@@ -14,6 +16,7 @@ use models::rust::sorted_par_map::SortedParMap;
 use models::rust::utils::new_freevar_par;
 use models::rust::validator::Validator;
 use rspace_plus_plus::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
+use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
@@ -21,10 +24,12 @@ use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::replay_rspace_interface::IReplayRSpace;
 use rspace_plus_plus::rspace::rspace::{RSpace, RSpaceStore};
-use rspace_plus_plus::rspace::rspace_interface::ISpace;
+use rspace_plus_plus::rspace::rspace_interface::{CommObserver, ISpace};
+use rspace_plus_plus::rspace::trace::event::COMM;
 use rspace_plus_plus::rspace::trace::Log;
 use rspace_plus_plus::rspace::tuplespace_interface::Tuplespace;
 
+use super::accounting::authority::ResourceMultiset;
 use super::accounting::cost_accounting::CostAccounting;
 use super::accounting::costs::Cost;
 use super::accounting::has_cost::HasCost;
@@ -280,6 +285,31 @@ impl RhoRuntimeImpl {
     pub fn clear_cost_log(&self) { self.cost.clear_log() }
 
     pub fn clear_cost_event_log(&self) { self.cost.clear_event_log() }
+
+    pub async fn evaluate_with_authority(
+        &self,
+        term: &str,
+        initial_phlo: Cost,
+        normalizer_env: HashMap<String, Par>,
+        rand: Blake2b512Random,
+        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
+    ) -> Result<EvaluateResult, InterpreterError> {
+        let start = Instant::now();
+        let interpreter = InterpreterImpl::new(self.cost.clone(), self.merge_chs.clone());
+        let result = interpreter
+            .inj_attempt(
+                &self.reducer,
+                term,
+                initial_phlo,
+                normalizer_env,
+                rand,
+                authority_allocation,
+            )
+            .await;
+        metrics::histogram!(EVALUATE_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
+            .record(start.elapsed().as_secs_f64());
+        result
+    }
 }
 
 impl RhoRuntime for RhoRuntimeImpl {
@@ -290,15 +320,8 @@ impl RhoRuntime for RhoRuntimeImpl {
         normalizer_env: HashMap<String, Par>,
         rand: Blake2b512Random,
     ) -> Result<EvaluateResult, InterpreterError> {
-        let start = Instant::now();
-        let i = InterpreterImpl::new(self.cost.clone(), self.merge_chs.clone());
-        let reducer = &self.reducer;
-        let res = i
-            .inj_attempt(reducer, term, initial_phlo, normalizer_env, rand)
-            .await;
-        metrics::histogram!(EVALUATE_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
-            .record(start.elapsed().as_secs_f64());
-        res
+        self.evaluate_with_authority(term, initial_phlo, normalizer_env, rand, None)
+            .await
     }
 
     async fn inj(
@@ -473,6 +496,66 @@ pub type RhoHistoryRepository = Arc<
 
 pub type ISpaceAndReplay = (RhoISpace, RhoReplayISpace);
 
+struct RhoCommObserver {
+    budget: RuntimeBudget,
+}
+
+impl CommObserver<ListParWithRandom, TaggedContinuation> for RhoCommObserver {
+    fn observe(
+        &self,
+        comm: &COMM,
+        continuation: &TaggedContinuation,
+        continuation_persistent: bool,
+        data: &[(&ListParWithRandom, bool)],
+    ) -> Result<(), RSpaceError> {
+        let bytes = comm.cost_identity().bytes();
+        let identity: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| RSpaceError::BugFoundError("invalid COMM identity length".to_string()))?;
+        let mut authorities = Vec::<&CostAuthority>::new();
+        let mut persistent_regions = std::collections::BTreeSet::new();
+        if let Some(authority) = continuation.cost_authority.as_ref() {
+            authorities.push(authority);
+            if continuation_persistent {
+                for region in super::accounting::authority::authority_regions(authority)
+                    .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?
+                    .into_keys()
+                {
+                    persistent_regions.insert(region);
+                }
+            }
+        }
+        for (datum, persistent) in data {
+            if let Some(authority) = datum.cost_authority.as_ref() {
+                authorities.push(authority);
+                if *persistent {
+                    for region in super::accounting::authority::authority_regions(authority)
+                        .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?
+                        .into_keys()
+                    {
+                        persistent_regions.insert(region);
+                    }
+                }
+            }
+        }
+        let authority = super::accounting::authority::merge_authorities(authorities)
+            .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
+        let authority = super::accounting::authority::instantiate_persistent_regions(
+            &authority,
+            &persistent_regions,
+            identity,
+        )
+        .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
+        self.budget
+            .reserve_comm_authority_identity(identity, &authority)
+            .map_err(|error| match error {
+                InterpreterError::OutOfPhlogistonsError => RSpaceError::OutOfPhlogistons,
+                other => RSpaceError::InterpreterError(other.to_string()),
+            })?;
+        Ok(())
+    }
+}
+
 async fn introduce_system_process<T>(
     mut spaces: Vec<&mut T>,
     processes: Vec<(Name, Arity, Remainder, BodyRef)>,
@@ -493,6 +576,7 @@ where
         let continuation = TaggedContinuation {
             tagged_cont: Some(TaggedCont::ScalaBodyRef(body_ref)),
             guard: None,
+            cost_authority: None,
         };
 
         for space in &mut spaces {
@@ -1120,6 +1204,9 @@ async fn setup_reducer(
     chromadb_service: SharedChromaDBService,
     cost: RuntimeBudget,
 ) -> Arc<DebruijnInterpreter> {
+    rspace.set_comm_observer(Some(Arc::new(RhoCommObserver {
+        budget: cost.clone(),
+    })));
     let reducer_cell = Arc::new(std::sync::OnceLock::new());
 
     let temp_dispatcher = Arc::new(RholangAndScalaDispatcher {

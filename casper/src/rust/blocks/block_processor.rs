@@ -36,7 +36,8 @@ use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
     BLOCK_PROCESSING_STORAGE_TIME_METRIC, BLOCK_PROCESSING_VALIDATION_SETUP_TIME_METRIC,
     BLOCK_PROCESSOR_METRICS_SOURCE, BLOCK_SIZE_METRIC, BLOCK_VALIDATION_FAILED_METRIC,
-    BLOCK_VALIDATION_SUCCESS_METRIC, BLOCK_VALIDATION_TIME_METRIC,
+    BLOCK_VALIDATION_LOCAL_FAULT_DEFERRED_METRIC, BLOCK_VALIDATION_SUCCESS_METRIC,
+    BLOCK_VALIDATION_TIME_METRIC,
 };
 use crate::rust::util::proto_util;
 use crate::rust::validate::Validate;
@@ -177,9 +178,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
         casper: Arc<dyn Casper + Send + Sync + 'static>,
         block: &BlockMessage,
     ) -> Result<bool, CasperError> {
-        // TODO casper.dag_contains does not take into account equivocation tracker
-        let already_processed =
-            casper.dag_contains(&block.block_hash) || casper.buffer_contains(&block.block_hash);
+        let already_processed = casper.contains(&block.block_hash);
 
         let shard_of_interest = casper.get_approved_block().map(|approved_block| {
             approved_block
@@ -187,9 +186,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
                 .eq_ignore_ascii_case(&block.shard_id)
         })?;
 
-        let version_of_interest = casper
-            .get_approved_block()
-            .map(|approved_block| Validate::version(block, approved_block.header.version))?;
+        let version_of_interest = Validate::version(block, casper.get_version());
 
         let old_block = casper.get_approved_block().map(|approved_block| {
             proto_util::block_number(block) < proto_util::block_number(approved_block)
@@ -354,27 +351,27 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
                             .effects_for_invalid_block(casper, block, i, &snapshot)
                             .await
                     }
-                    // BlockException → InvalidTransaction is safe: validation_dispatcher.rs:548
-                    // routes every is_slashable() variant through the same record-creation path
-                    // as AdmissibleEquivocation, so the slash pipeline fires identically. See
-                    // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.4 and
-                    // theorem T-9.3 (`t_9_3_dispatch_complete`, BugFixDispatcher.v:41).
                     BlockError::BlockException(ref err) => {
-                        tracing::warn!(
-                            "Block {} raised BlockException ({}); recording as InvalidTransaction to prevent dependent-block stall.",
+                        tracing::error!(
+                            "Block {} validation was inconclusive because of a local fault ({}); deferring it to bounded recovery without recording invalidity.",
                             PrettyPrinter::build_string_bytes(&block.block_hash),
                             err
                         );
                         self.dependencies
-                            .effects_for_invalid_block(
-                                casper,
-                                block,
-                                &InvalidBlock::InvalidTransaction,
-                                &snapshot,
-                            )
-                            .await
+                            .recover_after_local_validation_fault(&block.block_hash)
+                            .await?;
+                        return Ok(status);
                     }
-                    _ => Ok(snapshot.dag.clone()),
+                    BlockError::CasperIsBusy => {
+                        self.dependencies
+                            .recover_after_local_validation_fault(&block.block_hash)
+                            .await?;
+                        return Ok(status);
+                    }
+                    BlockError::MissingBlocks => {
+                        return Ok(status);
+                    }
+                    BlockError::Processed => Ok(snapshot.dag.clone()),
                 }
             }
         }?;
@@ -513,6 +510,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         block: &BlockMessage,
     ) -> Result<(bool, HashSet<BlockHash>, HashSet<BlockHash>), CasperError> {
         let all_deps = proto_util::dependencies_hashes_of(block);
+        let slash_evidence_deps = proto_util::slash_evidence_hashes_of(block);
 
         // in addition, equivocation tracker has to be checked, as admissible equivocations are not stored in DAG
         let equivocation_hashes: HashSet<BlockHash> = {
@@ -554,31 +552,18 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
                 .collect()
         };
 
-        let deps_in_dag: Vec<BlockHash> = all_deps
+        let deps_validated: Vec<BlockHash> = all_deps
             .iter()
-            .filter_map(|dep| {
-                if casper.dag_contains(dep) {
-                    Some(dep.clone())
-                } else {
-                    None
-                }
+            .filter(|&dep| {
+                proto_util::dependency_source_satisfies(
+                    slash_evidence_deps.contains(dep),
+                    casper.dag_contains(dep),
+                    equivocation_hashes.contains(dep),
+                    invalid_block_hashes.contains(dep),
+                )
             })
-            .collect();
-
-        let deps_in_eq_tracker: Vec<BlockHash> = all_deps
-            .iter()
-            .filter(|&dep| equivocation_hashes.contains(dep))
             .cloned()
             .collect();
-        let deps_in_invalid_set: Vec<BlockHash> = all_deps
-            .iter()
-            .filter(|&dep| invalid_block_hashes.contains(dep))
-            .cloned()
-            .collect();
-
-        let mut deps_validated: Vec<BlockHash> = deps_in_dag.clone();
-        deps_validated.extend(deps_in_eq_tracker.iter().cloned());
-        deps_validated.extend(deps_in_invalid_set.iter().cloned());
 
         // If a dependency is already validated, it should not be treated as a blocking
         // buffer dependency even if stale buffer relations still exist for that hash.
@@ -883,6 +868,24 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         }
 
         Ok(())
+    }
+
+    pub async fn recover_after_local_validation_fault(
+        &self,
+        block_hash: &BlockHash,
+    ) -> Result<(), CasperError> {
+        let block_hash_serde = BlockHashSerde(block_hash.clone());
+        self.casper_buffer.remove(block_hash_serde)?;
+
+        metrics::counter!(
+            BLOCK_VALIDATION_LOCAL_FAULT_DEFERRED_METRIC,
+            "source" => BLOCK_PROCESSOR_METRICS_SOURCE
+        )
+        .increment(1);
+
+        self.block_retriever
+            .recover_dependency(block_hash.clone())
+            .await
     }
 
     /// Equivalent to Scala's: validateBlock = (c: Casper[F], s: CasperSnapshot[F], b: BlockMessage) => c.validate(b, s)

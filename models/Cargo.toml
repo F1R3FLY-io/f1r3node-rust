@@ -32,6 +32,9 @@ tonic-prost = { workspace = true }
 utoipa = { workspace = true }
 tracing = { workspace = true }
 
+[dev-dependencies]
+bincode = { workspace = true }
+
 [[test]]
 name = "models_tests"
 path = "tests/mod.rs"

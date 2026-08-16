@@ -43,6 +43,7 @@ fn baseline_deploy_data(_phlo_limit: i64) -> DeployData {
         valid_after_block_number: 0,
         shard_id: "root".to_string(),
         expiration_timestamp: None,
+        authority_presentations: Vec::new(),
     }
 }
 
@@ -167,6 +168,7 @@ fn t5_pos_wire_multi_sig_cosigner_threshold_round_trip() {
         cosigners: vec![cosigner_proto],
         cosigner_threshold: 0,
         sig_algebra: None,
+        authority_presentations: Vec::new(),
     };
 
     let cosigned = DeployData::from_proto_cosigned(proto.clone()).expect("decode");
@@ -208,6 +210,7 @@ fn t6_pos_wire_threshold_2_of_3_round_trip_through_proto() {
         ],
         cosigner_threshold: 2,
         sig_algebra: None,
+        authority_presentations: Vec::new(),
     };
 
     let cosigned =

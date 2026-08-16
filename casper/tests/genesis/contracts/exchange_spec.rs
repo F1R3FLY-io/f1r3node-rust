@@ -16,14 +16,19 @@
 //!    relies on.
 
 use casper::rust::genesis::contracts::standard_deploys;
+use casper::rust::rholang::runtime::RuntimeOps;
 use casper::rust::util::construct_deploy;
+use casper::rust::util::rholang::supply;
 use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use rholang::rust::interpreter::accounting::authority::cost_signature_to_sig;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::registry::registry::Registry;
+use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 
 use crate::util::rholang::resources::with_runtime_manager;
 
@@ -229,6 +234,139 @@ async fn exchange_conserves_per_channel() {
                 results[0], swapped,
                 "per-channel conservation: one datum out per carrier, total {{7,11}} preserved"
             );
+        },
+    )
+    .await
+    .expect("with_runtime_manager");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn exchange_transports_cost_stacks_without_minting_or_retagging() {
+    with_runtime_manager(
+        |runtime_manager, _genesis_context, genesis_block| async move {
+            let gen_post_state = genesis_block.body.state.post_state_hash;
+            let source = r#"
+            new return, rl(`rho:registry:lookup`), exCh, cCarrier, vCarrier, swapAck in {
+              rl!(`rho:lang:exchange`, *exCh) |
+              for (@(_, Exchange) <- exCh) {
+                cCarrier!( client :: client_tail :: () ) |
+                vCarrier!( validator :: validator_tail :: () ) |
+                @Exchange!("swap", *cCarrier, *vCarrier, *swapAck) |
+                for (@(true, _) <- swapAck) {
+                  for (@cAfter <- cCarrier & @vAfter <- vCarrier) {
+                    cAfter | vAfter | return!(true)
+                  }
+                }
+              }
+            }
+            "#;
+            let deploy = construct_deploy::source_deploy_now_full(
+                source.to_string(),
+                Some(500_000),
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("construct cost-stack exchange deploy");
+            let runtime = runtime_manager.spawn_runtime().await;
+            let mut runtime_ops = RuntimeOps::new(runtime);
+            runtime_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(&gen_post_state))
+                .await
+                .expect("reset to genesis post-state");
+            let results = runtime_ops
+                .capture_results(&gen_post_state, &deploy)
+                .await
+                .expect("exchange cost-stack swap must execute");
+            assert_eq!(results, vec![ParBuilderUtil::mk_term("true").unwrap()]);
+
+            let expected = [
+                Compiler::source_to_adt("client :: client_tail :: ()")
+                    .unwrap()
+                    .cost_stacks
+                    .remove(0),
+                Compiler::source_to_adt("validator :: validator_tail :: ()")
+                    .unwrap()
+                    .cost_stacks
+                    .remove(0),
+            ];
+            let mut materialized_cells = 0;
+            for stack in expected {
+                let head = stack.cells.first().unwrap();
+                let signature = cost_signature_to_sig(head).unwrap();
+                let inventory = supply::decode_purse_inventory(
+                    &runtime_ops
+                        .get_data_datums(&supply::supply_channel(&signature))
+                        .await,
+                    head,
+                )
+                .unwrap();
+                assert_eq!(inventory.balance, None);
+                assert_eq!(inventory.stacks.len(), 1);
+                assert_eq!(inventory.stacks[0].stack, stack);
+                materialized_cells += inventory.stacks[0].stack.cells.len();
+            }
+            assert_eq!(materialized_cells, 4);
+        },
+    )
+    .await
+    .expect("with_runtime_manager");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn exchange_does_not_release_a_one_sided_cost_stack() {
+    with_runtime_manager(
+        |runtime_manager, _genesis_context, genesis_block| async move {
+            let gen_post_state = genesis_block.body.state.post_state_hash;
+            let source = r#"
+            new return, rl(`rho:registry:lookup`), exCh, cCarrier, vCarrier, swapAck in {
+              rl!(`rho:lang:exchange`, *exCh) |
+              for (@(_, Exchange) <- exCh) {
+                cCarrier!( client :: client_tail :: () ) |
+                @Exchange!("swap", *cCarrier, *vCarrier, *swapAck) |
+                for (@(true, _) <- swapAck) { return!(true) }
+              }
+            }
+            "#;
+            let deploy = construct_deploy::source_deploy_now_full(
+                source.to_string(),
+                Some(500_000),
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("construct one-sided cost-stack exchange deploy");
+            let runtime = runtime_manager.spawn_runtime().await;
+            let mut runtime_ops = RuntimeOps::new(runtime);
+            runtime_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(&gen_post_state))
+                .await
+                .expect("reset to genesis post-state");
+            let results = runtime_ops
+                .capture_results(&gen_post_state, &deploy)
+                .await
+                .expect("one-sided exchange must remain blocked without failing");
+            assert!(results.is_empty());
+
+            let stack = Compiler::source_to_adt("client :: client_tail :: ()")
+                .unwrap()
+                .cost_stacks
+                .remove(0);
+            let head = stack.cells.first().unwrap();
+            let signature = cost_signature_to_sig(head).unwrap();
+            let inventory = supply::decode_purse_inventory(
+                &runtime_ops
+                    .get_data_datums(&supply::supply_channel(&signature))
+                    .await,
+                head,
+            )
+            .unwrap();
+            assert_eq!(inventory.balance, None);
+            assert!(inventory.stacks.is_empty());
         },
     )
     .await

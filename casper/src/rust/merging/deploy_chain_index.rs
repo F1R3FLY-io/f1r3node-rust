@@ -41,6 +41,121 @@ pub struct DeployChainIndex {
 }
 
 impl DeployChainIndex {
+    pub fn validate_exact_projection(&self) -> Result<(), HistoryError> {
+        if !self.has_exact_state_witness {
+            return Err(HistoryError::MergeError(
+                "deploy chain is missing exact state witnesses".to_string(),
+            ));
+        }
+        let exact_indices: BTreeSet<u32> = self.exact_effect_changes.keys().copied().collect();
+        if exact_indices != self.effect_indices {
+            return Err(HistoryError::MergeError(
+                "deploy chain effect indices do not match exact-effect identities".to_string(),
+            ));
+        }
+        if self.effect_indices.len() != self.deploys_with_cost.0.len() {
+            return Err(HistoryError::MergeError(
+                "deploy chain does not bind exactly one effect identity per deploy".to_string(),
+            ));
+        }
+
+        let projected_state = self
+            .exact_effect_changes
+            .values()
+            .try_fold(StateChange::empty(), |acc, (change, _)| {
+                acc.additive_join(change.clone())
+            })?
+            .normalized();
+        if projected_state != self.state_changes.clone().normalized() {
+            return Err(HistoryError::MergeError(
+                "per-effect ordinary projection does not match the chain state change".to_string(),
+            ));
+        }
+
+        let mut projected_mergeable = NumberChannelsDiff::new();
+        for (change, mergeable) in self.exact_effect_changes.values() {
+            for entry in change.datums_changes.iter() {
+                let changed = !entry.value().added.is_empty() || !entry.value().removed.is_empty();
+                if changed
+                    && self
+                        .event_log_index
+                        .number_channels_data
+                        .contains_key(entry.key())
+                    && !mergeable.contains_key(entry.key())
+                {
+                    return Err(HistoryError::MergeError(format!(
+                        "exact effect changes mergeable channel {:?} without a typed contribution",
+                        entry.key(),
+                    )));
+                }
+            }
+            for (channel, (incoming_diff, incoming_type)) in mergeable {
+                match projected_mergeable.get_mut(channel) {
+                    Some((existing_diff, existing_type)) => {
+                        if existing_type != incoming_type {
+                            return Err(HistoryError::MergeError(format!(
+                                "exact effects disagree on merge type for channel {:?}",
+                                channel,
+                            )));
+                        }
+                        *existing_diff = rspace_plus_plus::rspace::merger::merging_logic::combine_mergeable_value(
+                            *existing_diff,
+                            *incoming_diff,
+                            *incoming_type,
+                        )
+                        .ok_or_else(|| {
+                            HistoryError::MergeError(format!(
+                                "exact mergeable contributions overflow on channel {:?}",
+                                channel,
+                            ))
+                        })?;
+                    }
+                    None => {
+                        projected_mergeable
+                            .insert(channel.clone(), (*incoming_diff, *incoming_type));
+                    }
+                }
+            }
+        }
+        if projected_mergeable != self.event_log_index.number_channels_data {
+            return Err(HistoryError::MergeError(
+                "per-effect mergeable projection does not match the chain event log".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn retained_bytes(&self) -> usize {
+        let deploy_bytes = self
+            .deploys_with_cost
+            .0
+            .iter()
+            .fold(0usize, |total, deploy| {
+                total
+                    .saturating_add(std::mem::size_of::<DeployIdWithCost>())
+                    .saturating_add(deploy.deploy_id.len())
+            });
+        let exact_bytes =
+            self.exact_effect_changes
+                .values()
+                .fold(0usize, |total, (change, channels)| {
+                    total
+                        .saturating_add(change.retained_bytes())
+                        .saturating_add(
+                            channels
+                                .len()
+                                .saturating_mul(std::mem::size_of::<(Blake2b256Hash, i64)>()),
+                        )
+                });
+        std::mem::size_of::<Self>()
+            .saturating_add(deploy_bytes)
+            .saturating_add(self.user_event_log_index.retained_bytes())
+            .saturating_add(self.system_event_log_index.retained_bytes())
+            .saturating_add(self.event_log_index.retained_bytes())
+            .saturating_add(self.state_changes.retained_bytes())
+            .saturating_add(exact_bytes)
+    }
+
     pub fn new<C, P, A, K>(
         deploys: &HashableSet<DeployIndex>,
         pre_state_hash: &Blake2b256Hash,
@@ -149,7 +264,7 @@ impl DeployChainIndex {
             StateChange::new(pre_history_reader, post_history_reader, &event_log_index)?
         };
 
-        Ok(Self {
+        let index = Self {
             deploys_with_cost: HashableSet(deploys_with_cost),
             post_state_hash: post_state_hash.clone(),
             user_event_log_index,
@@ -161,7 +276,11 @@ impl DeployChainIndex {
             exact_effect_changes,
             source_block_hash,
             source_block_number,
-        })
+        };
+        if index.has_exact_state_witness {
+            index.validate_exact_projection()?;
+        }
+        Ok(index)
     }
 
     /// Construct a DeployChainIndex directly from its parts (for testing).
@@ -323,11 +442,13 @@ impl Ord for DeployChainIndex {
 #[cfg(test)]
 mod tests {
     use std::collections::hash_map::DefaultHasher;
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use std::hash::{Hash, Hasher};
 
     use proptest::prelude::*;
     use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+    use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
+    use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 
     use super::*;
 
@@ -359,6 +480,185 @@ mod tests {
         let mut hasher = DefaultHasher::new();
         index.hash(&mut hasher);
         hasher.finish()
+    }
+
+    fn exact_index(
+        deploys: &[(u8, u64)],
+        effect_indices: BTreeSet<u32>,
+        state_changes: StateChange,
+        event_log_index: EventLogIndex,
+        exact_effect_changes: BTreeMap<u32, (StateChange, NumberChannelsDiff)>,
+    ) -> DeployChainIndex {
+        let mut index = mk_index(deploys, 1);
+        index.user_event_log_index = event_log_index.clone();
+        index.event_log_index = event_log_index;
+        index.state_changes = state_changes;
+        index.effect_indices = effect_indices;
+        index.has_exact_state_witness = true;
+        index.exact_effect_changes = exact_effect_changes;
+        index
+    }
+
+    #[test]
+    fn exact_projection_requires_exact_witness() {
+        let index = mk_index(&[(1, 1)], 1);
+        let error = index
+            .validate_exact_projection()
+            .expect_err("legacy chain must not satisfy exact projection");
+        assert!(error.to_string().contains("missing exact state witnesses"));
+    }
+
+    #[test]
+    fn exact_projection_requires_matching_effect_keys() {
+        let index = exact_index(
+            &[(1, 1)],
+            BTreeSet::from([0]),
+            StateChange::empty(),
+            EventLogIndex::empty(),
+            BTreeMap::from([(1, (StateChange::empty(), NumberChannelsDiff::new()))]),
+        );
+        let error = index
+            .validate_exact_projection()
+            .expect_err("mismatched effect keys must fail");
+        assert!(error.to_string().contains("effect indices do not match"));
+    }
+
+    #[test]
+    fn exact_projection_requires_one_effect_identity_per_deploy() {
+        let index = exact_index(
+            &[(1, 1), (2, 1)],
+            BTreeSet::from([0]),
+            StateChange::empty(),
+            EventLogIndex::empty(),
+            BTreeMap::from([(0, (StateChange::empty(), NumberChannelsDiff::new()))]),
+        );
+        let error = index
+            .validate_exact_projection()
+            .expect_err("effect cardinality mismatch must fail");
+        assert!(error
+            .to_string()
+            .contains("exactly one effect identity per deploy"));
+    }
+
+    #[test]
+    fn exact_projection_requires_ordinary_effect_coherence() {
+        let channel = Blake2b256Hash::from_bytes(vec![1; 32]);
+        let change = StateChange::from_parts(
+            HashMap::from([(channel, ChannelChange {
+                added: vec![vec![1]],
+                removed: Vec::new(),
+            })]),
+            HashMap::new(),
+            HashMap::new(),
+        );
+        let index = exact_index(
+            &[(1, 1)],
+            BTreeSet::from([0]),
+            StateChange::empty(),
+            EventLogIndex::empty(),
+            BTreeMap::from([(0, (change, NumberChannelsDiff::new()))]),
+        );
+        let error = index
+            .validate_exact_projection()
+            .expect_err("ordinary projection mismatch must fail");
+        assert!(error.to_string().contains("ordinary projection"));
+    }
+
+    #[test]
+    fn exact_projection_requires_typed_mergeable_contribution() {
+        let channel = Blake2b256Hash::from_bytes(vec![2; 32]);
+        let change = StateChange::from_parts(
+            HashMap::from([(channel.clone(), ChannelChange {
+                added: vec![vec![2]],
+                removed: Vec::new(),
+            })]),
+            HashMap::new(),
+            HashMap::new(),
+        );
+        let mut event_log = EventLogIndex::empty();
+        event_log
+            .number_channels_data
+            .insert(channel, (1, MergeType::IntegerAdd));
+        let index = exact_index(
+            &[(1, 1)],
+            BTreeSet::from([0]),
+            change.clone(),
+            event_log,
+            BTreeMap::from([(0, (change, NumberChannelsDiff::new()))]),
+        );
+        let error = index
+            .validate_exact_projection()
+            .expect_err("untyped mergeable effect must fail");
+        assert!(error.to_string().contains("without a typed contribution"));
+    }
+
+    #[test]
+    fn exact_projection_requires_mergeable_aggregate_coherence() {
+        let channel = Blake2b256Hash::from_bytes(vec![3; 32]);
+        let mut event_log = EventLogIndex::empty();
+        event_log
+            .number_channels_data
+            .insert(channel.clone(), (1, MergeType::IntegerAdd));
+        let exact_diff = NumberChannelsDiff::from([(channel, (2, MergeType::IntegerAdd))]);
+        let index = exact_index(
+            &[(1, 1)],
+            BTreeSet::from([0]),
+            StateChange::empty(),
+            event_log,
+            BTreeMap::from([(0, (StateChange::empty(), exact_diff))]),
+        );
+        let error = index
+            .validate_exact_projection()
+            .expect_err("mergeable aggregate mismatch must fail");
+        assert!(error.to_string().contains("mergeable projection"));
+    }
+
+    #[test]
+    fn exact_projection_accepts_effect_without_mergeable_touch() {
+        let index = exact_index(
+            &[(1, 1)],
+            BTreeSet::from([0]),
+            StateChange::empty(),
+            EventLogIndex::empty(),
+            BTreeMap::from([(0, (StateChange::empty(), NumberChannelsDiff::new()))]),
+        );
+        index
+            .validate_exact_projection()
+            .expect("non-mergeable effect projection");
+    }
+
+    #[test]
+    fn exact_projection_combines_all_effect_contributions() {
+        let channel = Blake2b256Hash::from_bytes(vec![4; 32]);
+        let mut event_log = EventLogIndex::empty();
+        event_log
+            .number_channels_data
+            .insert(channel.clone(), (3, MergeType::IntegerAdd));
+        let index = exact_index(
+            &[(1, 1), (2, 1)],
+            BTreeSet::from([0, 1]),
+            StateChange::empty(),
+            event_log,
+            BTreeMap::from([
+                (
+                    0,
+                    (
+                        StateChange::empty(),
+                        NumberChannelsDiff::from([(channel.clone(), (1, MergeType::IntegerAdd))]),
+                    ),
+                ),
+                (
+                    1,
+                    (
+                        StateChange::empty(),
+                        NumberChannelsDiff::from([(channel, (2, MergeType::IntegerAdd))]),
+                    ),
+                ),
+            ]),
+        );
+        index
+            .validate_exact_projection()
+            .expect("complete effect projection");
     }
 
     #[test]

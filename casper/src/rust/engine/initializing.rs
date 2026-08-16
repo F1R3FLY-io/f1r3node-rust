@@ -23,7 +23,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, BlockMessage, CasperMessage, MergeableEntryRequest, MergeableEntryResponse,
-    StoreItemsMessage, StoreItemsMessageRequest,
+    ProcessedSystemDeploy, StoreItemsMessage, StoreItemsMessageRequest, SystemDeployData,
 };
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
@@ -1009,10 +1009,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             PrettyPrinter::build_string_bytes(block_hash)
         );
 
-        let deploys = proto_util::deploys(block);
-        let system_deploys = proto_util::system_deploys(block);
-        let block_data = rholang::rust::interpreter::system_processes::BlockData::from_block(block);
-
         // Genesis starts from empty state
         let pre_state_hash = RuntimeManager::empty_state_hash_fixed();
 
@@ -1021,22 +1017,10 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // outer Mutex / lock acquisition is required.
         let result = self
             .runtime_manager
-            .replay_compute_state(
+            .replay_block_from_consensus_data(
                 &pre_state_hash,
-                deploys,
-                system_deploys,
-                &block_data,
+                block,
                 None, // No invalid blocks for genesis
-                true, // isGenesis = true
-                // Task #13a: pass the engine's shard-conf strict flag. Genesis
-                // replays with cost-accounting OFF, so the value is inert here,
-                // but threading the real shard constant keeps the call uniform.
-                self.casper_shard_conf.strict_funding_enforcement,
-                // Task #13b: genesis (block 0) runs no close post_eval and the
-                // client credit is gated on `block_number == 1`, so the list is
-                // inert here. Pass empty (the block-1 credit lands in
-                // `replay_single_block`, which threads the real allocations).
-                &[],
             )
             .await;
 
@@ -1085,20 +1069,30 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             block.body.state.pre_state_hash.clone()
         };
 
-        let deploys = proto_util::deploys(block);
-        let system_deploys = proto_util::system_deploys(block);
-        let block_data = rholang::rust::interpreter::system_processes::BlockData::from_block(block);
-        let is_genesis = parents.is_empty();
-
         // Get invalid blocks map for replay
         let dag = self.block_dag_storage.get_representation()?;
-        let invalid_blocks_map = dag.invalid_blocks_map()?;
+        let slashed_hashes = block
+            .body
+            .system_deploys
+            .iter()
+            .filter_map(|deploy| match deploy {
+                ProcessedSystemDeploy::Succeeded {
+                    system_deploy:
+                        SystemDeployData::Slash {
+                            invalid_block_hash, ..
+                        },
+                    ..
+                } => Some(invalid_block_hash.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let invalid_blocks_map = proto_util::slashed_block_senders(&dag, &slashed_hashes)?;
 
         tracing::debug!(
             "Replaying block #{} ({}) with {} deploys, {} parents",
             block_number,
             PrettyPrinter::build_string_bytes(block_hash),
-            deploys.len(),
+            block.body.deploys.len(),
             parents.len()
         );
 
@@ -1107,30 +1101,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // outer Mutex / lock acquisition is required.
         let result = self
             .runtime_manager
-            .replay_compute_state(
-                &pre_state_hash,
-                deploys,
-                system_deploys,
-                &block_data,
-                Some(invalid_blocks_map),
-                is_genesis,
-                // Task #13a: historical-block replay (rebuilding the mergeable
-                // cache) uses the engine's shard-conf strict flag — the SAME
-                // shard constant the block was validated under, so the
-                // recompute is deterministic.
-                self.casper_shard_conf.strict_funding_enforcement,
-                // Task #13b: historical NON-genesis replay (this path includes
-                // block 1) MUST thread the SAME client funding-slot allocations
-                // the block was validated/created under, lowered to raw pk bytes,
-                // so the reconstructed block-1 close re-seeds each `Σ⟦c⟧`
-                // byte-identically. Empty on default shards.
-                &self
-                    .casper_shard_conf
-                    .client_fuel_allocations
-                    .iter()
-                    .map(|(pk, amount)| (pk.bytes.to_vec(), *amount))
-                    .collect::<Vec<(Vec<u8>, i64)>>(),
-            )
+            .replay_block_from_consensus_data(&pre_state_hash, block, Some(invalid_blocks_map))
             .await;
 
         // A replay failure or state mismatch means the mergeable channel
@@ -1203,6 +1174,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             self.heartbeat_signal_ref.clone(),
         )
         .await?;
+        let adopted_casper_shard_conf = casper.casper_shard_conf().clone();
 
         tracing::info!(
             "create_casper_and_transition_to_running: MultiParentCasper instance created"
@@ -1240,7 +1212,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 engine_cell: self.engine_cell.clone(),
                 runtime_manager: self.runtime_manager.clone(),
                 estimator: recovery_estimator,
-                casper_shard_conf: self.casper_shard_conf.clone(),
+                casper_shard_conf: adopted_casper_shard_conf,
                 heartbeat_signal_ref: self.heartbeat_signal_ref.clone(),
             }),
             &self.engine_cell,

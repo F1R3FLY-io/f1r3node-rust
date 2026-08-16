@@ -259,6 +259,8 @@ impl RholangMergingLogic {
         let par_with_rnd = ListParWithRandom {
             pars: vec![num_par],
             random_state: rnd.to_bytes(),
+            cost_authority: None,
+            cost_stack: None,
         };
 
         // Create hash of the data
@@ -344,6 +346,8 @@ mod tests {
         let lpwr = ListParWithRandom {
             pars: vec![RhoNumber::create_par(n)],
             random_state: vec![0u8; 32],
+            cost_authority: None,
+            cost_stack: None,
         };
         Datum::create(&"chan".to_string(), lpwr, false)
     }
@@ -353,6 +357,8 @@ mod tests {
         let lpwr = ListParWithRandom {
             pars: vec![RhoNumber::create_par(1), RhoNumber::create_par(2)],
             random_state: vec![0u8; 32],
+            cost_authority: None,
+            cost_stack: None,
         };
         Datum::create(&"chan".to_string(), lpwr, false)
     }

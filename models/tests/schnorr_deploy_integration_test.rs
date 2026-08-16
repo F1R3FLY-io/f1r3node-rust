@@ -13,6 +13,7 @@ fn sample_deploy() -> DeployData {
         valid_after_block_number: 1,
         shard_id: "root".to_string(),
         expiration_timestamp: Some(1_773_865_060_000),
+        authority_presentations: Vec::new(),
     }
 }
 

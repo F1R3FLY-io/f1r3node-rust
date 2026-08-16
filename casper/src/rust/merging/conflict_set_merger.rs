@@ -9,9 +9,7 @@ use rspace_plus_plus::rspace::errors::HistoryError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hot_store_trie_action::HotStoreTrieAction;
 use rspace_plus_plus::rspace::internal::Datum;
-use rspace_plus_plus::rspace::merger::merging_logic::{
-    combine_mergeable_value, MergeType, NumberChannelsDiff,
-};
+use rspace_plus_plus::rspace::merger::merging_logic::{MergeType, NumberChannelsDiff};
 use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use shared::rust::hashable_set::HashableSet;
 use tracing::{debug, info};
@@ -142,15 +140,25 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     // Split the actual_set into branches without cross dependencies
     let (rejected_as_dependents, merge_set): (HashableSet<R>, HashableSet<R>) = {
         let mut rejected = HashableSet(HashSet::new());
-        let mut to_merge = HashableSet(HashSet::new());
-
-        for item in &actual_set {
-            if late_set.iter().any(|late_item| depends(item, late_item)) {
-                rejected.0.insert(item.clone());
-            } else {
-                to_merge.0.insert(item.clone());
+        loop {
+            let rejected_before = rejected.0.len();
+            for item in &actual_set {
+                if rejected.0.contains(item) {
+                    continue;
+                }
+                if late_set
+                    .iter()
+                    .chain(rejected.0.iter())
+                    .any(|rejected_source| depends(item, rejected_source))
+                {
+                    rejected.0.insert(item.clone());
+                }
+            }
+            if rejected.0.len() == rejected_before {
+                break;
             }
         }
+        let to_merge = HashableSet(actual_set.difference(&rejected.0).cloned().collect());
 
         (rejected, to_merge)
     };
@@ -521,12 +529,6 @@ where
         conts = combined_conts_count,
         joins = combined_joins_count);
 
-    // Combine all mergeable channels (in sorted order). Per-channel `MergeType`
-    // determines how diffs combine: integer-add uses wrapping addition; bitmask-OR
-    // uses bitwise OR through u64. Branches must agree on merge_type for a given
-    // channel; disagreement yields a tagged error so callers reject the merge
-    // rather than crashing the validator.
-    let mut all_mergeable_channels = NumberChannelsDiff::new();
     let mergeable_contributions = if exact_mode {
         unique_exact_effects
             .values()
@@ -538,36 +540,29 @@ where
             .map(|item| mergeable_channels(item))
             .collect::<Vec<_>>()
     };
-    for item_channels in mergeable_contributions {
-        for (key, value) in item_channels.iter() {
-            let (incoming_diff, incoming_mt) = *value;
-            match all_mergeable_channels.get_mut(key) {
-                Some(existing) => {
-                    if existing.1 != incoming_mt {
-                        return Err(HistoryError::MergeError(format!(
-                            "MergeType mismatch on channel {:?}: {:?} vs {:?}",
-                            key, existing.1, incoming_mt,
-                        )));
-                    }
-                    existing.0 =
-                        match combine_mergeable_value(existing.0, incoming_diff, incoming_mt) {
-                            Some(v) => v,
-                            // Survivors already passed the per-branch overflow gate, so
-                            // this should be unreachable; error rather than write a
-                            // wrapped value if it ever is.
-                            None => {
-                                return Err(HistoryError::MergeError(format!(
-                                    "IntegerAdd overflow combining mergeable channel {:?}",
-                                    key,
-                                )))
-                            }
-                        };
-                }
-                None => {
-                    all_mergeable_channels.insert(key.clone(), (incoming_diff, incoming_mt));
-                }
-            }
-        }
+    let (integer_diffs, bitmap_diffs) = aggregate_mergeable_contributions(mergeable_contributions)
+        .ok_or_else(|| {
+            HistoryError::MergeError(
+                "mergeable channel contributions disagree on type or exceed i128".to_string(),
+            )
+        })?;
+    let mut all_mergeable_channels = NumberChannelsDiff::new();
+    for (channel, diff) in integer_diffs {
+        all_mergeable_channels.insert(
+            channel.clone(),
+            (
+                i64::try_from(diff).map_err(|_| {
+                    HistoryError::MergeError(format!(
+                        "IntegerAdd total exceeds i64 on mergeable channel {:?}",
+                        channel
+                    ))
+                })?,
+                MergeType::IntegerAdd,
+            ),
+        );
+    }
+    for (channel, diff) in bitmap_diffs {
+        all_mergeable_channels.insert(channel, (diff as i64, MergeType::BitmaskOr));
     }
 
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
@@ -810,89 +805,70 @@ fn cal_merged_result<R: Clone + Eq + std::hash::Hash>(
         n_branch_items = branch.0.len(),
         n_origin_channels = origin_result.len());
 
-    // Combine all channel diffs from the branch using per-channel merge strategy.
-    // IntegerAdd overflow HERE means the branch's per-channel diffs sum out of
-    // i64 range: reject the branch (fail loudly, return None) rather than fold a
-    // silently-wrapped value that could then pass the apply-time
-    // `checked_add >= 0` gate below with a wrong result (the overflow-launder;
-    // see IntegerAdd.v). BitmaskOr never overflows.
-    let mut diff = NumberChannelsDiff::new();
-    for r in branch.0.iter() {
-        for (k, v) in mergeable_channels(r) {
+    cal_merged_result_for_items(branch.0.iter(), origin_result, mergeable_channels)
+}
+
+fn cal_merged_result_for_items<'a, R: 'a>(
+    items: impl IntoIterator<Item = &'a R>,
+    origin_result: HashMap<Blake2b256Hash, i64>,
+    mergeable_channels: impl Fn(&R) -> NumberChannelsDiff,
+) -> Option<HashMap<Blake2b256Hash, i64>> {
+    let (integer_diffs, bitmap_diffs) =
+        aggregate_mergeable_contributions(items.into_iter().map(mergeable_channels))?;
+
+    let mut out = origin_result;
+    for (channel, diff) in integer_diffs {
+        let current = i128::from(*out.get(&channel).unwrap_or(&0));
+        let result = current.checked_add(diff)?;
+        if !(0..=i128::from(i64::MAX)).contains(&result) {
+            return None;
+        }
+        out.insert(channel, i64::try_from(result).ok()?);
+    }
+    for (channel, diff) in bitmap_diffs {
+        let current = *out.get(&channel).unwrap_or(&0) as u64;
+        out.insert(channel, (current | diff) as i64);
+    }
+
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        tracing::debug!(target: "f1r3fly.merge.step", step = "cal_merged_result.EXIT",
+            accepted = true,
+            n_result_channels = out.len());
+    }
+
+    Some(out)
+}
+
+fn aggregate_mergeable_contributions(
+    contributions: impl IntoIterator<Item = NumberChannelsDiff>,
+) -> Option<(
+    BTreeMap<Blake2b256Hash, i128>,
+    BTreeMap<Blake2b256Hash, u64>,
+)> {
+    let mut integer_diffs = BTreeMap::<Blake2b256Hash, i128>::new();
+    let mut bitmap_diffs = BTreeMap::<Blake2b256Hash, u64>::new();
+    for contribution in contributions {
+        for (k, v) in contribution {
             let (incoming_diff, incoming_mt) = v;
-            match diff.get_mut(&k) {
-                Some(existing) => {
-                    match combine_mergeable_value(existing.0, incoming_diff, incoming_mt) {
-                        Some(combined) => existing.0 = combined,
-                        None => {
-                            tracing::debug!(target: "f1r3fly.merge.step",
-                                step = "cal_merged_result.COMBINE_OVERFLOW",
-                                channel = %hex::encode(k.clone().bytes()),
-                                existing = existing.0,
-                                incoming = incoming_diff);
-                            return None;
-                        }
+            match incoming_mt {
+                MergeType::IntegerAdd => {
+                    if bitmap_diffs.contains_key(&k) {
+                        return None;
                     }
+                    let total = integer_diffs.entry(k).or_default();
+                    *total = total.checked_add(i128::from(incoming_diff))?;
                 }
-                None => {
-                    diff.insert(k, (incoming_diff, incoming_mt));
+                MergeType::BitmaskOr => {
+                    if integer_diffs.contains_key(&k) {
+                        return None;
+                    }
+                    let total = bitmap_diffs.entry(k).or_default();
+                    *total |= incoming_diff as u64;
                 }
             }
         }
     }
-
-    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
-        let diff_channels: Vec<(String, i64)> = diff
-            .iter()
-            .map(|(k, v)| (hex::encode(k.clone().bytes()), v.0))
-            .collect();
-        tracing::debug!(target: "f1r3fly.merge.step", step = "cal_merged_result.diff",
-            n_channels = diff.len(),
-            channels = ?diff_channels);
-    }
-
-    // Start with Some(origin_result) and fold over the diffs
-    let out = diff
-        .iter()
-        .fold(Some(origin_result), |ba_opt, (channel, value)| {
-            ba_opt.and_then(|mut ba| {
-                let (diff_val, merge_type) = *value;
-                let current = *ba.get(channel).unwrap_or(&0);
-                match merge_type {
-                    MergeType::IntegerAdd => {
-                        // Vault balance: overflow or negative result rejects the branch
-                        match current.checked_add(diff_val) {
-                            Some(result) if result >= 0 => {
-                                ba.insert(channel.clone(), result);
-                                Some(ba)
-                            }
-                            _ => {
-                                tracing::debug!(target: "f1r3fly.merge.step",
-                                    step = "cal_merged_result.REJECT",
-                                    channel = %hex::encode(channel.clone().bytes()),
-                                    current = current,
-                                    diff = diff_val);
-                                None
-                            }
-                        }
-                    }
-                    MergeType::BitmaskOr => {
-                        // Bitmap: OR the new bits in; no overflow concern
-                        let result = ((current as u64) | (diff_val as u64)) as i64;
-                        ba.insert(channel.clone(), result);
-                        Some(ba)
-                    }
-                }
-            })
-        });
-
-    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
-        tracing::debug!(target: "f1r3fly.merge.step", step = "cal_merged_result.EXIT",
-            accepted = out.is_some(),
-            n_result_channels = out.as_ref().map(|m| m.len()).unwrap_or(0));
-    }
-
-    out
+    Some((integer_diffs, bitmap_diffs))
 }
 
 /// Evaluate branches and return the set of branches that should be rejected.
@@ -905,6 +881,15 @@ fn fold_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
     tracing::debug!(target: "f1r3fly.merge.step", step = "fold_rejection.ENTER",
         n_branches = branches.0.len(),
         n_base_channels = base_balance.len());
+
+    let aggregate = cal_merged_result_for_items(
+        branches.0.iter().flat_map(|branch| branch.0.iter()),
+        base_balance.clone(),
+        &mergeable_channels,
+    );
+    if aggregate.is_some() {
+        return HashableSet(HashSet::new());
+    }
 
     // Sort branches to ensure deterministic processing order
     let mut sorted_branches: Vec<&Branch<R>> = branches.0.iter().collect();
@@ -1023,6 +1008,8 @@ fn get_merged_result_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
 mod tests {
     use std::collections::{BTreeMap, HashSet};
 
+    use proptest::prelude::*;
+
     use super::*;
 
     fn branch(items: &[i32]) -> Branch<i32> {
@@ -1077,6 +1064,46 @@ mod tests {
         }
     }
 
+    fn resolve_linear_late_dependency(depth: i32) -> ResolvedConflicts<i32> {
+        let actual_seq = (1..=depth).chain(std::iter::once(depth + 2)).collect();
+        resolve_conflicts(
+            actual_seq,
+            vec![0],
+            &|target, source| *target == *source + 1,
+            &|_| 1,
+            &|_| NumberChannelsDiff::new(),
+            &|_| Ok(Vec::new()),
+            &|merge_set| {
+                HashableSet(
+                    merge_set
+                        .0
+                        .iter()
+                        .map(|item| HashableSet(HashSet::from([*item])))
+                        .collect(),
+                )
+            },
+            &|branches| {
+                Ok(branches
+                    .0
+                    .iter()
+                    .map(|branch| (branch.clone(), HashableSet(HashSet::new())))
+                    .collect())
+            },
+        )
+        .expect("linear dependency resolution")
+    }
+
+    #[test]
+    fn late_dependency_rejection_is_transitively_closed() {
+        let resolved = resolve_linear_late_dependency(3);
+
+        for rejected in 0..=3 {
+            assert!(resolved.rejected.0.contains(&rejected));
+        }
+        assert_eq!(resolved.rejected_as_dependents_count, 3);
+        assert!(resolved.to_merge.iter().any(|branch| branch.0.contains(&5)));
+    }
+
     #[test]
     fn merge_rejects_negative_channel_balance() {
         let actual_seq = vec![1, 2];
@@ -1089,8 +1116,8 @@ mod tests {
             |_r: &i32| -> Result<StateChange, HistoryError> { Ok(StateChange::empty()) };
         let mergeable_channels = |r: &i32| -> NumberChannelsDiff {
             let mut diff = BTreeMap::new();
-            // item 1 decrements channel, item 2 increments channel
-            let delta = if *r == 1 { -1 } else { 1 };
+            // The aggregate change is negative regardless of iteration order.
+            let delta = if *r == 1 { -2 } else { 1 };
             diff.insert(base_channel.clone(), (delta, MergeType::IntegerAdd));
             diff
         };
@@ -1161,9 +1188,8 @@ mod tests {
 
     // ---- IntegerAdd overflow-launder regression (Phase 6 W3/W4) --------------
     // Two chains in the SAME branch contribute IntegerAdd diffs to one channel
-    // whose sum overflows i64. The intra-branch combine must REJECT the branch
-    // (return None) — "fail loudly" — rather than wrap the value and let it pass
-    // the apply-time checked_add >= 0 gate with a wrong result (the launder).
+    // whose mathematical sum lies outside i64. The widened intra-branch sum
+    // must reject it rather than wrap it into an apparently valid value.
 
     #[test]
     fn cal_merged_result_rejects_integer_add_overflow_launder() {
@@ -1185,11 +1211,8 @@ mod tests {
     #[test]
     fn cal_merged_result_rejects_integer_add_true_launder_wraps_nonnegative() {
         // A DISCRIMINATING launder witness: three IntegerAdd diffs whose sum is 2^64,
-        // which wraps to 0 — a NON-NEGATIVE value that would sail through the apply-time
-        // `checked_add >= 0` gate if the combine used wrapping. Only the checked_add in
-        // the combine fold (which overflows on MAX + MAX) rejects it. Contrast the
-        // [MAX, 1] case above, whose wrap to i64::MIN is caught by the `>= 0` gate anyway
-        // and so does NOT isolate the overflow check.
+        // which wraps to 0 — a NON-NEGATIVE value that would sail through a
+        // wrapped i64 implementation. The widened mathematical sum rejects it.
         let ch = Blake2b256Hash::from_bytes(vec![7u8; 32]);
         let br = branch(&[1, 2, 3]); // three chains in ONE branch
         let mergeable = |r: &i32| {
@@ -1205,9 +1228,96 @@ mod tests {
         assert_eq!(
             cal_merged_result(&br, HashMap::new(), mergeable),
             None,
-            "a sum that wraps to a NON-NEGATIVE value must still be rejected by checked_add \
-             in the combine (the >= 0 gate alone would not catch it)"
+            "a sum that wraps to a non-negative value must still be rejected"
         );
+    }
+
+    #[test]
+    fn cal_merged_result_accepts_widened_cancellation_without_prefix_overflow() {
+        let ch = Blake2b256Hash::from_bytes(vec![8u8; 32]);
+        let br = branch(&[1, 2, 3]);
+        let mergeable = |r: &i32| {
+            let mut d = NumberChannelsDiff::new();
+            let v = match *r {
+                1 => i64::MAX - 1,
+                2 => 1,
+                _ => -1,
+            };
+            d.insert(ch.clone(), (v, MergeType::IntegerAdd));
+            d
+        };
+        assert_eq!(
+            cal_merged_result(&br, HashMap::from([(ch.clone(), 1)]), mergeable),
+            Some(HashMap::from([(ch, i64::MAX)]))
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        #[test]
+        fn late_dependency_rejection_closes_over_arbitrary_chain_depth(depth in 1i32..64) {
+            let resolved = resolve_linear_late_dependency(depth);
+
+            for rejected in 0..=depth {
+                prop_assert!(resolved.rejected.0.contains(&rejected));
+            }
+            prop_assert_eq!(resolved.rejected_as_dependents_count, depth as usize);
+            prop_assert!(resolved
+                .to_merge
+                .iter()
+                .any(|branch| branch.0.contains(&(depth + 2))));
+        }
+
+        #[test]
+        fn integer_merge_acceptance_and_result_are_permutation_invariant(
+            base in 0i64..=i64::MAX,
+            diffs in proptest::collection::vec(any::<i64>(), 0..64),
+        ) {
+            let channel = Blake2b256Hash::from_bytes(vec![12u8; 32]);
+            let contribution = |diff: &i64| {
+                BTreeMap::from([(channel.clone(), (*diff, MergeType::IntegerAdd))])
+            };
+            let initial = HashMap::from([(channel.clone(), base)]);
+            let forward = cal_merged_result_for_items(
+                diffs.iter(),
+                initial.clone(),
+                contribution,
+            );
+            let reverse = cal_merged_result_for_items(
+                diffs.iter().rev(),
+                initial,
+                contribution,
+            );
+            let mathematical = i128::from(base)
+                + diffs.iter().map(|diff| i128::from(*diff)).sum::<i128>();
+            let expected = if (0..=i128::from(i64::MAX)).contains(&mathematical) {
+                Some(HashMap::from([(
+                    channel,
+                    i64::try_from(mathematical).unwrap(),
+                )]))
+            } else {
+                None
+            };
+
+            prop_assert_eq!(&forward, &reverse);
+            prop_assert_eq!(forward, expected);
+        }
+    }
+
+    #[test]
+    fn fold_rejection_accepts_a_valid_total_despite_an_invalid_canonical_prefix() {
+        let ch = Blake2b256Hash::from_bytes(vec![9u8; 32]);
+        let branches = HashableSet(HashSet::from([branch(&[1]), branch(&[2])]));
+        let rejected = fold_rejection(HashMap::new(), &branches, |r: &i32| {
+            let mut d = NumberChannelsDiff::new();
+            d.insert(
+                ch.clone(),
+                (if *r == 1 { -5 } else { 10 }, MergeType::IntegerAdd),
+            );
+            d
+        });
+        assert!(rejected.0.is_empty());
     }
 
     #[test]
@@ -1243,19 +1353,18 @@ mod tests {
 
     // ---- IntegerAdd overflow-launder regression (Phase 6 W3/W4) --------------
     // Two chains in the SAME branch contribute IntegerAdd diffs to one channel
-    // whose sum overflows i64. The intra-branch combine must REJECT the branch
-    // (return None) — "fail loudly" — rather than wrap the value and let it pass
-    // the apply-time checked_add >= 0 gate with a wrong result (the launder).
+    // whose mathematical sum overflows i64. The widened sum must reject it.
 
     fn datum_state_change(channel: &[u8], added: &[&[u8]], removed: &[&[u8]]) -> StateChange {
         use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
-        let sc = StateChange::empty();
-        sc.datums_changes
-            .insert(Blake2b256Hash(channel.to_vec()), ChannelChange {
+        StateChange::from_parts(
+            HashMap::from([(Blake2b256Hash(channel.to_vec()), ChannelChange {
                 added: added.iter().map(|d| d.to_vec()).collect(),
                 removed: removed.iter().map(|d| d.to_vec()).collect(),
-            });
-        sc
+            })]),
+            HashMap::new(),
+            HashMap::new(),
+        )
     }
 
     fn resolved_without_rejections(items: &[i32]) -> ResolvedConflicts<i32> {
@@ -1273,6 +1382,40 @@ mod tests {
             conflicts_map_time: Duration::ZERO,
             rejection_options_time: Duration::ZERO,
         }
+    }
+
+    #[test]
+    fn compute_merged_state_uses_the_same_widened_sum_as_rejection() {
+        use std::sync::{Arc, Mutex};
+
+        let channel = Blake2b256Hash::from_bytes(vec![11u8; 32]);
+        let captured = Arc::new(Mutex::new(None));
+        let capture = Arc::clone(&captured);
+        let result = compute_merged_state(
+            &resolved_without_rejections(&[1, 2, 3]),
+            &|_| Ok(StateChange::empty()),
+            &|_| false,
+            &|_| Vec::new(),
+            &|item| {
+                let diff = match *item {
+                    1 => i64::MAX,
+                    2 => 1,
+                    _ => -1,
+                };
+                BTreeMap::from([(channel.clone(), (diff, MergeType::IntegerAdd))])
+            },
+            &move |_, mergeable| {
+                *capture.lock().unwrap() = Some(mergeable);
+                Ok(Vec::<HotStoreTrieAction<i32, i32, i32, i32>>::new())
+            },
+            &|_| Ok(Blake2b256Hash(vec![9; 32])),
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(
+            captured.lock().unwrap().as_ref().unwrap().get(&channel),
+            Some(&(i64::MAX, MergeType::IntegerAdd))
+        );
     }
 
     #[test]
@@ -1317,7 +1460,6 @@ mod tests {
             .get(&channel)
             .unwrap();
         assert_eq!(change.added, vec![b"x".to_vec()]);
-        drop(change);
         drop(captured);
 
         let captured_distinct = Arc::new(Mutex::new(None));
@@ -1352,7 +1494,6 @@ mod tests {
             .get(&channel)
             .unwrap();
         assert_eq!(distinct_change.added, vec![b"x".to_vec(), b"x".to_vec()]);
-        drop(distinct_change);
         drop(captured_distinct);
 
         let mismatch = compute_merged_state(

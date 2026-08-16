@@ -442,6 +442,19 @@ impl RejectedDeployReason {
         }
     }
 
+    pub fn canonical_join(self, other: Self) -> Self {
+        use RejectedDeployReason::{
+            CollateralChainDrop, DuplicateOccurrence, MergeConflict, Unspecified,
+        };
+
+        match (self, other) {
+            (DuplicateOccurrence, _) | (_, DuplicateOccurrence) => DuplicateOccurrence,
+            (MergeConflict, _) | (_, MergeConflict) => MergeConflict,
+            (CollateralChainDrop, _) | (_, CollateralChainDrop) => CollateralChainDrop,
+            (Unspecified, Unspecified) => Unspecified,
+        }
+    }
+
     fn from_proto(value: i32) -> Self {
         match RejectedDeployReasonProto::try_from(value)
             .unwrap_or(RejectedDeployReasonProto::RejectedDeployReasonUnspecified)
@@ -669,13 +682,45 @@ pub struct ProcessedDeploy {
     pub cosigner_threshold: i32,
     pub pre_state_hash: ByteString,
     pub post_state_hash: ByteString,
+    pub authority_funding_certificate: Option<CostAuthorityFundingCertificateProto>,
+    pub authority_cost_witness: Option<CostAuthorityWitnessProto>,
+    pub admission_status: DeployAdmissionStatus,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DeployAdmissionStatus {
+    #[default]
+    Executed,
+    Rejected,
+}
+
+impl DeployAdmissionStatus {
+    fn from_proto(value: i32) -> Self {
+        match DeployAdmissionStatusProto::try_from(value)
+            .unwrap_or(DeployAdmissionStatusProto::DeployAdmissionStatusExecuted)
+        {
+            DeployAdmissionStatusProto::DeployAdmissionStatusExecuted => Self::Executed,
+            DeployAdmissionStatusProto::DeployAdmissionStatusRejected => Self::Rejected,
+        }
+    }
+
+    fn to_proto(self) -> i32 {
+        match self {
+            Self::Executed => DeployAdmissionStatusProto::DeployAdmissionStatusExecuted as i32,
+            Self::Rejected => DeployAdmissionStatusProto::DeployAdmissionStatusRejected as i32,
+        }
+    }
 }
 
 impl ProcessedDeploy {
+    pub const FUNDING_ADMISSION_REJECTION: &'static str =
+        "Cost-accounting funding admission rejected";
+
     // D3 (DR-9): `try_refund_amount`/`refund_amount` are REMOVED — there is no
-    // escrow to refund. The deploy's `cost` is the per-COMM token count, debited
-    // once from the per-signature supply pool Σ⟦s⟧ at block close (no per-deploy
-    // pre-charge/refund settlement).
+    // escrow to refund. The deploy's `cost` is the per-COMM token count. Ordinary
+    // block execution reserves the maximum certified authority before retaining
+    // the transition, then settles the realized cost through canonical
+    // SystemVault custody and prepaid located stacks.
 
     pub fn empty(deploy: Signed<DeployData>) -> Self {
         Self {
@@ -688,6 +733,9 @@ impl ProcessedDeploy {
             cosigner_threshold: 0,
             pre_state_hash: ByteString::new(),
             post_state_hash: ByteString::new(),
+            authority_funding_certificate: None,
+            authority_cost_witness: None,
+            admission_status: DeployAdmissionStatus::Executed,
         }
     }
 
@@ -732,7 +780,29 @@ impl ProcessedDeploy {
             cosigner_threshold: 0,
             pre_state_hash: ByteString::new(),
             post_state_hash: ByteString::new(),
+            authority_funding_certificate: None,
+            authority_cost_witness: None,
+            admission_status: DeployAdmissionStatus::Executed,
         }
+    }
+
+    pub fn admission_rejected(
+        cosigned: &crypto::rust::signatures::signed::Cosigned<DeployData>,
+        pre_state_hash: ByteString,
+    ) -> Self {
+        let mut rejected = Self::empty_from_cosigned(cosigned);
+        rejected.cosigner_threshold =
+            i32::try_from(cosigned.cosigner_threshold()).unwrap_or(i32::MAX);
+        rejected.is_failed = true;
+        rejected.system_deploy_error = Some(Self::FUNDING_ADMISSION_REJECTION.to_string());
+        rejected.pre_state_hash = pre_state_hash.clone();
+        rejected.post_state_hash = pre_state_hash;
+        rejected.admission_status = DeployAdmissionStatus::Rejected;
+        rejected
+    }
+
+    pub fn is_admission_rejected(&self) -> bool {
+        self.admission_status == DeployAdmissionStatus::Rejected
     }
 
     /// Reconstitute the [`Cosigned<DeployData>`] envelope from on-disk
@@ -842,6 +912,9 @@ impl ProcessedDeploy {
             cosigner_threshold,
             pre_state_hash: proto.pre_state_hash,
             post_state_hash: proto.post_state_hash,
+            authority_funding_certificate: proto.authority_funding_certificate,
+            authority_cost_witness: proto.authority_cost_witness,
+            admission_status: DeployAdmissionStatus::from_proto(proto.admission_status),
         })
     }
 
@@ -860,6 +933,9 @@ impl ProcessedDeploy {
             system_deploy_error: self.system_deploy_error.unwrap_or_default(),
             pre_state_hash: self.pre_state_hash,
             post_state_hash: self.post_state_hash,
+            authority_funding_certificate: self.authority_funding_certificate,
+            authority_cost_witness: self.authority_cost_witness,
+            admission_status: self.admission_status.to_proto(),
         }
     }
 }
@@ -1153,6 +1229,8 @@ pub struct DeployData {
     pub shard_id: String,
     /// Optional millisecond timestamp after which deploy is invalid (None = no expiration)
     pub expiration_timestamp: Option<i64>,
+    #[serde(default, rename = "authorityPresentations")]
+    pub authority_presentations: Vec<crate::rhoapi::CostSignature>,
 }
 
 impl ToMessage for DeployData {
@@ -1170,6 +1248,11 @@ struct AlgebraAtom {
     sig_algorithm: String,
 }
 
+struct FundingAlgebraAnalysis {
+    min_required: u32,
+    all_required: bool,
+}
+
 impl AlgebraAtom {
     fn from_proto(atom: &crate::casper::SigAtom) -> Self {
         Self {
@@ -1184,10 +1267,10 @@ impl DeployData {
     // D3 (DR-9): the singular-phlo escrow/price arithmetic
     // (`checked_total_phlo_charge[_value]`, `total_phlo_charge`,
     // `refund_amount_for_token_cost[_value]`, `validate_phlo`) is REMOVED. A
-    // deploy's cost is the per-COMM token count (computed by the runtime); it
-    // is funded by the per-signature supply pool Σ⟦s⟧ and gated at block
-    // assembly (`casper/.../util/rholang/acceptance.rs`). There is no per-deploy
-    // budget cap and no refund settlement.
+    // deploy's cost is the per-COMM token count (computed by the runtime); it is
+    // funded by canonical SystemVault custody and prepaid located stacks and is
+    // gated at block assembly (`casper/.../util/rholang/acceptance.rs`). There is
+    // no client-supplied phlo limit or price and no legacy escrow refund.
 
     /// Returns true if this deploy has a time-based expiration set
     pub fn has_expiration(&self) -> bool {
@@ -1208,7 +1291,9 @@ impl DeployData {
     pub fn decode(a: ByteVector) -> Result<DeployData, String> {
         let proto = DeployDataProto::decode(&a[..])
             .map_err(|e| format!("Failed to decode DeployData: {}", e))?;
-        Ok(DeployData::_from_proto(proto))
+        let data = DeployData::_from_proto(proto);
+        data.validate_authority_presentations()?;
+        Ok(data)
     }
 
     fn _from_proto(proto: DeployDataProto) -> Self {
@@ -1223,7 +1308,57 @@ impl DeployData {
             } else {
                 Some(proto.expiration_timestamp)
             },
+            authority_presentations: proto.authority_presentations,
         }
+    }
+
+    fn validate_authority_presentations(&self) -> Result<(), String> {
+        use crate::rhoapi::cost_signature::Value;
+        use crate::rhoapi::CostSignature;
+        use crate::rust::rholang::sorter::cost_accounting_sorter::sort_signature;
+        use crate::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
+        use crate::rust::rholang::sorter::sortable::Sortable;
+
+        fn validate(signature: &CostSignature) -> Result<(), String> {
+            match signature.value.as_ref() {
+                Some(Value::Ground(_)) | Some(Value::Unit(true)) => Ok(()),
+                Some(Value::Quote(par)) | Some(Value::Name(par))
+                    if ParSortMatcher::sort_match(par).term == *par =>
+                {
+                    Ok(())
+                }
+                Some(Value::Compound(compound)) if compound.elements.len() >= 2 => {
+                    compound.elements.iter().try_for_each(validate)
+                }
+                Some(Value::BoundLevel(_)) => {
+                    Err("authority presentation contains an unresolved bound signature".to_string())
+                }
+                Some(Value::Compound(_)) => Err(
+                    "authority presentation contains a malformed compound signature".to_string(),
+                ),
+                Some(Value::Unit(false)) | Some(Value::Quote(_)) | Some(Value::Name(_)) => {
+                    Err("authority presentation contains a non-canonical signature".to_string())
+                }
+                None => Err("authority presentation is missing its signature".to_string()),
+            }
+        }
+
+        let mut previous: Option<Vec<u8>> = None;
+        for signature in &self.authority_presentations {
+            let canonical = sort_signature(signature).term;
+            validate(&canonical)?;
+            if &canonical != signature {
+                return Err("authority presentations must contain canonical signatures".to_string());
+            }
+            let encoded = canonical.encode_to_vec();
+            if previous.as_ref().is_some_and(|prior| prior >= &encoded) {
+                return Err(
+                    "authority presentations must be strictly ordered and unique".to_string(),
+                );
+            }
+            previous = Some(encoded);
+        }
+        Ok(())
     }
 
     /// Primary-signer-only decode. Returns `Signed<DeployData>` constructed
@@ -1242,7 +1377,9 @@ impl DeployData {
 
         let sig = proto.sig.clone();
         let pk = PublicKey::from_bytes(&proto.deployer);
-        let signed = Signed::from_signed_data(DeployData::_from_proto(proto), pk, sig, algorithm)?;
+        let data = DeployData::_from_proto(proto);
+        data.validate_authority_presentations()?;
+        let signed = Signed::from_signed_data(data, pk, sig, algorithm)?;
 
         match signed {
             Some(signed) => Ok(signed),
@@ -1260,13 +1397,29 @@ impl DeployData {
     /// 2. Canonical pk-ascending sort; no duplicates.
     ///
     /// D3 (DR-9): there is no per-signer `phlo_share` and no share-sum
-    /// invariant — fuel is the per-signature supply pool Σ⟦s⟧.
+    /// invariant — authority is resolved from canonical vault custody and
+    /// prepaid located stacks.
     pub fn from_proto_cosigned(
         proto: DeployDataProto,
     ) -> Result<crypto::rust::signatures::signed::Cosigned<DeployData>, String> {
         use crypto::rust::signatures::signed::{Cosigned, Cosigner};
 
-        // Resolve the primary signer's algorithm.
+        if let Some(sig_algebra) = proto.sig_algebra.clone() {
+            let data = DeployData::_from_proto(proto);
+            data.validate_authority_presentations()?;
+            return Self::from_proto_cosigned_with_sig_algebra(data, &sig_algebra);
+        }
+
+        let is_multi_sig = !proto.cosigners.is_empty();
+        let cosigner_threshold = proto.cosigner_threshold;
+        let total_signers = 1 + proto.cosigners.len();
+        if cosigner_threshold < 0 || cosigner_threshold as usize > total_signers {
+            return Err(format!(
+                "Invalid cosigner_threshold {}: must satisfy 0 ≤ threshold ≤ {} (total signers)",
+                cosigner_threshold, total_signers
+            ));
+        }
+
         let primary_alg = SignaturesAlgFactory::apply(&proto.sig_algorithm).ok_or_else(|| {
             format!(
                 "Unknown primary signature algorithm: {}",
@@ -1274,26 +1427,9 @@ impl DeployData {
             )
         })?;
 
-        // Phase 3 dispatch: sig_algebra (LL-rich algebra) OVERRIDES
-        // the flat cosigners[] + cosigner_threshold path. Take it out
-        // of proto upfront so the later _from_proto consumes the rest.
-        let sig_algebra = proto.sig_algebra.clone();
-
-        let is_multi_sig = !proto.cosigners.is_empty();
-        let cosigner_threshold = proto.cosigner_threshold;
-        let total_signers = 1 + proto.cosigners.len() as i32;
-        // Validate threshold range at the wire boundary so we can return
-        // a clear protocol-level error before signer construction.
-        if cosigner_threshold < 0 || cosigner_threshold > total_signers {
-            return Err(format!(
-                "Invalid cosigner_threshold {}: must satisfy 0 ≤ threshold ≤ {} (total signers)",
-                cosigner_threshold, total_signers
-            ));
-        }
-
         // Build the canonical signer list. Primary first (will be sorted
         // canonically by Cosigned::from_signed_data). D3 (DR-9): no per-signer
-        // phlo_share — funding is the per-signature supply pool Σ⟦s⟧.
+        // phlo_share — funding follows the verified authority algebra.
         let mut signers = Vec::with_capacity(1 + proto.cosigners.len());
         signers.push(Cosigner {
             pk: PublicKey::from_bytes(&proto.deployer),
@@ -1316,15 +1452,7 @@ impl DeployData {
         }
 
         let data = DeployData::_from_proto(proto);
-        // Phase 3 dispatch: when sig_algebra is set, the flat cosigners
-        // path is ignored; verification walks the algebra.
-        if let Some(algebra) = sig_algebra {
-            return Self::from_proto_cosigned_with_sig_algebra(data, &algebra);
-        }
-        // Phase 2 dispatch: cosigner_threshold == 0 → N-of-N (Phase 1
-        // semantics; every signer must verify); cosigner_threshold > 0 →
-        // M-of-N (at least `threshold` valid signatures required;
-        // placeholder signers with empty sig are admitted).
+        data.validate_authority_presentations()?;
         if cosigner_threshold == 0 {
             Cosigned::from_signed_data(data, signers).map_err(|e| {
                 format!(
@@ -1343,76 +1471,22 @@ impl DeployData {
         }
     }
 
-    /// Phase 3 LL-rich algebra dispatch. Validates a deploy against
-    /// the given `SigCompound` algebraic expression:
-    ///
-    /// - Tensor(left, right): both branches must verify (recursive).
-    /// - Plus(left, right, chosen_branch): only the chosen branch verifies.
-    /// - With(left, right): both branches' atoms must be presented and
-    ///   verify (the verifier picks which to consume at evaluation).
-    /// - Bang(inner): inner atom must verify (replicable at evaluation).
-    /// - WhyNot(inner): if inner has a non-empty sig, it must verify;
-    ///   empty sig is permitted (optional / zero-or-more uses).
-    /// - Lolly(from, to, handle): both branches must verify (the
-    ///   transformer runs at evaluation via the capability registry).
-    /// - Threshold{threshold, members}: at least `threshold` members
-    ///   must verify (Phase 2 quorum semantics, lifted into the algebra).
-    /// - Atom: the leaf signer; signature must verify.
-    ///
-    /// The collected atoms are folded into a canonical Cosigner list
-    /// (sorted ascending by pk; placeholders for non-required atoms get
-    /// empty sigs and zero shares) and `Cosigned::from_signed_data_threshold`
-    /// (with `threshold = required_signers.len()`) finalizes the envelope.
+    /// Validates the admission algebra accepted at the deploy boundary. `Atom`
+    /// and `Tensor` realize the funding-signature grammar. A top-level
+    /// `Threshold` realizes a k-of-N admission quorum whose members must be
+    /// atomic candidate signers. Thresholds nested under `Tensor` are rejected
+    /// because the flat `Cosigned` threshold cannot preserve that formula.
+    /// Capability connectives are rejected before the algebra is lowered to a
+    /// canonical `Cosigned` envelope.
     pub fn from_proto_cosigned_with_sig_algebra(
         data: DeployData,
         sig_algebra: &crate::casper::SigCompound,
     ) -> Result<crypto::rust::signatures::signed::Cosigned<DeployData>, String> {
         use crypto::rust::signatures::signed::{Cosigned, Cosigner};
 
-        // F-A funding/capability separation — INGRESS REJECT (c), THE
-        // load-bearing guard (`docs/theory/cost-accounting-impl/
-        // f-a-funding-vs-capability-separation.md` §3/§6, red-team item 4).
-        //
-        // BEFORE lowering the wire algebra to a flat `Cosigned`, reject any
-        // `sig_algebra` whose tree contains a VALUE/CAPABILITY type-logic
-        // connective (`Plus` ⊕ / `With` & / `Bang` ! / `WhyNot` ? / `Lolly` ⊸).
-        // These are NOT funding-signature formers (cost-accounted-rho §App-A:
-        // the funding grammar is `s ::= g | #P | s ∘ s` — atoms folded by the
-        // tensor only); they belong to the capability/type layer
-        // (`typed_value.tex`, `rho:system:capabilities` + W2). `Atom`, `Tensor`
-        // (the funding `And` ∘), and `Threshold` (a k-of-N admission-boundary
-        // quorum, F-A Threshold=(A) — lowered to a flat `Cosigned` + scalar
-        // `cosigner_threshold`) are KEPT.
-        //
-        // This is what actually stops a malicious gRPC client: the decode below
-        // (`collect_atoms` + `min_required_for`) would otherwise SILENTLY ACCEPT
-        // a `⊕/&/!/?/⊸`-formed algebra and fold it into a funding envelope.
-        Self::reject_capability_connectives(sig_algebra)?;
-
-        // Walk the algebra and collect EVERY atom into the signer list
-        // (with its actual sig), and compute the minimum number of valid
-        // signatures the algebra requires (`min_required`).
-        // Per-connective semantics live in `min_required_for`:
-        //
-        //   - Atom: 1 (must verify)
-        //   - Tensor(a, b): min(a) + min(b)
-        //   - Plus(a, b, chosen=0): min(a)
-        //   - Plus(a, b, chosen=1): min(b)
-        //   - With(a, b): min(a) + min(b) (both committed at envelope time)
-        //   - Bang(inner): min(inner)
-        //   - WhyNot(inner): 0 (entirely optional)
-        //   - Lolly(from, to): min(from) + min(to)
-        //   - Threshold(k, members): k
+        data.validate_authority_presentations()?;
         let mut atoms: Vec<AlgebraAtom> = Vec::new();
-        Self::collect_atoms(sig_algebra, &mut atoms)?;
-        let min_required = Self::min_required_for(sig_algebra)?;
-
-        if atoms.is_empty() {
-            return Err(
-                "Sig algebra contains no atomic signers — at least one Atom is required"
-                    .to_string(),
-            );
-        }
+        let analysis = Self::analyze_funding_algebra(sig_algebra, &mut atoms)?;
 
         let mut signers: Vec<Cosigner> = Vec::with_capacity(atoms.len());
         for atom in atoms.into_iter() {
@@ -1425,71 +1499,40 @@ impl DeployData {
             });
         }
 
-        // Dispatch:
-        //   - All atoms required (min_required == signers.len(), no Plus
-        //     branch dropped, no WhyNot absent, no Threshold) →
-        //     from_signed_data (canonical N-of-N).
-        //   - Otherwise → from_signed_data_threshold with min_required.
         let total = signers.len() as u32;
-        if min_required == total && Self::algebra_is_all_required(sig_algebra)? {
+        if analysis.all_required {
+            debug_assert_eq!(analysis.min_required, total);
             Cosigned::from_signed_data(data, signers)
                 .map_err(|e| format!("Cosigned sig_algebra validation failed: {}", e))
-        } else if min_required == 0 {
-            let presented: Vec<Cosigner> = signers
-                .into_iter()
-                .filter(|signer| !signer.sig.is_empty())
-                .collect();
-            if presented.is_empty() {
-                return Err(
-                    "Sig algebra requires zero valid signatures and presents no signer; a Cosigned envelope requires at least one"
-                        .to_string(),
-                );
-            }
-            Cosigned::from_signed_data(data, presented).map_err(|e| {
-                format!(
-                    "Cosigned sig_algebra optional-present validation failed: {}",
-                    e
-                )
-            })
         } else {
-            Cosigned::from_signed_data_threshold(data, signers, min_required).map_err(|e| {
-                format!(
-                    "Cosigned sig_algebra threshold validation failed (min_required={}): {}",
-                    min_required, e
-                )
-            })
+            Cosigned::from_signed_data_threshold(data, signers, analysis.min_required).map_err(
+                |e| {
+                    format!(
+                        "Cosigned sig_algebra threshold validation failed (min_required={}): {}",
+                        analysis.min_required, e
+                    )
+                },
+            )
         }
     }
 
-    /// F-A funding/capability separation — INGRESS REJECT (c). Recursively
-    /// reject a `SigCompound` deploy algebra that contains ANY value/capability
-    /// type-logic connective (`Plus` ⊕ / `With` & / `Bang` ! / `WhyNot` ? /
-    /// `Lolly` ⊸ — the five formers that are NOT in the funding grammar
-    /// `g|#P|s∘s`, cost-accounted-rho §App-A). `Atom`, `Tensor` (the funding
-    /// `And` ∘), and `Threshold` (a k-of-N admission-boundary quorum, F-A
-    /// Threshold=(A)) are accepted; the walk recurses THROUGH `Tensor`'s sides
-    /// and `Threshold`'s members so a connective nested anywhere in the tree is
-    /// still caught.
-    ///
-    /// Returns a crisp protocol error naming the offending connective. This is
-    /// the load-bearing wire-boundary guard: it refuses a malicious/ill-formed
-    /// deploy at decode time, BEFORE the algebra is lowered into a funding
-    /// `Cosigned`.
-    fn reject_capability_connectives(sig: &crate::casper::SigCompound) -> Result<(), String> {
+    fn analyze_funding_algebra(
+        sig: &crate::casper::SigCompound,
+        atoms: &mut Vec<AlgebraAtom>,
+    ) -> Result<FundingAlgebraAnalysis, String> {
         use crate::casper::sig_compound::Connective;
         let connective = sig
             .connective
             .as_ref()
             .ok_or_else(|| "SigCompound.connective missing".to_string())?;
-        const NOT_A_FUNDING_FORMER: &str =
-            "is not a funding-signature former (cost-accounted-rho §App-A: \
-             funding signatures are g | #P | s∘s — ground/quote atoms folded by \
-             the tensor ∘; value/capability connectives ⊕/&/!/?/⊸ are \
-             capability-layer only)";
         match connective {
-            // Funding-grammar formers — accepted; recurse through the
-            // structural ones so a nested capability connective is still caught.
-            Connective::Atom(_) => Ok(()),
+            Connective::Atom(atom) => {
+                atoms.push(AlgebraAtom::from_proto(atom));
+                Ok(FundingAlgebraAnalysis {
+                    min_required: 1,
+                    all_required: true,
+                })
+            }
             Connective::Tensor(pair) => {
                 let left = pair
                     .left
@@ -1499,220 +1542,74 @@ impl DeployData {
                     .right
                     .as_deref()
                     .ok_or_else(|| "SigPair.right missing".to_string())?;
-                Self::reject_capability_connectives(left)?;
-                Self::reject_capability_connectives(right)
-            }
-            Connective::Threshold(thresh) => {
-                for member in &thresh.members {
-                    Self::reject_capability_connectives(member)?;
+                let left = Self::analyze_funding_algebra(left, atoms)?;
+                let right = Self::analyze_funding_algebra(right, atoms)?;
+                if !left.all_required || !right.all_required {
+                    return Err(
+                        "SigThreshold must be the top-level admission connective; a scalar signer threshold cannot preserve Tensor composition"
+                            .to_string(),
+                    );
                 }
-                Ok(())
+                Ok(FundingAlgebraAnalysis {
+                    min_required: left
+                        .min_required
+                        .checked_add(right.min_required)
+                        .ok_or_else(|| "Funding algebra signer count overflow".to_string())?,
+                    all_required: left.all_required && right.all_required,
+                })
             }
-            // Value/capability type-logic connectives — REJECTED at ingress.
-            Connective::Plus(_) => Err(format!(
-                "value/capability connective ⊕ (Plus) {NOT_A_FUNDING_FORMER}"
-            )),
-            Connective::With(_) => Err(format!(
-                "value/capability connective & (With) {NOT_A_FUNDING_FORMER}"
-            )),
-            Connective::Bang(_) => Err(format!(
-                "value/capability connective ! (Bang) {NOT_A_FUNDING_FORMER}"
-            )),
-            Connective::Whynot(_) => Err(format!(
-                "value/capability connective ? (WhyNot) {NOT_A_FUNDING_FORMER}"
-            )),
-            Connective::Lolly(_) => Err(format!(
-                "value/capability connective ⊸ (Lolly) {NOT_A_FUNDING_FORMER}"
-            )),
-        }
-    }
-
-    fn collect_atoms(
-        sig: &crate::casper::SigCompound,
-        atoms: &mut Vec<AlgebraAtom>,
-    ) -> Result<(), String> {
-        use crate::casper::sig_compound::Connective;
-        let connective = sig
-            .connective
-            .as_ref()
-            .ok_or_else(|| "SigCompound.connective missing".to_string())?;
-        match connective {
-            Connective::Atom(atom) => {
-                atoms.push(AlgebraAtom::from_proto(atom));
-                Ok(())
-            }
-            Connective::Tensor(pair) | Connective::With(pair) => {
-                Self::collect_atoms_pair(pair, atoms)
-            }
-            Connective::Plus(plus) => {
-                if plus.chosen_branch != 0 && plus.chosen_branch != 1 {
-                    return Err(format!(
-                        "SigPlus.chosen_branch must be 0 or 1, got {}",
-                        plus.chosen_branch
-                    ));
-                }
-                let left = plus
-                    .left
-                    .as_deref()
-                    .ok_or_else(|| "SigPlus.left missing".to_string())?;
-                let right = plus
-                    .right
-                    .as_deref()
-                    .ok_or_else(|| "SigPlus.right missing".to_string())?;
-                Self::collect_atoms(left, atoms)?;
-                Self::collect_atoms(right, atoms)
-            }
-            Connective::Bang(bang) => {
-                let inner = bang
-                    .inner
-                    .as_deref()
-                    .ok_or_else(|| "SigBang.inner missing".to_string())?;
-                Self::collect_atoms(inner, atoms)
-            }
-            Connective::Whynot(inner) => Self::collect_atoms(inner, atoms),
-            Connective::Lolly(lolly) => {
-                let from = lolly
-                    .from
-                    .as_deref()
-                    .ok_or_else(|| "SigLolly.from missing".to_string())?;
-                let to = lolly
-                    .to
-                    .as_deref()
-                    .ok_or_else(|| "SigLolly.to missing".to_string())?;
-                Self::collect_atoms(from, atoms)?;
-                Self::collect_atoms(to, atoms)
-            }
-            Connective::Threshold(thresh) => {
-                if thresh.threshold < 1 || (thresh.threshold as usize) > thresh.members.len() {
+            Connective::Threshold(threshold) => {
+                if threshold.threshold < 1
+                    || (threshold.threshold as usize) > threshold.members.len()
+                {
                     return Err(format!(
                         "SigThreshold.threshold must satisfy 1 ≤ threshold ≤ members.len() ({}), got {}",
-                        thresh.members.len(),
-                        thresh.threshold
+                        threshold.members.len(), threshold.threshold
                     ));
                 }
-                for member in &thresh.members {
-                    Self::collect_atoms(member, atoms)?;
+                for member in &threshold.members {
+                    match member.connective.as_ref() {
+                        Some(Connective::Atom(atom)) => atoms.push(AlgebraAtom::from_proto(atom)),
+                        Some(Connective::Plus(_)) => {
+                            return Err(Self::capability_connective_error("⊕", "Plus"));
+                        }
+                        Some(Connective::With(_)) => {
+                            return Err(Self::capability_connective_error("&", "With"));
+                        }
+                        Some(Connective::Bang(_)) => {
+                            return Err(Self::capability_connective_error("!", "Bang"));
+                        }
+                        Some(Connective::Whynot(_)) => {
+                            return Err(Self::capability_connective_error("?", "WhyNot"));
+                        }
+                        Some(Connective::Lolly(_)) => {
+                            return Err(Self::capability_connective_error("⊸", "Lolly"));
+                        }
+                        Some(Connective::Tensor(_)) | Some(Connective::Threshold(_)) => {
+                            return Err(
+                                "SigThreshold members must be atomic candidate signers".to_string()
+                            );
+                        }
+                        None => return Err("SigThreshold member connective missing".to_string()),
+                    }
                 }
-                Ok(())
+                Ok(FundingAlgebraAnalysis {
+                    min_required: threshold.threshold as u32,
+                    all_required: false,
+                })
             }
+            Connective::Plus(_) => Err(Self::capability_connective_error("⊕", "Plus")),
+            Connective::With(_) => Err(Self::capability_connective_error("&", "With")),
+            Connective::Bang(_) => Err(Self::capability_connective_error("!", "Bang")),
+            Connective::Whynot(_) => Err(Self::capability_connective_error("?", "WhyNot")),
+            Connective::Lolly(_) => Err(Self::capability_connective_error("⊸", "Lolly")),
         }
     }
 
-    fn collect_atoms_pair(
-        pair: &crate::casper::SigPair,
-        atoms: &mut Vec<AlgebraAtom>,
-    ) -> Result<(), String> {
-        let left = pair
-            .left
-            .as_deref()
-            .ok_or_else(|| "SigPair.left missing".to_string())?;
-        let right = pair
-            .right
-            .as_deref()
-            .ok_or_else(|| "SigPair.right missing".to_string())?;
-        Self::collect_atoms(left, atoms)?;
-        Self::collect_atoms(right, atoms)
-    }
-
-    fn min_required_for(sig: &crate::casper::SigCompound) -> Result<u32, String> {
-        use crate::casper::sig_compound::Connective;
-        let connective = sig
-            .connective
-            .as_ref()
-            .ok_or_else(|| "SigCompound.connective missing".to_string())?;
-        match connective {
-            Connective::Atom(_) => Ok(1),
-            Connective::Tensor(pair) | Connective::With(pair) => {
-                let l = pair
-                    .left
-                    .as_deref()
-                    .ok_or_else(|| "SigPair.left missing".to_string())?;
-                let r = pair
-                    .right
-                    .as_deref()
-                    .ok_or_else(|| "SigPair.right missing".to_string())?;
-                Ok(Self::min_required_for(l)? + Self::min_required_for(r)?)
-            }
-            Connective::Plus(plus) => {
-                let l = plus
-                    .left
-                    .as_deref()
-                    .ok_or_else(|| "SigPlus.left missing".to_string())?;
-                let r = plus
-                    .right
-                    .as_deref()
-                    .ok_or_else(|| "SigPlus.right missing".to_string())?;
-                if plus.chosen_branch == 0 {
-                    Self::min_required_for(l)
-                } else {
-                    Self::min_required_for(r)
-                }
-            }
-            Connective::Bang(bang) => {
-                let inner = bang
-                    .inner
-                    .as_deref()
-                    .ok_or_else(|| "SigBang.inner missing".to_string())?;
-                Self::min_required_for(inner)
-            }
-            Connective::Whynot(_) => Ok(0),
-            Connective::Lolly(lolly) => {
-                let from = lolly
-                    .from
-                    .as_deref()
-                    .ok_or_else(|| "SigLolly.from missing".to_string())?;
-                let to = lolly
-                    .to
-                    .as_deref()
-                    .ok_or_else(|| "SigLolly.to missing".to_string())?;
-                Ok(Self::min_required_for(from)? + Self::min_required_for(to)?)
-            }
-            Connective::Threshold(thresh) => Ok(thresh.threshold as u32),
-        }
-    }
-
-    /// Returns true iff the algebra has no optional branch (no Plus,
-    /// no WhyNot, no Threshold). Used to choose between the N-of-N
-    /// constructor and the threshold constructor.
-    fn algebra_is_all_required(sig: &crate::casper::SigCompound) -> Result<bool, String> {
-        use crate::casper::sig_compound::Connective;
-        let connective = sig
-            .connective
-            .as_ref()
-            .ok_or_else(|| "SigCompound.connective missing".to_string())?;
-        match connective {
-            Connective::Atom(_) => Ok(true),
-            Connective::Tensor(pair) | Connective::With(pair) => {
-                let l = pair
-                    .left
-                    .as_deref()
-                    .ok_or_else(|| "SigPair.left missing".to_string())?;
-                let r = pair
-                    .right
-                    .as_deref()
-                    .ok_or_else(|| "SigPair.right missing".to_string())?;
-                Ok(Self::algebra_is_all_required(l)? && Self::algebra_is_all_required(r)?)
-            }
-            Connective::Bang(bang) => {
-                let inner = bang
-                    .inner
-                    .as_deref()
-                    .ok_or_else(|| "SigBang.inner missing".to_string())?;
-                Self::algebra_is_all_required(inner)
-            }
-            Connective::Lolly(lolly) => {
-                let from = lolly
-                    .from
-                    .as_deref()
-                    .ok_or_else(|| "SigLolly.from missing".to_string())?;
-                let to = lolly
-                    .to
-                    .as_deref()
-                    .ok_or_else(|| "SigLolly.to missing".to_string())?;
-                Ok(Self::algebra_is_all_required(from)? && Self::algebra_is_all_required(to)?)
-            }
-            Connective::Plus(_) | Connective::Whynot(_) | Connective::Threshold(_) => Ok(false),
-        }
+    fn capability_connective_error(symbol: &str, name: &str) -> String {
+        format!(
+            "value/capability connective {symbol} ({name}) is not a funding-signature former (cost-accounted-rho §App-A: funding signatures are g | #P | s∘s — ground/quote atoms folded by the tensor ∘; value/capability connectives ⊕/&/!/?/⊸ are capability-layer only)"
+        )
     }
 
     fn _to_proto(dd: DeployData) -> DeployDataProto {
@@ -1723,6 +1620,7 @@ impl DeployData {
             shard_id: dd.shard_id,
             // Only include expirationTimestamp if set to maintain backward compatibility
             expiration_timestamp: dd.expiration_timestamp.unwrap_or(0),
+            authority_presentations: dd.authority_presentations,
             ..Default::default()
         }
     }
@@ -1740,6 +1638,7 @@ impl DeployData {
             sig_algorithm: dd.sig_algorithm.name(),
             // Only include expirationTimestamp if set to maintain backward compatibility
             expiration_timestamp: dd.data.expiration_timestamp.unwrap_or(0),
+            authority_presentations: dd.data.authority_presentations.clone(),
             ..Default::default()
         }
     }
@@ -1777,6 +1676,7 @@ impl DeployData {
             sig: primary.sig.clone(),
             sig_algorithm: primary.sig_algorithm.name(),
             expiration_timestamp: cosigned.data.expiration_timestamp.unwrap_or(0),
+            authority_presentations: cosigned.data.authority_presentations.clone(),
             cosigners: cosigners_proto,
             // Single-signer / N-of-N round-trip emits 0 (legacy semantics).
             // M-of-N round-trip requires the caller to set this directly on
@@ -2173,8 +2073,10 @@ impl MergeableEntryResponse {
 #[cfg(test)]
 mod tests {
     use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::secp256k1_eth::Secp256k1Eth;
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
     use crypto::rust::signatures::signed::Signed;
+    use proptest::prelude::*;
     use prost::bytes::Bytes;
 
     use super::*;
@@ -2186,6 +2088,78 @@ mod tests {
             valid_after_block_number: 0,
             shard_id: "root".to_string(),
             expiration_timestamp: None,
+            authority_presentations: Vec::new(),
+        }
+    }
+
+    fn authority_signature(tag: u8) -> crate::rhoapi::CostSignature {
+        crate::rhoapi::CostSignature {
+            value: Some(crate::rhoapi::cost_signature::Value::Ground(vec![tag])),
+        }
+    }
+
+    #[test]
+    fn authority_presentations_are_signed_and_round_trip() {
+        let mut data = deploy_data();
+        data.authority_presentations = vec![authority_signature(1), authority_signature(2)];
+        let signed = signed_deploy(data.clone());
+        let proto = DeployData::to_proto(signed);
+        let decoded = DeployData::from_proto(proto).unwrap();
+        assert_eq!(decoded.data, data);
+
+        let mut changed = data;
+        changed.authority_presentations.push(authority_signature(3));
+        assert_ne!(
+            DeployData::_to_proto(decoded.data).encode_to_vec(),
+            DeployData::_to_proto(changed).encode_to_vec()
+        );
+    }
+
+    #[test]
+    fn authority_presentation_signature_preimage_matches_python_client() {
+        let mut data = deploy_data();
+        data.authority_presentations = vec![
+            crate::rhoapi::CostSignature {
+                value: Some(crate::rhoapi::cost_signature::Value::Ground(vec![b'a'])),
+            },
+            crate::rhoapi::CostSignature {
+                value: Some(crate::rhoapi::cost_signature::Value::Ground(vec![b'b'])),
+            },
+        ];
+        assert_eq!(
+            hex::encode(DeployData::_to_proto(data).encode_to_vec()),
+            "12034e696c5a04726f6f749201030a01619201030a0162"
+        );
+    }
+
+    #[test]
+    fn authority_presentations_round_trip_through_bincode_storage() {
+        for presentations in [Vec::new(), vec![
+            authority_signature(1),
+            authority_signature(2),
+        ]] {
+            let mut data = deploy_data();
+            data.authority_presentations = presentations;
+            let signed = signed_deploy(data);
+            let encoded = bincode::serialize(&signed).expect("serialize stored deploy");
+            let decoded: Signed<DeployData> =
+                bincode::deserialize(&encoded).expect("deserialize stored deploy");
+            assert_eq!(decoded, signed);
+        }
+    }
+
+    #[test]
+    fn authority_presentations_reject_noncanonical_order_and_duplicates() {
+        for presentations in [vec![authority_signature(2), authority_signature(1)], vec![
+            authority_signature(1),
+            authority_signature(1),
+        ]] {
+            let mut data = deploy_data();
+            data.authority_presentations = presentations;
+            let proto = DeployData::to_proto(signed_deploy(data));
+            assert!(DeployData::from_proto(proto)
+                .unwrap_err()
+                .contains("strictly ordered and unique"));
         }
     }
 
@@ -2207,6 +2181,60 @@ mod tests {
             RejectedDeploy::from_proto(rejected.clone().to_proto()),
             rejected
         );
+    }
+
+    #[test]
+    fn rejection_reason_join_uses_direct_cause_precedence() {
+        assert_eq!(
+            RejectedDeployReason::CollateralChainDrop
+                .canonical_join(RejectedDeployReason::MergeConflict),
+            RejectedDeployReason::MergeConflict
+        );
+        assert_eq!(
+            RejectedDeployReason::MergeConflict
+                .canonical_join(RejectedDeployReason::DuplicateOccurrence),
+            RejectedDeployReason::DuplicateOccurrence
+        );
+        assert_eq!(
+            RejectedDeployReason::Unspecified
+                .canonical_join(RejectedDeployReason::CollateralChainDrop),
+            RejectedDeployReason::CollateralChainDrop
+        );
+    }
+
+    fn rejection_reason_from_byte(value: u8) -> RejectedDeployReason {
+        match value % 4 {
+            0 => RejectedDeployReason::Unspecified,
+            1 => RejectedDeployReason::CollateralChainDrop,
+            2 => RejectedDeployReason::MergeConflict,
+            _ => RejectedDeployReason::DuplicateOccurrence,
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn rejection_reason_join_is_commutative(left: u8, right: u8) {
+            let left = rejection_reason_from_byte(left);
+            let right = rejection_reason_from_byte(right);
+            prop_assert_eq!(left.canonical_join(right), right.canonical_join(left));
+        }
+
+        #[test]
+        fn rejection_reason_join_is_associative(left: u8, middle: u8, right: u8) {
+            let left = rejection_reason_from_byte(left);
+            let middle = rejection_reason_from_byte(middle);
+            let right = rejection_reason_from_byte(right);
+            prop_assert_eq!(
+                left.canonical_join(middle).canonical_join(right),
+                left.canonical_join(middle.canonical_join(right))
+            );
+        }
+
+        #[test]
+        fn rejection_reason_join_is_idempotent(reason: u8) {
+            let reason = rejection_reason_from_byte(reason);
+            prop_assert_eq!(reason.canonical_join(reason), reason);
+        }
     }
 
     #[test]
@@ -2525,10 +2553,61 @@ mod tests {
             cosigner_threshold: 2,
             pre_state_hash: ByteString::new(),
             post_state_hash: ByteString::new(),
+            authority_funding_certificate: None,
+            authority_cost_witness: None,
+            admission_status: Default::default(),
         };
 
         let decoded = ProcessedDeploy::from_proto(processed.clone().to_proto()).unwrap();
         assert_eq!(decoded.cosigner_threshold, 2);
+    }
+
+    #[test]
+    fn processed_deploy_secp256k1_eth_roundtrips_through_proto() {
+        let algorithm: Box<dyn SignaturesAlg> = Box::new(Secp256k1Eth);
+        let (private_key, _) = algorithm.new_key_pair();
+        let deploy = Signed::create(deploy_data(), algorithm, private_key).unwrap();
+        let processed = ProcessedDeploy {
+            deploy,
+            cost: PCost { cost: 1 },
+            deploy_log: Vec::new(),
+            is_failed: false,
+            system_deploy_error: None,
+            cosigners: Vec::new(),
+            cosigner_threshold: 0,
+            pre_state_hash: ByteString::new(),
+            post_state_hash: ByteString::new(),
+            authority_funding_certificate: None,
+            authority_cost_witness: None,
+            admission_status: Default::default(),
+        };
+
+        let proto = processed.clone().to_proto();
+        assert_eq!(
+            proto.deploy.as_ref().unwrap().sig_algorithm,
+            Secp256k1Eth::NAME
+        );
+        assert_eq!(ProcessedDeploy::from_proto(proto).unwrap(), processed);
+    }
+
+    #[test]
+    fn funding_admission_rejection_roundtrips_as_terminal_non_execution() {
+        let signed = signed_deploy(deploy_data());
+        let cosigned =
+            crypto::rust::signatures::signed::Cosigned::from_single_signer(signed).unwrap();
+        let pre_state = ByteString::from_static(&[7; 32]);
+        let rejected = ProcessedDeploy::admission_rejected(&cosigned, pre_state.clone());
+
+        assert_eq!(rejected.admission_status, DeployAdmissionStatus::Rejected);
+        assert!(rejected.is_failed);
+        assert_eq!(rejected.cost.cost, 0);
+        assert!(rejected.deploy_log.is_empty());
+        assert_eq!(rejected.pre_state_hash, pre_state);
+        assert_eq!(rejected.post_state_hash, pre_state);
+        assert_eq!(
+            ProcessedDeploy::from_proto(rejected.clone().to_proto()).unwrap(),
+            rejected
+        );
     }
 
     // =================================================================
@@ -2752,10 +2831,241 @@ mod tests {
             }],
             cosigner_threshold: 0, // N-of-N
             sig_algebra: None,
+            authority_presentations: Vec::new(),
         };
         let cosigned = DeployData::from_proto_cosigned(proto)
             .expect("flat N-of-N (no sig_algebra) must decode unchanged post-F-A");
         assert_eq!(cosigned.signers().len(), 2);
         assert!(cosigned.is_compound());
+    }
+
+    #[test]
+    fn sig_algebra_wire_dispatch_ignores_all_flat_envelope_fields() {
+        let payload = deploy_data();
+        let algebra = atom_compound(&payload);
+        let proto = DeployDataProto {
+            term: payload.term.clone(),
+            timestamp: payload.time_stamp,
+            valid_after_block_number: payload.valid_after_block_number,
+            shard_id: payload.shard_id.clone(),
+            sig_algorithm: "unused-invalid-algorithm".to_string(),
+            cosigner_threshold: -1,
+            cosigners: vec![CompoundSigner {
+                pk: Bytes::new(),
+                sig: Bytes::new(),
+                sig_algorithm: "unused-invalid-cosigner-algorithm".to_string(),
+            }],
+            sig_algebra: Some(algebra),
+            ..Default::default()
+        };
+
+        let cosigned = DeployData::from_proto_cosigned(proto)
+            .expect("sig algebra must completely override the flat envelope fields");
+        assert_eq!(cosigned.signers().len(), 1);
+    }
+
+    #[test]
+    fn flat_threshold_wire_boundary_accepts_valid_quorum_and_rejects_both_invalid_bounds() {
+        use prost::Message;
+
+        let payload = deploy_data();
+        let serialized = DeployData::_to_proto(payload.clone()).encode_to_vec();
+        let hash = Signed::<DeployData>::signature_hash(&Secp256k1::name(), serialized);
+        let secp = Secp256k1;
+        let (primary_sk, primary_pk) = secp.new_key_pair();
+        let (_, placeholder_pk) = secp.new_key_pair();
+        let base = DeployDataProto {
+            deployer: primary_pk.bytes.clone().into(),
+            term: payload.term,
+            timestamp: payload.time_stamp,
+            sig: Bytes::from(secp.sign(&hash, &primary_sk.bytes)),
+            sig_algorithm: Secp256k1::name(),
+            valid_after_block_number: payload.valid_after_block_number,
+            shard_id: payload.shard_id,
+            cosigners: vec![CompoundSigner {
+                pk: placeholder_pk.bytes.into(),
+                sig: Bytes::new(),
+                sig_algorithm: Secp256k1::name(),
+            }],
+            cosigner_threshold: 1,
+            ..Default::default()
+        };
+
+        let cosigned = DeployData::from_proto_cosigned(base.clone())
+            .expect("one valid signer must satisfy a one-of-two threshold");
+        assert_eq!(cosigned.cosigner_threshold(), 1);
+
+        let mut negative = base.clone();
+        negative.cosigner_threshold = -1;
+        assert!(DeployData::from_proto_cosigned(negative)
+            .unwrap_err()
+            .contains("Invalid cosigner_threshold"));
+
+        let mut excessive = base;
+        excessive.cosigner_threshold = 3;
+        assert!(DeployData::from_proto_cosigned(excessive)
+            .unwrap_err()
+            .contains("Invalid cosigner_threshold"));
+    }
+
+    #[test]
+    fn funding_algebra_rejects_invalid_threshold_shapes_and_missing_structure() {
+        let payload = deploy_data();
+        let member = atom_compound(&payload);
+        for (threshold, members) in [(0, vec![member.clone()]), (2, vec![member.clone()])] {
+            let algebra = crate::casper::SigCompound {
+                connective: Some(crate::casper::sig_compound::Connective::Threshold(
+                    crate::casper::SigThreshold { threshold, members },
+                )),
+            };
+            assert!(
+                DeployData::from_proto_cosigned_with_sig_algebra(payload.clone(), &algebra)
+                    .unwrap_err()
+                    .contains("SigThreshold.threshold")
+            );
+        }
+
+        let missing_member = crate::casper::SigCompound {
+            connective: Some(crate::casper::sig_compound::Connective::Threshold(
+                crate::casper::SigThreshold {
+                    threshold: 1,
+                    members: vec![crate::casper::SigCompound { connective: None }],
+                },
+            )),
+        };
+        assert!(
+            DeployData::from_proto_cosigned_with_sig_algebra(payload.clone(), &missing_member)
+                .unwrap_err()
+                .contains("member connective missing")
+        );
+
+        let nested_tensor = crate::casper::SigCompound {
+            connective: Some(crate::casper::sig_compound::Connective::Threshold(
+                crate::casper::SigThreshold {
+                    threshold: 1,
+                    members: vec![crate::casper::SigCompound {
+                        connective: Some(crate::casper::sig_compound::Connective::Tensor(
+                            Box::new(crate::casper::SigPair {
+                                left: Some(Box::new(member.clone())),
+                                right: Some(Box::new(member)),
+                            }),
+                        )),
+                    }],
+                },
+            )),
+        };
+        assert!(
+            DeployData::from_proto_cosigned_with_sig_algebra(payload.clone(), &nested_tensor)
+                .unwrap_err()
+                .contains("atomic candidate signers")
+        );
+
+        let missing_root = crate::casper::SigCompound { connective: None };
+        assert!(
+            DeployData::from_proto_cosigned_with_sig_algebra(payload.clone(), &missing_root)
+                .unwrap_err()
+                .contains("SigCompound.connective missing")
+        );
+
+        for pair in [
+            crate::casper::SigPair {
+                left: None,
+                right: Some(Box::new(atom_compound(&payload))),
+            },
+            crate::casper::SigPair {
+                left: Some(Box::new(atom_compound(&payload))),
+                right: None,
+            },
+        ] {
+            let algebra = crate::casper::SigCompound {
+                connective: Some(crate::casper::sig_compound::Connective::Tensor(Box::new(
+                    pair,
+                ))),
+            };
+            assert!(
+                DeployData::from_proto_cosigned_with_sig_algebra(payload.clone(), &algebra)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn tensor_containing_threshold_is_rejected_instead_of_flattening_policy() {
+        let payload = deploy_data();
+        let threshold = crate::casper::SigCompound {
+            connective: Some(crate::casper::sig_compound::Connective::Threshold(
+                crate::casper::SigThreshold {
+                    threshold: 1,
+                    members: vec![atom_compound(&payload), atom_compound(&payload)],
+                },
+            )),
+        };
+        let algebra = crate::casper::SigCompound {
+            connective: Some(crate::casper::sig_compound::Connective::Tensor(Box::new(
+                crate::casper::SigPair {
+                    left: Some(Box::new(threshold)),
+                    right: Some(Box::new(atom_compound(&payload))),
+                },
+            ))),
+        };
+
+        let err = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra).expect_err(
+            "flattening Tensor(Threshold(1-of-2), Atom) would erase the mandatory atom",
+        );
+        assert!(
+            err.contains("top-level admission connective")
+                && err.contains("cannot preserve Tensor composition"),
+            "nested threshold rejection must explain the policy-preservation boundary: {err}"
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 64,
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn every_threshold_nested_under_tensor_is_rejected(
+            member_count in 1usize..8,
+            threshold_seed in any::<usize>(),
+            threshold_on_left in any::<bool>(),
+        ) {
+            let payload = deploy_data();
+            let threshold = crate::casper::SigCompound {
+                connective: Some(crate::casper::sig_compound::Connective::Threshold(
+                    crate::casper::SigThreshold {
+                        threshold: (1 + threshold_seed % member_count) as i32,
+                        members: (0..member_count)
+                            .map(|_| crate::casper::SigCompound {
+                                connective: Some(crate::casper::sig_compound::Connective::Atom(
+                                    empty_atom(),
+                                )),
+                            })
+                            .collect(),
+                    },
+                )),
+            };
+            let atom = Box::new(atom_compound(&payload));
+            let threshold = Box::new(threshold);
+            let (left, right) = if threshold_on_left {
+                (threshold, atom)
+            } else {
+                (atom, threshold)
+            };
+            let algebra = crate::casper::SigCompound {
+                connective: Some(crate::casper::sig_compound::Connective::Tensor(Box::new(
+                    crate::casper::SigPair {
+                        left: Some(left),
+                        right: Some(right),
+                    },
+                ))),
+            };
+
+            let err = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra)
+                .expect_err("no threshold policy can be nested under a tensor");
+            prop_assert!(err.contains("top-level admission connective"));
+        }
     }
 }

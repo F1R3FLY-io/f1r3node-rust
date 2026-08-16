@@ -7,6 +7,7 @@ use std::sync::Arc;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::accounting::Sig;
 use rholang::rust::interpreter::chromadb_service::create_noop_chromadb_service;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::grpc_client_service::{GrpcClientMockConfig, GrpcClientService};
@@ -19,6 +20,7 @@ use rholang::rust::interpreter::test_utils::resources::create_runtimes_with_serv
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+use rspace_plus_plus::rspace::trace::event::Event;
 
 /// Helper to create external services with mock OpenAI and optional mock gRPC
 fn create_test_external_services(
@@ -73,6 +75,7 @@ async fn evaluate_with_mock_service(
             >,
         >,
     ) = create_runtimes_with_services(store, false, &mut Vec::new(), external_services).await;
+    install_test_payer(&runtime);
 
     let rand = Blake2b512Random::create_from_bytes(&[]);
     let initial_phlo = Cost::create(i64::MAX, "test".to_string());
@@ -86,8 +89,8 @@ async fn evaluate_with_mock_service(
 /// Evaluate a term then replay it, returning (play_result, replay_result).
 /// Evaluate-and-replay pattern for non-deterministic process testing:
 ///   1. Play: evaluate on normal runtime
-///   2. Checkpoint: capture root hash + event log
-///   3. Rig: reset replay runtime to root, load event log
+///   2. Checkpoint: capture the post-state and event log
+///   3. Rig: reset replay runtime to the original pre-state, load event log
 ///   4. Replay: evaluate same term on replay runtime
 ///   5. Verify: check_replay_data ensures all events were consumed
 #[allow(clippy::type_complexity)]
@@ -110,8 +113,11 @@ async fn evaluate_and_replay(
             >,
         >,
     ) = create_runtimes_with_services(store, false, &mut Vec::new(), external_services).await;
+    install_test_payer(&runtime);
+    install_test_payer(&replay_runtime);
 
     let rand = Blake2b512Random::create_from_bytes(&[]);
+    let pre_state_root = runtime.get_root().await;
 
     // Play phase
     let play_result = runtime
@@ -124,7 +130,7 @@ async fn evaluate_and_replay(
 
     // Rig replay runtime with the event log from play
     replay_runtime
-        .reset(&checkpoint.root)
+        .reset(&pre_state_root)
         .await
         .expect("Replay reset failed");
     replay_runtime
@@ -147,6 +153,13 @@ async fn evaluate_and_replay(
     (play_result, replay_result)
 }
 
+fn install_test_payer(runtime: &RhoRuntimeImpl) {
+    runtime.cost.set_deploy_signature_funded(
+        b"non-deterministic-processes-spec-deploy",
+        Sig::Ground(b"non-deterministic-processes-spec-payer".to_vec()),
+    );
+}
+
 /// Assert that play and replay produce consistent results
 fn assert_replay_consistency(
     play_result: &EvaluateResult,
@@ -161,7 +174,11 @@ fn assert_replay_consistency(
         );
         assert!(
             !replay_result.errors.is_empty(),
-            "{test_name}: replay result should have errors"
+            "{test_name}: replay result should have errors (play_cost={}, replay_cost={}, play_errors={:?}, replay_errors={:?})",
+            play_result.cost.value,
+            replay_result.cost.value,
+            play_result.errors,
+            replay_result.errors
         );
     } else {
         assert!(
@@ -365,7 +382,7 @@ async fn replay_gpt4_produces_consistent_costs() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn replay_gpt4_out_of_phlogistons_consistent_cost() {
+async fn gpt4_out_of_phlogistons_rejects_before_comm_trace_or_state_mutation() {
     let term = r#"new output, gpt4(`rho:ai:gpt4`) in { gpt4!("abc", *output) }"#;
     let completion = "a".repeat(1_000_000);
     let full_cost_services =
@@ -386,16 +403,37 @@ async fn replay_gpt4_out_of_phlogistons_consistent_cost() {
         "GPT4 mock term should consume at least one COMM token"
     );
 
+    let mut kvm = InMemoryStoreManager::new();
+    let store = kvm.r_space_stores().await.unwrap();
     let external_services =
         create_test_external_services(OpenAIMockConfig::single_completion(&completion), None);
-    let (play, replay) = evaluate_and_replay(
-        term,
-        Cost::create(full_cost_play.cost.value - 1, "test".to_string()),
-        external_services,
-    )
-    .await;
+    let (mut runtime, _, _) =
+        create_runtimes_with_services(store, false, &mut Vec::new(), external_services).await;
+    install_test_payer(&runtime);
+    let pre_state_root = runtime.get_root().await;
+    let rejected = runtime
+        .evaluate(
+            term,
+            Cost::create(full_cost_play.cost.value - 1, "test".to_string()),
+            HashMap::new(),
+            Blake2b512Random::create_from_bytes(&[]),
+        )
+        .await
+        .expect("evaluation must return a deterministic rejection");
+    assert!(matches!(rejected.errors.as_slice(), [
+        rholang::rust::interpreter::errors::InterpreterError::OutOfPhlogistonsError
+    ]));
+    assert_eq!(rejected.cost.value, full_cost_play.cost.value - 1);
 
-    assert_replay_consistency(&play, &replay, "GPT4 OutOfPhlogistons replay", true);
+    let checkpoint = runtime.create_checkpoint().await;
+    assert_eq!(checkpoint.root, pre_state_root);
+    assert!(
+        checkpoint
+            .log
+            .iter()
+            .all(|event| !matches!(event, Event::Comm(_))),
+        "a rejected atomic match must not enter replay evidence"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

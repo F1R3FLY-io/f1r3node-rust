@@ -35,6 +35,7 @@ fn baseline_deploy_data(_phlo_limit: i64) -> DeployData {
         valid_after_block_number: 0,
         shard_id: "root".to_string(),
         expiration_timestamp: None,
+        authority_presentations: Vec::new(),
     }
 }
 
@@ -76,6 +77,7 @@ fn build_multi_sig_proto(num_signers: usize) -> DeployDataProto {
         cosigners,
         cosigner_threshold: 0,
         sig_algebra: None,
+        authority_presentations: Vec::new(),
     }
 }
 
@@ -96,6 +98,7 @@ fn build_single_sig_proto() -> DeployDataProto {
         cosigners: Vec::new(),
         cosigner_threshold: 0,
         sig_algebra: None,
+        authority_presentations: Vec::new(),
     }
 }
 
@@ -206,6 +209,9 @@ fn processed_deploy_to_cosigned_legacy_uplift() {
         cosigner_threshold: 0,
         pre_state_hash: Bytes::new(),
         post_state_hash: Bytes::new(),
+        authority_funding_certificate: None,
+        authority_cost_witness: None,
+        admission_status: Default::default(),
     };
     let cosigned = pd.to_cosigned().expect("legacy uplift must succeed");
     assert_eq!(cosigned.signers().len(), 1);
@@ -253,6 +259,9 @@ fn processed_deploy_to_cosigned_multi_sig_reconstruction() {
         cosigner_threshold: 0,
         pre_state_hash: Bytes::new(),
         post_state_hash: Bytes::new(),
+        authority_funding_certificate: None,
+        authority_cost_witness: None,
+        admission_status: Default::default(),
     };
     let reconstructed = pd
         .to_cosigned()
@@ -311,6 +320,9 @@ fn processed_deploy_proto_round_trip_preserves_cosigners() {
         cosigner_threshold: 0,
         pre_state_hash: Bytes::new(),
         post_state_hash: Bytes::new(),
+        authority_funding_certificate: None,
+        authority_cost_witness: None,
+        admission_status: Default::default(),
     };
     let pd_proto = pd_before.clone().to_proto();
     // Cosigners should be in the inner DeployDataProto (D3: no primary_phlo_share).
@@ -343,6 +355,9 @@ fn legacy_single_sig_processed_deploy_proto_round_trip_unchanged() {
         cosigner_threshold: 0,
         pre_state_hash: Bytes::new(),
         post_state_hash: Bytes::new(),
+        authority_funding_certificate: None,
+        authority_cost_witness: None,
+        admission_status: Default::default(),
     };
     let pd_proto = pd_before.clone().to_proto();
     let inner_deploy = pd_proto.deploy.as_ref().expect("proto deploy field");
@@ -419,6 +434,7 @@ fn sig_algebra_overrides_flat_cosigners_routes_via_algebra_dispatch() {
         cosigners: vec![bogus_cosigner],
         cosigner_threshold: 0,
         sig_algebra: Some(algebra),
+        authority_presentations: Vec::new(),
     };
 
     // The flat-cosigners path would fail (bogus sig), but the sig_algebra path

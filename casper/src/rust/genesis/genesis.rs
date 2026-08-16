@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::Par;
 use models::rust::block::state_hash::StateHash;
@@ -10,6 +11,7 @@ use models::rust::casper::protocol::casper_message::{
 };
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::merging::mergeable_tags;
+use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 
 use super::contracts::proof_of_stake::ProofOfStake;
@@ -26,6 +28,7 @@ pub struct Genesis {
     pub block_number: i64,
     pub proof_of_stake: ProofOfStake,
     pub vaults: Vec<Vault>,
+    pub client_fuel_allocations: Vec<(PublicKey, i64)>,
     pub supply: i64,
     pub version: i64,
     /// Full display name of the native token (e.g. "F1R3CAP"). Baked into
@@ -38,6 +41,121 @@ pub struct Genesis {
 }
 
 impl Genesis {
+    pub fn vaults_with_protocol_funding(
+        proof_of_stake: &ProofOfStake,
+        vaults: &[Vault],
+        client_fuel_allocations: &[(PublicKey, i64)],
+    ) -> Result<Vec<Vault>, CasperError> {
+        Self::validate_cost_accounting_parameters(proof_of_stake, client_fuel_allocations)?;
+        let mut balances = std::collections::BTreeMap::<String, (VaultAddress, u64)>::new();
+        for vault in vaults {
+            let entry = balances
+                .entry(vault.vault_address.to_base58())
+                .or_insert_with(|| (vault.vault_address.clone(), 0));
+            entry.1 = entry.1.checked_add(vault.initial_balance).ok_or_else(|| {
+                CasperError::RuntimeError("genesis vault balance overflow".to_string())
+            })?;
+        }
+        let initial_phlogiston =
+            u64::try_from(proof_of_stake.initial_phlogiston).map_err(|_| {
+                CasperError::RuntimeError("initial_phlogiston must be non-negative".to_string())
+            })?;
+        for validator in &proof_of_stake.validators {
+            let address = VaultAddress::from_public_key(&validator.pk).ok_or_else(|| {
+                CasperError::RuntimeError(
+                    "validator public key has no native vault address".to_string(),
+                )
+            })?;
+            let entry = balances
+                .entry(address.to_base58())
+                .or_insert_with(|| (address, 0));
+            entry.1 = entry.1.checked_add(initial_phlogiston).ok_or_else(|| {
+                CasperError::RuntimeError("genesis validator fuel balance overflow".to_string())
+            })?;
+        }
+        for (public_key, amount) in client_fuel_allocations {
+            let address = VaultAddress::from_public_key(public_key).ok_or_else(|| {
+                CasperError::RuntimeError(
+                    "client public key has no native vault address".to_string(),
+                )
+            })?;
+            let amount = u64::try_from(*amount).map_err(|_| {
+                CasperError::RuntimeError("client fuel allocation must be non-negative".to_string())
+            })?;
+            let entry = balances
+                .entry(address.to_base58())
+                .or_insert_with(|| (address, 0));
+            entry.1 = entry.1.checked_add(amount).ok_or_else(|| {
+                CasperError::RuntimeError("genesis client fuel balance overflow".to_string())
+            })?;
+        }
+        Ok(balances
+            .into_values()
+            .map(|(vault_address, initial_balance)| Vault {
+                vault_address,
+                initial_balance,
+            })
+            .collect())
+    }
+
+    pub fn validate_cost_accounting_parameters(
+        proof_of_stake: &ProofOfStake,
+        client_fuel_allocations: &[(PublicKey, i64)],
+    ) -> Result<(), CasperError> {
+        if proof_of_stake.epoch_length <= 0 {
+            return Err(CasperError::RuntimeError(format!(
+                "epoch_length must be positive; got {}",
+                proof_of_stake.epoch_length
+            )));
+        }
+        if proof_of_stake.max_cosigners_per_deploy == 0 {
+            return Err(CasperError::RuntimeError(
+                "max_cosigners_per_deploy must be at least 1".to_string(),
+            ));
+        }
+        if proof_of_stake.initial_phlogiston < 0 {
+            return Err(CasperError::RuntimeError(format!(
+                "initial_phlogiston must be non-negative; got {}",
+                proof_of_stake.initial_phlogiston
+            )));
+        }
+        if proof_of_stake.epoch_phlogiston < 0 {
+            return Err(CasperError::RuntimeError(format!(
+                "epoch_phlogiston must be non-negative; got {}",
+                proof_of_stake.epoch_phlogiston
+            )));
+        }
+        for validator in &proof_of_stake.validators {
+            if validator.pk.bytes.is_empty() {
+                return Err(CasperError::RuntimeError(
+                    "validator public key must be non-empty".to_string(),
+                ));
+            }
+            VaultAddress::from_public_key(&validator.pk).ok_or_else(|| {
+                CasperError::RuntimeError(
+                    "validator public key has no native vault address".to_string(),
+                )
+            })?;
+        }
+        for (public_key, amount) in client_fuel_allocations {
+            if public_key.bytes.is_empty() {
+                return Err(CasperError::RuntimeError(
+                    "client public key must be non-empty".to_string(),
+                ));
+            }
+            if *amount < 0 {
+                return Err(CasperError::RuntimeError(format!(
+                    "client fuel allocation must be non-negative; got {amount}"
+                )));
+            }
+            VaultAddress::from_public_key(public_key).ok_or_else(|| {
+                CasperError::RuntimeError(
+                    "client public key has no native vault address".to_string(),
+                )
+            })?;
+        }
+        Ok(())
+    }
     pub fn non_negative_mergeable_tag_name() -> Par {
         mergeable_tags::non_negative_mergeable_tag_name()
     }
@@ -166,9 +284,14 @@ impl Genesis {
         runtime_manager: &RuntimeManager,
         genesis: &Genesis,
     ) -> Result<BlockMessage, CasperError> {
-        let blessed_terms = Self::default_blessed_terms(
+        let funded_vaults = Self::vaults_with_protocol_funding(
             &genesis.proof_of_stake,
             &genesis.vaults,
+            &genesis.client_fuel_allocations,
+        )?;
+        let blessed_terms = Self::default_blessed_terms(
+            &genesis.proof_of_stake,
+            &funded_vaults,
             genesis.supply,
             &genesis.shard_id,
             &genesis.native_token_name,
@@ -210,12 +333,9 @@ impl Genesis {
             .into_iter()
             .filter(|deploy| !deploy.is_failed)
             .map(|mut deploy| {
-                use prost::Message;
-                deploy.deploy_log.sort_by(|a, b| {
-                    let a_bytes = a.to_proto().encode_to_vec();
-                    let b_bytes = b.to_proto().encode_to_vec();
-                    a_bytes.cmp(&b_bytes)
-                });
+                crate::rust::util::event_converter::canonicalize_casper_events(
+                    &mut deploy.deploy_log,
+                );
                 deploy
             })
             .collect();

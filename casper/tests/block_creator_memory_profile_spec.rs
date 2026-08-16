@@ -79,6 +79,7 @@ fn create_deploy(
         valid_after_block_number: 0,
         shard_id: shard_id.to_string(),
         expiration_timestamp: None,
+        authority_presentations: Vec::new(),
     };
 
     Signed::create(deploy_data, Box::new(Secp256k1), validator_sk.clone())
@@ -93,6 +94,7 @@ fn create_snapshot_with_parent(
 ) -> CasperSnapshot {
     let mut snapshot = CasperSnapshot::new(dag);
     snapshot.max_block_num = parent.body.state.block_number;
+    snapshot.last_finalized_block = parent.block_hash.clone();
     snapshot.parents = vec![parent.clone()];
     snapshot.justifications.insert(Justification {
         validator: validator.clone(),
@@ -107,10 +109,12 @@ fn create_snapshot_with_parent(
     shard_conf.shard_name = shard_name;
     shard_conf.deploy_lifespan = DEPLOY_LIFESPAN;
     shard_conf.max_number_of_parents = 10;
-    shard_conf.casper_version = 1;
+    shard_conf.casper_version = casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION;
     shard_conf.config_version = 1;
     shard_conf.bond_minimum = 0;
     shard_conf.bond_maximum = i64::MAX;
+    shard_conf.epoch_length = 1000;
+    shard_conf.quarantine_length = 50_000;
     shard_conf.disable_late_block_filtering = false;
     shard_conf.disable_validator_progress_check = false;
 
@@ -127,8 +131,7 @@ fn create_snapshot_with_parent(
 }
 
 #[test]
-#[ignore = "manual memory profiling; run with --ignored --nocapture"]
-fn profile_block_creator_create_memory_usage() {
+fn advancing_block_creator_has_bounded_resource_lifecycle() {
     let handle = std::thread::Builder::new()
         .name("block-creator-memory-profile".to_string())
         .stack_size(64 * 1024 * 1024)
@@ -147,10 +150,10 @@ fn profile_block_creator_create_memory_usage() {
 }
 
 async fn run_block_creator_create_memory_profile() {
-    let iterations: usize = 10;
-    let sample_every: usize = 5;
-    let timeout_ms: u64 = 2000;
-    let growth_limit_kb: Option<usize> = None;
+    let iterations: usize = 3;
+    let sample_every: usize = 1;
+    let timeout_ms: u64 = 30_000;
+    let growth_limit_kb: Option<usize> = Some(768 * 1024);
 
     let secp = Secp256k1;
     let (validator_sk, validator_pk) = secp.new_key_pair();
@@ -216,6 +219,7 @@ async fn run_block_creator_create_memory_profile() {
             epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
         },
         vaults: Vec::new(),
+        client_fuel_allocations: Vec::new(),
         supply: i64::MAX,
         version: 1,
         native_token_name: "F1R3CAP".to_string(),
@@ -236,7 +240,7 @@ async fn run_block_creator_create_memory_profile() {
         )
         .expect("Failed to insert parent block in DAG");
 
-    let snapshot = create_snapshot_with_parent(
+    let mut snapshot = create_snapshot_with_parent(
         dag_storage
             .get_representation()
             .expect("dag representation"),
@@ -250,6 +254,7 @@ async fn run_block_creator_create_memory_profile() {
     let mut error_count = 0usize;
     let mut timeout_count = 0usize;
     let mut error_samples: Vec<String> = Vec::new();
+    let mut post_state_roots = Vec::new();
     let mut samples: Vec<(usize, usize)> = Vec::new();
     let mut last_rss_kb = vm_rss_kb();
     if let Some(rss) = last_rss_kb {
@@ -268,7 +273,7 @@ async fn run_block_creator_create_memory_profile() {
             ds.add(vec![deploy]).expect("Failed to add deploy");
         }
 
-        let outcome = match timeout(
+        let (outcome, created_block) = match timeout(
             Duration::from_millis(timeout_ms),
             block_creator::create(
                 &snapshot,
@@ -284,27 +289,48 @@ async fn run_block_creator_create_memory_profile() {
         )
         .await
         {
-            Ok(Ok(BlockCreatorResult::Created(..))) => {
+            Ok(Ok(BlockCreatorResult::Created(block, _, _))) => {
                 created_count += 1;
-                "created"
+                ("created", Some(block))
             }
             Ok(Ok(_)) => {
                 non_created_count += 1;
-                "non_created"
+                ("non_created", None)
             }
             Ok(Err(err)) => {
                 error_count += 1;
                 if error_samples.len() < 5 {
                     error_samples.push(format!("{:?}", err));
                 }
-                "error"
+                ("error", None)
             }
             Err(_) => {
                 error_count += 1;
                 timeout_count += 1;
-                "timeout"
+                ("timeout", None)
             }
         };
+
+        if let Some(block) = created_block {
+            post_state_roots.push(block.body.state.post_state_hash.clone());
+            block_store
+                .put_block_message(&block)
+                .expect("Failed to store created block");
+            dag_storage
+                .insert(
+                    &block,
+                    block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+                )
+                .expect("Failed to advance DAG");
+            snapshot = create_snapshot_with_parent(
+                dag_storage
+                    .get_representation()
+                    .expect("dag representation"),
+                block,
+                validator.clone(),
+                shard_name.clone(),
+            );
+        }
 
         {
             let mut ds = deploy_storage.lock();
@@ -355,14 +381,17 @@ async fn run_block_creator_create_memory_profile() {
         "block_creator::create profile created={}, non_created={}, errors={}, timeouts={}, vmrss_kb_samples={:?}, error_samples={:?}",
         created_count, non_created_count, error_count, timeout_count, samples, error_samples
     );
+    assert_eq!(
+        created_count, iterations,
+        "every advancing proposal must succeed; non_created={}, errors={}, timeouts={}, samples={:?}, error_samples={:?}",
+        non_created_count, error_count, timeout_count, samples, error_samples
+    );
+    assert_eq!(post_state_roots.len(), iterations);
     assert!(
-        created_count > 0,
-        "profiling requires at least one successful block_creator::create; got created=0, non_created={}, errors={}, timeouts={}, samples={:?}, errors={:?}",
-        non_created_count,
-        error_count,
-        timeout_count,
-        samples,
-        error_samples
+        post_state_roots
+            .windows(2)
+            .all(|roots| roots[0] != roots[1]),
+        "each accepted block must advance the authenticated state root"
     );
 
     if let (Some(limit), Some((_, first)), Some((_, last))) = (
@@ -464,6 +493,7 @@ async fn run_block_creator_phase_split_memory_profile() {
             epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
         },
         vaults: Vec::new(),
+        client_fuel_allocations: Vec::new(),
         supply: i64::MAX,
         version: 1,
         native_token_name: "F1R3CAP".to_string(),
@@ -569,18 +599,10 @@ async fn run_block_creator_phase_split_memory_profile() {
 
         let rss_before = vm_rss_kb();
 
-        let (pre_state_hash, _rejected, _rejected_slashes) = if skip_parents_compute {
+        let (pre_state_hash, _rejected) = if skip_parents_compute {
             match snapshot.parents.first() {
-                Some(parent) => (
-                    parent.body.state.post_state_hash.clone(),
-                    Vec::new(),
-                    Vec::new(),
-                ),
-                None => (
-                    RuntimeManager::empty_state_hash_fixed(),
-                    Vec::new(),
-                    Vec::new(),
-                ),
+                Some(parent) => (parent.body.state.post_state_hash.clone(), Vec::new()),
+                None => (RuntimeManager::empty_state_hash_fixed(), Vec::new()),
             }
         } else {
             let latest_messages: std::collections::BTreeMap<_, _> = snapshot

@@ -1,24 +1,20 @@
 //! WD-D1 acceptance tests for the pure `Δ_s`/`Σ_s` demand analyzer
 //! (`accounting/delta_sigma.rs`).
 //!
-//! The headline test is the LOAD-BEARING EQUIVALENCE (consensus-critical, the
-//! gate↔runtime bridge): the static `demand().known_lower_bound` MUST equal the
-//! runtime's actual consumed token count — the number of
-//! `BillableTokenEvent{kind: Comm}` events the reducer emits — for a funded
-//! deploy that runs to completion. D3 (DR-9, OD-3): consensus cost = ONE token
-//! per COMM (send/receive ONLY); `new`/`match`/`if` are diagnostic `Reduction`s
-//! that contribute ZERO. This is the spec's "consumed = Δ_s", which
-//! `replay_cost_mismatch` guards as `total_cost == consumed`. If this ever
-//! diverges the acceptance gate would admit deploys the runtime cannot fund (or
-//! reject fundable ones), forking consensus.
+//! The load-bearing gate/runtime relation is that the static
+//! `demand().certified_upper_bound` dominates actual atomic-COMM token count for
+//! the closed, non-persistent fragment. It counts potential send/receive
+//! introductions, while the runtime counts successful matches; unmatched I/O is
+//! therefore free and the bound is generally strict. Persistent I/O and dynamic
+//! dequotation are unprovable structurally. Production uses exact state-bound
+//! evidence rooted in the authenticated pre-state.
 //!
 //! We validate it against:
 //!   * the cost-accounting paper's §7.4 debit/credit example, whose desugared
-//!     form has **8 token-consuming COMMs** (the "8 not 6" semantic count after
-//!     `?!` desugaring); D3 re-pins consensus cost to exactly that 8 (the outer
-//!     `new` no longer counts — §7.4 "9 → 8"), and
-//!   * the Appendix-B three-layer validator handler (5 COMMs under D3 — its
-//!     outer `new` no longer counts, so 6 → 5).
+//!     form has **8 potential communication introductions** after `?!`
+//!     desugaring and realizes 4 atomic matches, and
+//!   * the Appendix-B three-layer validator handler, with 5 introductions and 2
+//!     realized matches.
 //!
 //! Both contracts are parsed through `Compiler::source_to_adt` — the SAME
 //! normalizer path the runtime evaluates — so `demand` analyses exactly the `Par`
@@ -33,16 +29,16 @@ use models::rhoapi::var::VarInstance;
 use models::rhoapi::Par;
 use models::rust::utils::new_send;
 use prost::Message;
+use rholang::rust::interpreter::accounting::authority::{cost_signature_to_sig, DemandBound};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::delta_sigma::{
-    demand, demand_by_sig, desugar_for_funding, effective_supply, effective_supply_with, is_funded,
-    match_channel_to_lane, sig_key, Decomposition, DemandEntry,
+    demand, demand_bound, demand_by_sig, desugar_for_funding, effective_supply,
+    effective_supply_with, is_funded, match_channel_to_lane, sig_key, Decomposition, DemandEntry,
 };
 use rholang::rust::interpreter::accounting::{
     envelope_sig_compound, BillableKind, RuntimeBudget, Sig,
 };
 use rholang::rust::interpreter::compiler::compiler::Compiler;
-use rholang::rust::interpreter::metering::MeteredMachine;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::test_utils::resources::create_runtimes;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
@@ -60,13 +56,21 @@ async fn fresh_runtime() -> RhoRuntimeImpl {
     runtime
 }
 
+fn install_test_payer(runtime: &RhoRuntimeImpl) {
+    runtime.cost.set_deploy_signature_funded(
+        b"delta-sigma-spec-deploy",
+        Sig::Ground(b"alice-envelope".to_vec()),
+    );
+}
+
 /// Run `contract` to completion on a fresh runtime with an abundant budget and
-/// return the runtime's consumed TOKEN count: the number of `Comm`
+/// return the runtime's consumed TOKEN count: the number of atomic `Comm`
 /// `BillableTokenEvent`s in the finalized canonical event log (D3/DR-9
 /// token-per-COMM — each COMM is ONE token; `Reduction`/`Primitive`/
 /// `Substitution` events are diagnostic and excluded from the consensus tally).
 async fn runtime_consumed_token_count(contract: &str) -> usize {
     let mut runtime = fresh_runtime().await;
+    install_test_payer(&runtime);
     let result = runtime
         .evaluate_with_phlo(contract, Cost::create(50_000_000, "delta_sigma_spec"))
         .await
@@ -88,82 +92,83 @@ fn normalized_par(contract: &str) -> Par {
     Compiler::source_to_adt(contract).expect("contract must parse + normalize")
 }
 
-/// Recursively count token-consuming COMM nodes (sends + receives) ONLY,
+/// Recursively count potential communication introductions (sends + receives),
 /// excluding `new`/`match`/`if`. This is the cost-accounting paper's Def-17 §7.4
-/// SEMANTIC count (the number of for-comprehensions/sends after `?!`
-/// desugaring). Used to demonstrate the "8 not 6" property independently of the
-/// runtime's additional metering of `new` nodes.
-fn comm_node_count(par: &Par) -> usize {
+/// as used by the conservative structural analyzer. This is not the number of
+/// successful runtime matches.
+fn communication_introduction_count(par: &Par) -> usize {
     let mut n = 0;
     for send in &par.sends {
         n += 1;
         if let Some(chan) = &send.chan {
-            n += comm_node_count(chan);
+            n += communication_introduction_count(chan);
         }
         for datum in &send.data {
-            n += comm_node_count(datum);
+            n += communication_introduction_count(datum);
         }
     }
     for receive in &par.receives {
         n += 1;
         for bind in &receive.binds {
             if let Some(source) = &bind.source {
-                n += comm_node_count(source);
+                n += communication_introduction_count(source);
             }
             for pattern in &bind.patterns {
-                n += comm_node_count(pattern);
+                n += communication_introduction_count(pattern);
             }
         }
         if let Some(body) = &receive.body {
-            n += comm_node_count(body);
+            n += communication_introduction_count(body);
         }
     }
     for new in &par.news {
         if let Some(body) = &new.p {
-            n += comm_node_count(body);
+            n += communication_introduction_count(body);
         }
     }
     for mat in &par.matches {
         if let Some(target) = &mat.target {
-            n += comm_node_count(target);
+            n += communication_introduction_count(target);
         }
         for case in &mat.cases {
             if let Some(source) = &case.source {
-                n += comm_node_count(source);
+                n += communication_introduction_count(source);
             }
         }
     }
     for conditional in &par.conditionals {
         if let Some(condition) = &conditional.condition {
-            n += comm_node_count(condition);
+            n += communication_introduction_count(condition);
         }
         if let Some(if_true) = &conditional.if_true {
-            n += comm_node_count(if_true);
+            n += communication_introduction_count(if_true);
         }
         if let Some(if_false) = &conditional.if_false {
-            n += comm_node_count(if_false);
+            n += communication_introduction_count(if_false);
         }
     }
     for bundle in &par.bundles {
         if let Some(body) = &bundle.body {
-            n += comm_node_count(body);
+            n += communication_introduction_count(body);
+        }
+    }
+    for signed in &par.cost_signed_terms {
+        if let Some(body) = &signed.body {
+            n += communication_introduction_count(body);
         }
     }
     n
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// THE LOAD-BEARING EQUIVALENCE: demand() == runtime consumed token count.
+// THE LOAD-BEARING REFINEMENT: realized atomic COMM <= structural demand.
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// §7.4 debit/credit orchestrator. Two synchronous round-trips driven by an
 /// orchestrator against two reply-emitting handlers; fully reduces to `Nil`. The
-/// desugared form has exactly **8 token-consuming COMMs** (4 sends + 4
-/// for-comprehensions) — the paper's semantic count (Def 17, §7.4) — plus the
-/// single outer `new` that allocates the channels. D3 (DR-9, OD-3): the
-/// CONSENSUS cost is the COMM count = 8 (the outer `new` is a diagnostic
-/// `Reduction`, NOT a `Comm`, so it no longer counts — this is the §7.4 "9 → 8"
-/// re-pin); `demand` and the runtime's `Comm`-event count both equal 8.
+/// desugared form has exactly **8 potential introductions** (4 sends + 4
+/// receives) and realizes 4 atomic matches. The structural reservation is
+/// deliberately conservative; the state-bound witness settles the exact 4.
 const SEC_7_4_DEBIT_CREDIT: &str = r#"new d, c, dr, cr in {
     for(@x, ret <= d){ ret!(x) } |
     for(@y, ret <= c){ ret!(y) } |
@@ -182,36 +187,31 @@ const APP_B_HANDLER: &str = r#"new dq, ac, fee in {
 }"#;
 
 #[tokio::test]
-async fn delta_s_equals_runtime_consumed_for_sec_7_4_example() {
+async fn delta_s_bounds_runtime_consumed_for_sec_7_4_example() {
     let par = normalized_par(SEC_7_4_DEBIT_CREDIT);
 
-    // "8 not 6": the desugared §7.4 example has exactly 8 token-consuming COMMs
-    // (sends + receives), the SEMANTIC count after `?!` desugaring — strictly
-    // more than the 6 syntactic signed layers of the sugared surface form.
-    let comms = comm_node_count(&par);
+    let introductions = communication_introduction_count(&par);
     assert_eq!(
-        comms, 8,
-        "the §7.4 desugared example must have 8 token-consuming COMMs (semantic count)"
+        introductions, 8,
+        "the §7.4 desugared example must have 8 potential introductions"
     );
 
-    // D3 (DR-9, OD-3): the static demand (per-COMM) must equal the runtime's
-    // consumed COMM-event count exactly.
     let analysis = demand(&par, &envelope_sig());
     let runtime_consumed = runtime_consumed_token_count(SEC_7_4_DEBIT_CREDIT).await;
 
     assert!(
-        !analysis.unknown,
-        "the §7.4 example is fully statically resolvable (no unresolved *x)"
+        analysis.unknown,
+        "the persistent §7.4 handlers require state-bound evidence"
     );
-    assert_eq!(
-        analysis.known_lower_bound as usize, runtime_consumed,
-        "Δ_s ({}) must equal the runtime consumed COMM count ({}) for the §7.4 example",
-        analysis.known_lower_bound, runtime_consumed
+    assert!(
+        analysis.certified_upper_bound as usize >= runtime_consumed,
+        "Δ_s ({}) must bound realized atomic-COMM cost ({})",
+        analysis.certified_upper_bound,
+        runtime_consumed
     );
-    // §7.4 "9 → 8": consensus cost = the 8 COMMs (the outer `new` no longer
-    // counts). gate demand == runtime consumed == 8 == comm_node_count.
-    assert_eq!(analysis.known_lower_bound, 8);
-    assert_eq!(analysis.known_lower_bound as usize, comms);
+    assert_eq!(analysis.certified_upper_bound, 8);
+    assert_eq!(analysis.certified_upper_bound as usize, introductions);
+    assert_eq!(runtime_consumed, 4);
 }
 
 /// B6 (CA-P-176) — the SUGARED §7.4 surface form, written with the synchronous-
@@ -220,9 +220,9 @@ async fn delta_s_equals_runtime_consumed_for_sec_7_4_example() {
 /// expands EACH `chan!?(args).` to `new ret in { chan!(ret, args) | for(_ <- ret){ Nil } }`
 /// — a send + a wildcard reply for-comprehension. So the SOURCE's 6 token-bearing
 /// signed layers (2 handler `for`s + 2 handler `ret!` replies + 2 `!?` sync sends)
-/// become 8 token-consuming COMMs after desugaring: the 2 `!?` each contribute a
-/// SECOND COMM (their generated reply receive), so 6 → 8. This is the literal
-/// "8 not 6" semantic count. (`d!?(1).` is the standalone synchronous send with
+/// become 8 potential introductions after desugaring: the 2 `!?` each contribute
+/// a generated reply receive, so 6 → 8. This is the structural reservation
+/// count. (`d!?(1).` is the standalone synchronous send with
 /// the empty continuation `.` — grammar `send_sync` + `empty_cont`.)
 const SEC_7_4_SUGARED: &str = r#"new d, c in {
     for(@x, ret <= d){ ret!(x) } |
@@ -278,11 +278,11 @@ fn sync_reply_receive_count(par: &Par) -> usize {
 /// the two-sided `?!`/`!?` expansion, and `Δ_s == 8`.
 ///
 /// The two-sided sync round-trip is already exercised end-to-end by
-/// `delta_s_equals_runtime_consumed_for_sec_7_4_example` (the desugared form);
+/// `delta_s_bounds_runtime_consumed_for_sec_7_4_example` (the desugared form);
 /// this test PINS THE COUNT: the SUGARED surface (`SEC_7_4_SUGARED`, two `!?`
 /// sync sends) carries exactly 2 surface sync sends, and the normalizer expands
 /// each into a send + a wildcard reply receive — so the desugared `Par` has 8
-/// token-consuming COMMs, of which exactly 2 are `!?`-introduced reply receives.
+/// potential introductions, of which exactly 2 are `!?`-introduced reply receives.
 /// The surface signed-layer count is therefore 8 − 2 = 6, and `Δ_s` (which
 /// counts the desugared COMMs) is 8.
 #[tokio::test]
@@ -297,11 +297,11 @@ async fn sec_7_4_two_sided_desugar_pins_source_6_to_desugared_8() {
 
     let par = normalized_par(SEC_7_4_SUGARED);
 
-    // DESUGARED count: 8 token-consuming COMMs — the "8 not 6" semantic count.
-    let desugared_comms = comm_node_count(&par);
+    // DESUGARED structural count: 8 potential communication introductions.
+    let desugared_comms = communication_introduction_count(&par);
     assert_eq!(
         desugared_comms, 8,
-        "the two-sided §7.4 sugar desugars to 8 token-consuming COMMs"
+        "the two-sided §7.4 sugar desugars to 8 potential introductions"
     );
 
     // Exactly 2 of those 8 COMMs are the `!?`-introduced wildcard reply receives
@@ -320,45 +320,49 @@ async fn sec_7_4_two_sided_desugar_pins_source_6_to_desugared_8() {
         "§7.4 source signed-layer count = 8 desugared COMMs − 2 `!?` reply receives = 6"
     );
 
-    // Δ_s counts the desugared COMMs, so Δ_s == 8 (and matches the explicit
-    // desugared `SEC_7_4_DEBIT_CREDIT` example exactly).
+    // The numeric structural projection is 8, but persistent handlers make the
+    // finite proof unavailable; production uses state-bound evidence.
     let analysis = demand(&par, &envelope_sig());
-    assert!(!analysis.unknown, "the §7.4 example is fully resolvable");
+    assert!(
+        analysis.unknown,
+        "persistent handlers are structurally unprovable"
+    );
     assert_eq!(
-        analysis.known_lower_bound, 8,
+        analysis.certified_upper_bound, 8,
         "Δ_s == 8 for the §7.4 two-sided desugar"
     );
 
-    // The runtime confirms the 8: the live reducer consumes exactly 8 COMM tokens.
+    // With empty sync continuations only the two request rendezvous commit; the
+    // remaining introductions are unforced or unmatched.
     let runtime_consumed = runtime_consumed_token_count(SEC_7_4_SUGARED).await;
     assert_eq!(
-        runtime_consumed, 8,
-        "the runtime consumes exactly 8 COMM tokens for the §7.4 two-sided desugar"
+        runtime_consumed, 2,
+        "the runtime consumes exactly 2 atomic-COMM tokens"
     );
 
     // Cross-pin: the sugared form and the hand-desugared `SEC_7_4_DEBIT_CREDIT`
-    // example carry the SAME desugared COMM count (8) and the SAME Δ_s (8) — they
-    // are two surface spellings of the one §7.4 orchestrator.
+    // example carry the same structural introduction count and projection.
     let hand_desugared = normalized_par(SEC_7_4_DEBIT_CREDIT);
     assert_eq!(
-        comm_node_count(&hand_desugared),
+        communication_introduction_count(&hand_desugared),
         desugared_comms,
         "sugared `!?` form and hand-desugared form have the same 8-COMM semantic count"
     );
 }
 
 #[tokio::test]
-async fn delta_s_equals_runtime_consumed_for_app_b_handler() {
+async fn delta_s_bounds_runtime_consumed_for_app_b_handler() {
     let par = normalized_par(APP_B_HANDLER);
 
     let analysis = demand(&par, &envelope_sig());
     let runtime_consumed = runtime_consumed_token_count(APP_B_HANDLER).await;
 
     assert!(!analysis.unknown);
-    assert_eq!(
-        analysis.known_lower_bound as usize, runtime_consumed,
-        "Δ_s ({}) must equal the runtime consumed token count ({}) for the App.B handler",
-        analysis.known_lower_bound, runtime_consumed
+    assert!(
+        analysis.certified_upper_bound as usize >= runtime_consumed,
+        "Δ_s ({}) must bound runtime cost ({}) for the App.B handler",
+        analysis.certified_upper_bound,
+        runtime_consumed
     );
     // The App.B handler embeds the paper's 3 signed `{·}_v` layers; the desugared
     // realization meters 2 receives (the `for dep` / `for tok`) + 2 setup sends
@@ -367,21 +371,21 @@ async fn delta_s_equals_runtime_consumed_for_app_b_handler() {
     // Reduction worth 0, so the App.B count drops 6 → 5). Pin the COMM core (>= 3
     // signed layers) and the total.
     assert!(
-        comm_node_count(&par) >= 3,
-        "the App.B handler must carry at least its 3 signed-layer COMMs"
+        communication_introduction_count(&par) >= 3,
+        "the App.B handler must carry at least its 3 signed-layer introductions"
     );
-    assert_eq!(analysis.known_lower_bound, 5);
-    // gate demand == runtime consumed == comm_node_count, all per-COMM.
-    assert_eq!(analysis.known_lower_bound as usize, comm_node_count(&par));
+    assert_eq!(analysis.certified_upper_bound, 5);
+    assert_eq!(
+        analysis.certified_upper_bound as usize,
+        communication_introduction_count(&par)
+    );
+    assert_eq!(runtime_consumed, 2);
 }
 
-/// D3 (DR-9, OD-3) — GATE DEMAND == RUNTIME COMM COUNT. The block-assembly
-/// gate's static `demand().known_lower_bound` MUST equal the runtime's actual
-/// consumed COMM-event count for every funded, fully-reducing deploy. This is
-/// the consensus-critical D1→D3 bridge (the gate admits exactly what the runtime
-/// consumes); the explicit pin complements the §7.4 / App.B headline examples.
+/// D3 (DR-9, OD-3) — a branch-free reservation is exact. General contracts only
+/// require actual COMM cost to be bounded above by the certified reservation.
 #[tokio::test]
-async fn gate_demand_equals_runtime_comm_count() {
+async fn straight_line_gate_bound_dominates_runtime_comm_count() {
     let contracts = [
         SEC_7_4_DEBIT_CREDIT,
         APP_B_HANDLER,
@@ -391,69 +395,75 @@ async fn gate_demand_equals_runtime_comm_count() {
     ];
     for contract in contracts {
         let par = normalized_par(contract);
-        let demand_count = demand(&par, &envelope_sig()).known_lower_bound;
+        let demand_count = demand(&par, &envelope_sig()).certified_upper_bound;
         let runtime_comm_count = runtime_consumed_token_count(contract).await as i64;
-        let comm_nodes = comm_node_count(&par) as i64;
-        assert_eq!(
-            demand_count, runtime_comm_count,
-            "gate demand ({}) must equal runtime COMM count ({}) for: {}",
-            demand_count, runtime_comm_count, contract
+        let introductions = communication_introduction_count(&par) as i64;
+        assert!(
+            demand_count >= runtime_comm_count,
+            "gate demand ({}) must dominate runtime COMM count ({}) for: {}",
+            demand_count,
+            runtime_comm_count,
+            contract
         );
         assert_eq!(
-            demand_count, comm_nodes,
-            "gate demand ({}) must equal the static COMM-node count ({}) for: {}",
-            demand_count, comm_nodes, contract
+            demand_count, introductions,
+            "gate demand ({}) must equal the introduction count ({}) for: {}",
+            demand_count, introductions, contract
         );
     }
 }
 
-/// D3 (DR-9, OD-3) — SETTLEMENT DEBIT == COMM COUNT. The per-pool settlement
-/// debit the gate accumulates (`acceptance.rs`: `Σ demand.known_lower_bound`
-/// over the admitted prefix) is, for a single admitted deploy, exactly that
-/// deploy's per-COMM demand. With a zero safety margin and a supply that exactly
-/// meets the demand, the admitted deploy's debit equals its COMM count — so
-/// `post Σ⟦s⟧ = pre − COMM_count`. We pin this debit==COMM identity directly on
-/// the analyzer (the gate's `is_funded` admits iff `Σ ≥ Δ` for resolvable demand
-/// — the margin applies only to over-approximated `unknown` demand — and the
-/// debit it then subtracts is `Δ`, the COMM count).
 #[tokio::test]
-async fn settlement_debit_equals_comm_count() {
-    for contract in [
-        SEC_7_4_DEBIT_CREDIT,
-        APP_B_HANDLER,
-        r#"@"a"!(1) | @"b"!(2)"#,
-    ] {
+async fn one_signed_scope_over_multiple_redexes_reserves_every_possible_firing() {
+    let contract =
+        r#"{% for(_ <- @"x"){ Nil } | @"x"!(0) | for(_ <- @"y"){ Nil } | @"y"!(0) %}[ payer ]"#;
+    let par = normalized_par(contract);
+    let signature = par.cost_signed_terms[0].signature.as_ref().unwrap();
+    let lane = cost_signature_to_sig(signature).unwrap().lane_hash();
+    let DemandBound::FiniteUpperBound { bound, .. } = demand_bound(&par, &envelope_sig()) else {
+        panic!("the closed non-persistent term must have a finite bound")
+    };
+    assert_eq!(bound.get(&lane), 4);
+
+    let mut runtime = fresh_runtime().await;
+    let result = runtime
+        .evaluate_with_phlo(contract, Cost::create(50_000_000, "signed scope bound"))
+        .await
+        .unwrap();
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    assert_eq!(runtime.cost.authority_realized().get(&lane), 2);
+    assert!(bound.dominates(&runtime.cost.authority_realized()));
+}
+
+/// For closed, non-persistent terms the structural reservation is finite and
+/// equals the potential-introduction count.
+#[tokio::test]
+async fn straight_line_reservation_equals_introduction_count() {
+    for contract in [APP_B_HANDLER, r#"@"a"!(1) | @"b"!(2)"#] {
         let par = normalized_par(contract);
         let analysis = demand(&par, &envelope_sig());
-        let comm_count = comm_node_count(&par) as i64;
-        // The demand (== the debit the gate subtracts) is the COMM count.
-        assert_eq!(analysis.known_lower_bound, comm_count);
-        // A supply that exactly meets the demand (margin 0) admits the deploy;
-        // the debit then drives `post = pre − Δ = pre − comm_count`.
-        let supply = analysis.known_lower_bound;
-        assert!(
-            is_funded(&analysis, supply, 0),
-            "Σ = Δ must admit at margin 0"
-        );
-        let post = supply - analysis.known_lower_bound; // the settlement write.
-        assert_eq!(post, 0, "post Σ⟦s⟧ = pre − COMM_count must be exact");
+        let introductions = communication_introduction_count(&par) as i64;
+        assert_eq!(analysis.certified_upper_bound, introductions);
+        // A supply that exactly meets the reservation admits the deploy.
+        let supply = analysis.certified_upper_bound;
+        assert!(is_funded(&analysis, supply), "Σ = Δ must admit at margin 0");
     }
 }
 
 /// Cross-check on smaller fully-reducing deploys to widen the equivalence
 /// evidence beyond the two headline examples.
 #[tokio::test]
-async fn delta_s_equals_runtime_consumed_across_assorted_deploys() {
+async fn straight_line_delta_s_bounds_runtime_consumed_across_assorted_deploys() {
     // D3 (DR-9, OD-3): per-COMM counts (send/receive only; `new` is a diagnostic
     // Reduction worth 0). One send ⇒ 1. `new x in { x!(1) | for(y<-x){Nil} }` ⇒
     // 1 send + 1 receive = 2 (the `new` no longer counts). The third adds one
     // more send in the receive body ⇒ 3.
     let cases = [
-        (r#"@"a"!(1)"#, 1_i64),
-        (r#"new x in { x!(1) | for(y <- x){ Nil } }"#, 2),
-        (r#"new x, r in { x!(1) | for(y <- x){ r!(*y) } }"#, 3),
+        (r#"@"a"!(1)"#, 1_i64, 0_usize),
+        (r#"new x in { x!(1) | for(y <- x){ Nil } }"#, 2, 1),
+        (r#"new x, r in { x!(1) | for(y <- x){ r!(*y) } }"#, 3, 1),
     ];
-    for (contract, expected) in cases {
+    for (contract, expected_bound, expected_cost) in cases {
         let par = normalized_par(contract);
         let analysis = demand(&par, &envelope_sig());
         let runtime_consumed = runtime_consumed_token_count(contract).await;
@@ -461,14 +471,15 @@ async fn delta_s_equals_runtime_consumed_across_assorted_deploys() {
             !analysis.unknown,
             "contract should be resolvable: {contract}"
         );
-        assert_eq!(
-            analysis.known_lower_bound as usize, runtime_consumed,
-            "Δ_s must equal runtime consumed for: {contract}"
+        assert!(
+            analysis.certified_upper_bound as usize >= runtime_consumed,
+            "Δ_s must dominate runtime consumed for: {contract}"
         );
         assert_eq!(
-            analysis.known_lower_bound, expected,
-            "Δ_s for {contract} should be {expected}"
+            analysis.certified_upper_bound, expected_bound,
+            "Δ_s for {contract} should be {expected_bound}"
         );
+        assert_eq!(runtime_consumed, expected_cost);
     }
 }
 
@@ -490,7 +501,7 @@ async fn normalizer_already_desugars_sync_send() {
     // the sync-send sugar was expanded to send + for by the normalizer.
     let analysis = demand(&par, &envelope_sig());
     assert!(
-        analysis.known_lower_bound >= 2,
+        analysis.certified_upper_bound >= 2,
         "a desugared ?! must contribute at least a send + a for"
     );
 }
@@ -542,46 +553,29 @@ async fn effective_supply_closure_over_real_lane_hashes() {
 
 #[tokio::test]
 async fn is_funded_gate_at_def19_boundary_for_real_demand() {
-    // Analyze a real fully-reducing deploy: D3 per-COMM Δ = 8 for §7.4.
-    let analysis = demand(&normalized_par(SEC_7_4_DEBIT_CREDIT), &envelope_sig());
-    assert_eq!(analysis.known_lower_bound, 8);
+    let analysis = demand(&normalized_par(APP_B_HANDLER), &envelope_sig());
+    assert_eq!(analysis.certified_upper_bound, 5);
     assert!(!analysis.unknown);
 
     // F-B: for fully-resolvable demand the gate is EXACTLY Def 19 `Σ_s ≥ Δ_s` —
     // the economic margin (`min_phlo_price`) is NOT folded into the correctness
     // inequality, so a non-zero margin must NOT shift the known-demand boundary.
-    let margin = 2_i64;
-    // Σ = Δ - 1 = 7 ⇒ reject (under the exact demand).
-    assert!(!is_funded(&analysis, 7, margin));
-    // Σ = Δ = 8 ⇒ accept (Def 19 boundary; the margin does NOT apply to known demand).
-    assert!(is_funded(&analysis, 8, margin));
-    // Σ = Δ + margin - 1 = 9 ⇒ accept (this was REJECTED before the F-B fix).
-    assert!(is_funded(&analysis, 9, margin));
+    assert!(!is_funded(&analysis, 4));
+    assert!(is_funded(&analysis, 5));
+    assert!(is_funded(&analysis, 6));
     // Σ well above ⇒ accept.
-    assert!(is_funded(&analysis, 100, margin));
-    // The margin is inert for known demand: identical verdict at margin 0.
-    assert_eq!(is_funded(&analysis, 8, 0), is_funded(&analysis, 8, margin));
+    assert!(is_funded(&analysis, 100));
 }
 
 #[tokio::test]
-async fn is_funded_unknown_demand_rejected_unless_lower_bound_plus_margin_met() {
-    // A deploy that dequotes an unbound name (`*x` of a name received at runtime)
-    // is NOT statically resolvable ⇒ unknown demand. The gate must reject it
-    // unless the supply clears the KNOWN lower bound plus the margin (Thm 20 safe
-    // direction). We construct an analysis with the unknown flag directly to
-    // pin the boundary precisely (the in-module tests cover the AST trigger).
+async fn is_funded_unknown_demand_requires_finite_bound_proof() {
     let analysis = DemandEntry {
-        known_lower_bound: 5,
+        certified_upper_bound: 5,
         unknown: true,
     };
-    let margin = 4_i64;
-
-    // Σ = Δ_known = 5 (margin unmet) ⇒ reject even though Σ ≥ known lower bound.
-    assert!(!is_funded(&analysis, 5, margin));
-    // Σ = Δ_known + margin - 1 = 8 ⇒ still reject.
-    assert!(!is_funded(&analysis, 8, margin));
-    // Σ = Δ_known + margin = 9 ⇒ accept (margin headroom cleared).
-    assert!(is_funded(&analysis, 9, margin));
+    assert!(!is_funded(&analysis, 5));
+    assert!(!is_funded(&analysis, 8));
+    assert!(!is_funded(&analysis, i64::MAX));
 }
 
 /// W1 Phase 3 (GATE 3) — under the s₀ collapse `demand_by_sig` agrees with
@@ -637,18 +631,12 @@ fn single_sig_deploy_stays_on_the_scalar_fast_path() {
     );
 }
 
-/// W1 Phase 3 (GATE 3) — the multi-lane consensus bridge: the STATIC
-/// `demand_by_sig` per-lane counts equal the RUNTIME `per_lane_demand` per-lane
-/// counts COMM-for-COMM, because both route each COMM through the SAME
-/// `match_channel_to_lane` decision. A 2-cosigner envelope yields two leaf signer
-/// lanes; the fixture sends 3 COMMs on leaf-0's `Σ⟦s₀⟧` channel, 2 on leaf-1's,
-/// and 1 on a DATA channel (→ the envelope), so all three buckets are non-empty.
-///
-/// (Under s₀ no on-chain deploy COMMs on a supply channel, so this exercises the
-/// per-lane split with the real leaf channels rather than a real deploy; the
-/// production collapse is pinned by `demand_by_sig_collapses_to_envelope_under_s0`.)
+/// W1 Phase 3 — the structural multi-lane projection uses the canonical channel
+/// mapping. This fixture has 3 potential introductions on leaf 0, 2 on leaf 1,
+/// and 1 on a data channel attributed to the envelope. Realized runtime matches
+/// use the same mapping but need not equal these structural counts.
 #[test]
-fn multi_lane_demand_static_equals_runtime() {
+fn multi_lane_structural_projection_uses_canonical_channel_mapping() {
     let env = envelope_sig_compound(&[b"sig-a", b"sig-b"]);
     let leaves = env.signer_channels();
     assert_eq!(leaves.len(), 2, "two cosigners ⇒ two leaf signer lanes");
@@ -680,50 +668,22 @@ fn multi_lane_demand_static_equals_runtime() {
         .push(new_send(data_chan.clone(), vec![], false, vec![], false));
     let by_sig = demand_by_sig(&par, env_key, &region);
 
-    // RUNTIME: charge the SAME 6 COMMs (scalar, to the envelope) and record the
-    // per-lane VIEW via note_channel_lane on the SAME channels.
-    let budget = RuntimeBudget::new(Cost::create(1_000, "multi-lane gate-3"));
-    budget.set_deploy_signatures(&[b"sig-a", b"sig-b"]);
-    assert!(
-        budget.any_signed_regions(),
-        "a 2-cosigner deploy enables channel-match"
-    );
-    let machine = MeteredMachine::new(budget.clone());
-    for channel in [&chan0, &chan0, &chan0, &chan1, &chan1, &data_chan] {
-        machine
-            .reserve_comm(Cost::create(1, "comm"))
-            .expect("comm commits within budget");
-        machine.note_channel_lane(channel);
-    }
-    let runtime = budget.per_lane_demand();
-
-    // Both agree COMM-for-COMM on every lane.
-    assert_eq!(runtime.get(&lane0).copied(), Some(3), "runtime leaf-0 = 3");
-    assert_eq!(runtime.get(&lane1).copied(), Some(2), "runtime leaf-1 = 2");
     assert_eq!(
-        runtime.get(&env_key).copied(),
-        Some(1),
-        "runtime envelope = 1 (the data COMM)"
-    );
-    assert_eq!(
-        by_sig.get(&lane0).map(|entry| entry.known_lower_bound),
+        by_sig.get(&lane0).map(|entry| entry.certified_upper_bound),
         Some(3),
         "static leaf-0 = 3"
     );
     assert_eq!(
-        by_sig.get(&lane1).map(|entry| entry.known_lower_bound),
+        by_sig.get(&lane1).map(|entry| entry.certified_upper_bound),
         Some(2),
         "static leaf-1 = 2"
     );
     assert_eq!(
-        by_sig.get(&env_key).map(|entry| entry.known_lower_bound),
+        by_sig
+            .get(&env_key)
+            .map(|entry| entry.certified_upper_bound),
         Some(1),
         "static envelope = 1"
-    );
-    assert_eq!(
-        budget.total_cost().value,
-        6,
-        "consensus scalar total is unchanged (6 COMMs)"
     );
 }
 
@@ -738,7 +698,7 @@ fn multi_lane_demand_static_equals_runtime() {
 /// not hit). The whole-logic soundness is proven there; this is its per-lane image.
 #[test]
 fn multi_lane_demand_entries_satisfy_oslf_funding_laws_per_lane() {
-    // Rebuild the same multi-lane fixture as `multi_lane_demand_static_equals_runtime`.
+    // Rebuild the same multi-lane structural fixture.
     let env = envelope_sig_compound(&[b"sig-a", b"sig-b"]);
     let leaves = env.signer_channels();
     let env_key = sig_key(&env);
@@ -772,26 +732,20 @@ fn multi_lane_demand_entries_satisfy_oslf_funding_laws_per_lane() {
     );
 
     for (lane, entry) in &by_sig {
-        let lower = entry.known_lower_bound;
-        for &margin in &[0i64, 1, 10] {
-            for supply in 0i64..=(lower + margin + 2) {
-                let funded = is_funded(entry, supply, margin);
-                let expected = if entry.unknown {
-                    i128::from(supply) >= i128::from(lower) + i128::from(margin)
-                } else {
-                    i128::from(supply) >= i128::from(lower)
-                };
-                assert_eq!(
-                    funded, expected,
-                    "per-lane funding law (lane={lane:?} entry={entry:?} supply={supply} margin={margin})"
+        let bound = entry.certified_upper_bound;
+        for supply in 0i64..=(bound + 12) {
+            let funded = is_funded(entry, supply);
+            let expected = !entry.unknown && i128::from(supply) >= i128::from(bound);
+            assert_eq!(
+                funded, expected,
+                "per-lane funding law (lane={lane:?} entry={entry:?} supply={supply})"
+            );
+            // No contraction: funded at Σ ⇒ funded at Σ+1.
+            if funded {
+                assert!(
+                    is_funded(entry, supply + 1),
+                    "per-lane is_funded must be monotone in supply (lane={lane:?})"
                 );
-                // No contraction: funded at Σ ⇒ funded at Σ+1.
-                if funded {
-                    assert!(
-                        is_funded(entry, supply + 1, margin),
-                        "per-lane is_funded must be monotone in supply (lane={lane:?})"
-                    );
-                }
             }
         }
     }

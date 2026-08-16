@@ -58,24 +58,6 @@ pub struct CasperConf {
     #[serde(rename = "min-phlo-price")]
     pub min_phlo_price: i64,
 
-    /// Cost-Accounted Rho acceptance-gate activation mode (task #13a). When
-    /// `false` (default = back-compat), the per-signature funding gate is in
-    /// the TRANSITIONAL per-pool-presence mode: a deploy whose supply pool
-    /// `Σ⟦s⟧` is ABSENT (not yet provisioned by the economic producer) is
-    /// admitted UNENFORCED with no settlement debit (pre-cost-accounting
-    /// behavior, bit-for-bit). When `true`, the gate is SPEC-STRICT (§7.6
-    /// step 5): an absent pool is treated as a present-zero pool (`Σ = 0`),
-    /// so an underfunded (`Δ > 0`) deploy is REJECTED without executing any
-    /// part (no state change, no tokens consumed), and only a `Δ = 0` deploy
-    /// is admitted (with no debit). Shard-genesis constant, immutable per
-    /// shard (DR-6); every node in a shard shares it, so the gate verdict is
-    /// replay-deterministic (mirrors `min_phlo_price`).
-    #[serde(
-        rename = "strict-funding-enforcement",
-        default = "default_strict_funding_enforcement"
-    )]
-    pub strict_funding_enforcement: bool,
-
     #[serde(rename = "heartbeat")]
     pub heartbeat_conf: HeartbeatConf,
 
@@ -166,30 +148,16 @@ fn default_max_user_deploys_per_block() -> u32 { 128 }
 
 fn default_disable_late_block_filtering() -> bool { true }
 
-/// Default for `strict_funding_enforcement` (task #13a): OFF. Existing shards
-/// (which never set this key) keep the TRANSITIONAL per-pool-presence gate ⇒
-/// their replay is byte-identical to pre-#13a. Operators opt into the
-/// spec-strict §7.6-step-5 rejection at genesis by setting it `true`.
-fn default_strict_funding_enforcement() -> bool { false }
-
-/// Default for `client_fuel_allocations` (task #13b): EMPTY. Existing shards
-/// (which never set this key) perform NO genesis client funding-slot seed, so
-/// their genesis is byte-identical to pre-#13b. Operators opt into seeding
-/// client `Σ⟦c⟧` pools at genesis by listing `(public-key, amount)` entries.
+/// Default for `client_fuel_allocations`: no additional client fuel at genesis.
 fn default_client_fuel_allocations() -> Vec<ClientFuelAllocation> { Vec::new() }
 
-/// A single Cost-Accounted Rho task #13b genesis client funding-slot allocation:
-/// the hex-encoded client `public-key` and the `amount` of phlogiston to SEED
-/// into its supply pool `Σ⟦c⟧` at the genesis-block-1 close. Lowered to a
-/// `(crypto::PublicKey, i64)` pair at `casper_launch` wiring (hex-decoded once at
-/// startup, so a malformed key fails fast). Mirrors the `(public_key, amount)`
-/// shape of the vault/wallet surface; a genesis SEED only (no rate, no policy).
+/// Additional fuel credited to a client's canonical SystemVault at genesis.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientFuelAllocation {
-    /// Hex-encoded client public key. `Σ⟦c⟧ = from_sig(Ground(public_key_bytes))`.
+    /// Hex-encoded client public key used to derive its native vault address.
     #[serde(rename = "public-key")]
     pub public_key: String,
-    /// Phlogiston to seed into the client's supply pool at genesis-block-1.
+    /// Phlogiston added to the client's SystemVault balance at genesis.
     /// Must be `>= 0` (a negative seed is a config error; validated at wiring).
     #[serde(rename = "amount")]
     pub amount: i64,
@@ -212,21 +180,12 @@ pub const DEFAULT_MAX_COSIGNERS_PER_DEPLOY: u32 = 64;
 
 fn default_max_cosigners_per_deploy() -> u32 { DEFAULT_MAX_COSIGNERS_PER_DEPLOY }
 
-/// Default phlogiston minted into a validator's draw wallet `@W_v` when it
-/// first bonds (Cost-Accounted Rho, spec Appendix B; DR-13). An empty `@W_v`
-/// leaves the bootstrap `VB ≜ for(phlo<-@W_v){ VH | *phlo }` blocked, so the
-/// initial grant is what lets a freshly-bonded validator come online. Sized
-/// to comfortably cover the desugared signed-layer count of typical
-/// validator handlers across an epoch; configurable per shard via
-/// `genesis.initial_phlogiston`. Must be `>= 0`.
+/// Default fuel credited to a validator's SystemVault when it joins the validator set.
 pub const DEFAULT_INITIAL_PHLOGISTON: i64 = 1_000_000;
 
 fn default_initial_phlogiston() -> i64 { DEFAULT_INITIAL_PHLOGISTON }
 
-/// Default phlogiston minted into each active validator's draw wallet `@W_v`
-/// at every epoch boundary (Cost-Accounted Rho, spec Appendix B / §4.7;
-/// DR-13). The renewable per-epoch validator fuel; configurable per shard via
-/// `genesis.epoch_phlogiston`. Must be `>= 0`.
+/// Default fuel credited to each eligible active validator at an epoch boundary.
 pub const DEFAULT_EPOCH_PHLOGISTON: i64 = 1_000_000;
 
 fn default_epoch_phlogiston() -> i64 { DEFAULT_EPOCH_PHLOGISTON }
@@ -290,34 +249,17 @@ pub struct GenesisBlockData {
     )]
     pub max_cosigners_per_deploy: u32,
 
-    /// Phlogiston minted into a validator's draw wallet `@W_v` when it first
-    /// bonds (Cost-Accounted Rho, spec Appendix B; DR-13). Substituted into
-    /// the PoS contract at genesis as `$$initialPhlogiston$$`. An empty `@W_v`
-    /// leaves the per-validator bootstrap `VB` blocked (the DR-3 halt), so
-    /// this grant is what brings a freshly-bonded validator online. Default
-    /// `1_000_000`.
+    /// Fuel credited to a validator's canonical SystemVault when it first bonds.
     #[serde(rename = "initial-phlogiston", default = "default_initial_phlogiston")]
     pub initial_phlogiston: i64,
 
-    /// Phlogiston minted into each active validator's draw wallet `@W_v` at
-    /// every epoch boundary (Cost-Accounted Rho, spec Appendix B / §4.7;
-    /// DR-13). Substituted into the PoS contract at genesis as
-    /// `$$epochPhlogiston$$`. Default `1_000_000`.
+    /// Fuel credited to each eligible active validator at an epoch boundary.
     #[serde(rename = "epoch-phlogiston", default = "default_epoch_phlogiston")]
     pub epoch_phlogiston: i64,
 
-    /// Cost-Accounted Rho task #13b: the genesis CLIENT funding-slot allocations
-    /// — the §5.7/§7.5 genesis/system write that SEEDS each client supply pool
-    /// `Σ⟦c⟧ = from_sig(Ground(client_pk))` at the genesis-block-1 close, so a
-    /// spec-strict shard (`strict_funding_enforcement = true`) can bootstrap
-    /// FUNDED clients. SIBLING of `initial_phlogiston` (the validator bootstrap
-    /// grant) but for CLIENTS, applied at the block-1 close by the Rust
-    /// `supply::produce_balance` mirror (DR-13), not by a PoS substitution. Empty
-    /// by default (existing shards never set this key ⇒ their genesis is
-    /// byte-identical). A genesis funding-slot SEED only: no rate, no policy, no
-    /// business parameter — clients acquire MORE `Σ⟦c⟧` post-genesis via the
-    /// blessed `Exchange` (`rho:lang:exchange`). Shard-genesis constant
-    /// (immutable per DR-6).
+    /// Additional genesis balances for client SystemVaults. Each entry is
+    /// coalesced with any native-token vault balance for the same address before
+    /// the blessed vault-generator deploys are constructed.
     #[serde(
         rename = "client-fuel-allocations",
         default = "default_client_fuel_allocations"
@@ -356,7 +298,7 @@ impl GenesisBlockData {
     /// amount fails fast (loudly at launch) rather than being baked into genesis
     /// or silently producing a degenerate `Σ⟦c⟧` seed. Empty in, empty out
     /// (existing shards). The lowered list is wired into `CasperShardConf` and
-    /// then onto the genesis-block-1 `CloseBlockDeploy`.
+    /// then into the canonical genesis supply commitment.
     pub fn lowered_client_fuel_allocations(
         &self,
     ) -> Result<Vec<(crypto::rust::public_key::PublicKey, i64)>, String> {
@@ -374,12 +316,55 @@ impl GenesisBlockData {
                     alloc.public_key, e
                 )
             })?;
+            if bytes.is_empty() {
+                return Err(
+                    "client-fuel-allocations: public-key must decode to non-empty bytes"
+                        .to_string(),
+                );
+            }
             out.push((
                 crypto::rust::public_key::PublicKey::from_bytes(&bytes),
                 alloc.amount,
             ));
         }
         Ok(out)
+    }
+
+    pub fn validate_cost_accounting_parameters(&self) -> Result<(), String> {
+        if self.epoch_length <= 0 {
+            return Err(format!(
+                "epoch-length must be positive; got {}",
+                self.epoch_length
+            ));
+        }
+        if self.max_cosigners_per_deploy == 0 {
+            return Err("max-cosigners-per-deploy must be at least 1".to_string());
+        }
+        if self.initial_phlogiston < 0 {
+            return Err(format!(
+                "initial-phlogiston must be non-negative; got {}",
+                self.initial_phlogiston
+            ));
+        }
+        if self.epoch_phlogiston < 0 {
+            return Err(format!(
+                "epoch-phlogiston must be non-negative; got {}",
+                self.epoch_phlogiston
+            ));
+        }
+
+        let allocations = self.lowered_client_fuel_allocations()?;
+        let mut totals = std::collections::BTreeMap::<Vec<u8>, i64>::new();
+        for (public_key, amount) in allocations {
+            let entry = totals.entry(public_key.bytes.to_vec()).or_default();
+            *entry = entry.checked_add(amount).ok_or_else(|| {
+                format!(
+                    "client-fuel-allocations overflow for public-key {}",
+                    hex::encode(&public_key.bytes)
+                )
+            })?;
+        }
+        Ok(())
     }
 
     /// Validates native-token-* fields. Called during config load so a
@@ -566,49 +551,31 @@ fn default_empty_frontier_max_unfinalized_blocks() -> i64 { 64 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FinalizerConf {
     #[serde(
-        rename = "work-budget",
+        rename = "yield-interval",
         deserialize_with = "de_duration",
-        default = "default_finalizer_work_budget"
+        default = "default_finalizer_yield_interval"
     )]
-    pub work_budget: Duration,
+    pub yield_interval: Duration,
     #[serde(
-        rename = "step-timeout",
+        rename = "catchup-yield-interval",
         deserialize_with = "de_duration",
-        default = "default_finalizer_step_timeout"
+        default = "default_finalizer_catchup_yield_interval"
     )]
-    pub step_timeout: Duration,
-    #[serde(
-        rename = "catchup-work-budget",
-        deserialize_with = "de_duration",
-        default = "default_finalizer_catchup_work_budget"
-    )]
-    pub catchup_work_budget: Duration,
-    #[serde(
-        rename = "catchup-step-timeout",
-        deserialize_with = "de_duration",
-        default = "default_finalizer_catchup_step_timeout"
-    )]
-    pub catchup_step_timeout: Duration,
+    pub catchup_yield_interval: Duration,
 }
 
 impl Default for FinalizerConf {
     fn default() -> Self {
         Self {
-            work_budget: default_finalizer_work_budget(),
-            step_timeout: default_finalizer_step_timeout(),
-            catchup_work_budget: default_finalizer_catchup_work_budget(),
-            catchup_step_timeout: default_finalizer_catchup_step_timeout(),
+            yield_interval: default_finalizer_yield_interval(),
+            catchup_yield_interval: default_finalizer_catchup_yield_interval(),
         }
     }
 }
 
-fn default_finalizer_work_budget() -> Duration { Duration::from_secs(8) }
+fn default_finalizer_yield_interval() -> Duration { Duration::from_millis(1) }
 
-fn default_finalizer_step_timeout() -> Duration { Duration::from_secs(1) }
-
-fn default_finalizer_catchup_work_budget() -> Duration { Duration::from_secs(8) }
-
-fn default_finalizer_catchup_step_timeout() -> Duration { Duration::from_secs(1) }
+fn default_finalizer_catchup_yield_interval() -> Duration { Duration::from_millis(1) }
 
 pub fn de_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where D: serde::Deserializer<'de> {
@@ -660,7 +627,7 @@ mod native_token_validation_tests {
             wallets_file: String::new(),
             bond_minimum: 0,
             bond_maximum: 0,
-            epoch_length: 0,
+            epoch_length: 1,
             quarantine_length: 0,
             number_of_active_validators: 0,
             deploy_timestamp: None,
@@ -740,5 +707,65 @@ mod native_token_validation_tests {
         let mut g = valid_genesis();
         g.native_token_decimals = MAX_NATIVE_TOKEN_DECIMALS;
         g.validate_native_token().unwrap();
+    }
+
+    #[test]
+    fn accepts_valid_cost_accounting_parameters() {
+        valid_genesis()
+            .validate_cost_accounting_parameters()
+            .unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_cost_accounting_parameters() {
+        let mut invalid_epoch_length = valid_genesis();
+        invalid_epoch_length.epoch_length = 0;
+        assert!(invalid_epoch_length
+            .validate_cost_accounting_parameters()
+            .is_err());
+
+        let mut invalid_cosigner_limit = valid_genesis();
+        invalid_cosigner_limit.max_cosigners_per_deploy = 0;
+        assert!(invalid_cosigner_limit
+            .validate_cost_accounting_parameters()
+            .is_err());
+
+        let mut invalid_initial_phlogiston = valid_genesis();
+        invalid_initial_phlogiston.initial_phlogiston = -1;
+        assert!(invalid_initial_phlogiston
+            .validate_cost_accounting_parameters()
+            .is_err());
+
+        let mut invalid_epoch_phlogiston = valid_genesis();
+        invalid_epoch_phlogiston.epoch_phlogiston = -1;
+        assert!(invalid_epoch_phlogiston
+            .validate_cost_accounting_parameters()
+            .is_err());
+
+        let mut empty_client_key = valid_genesis();
+        empty_client_key
+            .client_fuel_allocations
+            .push(ClientFuelAllocation {
+                public_key: String::new(),
+                amount: 1,
+            });
+        assert!(empty_client_key
+            .validate_cost_accounting_parameters()
+            .is_err());
+
+        let mut overflowing_clients = valid_genesis();
+        overflowing_clients.client_fuel_allocations = vec![
+            ClientFuelAllocation {
+                public_key: "01".to_string(),
+                amount: i64::MAX,
+            },
+            ClientFuelAllocation {
+                public_key: "01".to_string(),
+                amount: 1,
+            },
+        ];
+        assert!(overflowing_clients
+            .validate_cost_accounting_parameters()
+            .is_err());
     }
 }

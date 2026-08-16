@@ -30,11 +30,12 @@ use super::metrics_constants::{
     REPLAY_WAITING_CONTINUATIONS_STORED_TOTAL_METRIC,
 };
 use super::rspace_interface::{
-    ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult, RSpaceResult,
+    CommObserver, ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate,
+    MaybeProduceResult, RSpaceResult,
 };
 use super::striped_locks::{self, ChannelLockGuard};
 use super::trace::Log;
-use super::trace::event::{COMM, Consume, Event, IOEvent, Produce};
+use super::trace::event::{COMM, Consume, Event, IOEvent, Produce, recorded_removal};
 use super::util::unpack_option;
 use crate::rspace::checkpoint::Checkpoint;
 use crate::rspace::history::history_repository::HistoryRepository;
@@ -52,6 +53,7 @@ pub struct ReplayRSpace<C, P, A, K> {
     event_log: Arc<Mutex<Log>>,
     produce_counter: Arc<Mutex<BTreeMap<Produce, i32>>>,
     matcher: Arc<Box<dyn Match<P, A, K>>>,
+    comm_observer: Arc<std::sync::RwLock<Option<Arc<dyn CommObserver<A, K>>>>>,
     pub replay_data: Arc<Mutex<MultisetMultiMap<IOEvent, COMM>>>,
     logger: Arc<Mutex<Box<dyn RSpaceLogger<C, P, A, K>>>>,
     replay_waiting_continuations_estimate: Arc<AtomicI64>,
@@ -125,6 +127,13 @@ where
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
     K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
 {
+    fn set_comm_observer(&self, observer: Option<Arc<dyn CommObserver<A, K>>>) {
+        *self
+            .comm_observer
+            .write()
+            .expect("comm observer write lock") = observer;
+    }
+
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {
         self.check_replay_data().await?;
 
@@ -193,6 +202,49 @@ where
         for index in (0..len).rev() {
             self.get_store().remove_datum(channel, index as i32)?;
         }
+        Ok(())
+    }
+
+    async fn remove_data_at(&self, channel: &C, index: i32) -> Result<(), RSpaceError> {
+        self.get_store().remove_datum(channel, index)
+    }
+
+    async fn remove_data_at_recorded(
+        &self,
+        channel: &C,
+        index: i32,
+        operation_id: &[u8],
+    ) -> Result<(), RSpaceError> {
+        let channel_lock = striped_locks::channel_hash(channel);
+        let _guard = self.consume_lock(&[channel_lock]).await;
+        let datum = usize::try_from(index)
+            .ok()
+            .and_then(|index| self.get_store().get_data(channel).get(index).cloned())
+            .ok_or_else(|| {
+                RSpaceError::BugFoundError(
+                    "recorded replay removal references a missing datum".to_string(),
+                )
+            })?;
+        let (consume, comm) = recorded_removal(channel, &datum.source, operation_id);
+        let available = self
+            .replay_data
+            .lock()
+            .expect("replay data lock")
+            .map
+            .get(&IOEvent::Consume(consume.clone()))
+            .is_some_and(|bindings| bindings.iter().any(|binding| binding.0 == &comm));
+        if !available {
+            return Err(RSpaceError::BugFoundError(
+                "recorded replay removal is absent from the proposer trace".to_string(),
+            ));
+        }
+        self.get_store().remove_datum(channel, index)?;
+        {
+            let mut event_log = self.event_log.lock().expect("event log lock");
+            event_log.push(Event::IoEvent(IOEvent::Consume(consume)));
+            event_log.push(Event::Comm(comm.clone()));
+        }
+        self.remove_bindings_for(comm);
         Ok(())
     }
 
@@ -456,6 +508,7 @@ where
             history_repository: Arc::new(std::sync::RwLock::new(history_repository)),
             store: Arc::new(std::sync::RwLock::new(store)),
             matcher,
+            comm_observer: Arc::new(std::sync::RwLock::new(None)),
             installs: Arc::new(Mutex::new(HashMap::new())),
             event_log: Arc::new(Mutex::new(Vec::new())),
             produce_counter: Arc::new(Mutex::new(BTreeMap::new())),
@@ -483,6 +536,7 @@ where
             history_repository: Arc::new(std::sync::RwLock::new(history_repository)),
             store: Arc::new(std::sync::RwLock::new(store)),
             matcher,
+            comm_observer: Arc::new(std::sync::RwLock::new(None)),
             installs: Arc::new(Mutex::new(HashMap::new())),
             event_log: Arc::new(Mutex::new(Vec::new())),
             produce_counter: Arc::new(Mutex::new(BTreeMap::new())),
@@ -607,7 +661,6 @@ where
         let _span = tracing::info_span!(target: "f1r3fly.rspace", "locked-consume").entered();
         tracing::trace!(target: "f1r3fly.rspace.ops", mark = "started-locked-consume", "locked_consume");
 
-        self.log_consume(consume_ref.clone(), &channels, &patterns, &continuation, persist, &peeks);
         tracing::trace!(target: "f1r3fly.rspace.ops", channels = ?consume_ref.channel_hashes, persist, "replay.consume ENTER");
 
         let wk = WaitingContinuation {
@@ -633,6 +686,14 @@ where
         match comms_option {
             None => {
                 tracing::trace!(target: "f1r3fly.rspace.ops", channels = ?consume_ref.channel_hashes, "replay.consume STALL-A: no recorded COMM for this consume (validator did a consume absent from the proposer's trace -> execution diverged)");
+                self.log_consume(
+                    consume_ref.clone(),
+                    &channels,
+                    &patterns,
+                    &wk.continuation,
+                    persist,
+                    &peeks,
+                );
                 Ok(self.store_waiting_continuation(channels, wk))
             }
             Some(comms_list) => {
@@ -643,6 +704,14 @@ where
                 ) {
                     None => {
                         tracing::trace!(target: "f1r3fly.rspace.ops", channels = ?consume_ref.channel_hashes, n_recorded_comms = comms_list.len(), "replay.consume STALL-B: recorded COMM exists but matching produce data not present (produce diverged / missing in merged pre-state)");
+                        self.log_consume(
+                            consume_ref.clone(),
+                            &channels,
+                            &wk.patterns,
+                            &wk.continuation,
+                            persist,
+                            &peeks,
+                        );
                         Ok(self.store_waiting_continuation(channels, wk))
                     }
                     Some((_, data_candidates)) => {
@@ -656,14 +725,6 @@ where
                             produce_counters_closure,
                         );
 
-                        self.log_comm(
-                            &data_candidates,
-                            &channels,
-                            wk.clone(),
-                            comm_ref.clone(),
-                            "comm.consume",
-                        );
-
                         assert!(
                             comms_list.contains(&comm_ref),
                             "{}",
@@ -671,6 +732,29 @@ where
                                 "COMM Event {:?} was not contained in the trace {:?}",
                                 comm_ref, comms_list
                             )
+                        );
+
+                        self.observe_comm(
+                            &comm_ref,
+                            &wk.continuation,
+                            wk.persist,
+                            &data_candidates,
+                        )?;
+
+                        self.log_consume(
+                            consume_ref.clone(),
+                            &channels,
+                            &wk.patterns,
+                            &wk.continuation,
+                            persist,
+                            &peeks,
+                        );
+                        self.log_comm(
+                            &data_candidates,
+                            &channels,
+                            wk.clone(),
+                            comm_ref.clone(),
+                            "comm.consume",
                         );
 
                         let _ = self.store_persistent_data(data_candidates.clone(), &peeks);
@@ -760,7 +844,7 @@ where
 
         let grouped_channels = self.get_store().get_joins(&channel);
 
-        self.log_produce(produce_ref.clone(), &channel, &data, persist);
+        self.increment_produce_counter(&produce_ref, persist);
         tracing::trace!(target: "f1r3fly.rspace.ops", channel = ?produce_ref.channel_hash, persist, "replay.produce ENTER");
 
         // O(1) hash lookup. `IOEvent` derives `Hash`/`Eq`, and `Produce`'s
@@ -783,6 +867,7 @@ where
         match comms_option {
             None => {
                 tracing::trace!(target: "f1r3fly.rspace.ops", channel = ?produce_ref.channel_hash, "replay.produce: stored (no recorded COMM for this produce)");
+                self.log_produce(produce_ref.clone(), &channel, &data, persist);
                 Ok(self.store_data(channel, data, persist, produce_ref))
             }
             Some(comms) => {
@@ -796,16 +881,29 @@ where
                 ) {
                     Some((comm, pc)) => {
                         tracing::trace!(target: "f1r3fly.rspace.ops", channel = ?produce_ref.channel_hash, "replay.produce OK: matched a recorded COMM (fired a waiting consume)");
-                        Ok(self.handle_match(pc, comms).map(|consume_result| {
-                            let p = comm
-                                .produces
-                                .into_iter()
-                                .find(|p| p.hash == produce_ref.hash);
-                            (consume_result.0, consume_result.1, p.unwrap_or(produce_ref))
-                        }))
+                        let result = self
+                            .handle_match(pc, comms, &channel, &data, persist, &produce_ref)
+                            .map(|matched| {
+                                matched.map(|consume_result| {
+                                    let p = comm
+                                        .produces
+                                        .into_iter()
+                                        .find(|p| p.hash == produce_ref.hash);
+                                    (
+                                        consume_result.0,
+                                        consume_result.1,
+                                        p.unwrap_or_else(|| produce_ref.clone()),
+                                    )
+                                })
+                            });
+                        if result.is_err() {
+                            self.rollback_produce_counter(&produce_ref, persist);
+                        }
+                        result
                     }
                     None => {
                         tracing::trace!(target: "f1r3fly.rspace.ops", channel = ?produce_ref.channel_hash, "replay.produce: stored (recorded COMM exists but no matching consume waiting yet)");
+                        self.log_produce(produce_ref.clone(), &channel, &data, persist);
                         Ok(self.store_data(channel, data, persist, produce_ref))
                     }
                 }
@@ -911,7 +1009,11 @@ where
         &self,
         pc: ProduceCandidate<C, P, A, K>,
         comms: Vec<COMM>,
-    ) -> MaybeConsumeResult<C, P, A, K> {
+        channel: &C,
+        data: &A,
+        produced_persistently: bool,
+        produce_ref: &Produce,
+    ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
         let ProduceCandidate {
             channels,
             continuation,
@@ -935,19 +1037,22 @@ where
             produce_counters_closure,
         );
 
+        assert!(
+            comms.contains(&comm_ref),
+            "COMM Event {:?} was not contained in the trace {:?}",
+            comm_ref,
+            comms
+        );
+
+        self.observe_comm(&comm_ref, _cont, *persist, &data_candidates)?;
+
+        self.log_produce(produce_ref.clone(), channel, data, produced_persistently);
         self.log_comm(
             &data_candidates,
             &channels,
             continuation.clone(),
             comm_ref.clone(),
             "comm.produce",
-        );
-
-        assert!(
-            comms.contains(&comm_ref),
-            "COMM Event {:?} was not contained in the trace {:?}",
-            comm_ref,
-            comms
         );
 
         if !persist {
@@ -960,7 +1065,31 @@ where
 
         let _ = self.remove_matched_datum_and_join(channels.clone(), data_candidates.clone());
         self.remove_bindings_for(comm_ref);
-        self.wrap_result(channels, continuation.clone(), consume_ref.clone(), data_candidates)
+        Ok(self.wrap_result(channels, continuation.clone(), consume_ref.clone(), data_candidates))
+    }
+
+    fn observe_comm(
+        &self,
+        comm: &COMM,
+        continuation: &K,
+        continuation_persistent: bool,
+        data_candidates: &[ConsumeCandidate<C, A>],
+    ) -> Result<(), RSpaceError> {
+        let observer = self
+            .comm_observer
+            .read()
+            .expect("comm observer read lock")
+            .clone();
+        match observer {
+            Some(observer) => {
+                let data = data_candidates
+                    .iter()
+                    .map(|candidate| (&candidate.datum.a, candidate.datum.persist))
+                    .collect::<Vec<_>>();
+                observer.observe(comm, continuation, continuation_persistent, &data)
+            }
+            None => Ok(()),
+        }
     }
 
     fn remove_bindings_for(&self, comm_ref: COMM) {
@@ -1021,11 +1150,28 @@ where
         if let Ok(logger_guard) = self.logger.lock() {
             logger_guard.log_produce(produce_ref.clone(), channel, data, persist);
         }
+    }
 
+    fn increment_produce_counter(&self, produce_ref: &Produce, persist: bool) {
         if !persist {
             let mut counter = self.produce_counter.lock().expect("produce counter lock");
-            let current = counter.get(&produce_ref).copied().unwrap_or(0);
+            let current = counter.get(produce_ref).copied().unwrap_or(0);
             counter.insert(produce_ref.clone(), current + 1);
+        }
+    }
+
+    fn rollback_produce_counter(&self, produce_ref: &Produce, persist: bool) {
+        if !persist {
+            let mut counter = self.produce_counter.lock().expect("produce counter lock");
+            match counter.get(produce_ref).copied().unwrap_or(0) {
+                0 => {}
+                1 => {
+                    counter.remove(produce_ref);
+                }
+                count => {
+                    counter.insert(produce_ref.clone(), count - 1);
+                }
+            }
         }
     }
 

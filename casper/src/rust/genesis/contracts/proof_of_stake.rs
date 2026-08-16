@@ -23,25 +23,13 @@ pub struct ProofOfStake {
     /// adversarial deploys exhausting block resources via runaway cosigner
     /// lists.
     pub max_cosigners_per_deploy: u32,
-    /// Initial phlogiston minted into a validator's draw wallet `@W_v` when
-    /// it first bonds (Cost-Accounted Rho, spec Appendix B; DR-13). Drawn by
-    /// the per-validator bootstrap `VB ≜ for(phlo<-@W_v){ VH | *phlo }`: an
-    /// empty `@W_v` ⇒ `VB` blocks ⇒ the validator is effectively offline (the
-    /// DR-3 halt mechanism). Substituted into the PoS contract at genesis as
-    /// `$$initialPhlogiston$$`; configurable per shard via
-    /// `casper_conf.rs::initial_phlogiston`. NOTE: `@W_v` (the draw channel)
-    /// is DISTINCT from the supply pool `Σ⟦v⟧ = from_sig(Ground(pk))` the
-    /// acceptance gate reads — the `Σ⟦v⟧` balance write is a Rust
-    /// `produce_balance` in a later stage, never an in-Rholang write
-    /// (`from_sig` is unnameable in Rholang).
+    /// Initial validator fuel credited to the validator's canonical SystemVault.
+    /// Genesis validators receive it in the blessed vault generator; a newly
+    /// bonded validator receives it from the PoS-authorized protocol mint at
+    /// the terminal close of the bonding block.
     pub initial_phlogiston: i64,
-    /// Phlogiston minted into each active validator's draw wallet `@W_v` at
-    /// every epoch boundary (Cost-Accounted Rho, spec Appendix B / §4.7;
-    /// DR-13). The renewable validator fuel matched to the desugared signed
-    /// layers of the validator handler. Substituted into the PoS contract at
-    /// genesis as `$$epochPhlogiston$$`; configurable per shard via
-    /// `casper_conf.rs::epoch_phlogiston`. The epoch mint loop itself is a
-    /// later stage; this field carries the per-epoch amount.
+    /// Fuel credited to each eligible active validator's canonical SystemVault
+    /// at every epoch boundary. Validator-handler reservations debit this vault.
     pub epoch_phlogiston: i64,
 }
 

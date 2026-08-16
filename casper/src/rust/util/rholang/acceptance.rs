@@ -6,35 +6,39 @@
 //! Wires three landed pieces into one decision:
 //!   * the PURE per-signature demand analyzer `Δ_s` + Split/Join supply closure
 //!     (`rholang/.../accounting/delta_sigma.rs`, WD-D1);
-//!   * the per-signature supply pool `Σ⟦s⟧` read helpers (`supply.rs`, StageB);
+//!   * canonical SystemVault balances plus located authority stacks exposed
+//!     through [`SupplyReader`];
 //!   * the ONE extracted FUNDING-`Sig` derivation (`accounting::funding_sig`) —
-//!     keyed by the signers' GROUND public keys, so the pool the gate proves
-//!     `Σ ≥ Δ` against and debits IS the genesis-seeded wallet `Σ⟦Ground(pk)⟧`
-//!     (`Σ⟦signer⟧ == Σ⟦wallet⟧`, WD-D2 §D2.9); replay re-derives it identically.
+//!     keyed by the signers' GROUND public keys, so the available authority the
+//!     gate proves `Σ ≥ Δ` against resolves to the signer's canonical
+//!     SystemVault plus prepaid located stacks; replay re-derives it identically.
 //!
 //! ## What the gate computes (and does not)
 //!
-//! [`admit_by_funding`] decides, for each per-signature group (deploys sharing a
-//! supply pool `Σ⟦s⟧`), the LARGEST canonical-order prefix whose cumulative
-//! demand `Σ Δ_s` fits the EFFECTIVE supply (§7.7 reject-both / no-partial: on the
-//! first unfunded candidate, reject it AND all after it in the group). It returns
-//! the admitted envelopes (in canonical order, fed straight to execution), the
-//! rejected primary signatures (returned for local selection telemetry; they are
-//! not merge-rejection tombstones), and the per-pool SETTLEMENT DEBIT `Σ Δ_s`
-//! (the amount `CloseBlockDeploy` subtracts from `Σ⟦s⟧` so
-//! `post = pre − Σ Δ_admitted`).
+//! [`admit_by_funding`] is the closed-fragment structural gate: for each
+//! per-signature group it admits the largest canonical-order prefix whose
+//! certified reservation fits effective supply. Production block admission uses
+//! [`RuntimeManager::admit_with_state_bound_evidence`]. That path evaluates the
+//! canonical candidate sequence in an isolated scratch runtime rooted at the
+//! merged pre-state, records each exact cost and pre/post root, removes every
+//! capacity-exhausted or underfunded candidate, and repeats until the evidence is
+//! for the exact retained sequence. Rejected candidates never reach committed
+//! execution.
 //!
-//! It does NOT execute anything (it is a pure O(AST) static analysis) and it does
-//! NOT mutate RSpace — the single consensus decrement is the settlement debit,
-//! applied once by `CloseBlockDeploy::dual_write_supply` AFTER all user deploys
-//! have executed (handoff Decision 4c).
+//! Neither path mutates the committed RSpace root. The state-bound path does
+//! perform bounded dependent proof evaluation because ambient continuations can
+//! contribute COMM events that are absent from the submitted syntax. Committed
+//! execution must reproduce the certified cost, status, event log, root chain,
+//! settlement debit, and fee carve. The retained path then atomically reserves
+//! and settles the exact debit through `rho:vault:system`, and replay performs
+//! the same lifecycle before accepting the resulting state root.
 //!
 //! ## Determinism (the fork-avoidance bar)
 //!
 //! Every input that feeds the verdict is consensus-deterministic: the analyzer is
-//! pure, the groups are a `BTreeMap` (deterministic iteration), the supply reads
-//! come from the merged pre-state hash (already a consensus quantity), and the
-//! genesis `margin` is on-chain (`min_phlo_price`). The block proposer collects
+//! pure, the groups are a `BTreeMap` (deterministic iteration), and balance and
+//! stack reads come from the merged pre-state hash (already a consensus
+//! quantity). The block proposer collects
 //! deploys into a `HashSet` whose iteration order is nondeterministic across
 //! nodes, so this gate RE-IMPOSES the canonical order itself
 //! ([`canonical_sort`], the `block_creator.rs:315-324` comparator) before grouping
@@ -58,18 +62,36 @@
 //! debit `Σ⟦s⟧ -= Σ Δ_s`. The SAME function runs on play and replay
 //! ([`recompute_settlement_debits`]) ⇒ byte-identical debits (fork safety).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::Arc;
 
+use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::signatures::signed::Cosigned;
-use models::rhoapi::Par;
+use models::casper::{
+    CostAuthorityBornStackProto, CostAuthorityDemandKindProto, CostAuthorityEventProto,
+    CostAuthorityFundingCertificateProto, CostAuthorityPhysicalEventDrawProto,
+    CostAuthorityResourceProto, CostAuthorityStackReservationProto, CostAuthorityWitnessProto,
+};
+use models::rhoapi::{CostAuthority, CostSignature, Par};
 use models::rust::block::state_hash::StateHash;
-use models::rust::casper::protocol::casper_message::DeployData;
+use models::rust::casper::protocol::casper_message::{DeployData, ProcessedDeploy};
 use prost::bytes::Bytes;
-// Re-exported (NOT a private `use`) so settlement-debit consumers
-// (`CloseBlockDeploy.settlement_debits`) key the map by the same canonical
-// basis (`Sig::lane_hash`) without reaching into rholang internals.
+use prost::Message;
+use rholang::rust::interpreter::accounting::authority::{
+    allocate_authority_events, allocate_physical_settlement, apply_physical_settlement,
+    authority_demand, authority_funding_signatures_with_presentations, canonical_authority,
+    cost_region, sig_to_cost_signature, verify_physical_settlement, AuthorityBornStack,
+    AuthorityCostWitness, AuthorityEvent, AuthorityPhysicalEventDraw, AuthorityPhysicalInventory,
+    AuthorityPhysicalSettlement, DemandBound, FundingCertificate, ResourceMultiset,
+    UnprovableDemand, AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
+};
+// Re-exported so reservation, settlement, replay, and reporting key every
+// authority lane by the same canonical `Sig::lane_hash` basis.
 pub use rholang::rust::interpreter::accounting::delta_sigma::SigKey;
-use rholang::rust::interpreter::accounting::delta_sigma::{Decomposition, DemandEntry};
+use rholang::rust::interpreter::accounting::delta_sigma::{
+    static_authority_plan, static_authority_signatures, Decomposition, DemandEntry,
+};
+use rholang::rust::interpreter::accounting::lexical::resolve_lexical_names_for_funding;
 use rholang::rust::interpreter::accounting::resource_logic::{
     ApportionmentPolicy, DefaultApportionment, DefaultResourceLogic, FlatFeeApportionment,
     GroupShape, GsltPresentation, OslfResourceLogic, PoolDraw, PoolResidual, ResourceSignature,
@@ -77,19 +99,21 @@ use rholang::rust::interpreter::accounting::resource_logic::{
 };
 use rholang::rust::interpreter::accounting::{self, Sig};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
+use rholang::rust::interpreter::rho_type::RhoNumber;
 
 use crate::rust::errors::CasperError;
 use crate::rust::rholang::runtime::RuntimeOps;
 use crate::rust::util::rholang::replay_failure::ReplayFailure;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rholang::supply;
+use crate::rust::util::rholang::tools::Tools;
 
-/// One per-pool settlement debit: the amount `Σ Δ_s` to subtract from the
-/// supply channel `Σ⟦s⟧` so `post = pre − Σ Δ_admitted` (handoff Decision 4c).
-/// Carries the resolved channel so the settlement writer needs no `Sig`.
+/// One per-authority-lane settlement debit. The channel identifies the located
+/// stack purse for the lane; integer balance materialization resolves the same
+/// signature to its canonical SystemVault payer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SettlementDebit {
-    /// `Σ⟦s⟧ = SignatureChannel::from_sig(s).par` — the pool to debit.
+    /// `SignatureChannel::from_sig(s).par` — the lane's located-stack purse.
     pub channel: Par,
     /// `Σ Δ_s` over the admitted prefix of the group (≥ 0 by construction).
     pub amount: i64,
@@ -103,89 +127,399 @@ pub struct AdmissionOutcome {
     /// `compute_deploys_checkpoint_cosigned` so execution order matches the
     /// order the funding decision was made in.
     pub admitted: Vec<Cosigned<DeployData>>,
-    /// The PRIMARY signatures of gate-rejected deploys. They remain in local
-    /// deploy storage and are not packaged as source-specific merge rejections.
+    /// The PRIMARY signatures of gate-rejected deploys.
     pub rejected: Vec<Bytes>,
-    /// The per-pool settlement debit (the COST, BURNED from `Σ⟦c⟧`), keyed by
-    /// `SigKey` (= `Sig::lane_hash`). Threaded to
-    /// `CloseBlockDeploy.settlement_debits` on the play path; RECOMPUTED
-    /// identically from `block.body.deploys` on replay.
+    /// The per-lane cost debit, keyed by `SigKey` (= `Sig::lane_hash`). The
+    /// physical draw may consume prepaid located stacks or canonical
+    /// SystemVault balance and is recomputed identically on replay.
     pub debits: BTreeMap<SigKey, SettlementDebit>,
     /// Cost-Accounted Rho Stage D FEE carve (the spec's `FeeExtract`,
     /// cost-accounted-rho.tex:3637 "one client token consumed as fee"): the
-    /// per-pool CLIENT debit — ONE token per admitted deploy, CARVED from the
-    /// client's own `Σ⟦c⟧` (a conserving TRANSFER, NOT a mint), keyed by `SigKey`.
-    /// The total (Σ over `fee_debits`) is TRANSFERRED to the proposing validator's
-    /// fee channel `F_v`. Computed AFTER the cost debit against the post-cost
-    /// residual (the gate admits only if `Σ⟦c⟧ ≥ cost + fee`); RECOMPUTED
-    /// identically on replay by [`recompute_fee_debits`].
+    /// per-lane client debit — ONE token per admitted deploy, transferred from
+    /// the client's reserved SystemVault allocation to the proposing validator's
+    /// SystemVault. Computed after the cost draw against residual authority and
+    /// recomputed identically on replay.
     pub fee_debits: BTreeMap<SigKey, SettlementDebit>,
-    /// The count of GATE-ADMITTED client deploy envelopes (= `admitted.len()`).
-    /// Read-only metadata (does NOT affect the gate decision); the fee itself is
-    /// the conserving carve in `fee_debits`, not derived from this count.
-    pub admitted_client_count: usize,
-}
-
-/// Cost-Accounted Rho Stage D FEE carve (the spec's `FeeExtract`,
-/// cost-accounted-rho.tex:3637 "one client token consumed as fee"): ONE client
-/// token per admitted deploy, CARVED from the client's own `Σ⟦c⟧` (a conserving
-/// TRANSFER, NOT a mint) and credited to the PROPOSING validator's fee channel
-/// `F_v`. Distinct from the COST (the `SettlementDebit`, BURNED from `Σ⟦c⟧`):
-/// cost ≠ fee. Carries the per-client debits + the consensus-deterministic
-/// recipient (`block_data.sender`). Computed after the cost debit against the
-/// post-cost residual; RECOMPUTED identically on replay from `block.body.deploys`.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub struct FeeCarve {
-    /// The proposing validator's public-key bytes (`block_data.sender.bytes`) —
-    /// the fee RECIPIENT: `F_v` for this pk is CREDITED by the carved total.
-    pub recipient_pk: Vec<u8>,
-    /// The per-CLIENT fee debit: each client's own `Σ⟦c⟧` is DEBITED `amount`
-    /// (= its admitted-deploy count, apportioned across compound components by the
-    /// same policy as the cost), keyed by `SigKey`. Their sum is what `F_v`
-    /// receives — conserving (no mint).
-    pub debits: BTreeMap<SigKey, SettlementDebit>,
-}
-
-impl FeeCarve {
-    /// Total carved fee = Σ of the per-client debits — the amount credited to the
-    /// proposer's `F_v` (conservation: clients debited == `F_v` credited).
-    pub fn total(&self) -> i64 { self.debits.values().map(|d| d.amount).sum() }
+    pub stack_pops: BTreeMap<[u8; 32], u64>,
+    pub purse_stacks: BTreeMap<[u8; 32], supply::PurseStack>,
 }
 
 /// The replay-recomputed debits: the COST settlement (burned) and the FEE carve
-/// (transferred to `F_v`), both recomputed from `block.body.deploys` by
+/// (transferred to the proposing validator's SystemVault), both recomputed from
+/// `block.body.deploys` by
 /// [`recompute_settlement_debits`] — byte-identical to the play-side
 /// `AdmissionOutcome.{debits, fee_debits}` for a valid block.
 #[derive(Clone, Debug, Default)]
 pub struct RecomputedDebits {
     pub settlement: BTreeMap<SigKey, SettlementDebit>,
     pub fee: BTreeMap<SigKey, SettlementDebit>,
+    pub stack_pops: BTreeMap<[u8; 32], u64>,
+    pub purse_stacks: BTreeMap<[u8; 32], supply::PurseStack>,
+}
+
+pub type ReplayPurseSnapshot = BTreeMap<SigKey, supply::PurseInventory>;
+
+fn authority_digest(bytes: &[u8], field: &str) -> Result<[u8; 32], CasperError> {
+    bytes.try_into().map_err(|_| {
+        CasperError::InvalidCostSettlement(format!("{field} must be exactly 32 bytes"))
+    })
+}
+
+fn authority_resources_from_proto(
+    resources: &[CostAuthorityResourceProto],
+) -> Result<ResourceMultiset<SigKey>, CasperError> {
+    let mut values = BTreeMap::new();
+    let mut previous = None;
+    for resource in resources {
+        let key = authority_digest(resource.key.as_ref(), "cost-authority resource key")?;
+        if resource.amount == 0 {
+            return Err(CasperError::InvalidCostSettlement(
+                "cost-authority resources cannot contain zero entries".to_string(),
+            ));
+        }
+        if previous.is_some_and(|prior| prior >= key) {
+            return Err(CasperError::InvalidCostSettlement(
+                "cost-authority resources must be strictly key-ordered".to_string(),
+            ));
+        }
+        previous = Some(key);
+        values.insert(key, resource.amount);
+    }
+    Ok(ResourceMultiset(values))
+}
+
+fn authority_resources_to_proto(
+    resources: &ResourceMultiset<SigKey>,
+) -> Vec<CostAuthorityResourceProto> {
+    resources
+        .0
+        .iter()
+        .filter(|(_, amount)| **amount != 0)
+        .map(|(key, amount)| CostAuthorityResourceProto {
+            key: key.to_vec().into(),
+            amount: *amount,
+        })
+        .collect()
+}
+
+fn authority_stack_reservations_from_proto(
+    reservations: &[CostAuthorityStackReservationProto],
+) -> Result<BTreeMap<[u8; 32], u64>, CasperError> {
+    let mut values = BTreeMap::new();
+    let mut previous = None;
+    for reservation in reservations {
+        let stack_id = authority_digest(
+            &reservation.stack_id,
+            "authority stack reservation identity",
+        )?;
+        if reservation.pop_count == 0 {
+            return Err(CasperError::InvalidCostSettlement(
+                "authority stack reservation cannot have zero pop count".to_string(),
+            ));
+        }
+        if previous.is_some_and(|prior| prior >= stack_id) {
+            return Err(CasperError::InvalidCostSettlement(
+                "authority stack reservations must be strictly identity-ordered".to_string(),
+            ));
+        }
+        previous = Some(stack_id);
+        values.insert(stack_id, reservation.pop_count);
+    }
+    Ok(values)
+}
+
+pub(crate) fn authority_certificate_from_proto(
+    certificate: &CostAuthorityFundingCertificateProto,
+) -> Result<FundingCertificate<SigKey>, CasperError> {
+    let demand_values = authority_resources_from_proto(&certificate.demand)?;
+    let kind = CostAuthorityDemandKindProto::try_from(certificate.demand_kind).map_err(|_| {
+        CasperError::InvalidCostSettlement(
+            "cost-authority demand kind is not recognized".to_string(),
+        )
+    })?;
+    let demand = match kind {
+        CostAuthorityDemandKindProto::CostAuthorityDemandKindExact => {
+            if !certificate.proof.is_empty() || certificate.unprovable_reason != 0 {
+                return Err(CasperError::InvalidCostSettlement(
+                    "exact authority demand carries non-exact metadata".to_string(),
+                ));
+            }
+            DemandBound::Exact(demand_values)
+        }
+        CostAuthorityDemandKindProto::CostAuthorityDemandKindFiniteUpperBound => {
+            if certificate.proof.is_empty() || certificate.unprovable_reason != 0 {
+                return Err(CasperError::InvalidCostSettlement(
+                    "finite authority bound must carry only a non-empty proof".to_string(),
+                ));
+            }
+            DemandBound::FiniteUpperBound {
+                bound: demand_values,
+                proof: certificate.proof.to_vec(),
+            }
+        }
+        CostAuthorityDemandKindProto::CostAuthorityDemandKindUnprovable => {
+            if !certificate.demand.is_empty() || !certificate.proof.is_empty() {
+                return Err(CasperError::InvalidCostSettlement(
+                    "unprovable authority demand cannot carry a bound or proof".to_string(),
+                ));
+            }
+            let reason = u8::try_from(certificate.unprovable_reason)
+                .ok()
+                .and_then(|reason| UnprovableDemand::from_tag(reason).ok())
+                .ok_or_else(|| {
+                    CasperError::InvalidCostSettlement(
+                        "unprovable authority reason is not recognized".to_string(),
+                    )
+                })?;
+            DemandBound::Unprovable(reason)
+        }
+    };
+    Ok(FundingCertificate {
+        protocol_version: certificate.protocol_version,
+        program_hash: authority_digest(&certificate.program_hash, "authority program hash")?,
+        pre_state_root: authority_digest(
+            &certificate.pre_state_root,
+            "authority certificate pre-state root",
+        )?,
+        reservation_id: authority_digest(
+            &certificate.reservation_id,
+            "authority reservation identity",
+        )?,
+        demand,
+        allocation: authority_resources_from_proto(&certificate.allocation)?,
+        stack_reservations: authority_stack_reservations_from_proto(
+            &certificate.stack_reservations,
+        )?,
+        fee_allocation: authority_resources_from_proto(&certificate.fee_allocation)?,
+        fee_recipient: certificate.fee_recipient.to_vec(),
+    })
+}
+
+pub(crate) fn authority_certificate_to_proto(
+    certificate: &FundingCertificate<SigKey>,
+) -> CostAuthorityFundingCertificateProto {
+    let (demand_kind, demand, proof, unprovable_reason) = match &certificate.demand {
+        DemandBound::Exact(demand) => (
+            CostAuthorityDemandKindProto::CostAuthorityDemandKindExact,
+            authority_resources_to_proto(demand),
+            Bytes::new(),
+            0,
+        ),
+        DemandBound::FiniteUpperBound { bound, proof } => (
+            CostAuthorityDemandKindProto::CostAuthorityDemandKindFiniteUpperBound,
+            authority_resources_to_proto(bound),
+            proof.clone().into(),
+            0,
+        ),
+        DemandBound::Unprovable(reason) => (
+            CostAuthorityDemandKindProto::CostAuthorityDemandKindUnprovable,
+            Vec::new(),
+            Bytes::new(),
+            u32::from(reason.tag()),
+        ),
+    };
+    CostAuthorityFundingCertificateProto {
+        protocol_version: certificate.protocol_version,
+        program_hash: certificate.program_hash.to_vec().into(),
+        pre_state_root: certificate.pre_state_root.to_vec().into(),
+        reservation_id: certificate.reservation_id.to_vec().into(),
+        demand_kind: demand_kind as i32,
+        demand,
+        proof,
+        unprovable_reason,
+        allocation: authority_resources_to_proto(&certificate.allocation),
+        stack_reservations: certificate
+            .stack_reservations
+            .iter()
+            .map(|(stack_id, pop_count)| CostAuthorityStackReservationProto {
+                stack_id: Bytes::copy_from_slice(stack_id),
+                pop_count: *pop_count,
+            })
+            .collect(),
+        fee_allocation: authority_resources_to_proto(&certificate.fee_allocation),
+        fee_recipient: certificate.fee_recipient.clone().into(),
+    }
+}
+
+pub(crate) fn authority_witness_from_proto(
+    witness: &CostAuthorityWitnessProto,
+    allow_unbound_certificate: bool,
+) -> Result<AuthorityCostWitness<SigKey>, CasperError> {
+    let certificate_id = if allow_unbound_certificate && witness.certificate_id.is_empty() {
+        [0; 32]
+    } else {
+        authority_digest(
+            &witness.certificate_id,
+            "authority witness certificate identity",
+        )?
+    };
+    let events = witness
+        .events
+        .iter()
+        .map(|event| {
+            let event = AuthorityEvent {
+                event_id: authority_digest(&event.event_id, "authority event identity")?,
+                authority: event.authority.clone().ok_or_else(|| {
+                    CasperError::InvalidCostSettlement(
+                        "authority event is missing its wrapper authority".to_string(),
+                    )
+                })?,
+                debit: authority_resources_from_proto(&event.debit)?,
+            };
+            event
+                .verify_authority()
+                .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+            Ok(event)
+        })
+        .collect::<Result<Vec<_>, CasperError>>()?;
+    let witness = AuthorityCostWitness {
+        protocol_version: witness.protocol_version,
+        certificate_id,
+        pre_state_root: authority_digest(
+            &witness.pre_state_root,
+            "authority witness pre-state root",
+        )?,
+        post_state_root: authority_digest(
+            &witness.post_state_root,
+            "authority witness post-state root",
+        )?,
+        events,
+        realized: authority_resources_from_proto(&witness.realized)?,
+        settlement: authority_resources_from_proto(&witness.settlement)?,
+        physical_draws: witness
+            .physical_draws
+            .iter()
+            .map(|draw| {
+                let stack_ids = draw
+                    .stack_ids
+                    .iter()
+                    .map(|stack_id| authority_digest(stack_id, "authority stack identity"))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(AuthorityPhysicalEventDraw {
+                    event_id: authority_digest(
+                        &draw.event_id,
+                        "authority physical draw event identity",
+                    )?,
+                    balances: authority_resources_from_proto(&draw.balances)?,
+                    stack_ids,
+                })
+            })
+            .collect::<Result<Vec<_>, CasperError>>()?,
+        born_stacks: witness
+            .born_stacks
+            .iter()
+            .map(|birth| {
+                Ok(AuthorityBornStack {
+                    stack_id: authority_digest(&birth.stack_id, "authority born stack identity")?,
+                    produce_hash: authority_digest(
+                        &birth.produce_hash,
+                        "authority born stack produce identity",
+                    )?,
+                    cells: birth.cells.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>, CasperError>>()?,
+    };
+    witness
+        .verify_structure()
+        .and_then(|_| witness.verify_event_authorities())
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+    Ok(witness)
+}
+
+pub(crate) fn authority_witness_to_proto(
+    witness: &AuthorityCostWitness<SigKey>,
+) -> CostAuthorityWitnessProto {
+    CostAuthorityWitnessProto {
+        protocol_version: witness.protocol_version,
+        certificate_id: witness.certificate_id.to_vec().into(),
+        pre_state_root: witness.pre_state_root.to_vec().into(),
+        post_state_root: witness.post_state_root.to_vec().into(),
+        events: witness
+            .events
+            .iter()
+            .map(|event| CostAuthorityEventProto {
+                event_id: event.event_id.to_vec().into(),
+                debit: authority_resources_to_proto(&event.debit),
+                authority: Some(event.authority.clone()),
+            })
+            .collect(),
+        realized: authority_resources_to_proto(&witness.realized),
+        settlement: authority_resources_to_proto(&witness.settlement),
+        physical_draws: witness
+            .physical_draws
+            .iter()
+            .map(|draw| CostAuthorityPhysicalEventDrawProto {
+                event_id: draw.event_id.to_vec().into(),
+                balances: authority_resources_to_proto(&draw.balances),
+                stack_ids: draw
+                    .stack_ids
+                    .iter()
+                    .map(|stack_id| stack_id.to_vec().into())
+                    .collect(),
+            })
+            .collect(),
+        born_stacks: witness
+            .born_stacks
+            .iter()
+            .map(|birth| CostAuthorityBornStackProto {
+                stack_id: birth.stack_id.to_vec().into(),
+                produce_hash: birth.produce_hash.to_vec().into(),
+                cells: birth.cells.clone(),
+            })
+            .collect(),
+    }
 }
 
 /// An async per-channel supply-balance reader returning PRESENCE: `Some(n)` iff
 /// a balance datum is resident on `chan` (even `n == 0`), `None` iff the pool is
-/// absent. The presence distinction is the gate's per-pool ACTIVATION signal
-/// (see [`read_balance_present`] / `admit_by_funding`). Two implementations keep
+/// absent. Absence is interpreted as zero supply. Two implementations keep
 /// the gate's read symmetric across play and replay:
 ///   * play (block assembly): [`RuntimeManagerSupplyReader`] over a merged
 ///     pre-state HASH via `RuntimeManager::get_data`;
 ///   * replay: [`RuntimeOpsSupplyReader`] over the LIVE store already `reset` to
 ///     `start_hash`.
 ///
-/// Both decode through the SAME `supply::decode_balance_present`, so the read is
-/// byte-identical for a given state root.
-///
 /// `Send + Sync` so a `&dyn SupplyReader` can be held across an `.await` inside a
 /// `Send` future (the gate runs on the async block-assembly / replay paths).
 pub trait SupplyReader: Send + Sync {
-    /// Read `supply(s)` from `chan`: `Some(n)` if a balance datum is present
-    /// (including `Some(0)`), `None` if the pool is absent.
-    fn read_balance<'a>(
+    fn pre_state_root(&self) -> [u8; 32];
+
+    fn urn_map<'a>(
         &'a self,
-        chan: &'a Par,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Option<i64>, CasperError>> + Send + 'a>,
+        Box<
+            dyn std::future::Future<Output = Result<Arc<HashMap<String, Par>>, CasperError>>
+                + Send
+                + 'a,
+        >,
     >;
+
+    fn read_purse<'a>(
+        &'a self,
+        signature: &'a models::rhoapi::CostSignature,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<supply::PurseInventory, CasperError>>
+                + Send
+                + 'a,
+        >,
+    >;
+}
+
+fn decode_vault_balance(values: Vec<Par>) -> Result<i64, CasperError> {
+    let mut balances = values.iter().filter_map(RhoNumber::unapply);
+    let balance = balances.next().ok_or_else(|| {
+        CasperError::InvalidCostSettlement(
+            "canonical SystemVault balance query returned no integer".to_string(),
+        )
+    })?;
+    if balances.next().is_some() {
+        return Err(CasperError::InvalidCostSettlement(
+            "canonical SystemVault balance query returned multiple integers".to_string(),
+        ));
+    }
+    Ok(balance)
 }
 
 /// Play-side supply reader: reads each pool from the merged pre-state hash via
@@ -196,51 +530,633 @@ pub struct RuntimeManagerSupplyReader<'rm> {
 }
 
 impl<'rm> SupplyReader for RuntimeManagerSupplyReader<'rm> {
-    fn read_balance<'a>(
+    fn pre_state_root(&self) -> [u8; 32] {
+        self.pre_state_hash
+            .as_ref()
+            .try_into()
+            .expect("consensus state roots are Blake2b-256")
+    }
+
+    fn urn_map<'a>(
         &'a self,
-        chan: &'a Par,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Option<i64>, CasperError>> + Send + 'a>,
+        Box<
+            dyn std::future::Future<Output = Result<Arc<HashMap<String, Par>>, CasperError>>
+                + Send
+                + 'a,
+        >,
     > {
         Box::pin(async move {
+            Ok(self
+                .runtime_manager
+                .spawn_runtime()
+                .await
+                .reducer
+                .urn_map
+                .clone())
+        })
+    }
+
+    fn read_purse<'a>(
+        &'a self,
+        signature: &'a models::rhoapi::CostSignature,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<supply::PurseInventory, CasperError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let funding =
+                rholang::rust::interpreter::accounting::authority::cost_signature_to_sig(signature)
+                    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+            let channel = supply::supply_channel(&funding);
             let data = self
                 .runtime_manager
-                .get_data(self.pre_state_hash.clone(), chan)
+                .get_data_datums(self.pre_state_hash.clone(), &channel)
                 .await?;
-            Ok(supply::decode_balance_present(&data))
+            let mut inventory = supply::decode_purse_inventory(&data, signature)?;
+            let payer = crate::rust::util::rholang::costacc::vault_payer::vault_payer(signature)
+                .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+            let query = Compiler::source_to_adt(
+                &crate::rust::util::rholang::costacc::vault_payer::balance_query_source(
+                    &payer.address,
+                ),
+            )
+            .map_err(CasperError::InterpreterError)?;
+            let values = self
+                .runtime_manager
+                .play_query_par_at_state_strict(query, &self.pre_state_hash)
+                .await?;
+            inventory.balance = Some(decode_vault_balance(values).map_err(|error| {
+                CasperError::InvalidCostSettlement(format!(
+                    "canonical SystemVault balance lookup for {} at pre-state {} failed: {}",
+                    payer.address.to_base58(),
+                    hex::encode(&self.pre_state_hash),
+                    error
+                ))
+            })?);
+            Ok(inventory)
         })
     }
 }
 
-/// Replay-side supply reader: reads each pool from the LIVE hot store (already
-/// `reset` to `start_hash`) via `supply::read_balance_present`. Same decoder,
-/// same root ⇒ byte-identical presence/balances to the play-side read.
+/// Replay-side supply reader over the LIVE hot store already reset to
+/// `start_hash`.
 pub struct RuntimeOpsSupplyReader<'ops> {
     pub runtime_ops: &'ops RuntimeOps,
+    pub pre_state_root: [u8; 32],
 }
 
 impl<'ops> SupplyReader for RuntimeOpsSupplyReader<'ops> {
-    fn read_balance<'a>(
+    fn pre_state_root(&self) -> [u8; 32] { self.pre_state_root }
+
+    fn urn_map<'a>(
         &'a self,
-        chan: &'a Par,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Option<i64>, CasperError>> + Send + 'a>,
+        Box<
+            dyn std::future::Future<Output = Result<Arc<HashMap<String, Par>>, CasperError>>
+                + Send
+                + 'a,
+        >,
     > {
-        Box::pin(async move { Ok(supply::read_balance_present(self.runtime_ops, chan).await) })
+        let urn_map = self.runtime_ops.runtime.reducer.urn_map.clone();
+        Box::pin(async move { Ok(urn_map) })
+    }
+
+    fn read_purse<'a>(
+        &'a self,
+        signature: &'a models::rhoapi::CostSignature,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<supply::PurseInventory, CasperError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let funding =
+                rholang::rust::interpreter::accounting::authority::cost_signature_to_sig(signature)
+                    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+            let channel = supply::supply_channel(&funding);
+            let data = self.runtime_ops.get_data_datums(&channel).await;
+            let mut inventory = supply::decode_purse_inventory(&data, signature)?;
+            let payer = crate::rust::util::rholang::costacc::vault_payer::vault_payer(signature)
+                .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+            let query = Compiler::source_to_adt(
+                &crate::rust::util::rholang::costacc::vault_payer::balance_query_source(
+                    &payer.address,
+                ),
+            )
+            .map_err(CasperError::InterpreterError)?;
+            let values = self
+                .runtime_ops
+                .play_query_par_current_strict(query)
+                .await?;
+            inventory.balance = Some(decode_vault_balance(values).map_err(|error| {
+                CasperError::InvalidCostSettlement(format!(
+                    "canonical SystemVault balance lookup for {} at pre-state {} failed: {}",
+                    payer.address.to_base58(),
+                    hex::encode(self.pre_state_root),
+                    error
+                ))
+            })?);
+            Ok(inventory)
+        })
     }
 }
 
-/// A canonicalized gate candidate: the deploy envelope, its supply key, its
-/// resolved supply channel, and its static demand.
+/// A canonicalized gate candidate: the deploy envelope, its authority-lane key,
+/// its located-stack channel, and its certified demand.
 struct Candidate {
     cosigned: Cosigned<DeployData>,
     sig_key: SigKey,
     channel: Par,
-    demand: DemandEntry,
+    certified_upper_bound: i64,
+    certified: Option<CertifiedDemand>,
     /// `true` iff the term is malformed (`source_to_adt` failed). Malformed
     /// terms are REJECTED outright (the runtime would fail them too), never
     /// grouped/admitted.
     malformed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateBoundCostEvidence {
+    pub cost: i64,
+    pub pre_state_root: [u8; 32],
+    pub post_state_root: [u8; 32],
+    pub authority_witness: AuthorityCostWitness<SigKey>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreparedAuthorityReservation {
+    pub canonical: Par,
+    pub certificate: FundingCertificate<SigKey>,
+    pub signatures: BTreeMap<SigKey, CostSignature>,
+    pub inventory: AuthorityPhysicalInventory<SigKey>,
+    pub purse_stacks: BTreeMap<[u8; 32], supply::PurseStack>,
+    pub bound_events: Vec<AuthorityEvent<SigKey>>,
+    pub fee_event: AuthorityEvent<SigKey>,
+    pub maximum_cost_settlement: AuthorityPhysicalSettlement<SigKey>,
+}
+
+impl PreparedAuthorityReservation {
+    pub fn execution_capacity(&self) -> Result<i64, CasperError> {
+        let reservation = match &self.certificate.demand {
+            DemandBound::Exact(reservation) => reservation,
+            DemandBound::FiniteUpperBound { bound, .. } => bound,
+            DemandBound::Unprovable(_) => {
+                return Err(CasperError::InvalidCostSettlement(
+                    "prepared authority reservation has no finite demand".to_string(),
+                ));
+            }
+        };
+        reservation
+            .0
+            .values()
+            .try_fold(0_i64, |total: i64, amount| {
+                i64::try_from(*amount)
+                    .ok()
+                    .and_then(|amount| total.checked_add(amount))
+                    .ok_or_else(|| {
+                        CasperError::InvalidCostSettlement(
+                            "prepared authority demand exceeds execution range".to_string(),
+                        )
+                    })
+            })
+    }
+
+    pub fn reserved_inventory(&self) -> Result<AuthorityPhysicalInventory<SigKey>, CasperError> {
+        let mut stacks = BTreeMap::new();
+        for (stack_id, pop_count) in &self.certificate.stack_reservations {
+            let cells = self.inventory.stacks.get(stack_id).ok_or_else(|| {
+                CasperError::InvalidCostSettlement(
+                    "prepared reservation references an unknown authority stack".to_string(),
+                )
+            })?;
+            let pop_count = usize::try_from(*pop_count).map_err(|_| {
+                CasperError::InvalidCostSettlement(
+                    "prepared authority stack reservation exceeds the platform range".to_string(),
+                )
+            })?;
+            if pop_count > cells.len() {
+                return Err(CasperError::InvalidCostSettlement(
+                    "prepared authority stack reservation exceeds the stack length".to_string(),
+                ));
+            }
+            stacks.insert(*stack_id, cells[..pop_count].to_vec());
+        }
+        Ok(AuthorityPhysicalInventory {
+            balances: self.certificate.allocation.clone(),
+            stacks,
+            born_stacks: BTreeMap::new(),
+        })
+    }
+}
+
+fn insert_signature(
+    signatures: &mut BTreeMap<SigKey, CostSignature>,
+    signature: CostSignature,
+) -> Result<(), CasperError> {
+    let key = rholang::rust::interpreter::accounting::authority::cost_signature_to_sig(&signature)
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?
+        .key();
+    match signatures.get(&key) {
+        Some(existing) if existing != &signature => Err(CasperError::InvalidCostSettlement(
+            "authority reservation contains a signature-key collision".to_string(),
+        )),
+        Some(_) => Ok(()),
+        None => {
+            signatures.insert(key, signature);
+            Ok(())
+        }
+    }
+}
+
+fn bounded_authority_events(
+    demand: &ResourceMultiset<SigKey>,
+    signatures: &BTreeMap<SigKey, CostSignature>,
+    reservation_id: [u8; 32],
+) -> Result<Vec<AuthorityEvent<SigKey>>, CasperError> {
+    let mut events = Vec::new();
+    for (key, amount) in &demand.0 {
+        let signature = signatures.get(key).ok_or_else(|| {
+            CasperError::InvalidCostSettlement(
+                "finite authority proof references an unresolved signature".to_string(),
+            )
+        })?;
+        for occurrence in 0..*amount {
+            let mut entropy = Vec::new();
+            entropy.extend_from_slice(b"f1r3node:static-authority-event:v1");
+            entropy.extend_from_slice(&reservation_id);
+            entropy.extend_from_slice(key);
+            entropy.extend_from_slice(&occurrence.to_le_bytes());
+            let event_id: [u8; 32] = Blake2b256::hash(entropy)
+                .try_into()
+                .expect("Blake2b-256 digest length");
+            let authority = canonical_authority(&CostAuthority {
+                regions: vec![cost_region(signature, &event_id, 0)
+                    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?],
+            })
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+            let debit = authority_demand(&authority)
+                .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+            if debit != ResourceMultiset::singleton(*key, 1) {
+                return Err(CasperError::InvalidCostSettlement(
+                    "static authority event disagrees with its certified lane".to_string(),
+                ));
+            }
+            events.push(AuthorityEvent {
+                event_id,
+                authority,
+                debit,
+            });
+        }
+    }
+    Ok(events)
+}
+
+pub async fn prepare_authority_reservation(
+    deploy: &Cosigned<DeployData>,
+    supply_reader: &dyn SupplyReader,
+    fee_recipient: &[u8],
+) -> Result<PreparedAuthorityReservation, CasperError> {
+    let funding = accounting::funding_sig(deploy);
+    if !funding.is_funding_former() {
+        return Err(CasperError::InvalidCostSettlement(
+            "deploy funding authority is not a funding former".to_string(),
+        ));
+    }
+    let canonical = canonical_program_for_deploy(deploy, supply_reader).await?;
+    let demand = DefaultResourceLogic.demand_bound(&canonical, &funding);
+    let reservation = DefaultResourceLogic
+        .verify_demand_bound(&canonical, &funding, &demand)
+        .ok_or_else(|| {
+            CasperError::InvalidCostSettlement(
+                "deploy has no verified finite authority bound".to_string(),
+            )
+        })?;
+    let static_plan = static_authority_plan(&canonical, &funding)
+        .map_err(|reason| CasperError::InvalidCostSettlement(format!("{reason:?}")))?;
+    if static_plan.demand != reservation {
+        return Err(CasperError::InvalidCostSettlement(
+            "static resource-flow plan disagrees with the certified authority demand".to_string(),
+        ));
+    }
+    let program_hash: [u8; 32] = Blake2b256::hash(canonical.encode_to_vec())
+        .try_into()
+        .expect("Blake2b-256 digest length");
+    let mut reservation_entropy = Vec::new();
+    reservation_entropy.extend_from_slice(b"f1r3node:vault-cost-reservation:v1");
+    reservation_entropy.extend_from_slice(&supply_reader.pre_state_root());
+    reservation_entropy.extend_from_slice(&program_hash);
+    reservation_entropy.extend_from_slice(deploy.primary().sig.as_ref());
+    let reservation_id: [u8; 32] = Blake2b256::hash(reservation_entropy)
+        .try_into()
+        .expect("Blake2b-256 digest length");
+
+    let mut signatures = static_authority_signatures(&canonical)
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+    insert_signature(
+        &mut signatures,
+        sig_to_cost_signature(&funding)
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?,
+    )?;
+    for presentation in &deploy.data().authority_presentations {
+        insert_signature(&mut signatures, presentation.clone())?;
+    }
+    let bound_events = bounded_authority_events(
+        &static_plan.external_reservation,
+        &signatures,
+        reservation_id,
+    )?;
+    let fee_event = fee_authority_event(deploy)?;
+    for (key, signature) in authority_funding_signatures_with_presentations(
+        &bound_events
+            .iter()
+            .cloned()
+            .chain(std::iter::once(fee_event.clone()))
+            .collect::<Vec<_>>(),
+        &deploy.data().authority_presentations,
+    )
+    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?
+    {
+        match signatures.get(&key) {
+            Some(existing) if existing != &signature => {
+                return Err(CasperError::InvalidCostSettlement(
+                    "authority reservation contains a signature-key collision".to_string(),
+                ));
+            }
+            Some(_) => {}
+            None => {
+                signatures.insert(key, signature);
+            }
+        }
+    }
+
+    let mut inventory = AuthorityPhysicalInventory::default();
+    let mut purse_stacks = BTreeMap::new();
+    for (key, signature) in &signatures {
+        let purse = supply_reader.read_purse(signature).await?;
+        let balance = purse.balance.unwrap_or(0);
+        if balance < 0 {
+            return Err(CasperError::InvalidCostSettlement(
+                "authority purse balance cannot be negative".to_string(),
+            ));
+        }
+        if balance > 0 {
+            inventory.balances.0.insert(
+                *key,
+                u64::try_from(balance).expect("non-negative authority balance"),
+            );
+        }
+        for stack in purse.stacks {
+            if inventory
+                .stacks
+                .insert(stack.instance_id, stack.stack.cells.clone())
+                .is_some()
+                || purse_stacks.insert(stack.instance_id, stack).is_some()
+            {
+                return Err(CasperError::InvalidCostSettlement(
+                    "authority inventory contains a duplicate stack identity".to_string(),
+                ));
+            }
+        }
+    }
+
+    let maximum_cost_settlement =
+        allocate_physical_settlement(&bound_events, &signatures, &inventory)
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+    verify_physical_settlement(
+        &bound_events,
+        &signatures,
+        &inventory,
+        &maximum_cost_settlement.draws,
+    )
+    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+    let after_cost = inventory
+        .balances
+        .checked_sub(&maximum_cost_settlement.balance_debit)
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+    let fee_allocation = allocate_authority_events(std::slice::from_ref(&fee_event), &after_cost)
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+    let certificate = FundingCertificate {
+        protocol_version: AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
+        program_hash,
+        pre_state_root: supply_reader.pre_state_root(),
+        reservation_id,
+        demand,
+        allocation: maximum_cost_settlement.balance_debit.clone(),
+        stack_reservations: maximum_cost_settlement.stack_pops.clone(),
+        fee_allocation,
+        fee_recipient: fee_recipient.to_vec(),
+    };
+    certificate
+        .verify_stack_reservations()
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+
+    Ok(PreparedAuthorityReservation {
+        canonical,
+        certificate,
+        signatures,
+        inventory,
+        purse_stacks,
+        bound_events,
+        fee_event,
+        maximum_cost_settlement,
+    })
+}
+
+pub async fn prepare_state_bound_authority_reservation(
+    deploy: &Cosigned<DeployData>,
+    witness: &AuthorityCostWitness<SigKey>,
+    supply_reader: &dyn SupplyReader,
+    fee_recipient: &[u8],
+) -> Result<PreparedAuthorityReservation, CasperError> {
+    witness
+        .verify_structure()
+        .and_then(|_| witness.verify_event_authorities())
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+    if witness.pre_state_root != supply_reader.pre_state_root() {
+        return Err(CasperError::InvalidCostSettlement(
+            "state-bound witness is bound to a different authority pre-state".to_string(),
+        ));
+    }
+
+    let canonical = canonical_program_for_deploy(deploy, supply_reader).await?;
+    let program_hash: [u8; 32] = Blake2b256::hash(canonical.encode_to_vec())
+        .try_into()
+        .expect("Blake2b-256 digest length");
+    let mut reservation_entropy = Vec::new();
+    reservation_entropy.extend_from_slice(b"f1r3node:vault-cost-reservation:v1");
+    reservation_entropy.extend_from_slice(&supply_reader.pre_state_root());
+    reservation_entropy.extend_from_slice(&program_hash);
+    reservation_entropy.extend_from_slice(deploy.primary().sig.as_ref());
+    let reservation_id: [u8; 32] = Blake2b256::hash(reservation_entropy)
+        .try_into()
+        .expect("Blake2b-256 digest length");
+
+    let fee_event = fee_authority_event(deploy)?;
+    let mut funding_events = witness.events.clone();
+    funding_events.push(fee_event.clone());
+    let mut signatures = authority_funding_signatures_with_presentations(
+        &funding_events,
+        &deploy.data().authority_presentations,
+    )
+    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+    for birth in &witness.born_stacks {
+        for cell in &birth.cells {
+            insert_signature(&mut signatures, cell.clone())?;
+        }
+    }
+
+    let mut inventory = AuthorityPhysicalInventory::default();
+    let mut purse_stacks = BTreeMap::new();
+    for (key, signature) in &signatures {
+        let purse = supply_reader.read_purse(signature).await?;
+        let balance = purse.balance.unwrap_or(0);
+        if balance < 0 {
+            return Err(CasperError::InvalidCostSettlement(
+                "authority purse balance cannot be negative".to_string(),
+            ));
+        }
+        if balance > 0 {
+            inventory.balances.0.insert(
+                *key,
+                u64::try_from(balance).expect("non-negative authority balance"),
+            );
+        }
+        for stack in purse.stacks {
+            if inventory
+                .stacks
+                .insert(stack.instance_id, stack.stack.cells.clone())
+                .is_some()
+                || purse_stacks.insert(stack.instance_id, stack).is_some()
+            {
+                return Err(CasperError::InvalidCostSettlement(
+                    "authority inventory contains a duplicate stack identity".to_string(),
+                ));
+            }
+        }
+    }
+    for birth in &witness.born_stacks {
+        if inventory
+            .stacks
+            .insert(birth.stack_id, birth.cells.clone())
+            .is_some()
+            || inventory
+                .born_stacks
+                .insert(birth.stack_id, birth.produce_hash)
+                .is_some()
+        {
+            return Err(CasperError::InvalidCostSettlement(
+                "born authority stack collides with pre-state inventory".to_string(),
+            ));
+        }
+    }
+
+    let maximum_cost_settlement =
+        allocate_physical_settlement(&witness.events, &signatures, &inventory)
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+    verify_physical_settlement(
+        &witness.events,
+        &signatures,
+        &inventory,
+        &maximum_cost_settlement.draws,
+    )
+    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+    let after_cost = inventory
+        .balances
+        .checked_sub(&maximum_cost_settlement.balance_debit)
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+    let fee_allocation = allocate_authority_events(std::slice::from_ref(&fee_event), &after_cost)
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+    let born_stack_ids = witness
+        .born_stacks
+        .iter()
+        .map(|birth| birth.stack_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    let stack_reservations = maximum_cost_settlement
+        .stack_pops
+        .iter()
+        .filter(|(stack_id, _)| !born_stack_ids.contains(*stack_id))
+        .map(|(stack_id, count)| (*stack_id, *count))
+        .collect();
+    let certificate = FundingCertificate {
+        protocol_version: AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
+        program_hash,
+        pre_state_root: supply_reader.pre_state_root(),
+        reservation_id,
+        demand: DemandBound::Exact(witness.realized.clone()),
+        allocation: maximum_cost_settlement.balance_debit.clone(),
+        stack_reservations,
+        fee_allocation,
+        fee_recipient: fee_recipient.to_vec(),
+    };
+    certificate
+        .verify_with_allocation(
+            AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
+            program_hash,
+            supply_reader.pre_state_root(),
+            &inventory.balances,
+            |_, _| false,
+            |demand, allocation| {
+                demand == &witness.realized && allocation == &maximum_cost_settlement.balance_debit
+            },
+        )
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+
+    Ok(PreparedAuthorityReservation {
+        canonical,
+        certificate,
+        signatures,
+        inventory,
+        purse_stacks,
+        bound_events: witness.events.clone(),
+        fee_event,
+        maximum_cost_settlement,
+    })
+}
+
+async fn canonical_program_for_deploy(
+    deploy: &Cosigned<DeployData>,
+    supply_reader: &dyn SupplyReader,
+) -> Result<Par, CasperError> {
+    let normalized = Compiler::source_to_adt_with_normalizer_env(
+        &deploy.data().term,
+        models::rust::normalizer_env::normalizer_env_from_cosigned_deploy(deploy),
+    )
+    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+    let canonical = RhoGslt.canonicalize_for_funding(&normalized);
+    let urn_map = supply_reader.urn_map().await?;
+    resolve_lexical_names_for_funding(
+        &canonical,
+        Tools::unforgeable_name_rng(&deploy.primary().pk, deploy.data().time_stamp),
+        &urn_map,
+    )
+    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))
+}
+
+#[derive(Clone, Copy)]
+enum DemandProofKind {
+    Structural,
+    StateBound,
+}
+
+struct CertifiedDemand {
+    canonical: Par,
+    funding: Sig,
+    program_hash: [u8; 32],
+    certificate: FundingCertificate<SigKey>,
+    proof_kind: DemandProofKind,
+}
+
+struct RealizedCost {
+    cost: i64,
+    post_state_root: [u8; 32],
+    certificate: FundingCertificate<SigKey>,
+    authority_witness: AuthorityCostWitness<SigKey>,
 }
 
 /// Re-impose the consensus-canonical deploy order on a `HashSet`-sourced
@@ -259,23 +1175,108 @@ pub fn canonical_sort(deploys: &mut [Cosigned<DeployData>]) {
     });
 }
 
+fn state_bound_evidence(
+    ordered: &[Cosigned<DeployData>],
+    processed: &[ProcessedDeploy],
+    initial_root: [u8; 32],
+) -> Result<BTreeMap<Vec<u8>, VecDeque<StateBoundCostEvidence>>, CasperError> {
+    if ordered.len() != processed.len() {
+        return Err(CasperError::InvalidCostSettlement(format!(
+            "state-bound evidence count {} does not match candidate count {}",
+            processed.len(),
+            ordered.len()
+        )));
+    }
+
+    let mut expected_pre = initial_root;
+    let mut evidence = BTreeMap::<Vec<u8>, VecDeque<StateBoundCostEvidence>>::new();
+    for (candidate, witness) in ordered.iter().zip(processed) {
+        let reconstructed = witness
+            .to_cosigned()
+            .map_err(CasperError::InvalidCostSettlement)?;
+        if &reconstructed != candidate {
+            return Err(CasperError::InvalidCostSettlement(
+                "state-bound evidence is not for the canonical candidate envelope".to_string(),
+            ));
+        }
+        let pre_state_root: [u8; 32] =
+            witness.pre_state_hash.as_ref().try_into().map_err(|_| {
+                CasperError::InvalidCostSettlement(
+                    "state-bound evidence pre-state root is not Blake2b-256".to_string(),
+                )
+            })?;
+        let post_state_root: [u8; 32] =
+            witness.post_state_hash.as_ref().try_into().map_err(|_| {
+                CasperError::InvalidCostSettlement(
+                    "state-bound evidence post-state root is not Blake2b-256".to_string(),
+                )
+            })?;
+        if pre_state_root != expected_pre {
+            return Err(CasperError::InvalidCostSettlement(format!(
+                "state-bound evidence chain expected pre-state {} but found {}",
+                hex::encode(expected_pre),
+                hex::encode(pre_state_root)
+            )));
+        }
+        let cost = i64::try_from(witness.cost.cost).map_err(|_| {
+            CasperError::InvalidCostSettlement(
+                "state-bound evidence cost exceeds i64 range".to_string(),
+            )
+        })?;
+        let authority_witness = authority_witness_from_proto(
+            witness.authority_cost_witness.as_ref().ok_or_else(|| {
+                CasperError::InvalidCostSettlement(
+                    "state-bound evidence is missing its authority witness".to_string(),
+                )
+            })?,
+            true,
+        )?;
+        if authority_witness.pre_state_root != pre_state_root
+            || authority_witness.post_state_root != post_state_root
+        {
+            return Err(CasperError::InvalidCostSettlement(
+                "state-bound authority witness roots disagree with the processed deploy"
+                    .to_string(),
+            ));
+        }
+        evidence
+            .entry(candidate.primary().sig.to_vec())
+            .or_default()
+            .push_back(StateBoundCostEvidence {
+                cost,
+                pre_state_root,
+                post_state_root,
+                authority_witness,
+            });
+        expected_pre = post_state_root;
+    }
+    Ok(evidence)
+}
+
 /// Build the gate candidate for one deploy: derive the FUNDING `Sig` via the
-/// ONE shared `accounting::funding_sig`, the supply key + channel from it, and
-/// the static demand `Δ_s` from the desugared term. A term whose
+/// ONE shared `accounting::funding_sig`, the authority key + channel from it, and
+/// either a structural demand bound or exact state-bound evidence. A term whose
 /// `source_to_adt` fails is flagged `malformed` (⇒ rejected).
 ///
 /// The funding signature is keyed by the signers' GROUND public keys
-/// (`Sig::Ground(pk)` / the `And`-fold thereof), so the pool the gate reads,
-/// proves `Σ ≥ Δ` against, and debits IS the genesis-seeded wallet
-/// `Σ⟦Ground(pk)⟧` — `Σ⟦signer⟧ == Σ⟦wallet⟧` (cost-accounting WD-D2 §D2.9).
-fn build_candidate_with_logic<L>(cosigned: Cosigned<DeployData>, logic: &L) -> Candidate
-where L: OslfResourceLogic<RhoGslt> {
+/// (`Sig::Ground(pk)` / the `And`-fold thereof), so native balance authority
+/// resolves to each signer's canonical SystemVault and stack authority resolves
+/// to the signature-keyed RSpace purse.
+fn build_candidate_with_logic<L>(
+    cosigned: Cosigned<DeployData>,
+    logic: &L,
+    pre_state_root: [u8; 32],
+    state_bound: Option<&StateBoundCostEvidence>,
+) -> Candidate
+where
+    L: OslfResourceLogic<RhoGslt>,
+{
     let gslt = RhoGslt;
     let funding: Sig = accounting::funding_sig(&cosigned);
 
     // F-A funding/capability separation (gate invariant (a) — red-team M2,
     // `docs/theory/cost-accounting-impl/f-a-funding-vs-capability-separation.md`
-    // §3/§6): the funding `Sig` that keys the supply pool `Σ⟦s⟧` MUST be a
+    // §3/§6): the funding `Sig` that keys an authority lane MUST be a
     // funding-grammar signature (`g|#P|s∘s` = `Unit`/`Ground`/`Quote` atoms
     // folded by `And`). A value/capability type-logic connective
     // (`Plus`/`With`/`Bang`/`WhyNot`/`Lolly`/`Threshold`) is NOT a funding former
@@ -304,7 +1305,8 @@ where L: OslfResourceLogic<RhoGslt> {
             cosigned,
             sig_key,
             channel,
-            demand: DemandEntry::ZERO,
+            certified_upper_bound: 0,
+            certified: None,
             malformed: true,
         };
     }
@@ -312,28 +1314,89 @@ where L: OslfResourceLogic<RhoGslt> {
     let sig_key = funding.key();
     let channel = supply::supply_channel(&funding);
 
-    match Compiler::source_to_adt(&cosigned.data().term) {
+    match Compiler::source_to_adt_with_normalizer_env(
+        &cosigned.data().term,
+        models::rust::normalizer_env::normalizer_env_from_cosigned_deploy(&cosigned),
+    ) {
         Ok(par) => {
             let desugared = gslt.canonicalize_for_funding(&par);
-            // D3 (DR-9): `demand` is now the per-COMM count (send/receive only;
-            // new/match/if are diagnostic Reductions). `known_lower_bound`
-            // therefore equals the runtime's consumed per-COMM `total_cost()`,
-            // so gate demand == runtime consumed == settlement debit, all
-            // per-COMM (the D1→D3 handoff completed in lockstep).
-            let demand = logic.demand(&desugared, &funding);
+            let (demand_bound, reservation, proof_kind, certified_upper_bound) = match state_bound {
+                Some(evidence) if evidence.cost >= 0 => {
+                    let reservation = evidence.authority_witness.realized.clone();
+                    (
+                        rholang::rust::interpreter::accounting::authority::DemandBound::Exact(
+                            reservation.clone(),
+                        ),
+                        Some(reservation),
+                        DemandProofKind::StateBound,
+                        Some(evidence.cost),
+                    )
+                }
+                Some(_) => (
+                    rholang::rust::interpreter::accounting::authority::DemandBound::Unprovable(
+                        rholang::rust::interpreter::accounting::authority::UnprovableDemand::DynamicAuthority,
+                    ),
+                    None,
+                    DemandProofKind::StateBound,
+                    None,
+                ),
+                None => {
+                    let demand_bound = logic.demand_bound(&desugared, &funding);
+                    let reservation =
+                        logic.verify_demand_bound(&desugared, &funding, &demand_bound);
+                    let certified_upper_bound = reservation.as_ref().and_then(|reservation| {
+                        reservation.0.values().try_fold(0_i64, |sum, amount| {
+                            i64::try_from(*amount).ok().and_then(|amount| sum.checked_add(amount))
+                        })
+                    });
+                    (
+                        demand_bound,
+                        reservation,
+                        DemandProofKind::Structural,
+                        certified_upper_bound,
+                    )
+                }
+            };
+            let program_hash: [u8; 32] = Blake2b256::hash(desugared.encode_to_vec())
+                .try_into()
+                .expect("Blake2b-256 digest length");
+            let reservation_id: [u8; 32] = Blake2b256::hash(cosigned.primary().sig.to_vec())
+                .try_into()
+                .expect("Blake2b-256 digest length");
+            let certified = reservation.map(|allocation| CertifiedDemand {
+                canonical: desugared,
+                funding,
+                program_hash,
+                certificate: FundingCertificate {
+                    protocol_version: AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
+                    program_hash,
+                    pre_state_root: state_bound
+                        .map(|evidence| evidence.pre_state_root)
+                        .unwrap_or(pre_state_root),
+                    reservation_id,
+                    demand: demand_bound,
+                    allocation,
+                    stack_reservations: BTreeMap::new(),
+                    fee_allocation: ResourceMultiset::default(),
+                    fee_recipient: Vec::new(),
+                },
+                proof_kind,
+            });
             Candidate {
                 cosigned,
                 sig_key,
                 channel,
-                demand,
-                malformed: false,
+                certified_upper_bound: certified_upper_bound.unwrap_or(0),
+                malformed: certified.is_none(),
+                certified,
             }
         }
         Err(_) => Candidate {
             cosigned,
             sig_key,
             channel,
-            demand: DemandEntry::ZERO,
+            certified_upper_bound: 0,
+            certified: None,
             malformed: true,
         },
     }
@@ -363,6 +1426,22 @@ fn collect_decompositions(
             }),
     );
     collect_component_channels(envelope, component_channels);
+}
+
+fn collect_funding_signatures(
+    signature: &Sig,
+    signatures: &mut BTreeMap<SigKey, CostSignature>,
+) -> Result<(), CasperError> {
+    insert_signature(
+        signatures,
+        sig_to_cost_signature(signature)
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?,
+    )?;
+    if let Sig::And(left, right) = signature {
+        collect_funding_signatures(left, signatures)?;
+        collect_funding_signatures(right, signatures)?;
+    }
+    Ok(())
 }
 
 fn collect_component_channels(envelope: &Sig, component_channels: &mut BTreeMap<SigKey, Par>) {
@@ -481,12 +1560,12 @@ fn draw_group_from_ledger(
 }
 
 /// CONSENSUS-CRITICAL (#12): the EXACT per-component (Split/Join) compound
-/// settlement debit. Given each PRESENT group's cumulative admitted demand
-/// `k = ΣΔ_admitted` (`demand_by_group`, keyed + channel'd by the group's
+/// apportionment. Given each PRESENT group's cumulative amount
+/// `k` (`demand_by_group`, keyed + channel'd by the group's
 /// `SigKey`), the Split/Join `decompositions`, the RAW pre-state pool balances
 /// `raw` (`Σ⟦s⟧`, absent ⇒ 0), and the resolved `channel` for every key
 /// (`channels_by_key`, covering groups AND compound components), produce the
-/// per-pool settlement-debit map so that, for every admitted compound group:
+/// per-pool map so that, for every admitted compound group:
 ///
 /// ```text
 /// draw_compound = min(k, Σ⟦compound⟧)
@@ -613,39 +1692,703 @@ where
 /// `deploys` are the candidate user deploy envelopes (`HashSet`-sourced, hence
 /// nondeterministically ordered — this function re-sorts canonically).
 /// `supply_reader` reads each pool `Σ⟦s⟧` from the consensus pre-state (play:
-/// merged pre-state hash; replay: live store reset to `start_hash`). `margin` is
-/// the on-chain genesis safety buffer (`min_phlo_price`).
-///
-/// `strict` is the shard-genesis activation mode (task #13a;
-/// `CasperShardConf::strict_funding_enforcement`). When `false` (default =
-/// back-compat) the gate is TRANSITIONAL: an ABSENT pool is admitted unenforced
-/// with no debit (the early `continue` below). When `true` the gate is
-/// SPEC-STRICT (§7.6 step 5): an absent pool is NOT early-admitted — it falls
-/// through to the normal enforcement path where (absent ⇒ effective supply 0) a
-/// `Δ > 0` deploy fails `is_funded` and is rejected, while a `Δ = 0` deploy is
-/// admitted with no debit. `strict` is the SAME shard constant on play and
-/// replay, so the verdict is replay-deterministic.
+/// merged pre-state hash; replay: live store reset to `start_hash`). An absent
+/// pool has zero supply and cannot fund positive demand or the fixed fee.
 ///
 /// Returns the [`AdmissionOutcome`]: admitted envelopes in canonical order, the
 /// rejected primary sigs, and the per-pool settlement debits.
 pub async fn admit_by_funding(
     deploys: Vec<Cosigned<DeployData>>,
     supply_reader: &dyn SupplyReader,
-    margin: i64,
-    strict: bool,
 ) -> Result<AdmissionOutcome, CasperError> {
     let logic = DefaultResourceLogic;
     let policy = DefaultApportionment;
-    admit_by_funding_with_logic(deploys, supply_reader, margin, strict, &logic, &policy).await
+    admit_by_funding_internal(deploys, supply_reader, &logic, &policy, None).await
+}
+
+pub(crate) fn fee_authority_event(
+    deploy: &Cosigned<DeployData>,
+) -> Result<AuthorityEvent<SigKey>, CasperError> {
+    let signature = sig_to_cost_signature(&accounting::funding_sig(deploy))
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+    let region = cost_region(&signature, deploy.primary().sig.as_ref(), u32::MAX)
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+    let authority = canonical_authority(&CostAuthority {
+        regions: vec![region],
+    })
+    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+    let mut identity = Vec::with_capacity(deploy.primary().sig.len() + 32);
+    identity.extend_from_slice(b"f1r3node:cost-accounted-rho:fee-event:v2");
+    identity.extend_from_slice(deploy.primary().sig.as_ref());
+    Ok(AuthorityEvent {
+        event_id: authority_digest(&Blake2b256::hash(identity), "fee event identity")?,
+        debit: authority_demand(&authority)
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?,
+        authority,
+    })
+}
+
+pub fn authority_purse_signatures(
+    deploy: &Cosigned<DeployData>,
+    witness: &AuthorityCostWitness<SigKey>,
+) -> Result<BTreeMap<SigKey, CostSignature>, CasperError> {
+    let fee_event = fee_authority_event(deploy)?;
+    let mut funding_events = witness.events.clone();
+    funding_events.push(fee_event);
+    let mut signatures = authority_funding_signatures_with_presentations(
+        &funding_events,
+        &deploy.data().authority_presentations,
+    )
+    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+    for birth in &witness.born_stacks {
+        for cell in &birth.cells {
+            insert_signature(&mut signatures, cell.clone())?;
+        }
+    }
+    Ok(signatures)
+}
+
+pub async fn replay_purse_snapshot(
+    processed: &ProcessedDeploy,
+    supply_reader: &dyn SupplyReader,
+) -> Result<ReplayPurseSnapshot, CasperError> {
+    let cosigned = processed.to_cosigned().map_err(CasperError::RuntimeError)?;
+    let witness = authority_witness_from_proto(
+        processed.authority_cost_witness.as_ref().ok_or_else(|| {
+            CasperError::InvalidCostSettlement(
+                "processed deploy is missing its authority witness".to_string(),
+            )
+        })?,
+        false,
+    )?;
+    let signatures = authority_purse_signatures(&cosigned, &witness)?;
+    let mut snapshot = BTreeMap::new();
+    for (key, signature) in signatures {
+        snapshot.insert(key, supply_reader.read_purse(&signature).await?);
+    }
+    Ok(snapshot)
+}
+
+pub(crate) fn record_authority_debits(
+    target: &mut BTreeMap<SigKey, SettlementDebit>,
+    draw: &ResourceMultiset<SigKey>,
+    channels: &BTreeMap<SigKey, Par>,
+) -> Result<(), CasperError> {
+    for (key, amount) in &draw.0 {
+        let amount = i64::try_from(*amount).map_err(|_| {
+            CasperError::InvalidCostSettlement(
+                "authority settlement amount exceeds i64 range".to_string(),
+            )
+        })?;
+        let channel = channels.get(key).cloned().ok_or_else(|| {
+            CasperError::InvalidCostSettlement(
+                "authority settlement references an unresolved purse".to_string(),
+            )
+        })?;
+        match target.get_mut(key) {
+            Some(existing) => {
+                existing.amount = existing.amount.checked_add(amount).ok_or_else(|| {
+                    CasperError::InvalidCostSettlement(
+                        "authority settlement debit overflow".to_string(),
+                    )
+                })?;
+            }
+            None => {
+                target.insert(*key, SettlementDebit { channel, amount });
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn admit_state_bound_authority(
+    deploys: Vec<Cosigned<DeployData>>,
+    processed: &mut [ProcessedDeploy],
+    supply_reader: &dyn SupplyReader,
+) -> Result<AdmissionOutcome, CasperError> {
+    let mut ordered = deploys;
+    canonical_sort(&mut ordered);
+    let mut state_bounds =
+        state_bound_evidence(&ordered, processed, supply_reader.pre_state_root())?;
+    let mut candidates = Vec::with_capacity(ordered.len());
+    let mut pool_signatures = BTreeMap::new();
+
+    for (index, deploy) in ordered.into_iter().enumerate() {
+        let evidence = state_bounds
+            .get_mut(deploy.primary().sig.as_ref())
+            .and_then(VecDeque::pop_front)
+            .ok_or_else(|| {
+                CasperError::InvalidCostSettlement(
+                    "missing state-bound authority evidence for candidate deploy".to_string(),
+                )
+            })?;
+        let fee_event = fee_authority_event(&deploy)?;
+        let mut funding_events = evidence.authority_witness.events.clone();
+        funding_events.push(fee_event.clone());
+        for (key, signature) in authority_funding_signatures_with_presentations(
+            &funding_events,
+            &deploy.data().authority_presentations,
+        )
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?
+        {
+            pool_signatures.entry(key).or_insert(signature);
+        }
+        for birth in &evidence.authority_witness.born_stacks {
+            for cell in &birth.cells {
+                insert_signature(&mut pool_signatures, cell.clone())?;
+            }
+        }
+        let candidate = build_candidate_with_logic(
+            deploy,
+            &DefaultResourceLogic,
+            supply_reader.pre_state_root(),
+            Some(&evidence),
+        );
+        candidates.push((index, candidate, evidence, fee_event));
+    }
+
+    let mut channels = BTreeMap::new();
+    let mut physical_inventory = AuthorityPhysicalInventory::default();
+    let mut purse_stacks = BTreeMap::new();
+    for (key, signature) in &pool_signatures {
+        let funding =
+            rholang::rust::interpreter::accounting::authority::cost_signature_to_sig(signature)
+                .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        let channel = supply::supply_channel(&funding);
+        let purse = supply_reader.read_purse(signature).await?;
+        let balance = purse.balance.unwrap_or(0);
+        if balance < 0 {
+            return Err(CasperError::InvalidCostSettlement(
+                "authority purse balance cannot be negative".to_string(),
+            ));
+        }
+        channels.insert(*key, channel);
+        if balance > 0 {
+            physical_inventory.balances.0.insert(
+                *key,
+                u64::try_from(balance).expect("non-negative authority balance"),
+            );
+        }
+        for stack in purse.stacks {
+            if physical_inventory
+                .stacks
+                .insert(stack.instance_id, stack.stack.cells.clone())
+                .is_some()
+                || purse_stacks.insert(stack.instance_id, stack).is_some()
+            {
+                return Err(CasperError::InvalidCostSettlement(
+                    "authority inventory contains a duplicate stack identity".to_string(),
+                ));
+            }
+        }
+    }
+
+    let mut outcome = AdmissionOutcome::default();
+    let mut closed_groups = std::collections::BTreeSet::new();
+    for (index, mut candidate, evidence, fee_event) in candidates {
+        if candidate.malformed || closed_groups.contains(&candidate.sig_key) {
+            closed_groups.insert(candidate.sig_key);
+            outcome
+                .rejected
+                .push(candidate.cosigned.primary().sig.clone());
+            continue;
+        }
+        let physical_settlement = match allocate_physical_settlement(
+            &evidence.authority_witness.events,
+            &pool_signatures,
+            &physical_inventory,
+        ) {
+            Ok(settlement) => settlement,
+            Err(rholang::rust::interpreter::accounting::authority::AuthorityError::InsufficientAuthority) => {
+                closed_groups.insert(candidate.sig_key);
+                outcome.rejected.push(candidate.cosigned.primary().sig.clone());
+                continue;
+            }
+            Err(error) => {
+                return Err(CasperError::InvalidCostSettlement(error.to_string()));
+            }
+        };
+        let cost_draw = physical_settlement.balance_debit.clone();
+        let after_cost = physical_inventory
+            .balances
+            .checked_sub(&cost_draw)
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        let fee_draw = match allocate_authority_events(std::slice::from_ref(&fee_event), &after_cost)
+        {
+            Ok(draw) => draw,
+            Err(rholang::rust::interpreter::accounting::authority::AuthorityError::InsufficientAuthority) => {
+                closed_groups.insert(candidate.sig_key);
+                outcome.rejected.push(candidate.cosigned.primary().sig.clone());
+                continue;
+            }
+            Err(error) => {
+                return Err(CasperError::InvalidCostSettlement(error.to_string()));
+            }
+        };
+
+        let certified = candidate.certified.as_mut().ok_or_else(|| {
+            CasperError::InvalidCostSettlement(
+                "state-bound candidate is missing its funding certificate".to_string(),
+            )
+        })?;
+        certified.certificate.allocation = cost_draw.clone();
+        certified.certificate.stack_reservations = physical_settlement.stack_pops.clone();
+        certified.certificate.fee_allocation = fee_draw.clone();
+        certified
+            .certificate
+            .verify_with_allocation(
+                AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
+                certified.program_hash,
+                evidence.pre_state_root,
+                &physical_inventory.balances,
+                |_, _| false,
+                |bound, allocation| {
+                    bound == &evidence.authority_witness.realized && allocation == &cost_draw
+                },
+            )
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        let mut witness = evidence.authority_witness;
+        witness.certificate_id = certified.certificate.certificate_id();
+        witness.settlement = cost_draw.clone();
+        witness.physical_draws = physical_settlement.draws.clone();
+        witness
+            .verify_with_settlement(&certified.certificate, |_, _, _| Ok(cost_draw.clone()))
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+
+        processed[index].authority_funding_certificate =
+            Some(authority_certificate_to_proto(&certified.certificate));
+        processed[index].authority_cost_witness = Some(authority_witness_to_proto(&witness));
+        apply_physical_settlement(&mut physical_inventory, &physical_settlement)
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        physical_inventory.balances = after_cost
+            .checked_sub(&fee_draw)
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        for (stack_id, pop_count) in physical_settlement.stack_pops {
+            let total = outcome.stack_pops.entry(stack_id).or_default();
+            *total = total.checked_add(pop_count).ok_or_else(|| {
+                CasperError::InvalidCostSettlement("authority stack pop count overflow".to_string())
+            })?;
+        }
+        record_authority_debits(&mut outcome.debits, &cost_draw, &channels)?;
+        record_authority_debits(&mut outcome.fee_debits, &fee_draw, &channels)?;
+        outcome.admitted.push(candidate.cosigned);
+    }
+    outcome.purse_stacks = purse_stacks;
+    Ok(outcome)
+}
+
+#[derive(Default)]
+pub struct StateBoundAuthoritySession {
+    pool_signatures: BTreeMap<SigKey, models::rhoapi::CostSignature>,
+    channels: BTreeMap<SigKey, Par>,
+    physical_inventory: AuthorityPhysicalInventory<SigKey>,
+    purse_stacks: BTreeMap<[u8; 32], supply::PurseStack>,
+    closed_groups: std::collections::BTreeSet<SigKey>,
+    outcome: AdmissionOutcome,
+}
+
+impl StateBoundAuthoritySession {
+    fn group_key(deploy: &Cosigned<DeployData>) -> SigKey { accounting::funding_sig(deploy).key() }
+
+    pub fn prepare(&mut self, deploy: &Cosigned<DeployData>) -> bool {
+        let funding = accounting::funding_sig(deploy);
+        let key = funding.key();
+        let valid = funding.is_funding_former()
+            && Compiler::source_to_adt_with_normalizer_env(
+                &deploy.data().term,
+                models::rust::normalizer_env::normalizer_env_from_cosigned_deploy(deploy),
+            )
+            .is_ok()
+            && !self.closed_groups.contains(&key);
+        if !valid {
+            self.closed_groups.insert(key);
+            self.outcome.rejected.push(deploy.primary().sig.clone());
+        }
+        valid
+    }
+
+    pub fn reject_exhausted(&mut self, deploy: &Cosigned<DeployData>) {
+        self.closed_groups.insert(Self::group_key(deploy));
+        self.outcome.rejected.push(deploy.primary().sig.clone());
+    }
+
+    async fn load_signatures(
+        &mut self,
+        signatures: BTreeMap<SigKey, models::rhoapi::CostSignature>,
+        supply_reader: &dyn SupplyReader,
+    ) -> Result<(), CasperError> {
+        for (key, signature) in signatures {
+            if let Some(existing) = self.pool_signatures.get(&key) {
+                if existing != &signature {
+                    return Err(CasperError::InvalidCostSettlement(
+                        "authority session contains a signature-key collision".to_string(),
+                    ));
+                }
+                continue;
+            }
+            let funding = rholang::rust::interpreter::accounting::authority::cost_signature_to_sig(
+                &signature,
+            )
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+            let channel = supply::supply_channel(&funding);
+            let purse = supply_reader.read_purse(&signature).await?;
+            let balance = purse.balance.unwrap_or(0);
+            if balance < 0 {
+                return Err(CasperError::InvalidCostSettlement(
+                    "authority purse balance cannot be negative".to_string(),
+                ));
+            }
+            if balance > 0 {
+                self.physical_inventory.balances.0.insert(
+                    key,
+                    u64::try_from(balance).expect("non-negative authority balance"),
+                );
+            }
+            for stack in purse.stacks {
+                if self
+                    .physical_inventory
+                    .stacks
+                    .insert(stack.instance_id, stack.stack.cells.clone())
+                    .is_some()
+                    || self.purse_stacks.insert(stack.instance_id, stack).is_some()
+                {
+                    return Err(CasperError::InvalidCostSettlement(
+                        "authority inventory contains a duplicate stack identity".to_string(),
+                    ));
+                }
+            }
+            self.channels.insert(key, channel);
+            self.pool_signatures.insert(key, signature);
+        }
+        Ok(())
+    }
+
+    pub async fn settle_candidate(
+        &mut self,
+        deploy: &Cosigned<DeployData>,
+        processed: &mut ProcessedDeploy,
+        pre_state_root: [u8; 32],
+        supply_reader: &dyn SupplyReader,
+    ) -> Result<bool, CasperError> {
+        let mut witness_proto = processed
+            .authority_cost_witness
+            .as_ref()
+            .ok_or_else(|| {
+                CasperError::InvalidCostSettlement(
+                    "state-bound execution is missing its authority witness".to_string(),
+                )
+            })?
+            .clone();
+        if witness_proto.pre_state_root.is_empty() {
+            witness_proto.pre_state_root = pre_state_root.to_vec().into();
+        }
+        if witness_proto.post_state_root.is_empty() {
+            witness_proto.post_state_root = vec![0; 32].into();
+        }
+        let mut witness = authority_witness_from_proto(&witness_proto, true)?;
+        witness.pre_state_root = pre_state_root;
+        let fee_event = fee_authority_event(deploy)?;
+        let mut funding_events = witness.events.clone();
+        funding_events.push(fee_event.clone());
+        let signatures = authority_funding_signatures_with_presentations(
+            &funding_events,
+            &deploy.data().authority_presentations,
+        )
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        self.load_signatures(signatures, supply_reader).await?;
+
+        let physical_settlement = match allocate_physical_settlement(
+            &witness.events,
+            &self.pool_signatures,
+            &self.physical_inventory,
+        ) {
+            Ok(settlement) => settlement,
+            Err(
+                rholang::rust::interpreter::accounting::authority::AuthorityError::InsufficientAuthority,
+            ) => {
+                self.closed_groups.insert(Self::group_key(deploy));
+                self.outcome.rejected.push(deploy.primary().sig.clone());
+                return Ok(false);
+            }
+            Err(error) => {
+                return Err(CasperError::InvalidCostSettlement(error.to_string()));
+            }
+        };
+        let cost_draw = physical_settlement.balance_debit.clone();
+        let after_cost = self
+            .physical_inventory
+            .balances
+            .checked_sub(&cost_draw)
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        let fee_draw = match allocate_authority_events(
+            std::slice::from_ref(&fee_event),
+            &after_cost,
+        ) {
+            Ok(draw) => draw,
+            Err(
+                rholang::rust::interpreter::accounting::authority::AuthorityError::InsufficientAuthority,
+            ) => {
+                self.closed_groups.insert(Self::group_key(deploy));
+                self.outcome.rejected.push(deploy.primary().sig.clone());
+                return Ok(false);
+            }
+            Err(error) => {
+                return Err(CasperError::InvalidCostSettlement(error.to_string()));
+            }
+        };
+
+        let canonical = canonical_program_for_deploy(deploy, supply_reader).await?;
+        let program_hash: [u8; 32] = Blake2b256::hash(canonical.encode_to_vec())
+            .try_into()
+            .expect("Blake2b-256 digest length");
+        let reservation_id: [u8; 32] = Blake2b256::hash(deploy.primary().sig.to_vec())
+            .try_into()
+            .expect("Blake2b-256 digest length");
+        let certificate = FundingCertificate {
+            protocol_version: AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
+            program_hash,
+            pre_state_root,
+            reservation_id,
+            demand: DemandBound::Exact(witness.realized.clone()),
+            allocation: cost_draw.clone(),
+            stack_reservations: physical_settlement.stack_pops.clone(),
+            fee_allocation: fee_draw.clone(),
+            fee_recipient: Vec::new(),
+        };
+        certificate
+            .verify_with_allocation(
+                AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
+                program_hash,
+                pre_state_root,
+                &self.physical_inventory.balances,
+                |_, _| false,
+                |bound, allocation| bound == &witness.realized && allocation == &cost_draw,
+            )
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        witness.certificate_id = certificate.certificate_id();
+        witness.settlement = cost_draw.clone();
+        witness.physical_draws = physical_settlement.draws.clone();
+        witness
+            .verify_event_authorities()
+            .and_then(|_| {
+                witness.verify_with_settlement(&certificate, |_, _, _| Ok(cost_draw.clone()))
+            })
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+
+        processed.authority_funding_certificate =
+            Some(authority_certificate_to_proto(&certificate));
+        processed.authority_cost_witness = Some(authority_witness_to_proto(&witness));
+        apply_physical_settlement(&mut self.physical_inventory, &physical_settlement)
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        self.physical_inventory.balances = after_cost
+            .checked_sub(&fee_draw)
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        for (stack_id, pop_count) in physical_settlement.stack_pops {
+            let total = self.outcome.stack_pops.entry(stack_id).or_default();
+            *total = total.checked_add(pop_count).ok_or_else(|| {
+                CasperError::InvalidCostSettlement("authority stack pop count overflow".to_string())
+            })?;
+        }
+        record_authority_debits(&mut self.outcome.debits, &cost_draw, &self.channels)?;
+        record_authority_debits(&mut self.outcome.fee_debits, &fee_draw, &self.channels)?;
+        self.outcome.admitted.push(deploy.clone());
+        Ok(true)
+    }
+
+    pub fn finish(mut self) -> AdmissionOutcome {
+        self.outcome.purse_stacks = self.purse_stacks;
+        self.outcome
+    }
+}
+
+pub async fn admit_by_funding_with_state_bound_evidence(
+    deploys: Vec<Cosigned<DeployData>>,
+    processed: &mut [ProcessedDeploy],
+    supply_reader: &dyn SupplyReader,
+) -> Result<AdmissionOutcome, CasperError> {
+    admit_state_bound_authority(deploys, processed, supply_reader).await
+}
+
+pub async fn state_bound_execution_caps(
+    deploys: &[Cosigned<DeployData>],
+    supply_reader: &dyn SupplyReader,
+) -> Result<Vec<i64>, CasperError> {
+    let mut ordered = deploys.to_vec();
+    canonical_sort(&mut ordered);
+    let mut capacities = Vec::with_capacity(ordered.len());
+
+    for deploy in &ordered {
+        capacities.push(state_bound_execution_cap_with_frontier(deploy, &[], supply_reader).await?);
+    }
+
+    Ok(capacities)
+}
+
+fn insert_capacity_signature(
+    signatures: &mut BTreeMap<SigKey, models::rhoapi::CostSignature>,
+    key: SigKey,
+    signature: models::rhoapi::CostSignature,
+) -> Result<(), CasperError> {
+    match signatures.get(&key) {
+        Some(existing) if existing != &signature => Err(CasperError::InvalidCostSettlement(
+            "authority capacity contains a signature-key collision".to_string(),
+        )),
+        Some(_) => Ok(()),
+        None => {
+            signatures.insert(key, signature);
+            Ok(())
+        }
+    }
+}
+
+fn state_bound_capacity_signatures(
+    deploy: &Cosigned<DeployData>,
+    canonical: &Par,
+    frontier: &[CostAuthority],
+) -> Result<BTreeMap<SigKey, models::rhoapi::CostSignature>, CasperError> {
+    let mut signatures = static_authority_signatures(canonical)
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+    let funding = accounting::funding_sig(deploy);
+    let funding_signature = sig_to_cost_signature(&funding)
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+    insert_capacity_signature(&mut signatures, funding.key(), funding_signature)?;
+
+    let frontier_events = frontier
+        .iter()
+        .enumerate()
+        .map(
+            |(index, authority)| -> Result<AuthorityEvent<SigKey>, CasperError> {
+                let authority = canonical_authority(authority)
+                    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+                let mut event_id = [0; 32];
+                event_id[..8].copy_from_slice(
+                    &u64::try_from(index)
+                        .map_err(|_| {
+                            CasperError::InvalidCostSettlement(
+                                "authority frontier exceeds the platform range".to_string(),
+                            )
+                        })?
+                        .to_le_bytes(),
+                );
+                Ok(AuthorityEvent {
+                    event_id,
+                    debit: authority_demand(&authority)
+                        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?,
+                    authority,
+                })
+            },
+        )
+        .collect::<Result<Vec<_>, _>>()?;
+    for (key, signature) in authority_funding_signatures_with_presentations(
+        &frontier_events,
+        &deploy.data().authority_presentations,
+    )
+    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?
+    {
+        insert_capacity_signature(&mut signatures, key, signature)?;
+    }
+    Ok(signatures)
+}
+
+async fn state_bound_capacity_from_signatures(
+    signatures: &BTreeMap<SigKey, models::rhoapi::CostSignature>,
+    supply_reader: &dyn SupplyReader,
+) -> Result<i64, CasperError> {
+    let mut capacity = 0_i64;
+    let mut stack_ids = std::collections::BTreeSet::new();
+    for signature in signatures.values() {
+        let purse = supply_reader.read_purse(signature).await?;
+        let balance = purse.balance.unwrap_or(0);
+        if balance < 0 {
+            return Err(CasperError::InvalidCostSettlement(
+                "authority purse balance cannot be negative".to_string(),
+            ));
+        }
+        capacity = capacity.checked_add(balance).ok_or_else(|| {
+            CasperError::InvalidCostSettlement(
+                "authority-derived execution capacity overflow".to_string(),
+            )
+        })?;
+        for stack in purse.stacks {
+            if !stack_ids.insert(stack.instance_id) {
+                return Err(CasperError::InvalidCostSettlement(
+                    "authority-derived execution capacity contains a duplicate stack identity"
+                        .to_string(),
+                ));
+            }
+            let cells = i64::try_from(stack.stack.cells.len()).map_err(|_| {
+                CasperError::InvalidCostSettlement(
+                    "authority stack depth exceeds execution capacity range".to_string(),
+                )
+            })?;
+            capacity = capacity.checked_add(cells).ok_or_else(|| {
+                CasperError::InvalidCostSettlement(
+                    "authority-derived execution capacity overflow".to_string(),
+                )
+            })?;
+        }
+    }
+    Ok(capacity)
+}
+
+pub async fn state_bound_execution_cap_with_frontier(
+    deploy: &Cosigned<DeployData>,
+    frontier: &[CostAuthority],
+    supply_reader: &dyn SupplyReader,
+) -> Result<i64, CasperError> {
+    let canonical = canonical_program_for_deploy(deploy, supply_reader).await?;
+    let signatures = state_bound_capacity_signatures(deploy, &canonical, frontier)?;
+    let live_capacity = state_bound_capacity_from_signatures(&signatures, supply_reader).await?;
+    let program_capacity = match static_authority_plan(&canonical, &accounting::funding_sig(deploy))
+    {
+        Ok(plan) => {
+            plan.guaranteed_program_supply
+                .0
+                .values()
+                .try_fold(0_i64, |total, amount| {
+                    i64::try_from(*amount)
+                        .ok()
+                        .and_then(|amount| total.checked_add(amount))
+                        .ok_or_else(|| {
+                            CasperError::InvalidCostSettlement(
+                                "program-born authority capacity exceeds the execution range"
+                                    .to_string(),
+                            )
+                        })
+                })?
+        }
+        Err(_) => 0,
+    };
+    live_capacity
+        .saturating_sub(1)
+        .max(0)
+        .checked_add(program_capacity)
+        .ok_or_else(|| {
+            CasperError::InvalidCostSettlement(
+                "state-bound execution capacity exceeds the platform range".to_string(),
+            )
+        })
 }
 
 pub async fn admit_by_funding_with_logic<L, P>(
     deploys: Vec<Cosigned<DeployData>>,
     supply_reader: &dyn SupplyReader,
-    margin: i64,
-    strict: bool,
     logic: &L,
     policy: &P,
+) -> Result<AdmissionOutcome, CasperError>
+where
+    L: OslfResourceLogic<RhoGslt>,
+    P: ApportionmentPolicy<RhoGslt>,
+{
+    admit_by_funding_internal(deploys, supply_reader, logic, policy, None).await
+}
+
+async fn admit_by_funding_internal<L, P>(
+    deploys: Vec<Cosigned<DeployData>>,
+    supply_reader: &dyn SupplyReader,
+    logic: &L,
+    policy: &P,
+    mut state_bounds: Option<&mut BTreeMap<Vec<u8>, VecDeque<StateBoundCostEvidence>>>,
 ) -> Result<AdmissionOutcome, CasperError>
 where
     L: OslfResourceLogic<RhoGslt>,
@@ -659,8 +2402,23 @@ where
     //    are split off as rejected immediately (never grouped).
     let mut outcome = AdmissionOutcome::default();
     let mut candidates: Vec<Candidate> = Vec::with_capacity(ordered.len());
+    let pre_state_root = supply_reader.pre_state_root();
     for cosigned in ordered {
-        let candidate = build_candidate_with_logic(cosigned, logic);
+        let evidence = match state_bounds.as_deref_mut() {
+            Some(bounds) => Some(
+                bounds
+                    .get_mut(cosigned.primary().sig.as_ref())
+                    .and_then(VecDeque::pop_front)
+                    .ok_or_else(|| {
+                        CasperError::InvalidCostSettlement(
+                            "missing state-bound cost evidence for candidate deploy".to_string(),
+                        )
+                    })?,
+            ),
+            None => None,
+        };
+        let candidate =
+            build_candidate_with_logic(cosigned, logic, pre_state_root, evidence.as_ref());
         if candidate.malformed {
             outcome
                 .rejected
@@ -683,6 +2441,7 @@ where
     //    deterministically by `SigKey`.
     let mut decompositions: Vec<Decomposition> = Vec::new();
     let mut channels_by_key: BTreeMap<SigKey, Par> = BTreeMap::new();
+    let mut signatures_by_key: BTreeMap<SigKey, CostSignature> = BTreeMap::new();
     for group in groups.values() {
         // All candidates in a group share the same envelope key/channel; the
         // first is the representative.
@@ -692,24 +2451,23 @@ where
                 .or_insert_with(|| repr.channel.clone());
             let funding = accounting::funding_sig(&repr.cosigned);
             collect_decompositions(&funding, &mut decompositions, &mut channels_by_key);
+            collect_funding_signatures(&funding, &mut signatures_by_key)?;
         }
     }
 
-    // 5. Read each distinct channel's PRESENCE + balance exactly once.
-    //    `present` records which pools exist (the per-pool ACTIVATION signal);
-    //    `raw` holds balances with absent ⇒ 0 (the Split/Join closure math).
-    let mut present: std::collections::BTreeSet<SigKey> = std::collections::BTreeSet::new();
     let mut raw: BTreeMap<SigKey, i64> = BTreeMap::new();
-    for (key, chan) in &channels_by_key {
-        match supply_reader.read_balance(chan).await? {
-            Some(balance) => {
-                present.insert(*key);
-                raw.insert(*key, balance);
-            }
-            None => {
-                raw.insert(*key, 0);
-            }
+    for (key, signature) in &signatures_by_key {
+        let balance = supply_reader
+            .read_purse(signature)
+            .await?
+            .balance
+            .unwrap_or(0);
+        if balance < 0 {
+            return Err(CasperError::InvalidCostSettlement(
+                "authority purse balance cannot be negative".to_string(),
+            ));
         }
+        raw.insert(*key, balance);
     }
 
     // 6. The LIVE cross-group residual ledger (TM-CA-165): each group's admission
@@ -729,39 +2487,12 @@ where
     //    ledger — #12) is computed AFTER the walk by [`compute_settlement_debits`],
     //    the SINGLE shared function replay also runs (byte-identity).
     let mut demand_by_group: BTreeMap<SigKey, (Par, i64)> = BTreeMap::new();
-    // The FEE carve (Stage D FeeExtract): per-group fee amount (1 per admitted
-    // deploy), CARVED from the client `Σ⟦c⟧` into `F_v` — accumulated alongside
-    // the cost demand and settled by a SECOND `compute_settlement_debits` pass
-    // (against the post-cost residual) below.
+    // The FeeExtract is one token per admitted deploy. It is accumulated beside
+    // cost demand and settled by a second allocation pass against the post-cost
+    // residual, then transferred to the proposing validator's SystemVault.
     let mut fee_by_group: BTreeMap<SigKey, (Par, i64)> = BTreeMap::new();
     for (sig_key, group) in groups {
         let channel = group.first().map(|c| c.channel.clone()).unwrap_or_default();
-
-        // ACTIVATION (reported grounding refinement — see `supply::read_balance_present`):
-        // a group whose pool is ABSENT is not yet under cost-accounting funding
-        // (the Workstream-C economic producer has not provisioned it) ⇒ admit
-        // the whole group with NO enforcement and NO debit (pre-C /
-        // non-cost-accounted behavior, bit-for-bit). A PRESENT pool (including a
-        // drained `Some(0)`) IS under cost-accounting ⇒ enforce the funding
-        // obligation + §7.7 reject-both.
-        //
-        // Task #13a: this transitional early-admit is gated on `!strict`. With
-        // `strict` OFF the `!strict &&` short-circuits to the EXACT same
-        // early-admit `continue` as before (byte-identical back-compat). With
-        // `strict` ON we do NOT early-admit — the group falls through to the
-        // enforcement path below, where an absent pool's effective supply is 0
-        // (`effective.get(&sig_key).unwrap_or(&0)`), so a `Δ > 0` deploy fails
-        // `is_funded(_, 0, margin)` and is rejected (§7.6 step 5: rejected
-        // without executing any part, no state change, no tokens consumed),
-        // while a `Δ = 0` deploy passes with a zero debit. This reuses the
-        // EXISTING present-drained-pool rejection path (strict-absent ≡
-        // present-zero).
-        if !strict && !present.contains(&sig_key) {
-            for candidate in group {
-                outcome.admitted.push(candidate.cosigned);
-            }
-            continue;
-        }
 
         // The admission residual is the group's EFFECTIVE supply read from the
         // LIVE cross-group ledger (TM-CA-165): a single group caps at its own-pool
@@ -776,28 +2507,57 @@ where
         // FeeExtract (cost-accounted-rho.tex:3637): ONE client token per admitted
         // deploy, CARVED from the client's own `Σ⟦c⟧` (conserving) IN ADDITION to
         // the burned per-COMM cost Δ — so an admitted deploy needs `Σ⟦c⟧ ≥ Δ + 1`.
-        // The admission demand folds the +1 fee into the known lower bound (the
-        // Thm-20 margin still rides ONLY the `unknown` flag — F-B coordination).
+        // The admission reservation folds the +1 fee into the certified cost
+        // upper bound. Unprovable demand was rejected while building candidates.
         const FEE_PER_DEPLOY: i64 = 1;
         let mut group_debit: i64 = 0; // COST (Σ Δ): burned from Σ⟦c⟧
-        let mut group_fee: i64 = 0; // FEE (1 per admitted deploy): carved to F_v
+        let mut group_fee: i64 = 0;
         let mut prefix_open = true;
         for candidate in group {
             // Admission demand = cost + fee (the client must afford BOTH).
             let cost_plus_fee = DemandEntry {
-                known_lower_bound: candidate
-                    .demand
-                    .known_lower_bound
+                certified_upper_bound: candidate
+                    .certified_upper_bound
                     .saturating_add(FEE_PER_DEPLOY),
-                unknown: candidate.demand.unknown,
+                unknown: false,
             };
-            if prefix_open && logic.is_funded(&cost_plus_fee, residual, margin) {
-                // Admit: consume cost + fee from the residual; accumulate the cost
-                // (burned) and the fee (carved to F_v) separately.
+            let available = ResourceMultiset::singleton(
+                sig_key,
+                u64::try_from(residual.max(0)).unwrap_or_default(),
+            );
+            let certificate_valid = candidate.certified.as_ref().is_some_and(|certified| {
+                certified
+                    .certificate
+                    .verify_with(
+                        AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
+                        certified.program_hash,
+                        pre_state_root,
+                        &available,
+                        |bound, _proof| match certified.proof_kind {
+                            DemandProofKind::Structural => {
+                                logic
+                                    .verify_demand_bound(
+                                        &certified.canonical,
+                                        &certified.funding,
+                                        &certified.certificate.demand,
+                                    )
+                                    .as_ref()
+                                    == Some(bound)
+                            }
+                            DemandProofKind::StateBound => {
+                                &certified.certificate.allocation == bound
+                            }
+                        },
+                    )
+                    .is_ok()
+            });
+            if prefix_open && certificate_valid && logic.is_funded(&cost_plus_fee, residual) {
+                // Admit: consume cost + fee from the residual and preserve their
+                // distinct burn and transfer dispositions.
                 residual = residual
-                    .saturating_sub(candidate.demand.known_lower_bound)
+                    .saturating_sub(candidate.certified_upper_bound)
                     .saturating_sub(FEE_PER_DEPLOY);
-                group_debit = group_debit.saturating_add(candidate.demand.known_lower_bound);
+                group_debit = group_debit.saturating_add(candidate.certified_upper_bound);
                 group_fee = group_fee.saturating_add(FEE_PER_DEPLOY);
                 outcome.admitted.push(candidate.cosigned);
             } else {
@@ -847,8 +2607,8 @@ where
     // PHYSICAL token per admitted deploy (tex:3637; design OD-3; Rocq flat-`f`), so
     // a COMPOUND deploy owes 1 — drawn combined-pool-first then a SINGLE component,
     // never the matched component PAIR that the COST debits (which would charge a
-    // multi-sig deploy 2× — red-team F-1). The carved total is still TRANSFERRED to
-    // F_v (conserving — TokenConservation.fee_collect_conserves). The gate admitted
+    // multi-sig deploy 2× — red-team F-1). The carved total is transferred to the
+    // proposer SystemVault (conserving). The gate admitted
     // only deploys with Σ⟦c⟧ ≥ cost + fee, so this pass never underflows; the same
     // function + policy over identically-derived inputs runs on replay (`:911`) ⇒
     // byte-identical.
@@ -873,75 +2633,353 @@ where
     // so a final canonical sort restores the global execution order.
     canonical_sort(&mut outcome.admitted);
 
-    // Stage D (additive; does NOT touch the gate decision above): record the
-    // admitted client-deploy count for the fee credit. The proposer adds its
-    // own dummy-deploy count to reach `block.body.deploys.len()`.
-    outcome.admitted_client_count = outcome.admitted.len();
-
     Ok(outcome)
 }
 
-/// REPLAY recompute of the WD-D2 settlement-debit map from the block's ADMITTED
-/// deploys (`block.body.deploys`), for the replay-symmetric settlement debit.
+/// REPLAY recompute of the WD-D2 structural reservation map from the block's
+/// ADMITTED deploys (`block.body.deploys`).
 ///
-/// `block.body.deploys` contains exactly the gate-admitted envelopes. Funding-
-/// gate exclusions are not packaged as merge-rejection tombstones. The per-pool
-/// settlement debit is therefore `Σ Δ_s` over the admitted deploys in each present
-/// pool — the SAME quantity `admit_by_funding` accumulated on the play path
-/// (where `debits[pool].amount = Σ Δ_s over the admitted prefix`), recomputed
-/// here from the block alone. This recompute is MARGIN-FREE: the admission
-/// decision (which uses the margin) already happened on the play side and is
-/// fixed by the block's contents; replay only needs to reproduce the debit
-/// AMOUNTS. A PRESENT pool's debit is enforced by the settlement `checked_sub`
-/// (an over-admitting proposer ⇒ `ΣΔ_s > Σ_s` ⇒ underflow ⇒ a detectable invalid
-/// block — TM-CA-153 double-spend); an ABSENT pool is unenforced (no debit),
-/// matching the play-side presence gate.
+/// Replay receives only the executed subset of `block.body.deploys`; terminal
+/// funding-rejection records are verified and removed before this function. The per-pool
+/// The map is `Σ Δ_s^max` over admitted deploys in each pool, matching
+/// the play-side reservation. Realized settlement uses
+/// [`recompute_realized_settlement_debits`] after execution. Every reservation
+/// is checked against supply, with an absent pool interpreted as zero.
 ///
 /// Returns the recomputed map (identical to the play-side `AdmissionOutcome.debits`
 /// for a valid block) AND the count of admitted deploys (for the
 /// `ReplayAdmissionMismatch` diagnostic).
 ///
-/// `strict` is the shard-genesis activation mode (task #13a;
-/// `CasperShardConf::strict_funding_enforcement`), threaded the SAME on play and
-/// replay. The DEBIT MATH is strict-INDEPENDENT (the amounts depend only on the
-/// admitted set, already fixed in the block, so flag-OFF is byte-identical to
-/// pre-#13a and the #12 compound debit is untouched). The flag adds ONE
-/// replay-side admission RE-VERIFICATION: under `strict`, a valid block's gate
-/// would NEVER admit a deploy whose pool is ABSENT (strict rejects underfunded
-/// deploys, and an absent pool funds nothing beyond `Δ = 0`), so if the block
-/// records an ADMITTED deploy with `Δ > 0` on an absent pool, the proposer
-/// bypassed the strict gate ⇒ the block is INVALID
-/// ([`ReplayFailure::ReplayAdmissionMismatch`]). When `strict` is `false` this
-/// check is skipped (absent ⇒ unenforced, matching the transitional gate).
-///
-/// **F-4 invariant (proposer/dummy deploys — red-team hardening).** This recompute
-/// runs over ALL of `block.body.deploys`, INCLUDING the proposer's own gate-exempt
-/// DUMMY deploys (the play side fed only the USER deploys to the gate, never the
-/// dummies). The play↔replay COST+FEE symmetry therefore relies on every
-/// dummy/proposer deploy contributing ZERO here: a dummy's envelope signature is a
-/// fresh per-block `Quote(Blake2b256(DEPLOY_SIGNATURE_DOMAIN ‖ sig))` — a
-/// never-provisioned, ABSENT pool, disjoint from the validator pool `Ground(pk)` —
-/// so the present-filter drops its debit/fee entry to 0, matching the play side
-/// (which excluded it). This is the same latent property the cost recompute
-/// already inherits; it holds for any honest block because a Σ⟦c⟧ write on a
-/// deploy-signature-keyed channel is confined by DR-13 to the Rust supply module on
-/// system deploys (no shard provisions a pool keyed by a deploy signature).
+/// The recompute covers every signed body deployment, including heartbeat and
+/// dummy deployments, exactly as proposal admission does.
 pub async fn recompute_settlement_debits(
     admitted: Vec<Cosigned<DeployData>>,
     supply_reader: &dyn SupplyReader,
-    strict: bool,
 ) -> Result<RecomputedDebits, CasperError> {
     let logic = DefaultResourceLogic;
     let policy = DefaultApportionment;
-    recompute_settlement_debits_with_logic(admitted, supply_reader, strict, &logic, &policy).await
+    recompute_settlement_debits_with_logic(admitted, supply_reader, &logic, &policy).await
 }
 
 pub async fn recompute_settlement_debits_with_logic<L, P>(
     admitted: Vec<Cosigned<DeployData>>,
     supply_reader: &dyn SupplyReader,
-    strict: bool,
     logic: &L,
     policy: &P,
+) -> Result<RecomputedDebits, CasperError>
+where
+    L: OslfResourceLogic<RhoGslt>,
+    P: ApportionmentPolicy<RhoGslt>,
+{
+    recompute_settlement_debits_internal(admitted, supply_reader, logic, policy, None, None).await
+}
+
+pub async fn recompute_realized_settlement_debits(
+    processed: &[ProcessedDeploy],
+    supply_reader: &dyn SupplyReader,
+) -> Result<RecomputedDebits, CasperError> {
+    recompute_authority_settlement_debits(processed, supply_reader).await
+}
+
+pub async fn recompute_state_bound_settlement_debits(
+    processed: &[ProcessedDeploy],
+    supply_reader: &dyn SupplyReader,
+) -> Result<RecomputedDebits, CasperError> {
+    recompute_authority_settlement_debits(processed, supply_reader).await
+}
+
+pub async fn verify_state_bound_replay_admission(
+    processed: &[ProcessedDeploy],
+    fee_recipient: &[u8],
+    supply_reader: &dyn SupplyReader,
+) -> Result<RecomputedDebits, CasperError> {
+    for deploy in processed {
+        let certificate = authority_certificate_from_proto(
+            deploy
+                .authority_funding_certificate
+                .as_ref()
+                .ok_or_else(|| {
+                    CasperError::InvalidCostSettlement(
+                        "replay deploy is missing its authority certificate".to_string(),
+                    )
+                })?,
+        )?;
+        if certificate.fee_recipient.as_slice() != fee_recipient {
+            return Err(CasperError::InvalidCostSettlement(
+                "authority certificate fee recipient differs from the block proposer".to_string(),
+            ));
+        }
+    }
+    recompute_state_bound_settlement_debits(processed, supply_reader).await
+}
+
+async fn recompute_authority_settlement_debits(
+    processed: &[ProcessedDeploy],
+    supply_reader: &dyn SupplyReader,
+) -> Result<RecomputedDebits, CasperError> {
+    let mut entries = Vec::with_capacity(processed.len());
+    let mut ordered = Vec::with_capacity(processed.len());
+    let mut pool_signatures = BTreeMap::new();
+    let mut expected_pre = supply_reader.pre_state_root();
+
+    for deploy in processed {
+        let cosigned = deploy.to_cosigned().map_err(CasperError::RuntimeError)?;
+        let witness = authority_witness_from_proto(
+            deploy.authority_cost_witness.as_ref().ok_or_else(|| {
+                CasperError::InvalidCostSettlement(
+                    "processed deploy is missing its authority witness".to_string(),
+                )
+            })?,
+            false,
+        )?;
+        let certificate = authority_certificate_from_proto(
+            deploy
+                .authority_funding_certificate
+                .as_ref()
+                .ok_or_else(|| {
+                    CasperError::InvalidCostSettlement(
+                        "processed deploy is missing its authority funding certificate".to_string(),
+                    )
+                })?,
+        )?;
+        if witness.pre_state_root != expected_pre
+            || certificate.pre_state_root != witness.pre_state_root
+            || witness.post_state_root
+                != authority_digest(&deploy.post_state_hash, "processed deploy post-state root")?
+            || witness.pre_state_root
+                != authority_digest(&deploy.pre_state_hash, "processed deploy pre-state root")?
+        {
+            return Err(CasperError::InvalidCostSettlement(
+                "authority certificate and witness do not form the processed root chain"
+                    .to_string(),
+            ));
+        }
+        let canonical = canonical_program_for_deploy(&cosigned, supply_reader).await?;
+        let program_hash = authority_digest(
+            &Blake2b256::hash(canonical.encode_to_vec()),
+            "replay authority program hash",
+        )?;
+        if certificate.protocol_version != AUTHORITY_ACCOUNTING_PROTOCOL_VERSION
+            || certificate.program_hash != program_hash
+        {
+            return Err(CasperError::InvalidCostSettlement(
+                "authority certificate protocol or program binding is invalid".to_string(),
+            ));
+        }
+        let demand = match &certificate.demand {
+            DemandBound::Exact(demand) => demand,
+            DemandBound::FiniteUpperBound { bound, proof } if !proof.is_empty() => bound,
+            _ => {
+                return Err(CasperError::InvalidCostSettlement(
+                    "authority certificate has no verifiable finite demand".to_string(),
+                ));
+            }
+        };
+        if !demand.dominates(&witness.realized) {
+            return Err(CasperError::InvalidCostSettlement(
+                "realized authority exceeds the certified demand".to_string(),
+            ));
+        }
+        let fee_event = fee_authority_event(&cosigned)?;
+        let mut funding_events = witness.events.clone();
+        funding_events.push(fee_event.clone());
+        for (key, signature) in authority_funding_signatures_with_presentations(
+            &funding_events,
+            &cosigned.data().authority_presentations,
+        )
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?
+        {
+            pool_signatures.entry(key).or_insert(signature);
+        }
+        for birth in &witness.born_stacks {
+            for cell in &birth.cells {
+                insert_signature(&mut pool_signatures, cell.clone())?;
+            }
+        }
+        expected_pre = witness.post_state_root;
+        ordered.push(cosigned.clone());
+        entries.push((cosigned, certificate, witness, fee_event));
+    }
+    let mut canonical_order = ordered.clone();
+    canonical_sort(&mut canonical_order);
+    if canonical_order != ordered {
+        return Err(CasperError::InvalidCostSettlement(
+            "processed authority evidence is not in canonical deploy order".to_string(),
+        ));
+    }
+
+    let mut channels = BTreeMap::new();
+    let mut physical_inventory = AuthorityPhysicalInventory::default();
+    let mut purse_stacks = BTreeMap::new();
+    for (key, signature) in &pool_signatures {
+        let funding =
+            rholang::rust::interpreter::accounting::authority::cost_signature_to_sig(signature)
+                .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        let channel = supply::supply_channel(&funding);
+        let purse = supply_reader.read_purse(signature).await?;
+        let balance = purse.balance.unwrap_or(0);
+        if balance < 0 {
+            return Err(CasperError::InvalidCostSettlement(
+                "authority purse balance cannot be negative".to_string(),
+            ));
+        }
+        channels.insert(*key, channel);
+        if balance > 0 {
+            physical_inventory.balances.0.insert(
+                *key,
+                u64::try_from(balance).expect("non-negative authority balance"),
+            );
+        }
+        for stack in purse.stacks {
+            if physical_inventory
+                .stacks
+                .insert(stack.instance_id, stack.stack.cells.clone())
+                .is_some()
+                || purse_stacks.insert(stack.instance_id, stack).is_some()
+            {
+                return Err(CasperError::InvalidCostSettlement(
+                    "authority inventory contains a duplicate stack identity".to_string(),
+                ));
+            }
+        }
+    }
+
+    let mut recomputed = RecomputedDebits::default();
+    for (_cosigned, certificate, witness, fee_event) in entries {
+        if witness.physical_draws.is_empty() && !witness.events.is_empty() {
+            return Err(CasperError::InvalidCostSettlement(
+                "authority witness is missing its physical settlement presentation".to_string(),
+            ));
+        }
+        for birth in &witness.born_stacks {
+            if physical_inventory
+                .stacks
+                .insert(birth.stack_id, birth.cells.clone())
+                .is_some()
+                || physical_inventory
+                    .born_stacks
+                    .insert(birth.stack_id, birth.produce_hash)
+                    .is_some()
+            {
+                return Err(CasperError::InvalidCostSettlement(
+                    "replayed born stack collides with prior authority inventory".to_string(),
+                ));
+            }
+        }
+        let physical_settlement = verify_physical_settlement(
+            &witness.events,
+            &pool_signatures,
+            &physical_inventory,
+            &witness.physical_draws,
+        )
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        let cost_draw = physical_settlement.balance_debit.clone();
+        if cost_draw != witness.settlement || !certificate.allocation.dominates(&cost_draw) {
+            return Err(CasperError::InvalidCostSettlement(
+                "authority settlement differs from the canonical replay allocation".to_string(),
+            ));
+        }
+        for (stack_id, pop_count) in &certificate.stack_reservations {
+            let available = physical_inventory
+                .stacks
+                .get(stack_id)
+                .ok_or_else(|| {
+                    CasperError::InvalidCostSettlement(
+                        "authority certificate reserves an unknown stack identity".to_string(),
+                    )
+                })?
+                .len();
+            if u64::try_from(available).unwrap_or(u64::MAX) < *pop_count {
+                return Err(CasperError::InvalidCostSettlement(
+                    "authority certificate reserves more stack cells than are available"
+                        .to_string(),
+                ));
+            }
+        }
+        let exact_reservation = matches!(&certificate.demand, DemandBound::Exact(_));
+        let born_stack_ids = witness
+            .born_stacks
+            .iter()
+            .map(|birth| birth.stack_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        let preexisting_stack_pops = physical_settlement
+            .stack_pops
+            .iter()
+            .filter(|(stack_id, _)| !born_stack_ids.contains(*stack_id))
+            .map(|(stack_id, count)| (*stack_id, *count))
+            .collect::<BTreeMap<_, _>>();
+        if exact_reservation
+            && (cost_draw != certificate.allocation
+                || preexisting_stack_pops != certificate.stack_reservations)
+        {
+            return Err(CasperError::InvalidCostSettlement(
+                "exact authority certificate does not bind the realized physical reservation"
+                    .to_string(),
+            ));
+        }
+        certificate
+            .verify_with_allocation(
+                AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
+                certificate.program_hash,
+                certificate.pre_state_root,
+                &physical_inventory.balances,
+                |_, proof| !proof.is_empty(),
+                |bound, allocation| {
+                    bound.dominates(&witness.realized) && allocation.dominates(&cost_draw)
+                },
+            )
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        let reserved_balances = certificate
+            .allocation
+            .checked_add(&certificate.fee_allocation)
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        if !physical_inventory.balances.dominates(&reserved_balances) {
+            return Err(CasperError::InvalidCostSettlement(
+                "authority certificate reserves more vault balance than is available".to_string(),
+            ));
+        }
+        witness
+            .verify_with_settlement(&certificate, |_, _, _| Ok(cost_draw.clone()))
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        let after_cost = physical_inventory
+            .balances
+            .checked_sub(&cost_draw)
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        let fee_draw = allocate_authority_events(std::slice::from_ref(&fee_event), &after_cost)
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        if fee_draw != certificate.fee_allocation {
+            return Err(CasperError::InvalidCostSettlement(
+                "authority fee allocation differs from the canonical replay allocation".to_string(),
+            ));
+        }
+        apply_physical_settlement(&mut physical_inventory, &physical_settlement)
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        for stack_id in born_stack_ids {
+            physical_inventory.born_stacks.remove(&stack_id);
+        }
+        physical_inventory.balances = after_cost
+            .checked_sub(&fee_draw)
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        for (stack_id, pop_count) in physical_settlement.stack_pops {
+            let total = recomputed.stack_pops.entry(stack_id).or_default();
+            *total = total.checked_add(pop_count).ok_or_else(|| {
+                CasperError::InvalidCostSettlement("authority stack pop count overflow".to_string())
+            })?;
+        }
+        record_authority_debits(&mut recomputed.settlement, &cost_draw, &channels)?;
+        record_authority_debits(&mut recomputed.fee, &fee_draw, &channels)?;
+    }
+    recomputed.purse_stacks = purse_stacks;
+    Ok(recomputed)
+}
+
+async fn recompute_settlement_debits_internal<L, P>(
+    admitted: Vec<Cosigned<DeployData>>,
+    supply_reader: &dyn SupplyReader,
+    logic: &L,
+    policy: &P,
+    mut state_bounds: Option<&mut BTreeMap<Vec<u8>, VecDeque<StateBoundCostEvidence>>>,
+    mut realized: Option<BTreeMap<Vec<u8>, VecDeque<RealizedCost>>>,
 ) -> Result<RecomputedDebits, CasperError>
 where
     L: OslfResourceLogic<RhoGslt>,
@@ -963,15 +3001,44 @@ where
     let mut fee_by_group: BTreeMap<SigKey, (Par, i64)> = BTreeMap::new();
     let mut decompositions: Vec<Decomposition> = Vec::new();
     let mut channels_by_key: BTreeMap<SigKey, Par> = BTreeMap::new();
+    let mut signatures_by_key: BTreeMap<SigKey, CostSignature> = BTreeMap::new();
     let mut group_envelopes: BTreeMap<SigKey, Sig> = BTreeMap::new();
-    for cosigned in admitted {
+    let admitted_count = admitted.len();
+    for (replay_index, cosigned) in admitted.into_iter().enumerate() {
         // SAME shared `funding_sig` the play-side gate (`build_candidate_with_logic`)
         // keys by — so replay reconstructs the byte-identical `Sig::Ground(pk)` /
         // `And`-fold, hence the byte-identical settlement-debit map.
         let funding = accounting::funding_sig(&cosigned);
-        let candidate = build_candidate_with_logic(cosigned, logic);
+        let evidence = match state_bounds.as_deref_mut() {
+            Some(bounds) => Some(
+                bounds
+                    .get_mut(cosigned.primary().sig.as_ref())
+                    .and_then(VecDeque::pop_front)
+                    .ok_or_else(|| {
+                        CasperError::InvalidCostSettlement(
+                            "missing state-bound cost evidence for admitted deploy".to_string(),
+                        )
+                    })?,
+            ),
+            None => None,
+        };
+        let candidate = build_candidate_with_logic(
+            cosigned,
+            logic,
+            supply_reader.pre_state_root(),
+            evidence.as_ref(),
+        );
         if candidate.malformed {
-            continue;
+            return Err(CasperError::ReplayFailure(
+                ReplayFailure::replay_admission_mismatch(
+                    admitted_count,
+                    replay_index,
+                    0,
+                    1,
+                    "admitted deployment has malformed or uncertifiable authority demand"
+                        .to_string(),
+                ),
+            ));
         }
         channels_by_key
             .entry(candidate.sig_key)
@@ -980,10 +3047,85 @@ where
         // collection (below) walks each compound exactly once — identical to the
         // play-side per-group representative walk.
         group_envelopes.entry(candidate.sig_key).or_insert(funding);
+        let realized_cost = if let Some(realized) = realized.as_mut() {
+            Some(
+                realized
+                    .get_mut(candidate.cosigned.primary().sig.as_ref())
+                    .and_then(VecDeque::pop_front)
+                    .ok_or_else(|| {
+                        CasperError::InvalidCostSettlement(
+                            "missing realized cost for admitted deploy".to_string(),
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
+        let cost = realized_cost
+            .as_ref()
+            .map(|realized| realized.cost)
+            .unwrap_or(candidate.certified_upper_bound);
+        if cost < 0 {
+            return Err(CasperError::InvalidCostSettlement(
+                "realized deploy cost must be non-negative".to_string(),
+            ));
+        }
+        if realized.is_some() && cost > candidate.certified_upper_bound {
+            return Err(CasperError::InvalidCostSettlement(format!(
+                "realized deploy cost {} exceeds certified bound {}",
+                cost, candidate.certified_upper_bound
+            )));
+        }
+        if let (Some(realized_cost), Some(certified)) =
+            (realized_cost, candidate.certified.as_ref())
+        {
+            if realized_cost.post_state_root != realized_cost.authority_witness.post_state_root {
+                return Err(CasperError::InvalidCostSettlement(
+                    "processed deploy root disagrees with its authority witness".to_string(),
+                ));
+            }
+            if realized_cost.certificate.protocol_version != AUTHORITY_ACCOUNTING_PROTOCOL_VERSION
+                || realized_cost.certificate.program_hash != certified.program_hash
+                || realized_cost.certificate.pre_state_root
+                    != realized_cost.authority_witness.pre_state_root
+            {
+                return Err(CasperError::InvalidCostSettlement(
+                    "processed deploy authority certificate disagrees with replay demand"
+                        .to_string(),
+                ));
+            }
+            let replay_bound = match &certified.certificate.demand {
+                DemandBound::Exact(bound) | DemandBound::FiniteUpperBound { bound, .. } => bound,
+                DemandBound::Unprovable(_) => {
+                    return Err(CasperError::InvalidCostSettlement(
+                        "replay demand has no finite authority bound".to_string(),
+                    ));
+                }
+            };
+            let certified_bound = match &realized_cost.certificate.demand {
+                DemandBound::Exact(bound) | DemandBound::FiniteUpperBound { bound, .. } => bound,
+                DemandBound::Unprovable(_) => {
+                    return Err(CasperError::InvalidCostSettlement(
+                        "processed authority certificate has no finite demand".to_string(),
+                    ));
+                }
+            };
+            if !replay_bound.dominates(certified_bound) {
+                return Err(CasperError::InvalidCostSettlement(
+                    "processed authority demand exceeds the replay bound".to_string(),
+                ));
+            }
+            realized_cost
+                .authority_witness
+                .verify_with_settlement(&realized_cost.certificate, |events, _, allocation| {
+                    allocate_authority_events(events, allocation)
+                })
+                .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        }
         let entry = demand_by_group
             .entry(candidate.sig_key)
             .or_insert_with(|| (candidate.channel.clone(), 0));
-        entry.1 = entry.1.saturating_add(candidate.demand.known_lower_bound);
+        entry.1 = entry.1.saturating_add(cost);
         // One fee token per admitted deploy in this group (the FeeExtract carve).
         let fee_entry = fee_by_group
             .entry(candidate.sig_key)
@@ -992,45 +3134,38 @@ where
     }
     for envelope in group_envelopes.values() {
         collect_decompositions(envelope, &mut decompositions, &mut channels_by_key);
+        collect_funding_signatures(envelope, &mut signatures_by_key)?;
     }
 
-    // 2. Restrict the per-group demand to PRESENT pools (absent ⇒ unenforced ⇒
-    //    no debit), mirroring the play-side presence gate, AND read the RAW
-    //    balance of every distinct channel (group + component) exactly once —
-    //    the same `raw` map (absent ⇒ 0) the play side fed to the closure. The
-    //    group's OWN-pool presence governs whether it contributes demand; the
-    //    component balances feed the Split/Join draw split.
     let mut raw: BTreeMap<SigKey, i64> = BTreeMap::new();
-    let mut present: std::collections::BTreeSet<SigKey> = std::collections::BTreeSet::new();
-    for (key, chan) in &channels_by_key {
-        match supply_reader.read_balance(chan).await? {
-            Some(balance) => {
-                present.insert(*key);
-                raw.insert(*key, balance);
-            }
-            None => {
-                raw.insert(*key, 0);
-            }
+    for (key, signature) in &signatures_by_key {
+        let balance = supply_reader
+            .read_purse(signature)
+            .await?
+            .balance
+            .unwrap_or(0);
+        if balance < 0 {
+            return Err(CasperError::InvalidCostSettlement(
+                "authority purse balance cannot be negative".to_string(),
+            ));
         }
+        raw.insert(*key, balance);
     }
-
     // The LIVE cross-group residual ledger (TM-CA-165) — the SAME ledger the
     // play-side gate draws (seeded `raw.clone()`, drawn down per group in SigKey
     // order via `draw_group_from_ledger`). Replay re-runs that pass over the
     // admitted set to re-verify the gate's CROSS-GROUP admission bound (below).
-    // The settle filter further down keys on `strict || present(own pool)`,
-    // mirroring the play-side early-admit: a multi-sig deploy funds from the
-    // cosigners' `Σ⟦Ground(pkᵢ)⟧` wallets even when no combined `Σ⟦And(…)⟧` pool
-    // exists (genesis seeds per-pubkey wallets, never compound pools — §D2.9).
+    // A multi-sig deploy funds from the cosigners' canonical SystemVaults even
+    // when no combined `Σ⟦And(…)⟧` authority lane exists.
     let mut remaining: BTreeMap<SigKey, i64> = raw.clone();
     let decomposition_by_compound = index_decompositions(&decompositions);
 
     // CROSS-GROUP ADMISSIBILITY RE-VERIFICATION (TM-CA-165) — the SUFFICIENT
     // consensus guarantee against over-admission across DISTINCT cosigner sets
-    // sharing a component wallet `Σ⟦Ground(s)⟧`. SUPERSEDES the prior per-group
+    // sharing a component SystemVault authority. SUPERSEDES the prior per-group
     // static-`effective` check (TM-CA-164), which bounded each group independently
     // and so could not catch two groups jointly over-drawing a shared component
-    // (e.g. `{A,s}` + `{B,s}` each admitted against `Σ⟦Ground(s)⟧`'s full balance).
+    // (e.g. `{A,s}` + `{B,s}` each admitted against `s`'s full balance).
     //
     // Replay RE-RUNS the gate's LIVE cross-group ledger over the admitted set:
     // process enforced groups in SigKey order, draw each group's folded cost+fee
@@ -1041,25 +3176,19 @@ where
     // `compute_settlement_debits` residual-caps each pool draw, so an
     // over-admission is silently absorbed into per-pool debits ≤ balance and the
     // post-state agrees play↔replay; only re-running the admission ledger detects
-    // it. Margin-free: the margin is a play-side admission tightening that only
-    // REMOVES deploys; a removed deploy is not in the block, so replay never needs
-    // it (matches the pre-existing margin-free recompute). Identical inputs +
-    // SigKey order on play and replay ⇒ no fork; equality is admissible (the gate
+    // it. Identical inputs + SigKey order on play and replay ⇒ no fork; equality is admissible (the gate
     // guarantees folded demand ≤ capacity, and this check uses the SAME ledger).
     //
-    // A group is ENFORCED iff `strict || present(own pool)` — matching the
-    // play-side early-admit condition (a non-strict ABSENT pool is early-admitted
-    // unenforced, carries no funding obligation, draws nothing). The folded demand
-    // covers groups carrying a cost AND/OR a fee (a zero-cost admitted deploy still
+    // The folded demand covers groups carrying a cost AND/OR a fee (a zero-cost admitted deploy still
     // carries a fee draw), via the union of `demand_by_group` and `fee_by_group`.
     let mut combined_demand: BTreeMap<SigKey, i64> = BTreeMap::new();
     for (key, (_chan, cost)) in &demand_by_group {
-        if *cost > 0 && (strict || present.contains(key)) {
+        if *cost > 0 {
             *combined_demand.entry(*key).or_insert(0) += *cost;
         }
     }
     for (key, (_chan, fee)) in &fee_by_group {
-        if *fee > 0 && (strict || present.contains(key)) {
+        if *fee > 0 {
             *combined_demand.entry(*key).or_insert(0) += *fee;
         }
     }
@@ -1080,8 +3209,8 @@ where
                         "cross-group funding over-admission: group folded demand \
                          (cost+fee {}) exceeds LIVE effective supply {} (SigKey {}) \
                          after drawing prior groups that share its component \
-                         wallets — proposer admitted cumulative demand exceeding a \
-                         shared Σ⟦Ground(s)⟧ (cross-group oversubscription, TM-CA-165)",
+                         SystemVault authority — proposer admitted cumulative demand \
+                         exceeding a shared payer (cross-group oversubscription, TM-CA-165)",
                         demand,
                         capacity,
                         hex::encode(key),
@@ -1092,21 +3221,15 @@ where
         draw_group_from_ledger(shape, *demand, &mut remaining);
     }
 
-    // Settle filter — mirror EXACTLY which groups the play side put in
-    // `demand_by_group`: the play side excludes a group iff it was EARLY-ADMITTED
-    // unenforced (`!strict && !present` at `:680`), i.e. it keeps a group iff
-    // `strict || present(own pool)`. Under strict, every still-present group has
-    // already passed the effective-supply re-verification above, so keeping them
-    // all (including a compound funded only via its components) reproduces the
-    // play-side debit map; under non-strict, only own-pool-present groups carry a
-    // debit (byte-identical pre-#13a behavior).
+    // Keep every positive admitted cost and fee obligation. The funding check
+    // above has already rejected any group whose effective supply is insufficient.
     let demand_by_group: BTreeMap<SigKey, (Par, i64)> = demand_by_group
         .into_iter()
-        .filter(|(key, (_chan, amount))| *amount > 0 && (strict || present.contains(key)))
+        .filter(|(_key, (_chan, amount))| *amount > 0)
         .collect();
     let fee_by_group: BTreeMap<SigKey, (Par, i64)> = fee_by_group
         .into_iter()
-        .filter(|(key, (_chan, amount))| *amount > 0 && (strict || present.contains(key)))
+        .filter(|(_key, (_chan, amount))| *amount > 0)
         .collect();
 
     // 3. Settle the per-pool COST debit via the SAME shared function the play side
@@ -1141,43 +3264,11 @@ where
         &FlatFeeApportionment,
     );
 
-    Ok(RecomputedDebits { settlement, fee })
-}
-
-/// Cost-Accounted Rho Stage D: REPLAY recompute of the per-block fee credit from
-/// the block's deploys (`block.body.deploys`) + the proposing validator
-/// (`block_data.sender`), MIRRORING [`recompute_settlement_debits`] in
-/// discipline (recomputed-from-the-block, never serialized into it).
-///
-/// The fee is the spec's flat `FeeExtract`: ONE token per deploy the validator
-/// processed in the block (tex:2509-2521), collected into the proposing
-/// validator's fee channel `F_v`. The amount is therefore EXACTLY the number of
-/// deploys recorded in `block.body.deploys` — a quantity that is byte-identical
-/// on the play side (`admitted_client_count + dummy_count = block.body.deploys.len()`)
-/// and the replay side (`deploy_count = terms.len()`, where `terms` IS
-/// `block.body.deploys`), INCLUDING failed and dummy deploys (every fed deploy is
-/// recorded as a `ProcessedDeploy`, failed or not — runtime.rs:881
-/// `is_failed: !eval_succeeded`). This is the same `terms.len()` identity that
-/// makes the settlement-debit recompute byte-identical; it is the StageD
-/// fork-safety bar (TM-CA-160 fee-credit play/replay divergence).
-///
-/// Returns `None` for an empty block (no deploys ⇒ no fee), so callers thread no
-/// fee credit through closeBlock in that case (a genesis / heartbeat-only block).
-/// `recipient_pk` is the consensus-deterministic `block_data.sender.bytes`.
-pub fn fee_carve(
-    recipient_pk: Vec<u8>,
-    debits: BTreeMap<SigKey, SettlementDebit>,
-) -> Option<FeeCarve> {
-    // The conserving FeeExtract carve = the per-client fee-debit map (the gate's
-    // `AdmissionOutcome.fee_debits` on play, `RecomputedDebits.fee` on replay).
-    // `None` when nothing was carved (empty block / no present client pools) ⇒ no
-    // fee write at closeBlock. The carved total is what `F_v` receives.
-    if debits.values().all(|d| d.amount <= 0) {
-        return None;
-    }
-    Some(FeeCarve {
-        recipient_pk,
-        debits,
+    Ok(RecomputedDebits {
+        settlement,
+        fee,
+        stack_pops: BTreeMap::new(),
+        purse_stacks: BTreeMap::new(),
     })
 }
 
@@ -1197,6 +3288,10 @@ mod tests {
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use crypto::rust::signatures::signed::Signed;
     use models::rust::casper::protocol::casper_message::DeployData;
+    use proptest::prelude::*;
+    use rholang::rust::interpreter::accounting::authority::{
+        allocate_authority_event_draws, DemandBound, ResourceMultiset,
+    };
     use rholang::rust::interpreter::accounting::delta_sigma;
 
     use super::*;
@@ -1228,12 +3323,14 @@ mod tests {
     /// A canned per-channel supply reader keyed by the channel's wire encoding.
     struct MockSupplyReader {
         balances: HashMap<Vec<u8>, i64>,
+        purses: HashMap<Vec<u8>, supply::PurseInventory>,
     }
 
     impl MockSupplyReader {
         fn new() -> Self {
             Self {
                 balances: HashMap::new(),
+                purses: HashMap::new(),
             }
         }
 
@@ -1258,21 +3355,61 @@ mod tests {
             let chan = supply::supply_channel(sig);
             self.balances.insert(chan.encode_to_vec(), balance);
         }
+
+        fn set_stack(&mut self, sig: &Sig, cells: Vec<models::rhoapi::CostSignature>) {
+            use prost::Message;
+            let chan = supply::supply_channel(sig);
+            let key = chan.encode_to_vec();
+            let stack = models::rhoapi::CostStack { cells };
+            self.purses
+                .entry(key)
+                .or_default()
+                .stacks
+                .push(supply::PurseStack {
+                    instance_id: Blake2b256::hash(stack.encode_to_vec()).try_into().unwrap(),
+                    source_hash: Blake2b256::hash(stack.encode_to_vec()).try_into().unwrap(),
+                    channel: chan,
+                    datum_index: 0,
+                    random_state: vec![1],
+                    persistent: false,
+                    stack,
+                });
+        }
     }
 
     impl SupplyReader for MockSupplyReader {
-        fn read_balance<'a>(
+        fn pre_state_root(&self) -> [u8; 32] { [42; 32] }
+
+        fn urn_map<'a>(
             &'a self,
-            chan: &'a Par,
         ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<Option<i64>, CasperError>> + Send + 'a>,
+            Box<
+                dyn std::future::Future<Output = Result<Arc<HashMap<String, Par>>, CasperError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Ok(Arc::new(HashMap::new())) })
+        }
+
+        fn read_purse<'a>(
+            &'a self,
+            signature: &'a models::rhoapi::CostSignature,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<supply::PurseInventory, CasperError>>
+                    + Send
+                    + 'a,
+            >,
         > {
             use prost::Message;
-            let key = chan.encode_to_vec();
-            // A `set` pool is PRESENT (`Some`); an unset pool is ABSENT (`None`).
-            // The gate enforces funding only for present pools (activation).
-            let balance = self.balances.get(&key).copied();
-            Box::pin(async move { Ok(balance) })
+            let sig =
+                rholang::rust::interpreter::accounting::authority::cost_signature_to_sig(signature)
+                    .unwrap();
+            let key = supply::supply_channel(&sig).encode_to_vec();
+            let mut inventory = self.purses.get(&key).cloned().unwrap_or_default();
+            inventory.balance = self.balances.get(&key).copied();
+            Box::pin(async move { Ok(inventory) })
         }
     }
 
@@ -1291,6 +3428,7 @@ mod tests {
             valid_after_block_number: vabn,
             shard_id: String::new(),
             expiration_timestamp: None,
+            authority_presentations: Vec::new(),
         };
         let signed = Signed {
             data,
@@ -1311,6 +3449,39 @@ mod tests {
     fn n_sends(n: usize) -> String {
         let one = "@0!(0)";
         std::iter::repeat_n(one, n).collect::<Vec<_>>().join(" | ")
+    }
+
+    #[tokio::test]
+    async fn state_bound_capacity_counts_balance_and_stack_after_fee() {
+        let deploy = cosigned(&n_sends(1), b"bounded", 0, 10);
+        let funding = accounting::funding_sig(&deploy);
+        let cell = sig_to_cost_signature(&funding).unwrap();
+        let mut reader = MockSupplyReader::new();
+        reader.set(b"bounded", 4);
+        reader.set_stack(&funding, vec![cell.clone(), cell]);
+
+        assert_eq!(
+            state_bound_execution_caps(&[deploy], &reader)
+                .await
+                .unwrap(),
+            vec![5]
+        );
+    }
+
+    #[tokio::test]
+    async fn state_bound_capacity_is_canonical_and_per_deploy() {
+        let early = cosigned(&n_sends(1), b"early", 0, 10);
+        let late = cosigned(&n_sends(1), b"late", 0, 20);
+        let mut reader = MockSupplyReader::new();
+        reader.set(b"early", 3);
+        reader.set(b"late", 6);
+
+        assert_eq!(
+            state_bound_execution_caps(&[late, early], &reader)
+                .await
+                .unwrap(),
+            vec![2, 5]
+        );
     }
 
     // ── #12 compound settlement-debit helpers ──────────────────────────────
@@ -1498,7 +3669,7 @@ mod tests {
         reader.set(b"alice", 4); // exactly one Δ=3 deploy fits (cost 3 + fee 1)
         reader.set(b"bob", 3); // the Δ=2 deploy fits (cost 2 + fee 1)
 
-        let outcome = admit_by_funding(vec![a1.clone(), b0.clone(), a0.clone()], &reader, 0, false)
+        let outcome = admit_by_funding(vec![a1.clone(), b0.clone(), a0.clone()], &reader)
             .await
             .expect("gate must not error");
 
@@ -1524,9 +3695,8 @@ mod tests {
         let bob_key = pool_key(b"bob");
         assert_eq!(outcome.debits.get(&alice_key).map(|d| d.amount), Some(3));
         assert_eq!(outcome.debits.get(&bob_key).map(|d| d.amount), Some(2));
-        // FEE carve (one token per ADMITTED deploy, carved to F_v): one admitted
-        // deploy per present group ⇒ 1 each. cost ≠ fee: this is the separate
-        // FeeExtract, not the burned cost above.
+        // One fee token per admitted deploy is transferred to the proposer
+        // SystemVault. Cost and fee retain distinct dispositions.
         assert_eq!(
             outcome.fee_debits.get(&alice_key).map(|d| d.amount),
             Some(1)
@@ -1541,14 +3711,16 @@ mod tests {
             delta_sigma::demand(canonical, deploy_sig)
         }
 
-        fn is_funded(
+        fn verify_demand_bound(
             &self,
-            _analysis: &DemandEntry,
-            _effective_supply_s: i64,
-            _margin: i64,
-        ) -> bool {
-            false
+            canonical: &Par,
+            deploy_sig: &Sig,
+            bound: &DemandBound<delta_sigma::SigKey>,
+        ) -> Option<ResourceMultiset<delta_sigma::SigKey>> {
+            DefaultResourceLogic.verify_demand_bound(canonical, deploy_sig, bound)
         }
+
+        fn is_funded(&self, _analysis: &DemandEntry, _effective_supply_s: i64) -> bool { false }
     }
 
     #[tokio::test]
@@ -1557,14 +3729,12 @@ mod tests {
         let mut reader = MockSupplyReader::new();
         reader.set(b"oslf-gate", 10);
 
-        let default = admit_by_funding(vec![deploy.clone()], &reader, 0, false)
+        let default = admit_by_funding(vec![deploy.clone()], &reader)
             .await
             .expect("default gate must not error");
         let denied = admit_by_funding_with_logic(
             vec![deploy.clone()],
             &reader,
-            0,
-            false,
             &DenyLogic,
             &DefaultApportionment,
         )
@@ -1578,13 +3748,165 @@ mod tests {
         assert!(denied.debits.is_empty());
     }
 
+    struct ForgedFiniteLogic;
+
+    impl OslfResourceLogic<RhoGslt> for ForgedFiniteLogic {
+        fn demand(&self, canonical: &Par, deploy_sig: &Sig) -> DemandEntry {
+            delta_sigma::demand(canonical, deploy_sig)
+        }
+
+        fn demand_bound(
+            &self,
+            canonical: &Par,
+            deploy_sig: &Sig,
+        ) -> DemandBound<delta_sigma::SigKey> {
+            DemandBound::FiniteUpperBound {
+                bound: ResourceMultiset::singleton(
+                    deploy_sig.key(),
+                    u64::try_from(self.demand(canonical, deploy_sig).certified_upper_bound)
+                        .unwrap(),
+                ),
+                proof: b"non-empty-is-not-a-proof".to_vec(),
+            }
+        }
+
+        fn is_funded(&self, analysis: &DemandEntry, effective_supply_s: i64) -> bool {
+            delta_sigma::is_funded(analysis, effective_supply_s)
+        }
+    }
+
+    #[tokio::test]
+    async fn gate_rejects_an_unverified_nonempty_bound_proof() {
+        let deploy = cosigned(&n_sends(1), b"forged-bound", 0, 10);
+        let mut reader = MockSupplyReader::new();
+        reader.set(b"forged-bound", 10);
+
+        let outcome = admit_by_funding_with_logic(
+            vec![deploy.clone()],
+            &reader,
+            &ForgedFiniteLogic,
+            &DefaultApportionment,
+        )
+        .await
+        .unwrap();
+
+        assert!(outcome.admitted.is_empty());
+        assert_eq!(outcome.rejected, vec![deploy.primary().sig.clone()]);
+    }
+
+    struct VerifiedFiniteLogic;
+
+    impl OslfResourceLogic<RhoGslt> for VerifiedFiniteLogic {
+        fn demand(&self, _canonical: &Par, _deploy_sig: &Sig) -> DemandEntry {
+            DemandEntry {
+                certified_upper_bound: 0,
+                unknown: true,
+            }
+        }
+
+        fn demand_bound(
+            &self,
+            _canonical: &Par,
+            deploy_sig: &Sig,
+        ) -> DemandBound<delta_sigma::SigKey> {
+            DemandBound::FiniteUpperBound {
+                bound: ResourceMultiset::singleton(deploy_sig.key(), 3),
+                proof: b"verified-gslt-bound".to_vec(),
+            }
+        }
+
+        fn verify_demand_bound(
+            &self,
+            _canonical: &Par,
+            deploy_sig: &Sig,
+            bound: &DemandBound<delta_sigma::SigKey>,
+        ) -> Option<ResourceMultiset<delta_sigma::SigKey>> {
+            match bound {
+                DemandBound::FiniteUpperBound { bound, proof }
+                    if proof.as_slice() == b"verified-gslt-bound"
+                        && bound == &ResourceMultiset::singleton(deploy_sig.key(), 3) =>
+                {
+                    Some(bound.clone())
+                }
+                _ => None,
+            }
+        }
+
+        fn is_funded(&self, analysis: &DemandEntry, effective_supply_s: i64) -> bool {
+            delta_sigma::is_funded(analysis, effective_supply_s)
+        }
+    }
+
+    #[tokio::test]
+    async fn verified_finite_bound_replaces_an_unprovable_native_lower_bound() {
+        let deploy = cosigned(&n_sends(1), b"verified-bound", 0, 10);
+        let key = pool_key(b"verified-bound");
+        let mut funded_reader = MockSupplyReader::new();
+        funded_reader.set(b"verified-bound", 4);
+        let mut underfunded_reader = MockSupplyReader::new();
+        underfunded_reader.set(b"verified-bound", 3);
+
+        let admitted = admit_by_funding_with_logic(
+            vec![deploy.clone()],
+            &funded_reader,
+            &VerifiedFiniteLogic,
+            &DefaultApportionment,
+        )
+        .await
+        .unwrap();
+        let rejected = admit_by_funding_with_logic(
+            vec![deploy.clone()],
+            &underfunded_reader,
+            &VerifiedFiniteLogic,
+            &DefaultApportionment,
+        )
+        .await
+        .unwrap();
+        let replay_reservation = recompute_settlement_debits_with_logic(
+            vec![deploy.clone()],
+            &funded_reader,
+            &VerifiedFiniteLogic,
+            &DefaultApportionment,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(admitted.admitted.len(), 1);
+        assert_eq!(admitted.debits.get(&key).map(|debit| debit.amount), Some(3));
+        assert_eq!(
+            admitted.fee_debits.get(&key).map(|debit| debit.amount),
+            Some(1)
+        );
+        assert_eq!(
+            replay_reservation
+                .settlement
+                .get(&key)
+                .map(|debit| debit.amount),
+            Some(3)
+        );
+        assert_eq!(
+            replay_reservation.fee.get(&key).map(|debit| debit.amount),
+            Some(1)
+        );
+        assert!(rejected.admitted.is_empty());
+        assert_eq!(rejected.rejected, vec![deploy.primary().sig.clone()]);
+    }
+
     struct ZeroDemandLogic;
 
     impl OslfResourceLogic<RhoGslt> for ZeroDemandLogic {
         fn demand(&self, _canonical: &Par, _deploy_sig: &Sig) -> DemandEntry { DemandEntry::ZERO }
 
-        fn is_funded(&self, analysis: &DemandEntry, effective_supply_s: i64, margin: i64) -> bool {
-            delta_sigma::is_funded(analysis, effective_supply_s, margin)
+        fn demand_bound(
+            &self,
+            _canonical: &Par,
+            deploy_sig: &Sig,
+        ) -> DemandBound<delta_sigma::SigKey> {
+            DemandBound::Exact(ResourceMultiset::singleton(deploy_sig.key(), 0))
+        }
+
+        fn is_funded(&self, analysis: &DemandEntry, effective_supply_s: i64) -> bool {
+            delta_sigma::is_funded(analysis, effective_supply_s)
         }
     }
 
@@ -1595,13 +3917,12 @@ mod tests {
         reader.set(b"oslf-replay", 10);
         let key = pool_key(b"oslf-replay");
 
-        let default = recompute_settlement_debits(vec![deploy.clone()], &reader, false)
+        let default = recompute_settlement_debits(vec![deploy.clone()], &reader)
             .await
             .expect("default recompute must not error");
         let injected = recompute_settlement_debits_with_logic(
             vec![deploy.clone()],
             &reader,
-            false,
             &ZeroDemandLogic,
             &DefaultApportionment,
         )
@@ -1613,6 +3934,442 @@ mod tests {
             Some(2)
         );
         assert!(injected.settlement.is_empty());
+    }
+
+    fn processed_with_bound(
+        cosigned: &Cosigned<DeployData>,
+        cost: u64,
+        bound: u64,
+    ) -> ProcessedDeploy {
+        let funding = accounting::funding_sig(cosigned);
+        let signature = sig_to_cost_signature(&funding).unwrap();
+        let events = if cost == 0 {
+            Vec::new()
+        } else {
+            let authority = canonical_authority(&CostAuthority {
+                regions: (0..cost)
+                    .map(|index| {
+                        cost_region(
+                            &signature,
+                            cosigned.primary().sig.as_ref(),
+                            u32::try_from(index).unwrap(),
+                        )
+                        .unwrap()
+                    })
+                    .collect(),
+            })
+            .unwrap();
+            vec![AuthorityEvent {
+                event_id: authority_digest(
+                    &Blake2b256::hash(cosigned.primary().sig.to_vec()),
+                    "test authority event",
+                )
+                .unwrap(),
+                debit: authority_demand(&authority).unwrap(),
+                authority,
+            }]
+        };
+        let realized = events
+            .iter()
+            .try_fold(ResourceMultiset::default(), |total, event| {
+                total.checked_add(&event.debit)
+            })
+            .unwrap();
+        let canonical = RhoGslt
+            .canonicalize_for_funding(&Compiler::source_to_adt(&cosigned.data().term).unwrap());
+        let program_hash = authority_digest(
+            &Blake2b256::hash(canonical.encode_to_vec()),
+            "test program hash",
+        )
+        .unwrap();
+        let reservation_id = authority_digest(
+            &Blake2b256::hash(cosigned.primary().sig.to_vec()),
+            "test reservation identity",
+        )
+        .unwrap();
+        let certificate = FundingCertificate {
+            protocol_version: AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
+            program_hash,
+            pre_state_root: [42; 32],
+            reservation_id,
+            demand: DemandBound::Exact(ResourceMultiset::singleton(funding.key(), bound)),
+            allocation: realized.clone(),
+            stack_reservations: BTreeMap::new(),
+            fee_allocation: ResourceMultiset::singleton(funding.key(), 1),
+            fee_recipient: Vec::new(),
+        };
+        let physical_draws = allocate_authority_event_draws(&events, &realized).unwrap();
+        let authority_witness = AuthorityCostWitness {
+            protocol_version: AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
+            certificate_id: certificate.certificate_id(),
+            pre_state_root: [42; 32],
+            post_state_root: [43; 32],
+            events,
+            realized: realized.clone(),
+            settlement: realized,
+            physical_draws,
+            born_stacks: Vec::new(),
+        };
+        ProcessedDeploy {
+            deploy: Signed {
+                data: cosigned.data().clone(),
+                pk: cosigned.primary().pk.clone(),
+                sig: cosigned.primary().sig.clone(),
+                sig_algorithm: cosigned.primary().sig_algorithm.clone(),
+            },
+            cost: models::rhoapi::PCost { cost },
+            deploy_log: Vec::new(),
+            is_failed: false,
+            system_deploy_error: None,
+            cosigners: Vec::new(),
+            cosigner_threshold: 0,
+            pre_state_hash: Bytes::from_static(&[42; 32]),
+            post_state_hash: Bytes::from_static(&[43; 32]),
+            authority_funding_certificate: Some(authority_certificate_to_proto(&certificate)),
+            authority_cost_witness: Some(authority_witness_to_proto(&authority_witness)),
+            admission_status: Default::default(),
+        }
+    }
+
+    fn processed(cosigned: &Cosigned<DeployData>, cost: u64) -> ProcessedDeploy {
+        processed_with_bound(cosigned, cost, cost)
+    }
+
+    #[tokio::test]
+    async fn realized_settlement_refunds_unused_reservation() {
+        let deploy = cosigned(&n_sends(3), b"refund", 0, 10);
+        let mut reader = MockSupplyReader::new();
+        reader.set(b"refund", 4);
+        let reservation = recompute_settlement_debits(vec![deploy.clone()], &reader)
+            .await
+            .expect("reservation recompute must succeed");
+        let realized = recompute_realized_settlement_debits(&[processed(&deploy, 1)], &reader)
+            .await
+            .expect("realized recompute must succeed");
+        let key = pool_key(b"refund");
+
+        assert_eq!(
+            reservation.settlement.get(&key).map(|debit| debit.amount),
+            Some(3)
+        );
+        assert_eq!(
+            realized.settlement.get(&key).map(|debit| debit.amount),
+            Some(1)
+        );
+        assert_eq!(realized.fee.get(&key).map(|debit| debit.amount), Some(1));
+    }
+
+    #[tokio::test]
+    async fn replay_rejects_a_tampered_fee_allocation() {
+        let deploy = cosigned(&n_sends(1), b"tampered-fee", 0, 10);
+        let mut reader = MockSupplyReader::new();
+        reader.set(b"tampered-fee", 2);
+        let mut evidence = vec![processed(&deploy, 1)];
+
+        let mut certificate = authority_certificate_from_proto(
+            evidence[0].authority_funding_certificate.as_ref().unwrap(),
+        )
+        .unwrap();
+        certificate.fee_allocation = ResourceMultiset::default();
+        let mut witness = authority_witness_from_proto(
+            evidence[0].authority_cost_witness.as_ref().unwrap(),
+            false,
+        )
+        .unwrap();
+        witness.certificate_id = certificate.certificate_id();
+        evidence[0].authority_funding_certificate =
+            Some(authority_certificate_to_proto(&certificate));
+        evidence[0].authority_cost_witness = Some(authority_witness_to_proto(&witness));
+
+        let error = recompute_state_bound_settlement_debits(&evidence, &reader)
+            .await
+            .expect_err("replay must reject a non-canonical fee allocation");
+        assert!(error
+            .to_string()
+            .contains("fee allocation differs from the canonical replay allocation"));
+    }
+
+    #[tokio::test]
+    async fn realized_settlement_rejects_cost_above_certified_bound() {
+        let deploy = cosigned(&n_sends(2), b"invalid-witness", 0, 10);
+        let mut reader = MockSupplyReader::new();
+        reader.set(b"invalid-witness", 10);
+        let error =
+            recompute_realized_settlement_debits(&[processed_with_bound(&deploy, 3, 2)], &reader)
+                .await
+                .expect_err("realized cost above the static certificate must fail");
+
+        assert!(error
+            .to_string()
+            .contains("realized authority exceeds the certified demand"));
+    }
+
+    #[tokio::test]
+    async fn absent_pool_does_not_relax_the_realized_bound() {
+        let deploy = cosigned(&n_sends(2), b"absent-unenforced", 0, 10);
+        let reader = MockSupplyReader::new();
+        let error =
+            recompute_realized_settlement_debits(&[processed_with_bound(&deploy, 3, 2)], &reader)
+                .await
+                .expect_err("an absent pool cannot relax the certified bound");
+        assert!(error
+            .to_string()
+            .contains("realized authority exceeds the certified demand"));
+    }
+
+    #[tokio::test]
+    async fn state_bound_evidence_accounts_for_ambient_contract_cost() {
+        let deploy = cosigned(&n_sends(2), b"ambient", 0, 10);
+        let witness = processed(&deploy, 123);
+        let mut evidence = vec![witness];
+        let mut reader = MockSupplyReader::new();
+        reader.set(b"ambient", 124);
+
+        let admitted = admit_by_funding_with_state_bound_evidence(
+            vec![deploy.clone()],
+            &mut evidence,
+            &reader,
+        )
+        .await
+        .unwrap();
+        let recomputed = recompute_state_bound_settlement_debits(&evidence, &reader)
+            .await
+            .unwrap();
+        let key = pool_key(b"ambient");
+
+        assert_eq!(admitted.admitted.len(), 1);
+        assert_eq!(
+            admitted.debits.get(&key).map(|debit| debit.amount),
+            Some(123)
+        );
+        assert_eq!(
+            admitted.fee_debits.get(&key).map(|debit| debit.amount),
+            Some(1)
+        );
+        assert_eq!(admitted.debits, recomputed.settlement);
+        assert_eq!(admitted.fee_debits, recomputed.fee);
+    }
+
+    #[tokio::test]
+    async fn state_bound_admission_and_replay_pop_the_same_persistent_stack() {
+        let deploy = cosigned(&n_sends(1), b"stack-funded", 0, 10);
+        let mut evidence = vec![processed(&deploy, 1)];
+        let funding = accounting::funding_sig(&deploy);
+        let signature = sig_to_cost_signature(&funding).unwrap();
+        let mut reader = MockSupplyReader::new();
+        reader.set(b"stack-funded", 1);
+        reader.set_stack(&funding, vec![signature]);
+
+        let admitted =
+            admit_by_funding_with_state_bound_evidence(vec![deploy], &mut evidence, &reader)
+                .await
+                .unwrap();
+        assert!(!evidence[0]
+            .authority_cost_witness
+            .as_ref()
+            .unwrap()
+            .physical_draws
+            .is_empty());
+        let replayed = recompute_state_bound_settlement_debits(&evidence, &reader)
+            .await
+            .unwrap();
+
+        assert!(admitted.debits.is_empty());
+        assert_eq!(admitted.stack_pops.len(), 1);
+        assert_eq!(admitted.stack_pops, replayed.stack_pops);
+        assert_eq!(admitted.purse_stacks, replayed.purse_stacks);
+        assert_eq!(admitted.fee_debits, replayed.fee);
+
+        let certificate = authority_certificate_from_proto(
+            evidence[0].authority_funding_certificate.as_ref().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(certificate.stack_reservations, admitted.stack_pops);
+
+        let mut tampered = evidence.clone();
+        let mut certificate = authority_certificate_from_proto(
+            tampered[0].authority_funding_certificate.as_ref().unwrap(),
+        )
+        .unwrap();
+        certificate.stack_reservations.clear();
+        let mut witness = authority_witness_from_proto(
+            tampered[0].authority_cost_witness.as_ref().unwrap(),
+            false,
+        )
+        .unwrap();
+        witness.certificate_id = certificate.certificate_id();
+        tampered[0].authority_funding_certificate =
+            Some(authority_certificate_to_proto(&certificate));
+        tampered[0].authority_cost_witness = Some(authority_witness_to_proto(&witness));
+        let error = recompute_state_bound_settlement_debits(&tampered, &reader)
+            .await
+            .expect_err("replay must reject a certificate that omits its stack reservation");
+        assert!(error
+            .to_string()
+            .contains("does not bind the realized physical reservation"));
+    }
+
+    #[tokio::test]
+    async fn signed_presentations_discover_intermediate_join_partitions() {
+        use models::rhoapi::cost_signature::Value;
+        use prost::Message;
+
+        let atom = |tag: u8| models::rhoapi::CostSignature {
+            value: Some(Value::Ground(vec![tag])),
+        };
+        let a = atom(1);
+        let b = atom(2);
+        let c = atom(3);
+        let d = atom(4);
+        let ab =
+            rholang::rust::interpreter::accounting::authority::compound_cost_signatures(&a, &b)
+                .unwrap();
+        let cd =
+            rholang::rust::interpreter::accounting::authority::compound_cost_signatures(&c, &d)
+                .unwrap();
+        let mut presentations = vec![ab.clone(), cd.clone()];
+        presentations.sort_by_key(|signature| signature.encode_to_vec());
+
+        let mut deploy = cosigned(&n_sends(1), b"intermediate-partition", 0, 10);
+        deploy.data.authority_presentations = presentations;
+        let mut evidence = processed(&deploy, 1);
+        let authority = canonical_authority(&CostAuthority {
+            regions: [a, b, c, d]
+                .iter()
+                .enumerate()
+                .map(|(index, signature)| {
+                    cost_region(signature, b"intermediate partition", index as u32).unwrap()
+                })
+                .collect(),
+        })
+        .unwrap();
+        let event = AuthorityEvent {
+            event_id: [17; 32],
+            debit: authority_demand(&authority).unwrap(),
+            authority,
+        };
+        let realized = event.debit.clone();
+        let mut certificate = authority_certificate_from_proto(
+            evidence.authority_funding_certificate.as_ref().unwrap(),
+        )
+        .unwrap();
+        certificate.demand = DemandBound::Exact(realized.clone());
+        certificate.allocation = realized.clone();
+        let witness = AuthorityCostWitness {
+            protocol_version: AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
+            certificate_id: certificate.certificate_id(),
+            pre_state_root: [42; 32],
+            post_state_root: [43; 32],
+            events: vec![event],
+            realized: realized.clone(),
+            settlement: realized,
+            physical_draws: Vec::new(),
+            born_stacks: Vec::new(),
+        };
+        evidence.authority_funding_certificate = Some(authority_certificate_to_proto(&certificate));
+        evidence.authority_cost_witness = Some(authority_witness_to_proto(&witness));
+
+        let mut reader = MockSupplyReader::new();
+        reader.set(b"intermediate-partition", 1);
+        reader.set_stack(
+            &rholang::rust::interpreter::accounting::authority::cost_signature_to_sig(&ab).unwrap(),
+            vec![ab],
+        );
+        reader.set_stack(
+            &rholang::rust::interpreter::accounting::authority::cost_signature_to_sig(&cd).unwrap(),
+            vec![cd],
+        );
+        let mut evidence = vec![evidence];
+        let admitted =
+            admit_by_funding_with_state_bound_evidence(vec![deploy], &mut evidence, &reader)
+                .await
+                .unwrap();
+        let replayed = recompute_state_bound_settlement_debits(&evidence, &reader)
+            .await
+            .unwrap();
+
+        assert_eq!(admitted.admitted.len(), 1);
+        assert!(admitted.debits.is_empty());
+        assert_eq!(admitted.stack_pops.len(), 2);
+        assert_eq!(admitted.stack_pops, replayed.stack_pops);
+        assert_eq!(admitted.purse_stacks, replayed.purse_stacks);
+    }
+
+    #[tokio::test]
+    async fn state_bound_evidence_rejects_a_broken_root_chain() {
+        let deploy = cosigned(&n_sends(1), b"broken-chain", 0, 10);
+        let mut witness = processed(&deploy, 1);
+        witness.pre_state_hash = Bytes::from_static(&[41; 32]);
+        let mut evidence = vec![witness];
+        let mut reader = MockSupplyReader::new();
+        reader.set(b"broken-chain", 2);
+
+        let error =
+            admit_by_funding_with_state_bound_evidence(vec![deploy], &mut evidence, &reader)
+                .await
+                .expect_err("evidence rooted in another state must fail");
+
+        assert!(error
+            .to_string()
+            .contains("state-bound evidence chain expected pre-state"));
+    }
+
+    #[tokio::test]
+    async fn state_bound_evidence_rejects_an_envelope_substitution() {
+        let expected = cosigned(&n_sends(1), b"expected", 0, 10);
+        let substituted = cosigned(&n_sends(1), b"substituted", 0, 10);
+        let witness = processed(&substituted, 1);
+        let mut evidence = vec![witness];
+        let mut reader = MockSupplyReader::new();
+        reader.set(b"expected", 2);
+
+        let error =
+            admit_by_funding_with_state_bound_evidence(vec![expected], &mut evidence, &reader)
+                .await
+                .expect_err("evidence for another envelope must fail");
+
+        assert!(error
+            .to_string()
+            .contains("state-bound evidence is not for the canonical candidate envelope"));
+    }
+
+    proptest! {
+        #[test]
+        fn state_bound_admission_has_an_exact_cost_plus_fee_boundary(cost in 0u64..128) {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let deploy = cosigned(&n_sends(1), b"state-bound-boundary", 0, 10);
+                let witness = processed(&deploy, cost);
+                let mut exact = MockSupplyReader::new();
+                exact.set(b"state-bound-boundary", i64::try_from(cost).unwrap() + 1);
+                let mut exact_evidence = vec![witness.clone()];
+                let admitted = admit_by_funding_with_state_bound_evidence(
+                    vec![deploy.clone()],
+                    &mut exact_evidence,
+                    &exact,
+                )
+                .await
+                .unwrap();
+                prop_assert_eq!(admitted.admitted.len(), 1);
+
+                let mut short = MockSupplyReader::new();
+                short.set(b"state-bound-boundary", i64::try_from(cost).unwrap());
+                let mut short_evidence = vec![witness];
+                let rejected = admit_by_funding_with_state_bound_evidence(
+                    vec![deploy],
+                    &mut short_evidence,
+                    &short,
+                )
+                .await
+                .unwrap();
+                prop_assert!(rejected.admitted.is_empty());
+                prop_assert_eq!(rejected.rejected.len(), 1);
+                Ok(())
+            })?;
+        }
     }
 
     /// §7.7 reject-both / no-partial: when the FIRST candidate in a group does
@@ -1627,7 +4384,7 @@ mod tests {
         let mut reader = MockSupplyReader::new();
         reader.set(b"carol", 2);
 
-        let outcome = admit_by_funding(vec![c0.clone(), c1.clone()], &reader, 0, false)
+        let outcome = admit_by_funding(vec![c0.clone(), c1.clone()], &reader)
             .await
             .expect("gate must not error");
 
@@ -1640,36 +4397,22 @@ mod tests {
         );
     }
 
-    /// §7.4 funded / unfunded boundary for RESOLVABLE demand: by Def 19 the
-    /// correctness inequality for the COST is EXACTLY `Σ ≥ Δ` — F-B: the economic
-    /// margin (`min_phlo_price`) is NOT folded into it for known demand. F-C/F-D:
-    /// admission ALSO charges the +1 FeeExtract carve, so the gate's full
-    /// admission boundary is `Σ ≥ Δ + fee` (cost + fee, NOT cost + margin). Pin
-    /// the exact boundary pair (Σ = Δ+fee accepts; Σ = Δ+fee−1 rejects) and prove
-    /// a non-zero margin is STILL inert here (the four-sends demand is fully
-    /// resolvable ⇒ unknown == false ⇒ margin rides only the unknown branch).
+    /// §7.4 exact funding boundary: admission reserves certified cost plus the
+    /// flat FeeExtract, so `Σ = Δ + fee` accepts and one unit less rejects.
     #[tokio::test]
     async fn funded_unfunded_boundary_at_def19() {
-        // Δ = 4 (four parallel sends, fully resolvable). margin = 2, but it must
-        // NOT shift the boundary for resolvable demand ⇒ need only Σ ≥ Δ + fee = 5
-        // (the +1 is the FeeExtract carve, not the margin).
+        // Δ = 4 and the flat fee is one, so exact funding requires Σ = 5.
         let demand = 4;
-        let margin = 2;
         const FEE: i64 = 1; // the per-deploy FeeExtract carve folded into admission
 
-        // Σ = Δ + fee = 5 ⇒ accepted (cost-Def-19 boundary + fee carve), even
-        // though Σ < Δ + fee + margin = 7 ⇒ the margin is inert (rides `unknown`).
+        // Σ = Δ + fee = 5 is accepted.
         let d = cosigned(&n_sends(demand), b"dave", 0, 10);
         let mut reader_ok = MockSupplyReader::new();
         reader_ok.set(b"dave", demand as i64 + FEE);
-        let accepted = admit_by_funding(vec![d.clone()], &reader_ok, margin, false)
+        let accepted = admit_by_funding(vec![d.clone()], &reader_ok)
             .await
             .expect("gate must not error");
-        assert_eq!(
-            accepted.admitted.len(),
-            1,
-            "Σ = Δ + fee ⇒ accepted (margin inert)"
-        );
+        assert_eq!(accepted.admitted.len(), 1, "Σ = Δ + fee ⇒ accepted");
         assert!(accepted.rejected.is_empty());
         let dave_key = pool_key(b"dave");
         // COST debit is still the cost-only Δ (the fee is carved separately).
@@ -1686,7 +4429,7 @@ mod tests {
         // Σ = Δ + fee − 1 = 4 ⇒ rejected (one below the cost+fee admission boundary).
         let mut reader_short = MockSupplyReader::new();
         reader_short.set(b"dave", demand as i64 + FEE - 1);
-        let rejected = admit_by_funding(vec![d.clone()], &reader_short, margin, false)
+        let rejected = admit_by_funding(vec![d.clone()], &reader_short)
             .await
             .expect("gate must not error");
         assert!(rejected.admitted.is_empty(), "Σ = Δ + fee − 1 ⇒ rejected");
@@ -1706,7 +4449,7 @@ mod tests {
         let bad = cosigned("for(x <- @0){ ", b"erin", 0, 10);
         let mut reader = MockSupplyReader::new();
         reader.set(b"erin", 1_000);
-        let outcome = admit_by_funding(vec![bad], &reader, 0, false)
+        let outcome = admit_by_funding(vec![bad], &reader)
             .await
             .expect("gate must not error");
         assert!(outcome.admitted.is_empty(), "malformed ⇒ not admitted");
@@ -1714,49 +4457,43 @@ mod tests {
         assert!(outcome.debits.is_empty());
     }
 
-    /// ACTIVATION: a deploy whose supply pool is ABSENT (never provisioned by
-    /// the cost-accounting economic producer) is admitted WITHOUT funding
-    /// enforcement and WITHOUT a debit — even though its Δ ≫ 0 and the supply
-    /// is (implicitly) 0. This is the pre-Workstream-C / non-cost-accounted
-    /// path that keeps existing blocks valid. Contrast `funded_unfunded_*`,
-    /// where the pool is PRESENT and the same Δ-vs-Σ shortfall rejects.
     #[tokio::test]
-    async fn absent_pool_admits_without_enforcement() {
-        // Δ = 5, but NO pool is set for "frank" ⇒ pool absent ⇒ admit, no debit.
+    async fn replay_rejects_malformed_admitted_deploy() {
+        let bad = cosigned("for(x <- @0){ ", b"malformed-replay", 0, 10);
+        let mut reader = MockSupplyReader::new();
+        reader.set(b"malformed-replay", 1_000);
+
+        let error = recompute_settlement_debits(vec![bad], &reader)
+            .await
+            .expect_err("replay must reject an admitted deploy without a demand certificate");
+
+        assert!(matches!(
+            error,
+            CasperError::ReplayFailure(ReplayFailure::ReplayAdmissionMismatch { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn absent_pool_is_zero_supply_and_rejects() {
         let f = cosigned(&n_sends(5), b"frank", 0, 10);
-        let reader = MockSupplyReader::new(); // empty: every pool absent
-                                              // strict = false ⇒ the TRANSITIONAL early-admit path (back-compat).
-        let outcome = admit_by_funding(
-            vec![f],
-            &reader,
-            /* margin */ 1,
-            /* strict */ false,
-        )
-        .await
-        .expect("gate must not error");
-        assert_eq!(
-            outcome.admitted.len(),
-            1,
-            "absent pool ⇒ admitted unenforced"
-        );
-        assert!(outcome.rejected.is_empty(), "absent pool ⇒ never rejected");
-        assert!(
-            outcome.debits.is_empty(),
-            "absent pool ⇒ no settlement debit (not under cost-accounting)"
-        );
+        let reader = MockSupplyReader::new();
+        let outcome = admit_by_funding(vec![f], &reader)
+            .await
+            .expect("gate must not error");
+        assert!(outcome.admitted.is_empty());
+        assert_eq!(outcome.rejected.len(), 1);
+        assert!(outcome.debits.is_empty());
     }
 
     /// A PRESENT but DRAINED pool (`Some(0)`) correctly REJECTS a further spend
     /// — the §7.7 duplicate-deploy example (tex 1677-1687): once a signer's
     /// supply is committed to 0, the next deploy sees Σ = 0 < Δ and is rejected.
-    /// This is the case `read_balance_present` exists to distinguish from an
-    /// absent pool (which would instead admit).
     #[tokio::test]
     async fn drained_present_pool_rejects() {
         let g = cosigned(&n_sends(3), b"grace", 0, 10);
         let mut reader = MockSupplyReader::new();
         reader.set(b"grace", 0); // PRESENT, drained to zero
-        let outcome = admit_by_funding(vec![g], &reader, 0, false)
+        let outcome = admit_by_funding(vec![g], &reader)
             .await
             .expect("gate must not error");
         assert!(
@@ -1767,49 +4504,7 @@ mod tests {
         assert!(outcome.debits.is_empty());
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // #13a — spec-strict acceptance-gate activation (§7.6 step 5).
-    // With `strict = true`, an ABSENT pool is treated as present-zero: a Δ>0
-    // deploy is REJECTED (no execution, no debit), a Δ=0 deploy is admitted
-    // with no debit. With `strict = false` the gate is byte-identical to the
-    // transitional per-pool-presence behavior (back-compat).
-    // ═══════════════════════════════════════════════════════════════════════
-
-    /// #13a.1 — STRICT inverse of `absent_pool_admits_without_enforcement`: with
-    /// `strict = true`, a Δ>0 deploy on an ABSENT pool is REJECTED (§7.6 step 5:
-    /// rejected without executing any part), NOT admitted. Admitted is empty,
-    /// rejected has it, and there is NO settlement debit.
-    #[tokio::test]
-    async fn strict_absent_pool_rejects() {
-        // Δ = 5, NO pool set for "frank" ⇒ pool absent ⇒ under strict, Σ=0 < Δ
-        // ⇒ rejected. (Contrast `absent_pool_admits_without_enforcement`, which
-        // admits the identical deploy with strict = false.)
-        let f = cosigned(&n_sends(5), b"frank", 0, 10);
-        let reader = MockSupplyReader::new(); // empty: every pool absent
-        let outcome = admit_by_funding(
-            vec![f],
-            &reader,
-            /* margin */ 1,
-            /* strict */ true,
-        )
-        .await
-        .expect("gate must not error");
-        assert!(
-            outcome.admitted.is_empty(),
-            "strict + absent pool + Δ>0 ⇒ rejected (effective supply 0)"
-        );
-        assert_eq!(
-            outcome.rejected.len(),
-            1,
-            "the underfunded deploy is rejected"
-        );
-        assert!(
-            outcome.debits.is_empty(),
-            "rejected ⇒ no settlement debit (no tokens consumed)"
-        );
-    }
-
-    /// #13a.2 — STRICT zero-demand handling under the F-C/F-D FeeExtract carve.
+    /// Zero-demand handling under the F-C/F-D FeeExtract carve.
     /// A Δ=0 deploy (no token-consuming COMMs) STILL owes the spec's flat
     /// FeeExtract (one client token per PROCESSED deploy, tex:2509-2521/3637),
     /// which F-C/F-D folds into the admission demand: an admitted deploy needs
@@ -1818,28 +4513,21 @@ mod tests {
     ///   * ABSENT (or drained) pool ⇒ effective Σ = 0 < 1 ⇒ REJECTED (it cannot
     ///     pay the FeeExtract; no execution, no debit, no carve);
     ///   * PRESENT pool with Σ ≥ 1 ⇒ ADMITTED with a ZERO COST debit (Δ=0) and a
-    ///     fee carve of exactly 1 (the FeeExtract, carved to F_v).
-    /// This is the cost ≠ fee split at the zero-cost boundary; the COST funding
-    /// predicate is still Def 19 `Σ ≥ Δ` (margin inert for resolvable demand),
-    /// the +1 is the fee, not the margin.
+    ///     fee carve of exactly 1, transferred to the proposer SystemVault.
+    /// This is the cost ≠ fee split at the zero-cost boundary.
     #[tokio::test]
-    async fn strict_zero_demand_is_fee_gated() {
+    async fn zero_demand_is_fee_gated() {
         let zoe_key = pool_key(b"zoe");
 
         // (a) ABSENT pool: Δ=0 but the FeeExtract needs Σ≥1 ⇒ effective 0 ⇒ rejected.
         let z_absent = cosigned("Nil", b"zoe", 0, 10);
         let reader_absent = MockSupplyReader::new(); // "zoe" pool absent
-        let absent = admit_by_funding(
-            vec![z_absent],
-            &reader_absent,
-            /* margin */ 0,
-            /* strict */ true,
-        )
-        .await
-        .expect("gate must not error");
+        let absent = admit_by_funding(vec![z_absent], &reader_absent)
+            .await
+            .expect("gate must not error");
         assert!(
             absent.admitted.is_empty(),
-            "strict + absent pool + Δ=0 ⇒ rejected (cannot pay the +1 FeeExtract)"
+            "absent pool + Δ=0 ⇒ rejected because it cannot pay the fee"
         );
         assert_eq!(
             absent.rejected.len(),
@@ -1854,18 +4542,13 @@ mod tests {
         let z_funded = cosigned("Nil", b"zoe", 0, 10);
         let mut reader_funded = MockSupplyReader::new();
         reader_funded.set(b"zoe", 1); // exactly the FeeExtract token, no cost
-        let funded = admit_by_funding(
-            vec![z_funded],
-            &reader_funded,
-            /* margin */ 0,
-            /* strict */ true,
-        )
-        .await
-        .expect("gate must not error");
+        let funded = admit_by_funding(vec![z_funded], &reader_funded)
+            .await
+            .expect("gate must not error");
         assert_eq!(
             funded.admitted.len(),
             1,
-            "strict + present pool (Σ=1) + Δ=0 ⇒ admitted (affords the FeeExtract)"
+            "Σ=1 and Δ=0 ⇒ admitted because the FeeExtract is funded"
         );
         assert!(
             funded.rejected.is_empty(),
@@ -1878,19 +4561,13 @@ mod tests {
         assert_eq!(
             funded.fee_debits.get(&zoe_key).map(|d| d.amount),
             Some(1),
-            "the admitted Δ=0 deploy still carves one FeeExtract token to F_v"
+            "the admitted Δ=0 deploy still transfers one fee token to the proposer"
         );
     }
 
-    /// #13a.3 — BACK-COMPAT byte-identity: with `strict = false`, the
-    /// admitted/rejected/debit outcome for a given input set is byte-identical
-    /// to the TRANSITIONAL gate. Runs three representative groups — an absent
-    /// pool (admitted unenforced, no debit), a present funded pool (admitted +
-    /// debited), and a present drained pool (rejected) — and asserts the exact
-    /// transitional verdict, the same one the pre-#13a gate produced.
     #[tokio::test]
-    async fn strict_flag_off_is_byte_identical_to_transitional() {
-        // absent: Δ=4, no pool        ⇒ admitted, no debit
+    async fn mixed_absent_funded_and_drained_pools_are_enforced_uniformly() {
+        // absent: Δ=4, no pool        ⇒ rejected
         // funded: Δ=2, Σ=5            ⇒ admitted, debit 2
         // drained: Δ=3, Σ=0 (present) ⇒ rejected, no debit
         let absent = cosigned(&n_sends(4), b"abs", 0, 10);
@@ -1905,30 +4582,22 @@ mod tests {
         let outcome = admit_by_funding(
             vec![absent.clone(), funded.clone(), drained.clone()],
             &reader,
-            /* margin */ 0,
-            /* strict */ false,
         )
         .await
         .expect("gate must not error");
 
-        // Admitted: absent (unenforced) + funded. Rejected: drained.
         let admitted_sigs: std::collections::BTreeSet<&[u8]> = outcome
             .admitted
             .iter()
             .map(|c| c.primary().sig.as_ref())
             .collect();
-        assert_eq!(outcome.admitted.len(), 2, "absent + funded admitted");
-        assert!(
-            admitted_sigs.contains(&b"abs".as_ref()),
-            "absent admitted unenforced"
+        assert_eq!(
+            outcome.admitted.len(),
+            1,
+            "only the funded deploy is admitted"
         );
         assert!(admitted_sigs.contains(&b"fund".as_ref()), "funded admitted");
-        assert_eq!(outcome.rejected.len(), 1, "drained rejected");
-        assert_eq!(
-            outcome.rejected[0].as_ref(),
-            b"drain".as_ref(),
-            "the drained-pool deploy is the rejected one"
-        );
+        assert_eq!(outcome.rejected.len(), 2, "absent and drained are rejected");
 
         // Debits: exactly the funded pool (Δ=2). Absent + drained ⇒ no debit.
         let abs_key = pool_key(b"abs");
@@ -1944,56 +4613,35 @@ mod tests {
             Some(2),
             "funded -= 2"
         );
-        assert!(outcome.debits.get(&abs_key).is_none(), "absent ⇒ no debit");
+        assert!(
+            outcome.debits.get(&abs_key).is_none(),
+            "absent and rejected ⇒ no debit"
+        );
         assert!(
             outcome.debits.get(&drain_key).is_none(),
             "drained/rejected ⇒ no debit"
         );
     }
 
-    /// #13b consensus bar (b) — STRICT-mode FUNDED client admitted + debited +
-    /// play==replay. This is the END-TO-END payoff of #13b: a client whose
-    /// supply pool `Σ⟦c⟧` was SEEDED at genesis (modeled here as a PRESENT,
-    /// funded pool) is, under `strict_funding_enforcement = true`, ADMITTED by
-    /// the play-side gate (`admit_by_funding`, strict) and assigned a settlement
-    /// debit of exactly its demand — and the replay-side recompute
-    /// (`recompute_settlement_debits`, strict) produces the BYTE-IDENTICAL debit
-    /// map AND does not reject (the strict re-verification only fires for an
-    /// admitted Δ>0 deploy on an ABSENT pool, which a funded client is not). So a
-    /// genesis-funded client bootstraps a strict shard: its deploy is admitted,
-    /// debited once, and the gate decision is play/replay-deterministic.
+    /// A genesis-funded client is admitted and debited identically on proposal
+    /// and replay.
     ///
-    /// This pairs with `client_fuel_allocation_credits_sigma_c_at_genesis` (which
-    /// proves the genesis seed itself is play/replay-symmetric): the seed makes
-    /// the pool PRESENT+funded, and this test proves a PRESENT+funded client pool
-    /// is admitted under strict mode with a deterministic debit.
+    /// This pairs with `genesis_system_vault_funding_is_committed_and_replay_deterministic`.
     #[tokio::test]
-    async fn strict_mode_funded_client_admitted_and_replays() {
-        // A client with demand Δ=4. Its Σ⟦c⟧ was seeded at genesis to 10 (≥ Δ +
-        // margin), so under STRICT it is admitted (PRESENT funded pool — the
-        // strict-absent rejection path does not apply).
+    async fn funded_client_is_admitted_and_replays() {
+        // A client with demand Δ=4 and enough supply for cost plus fee.
         const DEMAND: usize = 4;
-        const MARGIN: i64 = 1;
         let client = cosigned(&n_sends(DEMAND), b"client", 0, 10);
         let client_key = pool_key(b"client");
 
         let mut reader = MockSupplyReader::new();
-        reader.set(b"client", (DEMAND as i64) + MARGIN + 5); // present, comfortably funds Δ
+        reader.set(b"client", (DEMAND as i64) + 6);
 
-        // ---- PLAY gate (strict = true) ----
-        let play = admit_by_funding(
-            vec![client.clone()],
-            &reader,
-            MARGIN,
-            /* strict */ true,
-        )
-        .await
-        .expect("gate must not error");
-        assert_eq!(
-            play.admitted.len(),
-            1,
-            "strict + PRESENT funded client pool ⇒ admitted"
-        );
+        // ---- PLAY gate ----
+        let play = admit_by_funding(vec![client.clone()], &reader)
+            .await
+            .expect("gate must not error");
+        assert_eq!(play.admitted.len(), 1, "funded client pool ⇒ admitted");
         assert!(play.rejected.is_empty(), "funded client ⇒ not rejected");
         assert_eq!(
             play.debits.get(&client_key).map(|d| d.amount),
@@ -2005,10 +4653,9 @@ mod tests {
         // The replay path reconstructs the admitted envelopes from the block and
         // recomputes the debit map against the SAME pre-state pool. Under strict
         // it ALSO re-verifies admission; a funded client passes (no rejection).
-        let recomputed =
-            recompute_settlement_debits(play.admitted.clone(), &reader, /* strict */ true)
-                .await
-                .expect("strict replay recompute must not reject a funded client");
+        let recomputed = recompute_settlement_debits(play.admitted.clone(), &reader)
+            .await
+            .expect("strict replay recompute must not reject a funded client");
 
         // play == replay: the COST settlement map is byte-identical (the
         // consensus bar). `recompute_settlement_debits` returns `RecomputedDebits`
@@ -2062,14 +4709,9 @@ mod tests {
         let mut reader = MockSupplyReader::new();
         reader.set_sig(&wallet_sig, PRE);
 
-        let outcome = admit_by_funding(
-            vec![deploy.clone()],
-            &reader,
-            /* margin */ 1,
-            /* strict */ true,
-        )
-        .await
-        .expect("gate must not error");
+        let outcome = admit_by_funding(vec![deploy.clone()], &reader)
+            .await
+            .expect("gate must not error");
 
         assert_eq!(outcome.admitted.len(), 1, "funded signer admitted");
         assert!(outcome.rejected.is_empty());
@@ -2086,25 +4728,20 @@ mod tests {
         assert_eq!(PRE - debit.amount, PRE - DEMAND as i64);
     }
 
-    /// §D2.9 (single-sig) — under STRICT funding, a deploy whose signer wallet
+    /// §D2.9 (single-sig) — a deploy whose signer wallet
     /// `Σ⟦Ground(pk)⟧` is ABSENT (never seeded) is REJECTED: it cannot prove
     /// `Σ ≥ Δ`. Pre-fix the wire-sig pool was ALWAYS absent ⇒ every deploy was
-    /// silently admitted-unenforced; now an unfunded signer is actually refused.
+    /// admitted without a debit; now an unfunded signer is refused.
     #[tokio::test]
-    async fn unfunded_signer_rejected_under_strict() {
+    async fn unfunded_signer_is_rejected() {
         let deploy = cosigned(&n_sends(2), b"poor", 0, 10);
         let reader = MockSupplyReader::new(); // the signer's wallet is ABSENT
-        let outcome = admit_by_funding(
-            vec![deploy.clone()],
-            &reader,
-            /* margin */ 1,
-            /* strict */ true,
-        )
-        .await
-        .expect("gate must not error");
+        let outcome = admit_by_funding(vec![deploy.clone()], &reader)
+            .await
+            .expect("gate must not error");
         assert!(
             outcome.admitted.is_empty(),
-            "absent signer wallet ⇒ rejected under strict"
+            "absent signer wallet ⇒ rejected"
         );
         assert_eq!(outcome.rejected, vec![deploy.primary().sig.clone()]);
         assert!(outcome.debits.is_empty(), "rejected ⇒ no debit");
@@ -2116,13 +4753,11 @@ mod tests {
     ///
     /// This mirrors GENESIS: only the individual cosigner wallets
     /// `Σ⟦Ground(pkᵢ)⟧` are seeded — there is NO combined `Σ⟦And(…)⟧` pool (the
-    /// genesis ceremony seeds per-pubkey wallets, never compound pools). Under
-    /// STRICT enforcement the compound group therefore funds from
+    /// genesis ceremony seeds per-pubkey wallets, never compound pools). The
+    /// compound group therefore funds from
     /// `effectiveΣ_compound = Σ⟦compound⟧(absent ⇒ 0) + min(Σ⟦left⟧, Σ⟦right⟧)`,
     /// i.e. the matched component pair, debiting each cosigner's wallet equally.
-    /// (On a non-strict shard the absent compound pool early-admits unenforced —
-    /// the pre-existing transitional activation gate; strict is the enforced
-    /// production path.) The exact Split/Join split is pinned by
+    /// The exact Split/Join split is pinned by
     /// `compound_debit_play_replay_identical_pair_only` (now `funding_sig`-keyed);
     /// here we pin the cosigner-wallet identity + per-cosigner balance.
     #[tokio::test]
@@ -2159,18 +4794,16 @@ mod tests {
         reader.set_sig(&left, 5);
         reader.set_sig(&right, 5);
 
-        // STRICT: the enforced production path — the absent compound pool falls
-        // through to enforcement against the component pair (effectiveΣ).
-        let play = admit_by_funding(vec![compound.clone()], &reader, 0, /* strict */ true)
+        // The absent compound pool contributes zero; the component pair funds it.
+        let play = admit_by_funding(vec![compound.clone()], &reader)
             .await
             .expect("gate must not error");
         assert_eq!(play.admitted.len(), 1, "admitted from the cosigner wallets");
         assert!(play.rejected.is_empty());
 
-        let replay =
-            recompute_settlement_debits(play.admitted.clone(), &reader, /* strict */ true)
-                .await
-                .expect("recompute must not error");
+        let replay = recompute_settlement_debits(play.admitted.clone(), &reader)
+            .await
+            .expect("recompute must not error");
         assert_eq!(
             play.debits, replay.settlement,
             "play == replay byte-identical over the cosigner wallets"
@@ -2210,6 +4843,7 @@ mod tests {
             valid_after_block_number: 0,
             shard_id: String::new(),
             expiration_timestamp: None,
+            authority_presentations: Vec::new(),
         };
         let secp = Secp256k1;
         let serialized = data.to_message().encode_to_vec();
@@ -2252,7 +4886,7 @@ mod tests {
         reader.set_sig(&real_wallet, 10);
         reader.set_sig(&victim_wallet, 100);
 
-        let outcome = admit_by_funding(vec![cosigned.clone()], &reader, 0, /* strict */ true)
+        let outcome = admit_by_funding(vec![cosigned.clone()], &reader)
             .await
             .expect("gate must not error");
         assert_eq!(
@@ -2294,7 +4928,7 @@ mod tests {
         reader.set_sig(&left, 5);
         reader.set_sig(&right, 5);
 
-        let err = recompute_settlement_debits(vec![over.clone()], &reader, /* strict */ true)
+        let err = recompute_settlement_debits(vec![over.clone()], &reader)
             .await
             .expect_err("compound over-admission (ΣΔ=8 > effectiveΣ=5) must be rejected on replay");
         match err {
@@ -2321,7 +4955,7 @@ mod tests {
         let mut reader_ok = MockSupplyReader::new();
         reader_ok.set_sig(&l2, 5);
         reader_ok.set_sig(&r2, 5);
-        recompute_settlement_debits(vec![ok.clone()], &reader_ok, /* strict */ true)
+        recompute_settlement_debits(vec![ok.clone()], &reader_ok)
             .await
             .expect("a funded compound deploy (cost+fee = effectiveΣ) must pass the re-check");
     }
@@ -2586,6 +5220,7 @@ mod tests {
             valid_after_block_number: vabn,
             shard_id: String::new(),
             expiration_timestamp: None,
+            authority_presentations: Vec::new(),
         };
         let secp = Secp256k1;
         let serialized = data.to_message().encode_to_vec();
@@ -2635,6 +5270,7 @@ mod tests {
             valid_after_block_number: vabn,
             shard_id: String::new(),
             expiration_timestamp: None,
+            authority_presentations: Vec::new(),
         };
         let secp = Secp256k1;
         let serialized = data.to_message().encode_to_vec();
@@ -2688,7 +5324,7 @@ mod tests {
 
         // strict = true ⇒ enforce even though the compound `Σ⟦And⟧` pools are
         // genesis-absent (§D2.9): funding flows through the component wallets.
-        let outcome = admit_by_funding(vec![g1, g2], &reader, 0, true)
+        let outcome = admit_by_funding(vec![g1, g2], &reader)
             .await
             .expect("gate must not error");
 
@@ -2710,7 +5346,7 @@ mod tests {
         );
 
         // play == replay: the admitted set re-verifies + recomputes identically.
-        let recomputed = recompute_settlement_debits(outcome.admitted.clone(), &reader, true)
+        let recomputed = recompute_settlement_debits(outcome.admitted.clone(), &reader)
             .await
             .expect("admitted set is fundable ⇒ no cross-group mismatch on replay");
         assert_eq!(
@@ -2740,7 +5376,7 @@ mod tests {
         reader.set_sig(&a_sig, 100);
         reader.set_sig(&b_sig, 100);
 
-        let outcome = admit_by_funding(vec![g1, g2], &reader, 0, true)
+        let outcome = admit_by_funding(vec![g1, g2], &reader)
             .await
             .expect("gate must not error");
         assert_eq!(
@@ -2751,7 +5387,7 @@ mod tests {
         let s_draw = outcome.debits.get(&s_key).map(|d| d.amount).unwrap_or(0);
         assert!(s_draw <= 4, "summed shared-component draw {} ≤ 4", s_draw);
 
-        let recomputed = recompute_settlement_debits(outcome.admitted.clone(), &reader, true)
+        let recomputed = recompute_settlement_debits(outcome.admitted.clone(), &reader)
             .await
             .expect("boundary block re-verifies with no mismatch");
         assert_eq!(
@@ -2784,7 +5420,7 @@ mod tests {
         reader.set_sig(&b_sig, 100);
 
         // Hand-crafted over-admitted block: BOTH groups in the admitted set.
-        let result = recompute_settlement_debits(vec![g1, g2], &reader, true).await;
+        let result = recompute_settlement_debits(vec![g1, g2], &reader).await;
         assert!(
             result.is_err(),
             "cross-group over-admission of a shared component must be rejected on replay"
@@ -2820,7 +5456,7 @@ mod tests {
         reader.set_sig(&s_sig, 4); // funds only one folded-3 group
         reader.set_sig(&a_sig, 100);
 
-        let outcome = admit_by_funding(vec![single_s, compound_as], &reader, 0, true)
+        let outcome = admit_by_funding(vec![single_s, compound_as], &reader)
             .await
             .expect("gate must not error");
         assert_eq!(
@@ -2835,18 +5471,14 @@ mod tests {
             s_draw
         );
 
-        let recomputed = recompute_settlement_debits(outcome.admitted.clone(), &reader, true)
+        let recomputed = recompute_settlement_debits(outcome.admitted.clone(), &reader)
             .await
             .expect("admitted set fundable on replay");
         assert_eq!(outcome.debits, recomputed.settlement, "play == replay");
     }
 
-    /// TM-CA-165 migration no-op: on a DEFAULT shard (strict=false, all pools
-    /// ABSENT) the two shared-component compounds early-admit unenforced with NO
-    /// ledger draw and NO debit — byte-identical to pre-fix behavior (no golden
-    /// move). The cross-group ledger activates only on a strict/funded shard.
     #[tokio::test]
-    async fn cross_group_migration_no_op_default_shard_both_admitted() {
+    async fn cross_group_absent_authorities_reject_both() {
         let kp_a = fresh_keypair();
         let kp_b = fresh_keypair();
         let kp_s = fresh_keypair();
@@ -2854,22 +5486,14 @@ mod tests {
         let g1 = cosigned_with_keypairs("@0!(0)", &[kp_a.clone(), kp_s.clone()], 0, 10);
         let g2 = cosigned_with_keypairs("@0!(0)", &[kp_b.clone(), kp_s.clone()], 0, 20);
 
-        // No pools set ⇒ all absent ⇒ early-admit unenforced (strict = false).
         let reader = MockSupplyReader::new();
-        let outcome = admit_by_funding(vec![g1, g2], &reader, 0, false)
+        let outcome = admit_by_funding(vec![g1, g2], &reader)
             .await
             .expect("gate must not error");
 
-        assert_eq!(
-            outcome.admitted.len(),
-            2,
-            "default shard early-admits both, unenforced"
-        );
-        assert!(outcome.rejected.is_empty(), "no enforcement ⇒ no rejection");
-        assert!(
-            outcome.debits.is_empty(),
-            "absent pools ⇒ no debit (byte-identical to pre-fix)"
-        );
+        assert!(outcome.admitted.is_empty());
+        assert_eq!(outcome.rejected.len(), 2);
+        assert!(outcome.debits.is_empty());
         assert!(outcome.fee_debits.is_empty(), "absent pools ⇒ no fee carve");
     }
 
@@ -2900,7 +5524,7 @@ mod tests {
         reader.set_sig(&t_sig, 100);
         // Σ⟦And(A,s)⟧ and Σ⟦And(And(A,s),t)⟧ are NOT set ⇒ absent ⇒ 0.
 
-        let outcome = admit_by_funding(vec![two_sig, three_sig], &reader, 0, true)
+        let outcome = admit_by_funding(vec![two_sig, three_sig], &reader)
             .await
             .expect("gate must not error");
 
@@ -2945,7 +5569,7 @@ mod tests {
         reader.set_sig(&right, 5);
 
         // ---- PLAY: the gate's threaded debit map (strict OFF — #12 unchanged) ----
-        let outcome = admit_by_funding(vec![compound.clone()], &reader, /* margin */ 0, false)
+        let outcome = admit_by_funding(vec![compound.clone()], &reader)
             .await
             .expect("gate must not error");
         assert_eq!(
@@ -2956,7 +5580,7 @@ mod tests {
         assert!(outcome.rejected.is_empty());
 
         // ---- REPLAY: recompute from the admitted set over the SAME pre-state ----
-        let recomputed = recompute_settlement_debits(vec![compound.clone()], &reader, false)
+        let recomputed = recompute_settlement_debits(vec![compound.clone()], &reader)
             .await
             .expect("recompute must not error");
 
@@ -3007,7 +5631,7 @@ mod tests {
         reader.set_sig(&left, 4);
         reader.set_sig(&right, 4);
 
-        let outcome = admit_by_funding(vec![compound.clone()], &reader, 0, false)
+        let outcome = admit_by_funding(vec![compound.clone()], &reader)
             .await
             .expect("gate must not error");
         assert_eq!(
@@ -3016,7 +5640,7 @@ mod tests {
             "admitted on component-pair credit"
         );
 
-        let recomputed = recompute_settlement_debits(vec![compound.clone()], &reader, false)
+        let recomputed = recompute_settlement_debits(vec![compound.clone()], &reader)
             .await
             .expect("recompute must not error");
         assert_eq!(
@@ -3106,10 +5730,9 @@ mod tests {
         reader.set(b"alpha", DEMAND as i64 + FEE); // exactly cost + fee
         reader.set(b"beta", DEMAND as i64 - 1); // below cost ⇒ reject
 
-        let outcome =
-            admit_by_funding(vec![funded.clone(), underfunded.clone()], &reader, 0, false)
-                .await
-                .expect("gate must not error");
+        let outcome = admit_by_funding(vec![funded.clone(), underfunded.clone()], &reader)
+            .await
+            .expect("gate must not error");
 
         let alpha_key = pool_key(b"alpha");
         let beta_key = pool_key(b"beta");
@@ -3180,14 +5803,14 @@ mod tests {
         reader.set(b"beta", 0); // present but drained ⇒ rejected
 
         // Alpha ALONE.
-        let solo = admit_by_funding(vec![alpha.clone()], &reader, 0, false)
+        let solo = admit_by_funding(vec![alpha.clone()], &reader)
             .await
             .expect("gate must not error");
         // Alpha WITH the unfunded beta (both orders).
-        let with_peer = admit_by_funding(vec![alpha.clone(), beta.clone()], &reader, 0, false)
+        let with_peer = admit_by_funding(vec![alpha.clone(), beta.clone()], &reader)
             .await
             .expect("gate must not error");
-        let with_peer_rev = admit_by_funding(vec![beta.clone(), alpha.clone()], &reader, 0, false)
+        let with_peer_rev = admit_by_funding(vec![beta.clone(), alpha.clone()], &reader)
             .await
             .expect("gate must not error");
 
@@ -3243,7 +5866,7 @@ mod tests {
         reader.set(b"alpha", DA as i64 + FEE);
         reader.set(b"beta", DB as i64 + FEE);
 
-        let outcome = admit_by_funding(vec![a, b], &reader, 0, false)
+        let outcome = admit_by_funding(vec![a, b], &reader)
             .await
             .expect("gate must not error");
 
@@ -3275,8 +5898,7 @@ mod tests {
     //     arity (`FlatFeeApportionment` draws ONE pool, never the pair — so a
     //     compound deploy's fee is 1, not 2/n); (b) on every pool the gate
     //     conserves supply: `Σ pre = Σ residual + Σ cost-debits + Σ fee-debits`
-    //     (no mint/burn beyond the recorded debits — the `dual_write_supply`
-    //     `pre.checked_sub(debit)` identity). The existing
+    //     under the checked reserve/settle identity. The existing
     //     `compound_debit_play_replay_identical_pair_only` pins arity-2 only;
     //     this proptest exercises arities 1..=4 with random balances.
     // ════════════════════════════════════════════════════════════════════════
@@ -3351,7 +5973,7 @@ mod tests {
                     }
 
                     let outcome = rt
-                        .block_on(admit_by_funding(vec![deploy.clone()], &reader, 0, false))
+                        .block_on(admit_by_funding(vec![deploy.clone()], &reader))
                         .expect("gate must not error");
 
                     // The deploy is admitted (every pool is funded with headroom).
