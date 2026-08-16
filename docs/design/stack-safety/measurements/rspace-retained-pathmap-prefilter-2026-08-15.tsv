@@ -1,0 +1,18 @@
+# SS-A11 retained PathMap receive-prefilter measurements.
+# Times are Criterion slope estimates and 99% confidence intervals. Percentage changes compare point estimates at equal prefix shape and waiting-receive cardinality.
+# Host: AMD Ryzen Threadripper PRO 5975WX, 32 cores, SMT disabled. CPU 8 pinned; start load average 5.38; no cargo, rustc, nextest, or competing benchmark process during the interval.
+# Command: systemd-run --user --scope -p MemoryMax=5G -p MemorySwapMax=0 -p CPUQuota=100% taskset --cpu-list 8 cargo bench -p rspace_plus_plus --bench rspace_comm -- waiting_receive --noplot
+# Criterion: 51 samples, 2 s warm-up, 5 s requested measurement time, 99% confidence, 1% significance. The 4096 arms automatically extended collection to satisfy 51 samples.
+date	production_commit	harness_commit	pgmcp_run_id	prefix_shape	arm	waiting_receives	lower_ns	estimate_ns	upper_ns	latency_change_percent	throughput_change_percent	memory_max_mib	swap_max_mib	cpu	result
+2026-08-15	ea8c39f92	7bc5c6994	8980971c-a0ba-41e4-8a6c-506f393f44b5	diverse	control	16	17782.599	17812.498	17850.946	0.000	0.000	5120	0	8	pass
+2026-08-15	ea8c39f92	7bc5c6994	ad0ccf70-dcdf-49ba-9025-88cd7b1d7f90	diverse	pathmap	16	14197.478	14210.934	14225.228	-20.219	25.344	5120	0	8	pass
+2026-08-15	ea8c39f92	7bc5c6994	60a0d94d-83ac-4705-b151-56b4d51fcb7e	diverse	control	256	234299.618	234467.385	234622.721	0.000	0.000	5120	0	8	pass
+2026-08-15	ea8c39f92	7bc5c6994	8d384245-0f0a-4051-b487-53e151d86943	diverse	pathmap	256	161889.855	162168.770	162418.942	-30.835	44.582	5120	0	8	pass
+2026-08-15	ea8c39f92	7bc5c6994	9c6f374f-dc00-4791-a690-0f457e412939	diverse	control	4096	4197349.061	4203431.818	4208565.947	0.000	0.000	5120	0	8	pass
+2026-08-15	ea8c39f92	7bc5c6994	232c22ca-29d3-465f-a0d4-085d45dbf1ed	diverse	pathmap	4096	3039530.223	3042841.907	3046176.555	-27.611	38.142	5120	0	8	pass
+2026-08-15	ea8c39f92	7bc5c6994	b5e16441-b9af-4171-80fe-6e3c7c56d772	shared	control	16	17862.703	17874.591	17887.463	0.000	0.000	5120	0	8	pass
+2026-08-15	ea8c39f92	7bc5c6994	53046dab-7f1b-4a30-bd4d-b60337147302	shared	pathmap	16	14489.047	14509.150	14525.597	-18.828	23.195	5120	0	8	pass
+2026-08-15	ea8c39f92	7bc5c6994	bc2ea5a5-ff26-473f-9276-28f57b10af75	shared	control	256	232918.596	233250.412	233624.874	0.000	0.000	5120	0	8	pass
+2026-08-15	ea8c39f92	7bc5c6994	d76c5f9f-ba43-4fe2-906f-7230f958c6b6	shared	pathmap	256	162245.057	162493.252	162745.474	-30.335	43.545	5120	0	8	pass
+2026-08-15	ea8c39f92	7bc5c6994	3db19fab-40dc-4b53-9cc4-d33f1a6c3077	shared	control	4096	4113378.097	4118734.162	4125013.484	0.000	0.000	5120	0	8	pass
+2026-08-15	ea8c39f92	7bc5c6994	650b2c27-4f87-4798-8bfd-1182191c4b80	shared	pathmap	4096	2912105.666	2917451.930	2924043.932	-29.166	41.176	5120	0	8	pass

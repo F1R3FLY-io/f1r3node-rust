@@ -3248,7 +3248,18 @@ channel-local Bag, return increments it, and accepted candidates carry either an
 path or the distinct `Fresh` address. Firing removes exact paths, so same-channel batches cannot shift
 one another. `2eb0d3871` shares the canonical catalog and decode cells across pool construction;
 `d50b1183d` encodes the channel prefix once and holds one loaded-store read lock across the hot
-PathMap lookup. No event hash, serialized record, PathMap crate code, or cost-accounting rule changed.
+PathMap lookup. Retained-automaton checkpoints `a89cbc294`, `f149cef2b`, and `ea8c39f92` add one
+`PathMap<TerminalId>` transition segment per receive-bind position. `TerminalId` and `CandidateId`
+are fixed-width `u64` newtypes; an append-only linked terminal arena represents multiple candidates
+at one path without reference-counting primitive identifiers. The terminal identifier uses a
+nonzero one-based encoding, so an optional predecessor occupies one 64-bit word and each arena node
+is two fixed-width words. A lookup descends the fresh datum path
+with an iterative read zipper and marks terminals at each visited prefix; non-indexable
+patterns live at the root and therefore cannot be pruned. The automaton cache is sharded by channel
+group, versioned independently per group, invalidated by whole-store generation changes, and
+borrowed during lookup rather than cloned. Counter saturation disables the derived cache instead of
+introducing a correctness or traversal limit. No event hash, serialized record, PathMap crate code,
+or cost-accounting rule changed.
 
 ##### 5.16.5.4 Results
 
@@ -3265,6 +3276,11 @@ swap, and two-core CPU quota**. **MEASURED:**
 | enabled-rendezvous suite | same semantic corpus | **10/10** | adds one multiset-distinct rendezvous for indistinguishable duplicate occurrences |
 | data-index suite | pre-PathMap candidate pool absent | **15/15** | subtrie multiplicity, exact addresses, reversible Fresh reservation, cross-pool lazy-decode reuse, persistent reactivation, and permanent removal |
 | complete `rspace_plus_plus` package checkpoint | n/a — acceptance total | **372 passed / 0 failed** | all package test binaries at the shared-catalog and hot-lookup checkpoint |
+| retained PathMap automaton selection | no production prefilter | **3/3** | exact terminals, root fallbacks, repeated positions, direct-match-superset gate, and 4,096-candidate shared-terminal chain |
+| continuation-version lifecycle | no compiled automaton cache | **2/2** | group-local insert/remove invalidation plus generation invalidation on replace/clear |
+| Rholang structural-path contract | no retained path hook | **3/3** | exact-ground equality/inequality and binding/connective fallback |
+| RSpace actions with retained indexing enabled | same 41-case semantic corpus | **41/41** | consume/produce, joins, persistence, checkpoint, reset, and soft-revert |
+| retained waiting-receive throughput | full canonical candidate scan | **23.2–44.6% more COMMs/s** | six treatment pairs; 51 samples/arm; 99% confidence; 16/256/4,096 receives; diverse/shared prefixes |
 | exact source census | 574 recursive components before this conversion | **572** after the PDA; then **566 recursive / 42 term-family / 19 mutual / 25 production files** after relocating recursive oracles; current **566 / 41 / 18 / 24** after the fused evaluator cycle disappeared and its stale disposition was retired | `handwritten_recursion_census`, 5/5; independent normalizer control 31 members $`\geq`$ 26 required |
 
 At the initial SS-A11 checkpoint, the guarded-search workload retained its expected algorithmic counts: the 1,000-datum single-bind
@@ -3276,7 +3292,26 @@ throughput claims.
 The first post-catalog control/treatment pair is also **not a throughput claim**. Another agent ran a
 large unit-test workload concurrently; once discovered, the host load average was 58.62. Both arms
 are invalidated and excluded from pgmcp measurements, report conclusions, and optimization verdicts.
-The preregistered 51-sample, 99%-confidence comparison remains pending an idle-core preflight.
+The preregistered 51-sample, 99%-confidence comparison remained pending until the corrected
+instrument and clean run described below.
+
+The first retained-automaton attempts likewise established no timing verdict. Intermittent test load
+continued after the implementation landed, so no result from those attempts was admitted.
+Benchmark checkpoint `7bc5c6994` then corrected a more fundamental instrument defect: the original
+matrix timed `consume` against resting data, a path that never consults the produce-side retained
+automaton. The accepted control/treatment matrix instead installs persistent waiting receives and
+times the completed COMM caused by `produce`; the control disables only the matcher's retained-path
+hooks while treatment enables them. It selects the canonically last matching receive so control
+executes its complete candidate scan. Under 51 samples, 99% confidence, CPU-8 affinity, 5 GiB RSS,
+zero swap, and preflight load 5.38/32 with no competing Rust build/test process, all six confidence
+intervals are disjoint. Treatment latency is **18.8–30.8% lower** and throughput is
+**23.2–44.6% higher** for 16, 256, and 4,096 waiting receives under both diverse and shared prefixes.
+Each treatment upper latency bound is below 95% of its control lower bound, satisfying the
+preregistered five-percent threshold without relying only on point estimates. A Casper
+test observed later began after the benchmark file's completion timestamp. The retained-automaton
+throughput hypothesis therefore passes for this exact-ground slice; direct automaton/Bag products,
+construction cost, allocations, and the broader workload matrix remain open. The recorded estimates
+are [`measurements/rspace-retained-pathmap-prefilter-2026-08-15.tsv`](measurements/rspace-retained-pathmap-prefilter-2026-08-15.tsv).
 
 ##### 5.16.5.5 What it cost
 
@@ -3288,7 +3323,11 @@ copy-on-write Bag pool per distinct channel. A frame records only an optional re
 it does not clone the pool. The derived catalog is linear in distinct records rather than total
 multiplicity. Its path topology and lazy decode cells are shared across pool snapshots;
 multiplicity-only changes update derived counts without rebuilding it. The traversal does not
-materialize a Cartesian product or expand duplicate trie keys.
+materialize a Cartesian product or expand duplicate trie keys. The retained automaton adds one trie
+terminal relation per bind position and a temporary selection bit vector linear in the number of
+waiting continuations. Cache hits perform no trie clone. The exact-ground slice walks the arriving
+datum path, so its native stack remains $`O(1)`$; direct automaton/Bag zipper-product traversal is a
+separate, still-open campaign stage and is not claimed by this checkpoint.
 
 ##### 5.16.5.6 What is still recursive
 
@@ -7421,6 +7460,7 @@ done
 | [`measurements/slotted-state-indexed-channels-2026-08-10.tsv`](measurements/slotted-state-indexed-channels-2026-08-10.tsv) | D-E5/SS-G46 state quotient, indexed-channel ladder, 20,000-level small-stack gate, runtime accounting distinction, complete regressions, formal closure, and profiler row (§5.23) |
 | `mettail-rust/docs/benchmarks/data/sa-vs-naive/2026-08-10-post-d-e5-r3-r2/` | SS-G47/experiment-174 authenticated SA-versus-persistent-R3 samples, corrected derived decision, exact resource protocol, and production-promotion evidence (§5.24) |
 | [`measurements/flt-retained-candidate-matcher-2026-08-11.tsv`](measurements/flt-retained-candidate-matcher-2026-08-11.tsv) | SS-G49 paired retained-versus-spatial timings, shared-state counts, bounded-stack differential, capped resource envelopes, and formal gates (§5.26) |
+| [`measurements/rspace-retained-pathmap-prefilter-2026-08-15.tsv`](measurements/rspace-retained-pathmap-prefilter-2026-08-15.tsv) | SS-A11 produce-driven control/PathMap COMM timings for 16, 256, and 4,096 persistent waiting receives under diverse/shared prefixes (§5.16.5) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of

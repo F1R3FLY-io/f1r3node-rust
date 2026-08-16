@@ -6,7 +6,7 @@ Campaign: `campaign-4131-rspace-pathmap-integration`
 
 Experiment: `rspace-pathmap-end-to-end-layout-2026-08-15`
 Last updated: 2026-08-15
-Current implementation checkpoint: `d50b1183d`
+Current implementation checkpoint: `7bc5c6994`
 
 ## Purpose and scope
 
@@ -21,6 +21,17 @@ The work has three separable layers:
 | Matcher | Explicit pushdown automata over PathMap zippers | Directional spatial matching, ordered matching, associative-commutative matching, guard backtracking, and replay-equivalent selection |
 
 Neither a `Vec<Par>` nor a hash table is an authoritative substitute for a trie layer. Compatibility vectors may be materialized only at legacy API boundaries, and their cost must be measured and removed from hot paths.
+
+## Terms and notation
+
+| Term | Meaning in this report |
+|---|---|
+| Bag | A multiset: each distinct element has a strictly positive multiplicity. |
+| COMM | A Rholang communication event pairing a compatible produce with a waiting consume. |
+| PDA | Pushdown automaton: an iterative state machine with an explicit stack. |
+| RSpace | The tuple-space implementation that stores Rholang data and waiting continuations and selects COMMs. |
+| SMT | Satisfiability modulo theories, used to discharge bounded logical obligations. |
+| TLA | Temporal Logic of Actions; its TLA+ language is used here to model state transitions and invariants. |
 
 ## Current implementation checkpoint
 
@@ -41,10 +52,11 @@ The layout experiment remains open until the preregistered A/B/C comparison sele
 | Multiplicity-native matching pools | `5329b27a3` | exact-path firing; reversible Bag reservations; fresh-datum addressing; repeated-channel duplicate tests | implemented |
 | Shared canonical candidate catalogs | `2eb0d3871` | one canonical order and one lazy decode cell per distinct record across channel-pool snapshots; multiplicity-only updates do not rebuild the catalog | implemented |
 | Single-lookup hot-store reads | `d50b1183d` | one encoded prefix and one loaded-store read lock per hot pool/data lookup; final performance verdict remains pending | implemented |
-| Retained receive automaton and pattern-over-trie product walk | pgmcp `rspace-retained-set-automaton`, `rspace-pattern-over-pathmap` | no production evidence yet | next implementation stage |
-| Layout selection and performance verdict | pgmcp experiment 208 | preregistered; idle-core preflight rejected the first run window because competing release/coverage tests occupied the host | measurement pending |
+| Retained receive automaton, exact-ground slice | `a89cbc294`, `f149cef2b`, `ea8c39f92`; benchmark `7bc5c6994`; pgmcp `rspace-retained-set-automaton` | one `PathMap<TerminalId>` transition segment per bind position; fixed-width terminal/candidate identifiers; root fallback terminals; group-local versioning; no trie clone on cache hits; 3/3 automaton, 2/2 lifecycle, 3/3 Rholang path, and 41/41 RSpace action tests; valid end-to-end treatment is 18.8–30.8% lower latency | implemented, equivalence campaign open |
+| Direct automaton/Bag product walk | pgmcp `rspace-pattern-over-pathmap` | the fresh-datum path uses an iterative automaton zipper; direct resting-Bag trie-to-trie traversal is not yet implemented | next implementation stage |
+| Layout selection and performance verdict | pgmcp experiment 208 | retained-receive slice passes its preregistered five-percent throughput threshold at 99% confidence; direct product, full workload matrix, allocations, and final layout selection remain open | partial measurement accepted |
 
-At `d50b1183d`, each exact channel produces a `CandidatePool`. Its semantic residual is a
+At `7bc5c6994`, each exact channel produces a `CandidatePool`. Its semantic residual is a
 channel-local `Bag`, obtained as a copy-on-write PathMap subtrie through a read zipper. Pools share a
 derived `CandidateCatalog`: its `Arc` order table contains one lazy decode cell per distinct trie
 key, not one record per occurrence. The catalog also retains a `PathMap<()>` of paths already seen at
@@ -56,6 +68,27 @@ The explicit matcher PDA decrements and restores Bag multiplicities during desce
 An accepted stored candidate carries its complete trie path; an arriving produce carries the
 separate `Fresh` address. Firing therefore removes by exact path and cannot suffer positional-index
 shifts.
+
+The first retained receive automaton slice is also live. Each bind position owns a
+prefix-compressed `PathMap<TerminalId>`. `TerminalId` and `CandidateId` are fixed-width `u64`
+newtypes. A compact append-only terminal arena links candidates that share a path; it is secondary
+payload storage, not a second transition authority, and neither candidate nor terminal identifiers
+are reference-counted. `TerminalId` uses a nonzero one-based encoding so its optional predecessor is
+one 64-bit word; each arena node is therefore two fixed-width words. Exact-ground `BindPattern`
+values use the same canonical structural path as
+`ListParWithRandom` data. Every binding, remainder, connective, or otherwise non-indexable pattern
+is installed at the segment root as a universal fallback. A produce may consult the filter only
+when the target channel had no resting datum before the fresh produce was prepended. This condition
+is necessary because a legacy-compatible RSpace can otherwise fire a COMM entirely from resting
+data while retaining the fresh produce. The PathMap selection is therefore a conservative
+superset prefilter; the existing spatial matcher remains the acceptance oracle and canonical
+candidate order remains the selection order.
+
+Compiled automata are derived, sharded by channel group, and keyed by a pair consisting of the
+store generation and that group's independent continuation revision. An unrelated receive does not
+invalidate the group. State replacement and clear advance the generation; counter saturation
+disables caching rather than accepting a stale automaton. Cache hits borrow the trie during the
+iterative zipper query and never clone it. Empty groups remove their cache entry.
 
 Identical complete records are indistinguishable Bag occurrences. A repeated-channel receive may
 reserve the same trie key repeatedly while its multiplicity remains positive, but exhaustive
@@ -126,12 +159,14 @@ The optimized path is staged and directional:
 Production matching is directional: receive patterns match produced data. Symmetric Martelli-Montanari unification is an experiment for contexts that genuinely require variables on both sides; it is not silently substituted for receive semantics. Ordered children use linear PDA traversal. Associative-commutative collections use multiplicity-aware residual Bags rather than expanded vectors.
 
 The current checkpoint implements the multiplicity-aware reservation and exact-path commit portions
-of steps 4 and 6 over the existing spatial matcher. Steps 1–3—the retained automaton and direct
-pattern/PathMap product walk—remain the next production optimization; until they land, catalog
-construction still visits each distinct channel record. Datum decoding is lazy and shared across
-all pools derived from that catalog. Multiplicity-only changes update derived cardinalities in
-constant time, and a hot pool lookup encodes the channel prefix once and reads the loaded store under
-one outer lock.
+of steps 4 and 6 over the existing spatial matcher, plus the exact-ground first slice of steps 1 and
+3. The fresh-datum query traverses a retained PathMap segment iteratively and preserves every
+non-indexable candidate through its root fallback. Step 2—the direct product of a retained automaton
+zipper with the authoritative resting-data Bag zipper—remains the next production optimization;
+until it lands, catalog construction still visits each distinct resting channel record. Datum
+decoding is lazy and shared across all pools derived from that catalog. Multiplicity-only changes
+update derived cardinalities in constant time, and a hot pool lookup encodes the channel prefix once
+and reads the loaded store under one outer lock.
 
 ## Native PathMap operations
 
@@ -185,7 +220,23 @@ those observations guided `2eb0d3871` and `d50b1183d` but are not the preregiste
 attempted final control/treatment pair is also invalid: another agent was running a large unit-test
 workload, and the host load average was measured at 58.62 when the interference was identified. Both
 arms are quarantined from the report and pgmcp measurement table. This is a negative scheduling
-result, not performance evidence. The implementation evidence available at this checkpoint is:
+result, not performance evidence.
+
+Commit `7bc5c6994` repairs a defect in that instrument: the former matrix invoked `consume` against
+already-resting data, whereas retained receive automata are consulted by `produce` against waiting
+receives. Merely making that matcher's paths indexable did not measure this optimization. The
+accepted matrix stores persistent receives, chooses the matching receive last in canonical legacy
+order, and measures completed produce-driven COMMs with path hooks disabled and enabled in the same
+production implementation. The 2026-08-15 run began at load 5.38 on the 32-core, SMT-disabled host,
+with no competing Cargo, rustc, nextest, or benchmark process, and was pinned to CPU 8 under a 5 GiB
+resident-memory limit and zero swap. A later Casper test began after the benchmark log's 20:05:58
+completion timestamp and did not overlap. All six 99% confidence intervals are disjoint: PathMap
+lowers latency by **18.8–30.8%** and raises throughput by **23.2–44.6%** across 16, 256, and 4,096
+waiting receives with diverse and shared prefixes. In every pair, the treatment's upper latency
+bound is also below 95% of the control's lower bound, so the preregistered five-percent threshold is
+met without relying only on point estimates. Raw estimates and run metadata are recorded in
+[`rspace-retained-pathmap-prefilter-2026-08-15.tsv`](../stack-safety/measurements/rspace-retained-pathmap-prefilter-2026-08-15.tsv).
+The implementation evidence available at this checkpoint is:
 
 | Gate | Result | Interpretation |
 |---|---:|---|
@@ -193,9 +244,17 @@ result, not performance evidence. The implementation evidence available at this 
 | `guarded_matching_tests` | 17/17 | selector rollback, repeated channels, 20,000-bind stack gate, and production PathMap ordering pass |
 | `enabled_rendezvous_spec` | 10/10 | play/replay enumeration and duplicate-occurrence normalization pass |
 | complete `rspace_plus_plus` package checkpoint | 372 passed / 0 failed | no package-level behavioral regression at the shared-catalog and hot-lookup checkpoint |
-| strict lint over modified library and test targets | pass | no warning debt was introduced in the changed surface |
+| retained automaton selection | 3/3 | exact terminals, root fallbacks, repeated bind positions, the direct-match-superset law, and a 4,096-candidate shared-terminal chain pass from `tests/` sources |
+| continuation-version lifecycle | 2/2 | unrelated groups remain valid; insert/remove, state replacement, and clear invalidate exactly the required derived cache |
+| Rholang retained-path contract | 3/3 | matching exact-ground pattern/data paths agree; unequal ground values differ; bind/connective patterns fall back |
+| RSpace action suite with indexing enabled | 41/41 | consume/produce, joins, repeated channels, persistence, checkpoint, reset, and soft-revert behavior remain unchanged |
+| waiting-receive COMM throughput | 6/6 treatment pairs pass | 51 samples per arm at 99% confidence; 23.2–44.6% more completed COMMs/s; intervals are disjoint |
+| modified libraries and benchmark target strict lint | pass | focused `-D warnings` lint passes; the all-test-target lint remains blocked only by three pre-existing `vec_init_then_push` findings in `consume_arity_refusal.rs` |
+| formatter and all changed test/benchmark target compilation | pass | both libraries, their tests, and their benchmark targets compile after the retained-automaton integration |
 
-These are correctness and engineering gates, not a throughput verdict. Experiment 208 remains open.
+These gates establish the exact-ground retained-receive slice, but they do not select the final
+end-to-end RSpace layout. Experiment 208 remains open for the direct product, full workload matrix,
+and resource profiles.
 
 ## Verification ladder
 
@@ -209,9 +268,12 @@ These are correctness and engineering gates, not a throughput verdict. Experimen
 | Rust | Verus proofs for arithmetic and PDA invariants where supported; SMT obligations otherwise |
 | Robustness | Mutation tests demonstrating that equivalence and non-vacuity gates reject representative faults |
 
-The semantic reservation procedure is:
+**Algorithm 1 (Reversible Bag reservation).** The selector temporarily removes a nonpersistent,
+non-peek occurrence while descending. Keeping the removed key on an explicit rollback stack makes a
+failed branch restore exactly the multiplicity it observed, without expanding the Bag into repeated
+values.
 
-```text
+```pseudocode
 reserve(key, persistent, peek):
     require bag.count(key) > 0
     if not persistent and not peek:
@@ -224,16 +286,19 @@ rollback_all():
         bag.increment(rollback.pop())
 ```
 
-Procedure notation describes semantics only. Nested matching and multi-channel search are implemented by loop-driven state machines rather than native recursion.
+The procedure notation specifies the transaction law rather than a second implementation. Nested
+matching and multi-channel search use the same operations inside loop-driven state machines rather
+than native recursion.
 
 ## Migration and completion
 
 The migration order is lawful Bag, RhoPathV1 codec, authoritative index, multiplicity-native
 reservation PDA, retained automaton, direct pattern-over-trie traversal, replay/cold-store
-integration, and final removal of compatibility materializations. Through `5329b27a3`, the first four
-steps and the live play/replay exact-path flow are implemented; retained automata, direct trie-pruned
-matching, experiment selection, formal closure, and legacy-boundary retirement remain open and
-visible in the pgmcp subtree. Set, Map, and merkleization experiments are independent treatments and
-cannot be promoted merely because the Bag treatment succeeds.
+integration, and final removal of compatibility materializations. Through `7bc5c6994`, the first
+four steps, the live play/replay exact-path flow, and the conservative exact-ground retained-
+automaton slice are implemented. Direct trie-to-trie product matching, broader pattern compilation,
+experiment selection, formal closure, and legacy-boundary retirement remain open and visible in the
+pgmcp subtree. Set, Map, and merkleization experiments are independent treatments and cannot be
+promoted merely because the Bag treatment succeeds.
 
 The campaign completes only when the selected implementation is active end to end, old-path references are removed or test-only, every reachable pgmcp task has trusted evidence, the stack-safety report contains final profiles, the consensus register records the exact wire and state disposition, and the release workspace suite passes under a bounded resident-memory scope without `RUST_MIN_STACK`, `stacker`, or traversal caps.

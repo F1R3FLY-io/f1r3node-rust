@@ -593,6 +593,7 @@ is a *future* fork, not a present one).
 | [CBR-042](#cbr-042) | N | …and on the **bincode** wire too — `U(m)` verbatim and contiguous, then the values (FORM ②), so the reader never decodes a trie key | `3a32cf07` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-043](#cbr-043) | N | …but of **the entries that surface WRITES**. FORM ② keyed lf-blanked values by the *unblanked* entries, putting an entry's `locally_free` on the event hash | `8cf0b770` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-044](#cbr-044) | N | EPathMap becomes a homogeneous PathMap set/map and both codecs carry one versioned EPM1 trie snapshot; generated protobuf PDAs remove the read ceiling | `26876b65` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
+| [CBR-053](#cbr-053) | N | A retained PathMap prefilter skips receives whose pattern paths cannot match the fresh datum | `a89cbc294`, `f149cef2b`, `ea8c39f92`; benchmark `7bc5c6994` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
 | [CBR-L07](#cbr-l07) | L | `List.last()` in MeTTaIL's Rholang | `bbceb6d9`, `6e543c01` | · | · | · | · | · | ● | · | PERMISSIVE | **W** |
 | [CBR-L08](#cbr-l08) | L | The kv element-category gate — a Name in a kv slot is refused, not silently dropped | *in flight* | ● | ● | ● | ● | ● | ● | ○ | REGRESSIVE | **W** |
 | [CBR-L10](#cbr-l10) | L | A pathmap's entries come from a projection, not a field | `832d510f` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
@@ -603,12 +604,13 @@ is a *future* fork, not a present one).
 | [CBR-L23](#cbr-l23) | L | Alpha-equivalent matcher states share dense slot interfaces and positional channels use one exact indexed arena | `c63c6ca8` | ○ | ○ | ● | ● | ● | ○ | ● | CORRECTIVE | **W** |
 | [CBR-L24](#cbr-l24) | L | Generated identity-beta root spines select the certified finite-route persistent R3 driver; the general quiescence PDA remains the fallback | `57239207` | ○ | ○ | ● | ● | ● | ○ | ● | CORRECTIVE | **W** |
 
-**Totals — 23 entries**: **14 on Surface N, 9 on Surface L**; **22 landed, 1 in flight**
-(**CBR-L08**); zero open hazards. By evidence grade: **21 WITNESSED**, 1 MECHANISM-ONLY
-(**CBR-013**), 1 LATENT (**CBR-L14**). By direction: **15 CORRECTIVE, 4 PERMISSIVE, 4 REGRESSIVE**.
-Axis cells reading `UNVERIFIED`: **0** — the register's one historical `?` cell (CBR-L07 metering)
+**Totals — 24 entries**: **15 on Surface N, 9 on Surface L**; **23 landed, 1 in flight**
+(**CBR-L08**); one open verification hazard (**CBR-053**). By evidence grade: **21 WITNESSED**, 1
+MECHANISM-ONLY (**CBR-013**), 1 LATENT (**CBR-L14**), and 1 UNVERIFIED (**CBR-053**). By direction:
+**15 CORRECTIVE, 4 PERMISSIVE, 4 REGRESSIVE, 1 UNVERIFIED**. Axis cells reading `UNVERIFIED`: **2** —
+CBR-053's verdict and post-state axes. The register's historical CBR-L07 metering `?` remains
 resolved under the token model (§3.3). The 54 retired entries are
-[Appendix B.1](#b1-retired-register-entries); 23 + 54 = 77 historical identifiers, none reused.
+[Appendix B.1](#b1-retired-register-entries); 24 + 54 = 78 historical identifiers, none reused.
 
 ### 4.2 Entry template
 
@@ -2310,6 +2312,110 @@ The owner required direct trie serialization, specialized set/map modes, ordinar
 traversal-depth workarounds, and full equivalence evidence. The implementation is **LANDED**. Network
 activation/version selection remains a deployment decision, not an implementation-status qualifier.
 Legacy protobuf fields are read-only migration inputs; removing them is a later compatibility decision.
+
+---
+
+### CBR-053
+
+**A retained PathMap prefilter skips receives whose pattern paths cannot match the fresh datum.**
+
+| | |
+|---|---|
+| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`; benchmark `7bc5c6994` |
+| Status | LANDED ON CAMPAIGN BRANCH; VERIFICATION OPEN |
+| Direction | UNVERIFIED |
+| Evidence grade | UNVERIFIED |
+| Files | `rspace++/src/rspace/{match.rs,hot_store.rs,retained_set_automaton.rs,rspace.rs}`, `rholang/src/rust/interpreter/matcher/match.rs` |
+
+#### (a) The issue
+
+Before these checkpoints, a produce presented every waiting continuation in canonical order to the
+spatial matcher. The new optimization compiles each receive-bind position into a retained,
+prefix-compressed `PathMap<TerminalId>` and filters candidates by walking the fresh datum's canonical
+structural path. Both terminal and candidate identifiers are fixed-width `u64` newtypes; multiple
+candidates at one trie path form an append-only linked terminal arena, with no reference-counted
+primitive identifier. A nonzero one-based terminal encoding keeps the optional predecessor to one
+64-bit word, making each arena node two fixed-width words. This moves work before `Matcher::get`, which is a verdict-deciding
+boundary. The intended relation is a superset: every candidate that can consume the fresh datum must
+be selected by the trie, while false positives remain legal because `Matcher::get` still decides
+acceptance.
+
+The implementation limits the first slice to exact-ground patterns. Binding, remainder,
+connective, and otherwise non-indexable patterns are root terminals and therefore survive every
+query. The filter runs only when the target channel had no resting datum before the fresh produce was
+prepended. When resting data exists, the unfiltered path remains necessary because a valid COMM can
+use only old data and leave the fresh produce resting.
+
+#### (b) How it may break consensus
+
+| Axis | Verdict |
+|---|---|
+| 1 · computed value | NO — the matcher and continuation result types are unchanged. |
+| 2 · verdict | **UNVERIFIED** — an encoding or eligibility false negative would hide a valid waiting continuation and change which COMM fires, or whether one fires. |
+| 3 · bytes (Lane B) | NO — no bincode codec or stored-record format changed. |
+| 3 · bytes (Lane P) | NO — no protobuf codec or message schema changed. |
+| 4 · post-state hash | **UNVERIFIED** — it is unchanged if the superset law holds; a hidden COMM changes resting RSpace state and therefore can change the root. |
+| 5 · accepted programs | NO — syntax, normalization, and refusal rules are unchanged. |
+| 6 · metering | NO — D3 counts evaluated `Send`/`Receive` prefixes, not matcher attempts or committed RSpace rendezvous. |
+
+**The disagreement mechanism.** Let `c` be a waiting continuation that the spatial matcher accepts
+against fresh datum `d`. If the automaton omits `c`, the optimized node continues to another
+continuation or stores `d`; the predecessor fires `c`. The nodes then disagree about the COMM event,
+continuation result, and resting data. Candidate reordering is not a second mechanism: filtering
+retains the canonical relative order of every selected candidate.
+
+**Blast radius.** Every produce reaching a channel group whose pre-produce datum pool is empty and
+whose waiting receives contain at least one exact-ground bind. Installed and persistent receives are
+included in the same versioned candidate vector. No user-facing Rholang API or wire migration is
+introduced.
+
+#### (c) Why the change is necessary, and the current containment argument
+
+With `k` waiting receives, the predecessor can call the full spatial matcher for each rejected
+candidate even when canonical trie bytes rule the candidate out by its first differing prefix. A
+retained trie shares those prefixes across receives and lets one iterative zipper walk discard whole
+subsets before any datum decode or spatial-match state allocation. A flat `Vec`, `HashMap`, or
+`BTreeMap` transition authority would lose that shared-prefix property and is not the selected
+design.
+
+The current containment argument has five independently checked parts:
+
+1. exact-ground `BindPattern` and matching `ListParWithRandom` values use the same canonical
+   structural sequence;
+2. unequal ground values in the test corpus have unequal exact paths;
+3. every unsupported pattern becomes a root fallback terminal;
+4. the generic automaton selection is a superset of direct exact/wildcard matches over single and
+   repeated bind positions; and
+5. continuation-group revisions invalidate only the mutated group, while state replacement and
+   clear invalidate every derived automaton.
+
+Cache-counter saturation returns `None` and recompiles instead of accepting a stale trie. Cache hits
+borrow the trie under a sharded map guard and perform no `PathMap` clone. Empty groups remove their
+derived cache entry. These are resource and lifecycle properties; they do not by themselves close
+the verdict axis.
+
+#### Evidence and retirement gate
+
+- `retained_set_automaton_spec`: **3/3** exact-terminal, root-fallback, repeated-position,
+  direct-match-superset, and 4,096-candidate shared-terminal checks. **MEASURED.**
+- continuation-version lifecycle: **2/2** group-local and whole-state invalidation checks.
+  **MEASURED.**
+- `retained_path_index_test`: **3/3** Rholang exact-ground agreement, unequal-ground separation, and
+  binding/connective fallback checks. **MEASURED.**
+- `storage_actions_test` with path indexing enabled: **41/41**, covering single and joined receives,
+  repeated channels, persistence, checkpoint, reset, and soft-revert. **MEASURED.**
+- both changed libraries plus all tests and benchmark targets compile under a **5 GiB** resident-set
+  cap and one-core quota; focused strict lint passes. **MEASURED.**
+- the corrected produce-driven benchmark passes all six exact-ground treatment pairs: **18.8–30.8%
+  lower latency** and **23.2–44.6% higher throughput**, 51 samples per arm at 99% confidence.
+  **MEASURED.** This is performance evidence only; it cannot discharge the verdict/post-state axes.
+
+This entry retires as `OPTIMIZATION_MEASURED_NEUTRAL` only after the campaign's generated
+old-selector/new-selector differential covers every eligible and fallback `BindPattern` family,
+play/replay traces and post-state roots agree over generated schedules, and the formal superset
+obligation proves that filtering cannot remove the first admissible candidate. The preregistered
+throughput pair is separately pending an interference-free host window; timing cannot close a
+consensus obligation.
 
 ---
 
