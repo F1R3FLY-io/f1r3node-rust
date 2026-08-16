@@ -258,8 +258,14 @@ fn bfs_finalized_window(
             PrettyPrinter::build_string_bytes(&lfb_hash),
         )
     })?;
-    let scan_floor =
-        crate::rust::util::deploy_window::earliest_valid_after(lfb_height, deploy_lifespan)?.max(0);
+    let active_sig_floor = per_sig
+        .values()
+        .map(|state| state.valid_after_block_number)
+        .min()
+        .unwrap_or(lfb_height);
+    let rolling_floor =
+        crate::rust::util::deploy_window::earliest_valid_after(lfb_height, deploy_lifespan)?;
+    let scan_floor = rolling_floor.min(active_sig_floor).max(0);
 
     // Active sigs as a HashSet for O(1) membership checks during body scans.
     // Cloning sig bytes once here avoids per-block-per-sig clones.
@@ -353,11 +359,12 @@ fn bfs_finalized_window(
                     .get_mut(&rd.sig)
                     .expect("active_sigs and per_sig must agree on key set");
                 state.rejection_count = state.rejection_count.saturating_add(1);
-                if state
-                    .latest_rejected_event
-                    .as_ref()
-                    .map(|(h, _)| height > *h)
-                    .unwrap_or(true)
+                if !rd.duplicate
+                    && state
+                        .latest_rejected_event
+                        .as_ref()
+                        .map(|(h, _)| height > *h)
+                        .unwrap_or(true)
                 {
                     state.latest_rejected_event = Some((height, candidate_hash.clone()));
                 }
@@ -462,12 +469,12 @@ fn finalize_sig_state(
     // report `Finalized` for a sig whose effects are not in canonical
     // state.
     let mut clean_canonical: Option<(i64, BlockHash)> = state.clean_finalized_event.clone();
-    if let (Some((_, clean_block)), Some((_, reject_block))) =
+    if let (Some((clean_height, clean_block)), Some((reject_height, reject_block))) =
         (&state.clean_finalized_event, &state.latest_rejected_event)
     {
         let reject_is_canonical = canonical_block(reject_block)?;
         let clean_is_canonical = canonical_block(clean_block)?;
-        if !clean_is_canonical && reject_is_canonical {
+        if !clean_is_canonical && reject_is_canonical && reject_height >= clean_height {
             clean_canonical = None;
         } else if reject_is_canonical
             && clean_block != reject_block
