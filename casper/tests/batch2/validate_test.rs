@@ -2,7 +2,9 @@
 
 use std::collections::HashMap;
 
-use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use block_storage::rust::dag::block_dag_key_value_storage::{
+    InsertMode, KeyValueDagRepresentation,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
@@ -1070,6 +1072,82 @@ async fn repeat_deploy_validation_should_surface_a_storage_failure_not_admit_the
             matches!(result, Either::Left(BlockError::BlockException(_))),
             "an unreadable ancestry must surface as a storage failure; got {:?} — \
              a swallowed error admits the repeated deploy carried by genesis",
+            result
+        );
+    })
+    .await
+}
+
+/// The scan reads each ancestor's body to test it for the deploy signature, and
+/// an ancestor the DAG knows about may not be in the block store — that is the
+/// normal shape after an LFS restore, which fills the DAG from the sync window.
+/// Killing the validator thread on that read turns a recoverable storage gap
+/// into a crash; it belongs in the same typed failure as the walk itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_validation_should_surface_an_unreadable_ancestor_body() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // In the DAG, absent from the block store: inserted through the DAG-only
+        // path, the way an LFS restore populates metadata it has no body for.
+        let ghost = get_random_block(
+            Some(1),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![genesis.block_hash.clone()]),
+            None,
+            None,
+            None,
+            None,
+            Some(SHARD_ID.to_string()),
+            None,
+        );
+        block_dag_storage
+            .insert(&ghost, InsertMode::Normal)
+            .expect("dag-only insert");
+
+        let head = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![ghost.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![deploy]),
+            None,
+            None,
+            None,
+            Some(2),
+            None,
+            None,
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut casper_snapshot = mk_casper_snapshot(dag);
+
+        let result = Validate::repeat_deploy(&head, &mut casper_snapshot, &block_store, 50, None);
+        assert!(
+            matches!(result, Either::Left(BlockError::BlockException(_))),
+            "an ancestor whose body is missing must be a typed failure, not a panic; got {:?}",
             result
         );
     })

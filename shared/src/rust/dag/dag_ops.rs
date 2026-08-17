@@ -118,10 +118,11 @@ where
 /// Fallible `bf_traverse_find`: the search stops at the first `Err` instead of
 /// treating a failed expansion as "this node has no neighbors".
 ///
-/// A search that swallows the error cannot distinguish "not found" from "not
-/// looked at", and the caller reads the first as a verdict — e.g. the
-/// duplicate-deploy scan in `Validate::repeat_deploy`, where an unreadable
-/// ancestry would otherwise admit the repeat it exists to reject.
+/// Both the expansion and the test are fallible: a search that swallows either
+/// cannot distinguish "not found" from "not looked at", and the caller reads the
+/// first as a verdict — e.g. the duplicate-deploy scan in
+/// `Validate::repeat_deploy`, where an unreadable ancestry would otherwise admit
+/// the repeat it exists to reject.
 pub fn try_bf_traverse_find<A, E, F, P>(
     start: Vec<A>,
     mut neighbors: F,
@@ -130,7 +131,7 @@ pub fn try_bf_traverse_find<A, E, F, P>(
 where
     A: Eq + Hash + Clone,
     F: FnMut(&A) -> Result<Vec<A>, E>,
-    P: FnMut(&A) -> bool,
+    P: FnMut(&A) -> Result<bool, E>,
 {
     let mut queue = VecDeque::new();
     let mut visited = HashSet::new();
@@ -145,7 +146,7 @@ where
         }
 
         visited.insert(curr.clone());
-        if predicate(&curr) {
+        if predicate(&curr)? {
             return Ok(Some(curr));
         }
 
@@ -294,9 +295,24 @@ mod tests {
                 Ok(vec![n * 2, n * 3])
             }
         };
-        let found = try_bf_traverse_find(vec![1], neighbors, |n| *n == 6)
+        let found = try_bf_traverse_find(vec![1], neighbors, |n| Ok(*n == 6))
             .expect("match must not surface an error");
         assert_eq!(found, Some(6));
+    }
+
+    #[test]
+    fn test_try_bf_traverse_find_reports_a_failed_test_rather_than_no_match() {
+        let neighbors = |n: &i32| -> Result<Vec<i32>, &'static str> { Ok(vec![n * 2]) };
+        let predicate = |n: &i32| -> Result<bool, &'static str> {
+            if *n == 4 {
+                Err("simulated unreadable body")
+            } else {
+                Ok(false)
+            }
+        };
+        let err = try_bf_traverse_find(vec![1], neighbors, predicate)
+            .expect_err("a node that could not be tested must not read as 'no match'");
+        assert_eq!(err, "simulated unreadable body");
     }
 
     #[test]
@@ -308,7 +324,7 @@ mod tests {
                 Ok(vec![2, 3])
             }
         };
-        let err = try_bf_traverse_find(vec![1], neighbors, |n| *n == 99)
+        let err = try_bf_traverse_find(vec![1], neighbors, |n| Ok(*n == 99))
             .expect_err("an unreadable branch must not read as 'not found'");
         assert_eq!(err, "simulated storage failure");
     }
