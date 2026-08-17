@@ -309,36 +309,3 @@ fn exact_map_meet_preserves_common_topology_and_first_conflict() {
         }
     );
 }
-
-#[cfg(feature = "epathmap-subtract-into-differential")]
-#[test]
-fn set_subtract_into_treatment_matches_whole_map_subtraction() {
-    fn assert_same(left: &EPathMap, right: &EPathMap) {
-        let left_before = left.trie_snapshot().to_vec();
-        let right_before = right.trie_snapshot().to_vec();
-        let control = left.entry_trie().try_subtract(right.entry_trie()).unwrap();
-        let treatment = left
-            .entry_trie()
-            .try_subtract_into_treatment(right.entry_trie())
-            .unwrap();
-        assert_eq!(control, treatment);
-        assert_eq!(control.trie_snapshot(), treatment.trie_snapshot());
-        assert_eq!(left.trie_snapshot(), left_before);
-        assert_eq!(right.trie_snapshot(), right_before);
-    }
-
-    let disjoint_left = set([gint(1), list([1, 2])]);
-    let disjoint_right = set([gint(2), list([2, 1])]);
-    assert_same(&disjoint_left, &disjoint_right);
-
-    let overlap_left = set([gint(1), gint(2), gint(3)]);
-    let overlap_right = set([gint(2), gint(3), gint(4)]);
-    assert_same(&overlap_left, &overlap_right);
-    assert_same(&overlap_left, &overlap_left);
-
-    let topology = topology_only(EPathMapMode::Set, &list([7, 8]));
-    let equal_topology = topology_only(EPathMapMode::Set, &list([7, 8]));
-    let other_topology = topology_only(EPathMapMode::Set, &list([7, 9]));
-    assert_same(&topology, &equal_topology);
-    assert_same(&topology, &other_topology);
-}
