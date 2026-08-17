@@ -208,11 +208,13 @@ jobs:
       - name: Run TLA+ invariant suite
         env:
           TLA_TOOLS_JAR: /home/runner/.tla/tla2tools.jar
-          # Opt-in exhaustive tier: only a manual dispatch with
-          # run_exhaustive=true sets this; schedule and default dispatches
-          # keep gating on the fast tier alone.
           RUN_EXHAUSTIVE_TLA: ${{ (github.event_name == 'workflow_dispatch' && inputs.run_exhaustive) && '1' || '0' }}
-        run: bash scripts/ci/check-tla-invariants.sh
+        run: |
+          args=(--tla)
+          if [[ "$RUN_EXHAUSTIVE_TLA" == "1" ]]; then
+            args+=(--exhaustive)
+          fi
+          bash scripts/ci/check-formal-invariants.sh "${args[@]}"
 
   rocq-build:
     name: Rocq slashing and fork-choice rebuild
@@ -227,86 +229,10 @@ jobs:
           opam init --disable-sandboxing -y
           eval $(opam env)
           opam install -y coq
-      - name: Build Rocq slashing and fork-choice theories
+      - name: Run Rocq verification suite
         run: |
           eval $(opam env)
-          make -C formal/rocq/slashing -j1
-          make -C formal/rocq/fork_choice -j1
-      - name: Verify no axioms or admits (textual pre-filter)
-        # Line-anchored so prose in comments (e.g. "per the no-Axiom rule")
-        # cannot trip the guard; only actual vernacular commands match. This
-        # is a fast heuristic with known false-negative gaps (mid-line
-        # `Admitted.`, `Admit Obligations.`, axioms pulled in via imports) —
-        # the kernel-level Print Assumptions step below is the authoritative
-        # gate. The explicit -d check keeps a moved/renamed theories/ from
-        # turning grep's exit 2 into a vacuous pass through `!`.
-        run: |
-          test -d formal/rocq/slashing/theories
-          test -d formal/rocq/fork_choice/theories
-          ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?|Hypothes[ie]s)\b" \
-            formal/rocq/slashing/theories/
-          ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?)\b" \
-            formal/rocq/fork_choice/theories/
-      - name: Verify capstone trust base is closed (Print Assumptions)
-        # Authoritative axiom-freedom check (kernel-level, cf. the README's
-        # "Verifying the trust base"): the kernel reports every axiom, admit,
-        # parameter, or imported assumption the capstone theorems transitively
-        # depend on, regardless of where or how it was introduced. Both
-        # capstones must print "Closed under the global context".
-        #
-        # Implemented as a coqc-compiled check file rather than `coqtop -e`:
-        # `coqtop -batch` exits after argument parsing without a reliable -e
-        # across versions (first CI attempt died in 40ms with no output), and
-        # coqc is already proven present by the make step above. Output is
-        # captured with -e suspended so the assumption listing always reaches
-        # the log, even when the check fails.
-        run: |
-          eval $(opam env)
-          cd formal/rocq/slashing
-          cat > "${RUNNER_TEMP}/CheckAssumptions.v" <<'EOF'
-          From Slashing Require Import MainTheorem.
-          Print Assumptions main_bisimilarity_theorem.
-          Print Assumptions main_bisimilarity_strong.
-          EOF
-          set +e
-          out=$(coqc -Q theories Slashing "${RUNNER_TEMP}/CheckAssumptions.v" 2>&1)
-          status=$?
-          set -e
-          echo "$out"
-          if [ "$status" -ne 0 ]; then
-            echo "FAIL: assumption check did not run cleanly (coqc exit $status; output above)."
-            exit 1
-          fi
-          closed=$(grep -c "Closed under the global context" <<<"$out" || true)
-          if [ "$closed" -ne 2 ]; then
-            echo "FAIL: expected 2 closed trust bases, found $closed — capstone depends on axioms/admits listed above."
-            exit 1
-          fi
-      - name: Verify fork-choice capstone trust base is closed
-        run: |
-          eval $(opam env)
-          cd formal/rocq/fork_choice
-          cat > "${RUNNER_TEMP}/CheckForkChoiceAssumptions.v" <<'EOF'
-          From ForkChoice Require Import MainTheorem.
-          Print Assumptions fork_choice_determinism_correct.
-          Print Assumptions fork_choice_ghost_correct.
-          Print Assumptions fork_choice_bound_correct.
-          Print Assumptions fork_choice_bridge_correct.
-          EOF
-          set +e
-          out=$(coqc -Q theories ForkChoice "${RUNNER_TEMP}/CheckForkChoiceAssumptions.v" 2>&1)
-          status=$?
-          set -e
-          echo "$out"
-          if [ "$status" -ne 0 ]; then
-            echo "FAIL: fork-choice assumption check exited with $status."
-            exit 1
-          fi
-          closed=$(grep -c "Closed under the global context" <<<"$out" || true)
-          if [ "$closed" -ne 4 ]; then
-            echo "FAIL: expected 4 closed fork-choice trust bases, found $closed."
-            exit 1
-          fi
+          bash scripts/ci/check-formal-invariants.sh --rocq
 
   search-horizon-smoke:
     name: Search-horizon smoke tier (10k fuzz runs)

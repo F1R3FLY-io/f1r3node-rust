@@ -1040,6 +1040,7 @@ mod tests {
     use casper::rust::heartbeat_signal::new_heartbeat_signal_ref;
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+    use proptest::prelude::*;
 
     use super::*;
 
@@ -1068,6 +1069,40 @@ mod tests {
 
         assert_eq!(leader, Some(first.clone()));
         assert_eq!(reordered, Some(first));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        #[test]
+        fn lag_recovery_leader_is_cross_view_deterministic(
+            validator_bytes in prop::collection::vec(
+                prop::collection::vec(any::<u8>(), 1..16),
+                1..32,
+            ),
+            first_lfb in prop::collection::vec(any::<u8>(), 32..=32),
+            second_lfb in prop::collection::vec(any::<u8>(), 32..=32),
+            rotation in any::<usize>(),
+        ) {
+            let validators: Vec<Validator> = validator_bytes
+                .into_iter()
+                .map(Validator::from)
+                .collect();
+            let mut alternate_order = validators.clone();
+            let validator_count = alternate_order.len();
+            alternate_order.rotate_left(rotation % validator_count);
+
+            let first = select_lag_recovery_leader(
+                validators,
+                &BlockHash::from(first_lfb),
+            );
+            let second = select_lag_recovery_leader(
+                alternate_order,
+                &BlockHash::from(second_lfb),
+            );
+
+            prop_assert_eq!(first, second);
+        }
     }
 
     #[test]
