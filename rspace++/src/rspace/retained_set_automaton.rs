@@ -1,7 +1,7 @@
 use std::num::NonZeroU64;
 
 use pathmap::PathMap;
-use pathmap::zipper::{Zipper, ZipperMoving, ZipperReadOnlyValues};
+use pathmap::zipper::{Zipper, ZipperIteration, ZipperMoving, ZipperReadOnlyValues};
 
 use super::bag::Bag;
 use super::internal::WaitingContinuation;
@@ -41,6 +41,7 @@ struct Terminal {
 #[derive(Debug)]
 pub struct RetainedSetAutomaton {
     segments: Vec<PathMap<TerminalId>>,
+    terminal_depths: Vec<Vec<usize>>,
     terminals: Vec<Terminal>,
     candidate_count: usize,
 }
@@ -58,6 +59,7 @@ impl RetainedSetAutomaton {
         let mut segments = (0..segment_count)
             .map(|_| PathMap::new())
             .collect::<Vec<_>>();
+        let mut terminal_depths = vec![Vec::new(); segment_count];
         let mut terminals = Vec::new();
         for (candidate_index, candidate) in candidates.iter().enumerate() {
             let candidate_id = CandidateId(
@@ -85,11 +87,17 @@ impl RetainedSetAutomaton {
                 // be traversed as one zipper product. Fresh paths are framed
                 // on demand below; no singleton Bag is constructed for them.
                 let path = RhoPathV1::relative_datum_structure_prefix(&path);
+                terminal_depths[segment].push(path.len());
                 insert_terminal(&mut segments[segment], &mut terminals, &path, candidate_id, query);
             }
         }
+        for depths in &mut terminal_depths {
+            depths.sort_unstable();
+            depths.dedup();
+        }
         Self {
             segments,
+            terminal_depths,
             terminals,
             candidate_count: candidates.len(),
         }
@@ -122,7 +130,13 @@ impl RetainedSetAutomaton {
             };
             collect_prefix_terminals(segment, &self.terminals, datum_path, &mut selected);
             if let Some(resting) = resting {
-                collect_product_prefix_terminals(segment, &self.terminals, resting, &mut selected);
+                collect_product_prefix_terminals(
+                    segment,
+                    &self.terminal_depths[*position],
+                    &self.terminals,
+                    resting,
+                    &mut selected,
+                );
             }
         }
         selected
@@ -174,6 +188,7 @@ fn collect_prefix_terminals(
 /// false positives but cannot hide a spatial match.
 fn collect_product_prefix_terminals(
     segment: &PathMap<TerminalId>,
+    terminal_depths: &[usize],
     terminals: &[Terminal],
     resting: &Bag,
     selected: &mut [bool],
@@ -185,6 +200,31 @@ fn collect_product_prefix_terminals(
     let mut transitions = segment.read_zipper();
     let mut data = resting.as_pathmap().read_zipper();
     mark_without_residual(transitions.get_val().copied(), terminals, selected);
+
+    // A single distinct Bag key is the common datum-first case, including
+    // arbitrary multiplicity at that key. When at most one non-root terminal
+    // depth can prefix that key, one exact PathMap lookup avoids walking a
+    // long shared byte prefix. The generated, deduplicated depth schedule does
+    // not materialize candidates or replace either PathMap. Multiple eligible
+    // depths deliberately fall through to the linear zipper product instead
+    // of performing a potentially superlinear sequence of prefix lookups.
+    // The root terminal was handled above.
+    if resting.distinct_len() == 1 {
+        let has_value = data.to_next_val();
+        assert!(has_value, "a nonempty singleton Bag has one value");
+        let path = data.path();
+        let first_non_root = terminal_depths.partition_point(|depth| *depth == 0);
+        let end = terminal_depths.partition_point(|depth| *depth <= path.len());
+        match terminal_depths.get(first_non_root..end).unwrap_or_default() {
+            [] => return,
+            [depth] => {
+                mark_without_residual(segment.get(&path[..*depth]).copied(), terminals, selected);
+                return;
+            }
+            _ => data.reset(),
+        }
+    }
+
     let mut levels = vec![(transitions.child_mask() & data.child_mask()).iter()];
     while let Some(children) = levels.last_mut() {
         if let Some(byte) = children.next() {
@@ -197,8 +237,12 @@ fn collect_product_prefix_terminals(
 
         levels.pop();
         if !levels.is_empty() {
-            debug_assert!(transitions.ascend_byte());
-            debug_assert!(data.ascend_byte());
+            let transition_ascended = transitions.ascend_byte();
+            let data_ascended = data.ascend_byte();
+            debug_assert!(
+                transition_ascended && data_ascended,
+                "product zippers ascend after every matched descent"
+            );
         }
     }
 }

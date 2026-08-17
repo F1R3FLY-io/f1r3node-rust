@@ -184,3 +184,93 @@ fn retained_segments_product_walk_the_authoritative_resting_bag() {
 
     assert_eq!(selected, vec![true, false, true]);
 }
+
+#[test]
+fn compressed_product_runs_visit_prefix_terminals_and_bag_branches() {
+    let alpha = b"shared\0branch/alpha".to_vec();
+    let alpha_deeper = b"shared\0branch/alpha/deeper".to_vec();
+    let beta = b"shared\0branch/beta".to_vec();
+    let candidates = vec![
+        waiting(vec![Pattern::Exact(alpha.clone())]),
+        waiting(vec![Pattern::Exact(alpha_deeper.clone())]),
+        waiting(vec![Pattern::Exact(beta.clone())]),
+        waiting(vec![Pattern::Exact(b"shared\0branch/absent".to_vec())]),
+        waiting(vec![Pattern::Any]),
+    ];
+    let automaton = RetainedSetAutomaton::compile(&Matcher, &candidates);
+    let mut resting = Bag::new();
+    resting
+        .insert(&RhoPathV1::relative_datum_key(&alpha_deeper, b"identity/alpha"))
+        .expect("alpha occurrence");
+    resting
+        .insert(&RhoPathV1::relative_datum_key(&beta, b"identity/beta"))
+        .expect("beta occurrence");
+
+    let selected =
+        automaton.matching_candidates_with_resting(b"unrelated/fresh", &[0], Some(&resting));
+
+    assert_eq!(selected, vec![true, true, true, false, true]);
+}
+
+#[test]
+fn singleton_bag_path_selects_a_terminal_below_diverse_and_shared_branches() {
+    for shared_prefix in [false, true] {
+        for cardinality in [16usize, 256, 4_096] {
+            let values = (0usize..cardinality)
+                .map(|index| {
+                    if shared_prefix {
+                        format!("resting/shared-prefix/record-{index:08x}").into_bytes()
+                    } else {
+                        format!("{:02x}/{:08x}", index % 251, index.wrapping_mul(0x9E37_79B1))
+                            .into_bytes()
+                    }
+                })
+                .collect::<Vec<_>>();
+            let target = values.last().expect("nonempty corpus").clone();
+            let candidates = values
+                .into_iter()
+                .map(|value| waiting(vec![Pattern::Exact(value)]))
+                .collect::<Vec<_>>();
+            let automaton = RetainedSetAutomaton::compile(&Matcher, &candidates);
+            let mut resting = Bag::new();
+            resting
+                .insert(&RhoPathV1::relative_datum_key(&target, b"stable/resting-identity"))
+                .expect("target occurrence");
+
+            let selected = automaton.matching_candidates_with_resting(
+                b"fresh/does-not-match-any-retained-pattern",
+                &[0],
+                Some(&resting),
+            );
+
+            assert_eq!(selected.iter().filter(|selected| **selected).count(), 1);
+            assert!(selected[candidates.len() - 1]);
+        }
+    }
+}
+
+#[test]
+fn singleton_bag_with_multiple_terminal_depths_uses_the_linear_product() {
+    let target = b"shared/prefix/deeper".to_vec();
+    let candidates = vec![
+        waiting(vec![Pattern::Exact(b"shared".to_vec())]),
+        waiting(vec![Pattern::Exact(b"shared/prefix".to_vec())]),
+        waiting(vec![Pattern::Exact(target.clone())]),
+        waiting(vec![Pattern::Exact(b"shared/absent".to_vec())]),
+    ];
+    let automaton = RetainedSetAutomaton::compile(&Matcher, &candidates);
+    let mut resting = Bag::new();
+    resting
+        .insert(&RhoPathV1::relative_datum_key(&target, b"stable/resting-identity"))
+        .expect("target occurrence");
+
+    let selected = automaton.matching_candidates_with_resting(
+        b"fresh/does-not-match-any-retained-pattern",
+        &[0],
+        Some(&resting),
+    );
+
+    // Prefix terminals remain a conservative superset; the authoritative
+    // matcher rejects the two shorter exact patterns during CandidateScan.
+    assert_eq!(selected, vec![true, true, true, false]);
+}
