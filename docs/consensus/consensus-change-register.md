@@ -10,7 +10,7 @@
 | **Companion surface** | `mettail-rust`, branch `feature/rho-native-set-automata`. |
 | **Companion reports** | the [stack-safety report](../design/stack-safety/stack-safety-report-2026-07-29.md) and the [PathMap report](../design/pathmap/pathmap-report-2026-08-03.md), which carry the equivalence evidence this register's retirements cite. |
 | **Audience** | F1r3node consensus reviewers deciding whether to accept the fork risk of a coordinated protocol-version bump. |
-| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-16 |
+| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-17 |
 | **Maintenance** | [§7](#7-maintenance). Adding an entry is filling the form in [Appendix A](#appendix-a--the-entry-template). |
 
 ---
@@ -4658,12 +4658,13 @@ silently reviving a measured regression.
 **Dormant typed `ParBag` authority foundation (2026-08-17; pgmcp experiment 257).** Checkpoints
 `7ea86db75`, `6fcbb520e`, and `6807be503` expose stack-safe direct component decoders, define one
 versioned `PathMap<Multiplicity>` authority for all nine unordered top-level `Par` component
-families, and stream protobuf component fields directly from its distinct trie endpoints. The key
-domain binds family tag and canonical component bytes; ACT/bincode persistence is the direct trie
-image. Tests compare the streamed protobuf bytes with the existing generated repeated-field
-encoder, validate all component families, reject malformed/trailing images, and exercise depth
-4,096 without native recursion. The existing generated `Par` remains the runtime and serialization
-authority: no extern-path substitution or production caller is active at this checkpoint.
+families, and stream protobuf component fields directly from its distinct trie endpoints. At these
+historical RPB1 checkpoints, the key domain binds family tag and canonical bincode component bytes;
+ACTree03 is the direct trie image, and protobuf streaming decodes only the current endpoint. Tests
+compare the streamed protobuf bytes with the existing generated repeated-field encoder, validate all
+component families, reject malformed/trailing images, and exercise depth 4,096 without native
+recursion. The existing generated `Par` remains the runtime and serialization authority: no
+extern-path substitution or production caller is active at this checkpoint.
 
 Experiment 257 accepts exact membership for the preregistered 256/4,096-cardinality cells and
 records the fixed-cost losses at cardinalities 1 and 16 as diagnostics. This is
@@ -4673,6 +4674,31 @@ or event hash, COMM choice, charge, settlement, EPathMap mode, or PathMap crate 
 future authoritative cutover must receive its own register continuation with complete legacy-byte
 and play/replay equivalence evidence, explicit handling of `locally_free` and `connective_used`, and
 the full release gates. Stack-safety report §5.16.5.10 and its durable TSV preserve the experiment.
+
+**Dormant `ParBag` RPB2 refinement (2026-08-17; pgmcp experiment 258).** Checkpoint `2142b2273`
+replaces RPB1's bincode suffix with a protobuf-aligned family tag, a prefix-free byte encoding of the
+existing canonical score tree, and the canonical protobuf component body. Trie order is therefore
+the legacy `(score, emitted protobuf bytes)` order by construction. Protobuf serialization copies
+stored bodies directly from distinct endpoints and expands only `Multiplicity`; it does not decode
+components or construct repeated-field vectors. ACT import remains the direct trie image but now
+decodes, sorts, and re-keys each current endpoint to reject malformed score keys, unknown protobuf
+fields, and all alternate noncanonical encodings. A dedicated witness preserves nested
+`locally_free` metadata.
+
+`CanonicalParBagKey<T>` lets a retained matcher or channel plan prepare that exact typed path once.
+Experiment 258 accepts prepared lookup over dynamic RPB2 construction (Welch $`t=-68.6365`$,
+$`p=0`$ at reported precision, Cohen's $`d=-3.7898`$, 656 samples per arm); all eight paired 99%
+difference intervals favor preparation. The stronger every-cell 0.50 ratio target is not claimed:
+seven cells meet it, while diverse/4,096 has mean ratio 0.547507. Stack-safety report §5.27 and the
+durable 1,312-observation TSV preserve the exact decision, warnings, resource envelope, log digest,
+and finalized run digests.
+
+This remains `NO_PRODUCTION_CHANGE_MEASURED`. RPB2 is an internal dormant ACT/key format, not a
+protobuf, bincode, cold-store, event, post-state, signature, or network-format migration. The
+generated repeated-field `Par` is still authoritative, so no active register entry or register
+count changes here. Activation must add a new living continuation with equality/order/hash,
+protobuf/bincode bytes, charge, play/replay, post-state, and full-release evidence; this paragraph
+does not pre-authorize that cutover. PathMap source is unchanged.
 
 
 **Dormant RSpace matching-cursor foundation (2026-08-15; pgmcp `rspace-shared-match-pda`).**

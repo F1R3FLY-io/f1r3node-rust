@@ -143,10 +143,14 @@ fn compiled_typed_keys_reuse_the_exact_authoritative_path() {
 
 #[test]
 fn constructor_tags_prevent_cross_type_key_collisions() {
-    let mut bundle = Bundle::default();
-    bundle.body = Some(Par::default());
-    let mut send = Send::default();
-    send.chan = Some(Par::default());
+    let bundle = Bundle {
+        body: Some(Par::default()),
+        ..Default::default()
+    };
+    let send = Send {
+        chan: Some(Par::default()),
+        ..Default::default()
+    };
     let bundle_key = with_component_key(&bundle, <[u8]>::to_vec);
     let send_key = with_component_key(&send, <[u8]>::to_vec);
 

@@ -12,9 +12,11 @@
 
 **Repository** `f1r3node-rust-mettail`, branch `feature/mettail`
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
-**Report date** 2026-07-29, revised through 2026-08-16
+**Report date** 2026-07-29, revised through 2026-08-17
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
-**Living closure head** `f1r3node-rust-mettail@d659157f2` (byte-native exact-key EPathMap
+**Living closure head** `f1r3node-rust-mettail@2142b2273` (canonical-protobuf `ParBag` keys with
+prepared typed lookup, direct trie-to-protobuf emission, canonical ACT import validation, and
+byte-native exact-key EPathMap
 subtraction/selection with one moving map write zipper, following adaptive exact-key/moving-zipper
 Bag deltas over one privately forked PathMap root and atomic accepted-match Bag publication,
 PathMap-pruned ordered elements inside the stack-safe associative-commutative matcher, and generated ordered-expression datum-first/receive-first
@@ -35,7 +37,7 @@ pushdown-automaton (WPDA) generation, and Rho-network code-generation closure;
 **Companion report** — the PathMap/EPathMap representation, wire format, and performance results
 live in the [PathMap report](../pathmap/pathmap-report-2026-08-03.md); the `SS-C5`…`SS-C12` and
 `SS-Y6` register rows below point there, while SS-C13 records the subsequent native-cursor consumer
-closure in this report.
+closure and SS-C14 records the dormant canonical `ParBag` successor in this report.
 **Audit ledgers superseded by nothing; this report *cites* them** —
 `docs/design/audits/theta-depth-traversals-2026-07-26.md`,
 `docs/design/audits/four-quadrant-s0-baseline-2026-07-28.md`,
@@ -276,6 +278,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-C11** | `b30a1568`; mettail harness `bb98055b`, `9dccb346` | cross-repository | reducer-identity EPathMaps retain their native root; shared clone-family teardown releases one root without PathMap copy-on-write; E-6a binds the index once per phase | 4,119,482 $`\rightarrow`$ 278,527 allocation events; treatment 18.730 ms vs 32.281 ms control; PathMap clone/drop ladders remain **0 B/level** | measured-neutral optimization; no new traversal or PathMap change | [5.17](#517-epathmap-evaluator-and-clone-family-teardown-integration-ss-c11) |
 | **SS-C12** | this checkpoint; pgmcp #5193, #5282, #5283 | f1r3node | direct ACTree03 replay, range-backed canonical-key/value worklist, and exact deferred EPathMap fold construction; exhaustive comparison residues and malformed-gate resource closure | decoder/canonicalizer host re-entry $`\Theta(d) \rightarrow O(1)`$ native stack; repeated trie reconstruction/hash $`\Theta(d^2) \rightarrow \Theta(d)`$; depth **20,000** on **256 KiB**; malformed gate **6.12 GiB $`\rightarrow`$ 682,548 KiB** peak | **yes** for the decoder SCC; byte/acceptance neutral under CBR-044 and retired CBR-023 | [5.19](#519-direct-epm1-canonical-validation-and-fold-construction-closure-ss-c12) |
 | **SS-C13** | this checkpoint; pgmcp #5192 | cross-repository | one shared borrowed/owned canonical-`Par` PDA suspends native read/owned EPathMap zippers directly; set keys remain `PathMap<()>`, map values remain `PathMap<Par>` until their entry is current | all-entry decoded-key/value-pointer frontier $`\rightarrow O(1)`$ live trie cursors plus the current decoded key and structural frontier; **20,000** levels on **256 KiB**; integration **3/3** | **yes**; borrowed/owned preorder equality, independent recursive receive-count oracle, and existing forward/reverse raw-zipper order gates | [5.20](#520-semantic-scc-constructor-and-pathmap-streaming-closure-ss-g43-ss-c13) |
+| **SS-C14** | `2142b2273`; pgmcp experiment 258 | f1r3node | dormant `ParBag` RPB2 key: family tag + prefix-free score-order key + canonical protobuf body; ACT import decodes, sorts, and re-keys one current endpoint; protobuf output copies stored bodies without a `Vec` or decoded shadow | native stack remains $`O(1)`$ through the existing generated protobuf/sorter PDAs and iterative score-key parser; exact lookup is one PathMap probe after $`O(k)`$ prepared-key construction for key length $`k`$ | **yes**; all-family byte oracle, malformed/noncanonical ACT rejection, nested-metadata witness, depth 4,096, and experiment 258's 1,312 checksum-guarded observations | [5.27](#527-canonical-protobuf-key-parbag-and-prepared-key-closure-ss-c14) |
 | **SS-D1** | `d2591fa1` | f1r3node | task-spawn boundary per-branch deep clone | 2,867 $`\rightarrow`$ **0** *(this site)* | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D2** | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies | incl. $`O(n^2)`$ $`\rightarrow`$ $`O(n)`$ | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D3** | `9082d12c` | f1r3node | `inj_attempt` read-back clone $`\rightarrow`$ by-move | 2,852 $`\rightarrow`$ **0** | **yes** | [5.5.3](#553-the-three-repairs) |
@@ -424,7 +427,7 @@ companion repository — that the Rholang parser was depth-independent (§5.6.3)
 The PathMap/EPathMap half of the campaign — the homogeneous representation, the EPM1 wire format,
 their benchmarks, and the intern-store deletion — is reported in the
 [PathMap companion report](../pathmap/pathmap-report-2026-08-03.md); this report keeps their
-register rows (SS-C5…SS-C13, SS-Y6) and the stack-safety consequences.
+register rows (SS-C5…SS-C14, SS-Y6) and the stack-safety consequences.
 
 ---
 
@@ -480,6 +483,7 @@ register rows (SS-C5…SS-C13, SS-Y6) and the stack-safety consequences.
   - [5.24 Certified persistent-root production-driver closure [SS-G47]](#524-certified-persistent-root-production-driver-closure-ss-g47)
   - [5.25 Positional AC remainder reconstruction and co-install progress closure [SS-G48]](#525-positional-ac-remainder-reconstruction-and-co-install-progress-closure-ss-g48)
   - [5.26 Retained FLT candidate-matcher integration [SS-G49]](#526-retained-flt-candidate-matcher-integration-ss-g49)
+  - [5.27 Canonical-protobuf-key `ParBag` and prepared-key closure [SS-C14]](#527-canonical-protobuf-key-parbag-and-prepared-key-closure-ss-c14)
 - [6. Discussion](#6-discussion)
   - [6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces](#61-why-the-explicit-worklist-shape-and-why-it-is-smaller-than-what-it-replaces)
   - [6.2 Why the SCC is the unit of conversion](#62-why-the-scc-is-the-unit-of-conversion)
@@ -3980,6 +3984,11 @@ The 1,312 raw observations, cell summaries, resource envelope, and log digest ar
 pgmcp artifact 336 and finalized experiment 257 hold the corresponding audit trail. This experiment
 measures exact membership only. Construction, algebra, clone/update, protobuf streaming, complete
 `Par` matching, and end-to-end RSpace COMM throughput remain separate causal questions.
+
+Section 5.27 records the RPB2 successor. It replaces the bincode suffix with a canonical
+score-order/protobuf key and closes the fixed key-construction cost for long-lived matcher plans;
+the RPB1 results above remain the immutable experiment-257 baseline rather than being rewritten in
+light of the successor.
 
 #### 5.16.6 Sparse relational-row reuse inside the production PDA [SS-A10 refinement]
 
@@ -7969,6 +7978,134 @@ bytes, block and event hashes, COMM choice, D3 communication-prefix accounting, 
 EPathMap mode, EPM1 snapshot, and every PathMap operation remain unchanged. SS-G49 therefore extends
 retired **CBR-023** as `EQUIVALENCE_PROVEN`; it creates no active may-change-consensus entry.
 
+### 5.27 Canonical-protobuf-key `ParBag` and prepared-key closure [SS-C14]
+
+#### 5.27.1 Defect boundary and representation law
+
+RPB1 proved that a `Par`'s nine unordered top-level component families can inhabit one
+`PathMap<Multiplicity>` without becoming a vector, hash set, or shadow index. Its bincode suffix was
+nevertheless the wrong final key language. Canonical Rholang order is the lexicographic pair
+*score tree, emitted protobuf body*, whereas RPB1 ordered equal-family endpoints by bincode bytes.
+Protobuf emission therefore had to decode each endpoint and run the generated encoder again. That
+kept the trie authoritative, but it failed to make its stored bytes simultaneously useful for
+canonical ordering, exact lookup, and network serialization.
+
+RPB2 defines one complete component key as
+
+```math
+K(t,x)=\mathtt{RPB\,02}\;\Vert\;t\;\Vert\;O(S(x))\;\Vert\;P(x),
+```
+
+where $`t`$ is the protobuf-aligned constructor-family tag, $`S(x)`$ is the existing canonical
+score tree, $`O`$ is a prefix-free lexicographically order-preserving score encoding, and $`P(x)`$
+is the canonical protobuf body. The PathMap endpoint stores the positive checked value
+$`\mu(x)\in\mathbb{N}_{>0}`$ as `Multiplicity(u64)`. Prefix-freedom makes the protobuf bytes the
+tie-break only after the complete score; ascending trie traversal is therefore the legacy canonical
+component order by construction. The empty `ParBag` is the empty PathMap, so no mode discriminator
+or ambiguous empty representation is introduced.
+
+#### 5.27.2 Byte-native algorithms
+
+The implementation uses three stack-safe algorithms over this single authority:
+
+```text
+PREPARE(x):
+  canonical := generated_stack_safe_sort(x)
+  key := RPB2 || family_tag(x)
+  append_prefix_free_score(key, canonical.score)
+  generated_protobuf_pda_append(key, canonical.term)
+  return typed CanonicalParBagKey(key)
+
+STREAM_PROTOBUF(bag):
+  for family in ascending protobuf-field order:
+    for endpoint under RPB2 || family using the Bag zipper:
+      body := suffix_after_iteratively_parsed_score_key(endpoint.path)
+      emit protobuf_field_header(family, body.length)
+      copy body exactly endpoint.multiplicity times
+
+VALIDATE_ACT(image):
+  bag := validate_and_import_canonical_ACTree03(image)
+  for each endpoint in bag:
+    parse family and score-key extent iteratively
+    value := generated_protobuf_pda_decode(stored_body)
+    require PREPARE(value).bytes == endpoint.path
+  return bag
+```
+
+`STREAM_PROTOBUF` never decodes an endpoint and never constructs a repeated-field `Vec`, legacy
+`Par`, or entry projection. `VALIDATE_ACT` decodes only the current endpoint, and exact re-keying
+rejects unknown protobuf fields, noncanonical child order, invalid score encodings, invalid family
+tags, and alternate encodings of an otherwise accepted value. Nested `locally_free` bytes remain in
+the protobuf body and have a dedicated round-trip witness. The exact encoded-length pass uses the
+same endpoint payloads and checked multiplicity arithmetic before allocation.
+
+The general key constructor reuses a thread-local byte buffer, uses a private buffer under
+re-entrancy, and releases exceptional capacity above 1 MiB. Ground `Expr` and `GUnforgeable`
+families have allocation-avoiding shallow score/protobuf specializations; exhaustive leaf-family
+tests require their bytes to equal the general sorter and generated protobuf PDA exactly. All other
+shapes use the complete generated stack-safe machines. PathMap itself is unchanged.
+
+#### 5.27.3 Prepared-key experiment
+
+Dynamic `ParBag::contains` necessarily performs `PREPARE` on every call. RSpace receive patterns,
+channel plans, and retained match programs live longer than one probe, so checkpoint `2142b2273`
+adds `CanonicalParBagKey<T>`: one owned, typed canonical byte string compiled once and reused by
+membership, count, insertion, and removal. It is not a second index or shadow AST. The treatment is
+one exact PathMap probe over the same bytes used by the control after its per-probe construction.
+
+Pgmcp experiment 258 compares 64-query batches with 32 present and 32 absent keys. Fixture, Bag,
+queries, and prepared keys are built outside the timed region. Ten warmups precede 82 retained
+samples per arm in each of eight shared/diverse-prefix by cardinality cells; arm order alternates.
+The admitted run observed 93.36% aggregate CPU idle, was pinned to CPU 8 under `MemoryMax=12G` and
+`MemorySwapMax=0`, and completed in 43.55 s with 1,068,104 KiB peak RSS. Every observation returned
+the same checksum of 32.
+
+| topology / cardinality | dynamic mean (ns) | prepared mean (ns) | mean ratio | median paired ratio | paired treatment minus control (ns), 99% half-width |
+|---|---:|---:|---:|---:|---:|
+| shared / 1 | 3,381.390 | 1,334.720 | 0.394725 | 0.394370 | $`-2{,}046.671 \mathbin{\pm} 13.735`$ |
+| shared / 16 | 3,980.110 | 1,743.305 | 0.438004 | 0.447524 | $`-2{,}236.805 \mathbin{\pm} 201.725`$ |
+| shared / 256 | 4,220.683 | 2,008.500 | 0.475871 | 0.475724 | $`-2{,}212.183 \mathbin{\pm} 15.770`$ |
+| shared / 4,096 | 4,518.902 | 2,215.341 | 0.490239 | 0.497262 | $`-2{,}303.561 \mathbin{\pm} 169.021`$ |
+| diverse / 1 | 3,335.646 | 1,409.451 | 0.422542 | 0.422315 | $`-1{,}926.195 \mathbin{\pm} 27.392`$ |
+| diverse / 16 | 4,157.207 | 1,904.293 | 0.458070 | 0.466976 | $`-2{,}252.915 \mathbin{\pm} 182.630`$ |
+| diverse / 256 | 4,690.683 | 2,301.622 | 0.490679 | 0.495219 | $`-2{,}389.061 \mathbin{\pm} 47.361`$ |
+| diverse / 4,096 | 5,049.963 | 2,764.890 | 0.547507 | 0.560161 | $`-2{,}285.073 \mathbin{\pm} 75.942`$ |
+
+Pgmcp accepts the locked aggregate decision: Welch $`t=-68.6365`$, $`p=0`$ at reported floating-
+point precision, Cohen's $`d=-3.7898`$, and a 95% mean-difference interval of
+$`[-2{,}269.636,-2{,}143.480]`$ ns over 656 samples per arm. Both arms are non-normal; the retained
+robust corroboration is Mann–Whitney $`p=0`$ with Cliff's delta $`-1.0`$. The stronger auxiliary
+claim that treatment/control would be at most 0.50 in *every* cell is false: seven cells satisfy it,
+but diverse/4,096 has mean ratio 0.547507 and median paired ratio 0.560161. Its paired 99% difference
+interval remains wholly below zero, so the miss narrows the magnitude claim rather than the selected
+prepared-key architecture.
+
+#### 5.27.4 Correctness, stack, and cost accounting
+
+The permanent suite covers all nine families, exact multiplicities and Bag algebra, CoW clone
+detachment, family-prefix removal, canonical legacy protobuf order, encoded-length equality,
+impossible output-length rejection, canonical ACT round-trip, malformed domain/tag/order/body
+rejection, unknown-field rejection, nested `locally_free`, and depth 4,096. The score-order extent
+parser is iterative; sorting, protobuf encode/decode, clone, equality, and teardown use the already
+generated PDAs. No recursive fallback, traversal cap, `RUST_MIN_STACK`, `stacker`, decoded all-entry
+frontier, or PathMap source change exists.
+
+RPB2 keys are longer than a payload-only key because they deliberately retain both order and body.
+That space buys direct canonical traversal, byte-native network emission, exact validation, and
+shared-prefix compression. Prepared keys move the $`O(k)`$ construction cost out of a repeated
+probe loop; they do not make first-use construction free. Experiment 258 measures exact membership,
+not construction, whole-pattern unification, COMM selection, checkpoint persistence, or end-to-end
+RSpace throughput. Those causal questions require their own controls and cannot inherit this result.
+
+The 1,312 observations, eight summaries, resource envelope, command, log digest, decision, and
+finalized run digests are durable in
+[`measurements/parbag-prepared-key-membership-2026-08-17.tsv`](measurements/parbag-prepared-key-membership-2026-08-17.tsv).
+Pgmcp artifact 337 stores the corresponding experiment record. The RPB2 `ParBag` remains dormant:
+the generated repeated-field `Par` is still the runtime and wire authority at this checkpoint.
+Consequently SS-C14 is `NO_PRODUCTION_CHANGE_MEASURED`; production activation still requires an
+explicit consensus review and complete byte, equality/order/hash, play/replay, post-state, charge,
+and release evidence.
+
 ---
 
 ## 6. Discussion
@@ -8779,6 +8916,7 @@ done
 | [`measurements/epathmap-map-meet-zipper-2026-08-17.tsv`](measurements/epathmap-map-meet-zipper-2026-08-17.tsv) | experiment 255's topology-reconstruction/synchronized-zipper map intersection, all 540 paired raw timings across nine cells, exact EntryTrie/error and value-free-topology guards, resources, finalized run digests, warnings, and selected production disposition (§5.16.7.10) |
 | [`measurements/epathmap-set-subtract-into-2026-08-17.tsv`](measurements/epathmap-set-subtract-into-2026-08-17.tsv) | experiment 256's whole-map/destructive-root set subtraction, all 480 paired raw timings across eight cells, exact EntryTrie/EPM1 and operand non-mutation guards, resources, finalized run digests, robust rejection, and retained production disposition (§5.16.7.11) |
 | [`measurements/parbag-exact-membership-2026-08-17.tsv`](measurements/parbag-exact-membership-2026-08-17.tsv) | experiment 257's legacy repeated-vector/typed `ParBag` exact-membership comparison, all 1,312 raw observations across eight cardinality/topology cells, crossover diagnostics, resource envelope, log digest, and accepted primary decision (§5.16.5.10) |
+| [`measurements/parbag-prepared-key-membership-2026-08-17.tsv`](measurements/parbag-prepared-key-membership-2026-08-17.tsv) | experiment 258's dynamic-RPB2/prepared-key comparison, all 1,312 raw observations and eight summaries, accepted aggregate decision, failed every-cell 0.50 auxiliary target, resource envelope, log digest, and finalized run digests (§5.27) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of
@@ -8809,7 +8947,7 @@ Appendix A are the durable evidence:
 > chronological snapshot behind the early sections, but it is not extended with later PathMap,
 > generated-PDA, matcher, proof, or resource-closure commits. The stable-ID register in [§0](#0-the-fix-register--the-scannable-index)
 > is the living and authoritative inventory. Treating this appendix as current would silently omit
-> SS-A8…SS-A10, SS-C5…SS-C13, SS-E2…SS-E4, and the repaired `SS-Y…` rows.
+> SS-A8…SS-A10, SS-C5…SS-C14, SS-E2…SS-E4, and the repaired `SS-Y…` rows.
 
 ### C.1 Historical code fixes
 

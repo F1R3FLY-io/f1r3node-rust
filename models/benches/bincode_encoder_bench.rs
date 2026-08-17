@@ -332,7 +332,7 @@ fn main() {
         ("map(1024 entries)", vec![map_datum(1024); 8]),
         ("wide(4096 siblings)", vec![
             ListParWithRandom {
-                pars: (0..4096).map(|i| gint(i)).collect(),
+                pars: (0..4096).map(gint).collect(),
                 random_state: vec![1; 32],
             };
             4
