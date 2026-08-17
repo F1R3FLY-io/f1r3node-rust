@@ -1594,6 +1594,31 @@ impl EntryTrie {
         }
     }
 
+    /// Experiment 256 treatment for set-mode subtraction.
+    ///
+    /// Production [`Self::try_subtract`] remains the frozen whole-map
+    /// `PathMap::subtract` control until the preregistered causal comparison
+    /// selects or rejects destructive root-focused subtraction. Map mode keeps
+    /// the production implementation because `Par` has no lawful distributive
+    /// lattice for [`pathmap::zipper::ZipperWriting::subtract_into`].
+    #[cfg(feature = "epathmap-subtract-into-differential")]
+    pub fn try_subtract_into_treatment(&self, other: &Self) -> Result<Self, EPathMapAlgebraError> {
+        match (&self.repr, &other.repr) {
+            (EPathMapRepr::Set(left), EPathMapRepr::Set(right)) => {
+                use pathmap::zipper::ZipperWriting;
+
+                let mut difference = left.clone();
+                {
+                    let source = right.read_zipper();
+                    let mut destination = difference.write_zipper();
+                    destination.subtract_into(&source, false);
+                }
+                Ok(Self::algebra_result(EPathMapRepr::Set(difference)))
+            }
+            _ => self.try_subtract(other),
+        }
+    }
+
     /// Remove the values named by a mode-independent encoded-key mask.
     ///
     /// Set mode delegates the complete operation to PathMap's native lattice
