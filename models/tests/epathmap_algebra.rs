@@ -66,72 +66,77 @@ fn assert_map_value(entries: &models::rust::rhoapi_ext::EntryTrie, key: i64, val
     assert_eq!(actual, value);
 }
 
-#[cfg(feature = "epathmap-map-join-clone-family-differential")]
-fn assert_clone_family_join_arms(label: &str, left: &EPathMap, right: &EPathMap) {
-    let control = left
-        .entry_trie()
-        .try_join_clone_family_control(right.entry_trie());
-    let treatment = left.entry_trie().try_join(right.entry_trie());
-    assert_eq!(control, treatment, "join result mismatch: {label}");
-    if let (Ok(control), Ok(treatment)) = (control, treatment) {
-        assert_eq!(control, treatment, "EntryTrie mismatch: {label}");
-        assert_eq!(
-            control.trie_snapshot(),
-            treatment.trie_snapshot(),
-            "EPM1 mismatch: {label}"
-        );
-    }
+fn assert_map_join_snapshot(label: &str, left: &EPathMap, right: &EPathMap, expected: &EPathMap) {
+    let actual = left.entry_trie().try_join(right.entry_trie()).unwrap();
+    assert_eq!(
+        actual,
+        *expected.entry_trie(),
+        "EntryTrie mismatch: {label}"
+    );
+    assert_eq!(
+        actual.trie_snapshot(),
+        expected.entry_trie().trie_snapshot(),
+        "EPM1 mismatch: {label}"
+    );
 }
 
-#[cfg(feature = "epathmap-map-join-clone-family-differential")]
 #[test]
 fn clone_family_map_join_shortcut_is_invalidated_by_every_mutation() {
     let base = map([(0, 0), (1, 10), (2, 20)]);
     let shared = base.clone();
-    assert_clone_family_join_arms("unchanged clone family", &base, &shared);
+    assert_map_join_snapshot("unchanged clone family", &base, &shared, &base);
 
     let independent = map([(0, 0), (1, 10), (2, 20)]);
-    assert_clone_family_join_arms("independently equal", &base, &independent);
+    assert_map_join_snapshot("independently equal", &base, &independent, &base);
 
     let mut extended = base.clone();
     extended.insert_map_entry(gint(3), gint(30)).unwrap();
-    assert_clone_family_join_arms("extended clone", &base, &extended);
+    assert_map_join_snapshot("extended clone", &extended, &base, &extended);
 
     let mut replaced = base.clone();
     replaced.insert_map_entry(gint(2), gint(999)).unwrap();
-    assert_clone_family_join_arms("conflicting clone", &base, &replaced);
+    assert!(matches!(
+        replaced.entry_trie().try_join(base.entry_trie()),
+        Err(EPathMapAlgebraError::ValueConflict { .. })
+    ));
 
     let key_two = encode_trie_path(&gint(2));
     let mut removed = base.clone();
     assert!(removed.remove_encoded_entry(&key_two));
-    assert_clone_family_join_arms("removed entry clone", &base, &removed);
+    assert_map_join_snapshot("removed entry clone", &removed, &base, &base);
 
     let mut topology = base.clone();
     let mut descendant = key_two.clone();
     descendant.extend_from_slice(&[0xAA, 0xBB]);
     assert!(topology.create_path(&descendant).unwrap());
-    assert_clone_family_join_arms("value-free topology clone", &base, &topology);
+    assert_map_join_snapshot("value-free topology clone", &base, &topology, &topology);
 
     let mut pruned = topology.clone();
     assert!(pruned.remove_branches_at(&key_two));
-    assert_clone_family_join_arms("pruned topology clone", &topology, &pruned);
+    assert_map_join_snapshot("pruned topology clone", &pruned, &topology, &topology);
 
     let mut subtrie_removed = base.clone();
     assert!(subtrie_removed.remove_subtrie_at(&key_two));
-    assert_clone_family_join_arms("removed subtrie clone", &base, &subtrie_removed);
+    assert_map_join_snapshot("removed subtrie clone", &subtrie_removed, &base, &base);
 
     let mut greatest_removed = base.clone();
     assert!(greatest_removed
         .remove_greatest_map_entry()
         .unwrap()
         .is_some());
-    assert_clone_family_join_arms("removed greatest clone", &base, &greatest_removed);
+    assert_map_join_snapshot("removed greatest clone", &greatest_removed, &base, &base);
 
     let mut replaced_subtrie = base.clone();
     replaced_subtrie
         .replace_subtrie(&[], CursorKind::Prefix, &map([(8, 80), (9, 90)]))
         .unwrap();
-    assert_clone_family_join_arms("replaced subtrie clone", &base, &replaced_subtrie);
+    let replaced_snapshot = replaced_subtrie.entry_trie().trie_snapshot().to_vec();
+    let combined = replaced_subtrie
+        .entry_trie()
+        .try_join(base.entry_trie())
+        .unwrap();
+    assert_eq!(combined.len(), 5);
+    assert_ne!(combined.trie_snapshot(), replaced_snapshot);
 }
 
 #[test]

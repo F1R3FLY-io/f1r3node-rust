@@ -1490,14 +1490,6 @@ impl EntryTrie {
         self.try_join_exact_zipper(other)
     }
 
-    #[cfg(feature = "epathmap-map-join-clone-family-differential")]
-    pub fn try_join_clone_family_control(
-        &self,
-        other: &Self,
-    ) -> Result<Self, EPathMapAlgebraError> {
-        self.try_join_exact_zipper(other)
-    }
-
     pub fn try_meet(&self, other: &Self) -> Result<Self, EPathMapAlgebraError> {
         match (&self.repr, &other.repr) {
             (EPathMapRepr::Empty, _) | (_, EPathMapRepr::Empty) => Ok(Self::default()),
