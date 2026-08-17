@@ -3587,6 +3587,7 @@ swap, and two-core CPU quota**. **MEASURED:**
 | standalone Bag delta and compact-trie codec | no direct Bag codec or normalized reversible transition carrier | **200,000-byte compressed key round-trips on 256 KiB; 23/23 Bag tests; 1/1 allocation gate; 183/183 affected EPathMap tests** | `0d7a6a3f8` adds atomic exact-key delta apply/revert; `1560f4371` uses raw canonical ACTree03 with native `u64` value slots and a shared iterative reader; `46aaa6472` adds legacy parity, prefix, algebra, delta, deep/wide, Merkle-image, and multiplicity-allocation evidence; `87679597d` adds the exact-prefix cursor/pruning regression; malformed/noncanonical/zero/dangling images fail closed and strict lint passes |
 | live accepted-match Bag transaction | per-selected-datum hot-store lock and removal | **23/23 Bag; 18/18 data index; 17/17 guarded play/replay; 146/146 broad RSpace integration; Rocq/TLC/mCRL2 live-commit proof; experiments 218 and 219 accepted under their locked statistical criteria** | `cd01ea721` normalizes exact selected identities, commits one COW root under one lock, preserves fresh/persistent candidates, and rejects underflow or malformed paths without mutation; `21ece399d` proves candidate projection, play/replay delta equality, atomic publication, all seven invariants over 2,628 TLC states, branching bisimulation, and no partial-publication reachability; `0f9beb5f0` removes the redundant outer root clone while retaining the `BagDelta`-owned atomic root, lowering singleton median latency 5.671% with no secondary-cardinality regression; `87679597d` measures one moving write zipper and `9a746f2bf` selects it only for multi-key deltas after the singleton regressed 8.289%; broad gate 3 min 6.13 s, 489,848 KiB peak RSS, zero swap under 12 GiB `MemoryMax` and four-core quota; affected strict Clippy passes, while the intentionally broader all-test Clippy reaches unrelated pre-existing warnings and is not claimed |
 | receive-first query-product `TrieRef` experiment | synchronized mutable read zippers | **pgmcp experiment 220 rejected; 82 samples per arm at 16, 256, and 4,096 candidates; exact sorted candidate vectors agree; 31/31 focused and 419/419 complete package tests; strict changed-target lint passes** | `514659e2b` freezes the zipper control and tests per-byte borrowed `TrieRef` focuses; the treatment regresses mean latency 83.041%, 61.953%, and 55.549%, respectively; `27557c374` restores the control in production while retaining the falsified treatment as a benchmark; both machines remain iterative heap PDAs with constant native-stack use |
+| datum-first retained-automaton × Bag product | resting data disabled the retained prefilter and forced the full canonical continuation scan | **pgmcp experiments 224 and 225 rejected; 226 and exact-final-source 229 accepted; 82 samples per arm/cell; 8/8 release regressions; 12/12 benchmark preflights; 428/428 complete package tests; strict changed-target lint; Rocq proof pass** | `ad395c357` adds the conservative fresh-or-resting product and `61accc170` selects the bounded traversal: zero/one exact PathMap prefix lookup for a singleton Bag with zero/one eligible terminal depth, otherwise the linear synchronized zipper product; shared/256 improves from 840.48 ns to 207.20 ns (4.06×) and shared/4,096 from 13.712 µs to 1.183 µs (11.59×), while shared/16 retains the transparent 136.23 ns versus 52.70 ns fixed-cost crossover; native-stack use is constant and no record is decoded or flattened |
 | Bag formal laws | informal implementation equations | **Rocq and Verus `--no-cheating` plus TLC and mCRL2 pass inside the complete bounded bundle** | `8e4938ec6` proves exact-key multiplicity algebra and normalized/canonical deltas in Rocq, plus executable checked-`u64` apply/revert in Verus; `21ece399d` adds the live-commit Rocq bridge, a 2,628-state TLC model, branching bisimulation, and no-partial-publication proof; the earlier focused Rocq/Verus proofs used 351,028 KiB and 261,824 KiB peak RSS respectively with zero swap; Z3 and all three TLC models pass |
 | standalone Bag microbenchmark | legacy `HashMultiSet` controls | **15/15 comparative pairs plus 6 logical-multiplicity points** | construction improves 20.5–54.6%; the full exact-lookup sweep improves except for an operationally neutral 0.236% loss at 4,096; copy-on-write clone/update improves from 16 keys but loses 65.9% at one; one-key construction remains approximately 76 ns through `u64::MAX`; aggregate benchmark-process RSS is 39,912 KiB, not a comparative per-operation memory result |
 | retained waiting-receive throughput | full canonical candidate scan | **23.2–44.6% more COMMs/s** | six treatment pairs; 51 samples/arm; 99% confidence; 16/256/4,096 receives; diverse/shared prefixes |
@@ -3620,8 +3621,9 @@ intervals are disjoint. Treatment latency is **18.8–30.8% lower** and throughp
 Each treatment upper latency bound is below 95% of its control lower bound, satisfying the
 preregistered five-percent threshold without relying only on point estimates. A Casper
 test observed later began after the benchmark file's completion timestamp. The retained-automaton
-throughput hypothesis therefore passes for this exact-ground slice; direct automaton/Bag products,
-construction cost, allocations, and the broader workload matrix remain open. The recorded estimates
+throughput hypothesis therefore passes for this exact-ground slice; at that checkpoint direct
+automaton/Bag products, construction cost, allocations, and the broader workload matrix remained
+open. The recorded estimates
 are [`measurements/rspace-retained-pathmap-prefilter-2026-08-15.tsv`](measurements/rspace-retained-pathmap-prefilter-2026-08-15.tsv).
 
 The paired resting-datum control/PathMap benchmark at `564dac0b4` is admitted to the measurement
@@ -3716,7 +3718,62 @@ verdict. Its active Criterion directory was quarantined before the valid run. Th
 ledger and that exclusion are
 [`measurements/rspace-query-product-trieref-2026-08-16.tsv`](measurements/rspace-query-product-trieref-2026-08-16.tsv).
 
-##### 5.16.5.5 What it cost
+##### 5.16.5.5 Datum-first retained-automaton × Bag product
+
+The predecessor used its retained waiting-pattern trie only against the arriving datum. If the
+channel already contained data, it disabled that prefilter because a legal communication may
+consume a resting datum and leave the arrival stored. Checkpoint `ad395c357` replaces that bypass
+with a product over the retained `PathMap<TerminalId>` and authoritative
+`Bag(PathMap<Multiplicity>)`. Both zippers occupy the same escaped structure-prefix byte domain.
+Their child-mask intersection drives an explicit depth-first heap stack, so only byte edges present
+in both tries are visited. Reaching a retained terminal admits its continuation to the ordinary
+candidate scan; residual wildcard/capture instructions and the spatial matcher still decide the
+verdict. The product can therefore preserve a false positive but cannot create an acceptance or
+hide a prefix witness if its trie traversal is sound.
+
+This closes the resting-only schedule without constructing a unit-valued copy of the Bag, decoding
+records, enumerating occurrences, or converting either trie to a vector. Bag multiplicity remains
+one `u64` value at the complete record key and is irrelevant to the existence question. The fresh
+datum follows the same retained segment through an allocation-free framed-byte iterator. Canonical
+candidate order is unchanged because the result remains a bitmap over the predecessor vector.
+
+The first two measurements are retained failures. Experiment 224's byte-at-a-time product won at
+diverse/256 and both 4,096-candidate cells, but the long shared-prefix primary at 256 moved from
+888.96 ns to 1,870.04 ns and was rejected. Experiment 225 used compressed unary descent and cut that
+treatment to 1,054.76 ns, but its contemporaneous 920.97 ns control still won by 14.5%; it too was
+rejected. These results isolate the fixed cost of walking a long common byte prefix when the
+authoritative exact matcher is unusually cheap.
+
+The singleton-Bag specialization uses `Bag::distinct_len`, which is a cached derived scalar, to
+borrow the sole complete trie path once. Compilation records one local `usize` per distinct
+terminal byte depth, sorts it, and removes duplicates. This vector is a generated traversal
+schedule, not a candidate collection, serialized surface, or alternative EPathMap/Bag
+representation. If no non-root terminal depth can prefix the Bag key, selection returns after the
+root fallback. If exactly one can, one exact `PathMap::get` visits it. If more than one can, the
+zipper resets and the linear product runs. The dispatch therefore avoids a repeated-prefix-search
+sum in the many-depth case: exact probing is bounded to one lookup, and the fallback visits common
+trie edges once.
+
+Release preflight caught an implementation defect before experiment 226 collected a timing sample:
+`to_next_val` and two `ascend_byte` state changes were initially called inside `debug_assert!`.
+Optimized Rust removes the assertion expression, so release traversal remained at the wrong focus.
+Checkpoint `61accc170` executes every zipper movement unconditionally and checks only the resulting
+invariant in a debug assertion. The release regression covers both singleton and multi-depth
+fallbacks, diverse/shared 16/256/4,096 candidates, embedded zero bytes, and branching Bags.
+
+Experiment 226 accepted the repaired schedule at 932.83 ns control versus 216.08 ns treatment for
+shared/256. The final complexity-bounded source was then preregistered and measured separately as
+experiment 229. It records **840.48 ns versus 207.20 ns** at shared/256, a **4.06× speedup**, and
+**13.712 µs versus 1.183 µs** at shared/4,096, an **11.59× speedup**. Its locked primary Welch test
+gives $`t = -1040.8646`$, $`p = 1.6872 \times 10^{-171}`$, Cohen's $`d = -162.5557`$, and a 95%
+mean-difference confidence interval of $`[-634.4884, -632.0678]\,\mathrm{ns}`$. Shared/16 remains
+slower, **136.23 ns versus 52.70 ns**, and is recorded as a fixed-cost crossover rather than hidden behind a universal-win
+claim. All arms contain 82 post-warm-up samples from one CPU-8-pinned run under an 8 GiB, zero-swap
+scope; no Cargo or rustc process competed at preflight. The scope cap is not a comparative RSS
+measurement. Raw summaries, rejected designs, statistics, and sealed pgmcp digests are
+[`measurements/rspace-retained-bag-product-2026-08-16.tsv`](measurements/rspace-retained-bag-product-2026-08-16.tsv).
+
+##### 5.16.5.6 What it cost
 
 Native-stack complexity changes from $`\Theta(b)`$ to $`O(1)`$. Explicit control storage is
 $`O(b)`$, which is the irreducible selected-candidate/frame frontier. Search time and output storage
@@ -3729,8 +3786,12 @@ multiplicity-only changes update derived counts without rebuilding it. The trave
 materialize a Cartesian product or expand duplicate trie keys. The retained automaton adds one trie
 terminal relation per bind position and a temporary selection bit vector linear in the number of
 waiting continuations. Cache hits perform no trie clone. The exact-ground slice walks the arriving
-datum path, so its native stack remains $`O(1)`$; direct automaton/Bag zipper-product traversal is a
-separate, still-open campaign stage and is not claimed by this checkpoint.
+datum path, so its native stack remains $`O(1)`$. The direct automaton/Bag product also uses constant
+native stack. Its explicit depth-first level vector is $`O(d)`$ for maximum common trie depth $`d`$,
+and it visits $`O(e)`$ common byte edges for a multi-key or multi-depth query. The singleton/single-
+depth specialization performs $`O(\log s)`$ schedule partitioning plus at most one exact lookup,
+where $`s`$ is the number of distinct terminal depths. It never repeats exact lookup for multiple
+eligible depths.
 
 For a supported receive-first pattern, the synchronized product scan allocates one heap vector
 containing only the matching fixed-width catalog positions and sorts it in $`O(m \log m)`$, where
@@ -3743,10 +3804,10 @@ workloads. The proof-derived zero/one-candidate base case removes the known fixe
 choosing an empirical cutoff. Ordered nested instructions now descend their first exact byte run
 before enumerating a complete frame; their explicit closer and capture maps use heap space linear in
 the live nested frontier and repeated-capture count, while native-stack use remains constant. The
-associative-commutative schema instructions, retained-automaton/Bag product, and allocation-per-COMM
+associative-commutative schema instructions and allocation-per-COMM
 remeasurement remain open measured questions rather than settled claims.
 
-##### 5.16.5.6 What is still recursive
+##### 5.16.5.7 What is still recursive
 
 No candidate-selection or enabled-rendezvous recursion remains. The first production-only pgmcp run
 after SS-A11 reported two direct findings and three mutual clusters across the wider target. Source
@@ -3765,7 +3826,7 @@ is the reducer's eleven-function evaluator SCC.
 This repair introduces no depth limit, stack-growing dependency, PathMap fork, or non-trie fallback
 representation.
 
-##### 5.16.5.7 Anti-vacuity
+##### 5.16.5.8 Anti-vacuity
 
 The 20,000-bind test enters both public modes on a 256 KiB thread: `consume` must return all 20,000
 data candidates, while `enabled_rendezvous` must enumerate exactly one 20,000-candidate selection.
@@ -7903,6 +7964,7 @@ done
 | [`measurements/rspace-bag-single-root-commit-2026-08-16.tsv`](measurements/rspace-bag-single-root-commit-2026-08-16.tsv) | experiment 218's redundant-two-root/single-root Bag publication samples, statistics, resource bound, and sealed pgmcp digests (§5.16.5) |
 | [`measurements/rspace-bag-delta-cursor-2026-08-16.tsv`](measurements/rspace-bag-delta-cursor-2026-08-16.tsv) | experiment 219's root-replay/moving-write-zipper samples, adaptive selection, resource bound, and sealed pgmcp digests (§5.16.5) |
 | [`measurements/rspace-query-product-trieref-2026-08-16.tsv`](measurements/rspace-query-product-trieref-2026-08-16.tsv) | experiment 220's paired-read-zipper/borrowed-`TrieRef` query-product samples, exact-vector oracle, rejected treatment, resource bound, hashes, and sealed pgmcp digests (§5.16.5) |
+| [`measurements/rspace-retained-bag-product-2026-08-16.tsv`](measurements/rspace-retained-bag-product-2026-08-16.tsv) | experiments 224/225's rejected datum-first traversals, experiments 226/229's accepted singleton/single-depth schedule, exact-final-source means/statistics, release/package/formal gates, resource protocol, and sealed pgmcp digests (§5.16.5) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of

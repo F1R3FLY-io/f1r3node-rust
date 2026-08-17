@@ -594,7 +594,7 @@ is a *future* fork, not a present one).
 | [CBR-042](#cbr-042) | N | …and on the **bincode** wire too — `U(m)` verbatim and contiguous, then the values (FORM ②), so the reader never decodes a trie key | `3a32cf07` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-043](#cbr-043) | N | …but of **the entries that surface WRITES**. FORM ② keyed lf-blanked values by the *unblanked* entries, putting an entry's `locally_free` on the event hash | `8cf0b770` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-044](#cbr-044) | N | EPathMap becomes a homogeneous PathMap set/map and both codecs carry one versioned EPM1 trie snapshot; generated protobuf PDAs remove the read ceiling | `26876b65` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
-| [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`, `0f9beb5f0`, `87679597d`, `9a746f2bf`, `514659e2b`, `27557c374`; benchmarks `7bc5c6994`, `7b3254573` | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
+| [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized datum-first/receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`, `0f9beb5f0`, `87679597d`, `9a746f2bf`, `514659e2b`, `27557c374`, `ad395c357`, `61accc170`; benchmarks `7bc5c6994`, `7b3254573`; pgmcp experiments 224, 225, 226, 229 | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
 | [CBR-L07](#cbr-l07) | L | `List.last()` in MeTTaIL's Rholang | `bbceb6d9`, `6e543c01` | · | · | · | · | · | ● | · | PERMISSIVE | **W** |
 | [CBR-L08](#cbr-l08) | L | The kv element-category gate — a Name in a kv slot is refused, not silently dropped | *in flight* | ● | ● | ● | ● | ● | ● | ○ | REGRESSIVE | **W** |
 | [CBR-L10](#cbr-l10) | L | A pathmap's entries come from a projection, not a field | `832d510f` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
@@ -2318,11 +2318,11 @@ Legacy protobuf fields are read-only migration inputs; removing them is a later 
 
 ### CBR-053
 
-**Retained PathMap indexes and synchronized receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart.**
+**Retained PathMap indexes and synchronized datum-first/receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart.**
 
 | | |
 |---|---|
-| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`, `0f9beb5f0`, `87679597d`, `9a746f2bf`, `514659e2b`, `27557c374`; benchmarks `7bc5c6994`, `7b3254573` |
+| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`, `0f9beb5f0`, `87679597d`, `9a746f2bf`, `514659e2b`, `27557c374`, `ad395c357`, `61accc170`; benchmarks `7bc5c6994`, `7b3254573`; pgmcp experiments 224, 225, 226, 229 |
 | Status | LANDED ON CAMPAIGN BRANCH; VERIFICATION OPEN |
 | Direction | UNVERIFIED |
 | Evidence grade | UNVERIFIED |
@@ -2341,11 +2341,13 @@ boundary. The intended relation is a superset: every candidate that can consume 
 be selected by the trie, while false positives remain legal because `Matcher::get` still decides
 acceptance.
 
-The implementation limits the first slice to exact-ground patterns. Binding, remainder,
+The implementation limited its first slice to exact-ground patterns. Binding, remainder,
 connective, and otherwise non-indexable patterns are root terminals and therefore survive every
-query. The filter runs only when the target channel had no resting datum before the fresh produce was
-prepended. When resting data exists, the unfiltered path remains necessary because a valid COMM can
-use only old data and leave the fresh produce resting.
+query. At that checkpoint the filter ran only when the target channel had no resting datum before
+the fresh produce was prepended. When resting data existed, it retained the full scan because a
+valid COMM can use only old data and leave the fresh produce resting. Checkpoints `ad395c357` and
+`61accc170` remove that performance bypass by intersecting the retained transition trie directly
+with the authoritative Bag while preserving the fresh-datum query.
 
 Checkpoint `564dac0b4` applies the same conservative-prefix rule in the opposite traffic shape. For
 an exact-ground receive bind, a derived `PathMap<CandidatePosition>` is cut at the framed structural
@@ -2354,8 +2356,8 @@ fixed-width `u64` newtype. The matching positions are sorted back into canonical
 authoritative `PathMap<Multiplicity>` Bag is checked before reservation; a fresh datum is checked
 through its retained path; and the spatial matcher remains the acceptance oracle. Generic matchers
 use the full scan unless they explicitly assert that successful matches imply the same RhoPath
-prefix relation. This is an exact-ground candidate cut, not yet the direct retained-automaton/Bag
-zipper product.
+prefix relation. This was an exact-ground candidate cut, not yet the direct retained-automaton/Bag
+zipper product at that checkpoint.
 
 Checkpoint `f43858ec2` advances the receive-first path from a one-sided prefix cut to a synchronized
 product between borrowed zippers on the authoritative Bag and the derived candidate-position trie.
@@ -2364,7 +2366,7 @@ terminal is returned only when both tries carry a value. Iterative framed scanni
 whole terms, whole-term wildcard/free-variable capture, repeated-capture equality, and ordered list
 remainder. The Bag remains
 the sole membership authority and the spatial matcher remains the verdict authority. This product
-does not satisfy or stand in for the separate retained-automaton/Bag product.
+did not satisfy or stand in for the separate retained-automaton/Bag product at that checkpoint.
 
 Checkpoint `b6b53d1b3` adds ordered nested EList/ETuple holes. The compiler divides the generated
 RMP1 event stream into exact byte runs and whole-`Par` wildcard/capture instructions. The first exact
@@ -2526,6 +2528,32 @@ invent a Bag for one fresh datum or make the derived automaton authoritative. Th
 control/index witness returns the same COMM, event trace, and post-state map with 256 versus 1 spatial
 calls.
 
+Checkpoints `ad395c357` and `61accc170` extend that datum-first filter to channels that already hold
+data. The arriving datum is streamed through the retained segment without allocating a singleton
+Bag. In parallel, an iterative product intersects each relevant `PathMap<TerminalId>` segment with
+the authoritative `Bag(PathMap<Multiplicity>)` in their common escaped structure-prefix byte
+domain. A reached terminal is only a candidate: its residual query is deferred to the ordinary
+candidate scan, and the spatial matcher remains the sole verdict authority. Canonical order remains
+the predecessor vector order because the product only sets its candidate bitmap.
+
+The product does not flatten either trie or expand multiplicity. One distinct Bag key with zero or
+one eligible non-root terminal depth takes zero or one exact `PathMap::get`; multiple eligible
+depths and every multi-key Bag use the synchronized bytewise zipper product. This structural
+dispatch prevents an adversarial sequence of repeated prefix searches and uses no empirical
+cardinality cutoff. Zipper movements occur outside `debug_assert!`, a release-mode requirement
+enforced by the optimized regression suite.
+
+The scientific record retains two rejected shapes. Experiment 224 rejected a raw bytewise product
+at shared/256, and experiment 225 rejected compressed unary descent at the same primary despite
+large-cardinality wins. Experiment 226 accepted the repaired terminal-depth specialization, and
+exact-final-source experiment 229 accepted **207.20 ns versus 840.48 ns** at shared/256 and
+**1.183 µs versus 13.712 µs** at shared/4,096. Shared/16 remains a documented fixed-cost loss,
+**136.23 ns versus 52.70 ns**. These timings select physical traversal only; they do not establish
+consensus neutrality. Release automaton tests pass 8/8, the causal benchmark preflight passes all
+12 cells, the complete package passes 428/428, focused strict lint passes, and the Rocq
+fresh-or-resting composition theorem recompiles. Full generated schedule/replay/post-state closure
+remains open, so CBR-053 remains `UNVERIFIED`.
+
 #### (b) How it may break consensus
 
 | Axis | Verdict |
@@ -2539,16 +2567,17 @@ calls.
 | 6 · metering | NO — D3 counts evaluated `Send`/`Receive` prefixes, not matcher attempts or committed RSpace rendezvous. |
 
 **The disagreement mechanism.** Let `c` be a waiting continuation that the spatial matcher accepts
-against fresh datum `d`. If the automaton omits `c`, the optimized node continues to another
-continuation or stores `d`; the predecessor fires `c`. The nodes then disagree about the COMM event,
+against fresh datum `d` or against a pre-existing resting datum `r`. If the automaton omits `c`, the
+optimized node continues to another continuation or stores `d`; the predecessor fires `c` with
+`d`, `r`, or a join containing one of them. The nodes then disagree about the COMM event,
 continuation result, and resting data. Candidate reordering is not a second mechanism: filtering
 retains the canonical relative order of every selected candidate.
 
-**Blast radius.** Every produce reaching a channel group whose pre-produce datum pool is empty and
-whose waiting receives contain at least one exact-ground bind, plus every consume whose exact-ground
-bind scans resting data through the opted-in Rholang matcher. Installed and persistent receives are
-included in the same versioned candidate vector. No user-facing Rholang API or wire migration is
-introduced.
+**Blast radius.** Every produce reaching a channel group whose waiting receives contain at least
+one compiled bind, whether the pre-produce datum pool is empty or populated, plus every consume
+whose compiled bind scans resting data through the opted-in Rholang matcher. Installed and
+persistent receives are included in the same versioned candidate vector. No user-facing Rholang API
+or wire migration is introduced.
 
 #### (c) Why the change is necessary, and the current containment argument
 
@@ -2559,7 +2588,7 @@ subsets before any datum decode or spatial-match state allocation. A flat `Vec`,
 `BTreeMap` transition authority would lose that shared-prefix property and is not the selected
 design.
 
-The current containment argument has thirteen independently checked parts:
+The current containment argument has fifteen independently checked parts:
 
 1. exact-ground `BindPattern` and matching `ListParWithRandom` values use the same canonical
    structural sequence;
@@ -2582,11 +2611,15 @@ The current containment argument has thirteen independently checked parts:
     preserve canonical candidate order after filtering; and
 12. Rocq proves that if the exact-prefix and residual-query predicates are each supersets of the
     authoritative spatial relation, their conjunction cannot remove a spatial success and filtering
-    preserves the first spatially accepted candidate in canonical order; and
+    preserves the first spatially accepted candidate in canonical order;
 13. compact remainder occupancy reproduces the predecessor universal-root initialization and
-    displacement scan, while Bag subtraction conserves the exact unassigned multiplicity.
+    displacement scan, while Bag subtraction conserves the exact unassigned multiplicity;
 14. accepted-match datum removal projects only stored nonpersistent candidates into an exact-key
-    multiplicity delta, and publishes either the complete play/replay result or the unchanged Bag.
+    multiplicity delta, and publishes either the complete play/replay result or the unchanged Bag;
+    and
+15. the datum-first product walks both the arriving datum and authoritative resting Bag, admits
+    every reached prefix terminal conservatively, keeps residual checks at the spatial oracle, and
+    preserves predecessor order through the original candidate bitmap.
 
 Cache-counter saturation returns `None` and recompiles instead of accepting a stale trie. Cache hits
 borrow the trie under a sharded map guard and perform no `PathMap` clone. Empty groups remove their
@@ -2595,19 +2628,21 @@ the verdict axis.
 
 #### Evidence and retirement gate
 
-- `retained_set_automaton_spec`: **4/4** exact-terminal, longest-exact-query-prefix,
-  post-wildcard residual-filter, root-fallback, repeated-position, direct-match-superset, and
-  4,096-candidate shared-terminal checks. **MEASURED.**
+- `retained_set_automaton_spec`: **8/8** exact-terminal, longest-exact-query-prefix,
+  post-wildcard residual-filter, root-fallback, repeated-position, direct-match-superset,
+  embedded-zero/branching product, singleton diverse/shared 16/256/4,096, and multi-depth linear-
+  fallback checks in both debug and release. **MEASURED.**
 - continuation-version lifecycle: **2/2** group-local and whole-state invalidation checks.
   **MEASURED.**
 - `retained_path_index_test`: **3/3** Rholang exact-ground agreement, unequal-ground separation, and
   binding/connective fallback checks. **MEASURED.**
 - `storage_actions_test` with path indexing enabled: **41/41**, covering single and joined receives,
   repeated channels, persistence, checkpoint, reset, and soft-revert. **MEASURED.**
-- `candidate_path_pruning_spec`: **9/9**, including receive-first flat/nested and datum-first waiting-
+- `candidate_path_pruning_spec`: **10/10**, including receive-first flat/nested and datum-first waiting-
   continuation 256-to-1 spatial-call witnesses, exact/wildcard/repeated-capture/ordered-remainder/
   nested product traversal, embedded-zero/double-escape framing, identical COMM/event/state
-  projections, and a structural false positive rejected by the spatial oracle. **MEASURED.**
+  projections, a structural false positive rejected by the spatial oracle, and a resting-only COMM
+  deliberately installed before matcher activation. **MEASURED.**
 - `rho_path_spec`: **10/10**, including channel-relative complete-key equivalence, malformed framing, embedded double-zero escapes, capture
   equality, every proper shallow truncation, a 20,000-level nested query on a 128 KiB worker stack,
   and a million-byte iterative scan on the same stack size. **MEASURED.**
@@ -2663,6 +2698,17 @@ the verdict axis.
   matrix is non-regressing at one entry and retains **48.7–53.4%**, **12.22–13.01×**, and
   **238.8–256.9×** treatment throughput at 16/256/4,096. **MEASURED.** This repairs the resource
   regression but does not discharge verdict or post-state equivalence.
+- checkpoints `ad395c357` and `61accc170` implement the distinct datum-first retained-automaton/Bag
+  product. Experiments 224 and 225 preserve rejected intermediate traversals. Experiment 226 accepts
+  the release-safe terminal-depth specialization, and exact-final-source experiment 229 accepts
+  shared/256 at **207.20 ns versus 840.48 ns** ($`p = 1.6872 \times 10^{-171}`$, 95% mean-difference
+  confidence interval $`[-634.4884, -632.0678]\,\mathrm{ns}`$) while shared/4,096 is **11.59×**
+  faster. Shared/16 remains the disclosed fixed-cost crossover. The release automaton suite passes
+  **8/8**, all **12/12**
+  benchmark result preflights pass, the complete package passes **428/428**, focused strict lint
+  passes, and `SpatialMatcher.v` recompiles. **MEASURED for semantics/performance; PROVEN
+  CONDITIONALLY for the abstract fresh-or-resting superset composition.** Complete generated
+  schedules and post-state roots remain open.
 - checkpoint `5a56376b4` proves the abstract retained-filter composition law in Rocq. The complete
   bounded formal bundle passes: Rocq, Verus `--no-cheating` (**6/6**), Z3, PDA TLC (**2,816 distinct
   states**), spatial-matcher TLC (**478 distinct states**), and live Bag-commit TLC (**2,628 distinct
@@ -2685,7 +2731,9 @@ old-selector/new-selector differential covers every eligible and fallback `BindP
 play/replay traces and post-state roots agree over generated schedules, and the formal superset
 premises are discharged for the concrete generated compiler over that same complete family. The retained-receive
 throughput pair has passed; the resting-data curve is non-regressing at one entry after the
-proof-derived base-case repair and passes from 16 through 4,096 entries. Timing cannot close a
+proof-derived base-case repair and passes from 16 through 4,096 entries. The datum-first direct
+product passes its shared/256 and shared/4,096 performance criteria after retaining two rejected
+designs; its cardinality-16 fixed cost remains explicit. Timing cannot close a
 consensus obligation in either direction.
 
 ---

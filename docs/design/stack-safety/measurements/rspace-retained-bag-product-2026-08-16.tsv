@@ -1,0 +1,54 @@
+# RSpace datum-first retained-automaton × authoritative Bag candidate selection.
+# Production implementation: 61accc170. The Bag remains PathMap<Multiplicity>; the retained transition authority remains PathMap<TerminalId>.
+# Host: AMD Ryzen Threadripper PRO 5975WX, 32 physical cores, SMT disabled; CPU 8 pinned; performance governor; boost enabled.
+# Command: systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 taskset -c 8 cargo bench -p rspace_plus_plus --bench rspace_retained_bag_product
+# Fixture: one deliberately last matching resting datum, one unrelated fresh datum, canonical control order, and exact result equivalence before timing. Diverse and long-shared-prefix candidate corpora use 16, 256, and 4,096 retained continuations.
+# Criterion: one shot per experiment; 82 post-warm-up samples per arm/cell; 2 s warm-up; 5 s requested measurement interval; 99% confidence; 1% significance; no competing Cargo or rustc process at preflight.
+# Experiment 224: REJECTED. Bytewise synchronized zippers won at large cardinality but shared/256 regressed 2.104x. Pgmcp digests: control sha256:572593b1f91fd37329196f1284e37ab8c69d478c3572f129be38e26308c0a86d; treatment sha256:df10cab03df38ca5f8544825fc83e86b24877212306cef4def38adfafbbe3668.
+# Experiment 225: REJECTED. Compressed unary descent reduced the rejected shared/256 treatment by 43.6% but remained 14.5% slower than its contemporaneous control. Pgmcp digests include seven metrics because one non-decisional duplicated historical metric was retained transparently: control sha256:313fbfae5535f06ef6a2c7039009d29f25c902e6cbd2232e39789fec5779dedc; treatment sha256:06d4c2562a04983be4ec274006c46a138ca15767e18eb81328b4b89a5fd5fb31.
+# Experiment 226: ACCEPTED after release preflight corrected assertion-gated zipper movement before timing. The measured singleton specialization uses a deduplicated terminal-depth schedule and exact PathMap prefix probes. Primary shared/256: Welch t=-1637.519071659, p=9.0829891259e-196, Cohen's d=-255.737513585, mean-difference 95% CI [-717.627227456,-715.887015298] ns. Pgmcp digests: control sha256:54de5a7e29d62a1850af3f080dbd620362706ef6391e79a2c8c23c111ab96b5a; treatment sha256:236d1dc1919ff2e826c0329cb47de585f7c88ad58bb93fc2a19adc38b3b51d45.
+# Experiment 229: exact-final-source ACCEPTED. Zero/one eligible terminal depths use zero/one exact lookup; multiple depths use the linear synchronized zipper product, bounding adversarial lookup work. Primary shared/256: Welch t=-1040.864588233, p=1.6871643573e-171, Cohen's d=-162.555738361, mean-difference 95% CI [-634.488389524,-632.067833619] ns. Pgmcp digests: control sha256:4ad7250a7cbc7c2002fed8644612545214188ee5c5957b0216301720080b90c6; treatment sha256:31b83c5592a3b28fe92fc093093ca1dd9cda9bee7d9edee10c8ed811ec3ccce7.
+# Correctness gates for final source: 8/8 release retained-automaton tests; 12/12 benchmark equivalence cells; 428/428 complete rspace_plus_plus package tests; strict lint for the production library and touched test/benchmark; Rocq SpatialMatcher.v recompiles. No traversal cap, RUST_MIN_STACK, stacker, occurrence expansion, or Bag flattening is used.
+date	production_commit	experiment_id	implementation	prefix_shape	cardinality	arm	samples	raw_mean_ns	raw_stddev_ns	control_over_treatment_speedup	memory_max_mib	swap_max_mib	cpu_affinity	result
+2026-08-16	61accc170	224	bytewise_zipper_product	diverse	16	control	82	54.174000	NA	NA	8192	0	8	control
+2026-08-16	61accc170	224	bytewise_zipper_product	diverse	16	treatment	82	540.232000	NA	0.100278	8192	0	8	rejected-small-fixed-cost
+2026-08-16	61accc170	224	bytewise_zipper_product	diverse	256	control	82	882.364000	NA	NA	8192	0	8	control
+2026-08-16	61accc170	224	bytewise_zipper_product	diverse	256	treatment	82	698.003000	NA	1.264127	8192	0	8	benefit-secondary
+2026-08-16	61accc170	224	bytewise_zipper_product	diverse	4096	control	82	14689.058000	NA	NA	8192	0	8	control
+2026-08-16	61accc170	224	bytewise_zipper_product	diverse	4096	treatment	82	1696.037000	NA	8.660813	8192	0	8	benefit-secondary
+2026-08-16	61accc170	224	bytewise_zipper_product	shared	16	control	82	55.734000	NA	NA	8192	0	8	control
+2026-08-16	61accc170	224	bytewise_zipper_product	shared	16	treatment	82	1836.999000	NA	0.030340	8192	0	8	rejected-small-fixed-cost
+2026-08-16	61accc170	224	bytewise_zipper_product	shared	256	control	82	888.961000	NA	NA	8192	0	8	primary-control
+2026-08-16	61accc170	224	bytewise_zipper_product	shared	256	treatment	82	1870.038000	NA	0.475370	8192	0	8	statistically-rejected-primary
+2026-08-16	61accc170	224	bytewise_zipper_product	shared	4096	control	82	14960.207000	NA	NA	8192	0	8	control
+2026-08-16	61accc170	224	bytewise_zipper_product	shared	4096	treatment	82	2753.431000	NA	5.433297	8192	0	8	benefit-secondary
+2026-08-16	61accc170	225	compressed_unary_product	diverse	16	control	82	50.418000	NA	NA	8192	0	8	control
+2026-08-16	61accc170	225	compressed_unary_product	diverse	16	treatment	82	394.802000	NA	0.127704	8192	0	8	rejected-small-fixed-cost
+2026-08-16	61accc170	225	compressed_unary_product	diverse	256	control	82	866.542000	NA	NA	8192	0	8	control
+2026-08-16	61accc170	225	compressed_unary_product	diverse	256	treatment	82	515.587000	NA	1.680690	8192	0	8	benefit-secondary
+2026-08-16	61accc170	225	compressed_unary_product	diverse	4096	control	82	14105.688000	NA	NA	8192	0	8	control
+2026-08-16	61accc170	225	compressed_unary_product	diverse	4096	treatment	82	1525.136000	NA	9.248807	8192	0	8	benefit-secondary
+2026-08-16	61accc170	225	compressed_unary_product	shared	16	control	82	55.619000	NA	NA	8192	0	8	control
+2026-08-16	61accc170	225	compressed_unary_product	shared	16	treatment	82	994.866000	NA	0.055906	8192	0	8	rejected-small-fixed-cost
+2026-08-16	61accc170	225	compressed_unary_product	shared	256	control	82	920.970000	NA	NA	8192	0	8	primary-control
+2026-08-16	61accc170	225	compressed_unary_product	shared	256	treatment	82	1054.760000	NA	0.873158	8192	0	8	statistically-rejected-primary
+2026-08-16	61accc170	225	compressed_unary_product	shared	4096	control	82	15343.942000	NA	NA	8192	0	8	control
+2026-08-16	61accc170	225	compressed_unary_product	shared	4096	treatment	82	1994.964000	NA	7.691348	8192	0	8	benefit-secondary
+2026-08-16	61accc170	226	terminal_depth_schedule	diverse	16	control	82	46.703042	0.108617	NA	8192	0	8	control
+2026-08-16	61accc170	226	terminal_depth_schedule	diverse	16	treatment	82	151.421653	0.794599	0.308431	8192	0	8	documented-fixed-cost-crossover
+2026-08-16	61accc170	226	terminal_depth_schedule	diverse	256	control	82	835.994393	3.596430	NA	8192	0	8	control
+2026-08-16	61accc170	226	terminal_depth_schedule	diverse	256	treatment	82	270.442504	1.749091	3.091257	8192	0	8	benefit-secondary
+2026-08-16	61accc170	226	terminal_depth_schedule	diverse	4096	control	82	12984.690347	22.117422	NA	8192	0	8	control
+2026-08-16	61accc170	226	terminal_depth_schedule	diverse	4096	treatment	82	1276.297398	5.576758	10.173727	8192	0	8	benefit-secondary
+2026-08-16	61accc170	226	terminal_depth_schedule	shared	16	control	82	48.699988	0.181273	NA	8192	0	8	control
+2026-08-16	61accc170	226	terminal_depth_schedule	shared	16	treatment	82	146.540309	0.467489	0.332333	8192	0	8	documented-fixed-cost-crossover
+2026-08-16	61accc170	226	terminal_depth_schedule	shared	256	control	82	932.833572	3.901264	NA	8192	0	8	primary-control
+2026-08-16	61accc170	226	terminal_depth_schedule	shared	256	treatment	82	216.076450	0.700329	4.317147	8192	0	8	statistically-accepted-primary
+2026-08-16	61accc170	226	terminal_depth_schedule	shared	4096	control	82	14953.942452	248.703845	NA	8192	0	8	control
+2026-08-16	61accc170	226	terminal_depth_schedule	shared	4096	treatment	82	1177.995280	3.117647	12.694399	8192	0	8	benefit-secondary
+2026-08-16	61accc170	229	bounded_terminal_depth_schedule	shared	16	control	82	52.702688	0.296622	NA	8192	0	8	control
+2026-08-16	61accc170	229	bounded_terminal_depth_schedule	shared	16	treatment	82	136.230141	0.503206	0.386856	8192	0	8	documented-fixed-cost-crossover
+2026-08-16	61accc170	229	bounded_terminal_depth_schedule	shared	256	control	82	840.476911	5.488367	NA	8192	0	8	primary-control
+2026-08-16	61accc170	229	bounded_terminal_depth_schedule	shared	256	treatment	82	207.198799	0.481367	4.056381	8192	0	8	statistically-accepted-primary
+2026-08-16	61accc170	229	bounded_terminal_depth_schedule	shared	4096	control	82	13711.804490	151.488518	NA	8192	0	8	control
+2026-08-16	61accc170	229	bounded_terminal_depth_schedule	shared	4096	treatment	82	1182.790473	4.330806	11.592744	8192	0	8	benefit-secondary
