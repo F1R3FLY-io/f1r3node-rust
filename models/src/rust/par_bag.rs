@@ -23,6 +23,8 @@ use std::cell::RefCell;
 use std::fmt;
 use std::marker::PhantomData;
 
+use prost::bytes::BufMut;
+use prost::encoding::{encode_key, encoded_len_varint, key_len, WireType};
 use rspace_plus_plus::rspace::bag::{Bag, BagCodecError, BagError, Multiplicity};
 use rspace_plus_plus::rspace::serializers::cold_store_decode::{
     ColdStoreDecode, ColdStoreDecodeError,
@@ -169,6 +171,47 @@ impl std::error::Error for ParBagCodecError {
 
 impl From<BagCodecError> for ParBagCodecError {
     fn from(error: BagCodecError) -> Self { Self::Bag(error) }
+}
+
+/// Failure to expand the compact multiplicity representation onto the legacy
+/// repeated-message protobuf surface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParBagProtobufError {
+    Codec(ParBagCodecError),
+    EncodedLengthOverflow {
+        tag: ParComponentTag,
+        multiplicity: u64,
+        one_occurrence_bytes: usize,
+    },
+}
+
+impl fmt::Display for ParBagProtobufError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Codec(error) => error.fmt(formatter),
+            Self::EncodedLengthOverflow {
+                tag,
+                multiplicity,
+                one_occurrence_bytes,
+            } => write!(
+                formatter,
+                "expanding {multiplicity} {tag:?} occurrence(s) of {one_occurrence_bytes} byte(s) overflows the protobuf output length"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ParBagProtobufError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Codec(error) => Some(error),
+            Self::EncodedLengthOverflow { .. } => None,
+        }
+    }
+}
+
+impl From<ParBagCodecError> for ParBagProtobufError {
+    fn from(error: ParBagCodecError) -> Self { Self::Codec(error) }
 }
 
 /// Error from a decoded trie traversal, preserving a caller's own error type.
@@ -492,6 +535,112 @@ impl ParBag {
 
     pub fn from_compact_bytes(bytes: &[u8]) -> Result<Self, ParBagCodecError> {
         Self::try_from_bag(Bag::from_compact_bytes(bytes)?)
+    }
+
+    /// Exact length of the legacy repeated-message protobuf component fields.
+    /// Root metadata fields 9 and 10 are owned by the eventual repository
+    /// `Par` wrapper and are deliberately outside this component Bag.
+    pub fn protobuf_components_encoded_len(&self) -> Result<usize, ParBagProtobufError> {
+        let mut total = 0usize;
+        self.add_protobuf_family_len::<Send>(&mut total)?;
+        self.add_protobuf_family_len::<Receive>(&mut total)?;
+        self.add_protobuf_family_len::<New>(&mut total)?;
+        self.add_protobuf_family_len::<Expr>(&mut total)?;
+        self.add_protobuf_family_len::<Match>(&mut total)?;
+        self.add_protobuf_family_len::<GUnforgeable>(&mut total)?;
+        self.add_protobuf_family_len::<Connective>(&mut total)?;
+        self.add_protobuf_family_len::<Bundle>(&mut total)?;
+        self.add_protobuf_family_len::<If>(&mut total)?;
+        Ok(total)
+    }
+
+    /// Stream protobuf fields from trie endpoints in canonical tag/key order.
+    /// Each distinct payload is decoded once and emitted `Multiplicity` times;
+    /// no repeated-field `Vec` or legacy `Par` is materialized.
+    pub fn protobuf_components_to_vec(&self) -> Result<Vec<u8>, ParBagProtobufError> {
+        let encoded_len = self.protobuf_components_encoded_len()?;
+        let mut output = Vec::with_capacity(encoded_len);
+        self.encode_protobuf_family::<Send>(&mut output)?;
+        self.encode_protobuf_family::<Receive>(&mut output)?;
+        self.encode_protobuf_family::<New>(&mut output)?;
+        self.encode_protobuf_family::<Expr>(&mut output)?;
+        self.encode_protobuf_family::<Match>(&mut output)?;
+        self.encode_protobuf_family::<GUnforgeable>(&mut output)?;
+        self.encode_protobuf_family::<Connective>(&mut output)?;
+        self.encode_protobuf_family::<Bundle>(&mut output)?;
+        self.encode_protobuf_family::<If>(&mut output)?;
+        debug_assert_eq!(output.len(), encoded_len);
+        Ok(output)
+    }
+
+    fn add_protobuf_family_len<T>(&self, total: &mut usize) -> Result<(), ParBagProtobufError>
+    where T: ParBagComponent + crate::rust::rholang::protobuf_schema::ProtobufNode {
+        self.try_visit_decoded::<T, ParBagProtobufError>(|value, multiplicity| {
+            let body_len = crate::rust::rholang::protobuf_encoder::encoded_len(&value);
+            let body_len_u64 = u64::try_from(body_len).map_err(|_| {
+                ParBagProtobufError::EncodedLengthOverflow {
+                    tag: T::TAG,
+                    multiplicity: multiplicity.get(),
+                    one_occurrence_bytes: body_len,
+                }
+            })?;
+            let one_occurrence = key_len(T::TAG.byte().into())
+                .checked_add(encoded_len_varint(body_len_u64))
+                .and_then(|framing| framing.checked_add(body_len))
+                .ok_or(ParBagProtobufError::EncodedLengthOverflow {
+                    tag: T::TAG,
+                    multiplicity: multiplicity.get(),
+                    one_occurrence_bytes: body_len,
+                })?;
+            let repetitions = usize::try_from(multiplicity.get()).map_err(|_| {
+                ParBagProtobufError::EncodedLengthOverflow {
+                    tag: T::TAG,
+                    multiplicity: multiplicity.get(),
+                    one_occurrence_bytes: one_occurrence,
+                }
+            })?;
+            let family_len = one_occurrence.checked_mul(repetitions).ok_or(
+                ParBagProtobufError::EncodedLengthOverflow {
+                    tag: T::TAG,
+                    multiplicity: multiplicity.get(),
+                    one_occurrence_bytes: one_occurrence,
+                },
+            )?;
+            *total = total.checked_add(family_len).ok_or(
+                ParBagProtobufError::EncodedLengthOverflow {
+                    tag: T::TAG,
+                    multiplicity: multiplicity.get(),
+                    one_occurrence_bytes: one_occurrence,
+                },
+            )?;
+            Ok(())
+        })
+        .map_err(|error| match error {
+            ParBagVisitError::Codec(error) => ParBagProtobufError::Codec(error),
+            ParBagVisitError::Visitor(error) => error,
+        })
+    }
+
+    fn encode_protobuf_family<T>(
+        &self,
+        output: &mut impl BufMut,
+    ) -> Result<(), ParBagProtobufError>
+    where
+        T: ParBagComponent + crate::rust::rholang::protobuf_schema::ProtobufNode,
+    {
+        self.try_visit_decoded::<T, ParBagProtobufError>(|value, multiplicity| {
+            for _ in 0..multiplicity.get() {
+                encode_key(T::TAG.byte().into(), WireType::LengthDelimited, output);
+                crate::rust::rholang::protobuf_encoder::encode_length_delimited_body_into(
+                    &value, output,
+                );
+            }
+            Ok(())
+        })
+        .map_err(|error| match error {
+            ParBagVisitError::Codec(error) => ParBagProtobufError::Codec(error),
+            ParBagVisitError::Visitor(error) => error,
+        })
     }
 }
 

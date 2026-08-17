@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
 
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{Bundle, Expr, GUnforgeable, Par, Send};
+use models::rhoapi::{Bundle, Connective, Expr, GUnforgeable, If, Match, New, Par, Receive, Send};
 use models::rust::par_bag::{
-    with_component_key, ParBag, ParBagCodecError, ParComponentTag, PAR_BAG_KEY_DOMAIN,
+    with_component_key, ParBag, ParBagCodecError, ParBagProtobufError, ParComponentTag,
+    PAR_BAG_KEY_DOMAIN,
 };
+use prost::Message as _;
 use rspace_plus_plus::rspace::bag::{Bag, Multiplicity};
 
 mod par_corpus;
@@ -191,6 +193,50 @@ fn direct_act_image_round_trips_without_an_entry_projection() {
     assert_eq!(decoded, bag);
 }
 
+fn canonical_component_par(bag: &ParBag) -> Par {
+    let mut par = Par::default();
+    macro_rules! expand {
+        ($ty:ty, $field:ident) => {
+            bag.try_visit_decoded::<$ty, ()>(|value, multiplicity| {
+                for _ in 0..multiplicity.get() {
+                    par.$field.push(value.clone());
+                }
+                Ok(())
+            })
+            .expect("valid ParBag")
+        };
+    }
+    expand!(Send, sends);
+    expand!(Receive, receives);
+    expand!(New, news);
+    expand!(Expr, exprs);
+    expand!(Match, matches);
+    expand!(GUnforgeable, unforgeables);
+    expand!(Connective, connectives);
+    expand!(Bundle, bundles);
+    expand!(If, conditionals);
+    par
+}
+
+#[test]
+fn protobuf_streams_canonical_trie_order_without_reconstructing_production_vecs() {
+    let mut source = corpus::all_par_fields();
+    source.exprs.push(source.exprs[0].clone());
+    let bag = ParBag::import_legacy(&source).expect("import");
+
+    // Test-only oracle: reconstruct the canonical repeated fields and hand
+    // them to the already-proven generated encoder. Production calls the
+    // ParBag streamer directly and never builds this projection.
+    let oracle = canonical_component_par(&bag);
+    let expected = models::rust::rholang::protobuf_encoder::encode_to_vec(&oracle);
+    let actual = bag.protobuf_components_to_vec().expect("stream");
+    assert_eq!(actual, expected);
+    assert_eq!(
+        bag.protobuf_components_encoded_len().expect("length"),
+        actual.len()
+    );
+}
+
 #[test]
 fn deep_component_import_and_act_validation_are_stack_safe() {
     let par = corpus::deep_par(4_096);
@@ -201,6 +247,30 @@ fn deep_component_import_and_act_validation_are_stack_safe() {
         ParBag::from_compact_bytes(&bytes).expect("deep decode"),
         bag
     );
+    let protobuf = bag.protobuf_components_to_vec().expect("deep protobuf");
+    let decoded = Par::decode(protobuf.as_slice()).expect("stack-safe Par protobuf decoder");
+    assert_eq!(decoded.exprs.len(), 1);
+}
+
+#[test]
+fn protobuf_expansion_rejects_impossible_output_length_before_allocating() {
+    let value = Expr {
+        expr_instance: Some(ExprInstance::GInt(1)),
+    };
+    let mut bag = ParBag::new();
+    bag.insert_many(
+        &value,
+        Multiplicity::new(u64::MAX).expect("positive multiplicity"),
+    )
+    .expect("logical multiplicity fits Bag");
+    assert!(matches!(
+        bag.protobuf_components_encoded_len(),
+        Err(ParBagProtobufError::EncodedLengthOverflow {
+            tag: ParComponentTag::Expr,
+            multiplicity: u64::MAX,
+            ..
+        })
+    ));
 }
 
 #[test]
