@@ -1396,10 +1396,20 @@ impl EntryTrie {
             EPathMapRepr::Empty => Self::default(),
             EPathMapRepr::Set(left) => Self::algebra_result(EPathMapRepr::Set(left.subtract(keys))),
             EPathMapRepr::Map(left) => {
+                use pathmap::zipper::{ZipperMoving, ZipperWriting};
+
                 let mut difference = left.clone();
-                for (key, ()) in keys.iter() {
-                    if let Some(removed) = difference.remove(&key) {
-                        crate::rust::rholang::par_children::dismantle(removed);
+                {
+                    let mut cursor = difference.write_zipper();
+                    for (key, ()) in keys.iter() {
+                        cursor.move_to_path(&key);
+                        let removed = cursor.remove_val(false);
+                        if removed.is_some() {
+                            cursor.prune_ascend();
+                        }
+                        if let Some(removed) = removed {
+                            crate::rust::rholang::par_children::dismantle(removed);
+                        }
                     }
                 }
                 Self::algebra_result(EPathMapRepr::Map(difference))
@@ -1418,10 +1428,18 @@ impl EntryTrie {
             EPathMapRepr::Empty => Self::default(),
             EPathMapRepr::Set(left) => Self::algebra_result(EPathMapRepr::Set(left.meet(keys))),
             EPathMapRepr::Map(left) => {
+                use pathmap::zipper::{ZipperMoving, ZipperValues, ZipperWriting};
+
                 let mut selected = RholangMapPathMap::new();
-                for (key, ()) in keys.iter() {
-                    if let Some(value) = left.get(&key) {
-                        selected.insert(&key, value.clone());
+                {
+                    let mut source = left.read_zipper();
+                    let mut destination = selected.write_zipper();
+                    for (key, ()) in keys.iter() {
+                        source.move_to_path(&key);
+                        if let Some(value) = source.val() {
+                            destination.move_to_path(&key);
+                            destination.set_val(value.clone());
+                        }
                     }
                 }
                 Self::algebra_result(EPathMapRepr::Map(selected))
