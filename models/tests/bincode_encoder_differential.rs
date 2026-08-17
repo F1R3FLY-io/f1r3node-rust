@@ -532,11 +532,12 @@ fn the_generated_variant_table_is_not_degenerate() {
         EXPR_INSTANCE_VARIANT_COUNT,
         "the count must BE the table's length"
     );
-    assert!(
-        EXPR_INSTANCE_VARIANT_COUNT >= 36,
-        "the schema has at least 36 ExprInstance arms; a smaller table means the generator \
-         silently dropped some"
-    );
+    const {
+        assert!(
+            EXPR_INSTANCE_VARIANT_COUNT >= 36,
+            "a smaller ExprInstance table means the generator silently dropped variants"
+        );
+    }
     for (i, v) in EXPR_INSTANCE_VARIANTS.iter().enumerate() {
         assert_eq!(
             v.serde_index, i as u32,

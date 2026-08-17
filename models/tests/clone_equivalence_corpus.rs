@@ -1192,17 +1192,18 @@ fn the_emitters_join_tables_describe_a_real_conversion() {
          WHOLE, i.e. Θ(depth).",
         CLONE_DESCEND_SET.len()
     );
-    assert!(
-        CLONE_RESIDUAL_HEIGHT > 0,
-        "a residual height of 0 would mean the residual graph has no edges at all, which \
-         contradicts `CLONE_DESCEND_SET` being non-empty"
-    );
-    assert!(
-        CLONE_RESIDUAL_HEIGHT < 16,
-        "the residual height is {CLONE_RESIDUAL_HEIGHT}. It bounds a generated field-wise \
-         `clone`'s NATIVE recursion, so it must be a small constant of the schema; a large value \
-         means the cut set is not cutting."
-    );
+    const {
+        assert!(
+            CLONE_RESIDUAL_HEIGHT > 0,
+            "a residual height of 0 would mean the residual graph has no edges at all, which \
+             contradicts `CLONE_DESCEND_SET` being non-empty"
+        );
+        assert!(
+            CLONE_RESIDUAL_HEIGHT < 16,
+            "the residual height must remain below 16 so the generated field-wise clone has a \
+             small schema-bounded native recursion height"
+        );
+    }
     assert_eq!(
         CLONE_EXTERN_BOUNDED,
         &["EPathMap"],

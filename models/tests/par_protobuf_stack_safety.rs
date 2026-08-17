@@ -194,9 +194,9 @@ fn every_production_envelope_crosses_the_par_feedback_vertex_stack_safely() {
         .stack_size(SMALL_STACK)
         .spawn(|| {
             assert!(!ENVELOPES.is_empty());
-            for index in 0..ENVELOPES.len() {
+            for (index, envelope) in ENVELOPES.iter().enumerate() {
                 let term = nested_list(DEPTH);
-                assert_eq!(par_depth(&term), DEPTH, "{} fixture", ENVELOPES[index]);
+                assert_eq!(par_depth(&term), DEPTH, "{envelope} fixture");
                 assert_envelope(index, term);
             }
         })

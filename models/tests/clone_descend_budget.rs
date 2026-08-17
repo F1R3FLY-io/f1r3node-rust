@@ -279,7 +279,7 @@ fn reachable_count(root: &Par) -> usize {
 
 /// The `Par` descendants of `p` at cut-set depth exactly `d` (`d ≥ 1`), over the
 /// same hand-written relation.
-fn descendants_at<'a>(p: &'a Par, d: usize) -> Vec<&'a Par> {
+fn descendants_at(p: &Par, d: usize) -> Vec<&Par> {
     let mut frontier: Vec<&Par> = vec![p];
     for _ in 0..d {
         let mut next: Vec<&Par> = Vec::with_capacity(frontier.len() * 2);
@@ -329,26 +329,19 @@ const RECURSIVE_ORACLE_MAX_LEVELS: usize = 16;
 /// mode is a silent revert, not a compile error.
 #[test]
 fn the_budget_is_not_zero() {
-    assert!(
-        CLONE_DESCEND_BUDGET >= 1,
-        "CLONE_DESCEND_BUDGET is {CLONE_DESCEND_BUDGET}. Zero is the PRE-BUDGET machine \
-         verbatim — `clone_push_children_*` suspends every cut-set child and the trampoline is \
-         re-entered once per `Par` node — so this whole file, the equivalence corpus and the \
-         depth gate would all stay green while the amortization was gone. See \
-         `models/codegen/schema.rs`'s `DESCEND_BUDGET` for the derivation of the value."
-    );
-    // The upper bound is not a correctness bound (the prefix is a constant at every
-    // budget) but a REVIEW bound: past this, the constant costs a share of the
-    // smallest production stack that ought to be argued for rather than assumed.
-    assert!(
-        CLONE_DESCEND_BUDGET <= 8,
-        "CLONE_DESCEND_BUDGET is {CLONE_DESCEND_BUDGET}. Nothing about correctness breaks — the \
-         native prefix is a constant at every budget and the surviving depth stays unbounded — \
-         but at the conservative 7,021 B/level family slope this spends \
-         {} B of a 2 MiB worker's stack on a constant, and a share that large should come with \
-         its own measurement rather than inherit this one's.",
-        (CLONE_DESCEND_BUDGET + 1) * 7_021
-    );
+    const {
+        assert!(
+            CLONE_DESCEND_BUDGET >= 1,
+            "a zero clone descend budget restores the pre-budget machine"
+        );
+        // The upper bound is not a correctness bound (the prefix is a constant at every
+        // budget) but a REVIEW bound: past this, the constant costs a share of the
+        // smallest production stack that ought to be argued for rather than assumed.
+        assert!(
+            CLONE_DESCEND_BUDGET <= 8,
+            "a clone descend budget above eight requires a new native-stack measurement"
+        );
+    }
 }
 
 /// ★ The modal case, which is 95.43% of measured produces: a depth-2 datum is a
@@ -549,11 +542,12 @@ fn the_counted_walk_reproduces_the_oracle() {
 /// resolution floor to the wrong slope is not a depth budget.
 #[test]
 fn the_prefix_is_a_constant_and_that_is_why_depth_stays_unbounded() {
-    assert!(
-        CLONE_RESIDUAL_HEIGHT > 0 && CLONE_RESIDUAL_HEIGHT < 16,
-        "CLONE_RESIDUAL_HEIGHT is {CLONE_RESIDUAL_HEIGHT}; the prefix bound \
-         `(k + 1) × CLONE_RESIDUAL_HEIGHT` is only a constant of the schema while this is one."
-    );
+    const {
+        assert!(
+            CLONE_RESIDUAL_HEIGHT > 0 && CLONE_RESIDUAL_HEIGHT < 16,
+            "clone residual height must remain a small, positive schema constant"
+        );
+    }
 
     // The prefix is bounded by the BUDGET, so the same term at any depth costs the
     // same number of native levels — which is the property that makes the stack

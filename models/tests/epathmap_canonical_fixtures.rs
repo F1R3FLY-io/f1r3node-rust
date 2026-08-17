@@ -265,12 +265,7 @@ fn clear_locally_free(map: &EPathMap) -> EPathMap {
             cleared
         })
         .collect();
-    EPathMap::new(
-        entries,
-        Vec::new(),
-        map.connective_used,
-        map.remainder.clone(),
-    )
+    EPathMap::new(entries, Vec::new(), map.connective_used, map.remainder)
 }
 
 /// THE serialize-only normalization (models/build.rs injects
@@ -416,12 +411,12 @@ fn event_hash_goldens_produce() {
     check_pinned_hex(
         "INDEX_CHANNEL_HASH_HEX",
         pinned::INDEX_CHANNEL_HASH_HEX,
-        &hex::encode(&produce1.channel_hash.bytes()),
+        &hex::encode(produce1.channel_hash.bytes()),
     );
     check_pinned_hex(
         "PRODUCE_INDEX_RS1_HASH_HEX",
         pinned::PRODUCE_INDEX_RS1_HASH_HEX,
-        &hex::encode(&produce1.hash.bytes()),
+        &hex::encode(produce1.hash.bytes()),
     );
 
     // Same pars, random_state differing in one byte ⇒ DIFFERENT hash: the
@@ -442,7 +437,7 @@ fn event_hash_goldens_produce() {
     check_pinned_hex(
         "PRODUCE_INDEX_RS2_HASH_HEX",
         pinned::PRODUCE_INDEX_RS2_HASH_HEX,
-        &hex::encode(&produce2.hash.bytes()),
+        &hex::encode(produce2.hash.bytes()),
     );
 
     // Persist participates too (hash_produce's third leg).
@@ -539,14 +534,14 @@ fn event_hash_goldens_consume() {
     check_pinned_hex(
         "CONSUME_DISCOVERY_HASH_HEX",
         pinned::CONSUME_DISCOVERY_HASH_HEX,
-        &hex::encode(&consume.hash.bytes()),
+        &hex::encode(consume.hash.bytes()),
     );
     // The consume's channel leg reuses the same stable channel hash as the
     // produce side (hash_vec over the singleton).
     check_pinned_hex(
         "INDEX_CHANNEL_HASH_HEX (consume leg)",
         pinned::INDEX_CHANNEL_HASH_HEX,
-        &hex::encode(&consume.channel_hashes[0].bytes()),
+        &hex::encode(consume.channel_hashes[0].bytes()),
     );
 }
 
@@ -578,12 +573,12 @@ fn event_hash_goldens_produce_with_filled_cell_splices_identically() {
     check_pinned_hex(
         "PRODUCE_INDEX_RS1_HASH_HEX (spliced)",
         pinned::PRODUCE_INDEX_RS1_HASH_HEX,
-        &hex::encode(&produce.hash.bytes()),
+        &hex::encode(produce.hash.bytes()),
     );
     check_pinned_hex(
         "INDEX_CHANNEL_HASH_HEX (spliced)",
         pinned::INDEX_CHANNEL_HASH_HEX,
-        &hex::encode(&produce.channel_hash.bytes()),
+        &hex::encode(produce.channel_hash.bytes()),
     );
 }
 
@@ -613,7 +608,7 @@ fn event_hash_goldens_consume_with_filled_cell_splices_identically() {
     check_pinned_hex(
         "CONSUME_DISCOVERY_HASH_HEX (trait plumbing)",
         pinned::CONSUME_DISCOVERY_HASH_HEX,
-        &hex::encode(&consume.hash.bytes()),
+        &hex::encode(consume.hash.bytes()),
     );
 
     // Second: map-bearing pattern + continuation — spliced and direct

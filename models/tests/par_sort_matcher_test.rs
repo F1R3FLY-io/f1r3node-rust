@@ -333,9 +333,9 @@ fn par_should_sort_methods_after_other_expressions() {
             ),
             new_emethod_expr(
                 "nth".to_string(),
-                new_boundvar_par(2, create_bit_vector(&vec![2]), false),
+                new_boundvar_par(2, create_bit_vector(&[2]), false),
                 vec![new_gint_par(1, Vec::new(), false)],
-                create_bit_vector(&vec![2]),
+                create_bit_vector(&[2]),
             ),
             new_eor_expr(
                 new_boundvar_par(3, Vec::new(), false),
@@ -357,9 +357,9 @@ fn par_should_sort_methods_after_other_expressions() {
             ),
             new_emethod_expr(
                 "nth".to_string(),
-                new_boundvar_par(2, create_bit_vector(&vec![2]), false),
+                new_boundvar_par(2, create_bit_vector(&[2]), false),
                 vec![new_gint_par(1, Vec::new(), false)],
-                create_bit_vector(&vec![2]),
+                create_bit_vector(&[2]),
             ),
         ],
         ..Default::default()
@@ -379,30 +379,30 @@ fn par_should_sort_methods_based_on_method_name_target_and_arguments() {
         exprs: vec![
             new_emethod_expr(
                 "nth".to_string(),
-                new_boundvar_par(2, create_bit_vector(&vec![2]), false),
+                new_boundvar_par(2, create_bit_vector(&[2]), false),
                 vec![new_gint_par(1, Vec::new(), false)],
-                create_bit_vector(&vec![2]),
+                create_bit_vector(&[2]),
             ),
             new_emethod_expr(
                 "mth".to_string(),
-                new_boundvar_par(2, create_bit_vector(&vec![2]), false),
+                new_boundvar_par(2, create_bit_vector(&[2]), false),
                 vec![new_gint_par(1, Vec::new(), false)],
-                create_bit_vector(&vec![2]),
+                create_bit_vector(&[2]),
             ),
             new_emethod_expr(
                 "nth".to_string(),
-                new_boundvar_par(2, create_bit_vector(&vec![2]), false),
+                new_boundvar_par(2, create_bit_vector(&[2]), false),
                 vec![
                     new_gint_par(2, Vec::new(), false),
                     new_gint_par(3, Vec::new(), false),
                 ],
-                create_bit_vector(&vec![2]),
+                create_bit_vector(&[2]),
             ),
             new_emethod_expr(
                 "nth".to_string(),
-                new_boundvar_par(2, create_bit_vector(&vec![2]), false),
+                new_boundvar_par(2, create_bit_vector(&[2]), false),
                 vec![new_gint_par(2, Vec::new(), false)],
-                create_bit_vector(&vec![2]),
+                create_bit_vector(&[2]),
             ),
         ],
         ..Default::default()
@@ -412,30 +412,30 @@ fn par_should_sort_methods_based_on_method_name_target_and_arguments() {
         exprs: vec![
             new_emethod_expr(
                 "mth".to_string(),
-                new_boundvar_par(2, create_bit_vector(&vec![2]), false),
+                new_boundvar_par(2, create_bit_vector(&[2]), false),
                 vec![new_gint_par(1, Vec::new(), false)],
-                create_bit_vector(&vec![2]),
+                create_bit_vector(&[2]),
             ),
             new_emethod_expr(
                 "nth".to_string(),
-                new_boundvar_par(2, create_bit_vector(&vec![2]), false),
+                new_boundvar_par(2, create_bit_vector(&[2]), false),
                 vec![new_gint_par(1, Vec::new(), false)],
-                create_bit_vector(&vec![2]),
+                create_bit_vector(&[2]),
             ),
             new_emethod_expr(
                 "nth".to_string(),
-                new_boundvar_par(2, create_bit_vector(&vec![2]), false),
+                new_boundvar_par(2, create_bit_vector(&[2]), false),
                 vec![new_gint_par(2, Vec::new(), false)],
-                create_bit_vector(&vec![2]),
+                create_bit_vector(&[2]),
             ),
             new_emethod_expr(
                 "nth".to_string(),
-                new_boundvar_par(2, create_bit_vector(&vec![2]), false),
+                new_boundvar_par(2, create_bit_vector(&[2]), false),
                 vec![
                     new_gint_par(2, Vec::new(), false),
                     new_gint_par(3, Vec::new(), false),
                 ],
-                create_bit_vector(&vec![2]),
+                create_bit_vector(&[2]),
             ),
         ],
         ..Default::default()

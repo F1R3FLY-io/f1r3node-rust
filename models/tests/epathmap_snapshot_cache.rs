@@ -75,7 +75,7 @@ fn arb_epathmap() -> impl Strategy<Value = EPathMap> {
                         .map(|bit| create_bit_vector(&[bit]))
                         .unwrap_or_default(),
                     connective_used,
-                    with_remainder.then(|| Var {
+                    with_remainder.then_some(Var {
                         var_instance: Some(models::rhoapi::var::VarInstance::FreeVar(0)),
                     }),
                 )
@@ -109,7 +109,7 @@ fn derived_twin(map: &EPathMap) -> DerivedTwin {
         ps: map.trie_snapshot().to_vec(),
         locally_free: map.locally_free.clone(),
         connective_used: map.connective_used,
-        remainder: map.remainder.clone(),
+        remainder: map.remainder,
     }
 }
 
@@ -209,7 +209,7 @@ fn always_equal_vs_derived_ord_wart_survives_the_wrapper() {
         plain.entry_trie().entries_owned(),
         create_bit_vector(&[0]), // [] vs [0x01]
         plain.connective_used,
-        plain.remainder.clone(),
+        plain.remainder,
     );
 
     // AlwaysEqual: equal + same hash (locally_free invisible).

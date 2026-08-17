@@ -303,8 +303,7 @@ fn bounded_walk_over_bare_elements_visits_every_entry_once() {
     let mut exhausted_at = None;
     for step in 0..4 {
         // The reducer's from_key: `segments_to_key(current_path, true)`.
-        let mut from_key: Vec<u8> = current.iter().flatten().copied().collect();
-        from_key.push(0x00);
+        let from_key: Vec<u8> = current.iter().flatten().copied().chain([0x00]).collect();
         match next_value_path(&map, &from_key) {
             Some(segments) => {
                 current = segments.clone();
@@ -340,8 +339,7 @@ fn bounded_walk_over_split_elements_visits_every_entry_once() {
     let mut visited: Vec<Vec<Vec<u8>>> = Vec::with_capacity(3);
     let mut current: Vec<Vec<u8>> = Vec::new();
     for _ in 0..3 {
-        let mut from_key: Vec<u8> = current.iter().flatten().copied().collect();
-        from_key.push(0x00);
+        let from_key: Vec<u8> = current.iter().flatten().copied().chain([0x00]).collect();
         match next_value_path(&map, &from_key) {
             Some(segments) => {
                 current = segments.clone();
