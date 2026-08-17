@@ -9,14 +9,19 @@
 use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::marker::PhantomData;
 
 use prost::bytes::{Buf, BufMut};
 use prost::encoding::wire_type::WireType;
 use prost::encoding::{self, DecodeContext};
 use prost::{DecodeError, Message};
-use rspace_plus_plus::rspace::bag::BagError;
+use rspace_plus_plus::rspace::bag::{BagError, Multiplicity};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::par_bag::{ParBag, ParBagComponent, ParBagProtobufError};
+use super::par_bag::{
+    EncodedParComponent, ParBag, ParBagComponent, ParBagProtobufError, ParBagVisitError,
+};
 use crate::rhoapi::{Bundle, Connective, Expr, GUnforgeable, If, Match, New, Receive, Send};
 
 #[derive(Debug)]
@@ -50,7 +55,7 @@ impl From<ParBagProtobufError> for ParProtobufError {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct Par {
     components: ParBag,
     locally_free: Vec<u8>,
@@ -78,11 +83,81 @@ impl Par {
 
     pub fn into_components(self) -> ParBag { self.components }
 
+    /// Borrow the canonical prefix-compressed Bag image. The image is derived
+    /// once, memoized by `ParBag`, and shared by CoW clones.
+    pub fn compact_snapshot(&self) -> &[u8] { self.components.compact_snapshot() }
+
     pub fn locally_free(&self) -> &[u8] { &self.locally_free }
 
     pub const fn connective_used(&self) -> bool { self.connective_used }
 
     pub fn is_empty(&self) -> bool { self.components.is_empty() }
+
+    pub const fn distinct_len(&self) -> usize { self.components.distinct_len() }
+
+    pub const fn cardinality(&self) -> u128 { self.components.cardinality() }
+
+    pub fn contains<T: ParBagComponent>(&self, value: &T) -> bool {
+        self.components.contains(value)
+    }
+
+    pub fn count<T: ParBagComponent>(&self, value: &T) -> u64 { self.components.count(value) }
+
+    pub fn family_distinct_len<T: ParBagComponent>(&self) -> usize {
+        self.components.family_distinct_len::<T>()
+    }
+
+    pub fn family_cardinality<T: ParBagComponent>(&self) -> u128 {
+        self.components.family_cardinality::<T>()
+    }
+
+    pub fn visit_encoded<T: ParBagComponent>(
+        &self,
+        visitor: impl FnMut(EncodedParComponent<'_, T>),
+    ) {
+        self.components.visit_encoded(visitor);
+    }
+
+    pub fn try_visit_decoded<T, E>(
+        &self,
+        visitor: impl FnMut(T, Multiplicity) -> Result<(), E>,
+    ) -> Result<(), ParBagVisitError<E>>
+    where
+        T: ParBagComponent,
+    {
+        self.components.try_visit_decoded(visitor)
+    }
+
+    /// Insert one occurrence and join its independently-derived root metadata.
+    /// The caller supplies the same cached summary it computed while building
+    /// the component, so no second AST traversal is introduced here.
+    pub fn insert_component<T: ParBagComponent>(
+        &mut self,
+        value: &T,
+        locally_free: Vec<u8>,
+        connective_used: bool,
+    ) -> Result<Multiplicity, BagError> {
+        let multiplicity = self.components.insert(value)?;
+        self.locally_free =
+            super::utils::union(std::mem::take(&mut self.locally_free), locally_free);
+        self.connective_used |= connective_used;
+        Ok(multiplicity)
+    }
+
+    /// Insert `amount` identical occurrences with one canonical-key build.
+    pub fn insert_component_many<T: ParBagComponent>(
+        &mut self,
+        value: &T,
+        amount: Multiplicity,
+        locally_free: Vec<u8>,
+        connective_used: bool,
+    ) -> Result<Multiplicity, BagError> {
+        let multiplicity = self.components.insert_many(value, amount)?;
+        self.locally_free =
+            super::utils::union(std::mem::take(&mut self.locally_free), locally_free);
+        self.connective_used |= connective_used;
+        Ok(multiplicity)
+    }
 
     pub fn parallel(self, other: Self) -> Result<Self, BagError> {
         Ok(Self {
@@ -159,6 +234,105 @@ impl Hash for Par {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.components.hash(state);
         self.connective_used.hash(state);
+    }
+}
+
+struct ParFamilyDebug<'a, T> {
+    components: &'a ParBag,
+    marker: PhantomData<T>,
+}
+
+impl<'a, T> ParFamilyDebug<'a, T> {
+    fn new(components: &'a ParBag) -> Self {
+        Self {
+            components,
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<T> fmt::Debug for ParFamilyDebug<'_, T>
+where T: ParBagComponent + fmt::Debug
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut list = formatter.debug_list();
+        self.components.visit_encoded::<T>(|entry| {
+            let multiplicity = entry.multiplicity();
+            let value = entry
+                .decode()
+                .expect("Par invariant: every stored component body was validated");
+            for _ in 0..multiplicity.get() {
+                list.entry(&value);
+            }
+        });
+        list.finish()
+    }
+}
+
+impl fmt::Debug for Par {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Par")
+            .field("sends", &ParFamilyDebug::<Send>::new(&self.components))
+            .field(
+                "receives",
+                &ParFamilyDebug::<Receive>::new(&self.components),
+            )
+            .field("news", &ParFamilyDebug::<New>::new(&self.components))
+            .field("exprs", &ParFamilyDebug::<Expr>::new(&self.components))
+            .field("matches", &ParFamilyDebug::<Match>::new(&self.components))
+            .field(
+                "unforgeables",
+                &ParFamilyDebug::<GUnforgeable>::new(&self.components),
+            )
+            .field("bundles", &ParFamilyDebug::<Bundle>::new(&self.components))
+            .field(
+                "connectives",
+                &ParFamilyDebug::<Connective>::new(&self.components),
+            )
+            .field("conditionals", &ParFamilyDebug::<If>::new(&self.components))
+            .field("locally_free", &self.locally_free)
+            .field("connective_used", &self.connective_used)
+            .finish()
+    }
+}
+
+struct BorrowedBytes<'a>(&'a [u8]);
+
+impl Serialize for BorrowedBytes<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where S: Serializer {
+        serializer.serialize_bytes(self.0)
+    }
+}
+
+impl Serialize for Par {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where S: Serializer {
+        let mut state = serializer.serialize_struct("Par", 3)?;
+        state.serialize_field("components", &BorrowedBytes(self.compact_snapshot()))?;
+        state.serialize_field("locally_free", &BorrowedBytes(&[]))?;
+        state.serialize_field("connective_used", &self.connective_used)?;
+        state.end()
+    }
+}
+
+#[derive(Deserialize)]
+struct ParImage {
+    components: ParBag,
+    locally_free: Vec<u8>,
+    connective_used: bool,
+}
+
+impl<'de> Deserialize<'de> for Par {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: Deserializer<'de> {
+        let image = ParImage::deserialize(deserializer)?;
+        Ok(Self::from_parts(
+            image.components,
+            image.locally_free,
+            image.connective_used,
+        ))
     }
 }
 

@@ -107,6 +107,84 @@ fn protobuf_decode_rejects_truncated_component_bodies() {
 }
 
 #[test]
+fn bincode_is_one_memoized_prefix_compressed_snapshot_plus_root_metadata() {
+    let source = models::par_from_default! {
+        exprs: vec![
+            Expr {
+                expr_instance: Some(ExprInstance::GInt(9)),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::GInt(3)),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::GInt(9)),
+            },
+        ],
+        locally_free: vec![0x05],
+        connective_used: true,
+        ..GeneratedPar::default()
+    };
+    let value = Par::import_generated(&source).expect("import");
+    let snapshot = value.compact_snapshot();
+    let bincode = bincode::serialize(&value).expect("serialize direct Par image");
+    let driven = models::rust::rholang::bincode_encoder::encode(&value);
+
+    assert_eq!(bincode, driven);
+    assert_eq!(
+        u64::from_le_bytes(bincode[..8].try_into().expect("snapshot length")),
+        snapshot.len() as u64
+    );
+    assert_eq!(&bincode[8..8 + snapshot.len()], snapshot);
+    assert_eq!(&bincode[8 + snapshot.len()..16 + snapshot.len()], &[0; 8]);
+    assert_eq!(bincode[16 + snapshot.len()], 1);
+
+    let decoded: Par = bincode::deserialize(&bincode).expect("decode direct Par image");
+    assert_eq!(decoded, value);
+    assert!(decoded.locally_free().is_empty());
+    assert!(decoded.connective_used());
+
+    let mut shared = value.clone();
+    assert_eq!(
+        shared.compact_snapshot().as_ptr(),
+        value.compact_snapshot().as_ptr(),
+        "CoW clones must share the immutable compact image"
+    );
+    let added = Expr {
+        expr_instance: Some(ExprInstance::GInt(41)),
+    };
+    shared
+        .insert_component(&added, Vec::new(), false)
+        .expect("mutate CoW clone");
+    assert_ne!(shared.compact_snapshot(), value.compact_snapshot());
+    assert!(!value.contains(&added));
+    assert!(shared.contains(&added));
+}
+
+#[test]
+fn semantic_debug_matches_the_canonical_generated_surface_without_a_vec_shadow() {
+    let source = models::par_from_default! {
+        exprs: vec![
+            Expr {
+                expr_instance: Some(ExprInstance::GInt(9)),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::GInt(3)),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::GInt(9)),
+            },
+        ],
+        locally_free: vec![0x05],
+        connective_used: true,
+        ..GeneratedPar::default()
+    };
+    let canonical = ParSortMatcher::sort_match(&source).term;
+    let value = Par::import_generated(&source).expect("import");
+
+    assert_eq!(format!("{value:?}"), format!("{canonical:?}"));
+}
+
+#[test]
 fn equality_hashing_and_ordering_ignore_only_transient_root_locally_free() {
     let base = models::par_from_default! {
         exprs: vec![Expr {

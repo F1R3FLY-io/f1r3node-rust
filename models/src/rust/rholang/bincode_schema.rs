@@ -2,8 +2,9 @@
 //!
 //! This module holds the **hand-written** half of the codec: the closed
 //! `FieldKind` alphabet, the two object-safe traits the generated table
-//! implements, and the one program the descriptor cannot express
-//! (`EPathMap`). The **generated** half — one `impl BincodeNode` per message, one
+//! implements, and the repository-owned trie programs whose layouts differ
+//! from their descriptors (`EPathMap` and the successor `Par`). The
+//! **generated** half — one `impl BincodeNode` per message, one
 //! `impl BincodeOneof` per oneof, the variant tables and their indices — is
 //! emitted by `models/codegen/schema.rs` into `OUT_DIR/rhoapi_bincode_schema.rs` and
 //! included by [`crate::rust::rholang::bincode_schema_tables`].
@@ -45,6 +46,7 @@
 use std::collections::BTreeMap;
 
 use crate::rhoapi::{Par, Var};
+use crate::rust::par::Par as PathMapPar;
 use crate::rust::rhoapi_ext::EPathMap;
 
 // ===========================================================================
@@ -257,21 +259,21 @@ pub trait BincodeNode {
     /// serde's derive does.
     fn bincode_emit(&self, from: usize, out: &mut Vec<u8>) -> Descent<'_>;
 
-    /// ⚠ **The one node whose field 0 must be CONSTRUCTED, not borrowed.**
-    ///
-    /// `EPathMap` overrides this; every generated impl inherits `None`.
+    /// A repository-owned trie snapshot reached through an accessor rather
+    /// than a generated struct field. `EPathMap` and the PathMap-backed `Par`
+    /// override this; every generated impl inherits `None`.
     ///
     /// ★ It is a *trait method* and not a pointer comparison against
     /// [`EPATHMAP_PROGRAM`] for a reason that cost a `SIGSEGV` to learn:
-    /// `&'static` slices with identical contents are **merged by the linker**,
-    /// and `EPATHMAP_PROGRAM` is `[Seq, EmptyBytes, Bool, Opt]` — byte-for-byte
-    /// the same as `ELIST_PROGRAM`, `ESET_PROGRAM` and `EMAP_PROGRAM`. Program
-    /// addresses therefore do **not** identify a type, and any downcast built
-    /// on them silently reinterprets an `EList` as an `EPathMap`.
+    /// `&'static` slices with identical contents are **merged by the linker**.
+    /// The pre-EPM1 PathMap program was byte-for-byte identical to the list,
+    /// set, and map programs, so a pointer-based downcast reinterpreted an
+    /// `EList` as an `EPathMap`. EPM1 changed that particular byte sequence,
+    /// but linker identity remains no type-system contract.
     /// `bincode_encoder_space::program_addresses_do_not_identify_a_type` pins that
     /// fact so the trick cannot be reintroduced as an "optimization".
     #[inline]
-    fn bincode_as_pathmap(&self) -> Option<&EPathMap> { None }
+    fn bincode_snapshot(&self) -> Option<&[u8]> { None }
 }
 
 /// A oneof: writes its declaration-order index and any bounded payload, and
@@ -313,7 +315,7 @@ pub struct VariantProgram {
 }
 
 // ===========================================================================
-// §C  The one program the descriptor cannot express
+// §C  Repository-owned trie programs the descriptor cannot express
 // ===========================================================================
 
 /// `EPathMap`'s serde field program.
@@ -342,29 +344,12 @@ pub static EPATHMAP_PROGRAM: &[FieldKind] = &[
     FieldKind::Opt,        // remainder
 ];
 
-/// What an `EPathMap` serializes for its entries: one borrowed canonical EPM1
-/// byte slice.
-///
-/// # ★ Nothing is constructed, and that is what deleted the arena
-///
-/// The named wrapper keeps the encoder interface explicit while borrowing the
-/// memoized snapshot directly; the driver does not park an entry vector or a
-/// second representation of the trie.
-pub enum PathmapSnapshot<'a> {
-    /// The complete canonical EPM1 snapshot, borrowed.
-    Stored {
-        /// Prefix-compressed ACTree03 data plus the homogeneous value table,
-        /// emitted verbatim as one bincode byte slice.
-        trie_snapshot: &'a [u8],
-    },
-}
-
 impl BincodeNode for EPathMap {
     #[inline]
     fn bincode_program(&self) -> &'static [FieldKind] { EPATHMAP_PROGRAM }
 
     #[inline]
-    fn bincode_as_pathmap(&self) -> Option<&EPathMap> { Some(self) }
+    fn bincode_snapshot(&self) -> Option<&[u8]> { Some(self.trie_snapshot()) }
 
     /// Field 0 is accessor-reached because it is the memoized EPM1 snapshot,
     /// not a generated struct field. The driver opens the `EPathMap` there and
@@ -375,7 +360,7 @@ impl BincodeNode for EPathMap {
             match i {
                 0 => unreachable!(
                     "EPathMap's entries must be opened through \
-                     `bincode_schema::pathmap_snapshot` — field 0 is the canonical EPM1 byte \
+                     `BincodeNode::bincode_snapshot` — field 0 is the canonical EPM1 byte \
                      snapshot and is accessor-reached rather than a plain field read"
                 ),
                 1 => put_empty_bytes(out),
@@ -399,12 +384,38 @@ impl BincodeNode for EPathMap {
     }
 }
 
-/// Return the same canonical EPM1 byte slice used by the hand-written
-/// `Serialize` implementation. Both bincode encoders therefore have one source
-/// of truth and cannot split keys from values.
-pub fn pathmap_snapshot(map: &EPathMap) -> PathmapSnapshot<'_> {
-    PathmapSnapshot::Stored {
-        trie_snapshot: map.trie_snapshot(),
+/// Final repository-owned `Par` bincode image:
+///
+/// ```text
+///   Bytes       ACTree03(PathMap<Multiplicity>)
+///   EmptyBytes  locally_free
+///   Bool        connective_used
+/// ```
+///
+/// The first field is one memoized prefix-compressed byte array. No component
+/// decoding, repeated-message vector, or sorting occurs at serialization.
+pub static PAR_PROGRAM: &[FieldKind] = &[FieldKind::Bytes, FieldKind::EmptyBytes, FieldKind::Bool];
+
+impl BincodeNode for PathMapPar {
+    #[inline]
+    fn bincode_program(&self) -> &'static [FieldKind] { PAR_PROGRAM }
+
+    #[inline]
+    fn bincode_snapshot(&self) -> Option<&[u8]> { Some(self.compact_snapshot()) }
+
+    fn bincode_emit(&self, from: usize, out: &mut Vec<u8>) -> Descent<'_> {
+        let mut index = from;
+        loop {
+            match index {
+                0 => unreachable!(
+                    "PathMap-backed Par components are accessor-reached as one canonical snapshot"
+                ),
+                1 => put_empty_bytes(out),
+                2 => put_bool(out, self.connective_used()),
+                _ => return Descent::Done,
+            }
+            index += 1;
+        }
     }
 }
 

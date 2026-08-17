@@ -24,8 +24,11 @@
 //! value is their checked `u64` multiplicity.
 
 use std::cell::RefCell;
+use std::cmp::Ordering;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
+use std::sync::{Arc, OnceLock};
 
 use prost::bytes::BufMut;
 use prost::encoding::{encode_key, encoded_len_varint, key_len, WireType};
@@ -638,13 +641,68 @@ impl<T: ParBagComponent> fmt::Debug for CanonicalParBagKey<T> {
 
 /// One homogeneous PathMap-backed multiset containing every top-level `Par`
 /// component category. Empty `Par` is exactly an empty `ParBag`.
-#[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct ParBag {
     components: Bag,
+    /// Canonical ACTree03 image derived from `components` and shared by CoW
+    /// clones. Every successful mutation detaches this cache before the next
+    /// read, so an unchanged clone keeps its already-materialized image.
+    compact_snapshot: Arc<OnceLock<Arc<[u8]>>>,
+}
+
+impl Default for ParBag {
+    fn default() -> Self {
+        Self {
+            components: Bag::new(),
+            compact_snapshot: Arc::new(OnceLock::new()),
+        }
+    }
+}
+
+impl Clone for ParBag {
+    fn clone(&self) -> Self {
+        Self {
+            components: self.components.clone(),
+            compact_snapshot: Arc::clone(&self.compact_snapshot),
+        }
+    }
+}
+
+impl PartialEq for ParBag {
+    fn eq(&self, other: &Self) -> bool { self.components == other.components }
+}
+
+impl Eq for ParBag {}
+
+impl PartialOrd for ParBag {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+}
+
+impl Ord for ParBag {
+    fn cmp(&self, other: &Self) -> Ordering { self.components.cmp(&other.components) }
+}
+
+impl Hash for ParBag {
+    fn hash<H: Hasher>(&self, state: &mut H) { self.components.hash(state) }
+}
+
+impl fmt::Debug for ParBag {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ParBag")
+            .field("components", &self.components)
+            .finish()
+    }
 }
 
 impl ParBag {
     pub fn new() -> Self { Self::default() }
+
+    #[inline]
+    fn invalidate_compact_snapshot(&mut self) {
+        if Arc::strong_count(&self.compact_snapshot) != 1 || self.compact_snapshot.get().is_some() {
+            self.compact_snapshot = Arc::new(OnceLock::new());
+        }
+    }
 
     /// Import the legacy repeated fields once. Root metadata is deliberately
     /// not duplicated here: it remains a derived concern of the eventual
@@ -685,7 +743,10 @@ impl ParBag {
         for (path, _) in components.iter() {
             validate_key(&path)?;
         }
-        Ok(Self { components })
+        Ok(Self {
+            components,
+            compact_snapshot: Arc::new(OnceLock::new()),
+        })
     }
 
     pub fn as_bag(&self) -> &Bag { &self.components }
@@ -718,7 +779,11 @@ impl ParBag {
     }
 
     pub fn insert<T: ParBagComponent>(&mut self, value: &T) -> Result<Multiplicity, BagError> {
-        with_component_key(value, |key| self.components.insert(key))
+        let result = with_component_key(value, |key| self.components.insert(key));
+        if result.is_ok() {
+            self.invalidate_compact_snapshot();
+        }
+        result
     }
 
     #[inline]
@@ -726,7 +791,11 @@ impl ParBag {
         &mut self,
         key: &CanonicalParBagKey<T>,
     ) -> Result<Multiplicity, BagError> {
-        self.components.insert(key.as_bytes())
+        let result = self.components.insert(key.as_bytes());
+        if result.is_ok() {
+            self.invalidate_compact_snapshot();
+        }
+        result
     }
 
     pub fn insert_many<T: ParBagComponent>(
@@ -734,7 +803,11 @@ impl ParBag {
         value: &T,
         amount: Multiplicity,
     ) -> Result<Multiplicity, BagError> {
-        with_component_key(value, |key| self.components.insert_many(key, amount))
+        let result = with_component_key(value, |key| self.components.insert_many(key, amount));
+        if result.is_ok() {
+            self.invalidate_compact_snapshot();
+        }
+        result
     }
 
     #[inline]
@@ -743,11 +816,22 @@ impl ParBag {
         key: &CanonicalParBagKey<T>,
         amount: Multiplicity,
     ) -> Result<Multiplicity, BagError> {
-        self.components.insert_many(key.as_bytes(), amount)
+        let result = self.components.insert_many(key.as_bytes(), amount);
+        if result.is_ok() {
+            self.invalidate_compact_snapshot();
+        }
+        result
     }
 
     pub fn remove<T: ParBagComponent>(&mut self, value: &T) -> Option<Multiplicity> {
-        with_component_key(value, |key| self.components.remove(key))
+        let (result, changed) = with_component_key(value, |key| {
+            let changed = self.components.contains(key);
+            (self.components.remove(key), changed)
+        });
+        if changed {
+            self.invalidate_compact_snapshot();
+        }
+        result
     }
 
     #[inline]
@@ -755,7 +839,12 @@ impl ParBag {
         &mut self,
         key: &CanonicalParBagKey<T>,
     ) -> Option<Multiplicity> {
-        self.components.remove(key.as_bytes())
+        let changed = self.components.contains(key.as_bytes());
+        let result = self.components.remove(key.as_bytes());
+        if changed {
+            self.invalidate_compact_snapshot();
+        }
+        result
     }
 
     pub fn remove_many<T: ParBagComponent>(
@@ -763,7 +852,14 @@ impl ParBag {
         value: &T,
         amount: Multiplicity,
     ) -> Option<Multiplicity> {
-        with_component_key(value, |key| self.components.remove_many(key, amount))
+        let (result, changed) = with_component_key(value, |key| {
+            let changed = self.components.contains(key);
+            (self.components.remove_many(key, amount), changed)
+        });
+        if changed {
+            self.invalidate_compact_snapshot();
+        }
+        result
     }
 
     #[inline]
@@ -772,7 +868,12 @@ impl ParBag {
         key: &CanonicalParBagKey<T>,
         amount: Multiplicity,
     ) -> Option<Multiplicity> {
-        self.components.remove_many(key.as_bytes(), amount)
+        let changed = self.components.contains(key.as_bytes());
+        let result = self.components.remove_many(key.as_bytes(), amount);
+        if changed {
+            self.invalidate_compact_snapshot();
+        }
+        result
     }
 
     pub fn try_remove_many<T: ParBagComponent>(
@@ -780,7 +881,11 @@ impl ParBag {
         value: &T,
         amount: Multiplicity,
     ) -> Result<Option<Multiplicity>, BagError> {
-        with_component_key(value, |key| self.components.try_remove_many(key, amount))
+        let result = with_component_key(value, |key| self.components.try_remove_many(key, amount));
+        if result.is_ok() {
+            self.invalidate_compact_snapshot();
+        }
+        result
     }
 
     #[inline]
@@ -789,12 +894,20 @@ impl ParBag {
         key: &CanonicalParBagKey<T>,
         amount: Multiplicity,
     ) -> Result<Option<Multiplicity>, BagError> {
-        self.components.try_remove_many(key.as_bytes(), amount)
+        let result = self.components.try_remove_many(key.as_bytes(), amount);
+        if result.is_ok() {
+            self.invalidate_compact_snapshot();
+        }
+        result
     }
 
     /// Remove one entire constructor family with one prefix operation.
     pub fn remove_family<T: ParBagComponent>(&mut self) -> (usize, u128) {
-        self.components.remove_prefix(&component_prefix(T::TAG))
+        let removed = self.components.remove_prefix(&component_prefix(T::TAG));
+        if removed.0 != 0 {
+            self.invalidate_compact_snapshot();
+        }
+        removed
     }
 
     pub fn family_distinct_len<T: ParBagComponent>(&self) -> usize {
@@ -853,36 +966,49 @@ impl ParBag {
     pub fn sum(&self, other: &Self) -> Result<Self, BagError> {
         self.components
             .sum(&other.components)
-            .map(|components| Self { components })
+            .map(Self::from_components)
     }
 
     pub fn join(&self, other: &Self) -> Self {
-        Self {
-            components: self.components.join(&other.components),
-        }
+        Self::from_components(self.components.join(&other.components))
     }
 
     pub fn meet(&self, other: &Self) -> Self {
-        Self {
-            components: self.components.meet(&other.components),
-        }
+        Self::from_components(self.components.meet(&other.components))
     }
 
     pub fn subtract(&self, other: &Self) -> Self {
-        Self {
-            components: self.components.subtract(&other.components),
-        }
+        Self::from_components(self.components.subtract(&other.components))
     }
 
     pub fn is_subbag_of(&self, other: &Self) -> bool {
         self.components.is_subbag_of(&other.components)
     }
 
-    /// Direct canonical `ACTree03` image: no entry vector or decoded shadow.
-    pub fn compact_bytes(&self) -> Vec<u8> { self.components.compact_bytes() }
+    fn from_components(components: Bag) -> Self {
+        Self {
+            components,
+            compact_snapshot: Arc::new(OnceLock::new()),
+        }
+    }
+
+    /// Borrow the memoized canonical `ACTree03` image directly. The first
+    /// access materializes PathMap's compact arena once; subsequent encoders
+    /// and CoW clones share the immutable byte array.
+    pub fn compact_snapshot(&self) -> &[u8] {
+        self.compact_snapshot
+            .get_or_init(|| Arc::from(self.components.compact_bytes()))
+            .as_ref()
+    }
+
+    /// Owned convenience image: no entry vector or decoded shadow.
+    pub fn compact_bytes(&self) -> Vec<u8> { self.compact_snapshot().to_vec() }
 
     pub fn from_compact_bytes(bytes: &[u8]) -> Result<Self, ParBagCodecError> {
-        Self::try_from_bag(Bag::from_compact_bytes(bytes)?)
+        let components = Bag::from_compact_bytes(bytes)?;
+        let bag = Self::try_from_bag(components)?;
+        let _ = bag.compact_snapshot.set(Arc::from(bytes));
+        Ok(bag)
     }
 
     /// Exact length of the legacy repeated-message protobuf component fields.
@@ -1051,7 +1177,7 @@ impl TryFrom<&Par> for ParBag {
 impl Serialize for ParBag {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where S: Serializer {
-        self.components.serialize(serializer)
+        serializer.serialize_bytes(self.compact_snapshot())
     }
 }
 

@@ -88,7 +88,7 @@
 //!   — `EList` whose only interesting field is its `ps` — does not accumulate
 //!   resume points at all.
 //!
-//! ## 4. ⚠ `EPathMap` — the one program the descriptor cannot express
+//! ## 4. Repository-owned trie snapshots
 //!
 //! `EPathMap` is `extern_path`'d, so the descriptor-driven generator emits no
 //! program for it and [`crate::rust::rholang::bincode_schema::EPATHMAP_PROGRAM`] is
@@ -96,6 +96,10 @@
 //! directly from the value. EPM1 contains PathMap's compact ACTree03 topology
 //! and, in map mode, its generated stack-safe `Par` value table. No decoded
 //! entry projection participates.
+//!
+//! The repository-owned PathMap-backed `Par` follows the same seam: its
+//! `PathMap<Multiplicity>` ACTree03 image is one borrowed field, followed by
+//! its two root metadata summaries.
 //!
 //! ⚠ ★ **This section used to describe an owned entry arena.** A ground map's
 //! canonical entry vector was constructed by re-reading a trie, and a
@@ -119,9 +123,8 @@ use std::cell::RefCell;
 use std::collections::btree_map;
 
 use crate::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
-use crate::rust::rhoapi_ext::EPathMap;
 use crate::rust::rholang::bincode_schema::{
-    pathmap_snapshot, put_bytes, BincodeNode, BincodeSeq, Descent, PathmapSnapshot, NO_RESUME,
+    put_bytes, BincodeNode, BincodeSeq, Descent, NO_RESUME,
 };
 
 // ===========================================================================
@@ -134,7 +137,7 @@ use crate::rust::rholang::bincode_schema::{
 // the emission of a node's bounded fields is monomorphic — which is what makes
 // it competitive with serde's derive. This module owns the TRAMPOLINE: the op
 // stack, the counted repeat, the suspension discipline, the map iterator and
-// the `EPathMap` interception. See `bincode_schema.rs` §A2 for the profile that forced
+// the repository-owned snapshot interception. See `bincode_schema.rs` §A2 for the profile that forced
 // the split.
 
 // ===========================================================================
@@ -309,12 +312,12 @@ impl<'a> Machine<'a> {
     /// 21 indirect calls per `Par`; see `bincode_schema.rs` §A2.
     #[inline]
     fn run_node(&mut self, out: &mut Vec<u8>, node: &'a dyn BincodeNode, field: usize) {
-        // ⚠ `EPathMap` cannot be entered at field 0: its `ps` may have to be
-        // CONSTRUCTED in canonical order (§4), which no borrow-returning
-        // emission can serve. Intercept, park, and rejoin at field 1.
+        // Repository-owned trie nodes expose field 0 as one borrowed canonical
+        // snapshot rather than as a generated struct field. Intercept that
+        // accessor and rejoin their program at field 1.
         if field == 0 {
-            if let Some(map) = node.bincode_as_pathmap() {
-                self.open_pathmap(out, node, map);
+            if let Some(snapshot) = node.bincode_snapshot() {
+                self.open_snapshot(out, node, snapshot);
                 return;
             }
         }
@@ -383,14 +386,12 @@ impl<'a> Machine<'a> {
         }
     }
 
-    /// Open an `EPathMap`: emit its EPM1 snapshot, then arrange for the three
-    /// metadata fields.
+    /// Emit one repository-owned trie image and resume its metadata fields.
     ///
     /// ⚠ It is still opened HERE rather than at field 0 of the generated
-    /// walker because `EPathMap`'s first field is an accessor-reached EPM1 byte
-    /// snapshot rather than a plain generated field read. Emitting anything else
-    /// changes the event-hash preimage silently.
-    fn open_pathmap(&mut self, out: &mut Vec<u8>, node: &'a dyn BincodeNode, map: &'a EPathMap) {
+    /// walker because the first field is an accessor-reached immutable byte
+    /// snapshot rather than a plain generated field read.
+    fn open_snapshot(&mut self, out: &mut Vec<u8>, node: &'a dyn BincodeNode, snapshot: &'a [u8]) {
         // ★★ THIS SEAM IS TRIE-NATIVE.
         //
         // The mandate is that a pathmap serializes as its own byte array on every
@@ -402,8 +403,7 @@ impl<'a> Machine<'a> {
         // second bincode field nor interleaved with keys. This keeps the complete
         // trie snapshot contiguous and leaves the steady-state bincode driver at
         // zero owned entry projections.
-        let PathmapSnapshot::Stored { trie_snapshot } = pathmap_snapshot(map);
-        put_bytes(out, trie_snapshot);
+        put_bytes(out, snapshot);
         self.suspend(node, 1);
     }
 }
@@ -557,9 +557,9 @@ pub const fn op_size() -> usize { std::mem::size_of::<Op<'static>>() }
 ///
 /// ⚠ Exposed so `bincode_encoder_space` can demonstrate that program addresses do
 /// **not** identify a type: `&'static` slices with identical contents are
-/// merged by the linker, and `EPATHMAP_PROGRAM` is byte-for-byte
-/// `ELIST_PROGRAM`. A downcast built on address identity therefore
-/// reinterprets an `EList` as an `EPathMap` — which is exactly the `SIGSEGV`
-/// that produced [`BincodeNode::bincode_as_pathmap`]. The gate keeps that fact
+/// merged by the linker. The former pre-EPM1 PathMap program collided with
+/// `ELIST_PROGRAM`; a downcast built on address identity therefore
+/// reinterpreted an `EList` as an `EPathMap` — exactly the `SIGSEGV`
+/// that produced [`BincodeNode::bincode_snapshot`]. The gate keeps that fact
 /// executable so the "optimization" cannot be reintroduced.
 pub fn program_address(node: &dyn BincodeNode) -> usize { node.bincode_program().as_ptr() as usize }

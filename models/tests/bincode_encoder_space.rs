@@ -10,16 +10,17 @@
 //! | the reused buffer converges and does not pin | a leak of capacity is invisible to every assertion about bytes |
 //! | program addresses do **not** identify a type | the unsound downcast *worked* on every fixture until an `EList` met it |
 //!
-//! ⚠ The last row is not hypothetical. `EPATHMAP_PROGRAM` is
-//! `[Seq, EmptyBytes, Bool, Opt]` — byte-for-byte identical to `ELIST_PROGRAM`,
-//! `ESET_PROGRAM` and `EMAP_PROGRAM` — and the linker **merges** identical
-//! read-only statics. A downcast keyed on the program's address therefore
-//! reinterpreted an `EList` as an `EPathMap` and produced a `SIGSEGV` on the
-//! differential's first run. [`program_addresses_do_not_identify_a_type`] keeps
-//! that fact executable so the trick cannot return as an "optimization".
+//! ⚠ The last row is not hypothetical. Before EPM1, `EPATHMAP_PROGRAM` was
+//! byte-for-byte identical to the list, set, and map programs, and the linker
+//! merged the read-only statics. A downcast keyed on the program's address
+//! therefore reinterpreted an `EList` as an `EPathMap` and produced a `SIGSEGV`.
+//! EPM1 changed that particular program, but address identity is still not a
+//! type contract. [`program_addresses_do_not_identify_a_type`] keeps the safe
+//! trait dispatch executable so the pointer trick cannot return.
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, Expr, Par, Send};
+use models::rust::par::Par as PathMapPar;
 use models::rust::rholang::bincode_encoder::{
     encode, encode_into, op_size, op_stack_high_water, program_address, with_encoded,
 };
@@ -490,7 +491,7 @@ fn the_op_stack_pool_does_not_pin_a_deep_terms_high_water() {
 // §3  ⚠ Program addresses do NOT identify a type
 // ===========================================================================
 
-/// The measured fact behind [`models::rust::rholang::bincode_schema::BincodeNode::bincode_as_pathmap`].
+/// The measured fact behind [`models::rust::rholang::bincode_schema::BincodeNode::bincode_snapshot`].
 ///
 /// If this test ever *fails* — i.e. the addresses become distinct — that is not
 /// permission to reintroduce the pointer trick. Constant merging is a linker
@@ -513,15 +514,19 @@ fn program_addresses_do_not_identify_a_type() {
     // Whatever the addresses are, the TYPE question must be answered by the
     // trait, and it must answer correctly.
     assert!(
-        (&pathmap as &dyn BincodeNode)
-            .bincode_as_pathmap()
-            .is_some(),
+        (&pathmap as &dyn BincodeNode).bincode_snapshot().is_some(),
         "an EPathMap must identify itself"
     );
     assert!(
-        (&elist as &dyn BincodeNode).bincode_as_pathmap().is_none(),
+        (&elist as &dyn BincodeNode).bincode_snapshot().is_none(),
         "an EList must NOT identify as an EPathMap — this is the type confusion that \
          SIGSEGV'd the differential on its first run"
+    );
+    assert!(
+        (&PathMapPar::default() as &dyn BincodeNode)
+            .bincode_snapshot()
+            .is_some(),
+        "the repository-owned Par must expose its canonical Bag image"
     );
     for node in [
         &Par::default() as &dyn BincodeNode,
@@ -531,8 +536,8 @@ fn program_addresses_do_not_identify_a_type() {
         &models::rhoapi::EMap::default(),
     ] {
         assert!(
-            node.bincode_as_pathmap().is_none(),
-            "only EPathMap may answer to `bincode_as_pathmap`"
+            node.bincode_snapshot().is_none(),
+            "generated schema nodes must not masquerade as repository-owned snapshots"
         );
     }
 
