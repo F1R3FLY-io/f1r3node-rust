@@ -6,7 +6,7 @@ Campaign: `campaign-4131-rspace-pathmap-integration`
 
 Experiment: `rspace-pathmap-end-to-end-layout-2026-08-15`
 Last updated: 2026-08-16
-Current implementation checkpoint: `9a746f2bf`
+Current implementation checkpoint: `47bb83f1e`
 
 ## Purpose and scope
 
@@ -27,6 +27,7 @@ Neither a `Vec<Par>` nor a hash table is an authoritative substitute for a trie 
 | Term | Meaning in this report |
 |---|---|
 | Bag | A multiset: each distinct element has a strictly positive multiplicity. |
+| CAS | Compare-and-swap: an atomic conditional update that publishes a new value only when the observed old value is unchanged. |
 | COMM | A Rholang communication event pairing a compatible produce with a waiting consume. |
 | DFS | Depth-first search: traversal that completes one branch before moving to its sibling. |
 | PDA | Pushdown automaton: an iterative state machine with an explicit stack. |
@@ -36,6 +37,95 @@ Neither a `Vec<Par>` nor a hash table is an authoritative substitute for a trie 
 | mCRL2 | A process-algebra toolset used here for branching-bisimulation and modal reachability checks. |
 | SMT | Satisfiability modulo theories, used to discharge bounded logical obligations. |
 | TLA | Temporal Logic of Actions; its TLA+ language is used here to model state transitions and invariants. |
+
+## Frozen pre-migration RSpace contract
+
+The behavioral baseline is the target worktree at commit `dcc4600d4`. This is a
+source coordinate, not a second checkout: reproduce a historical observation
+with `git show dcc4600d4:<path>`. The campaign does not maintain a shadow legacy
+implementation. Instead, control arms disable the derived PathMap selector and
+run the same production `consume` or `produce` entry point, while differential
+tests compare the selected COMM, event log, and post-state.
+
+At the frozen coordinate, `RSpace<C, P, A, K>` owns the synchronization and
+consensus-visible side effects, while `HotStoreState<C, P, A, K>` stores five
+hash-indexed collections. Datum and continuation buckets are ordered `Vec`
+values, so multiplicity is occurrence expansion and removal uses an integer
+position. The history repository remains the checkpoint authority. The
+event-log and produce-counter locks are separate from the hot-store lock, and
+channel operations acquire phase-A and phase-B locks in sorted, deduplicated
+channel-hash order.
+
+| Frozen authority | Representation at `dcc4600d4` | Semantic responsibility | Replacement constraint |
+|---|---|---|---|
+| Resting data | `HashMap<C, Vec<Datum<A>>>` | multiplicity, candidate materialization, source metadata, persistence | `PathMap<Multiplicity>` may quotient identical complete records only if exact selected identities and historical order remain reproducible |
+| Waiting continuations | `HashMap<Vec<C>, Vec<WaitingContinuation<P, K>>>` plus installed singleton map | bind patterns, continuation, peeks, persistence, source metadata | retained automata are derived indexes; they never become the continuation authority |
+| Joins | `HashMap<C, Vec<Vec<C>>>` plus installed joins | discover channel groups that a produce can complete | updates remain inside the existing selected-match transaction boundary |
+| History | radix-history repository over cold-store leaves | checkpoint roots, reset, export/import, replay state | cold bytes and roots are consensus surfaces until an explicitly versioned migration is approved |
+| Event log and replay multimap | ordered IO/COMM events plus multiplicities | deterministic replay and ambiguity refusal | a PathMap selector may prune candidates but cannot change the recorded event or its multiplicity |
+| Installs | RSpace install map plus installed hot-store collections | blessed/persistent system continuations | derived-index invalidation must preserve install availability across reset |
+| Locks | sorted phase-A/phase-B channel locks; hot-store and log locks | atomic multi-channel reservation and publication | no retryable whole-state compare-and-swap loop may repeat matcher or event effects |
+
+### Observable contract matrix
+
+The matrix is the review index for the frozen contract. “Control” means the
+production matcher with derived RhoPath pruning disabled. “Treatment” means the
+same public operation with the derived index enabled; the spatial matcher still
+decides acceptance.
+
+| Observable invariant | Frozen source seam | Executable evidence retained in the current tree | Required equality |
+|---|---|---|---|
+| Datum-first COMM | `RSpace::locked_produce` and `SpaceMatcher::extract_first_match` | `candidate_path_pruning_spec::datum_first_retained_queries_filter_waiting_continuations_before_spatial_match`; `rspace_comm::waiting_receive_*` | continuation, bindings, selected datum, COMM bytes, log, and post-state |
+| Receive-first COMM | `RSpace::locked_consume` and `SpaceMatcher::find_matching_data_candidate` | `candidate_path_pruning_spec`; `rspace_comm::distinct_*` | same first admissible candidate in canonical order |
+| Multi-channel join | phase-A/phase-B acquisition and candidate recursion | `storage_actions_test::consuming_on_two_channels_then_producing_on_each_should_return_cont_with_both_data`; `enabled_rendezvous_spec::t8_a_join_enumerates_its_cross_product` | atomic all-or-nothing reservation and the same binding order |
+| Repeated channel | per-bind candidate selection and positional removal | `guarded_matching_tests::a_receive_taking_two_data_from_one_channel_removes_both`; `two_identical_occurrences_fill_two_binds_without_expansion` | enough multiplicity is required; indistinguishable occurrences do not create factorially distinct outcomes |
+| Peek | selected indices retained or restored according to the peek set | consume-first and produce-first peek cases in `replay_rspace_tests`; `reporting_rspace_should_capture_peeks_in_comm_event` | same retained data and same peek metadata in the COMM |
+| Persistent datum/continuation | `Datum::persist`, `WaitingContinuation::persist` | persistent cases in `storage_actions_test` and `replay_rspace_tests` | persistent records remain available for later matches without duplicated effects |
+| Guard timing and backtracking | `Match::check_commit` after a complete spatial assignment | `guarded_matching_tests` and `enabled_rendezvous_spec` | guard rejection restores reservations; the next canonical assignment is tried |
+| Candidate order | `order_candidates_with_index` and stable serialized candidate hashes | `the_canonical_candidate_order_is_a_pure_function_of_the_candidates`; `replay_comm_order` | insertion and hash-map iteration order do not change selection |
+| Source and random metadata | `Datum::source`, `WaitingContinuation::source`, `ListParWithRandom::random_state` | `serializer_byte_goldens`, `models::event_hash_*_differential`, and `epathmap_canonical_fixtures` | complete identity bytes include metadata that distinguishes RSpace records |
+| Event history and replay | `log_comm`, replay COMM multimap, `ReplayRSpace` | complete `replay_rspace_tests`; guarded play/replay tests; `deploy_log_canonicalization_and_replay` | same event multiplicities, selected assignment, final root, and no unused rigging |
+| Checkpoint and reset | `create_checkpoint`, `reset`, soft checkpoint/revert | checkpoint/reset/soft-checkpoint cases in `storage_actions_test` | stable root for identical logical state; reset reconstructs the same authority |
+| Export and import | history exporter/importer over cold-store leaves | all three `export_import_tests` round trips | imported root and post-import behavior equal the exported source |
+| Malformed input | public `consume`/`install` arity guard before mutation | all five `consume_arity_refusal` cases | deterministic refusal, no half-write, play/replay agreement |
+| Cold bytes and hashes | serializers and `StableHashSerialize` | `serializer_byte_goldens`, `serializer_par_byte_goldens`, and event-hash differentials | byte-identical encodings and therefore unchanged consensus hashes |
+
+### Corpus and groundness audit
+
+The executable corpus spans exact and wildcard single-channel matches,
+datum-first and receive-first arrival, 2-by-2 joins, repeated channels,
+duplicate multiplicity, peeks, persistence, guards, canonical-order reversal,
+malformed arity, checkpoint/reset, export/import, and replay. The generated
+Rholang corpus adds deep and wide `Par`, every descriptor root, ordered and
+unordered collections, binders, remainders, and random-state variants. The
+benchmark corpus adds shared-prefix and diverse-prefix cardinalities 1, 16,
+256, and 4,096, duplicate multiplicities, and join arities.
+
+Stored data are **not proven ground at the generic RSpace boundary**.
+`ISpace<C, P, A, K>::produce` accepts an arbitrary `A`, `HotStore::put_datum`
+performs no closedness validation, and the type system does not refine
+`ListParWithRandom` to a ground-only form. Normal Rholang evaluation generally
+supplies closed data, but direct Rust callers, imported historical state, and
+malformed or future producers remain counterexamples to treating that as an
+RSpace invariant. Consequently, every PathMap query compiler is conservative:
+unsupported, open, nonlinear, malformed, or unresolved structures reach the
+unchanged spatial matcher exactly once.
+
+### Reproducible baseline evidence
+
+The original source coordinate is pinned even though the measurement harness
+was added later. The end-to-end Criterion controls invoke production RSpace and
+disable only the derived selector; they do not substitute a standalone trie
+microbenchmark. Each accepted comparison records commit, CPU affinity,
+governor, sample count, confidence level, RSS cap, zero-swap policy, raw digest,
+and causal interpretation in pgmcp. Durable summaries are stored under
+`docs/design/stack-safety/measurements/`, including the retained-receive,
+resting-prefix, Bag mutation, and retained-Bag product experiments. The latest
+full `rspace_plus_plus` package gate executed 428 tests successfully under an
+8 GiB `MemoryMax` and `MemorySwapMax=0`; release-specific retained-product and
+strict affected-target lint gates also pass. Workspace-wide CI and the complete
+layout A/B/C resource matrix remain completion gates, so this section freezes
+the baseline without claiming the entire campaign complete.
 
 ## Current implementation checkpoint
 
@@ -520,7 +610,7 @@ measurement ledger is
 
 A read-only review of libdictenstein commits `ba004a4`, `86e658c`, and `0abeae4` identified four
 techniques that apply to the remaining matcher work. Libdictenstein atomically publishes a coherent
-immutable PathMap root and exact cardinality; captures an owned `TrieRef` at query start in O(1);
+immutable PathMap root and exact cardinality; captures an owned `TrieRef` at query start in $`O(1)`$;
 carries focus-local handles so descent does not replay a path from the root; and evaluates an edge
 predicate before cloning or constructing the accepted child handle. Its node interface also offers
 a fused finality-plus-edge visit so boundary-backed dictionaries need not observe the same focus
