@@ -369,6 +369,140 @@ fn graft_composed_map_subtrie(
     }
 }
 
+/// Exact map union without inventing a lattice for `Par`.
+///
+/// A synchronized zipper walk compares values only on common paths. When the
+/// right operand enters a branch absent from the left operand, the whole
+/// compressed branch is grafted into the copy-on-write destination. The focus
+/// value is verified when PathMap's `graft_root_vals` feature carries it and
+/// cloned explicitly only when that feature is absent.
+fn join_exact_map_with_grafts(
+    left: &RholangMapPathMap,
+    right: &RholangMapPathMap,
+) -> Result<(RholangMapPathMap, usize), EPathMapAlgebraError> {
+    use pathmap::utils::BitMask;
+    use pathmap::zipper::{Zipper, ZipperMoving, ZipperValues, ZipperWriting};
+
+    fn merge_focus(
+        destination: &mut (impl ZipperWriting<Par> + ZipperValues<Par>),
+        source: &impl ZipperValues<Par>,
+        encoded_key: &[u8],
+    ) -> Result<bool, EPathMapAlgebraError> {
+        let Some(right_value) = source.val() else {
+            return Ok(false);
+        };
+        if let Some(left_value) = destination.val() {
+            if left_value.cmp(right_value) != Ordering::Equal {
+                return Err(EPathMapAlgebraError::ValueConflict {
+                    operation: "join",
+                    encoded_key: encoded_key.to_vec(),
+                });
+            }
+            Ok(true)
+        } else {
+            let replaced = destination.set_val(right_value.clone());
+            debug_assert!(replaced.is_none(), "right-only map value must be new");
+            Ok(false)
+        }
+    }
+
+    let mut joined = left.clone();
+    let mut overlap = 0usize;
+    {
+        let mut source = right.read_zipper();
+        let mut destination = joined.write_zipper();
+        overlap += usize::from(merge_focus(&mut destination, &source, source.path())?);
+
+        let mut levels = vec![source.child_mask().iter()];
+        while let Some(children) = levels.last_mut() {
+            let Some(byte) = children.next() else {
+                levels.pop();
+                if !levels.is_empty() {
+                    let source_ascended = source.ascend_byte();
+                    let destination_ascended = destination.ascend_byte();
+                    debug_assert!(source_ascended && destination_ascended);
+                }
+                continue;
+            };
+
+            let destination_has_child = destination.child_mask().test_bit(byte);
+            source.descend_to_byte(byte);
+            destination.descend_to_byte(byte);
+            debug_assert!(source.path_exists());
+
+            if !destination_has_child {
+                destination.graft(&source);
+                if let Some(value) = source.val() {
+                    if let Some(grafted) = destination.val() {
+                        debug_assert_eq!(
+                            grafted.cmp(value),
+                            Ordering::Equal,
+                            "PathMap graft must preserve its focus value when enabled"
+                        );
+                    } else {
+                        let replaced = destination.set_val(value.clone());
+                        debug_assert!(
+                            replaced.is_none(),
+                            "a right-only branch cannot replace a value"
+                        );
+                    }
+                }
+                let source_ascended = source.ascend_byte();
+                let destination_ascended = destination.ascend_byte();
+                debug_assert!(source_ascended && destination_ascended);
+                continue;
+            }
+
+            overlap += usize::from(merge_focus(&mut destination, &source, source.path())?);
+            levels.push(source.child_mask().iter());
+        }
+    }
+    Ok((joined, overlap))
+}
+
+/// A shared physical root proves complete descendant identity. Root values are
+/// checked separately because PathMap stores them outside that node.
+fn maps_share_complete_root(left: &RholangMapPathMap, right: &RholangMapPathMap) -> bool {
+    use pathmap::zipper::{ZipperConcrete, ZipperValues};
+
+    let left = left.read_zipper();
+    let right = right.read_zipper();
+    let root_values_equal = match (left.val(), right.val()) {
+        (Some(left), Some(right)) => left.cmp(right) == Ordering::Equal,
+        (None, None) => true,
+        _ => false,
+    };
+    root_values_equal
+        && left
+            .shared_node_id()
+            .zip(right.shared_node_id())
+            .is_some_and(|(left_id, right_id)| left_id == right_id)
+}
+
+#[cfg(feature = "epathmap-map-join-differential")]
+fn join_exact_map_reconstructed(
+    left: &RholangMapPathMap,
+    right: &RholangMapPathMap,
+) -> Result<(RholangMapPathMap, usize), EPathMapAlgebraError> {
+    let mut joined = left.clone();
+    let mut overlap = 0usize;
+    compose_topology(&mut joined, &[], right);
+    for (key, right_value) in right.iter() {
+        if let Some(left_value) = joined.get(&key) {
+            overlap += 1;
+            if left_value.cmp(right_value) != Ordering::Equal {
+                return Err(EPathMapAlgebraError::ValueConflict {
+                    operation: "join",
+                    encoded_key: key,
+                });
+            }
+        } else {
+            joined.insert(&key, right_value.clone());
+        }
+    }
+    Ok((joined, overlap))
+}
+
 /// Re-type a PathMap's terminating topology as a membership trie. Values are
 /// deliberately excluded: this mask exists only where a structural
 /// algebraic operation must be applied to `PathMap<Par>` without inventing an
@@ -1373,22 +1507,46 @@ impl EntryTrie {
                 ))
             }
             (EPathMapRepr::Map(left), EPathMapRepr::Map(right)) => {
-                let mut joined = left.clone();
-                compose_topology(&mut joined, &[], right);
-                let mut overlap = 0usize;
-                for (key, right_value) in right.iter() {
-                    if let Some(left_value) = joined.get(&key) {
-                        overlap += 1;
-                        if !Self::exact_map_value_eq(left_value, right_value) {
-                            return Err(EPathMapAlgebraError::ValueConflict {
-                                operation: "join",
-                                encoded_key: key,
-                            });
-                        }
-                    } else {
-                        joined.insert(&key, right_value.clone());
-                    }
+                if maps_share_complete_root(left, right) {
+                    return Ok(Self::joined_result(
+                        EPathMapRepr::Map(left.clone()),
+                        self.len,
+                        self,
+                        other,
+                    ));
                 }
+                let (joined, overlap) = join_exact_map_with_grafts(left, right)?;
+                Ok(Self::joined_result(
+                    EPathMapRepr::Map(joined),
+                    self.len + other.len - overlap,
+                    self,
+                    other,
+                ))
+            }
+            _ => Err(self.mode_mismatch(other)),
+        }
+    }
+
+    #[cfg(feature = "epathmap-map-join-differential")]
+    pub fn try_join_reconstructed_control(
+        &self,
+        other: &Self,
+    ) -> Result<Self, EPathMapAlgebraError> {
+        match (&self.repr, &other.repr) {
+            (EPathMapRepr::Empty, _) => Ok(other.clone()),
+            (_, EPathMapRepr::Empty) => Ok(self.clone()),
+            (EPathMapRepr::Set(left), EPathMapRepr::Set(right)) => {
+                let joined = left.join(right);
+                let len = joined.val_count();
+                Ok(Self::joined_result(
+                    EPathMapRepr::Set(joined),
+                    len,
+                    self,
+                    other,
+                ))
+            }
+            (EPathMapRepr::Map(left), EPathMapRepr::Map(right)) => {
+                let (joined, overlap) = join_exact_map_reconstructed(left, right)?;
                 Ok(Self::joined_result(
                     EPathMapRepr::Map(joined),
                     self.len + other.len - overlap,
