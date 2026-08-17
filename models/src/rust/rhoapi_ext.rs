@@ -274,6 +274,101 @@ fn compose_topology<DestinationValue, SourceValue>(
     }
 }
 
+/// Graft a set-mode source at `prefix`, then normalize the one codec-arm
+/// difference between a standalone entry and a composed child entry.
+///
+/// PathMap grafts the complete compressed topology by copy-on-write. A bare
+/// source key must nevertheless move from `prefix ++ key` to
+/// `prefix ++ key ++ TERM`, because every child composed below a cursor is in
+/// the split arm. When the source also contains the singleton split entry at
+/// that destination, the split entry wins exactly as it did in the canonical
+/// source iteration used by the predecessor.
+fn graft_composed_set_subtrie(
+    destination: &mut RholangSetPathMap,
+    prefix: &[u8],
+    source: &RholangSetPathMap,
+) {
+    use pathmap::zipper::{ZipperMoving, ZipperReadOnlyIteration, ZipperWriting};
+
+    destination
+        .write_zipper_at_path(prefix)
+        .graft(&source.read_zipper());
+
+    let mut source_zipper = source.read_zipper();
+    while source_zipper.to_next_get_val().is_some() {
+        let source_key = source_zipper.path();
+        let branch_prefix = entry_key_branch_prefix(source_key)
+            .expect("set-mode EPathMap keys are canonical_path encodings");
+        if branch_prefix.len() != source_key.len() {
+            continue;
+        }
+
+        let mut relative_split = Vec::with_capacity(source_key.len() + 1);
+        relative_split.extend_from_slice(source_key);
+        relative_split.push(super::canonical_path::tag::TERM);
+
+        let mut absolute_bare = Vec::with_capacity(prefix.len() + source_key.len());
+        absolute_bare.extend_from_slice(prefix);
+        absolute_bare.extend_from_slice(source_key);
+        let removed = destination.remove(&absolute_bare);
+        debug_assert!(removed.is_some(), "grafted bare set member must exist");
+
+        if !source.contains(&relative_split) {
+            let mut absolute_split = Vec::with_capacity(prefix.len() + relative_split.len());
+            absolute_split.extend_from_slice(prefix);
+            absolute_split.extend_from_slice(&relative_split);
+            destination.insert(absolute_split, ());
+        }
+    }
+}
+
+/// Map-mode twin of [`graft_composed_set_subtrie`]. Associated values move
+/// inside the destination PathMap; split entries already present at the
+/// composed destination retain precedence over their bare aliases.
+fn graft_composed_map_subtrie(
+    destination: &mut RholangMapPathMap,
+    prefix: &[u8],
+    source: &RholangMapPathMap,
+) {
+    use pathmap::zipper::{ZipperMoving, ZipperReadOnlyIteration, ZipperWriting};
+
+    destination
+        .write_zipper_at_path(prefix)
+        .graft(&source.read_zipper());
+
+    let mut source_zipper = source.read_zipper();
+    while source_zipper.to_next_get_val().is_some() {
+        let source_key = source_zipper.path();
+        let branch_prefix = entry_key_branch_prefix(source_key)
+            .expect("map-mode EPathMap keys are canonical_path encodings");
+        if branch_prefix.len() != source_key.len() {
+            continue;
+        }
+
+        let mut relative_split = Vec::with_capacity(source_key.len() + 1);
+        relative_split.extend_from_slice(source_key);
+        relative_split.push(super::canonical_path::tag::TERM);
+
+        let mut absolute_bare = Vec::with_capacity(prefix.len() + source_key.len());
+        absolute_bare.extend_from_slice(prefix);
+        absolute_bare.extend_from_slice(source_key);
+        let removed = destination
+            .remove(&absolute_bare)
+            .expect("grafted bare map entry must exist");
+
+        if source.contains(&relative_split) {
+            crate::rust::rholang::par_children::dismantle(removed);
+        } else {
+            let mut absolute_split = Vec::with_capacity(prefix.len() + relative_split.len());
+            absolute_split.extend_from_slice(prefix);
+            absolute_split.extend_from_slice(&relative_split);
+            if let Some(replaced) = destination.insert(absolute_split, removed) {
+                crate::rust::rholang::par_children::dismantle(replaced);
+            }
+        }
+    }
+}
+
 /// Re-type a PathMap's terminating topology as a membership trie. Values are
 /// deliberately excluded: this mask exists only where a structural
 /// algebraic operation must be applied to `PathMap<Par>` without inventing an
@@ -287,6 +382,7 @@ where V: Clone + Send + Sync + Unpin {
     mask
 }
 
+#[cfg(feature = "epathmap-setsubtrie-differential")]
 fn composed_subtrie_member_key(prefix: &[u8], source_key: &[u8]) -> Vec<u8> {
     let (segments, _) = decode_cursor(source_key);
     let segment_bytes = segments.iter().map(Vec::len).sum::<usize>();
@@ -1179,6 +1275,82 @@ impl EntryTrie {
             }
             (EPathMapRepr::Empty, EPathMapRepr::Set(source_map)) => {
                 let mut destination = RholangSetPathMap::new();
+                graft_composed_set_subtrie(&mut destination, &prefix, source_map);
+                EPathMapRepr::Set(destination)
+            }
+            (EPathMapRepr::Set(base), EPathMapRepr::Set(source_map)) => {
+                let mut destination = base.clone();
+                remove_subtrie_native(&mut destination, &prefix);
+                graft_composed_set_subtrie(&mut destination, &prefix, source_map);
+                EPathMapRepr::Set(destination)
+            }
+            (EPathMapRepr::Empty, EPathMapRepr::Map(source_map)) => {
+                let mut destination = pathmap::PathMap::<Par>::new();
+                graft_composed_map_subtrie(&mut destination, &prefix, source_map);
+                EPathMapRepr::Map(destination)
+            }
+            (EPathMapRepr::Map(base), EPathMapRepr::Map(source_map)) => {
+                let mut destination = base.clone();
+                remove_subtrie_native(&mut destination, &prefix);
+                graft_composed_map_subtrie(&mut destination, &prefix, source_map);
+                EPathMapRepr::Map(destination)
+            }
+            (EPathMapRepr::Set(_), EPathMapRepr::Map(_))
+            | (EPathMapRepr::Map(_), EPathMapRepr::Set(_)) => {
+                return Err(EPathMapAlgebraError::ModeMismatch {
+                    left: left_mode,
+                    right: right_mode,
+                });
+            }
+        };
+
+        *self = Self::algebra_result(repr);
+        Ok(())
+    }
+
+    /// Reconstructed-topology control retained only for the causal native
+    /// zipper-graft benchmark.
+    #[cfg(feature = "epathmap-setsubtrie-differential")]
+    pub fn replace_subtrie_reconstructed_control(
+        &mut self,
+        cursor_segments: &[Vec<u8>],
+        cursor_kind: CursorKind,
+        source: &Self,
+    ) -> Result<(), EPathMapAlgebraError> {
+        let prefix = segments_to_key(cursor_segments, false);
+        let left_mode = self.mode();
+        let right_mode = source.mode();
+
+        let repr = match (&self.repr, &source.repr) {
+            (EPathMapRepr::Empty, EPathMapRepr::Empty) => {
+                if cursor_segments.is_empty() {
+                    EPathMapRepr::Empty
+                } else {
+                    return Err(EPathMapAlgebraError::AmbiguousEmpty {
+                        operation: "setSubtrie",
+                    });
+                }
+            }
+            (EPathMapRepr::Set(base), EPathMapRepr::Empty) => {
+                let mut destination = base.clone();
+                remove_subtrie_native(&mut destination, &prefix);
+                if !cursor_segments.is_empty() {
+                    let key = encode_cursor_entry_key(cursor_segments, cursor_kind, &destination);
+                    destination.insert(key, ());
+                }
+                EPathMapRepr::Set(destination)
+            }
+            (EPathMapRepr::Map(base), EPathMapRepr::Empty) => {
+                let mut destination = base.clone();
+                remove_subtrie_native(&mut destination, &prefix);
+                if !cursor_segments.is_empty() {
+                    let key = encode_cursor_entry_key(cursor_segments, cursor_kind, &destination);
+                    destination.create_path(key);
+                }
+                EPathMapRepr::Map(destination)
+            }
+            (EPathMapRepr::Empty, EPathMapRepr::Set(source_map)) => {
+                let mut destination = RholangSetPathMap::new();
                 compose_topology(&mut destination, &prefix, source_map);
                 for (source_key, ()) in source_map.iter() {
                     destination.insert(composed_subtrie_member_key(&prefix, &source_key), ());
@@ -1195,7 +1367,7 @@ impl EntryTrie {
                 EPathMapRepr::Set(destination)
             }
             (EPathMapRepr::Empty, EPathMapRepr::Map(source_map)) => {
-                let mut destination = pathmap::PathMap::<Par>::new();
+                let mut destination = RholangMapPathMap::new();
                 compose_topology(&mut destination, &prefix, source_map);
                 for (source_key, value) in source_map.iter() {
                     destination.insert(
@@ -2696,6 +2868,17 @@ impl EPathMap {
     ) -> Result<(), EPathMapAlgebraError> {
         self.ps
             .replace_subtrie(cursor_segments, cursor_kind, &source.ps)
+    }
+
+    #[cfg(feature = "epathmap-setsubtrie-differential")]
+    pub fn replace_subtrie_reconstructed_control(
+        &mut self,
+        cursor_segments: &[Vec<u8>],
+        cursor_kind: CursorKind,
+        source: &EPathMap,
+    ) -> Result<(), EPathMapAlgebraError> {
+        self.ps
+            .replace_subtrie_reconstructed_control(cursor_segments, cursor_kind, &source.ps)
     }
 
     #[allow(deprecated)]
