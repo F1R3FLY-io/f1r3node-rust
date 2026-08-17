@@ -46,7 +46,7 @@ pub fn reducer_eval_identity_epathmap(e_pathmap: &EPathMap) -> bool {
 ///   `eval_expr`, regardless of the process fields it reflects.
 #[inline]
 pub(crate) fn reducer_eval_identity_par(par: &Par, codec_stable: bool) -> bool {
-    codec_stable || par.exprs.is_empty()
+    codec_stable || par.family_cardinality::<crate::rhoapi::Expr>() == 0
 }
 
 /// Classify a `Par` as ground normal form: either a single-expr carrier over
@@ -85,40 +85,54 @@ pub(crate) fn reducer_eval_identity_par(par: &Par, codec_stable: bool) -> bool {
 /// threshold. The predicate is a side-effect-free conjunction, so this
 /// depth-first evaluation returns the same boolean as the recursive definition.
 pub(crate) fn eval_stable_par(root: &Par) -> bool {
-    let mut current = Some(root);
-    let mut deferred: Vec<&Par> = Vec::new();
+    // The production PathMap-backed `Par` clone shares one immutable trie root.
+    // Each decoded collection component then moves its owned children onto this
+    // explicit worklist, so neither a repeated-field projection nor recursive
+    // traversal is needed.
+    let mut current = Some(root.clone());
+    let mut deferred: Vec<Par> = Vec::new();
 
     loop {
         let Some(par) = current.take().or_else(|| deferred.pop()) else {
             return true;
         };
 
-        if !par.sends.is_empty()
-            || !par.receives.is_empty()
-            || !par.news.is_empty()
-            || !par.matches.is_empty()
-            || !par.bundles.is_empty()
-            || !par.connectives.is_empty()
-            || !par.conditionals.is_empty()
-            || !par.locally_free.is_empty()
-            || par.connective_used
+        if par.family_cardinality::<crate::rhoapi::Send>() != 0
+            || par.family_cardinality::<crate::rhoapi::Receive>() != 0
+            || par.family_cardinality::<crate::rhoapi::New>() != 0
+            || par.family_cardinality::<crate::rhoapi::Match>() != 0
+            || par.family_cardinality::<crate::rhoapi::Bundle>() != 0
+            || par.family_cardinality::<crate::rhoapi::Connective>() != 0
+            || par.family_cardinality::<crate::rhoapi::If>() != 0
+            || !par.locally_free().is_empty()
+            || par.connective_used()
         {
             return false;
         }
 
-        let expr = match (par.exprs.as_slice(), par.unforgeables.as_slice()) {
-            // The reflect GPrivate leaf is an unforgeable instead of an expr.
-            ([], [unforgeable])
-                if matches!(unforgeable.unf_instance, Some(UnfInstance::GPrivateBody(_))) =>
-            {
+        let expr_count = par.family_cardinality::<crate::rhoapi::Expr>();
+        let unforgeable_count = par.family_cardinality::<crate::rhoapi::GUnforgeable>();
+        if expr_count == 0 && unforgeable_count == 1 {
+            let unforgeable = par
+                .first::<crate::rhoapi::GUnforgeable>()
+                .expect("generated and PathMap Par family cursors are infallible")
+                .expect("the cardinality check proved one unforgeable")
+                .0;
+            if matches!(unforgeable.unf_instance, Some(UnfInstance::GPrivateBody(_))) {
                 continue;
             }
-            // A single expression is the other valid carrier shape.
-            ([expr], []) => expr,
-            _ => return false,
-        };
+            return false;
+        }
+        if expr_count != 1 || unforgeable_count != 0 {
+            return false;
+        }
+        let expr = par
+            .first::<crate::rhoapi::Expr>()
+            .expect("generated and PathMap Par family cursors are infallible")
+            .expect("the cardinality check proved one expression")
+            .0;
 
-        let children = match &expr.expr_instance {
+        let children = match expr.expr_instance {
             Some(
                 ExprInstance::GBool(_)
                 | ExprInstance::GInt(_)
@@ -135,22 +149,23 @@ pub(crate) fn eval_stable_par(root: &Par) -> bool {
                     && list.locally_free.is_empty()
                     && !list.connective_used =>
             {
-                list.ps.as_slice()
+                list.ps
             }
             Some(ExprInstance::ETupleBody(tuple))
                 if tuple.locally_free.is_empty() && !tuple.connective_used =>
             {
-                tuple.ps.as_slice()
+                tuple.ps
             }
             // O(1): `EntryTrie` maintains the entry fold as entries change.
-            Some(ExprInstance::EPathmapBody(inner)) if eval_stable_epathmap(inner) => continue,
+            Some(ExprInstance::EPathmapBody(inner)) if eval_stable_epathmap(&inner) => continue,
             _ => return false,
         };
 
-        if let Some((first, siblings)) = children.split_first() {
+        let mut children = children.into_iter();
+        if let Some(first) = children.next() {
             // Reverse-push preserves the recursive definition's left-to-right
             // visitation while storing only pending siblings.
-            deferred.extend(siblings.iter().rev());
+            deferred.extend(children.rev());
             current = Some(first);
         }
     }

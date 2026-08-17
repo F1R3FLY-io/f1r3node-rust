@@ -128,6 +128,16 @@ impl Par {
         self.components.try_visit_decoded(visitor)
     }
 
+    pub fn try_visit_occurrences<T, E>(
+        &self,
+        visitor: impl FnMut(&T) -> Result<(), E>,
+    ) -> Result<(), ParBagVisitError<E>>
+    where
+        T: ParBagComponent,
+    {
+        self.components.try_visit_occurrences(visitor)
+    }
+
     pub fn first<T: ParBagComponent>(
         &self,
     ) -> Result<Option<(T, Multiplicity)>, super::par_bag::ParBagCodecError> {

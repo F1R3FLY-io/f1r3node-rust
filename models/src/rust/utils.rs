@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 
 use expr::ExprInstance;
+use rspace_plus_plus::rspace::bag::Multiplicity;
 use serde::{Deserialize, Serialize};
 
+use super::par_bag::{ParBagCodecError, ParBagComponent, ParBagVisitError};
 use super::par_map::ParMap;
 use super::par_map_type_mapper::ParMapTypeMapper;
 use super::par_set::ParSet;
@@ -22,8 +24,81 @@ pub struct OptionResult<A, K> {
     pub data: A,
 }
 
+/// Transitional component-family projection implemented only by Prost's
+/// generated `Par`. Production callers use the representation-independent
+/// methods below; this projection disappears when `.rhoapi.Par` is extern-
+/// pathed to the repository-owned PathMap representation.
+#[doc(hidden)]
+pub trait GeneratedParComponent: ParBagComponent + Clone {
+    fn generated_family(par: &Par) -> &[Self];
+}
+
+macro_rules! generated_par_component {
+    ($component:ty, $field:ident) => {
+        impl GeneratedParComponent for $component {
+            fn generated_family(par: &Par) -> &[Self] { &par.$field }
+        }
+    };
+}
+
+generated_par_component!(Send, sends);
+generated_par_component!(Receive, receives);
+generated_par_component!(New, news);
+generated_par_component!(Expr, exprs);
+generated_par_component!(Match, matches);
+generated_par_component!(GUnforgeable, unforgeables);
+generated_par_component!(Bundle, bundles);
+generated_par_component!(Connective, connectives);
+generated_par_component!(If, conditionals);
+
 // Adding helper functions 'with_*' to protobuf message 'Par'
 impl Par {
+    pub fn locally_free(&self) -> &[u8] { &self.locally_free }
+
+    pub const fn connective_used(&self) -> bool { self.connective_used }
+
+    /// Visit each semantic occurrence without exposing the generated repeated
+    /// field. This has the same call surface as the PathMap-backed `Par` and is
+    /// removed with the generated representation at the final extern cutover.
+    pub fn try_visit_occurrences<T, E>(
+        &self,
+        mut visitor: impl FnMut(&T) -> Result<(), E>,
+    ) -> Result<(), ParBagVisitError<E>>
+    where
+        T: GeneratedParComponent,
+    {
+        for value in T::generated_family(self) {
+            visitor(value).map_err(ParBagVisitError::Visitor)?;
+        }
+        Ok(())
+    }
+
+    pub fn try_visit_decoded<T, E>(
+        &self,
+        mut visitor: impl FnMut(T, Multiplicity) -> Result<(), E>,
+    ) -> Result<(), ParBagVisitError<E>>
+    where
+        T: GeneratedParComponent,
+    {
+        for value in T::generated_family(self) {
+            visitor(value.clone(), Multiplicity::ONE).map_err(ParBagVisitError::Visitor)?;
+        }
+        Ok(())
+    }
+
+    pub fn first<T>(&self) -> Result<Option<(T, Multiplicity)>, ParBagCodecError>
+    where T: GeneratedParComponent {
+        Ok(T::generated_family(self)
+            .first()
+            .cloned()
+            .map(|value| (value, Multiplicity::ONE)))
+    }
+
+    pub fn family_cardinality<T>(&self) -> u128
+    where T: GeneratedParComponent {
+        T::generated_family(self).len() as u128
+    }
+
     pub fn with_sends(&self, new_sends: Vec<Send>) -> Par {
         let mut out = self.clone();
         out.sends = new_sends;

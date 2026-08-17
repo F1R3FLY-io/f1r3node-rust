@@ -95,6 +95,22 @@ fn first_component_uses_canonical_family_order_and_preserves_multiplicity() {
         .first::<Expr>()
         .expect("empty lookup")
         .is_none());
+
+    let mut occurrences = Vec::new();
+    value
+        .try_visit_occurrences::<Expr, std::convert::Infallible>(|expr| {
+            occurrences.push(expr.clone());
+            Ok(())
+        })
+        .expect("visit occurrences");
+    assert_eq!(occurrences.len(), 3);
+    assert_eq!(
+        occurrences
+            .iter()
+            .filter(|expr| expr.expr_instance == Some(ExprInstance::GInt(3)))
+            .count(),
+        2
+    );
 }
 
 #[test]

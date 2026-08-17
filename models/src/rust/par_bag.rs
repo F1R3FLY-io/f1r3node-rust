@@ -963,6 +963,24 @@ impl ParBag {
             })
     }
 
+    /// Visit every semantic occurrence in one constructor family without
+    /// constructing a repeated-field collection. Each distinct trie endpoint
+    /// is decoded once and borrowed for exactly its stored multiplicity.
+    pub fn try_visit_occurrences<T, E>(
+        &self,
+        mut visitor: impl FnMut(&T) -> Result<(), E>,
+    ) -> Result<(), ParBagVisitError<E>>
+    where
+        T: ParBagComponent,
+    {
+        self.try_visit_decoded::<T, E>(|value, multiplicity| {
+            for _ in 0..multiplicity.get() {
+                visitor(&value)?;
+            }
+            Ok(())
+        })
+    }
+
     /// Decode only the lexicographically first endpoint in one constructor
     /// family. The zipper traversal stops immediately after that endpoint;
     /// it does not scan or collect the remaining family.
