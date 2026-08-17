@@ -103,11 +103,15 @@ pub fn compute_forward_horizon_roots(
 
     let mut roots: Vec<Blake2b256Hash> = Vec::new();
     let mut seen: HashSet<Blake2b256Hash> = HashSet::new();
+    let mut visited = 0usize;
+    let mut absent = 0usize;
     for layer in layers.iter().rev() {
         for block_hash in layer {
+            visited += 1;
             let block = match block_store.get(block_hash)? {
                 Some(b) => b,
                 None => {
+                    absent += 1;
                     tracing::warn!(
                         "compute_forward_horizon_roots: block {} in DAG but missing from block_store",
                         models::rust::casper::pretty_printer::PrettyPrinter::build_string_bytes(
@@ -127,6 +131,25 @@ pub fn compute_forward_horizon_roots(
             }
         }
     }
+
+    // The walk's inputs and yield. A root the joiner later resets to but never
+    // requested is invisible without this: `visited` says how much of the
+    // window the DAG actually held, which a downloaded-block count cannot.
+    tracing::debug!(
+        target: "f1r3.trace.lfs",
+        min_height,
+        lfb_height,
+        layers = layers.len(),
+        blocks_visited = visited,
+        blocks_absent_from_store = absent,
+        roots = roots.len(),
+        emitted = %roots
+            .iter()
+            .map(|r| hex::encode(&r.bytes()[..8]))
+            .collect::<Vec<_>>()
+            .join(","),
+        "forward-horizon walk"
+    );
     Ok(roots)
 }
 

@@ -294,6 +294,7 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
                     progress_map.get(root).cloned().unwrap_or_default()
                 };
                 tracing::debug!(
+                    target: "f1r3.trace.lfs",
                     "LFS forward-horizon: completed root {} ({} chunks, {} history, {} data)",
                     root,
                     progress.chunk_count,
@@ -447,6 +448,18 @@ pub async fn stream<T: HorizonRequesterOps>(
         filtered.len(),
         skipped,
         total_input
+    );
+    // The set actually requested, after the has_root pre-filter. Pairs with
+    // the walk's `emitted` list: a root in one and not the other localises the
+    // loss to selection or to the pre-filter.
+    tracing::debug!(
+        target: "f1r3.trace.lfs",
+        requested = %filtered
+            .iter()
+            .map(|r| hex::encode(&r.bytes()[..8]))
+            .collect::<Vec<_>>()
+            .join(","),
+        "LFS forward-horizon: requested root set"
     );
 
     // Build initial ST: one path per root, of the form `[(root, None)]`.

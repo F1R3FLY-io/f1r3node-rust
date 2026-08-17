@@ -862,6 +862,9 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             .map(|justification| justification.latest_block_hash.to_vec())
             .collect();
 
+        let mut inserted = 0usize;
+        let mut below_min = 0usize;
+
         // Add sorted DAG in order from approved block to oldest
         for hash in height_map
             .values()
@@ -876,17 +879,36 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             let block = self.block_store.get_unsafe(&hash);
             // If sender has stake 0 in approved block, this means that sender has been slashed and block is invalid
             let is_invalid = invalid_blocks.contains(&block.block_hash.to_vec());
-            // Filter older not necessary blocks
+            // The requester deliberately reaches one level below the bound — it
+            // lowers `lower_bound` to `height - 1` for latest messages because
+            // the boundary's parents are needed — so cutting at `min_height`
+            // here discards blocks the download went and got. Blocks at
+            // `min_height` then have parents and justifications the DAG does
+            // not hold, and every lookup_unsafe that walks up from them fails
+            // with DAGStorageMissingHash: incoming blocks fail validation and
+            // the heartbeat cannot run.
             let block_height = proto_util::block_number(&block);
-            let block_height_ok = block_height >= min_height;
+            let block_height_ok = block_height >= min_height - 1;
 
             // Add block to DAG
             if block_height_ok {
                 add_block_to_dag(self, &block, is_invalid).await?;
+                inserted += 1;
+            } else {
+                below_min += 1;
             }
         }
 
-        tracing::info!("Blocks for approved state added to DAG.");
+        // What the horizon walk will actually see. The requester's `finished`
+        // count is not this number — it counts downloads, and anything the
+        // height map dropped or the min-height filter cut never reaches the DAG.
+        tracing::info!(
+            inserted,
+            below_min,
+            min_height,
+            height_map_entries = height_map.values().map(|h| h.len()).sum::<usize>(),
+            "Blocks for approved state added to DAG."
+        );
         Ok(())
     }
 
