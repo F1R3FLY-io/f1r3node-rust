@@ -151,6 +151,9 @@ impl DeployGrpcServiceV1Impl {
             Err(_) => return,
         };
 
+        // Cached when available, replayed only when the reporter is idle:
+        // block_report refuses rather than queues, so this never adds to the
+        // load it would be competing with.
         match self
             .block_report_api
             .block_report(block_hash_bytes, false)
@@ -170,9 +173,10 @@ impl DeployGrpcServiceV1Impl {
                 }
             }
             Err(_) => {
-                // Validators: transfers_available stays false (proto default),
-                // transfers stays empty Vec. Clients check transfers_available
-                // to distinguish "no transfers" from "unavailable."
+                // Validators, and a reporter busy with another replay:
+                // transfers_available stays false (proto default), transfers
+                // stays empty Vec. Clients check transfers_available to
+                // distinguish "no transfers" from "unavailable."
             }
         }
     }
