@@ -2633,6 +2633,16 @@ is [-28.030114307 s, -27.821338501 s]. The exact-diagonal and Send-remainder gua
 exact estimates are committed in the stack-safety report's
 [`rspace-ac-connective-domain-algebra-2026-08-17.tsv`](../design/stack-safety/measurements/rspace-ac-connective-domain-algebra-2026-08-17.tsv).
 
+Follow-up pgmcp experiment 249 tests whether those already-owned candidate masks should instead be
+reduced through consuming zipper `join_map_into` / `meet_into`. Exact verdict and `FreeMap`
+differentials pass, but all five measured cells regress: **2.431738%** at the width-4,096 primary
+and **0.437720–0.974598%** across the guards. The locked hypothesis is rejected
+($`p = 0.549620`$, Cohen's $`d = +0.014412`$). The treatment remains recoverable at `855004971`;
+the selected tree removes its default-disabled feature and benchmark and retains immutable
+`PathMap::join` / `meet`. Consequently experiment 249 changes no production transition,
+candidate order, binding, wire image, hash, cost, or replay result. Its exact ledger is
+[`rspace-ac-candidate-mask-consuming-algebra-2026-08-17.tsv`](../design/stack-safety/measurements/rspace-ac-candidate-mask-consuming-algebra-2026-08-17.tsv).
+
 This checkpoint introduces no new byte lane, RSpace state carrier, PathMap crate behavior, match
 authority, candidate order, or metering rule. It strengthens the inner associative-commutative
 superset and stack/resource evidence within CBR-053. It does not yet prove every generated

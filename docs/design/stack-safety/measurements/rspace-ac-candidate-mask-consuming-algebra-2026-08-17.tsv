@@ -1,0 +1,26 @@
+# RSpace AC candidate-mask algebra: immutable whole-map join/meet versus consuming zipper join_map_into/meet_into.
+# Reproducible treatment checkpoint: 855004971. Selected production removes the rejected differential and retains immutable PathMap::join/meet.
+# Host: AMD Ryzen Threadripper PRO 5975WX, 32 physical cores, SMT disabled; CPU 8 pinned; no competing Cargo, rustc, or nextest process at preflight.
+# Preflight utilization: 84.22% aggregate idle; CPU 8 was 97.99% idle; 42 GiB memory available; zero swap used.
+# Command: systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 taskset -c 8 cargo bench -j 4 -p rholang --bench spatial_matcher_candidate_mask_algebra --features spatial-matcher-candidate-mask-algebra-differential
+# Arms: both use production PathMap connective domains and the complete list PDA. Control reduces owned candidate masks with immutable join/meet; treatment alone uses join_map_into/meet_into.
+# Fixture: width-4,096 rejecting-OR primary plus width-256 exact, union, intersection, and duplicate-position guards. Fixture cloning is outside timed samples.
+# Criterion: one scientific run; 30 post-warm-up samples per arm/cell; 2 s warm-up; 5 s requested measurement interval; slow flat cells extended automatically to collect all 30 samples.
+# Pgmcp experiment/hypothesis 249: REJECTED. Pooled locked Welch t=0.1248075952, one-sided p=0.5496199663, Cohen's d=+0.0144115397, treatment-minus-control 95% CI [-62876124.5531,+71391334.6011] ns.
+# Robustness: Cliff's delta=+0.1129777778 and Mann-Whitney p=0.0908017221. Every per-cell treatment mean is slower; the primary fails the preregistered 5% improvement requirement.
+# Correctness preflight: 1/1 focused differential with exact verdict and FreeMap equality; feature-free rholang check; release benchmark build.
+# Scope: 166.798 s wall; 165.646 s CPU; 256.4 MiB peak RSS; 8,192 MiB MemoryMax; zero swap.
+# Control run: 98af4707-c5d1-48d3-8e87-737c57eb3cbd; sha256:2645c5d90ad64b98390ef987eebd4759917a552f50dea00dd3c76339f341d726.
+# Treatment run: 5a6000e0-4056-43c1-a26f-eb6120d37ab9; sha256:42c72dd15446376cd35c17477b5cc5b027a9a7422d10423b67c07086bb2b5a6f.
+# Pgmcp artifact 328 preserves the run summary; source log SHA-256 ceb44cf745d2448d527edada855be60786c6a2865a74a3f7b36ff2478f91e0f2.
+date	source_commit	experiment_id	workload	cardinality	arm	samples	raw_mean_ns	raw_stddev_ns	median_ns	mean_ci_low_ns	mean_ci_high_ns	treatment_over_control_ratio	mean_change_percent	control_speedup	memory_max_mib	peak_rss_mib	swap_max_mib	cpu_affinity	result
+2026-08-17	855004971	249	primary_rejecting_or_chain	4096	control	30	739942320.533333	22464856.702879	730715978.000000	732188724.326667	748004981.262500	NA	NA	NA	8192	256.4	0	8	primary-control
+2026-08-17	855004971	249	primary_rejecting_or_chain	4096	treatment	30	757935779.566667	23865229.499480	764886753.500000	749463009.250833	766169609.763333	1.024317381	+2.431738	0.976259916	8192	256.4	0	8	rejected-primary
+2026-08-17	855004971	249	guard_exact_diagonal	256	control	30	2305078.994212	14479.434468	2303195.268803	2300069.707331	2310297.274045	NA	NA	NA	8192	256.4	0	8	guard-control
+2026-08-17	855004971	249	guard_exact_diagonal	256	treatment	30	2315884.031816	14113.044916	2314969.450000	2311009.809574	2320976.731754	1.004687491	+0.468749	0.995334379	8192	256.4	0	8	slower
+2026-08-17	855004971	249	guard_finite_unions	256	control	30	3671827.860918	24697.317952	3671116.468915	3663618.605148	3680911.569180	NA	NA	NA	8192	256.4	0	8	guard-control
+2026-08-17	855004971	249	guard_finite_unions	256	treatment	30	3706193.573004	12950.934508	3706322.441667	3701680.132044	3710804.307298	1.009359293	+0.935929	0.990727491	8192	256.4	0	8	slower
+2026-08-17	855004971	249	guard_finite_intersections	256	control	30	5083696.619353	20532.057672	5082291.639098	5076548.745651	5091063.483049	NA	NA	NA	8192	256.4	0	8	guard-control
+2026-08-17	855004971	249	guard_finite_intersections	256	treatment	30	5105948.989620	18458.818266	5105621.605159	5100089.832442	5113046.800135	1.004377203	+0.437720	0.995641874	8192	256.4	0	8	slower
+2026-08-17	855004971	249	guard_duplicate_positions	256	control	30	331125593.900000	9705407.338561	334465296.500000	327366823.609167	334170358.390833	NA	NA	NA	8192	256.4	0	8	guard-control
+2026-08-17	855004971	249	guard_duplicate_positions	256	treatment	30	334352736.866667	6543218.829680	335835954.500000	331713084.289167	336187337.288333	1.009745979	+0.974598	0.990348089	8192	256.4	0	8	slower

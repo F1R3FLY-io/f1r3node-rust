@@ -3615,6 +3615,7 @@ swap, and two-core CPU quota**. **MEASURED:**
 | standalone Bag delta and compact-trie codec | no direct Bag codec or normalized reversible transition carrier | **200,000-byte compressed key round-trips on 256 KiB; 23/23 Bag tests; 1/1 allocation gate; 183/183 affected EPathMap tests** | `0d7a6a3f8` adds atomic exact-key delta apply/revert; `1560f4371` uses raw canonical ACTree03 with native `u64` value slots and a shared iterative reader; `46aaa6472` adds legacy parity, prefix, algebra, delta, deep/wide, Merkle-image, and multiplicity-allocation evidence; `87679597d` adds the exact-prefix cursor/pruning regression; malformed/noncanonical/zero/dangling images fail closed and strict lint passes |
 | live accepted-match Bag transaction | per-selected-datum hot-store lock and removal | **23/23 Bag; 18/18 data index; 17/17 guarded play/replay; 146/146 broad RSpace integration; Rocq/TLC/mCRL2 live-commit proof; experiments 218 and 219 accepted under their locked statistical criteria** | `cd01ea721` normalizes exact selected identities, commits one COW root under one lock, preserves fresh/persistent candidates, and rejects underflow or malformed paths without mutation; `21ece399d` proves candidate projection, play/replay delta equality, atomic publication, all seven invariants over 2,628 TLC states, branching bisimulation, and no partial-publication reachability; `0f9beb5f0` removes the redundant outer root clone while retaining the `BagDelta`-owned atomic root, lowering singleton median latency 5.671% with no secondary-cardinality regression; `87679597d` measures one moving write zipper and `9a746f2bf` selects it only for multi-key deltas after the singleton regressed 8.289%; broad gate 3 min 6.13 s, 489,848 KiB peak RSS, zero swap under 12 GiB `MemoryMax` and four-core quota; affected strict Clippy passes, while the intentionally broader all-test Clippy reaches unrelated pre-existing warnings and is not claimed |
 | receive-first query-product `TrieRef` experiment | synchronized mutable read zippers | **pgmcp experiment 220 rejected; 82 samples per arm at 16, 256, and 4,096 candidates; exact sorted candidate vectors agree; 31/31 focused and 419/419 complete package tests; strict changed-target lint passes** | `514659e2b` freezes the zipper control and tests per-byte borrowed `TrieRef` focuses; the treatment regresses mean latency 83.041%, 61.953%, and 55.549%, respectively; `27557c374` restores the control in production while retaining the falsified treatment as a benchmark; both machines remain iterative heap PDAs with constant native-stack use |
+| owned candidate-mask consuming algebra | immutable whole-map `PathMap::join` / `meet` | **pgmcp experiment 249 rejected; 30 samples per arm in five cells; exact verdict/FreeMap differential, feature-free build, and release benchmark build pass** | `join_map_into` / `meet_into` slow every measured cell: +2.432% at the width-4,096 primary and +0.438% to +0.975% across four guards; production retains the immutable operations, the tested treatment is recoverable at `855004971`, and the rejected feature/benchmark is removed from the selected tree |
 | datum-first retained-automaton × Bag product | resting data disabled the retained prefilter and forced the full canonical continuation scan | **pgmcp experiments 224 and 225 rejected; 226 and exact-final-source 229 accepted; full-matrix replication artifact 320; 82 samples per arm/cell; 8/8 release regressions; 12/12 benchmark preflights; 428/428 complete package tests; strict changed-target lint; Rocq proof pass** | `ad395c357` adds the conservative fresh-or-resting product and `61accc170` selects the bounded traversal: zero/one exact PathMap prefix lookup for a singleton Bag with zero/one eligible terminal depth, otherwise the linear synchronized zipper product; artifact 320 confirms shared speedups of 4.476× at 256 and 13.338× at 4,096 and records diverse speedups of 1.059× and 7.803×; both cardinality-16 causal-selector cells lose to the trivial scan, but the existing end-to-end COMM experiments win at 16 because they include avoided spatial matching work; native-stack use is constant, no record is decoded or flattened, and no empirical cutoff is inferred |
 | Bag formal laws | informal implementation equations | **Rocq and Verus `--no-cheating` plus TLC and mCRL2 pass inside the complete bounded bundle** | `8e4938ec6` proves exact-key multiplicity algebra and normalized/canonical deltas in Rocq, plus executable checked-`u64` apply/revert in Verus; `21ece399d` adds the live-commit Rocq bridge, a 2,628-state TLC model, branching bisimulation, and no-partial-publication proof; the earlier focused Rocq/Verus proofs used 351,028 KiB and 261,824 KiB peak RSS respectively with zero swap; Z3 and all three TLC models pass |
 | standalone Bag microbenchmark | legacy `HashMultiSet` controls | **15/15 comparative pairs plus 6 logical-multiplicity points** | construction improves 20.5–54.6%; the full exact-lookup sweep improves except for an operationally neutral 0.236% loss at 4,096; copy-on-write clone/update improves from 16 keys but loses 65.9% at one; one-key construction remains approximately 76 ns through `u64::MAX`; aggregate benchmark-process RSS is 39,912 KiB, not a comparative per-operation memory result |
@@ -4136,6 +4137,39 @@ metadata, and command are committed in
 [`measurements/rspace-ac-connective-domain-algebra-2026-08-17.tsv`](measurements/rspace-ac-connective-domain-algebra-2026-08-17.tsv).
 Generated end-to-end associative-commutative RSpace schedule and post-state equivalence remains the
 separate active CBR-053 obligation; the timing verdict does not claim that proof.
+
+##### 5.16.6.6 Owned candidate-mask zipper algebra is slower
+
+Pgmcp experiment 249 isolates a narrower question after experiment 248: both arms use the selected
+native connective domains and the complete production PDA, while the treatment alone consumes
+owned `PathMap<()>` operands through `join_map_into` and `meet_into` instead of immutable
+whole-map `join` and `meet`. Candidate paths are nonempty fixed-width big-endian `u64` values,
+so the treatment does not encounter PathMap's documented root-value ambiguity. A default-disabled
+differential first proves identical verdicts and committed `FreeMap` values for nested union and
+intersection, duplicate positions, an empty domain, and a universal capture. The feature-free
+production build and release benchmark build also pass.
+
+The single preregistered run was pinned to CPU 8. Preflight measured **84.22%** aggregate idle and
+**97.99%** idle on CPU 8, with no Cargo, rustc, or nextest process. The capped scope completed in
+**166.798 s wall / 165.646 s CPU**, peaked at **256.4 MiB**, and used no swap. Every cell is slower:
+
+| preregistered cell | immutable control mean | consuming treatment mean | change |
+|---|---:|---:|---:|
+| rejecting OR, width 4,096 | 739.942321 ms | 757.935780 ms | +2.431738% |
+| exact diagonal, width 256 | 2.305079 ms | 2.315884 ms | +0.468749% |
+| finite unions, width 256 | 3.671828 ms | 3.706194 ms | +0.935929% |
+| finite intersections, width 256 | 5.083697 ms | 5.105949 ms | +0.437720% |
+| duplicate positions, width 256 | 331.125594 ms | 334.352737 ms | +0.974598% |
+
+The locked one-sided Welch test rejects the predicted improvement
+($`t = 0.1248076`$, $`p = 0.549620`$, Cohen's $`d = +0.014412`$, treatment-minus-control 95%
+CI **[-62.8761246 ms, +71.3913346 ms]**). The nonparametric robustness result also does not support
+the treatment (Cliff's $`\delta = +0.112978`$, Mann–Whitney $`p = 0.090802`$). Production therefore
+retains immutable whole-map algebra. The tested treatment is recoverable at checkpoint
+`855004971`, but its feature and benchmark are removed from the selected tree so a rejected
+alternate path does not become a stale runtime artifact. Exact per-cell estimates, resource
+metadata, pgmcp run digests, and artifact 328 are recorded in
+[`measurements/rspace-ac-candidate-mask-consuming-algebra-2026-08-17.tsv`](measurements/rspace-ac-candidate-mask-consuming-algebra-2026-08-17.tsv).
 
 #### 5.16.7 Byte-native exact-key EPathMap algebra inside the production PDA
 
@@ -8240,6 +8274,7 @@ done
 | [`measurements/rspace-retained-query-arena-2026-08-16.tsv`](measurements/rspace-retained-query-arena-2026-08-16.tsv) | experiment 241's owned-query control and rejected hash-consed query-arena treatment, exact per-cell means, resource protocol, stack/allocation gates, and sealed pgmcp digests (§5.16.5) |
 | [`measurements/epathmap-ac-byte-native-2026-08-16.tsv`](measurements/epathmap-ac-byte-native-2026-08-16.tsv) | experiment 233's decoded-key control, byte-native exact-mask treatment, final moving-zipper treatment, per-cell statistics, protocol deviation, and capped equivalence gates (§5.16.7) |
 | [`measurements/rspace-ac-connective-domain-algebra-2026-08-17.tsv`](measurements/rspace-ac-connective-domain-algebra-2026-08-17.tsv) | experiment 248's universal-domain control and PathMap join/meet treatment, six per-cell estimates, primary decision statistics, guardrails, resource protocol, and sealed pgmcp digests (§5.16.6.5) |
+| [`measurements/rspace-ac-candidate-mask-consuming-algebra-2026-08-17.tsv`](measurements/rspace-ac-candidate-mask-consuming-algebra-2026-08-17.tsv) | experiment 249's immutable whole-map control and rejected consuming-zipper treatment, five per-cell estimates, resource protocol, sealed pgmcp digests, and selected production disposition (§5.16.6.6) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of

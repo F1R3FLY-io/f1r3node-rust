@@ -11,8 +11,6 @@ pub mod spatial_matcher;
 mod spatial_matcher_pda;
 pub mod sub_pars;
 
-#[cfg(feature = "spatial-matcher-candidate-mask-algebra-differential")]
-pub use spatial_matcher_pda::benchmark_match_par_list_candidate_mask_algebra;
 #[cfg(feature = "spatial-matcher-connective-domain-differential")]
 pub use spatial_matcher_pda::{benchmark_match_par_list, benchmark_match_send_list_with_remainder};
 
