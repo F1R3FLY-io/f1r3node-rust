@@ -200,6 +200,16 @@
 //! machine's [`Drop`] funnels every value stack through
 //! [`crate::rust::rholang::par_children::dismantle_all`], the existing
 //! explicit-worklist teardown, so an error path is O(1) native stack too.
+//!
+//! ## 8. Direct Par-component roots
+//!
+//! A PathMap-backed `Par` stores each top-level component as one typed key.
+//! Decoding such a key must not wrap the component in a synthetic one-field
+//! `Par`, nor fall back to derived recursive descent. The same opcode programs
+//! used while decoding a `Par` are therefore exposed as `ColdStoreDecode`
+//! roots for all nine component categories. This is one machine and one wire
+//! language: the only root-specific operation is selecting the completed
+//! value stack after the shared interpreter has drained.
 
 use std::collections::BTreeMap;
 use std::mem;
@@ -1018,16 +1028,24 @@ impl<'a> Machine<'a> {
     fn assert_drained(&self, allow: DrainedRoot) -> Res<()> {
         let counts = [
             ("pars", self.pars.len(), allow == DrainedRoot::Par),
-            ("sends", self.sends.len(), false),
-            ("receives", self.receives.len(), false),
+            ("sends", self.sends.len(), allow == DrainedRoot::Send),
+            (
+                "receives",
+                self.receives.len(),
+                allow == DrainedRoot::Receive,
+            ),
             ("binds", self.binds.len(), false),
-            ("news", self.news.len(), false),
-            ("matches", self.matches.len(), false),
+            ("news", self.news.len(), allow == DrainedRoot::New),
+            ("matches", self.matches.len(), allow == DrainedRoot::Match),
             ("cases", self.cases.len(), false),
-            ("ifs", self.ifs.len(), false),
-            ("bundles", self.bundles.len(), false),
-            ("exprs", self.exprs.len(), false),
-            ("connectives", self.connectives.len(), false),
+            ("ifs", self.ifs.len(), allow == DrainedRoot::If),
+            ("bundles", self.bundles.len(), allow == DrainedRoot::Bundle),
+            ("exprs", self.exprs.len(), allow == DrainedRoot::Expr),
+            (
+                "connectives",
+                self.connectives.len(),
+                allow == DrainedRoot::Connective,
+            ),
             ("kvs", self.kvs.len(), false),
             ("pathmaps", self.pathmaps.len(), false),
             (
@@ -1938,6 +1956,14 @@ impl<'a> Machine<'a> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DrainedRoot {
     Par,
+    Send,
+    Receive,
+    New,
+    Expr,
+    Match,
+    Bundle,
+    Connective,
+    If,
     ListParWithRandom,
     BindPattern,
     TaggedContinuation,
@@ -2074,35 +2100,95 @@ impl<'a> Machine<'a> {
 }
 
 // ===========================================================================
-// §F  The four public entry points
+// §F  Public root entry points
 // ===========================================================================
 //
 // C, P, A, K of `RSpace<Par, BindPattern, ListParWithRandom,
-// TaggedContinuation>` — the Rholang instantiation. Every other machine type is
-// reachable only as a child of one of these, and is exercised through them.
+// TaggedContinuation>` remain the cold-store roots. The nine top-level `Par`
+// component types are also roots because authoritative ParBag keys encode one
+// complete typed component. All use the same opcode programs as nested decode.
+
+fn decode_machine_root<T>(
+    bytes: &[u8],
+    start: Op,
+    expected: DrainedRoot,
+    take: impl FnOnce(&mut Machine<'_>) -> Res<T>,
+) -> Res<(T, usize)> {
+    let mut machine = Machine::new(bytes);
+    machine.ops.push(start);
+    machine.run()?;
+    machine.assert_drained(expected)?;
+    let consumed = machine.r.consumed();
+    let value = take(&mut machine)?;
+    Ok((value, consumed))
+}
 
 impl ColdStoreDecode for Par {
     fn cold_decode_prefix(bytes: &[u8]) -> Res<(Self, usize)> {
-        let mut m = Machine::new(bytes);
-        m.ops.push(Op::ParStart);
-        m.run()?;
-        m.assert_drained(DrainedRoot::Par)?;
-        let consumed = m.r.consumed();
-        let value = take_one(&mut m.pars, "Par (root)")?;
+        let (value, consumed) =
+            decode_machine_root(bytes, Op::ParStart, DrainedRoot::Par, |machine| {
+                take_one(&mut machine.pars, "Par (root)")
+            })?;
         #[cfg(feature = "phase7-depth-histograms")]
         crate::rust::rholang::phase7_depth_histogram::record_par("bincode_decoder", &value);
         Ok((value, consumed))
     }
 }
 
+macro_rules! impl_component_root_decode {
+    ($ty:ty, $start:expr, $root:ident, $stack:ident, $label:literal) => {
+        impl ColdStoreDecode for $ty {
+            fn cold_decode_prefix(bytes: &[u8]) -> Res<(Self, usize)> {
+                decode_machine_root(bytes, $start, DrainedRoot::$root, |machine| {
+                    take_one(&mut machine.$stack, $label)
+                })
+            }
+        }
+    };
+}
+
+impl_component_root_decode!(Send, Op::SendStart, Send, sends, "Send (root)");
+impl_component_root_decode!(
+    Receive,
+    Op::ReceiveStart,
+    Receive,
+    receives,
+    "Receive (root)"
+);
+impl_component_root_decode!(New, Op::NewStart, New, news, "New (root)");
+impl_component_root_decode!(Expr, Op::ExprStart, Expr, exprs, "Expr (root)");
+impl_component_root_decode!(Match, Op::MatchStart, Match, matches, "Match (root)");
+impl_component_root_decode!(Bundle, Op::BundleStart, Bundle, bundles, "Bundle (root)");
+impl_component_root_decode!(
+    Connective,
+    Op::ConnStart,
+    Connective,
+    connectives,
+    "Connective (root)"
+);
+impl_component_root_decode!(If, Op::IfStart, If, ifs, "If (root)");
+
+impl ColdStoreDecode for GUnforgeable {
+    fn cold_decode_prefix(bytes: &[u8]) -> Res<(Self, usize)> {
+        let mut reader = Reader::new(bytes);
+        let value = reader.unforgeable()?;
+        Ok((value, reader.consumed()))
+    }
+}
+
 impl ColdStoreDecode for ListParWithRandom {
     fn cold_decode_prefix(bytes: &[u8]) -> Res<(Self, usize)> {
-        let mut m = Machine::new(bytes);
-        m.ops.push(Op::ListParWithRandomStart);
-        m.run()?;
-        m.assert_drained(DrainedRoot::ListParWithRandom)?;
-        let consumed = m.r.consumed();
-        let value = take_one(&mut m.list_par_with_randoms, "ListParWithRandom (root)")?;
+        let (value, consumed) = decode_machine_root(
+            bytes,
+            Op::ListParWithRandomStart,
+            DrainedRoot::ListParWithRandom,
+            |machine| {
+                take_one(
+                    &mut machine.list_par_with_randoms,
+                    "ListParWithRandom (root)",
+                )
+            },
+        )?;
         #[cfg(feature = "phase7-depth-histograms")]
         crate::rust::rholang::phase7_depth_histogram::record_list_par_with_random(
             "bincode_decoder",
@@ -2114,12 +2200,12 @@ impl ColdStoreDecode for ListParWithRandom {
 
 impl ColdStoreDecode for BindPattern {
     fn cold_decode_prefix(bytes: &[u8]) -> Res<(Self, usize)> {
-        let mut m = Machine::new(bytes);
-        m.ops.push(Op::BindPatternStart);
-        m.run()?;
-        m.assert_drained(DrainedRoot::BindPattern)?;
-        let consumed = m.r.consumed();
-        let value = take_one(&mut m.bind_patterns, "BindPattern (root)")?;
+        let (value, consumed) = decode_machine_root(
+            bytes,
+            Op::BindPatternStart,
+            DrainedRoot::BindPattern,
+            |machine| take_one(&mut machine.bind_patterns, "BindPattern (root)"),
+        )?;
         #[cfg(feature = "phase7-depth-histograms")]
         crate::rust::rholang::phase7_depth_histogram::record_bind_pattern(
             "bincode_decoder",
@@ -2131,12 +2217,17 @@ impl ColdStoreDecode for BindPattern {
 
 impl ColdStoreDecode for TaggedContinuation {
     fn cold_decode_prefix(bytes: &[u8]) -> Res<(Self, usize)> {
-        let mut m = Machine::new(bytes);
-        m.ops.push(Op::TaggedContinuationStart);
-        m.run()?;
-        m.assert_drained(DrainedRoot::TaggedContinuation)?;
-        let consumed = m.r.consumed();
-        let value = take_one(&mut m.tagged_continuations, "TaggedContinuation (root)")?;
+        let (value, consumed) = decode_machine_root(
+            bytes,
+            Op::TaggedContinuationStart,
+            DrainedRoot::TaggedContinuation,
+            |machine| {
+                take_one(
+                    &mut machine.tagged_continuations,
+                    "TaggedContinuation (root)",
+                )
+            },
+        )?;
         #[cfg(feature = "phase7-depth-histograms")]
         crate::rust::rholang::phase7_depth_histogram::record_tagged_continuation(
             "bincode_decoder",

@@ -55,9 +55,11 @@
 //! *looked* converted.
 //!
 //! The cost of not having it is four one-line delegations for the rspace++ test
-//! doubles ([`legacy_prefix`] below) and four machine impls in `models`. The
-//! benefit is that "which types are decoded by the machine" is an explicit,
-//! greppable list rather than an inference outcome.
+//! doubles ([`legacy_prefix`] below), the four RSpace-root machine impls in
+//! `models`, and explicit direct-root impls for the nine component categories
+//! stored by authoritative ParBag. The benefit is that "which types are decoded
+//! by the machine" is an explicit, greppable list rather than an inference
+//! outcome.
 //!
 //! ## The bound sites — the full enumeration
 //!

@@ -57,7 +57,10 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Mutex, MutexGuard};
 
-use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
+use models::rhoapi::{
+    BindPattern, Bundle, Connective, Expr, GUnforgeable, If, ListParWithRandom, Match, New, Par,
+    Receive, Send, TaggedContinuation,
+};
 use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use serde::Deserialize;
 
@@ -223,8 +226,8 @@ fn malformed_family_guard() -> MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Every corpus encoding, as `(label, bytes)`, for all four root types plus a
-/// deep case per root.
+/// Every corpus encoding, as `(label, bytes)`, for all four RSpace roots plus
+/// one direct root for each authoritative ParBag component category.
 fn encodings() -> Vec<(String, Kind, Vec<u8>)> {
     let mut out: Vec<(String, Kind, Vec<u8>)> = Vec::new();
     for (label, par) in corpus::par_corpus() {
@@ -255,12 +258,55 @@ fn encodings() -> Vec<(String, Kind, Vec<u8>)> {
             bincode::serialize(&v).expect("serialize"),
         ));
     }
+    let par = corpus::all_par_fields();
+    out.push(component_encoding("Send", Kind::Send, &par.sends[0]));
+    out.push(component_encoding(
+        "Receive",
+        Kind::Receive,
+        &par.receives[0],
+    ));
+    out.push(component_encoding("New", Kind::New, &par.news[0]));
+    out.push(component_encoding("Expr", Kind::Expr, &par.exprs[0]));
+    out.push(component_encoding("Match", Kind::Match, &par.matches[0]));
+    out.push(component_encoding(
+        "GUnforgeable",
+        Kind::GUnforgeable,
+        &par.unforgeables[0],
+    ));
+    out.push(component_encoding("Bundle", Kind::Bundle, &par.bundles[0]));
+    out.push(component_encoding(
+        "Connective",
+        Kind::Connective,
+        &par.connectives[0],
+    ));
+    out.push(component_encoding("If", Kind::If, &par.conditionals[0]));
     out
+}
+
+fn component_encoding<T: serde::Serialize>(
+    label: &str,
+    kind: Kind,
+    value: &T,
+) -> (String, Kind, Vec<u8>) {
+    (
+        format!("ParBagComponent::{label}"),
+        kind,
+        bincode::serialize(value).expect("serialize"),
+    )
 }
 
 #[derive(Clone, Copy)]
 enum Kind {
     Par,
+    Send,
+    Receive,
+    New,
+    Expr,
+    Match,
+    GUnforgeable,
+    Bundle,
+    Connective,
+    If,
     ListParWithRandom,
     BindPattern,
     TaggedContinuation,
@@ -270,6 +316,15 @@ fn check<F>(label: F, kind: Kind, bytes: &[u8], rejections: &mut usize)
 where F: FnOnce() -> String {
     match kind {
         Kind::Par => assert_agree::<Par, _>(label, bytes, rejections),
+        Kind::Send => assert_agree::<Send, _>(label, bytes, rejections),
+        Kind::Receive => assert_agree::<Receive, _>(label, bytes, rejections),
+        Kind::New => assert_agree::<New, _>(label, bytes, rejections),
+        Kind::Expr => assert_agree::<Expr, _>(label, bytes, rejections),
+        Kind::Match => assert_agree::<Match, _>(label, bytes, rejections),
+        Kind::GUnforgeable => assert_agree::<GUnforgeable, _>(label, bytes, rejections),
+        Kind::Bundle => assert_agree::<Bundle, _>(label, bytes, rejections),
+        Kind::Connective => assert_agree::<Connective, _>(label, bytes, rejections),
+        Kind::If => assert_agree::<If, _>(label, bytes, rejections),
         Kind::ListParWithRandom => assert_agree::<ListParWithRandom, _>(label, bytes, rejections),
         Kind::BindPattern => assert_agree::<BindPattern, _>(label, bytes, rejections),
         Kind::TaggedContinuation => assert_agree::<TaggedContinuation, _>(label, bytes, rejections),

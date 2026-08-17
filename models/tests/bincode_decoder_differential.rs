@@ -32,7 +32,10 @@
 //! which builds no `EPathMap`; everything else is asserted by DIFFERENTIAL,
 //! which is the stronger statement anyway: it holds whatever the encoder does.
 
-use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
+use models::rhoapi::{
+    BindPattern, Bundle, Connective, Expr, GUnforgeable, If, ListParWithRandom, Match, New, Par,
+    Receive, Send, TaggedContinuation,
+};
 use models::rust::rholang::bincode_decoder::{
     cold_decode_list_bind_patterns_for_test, cold_decode_par_with_random_for_test,
 };
@@ -116,6 +119,62 @@ where T: ColdStoreDecode + serde::Serialize + for<'de> Deserialize<'de> + Partia
         consumed, exact_len,
         "{label}: extent must exclude the trailing bytes"
     );
+}
+
+/// Every authoritative ParBag member category is a direct root of the same
+/// iterative machine used for whole-`Par` decoding. Exercise every populated
+/// component in the exhaustive corpus so this proves both the root plumbing
+/// and the complete Expr/Connective oneof alphabets, rather than one convenient
+/// representative per category.
+#[test]
+fn every_parbag_component_root_agrees_with_the_derived_oracle() {
+    let par = corpus::all_par_fields();
+
+    for (index, value) in par.sends.iter().enumerate() {
+        agree::<Send>(&format!("Send[{index}]"), value);
+    }
+    for (index, value) in par.receives.iter().enumerate() {
+        agree::<Receive>(&format!("Receive[{index}]"), value);
+    }
+    for (index, value) in par.news.iter().enumerate() {
+        agree::<New>(&format!("New[{index}]"), value);
+    }
+    for (index, value) in par.exprs.iter().enumerate() {
+        agree::<Expr>(&format!("Expr[{index}]"), value);
+    }
+    for (index, value) in par.matches.iter().enumerate() {
+        agree::<Match>(&format!("Match[{index}]"), value);
+    }
+    for (index, value) in par.unforgeables.iter().enumerate() {
+        agree::<GUnforgeable>(&format!("GUnforgeable[{index}]"), value);
+    }
+    for (index, value) in par.bundles.iter().enumerate() {
+        agree::<Bundle>(&format!("Bundle[{index}]"), value);
+    }
+    for (index, value) in par.connectives.iter().enumerate() {
+        agree::<Connective>(&format!("Connective[{index}]"), value);
+    }
+    for (index, value) in par.conditionals.iter().enumerate() {
+        agree::<If>(&format!("If[{index}]"), value);
+    }
+}
+
+/// Prefix extent is part of the shared codec contract. ParBag normally hands
+/// the decoder one exact key suffix, but versioned or concatenated readers may
+/// provide a larger window; the component decoder must still stop exactly
+/// where the retained derived decoder stops.
+#[test]
+fn every_parbag_component_root_preserves_trailing_bytes() {
+    let par = corpus::all_par_fields();
+    agree_with_trailing::<Send>("Send", &par.sends[0]);
+    agree_with_trailing::<Receive>("Receive", &par.receives[0]);
+    agree_with_trailing::<New>("New", &par.news[0]);
+    agree_with_trailing::<Expr>("Expr", &par.exprs[0]);
+    agree_with_trailing::<Match>("Match", &par.matches[0]);
+    agree_with_trailing::<GUnforgeable>("GUnforgeable", &par.unforgeables[0]);
+    agree_with_trailing::<Bundle>("Bundle", &par.bundles[0]);
+    agree_with_trailing::<Connective>("Connective", &par.connectives[0]);
+    agree_with_trailing::<If>("If", &par.conditionals[0]);
 }
 
 // ===========================================================================
