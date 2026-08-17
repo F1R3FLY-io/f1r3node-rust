@@ -2,6 +2,7 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, EPathMap, Expr, Par};
 use models::rust::canonical_path::encode_trie_path;
 use models::rust::epathmap_trie_codec::EPathMapMode;
+use models::rust::pathmap_integration::CursorKind;
 use models::rust::rhoapi_ext::{EPathMapAlgebraError, EntryTrie};
 use models::rust::utils::new_freevar_par;
 use pathmap::PathMap;
@@ -99,6 +100,38 @@ fn clone_family_map_join_shortcut_is_invalidated_by_every_mutation() {
     let mut replaced = base.clone();
     replaced.insert_map_entry(gint(2), gint(999)).unwrap();
     assert_clone_family_join_arms("conflicting clone", &base, &replaced);
+
+    let key_two = encode_trie_path(&gint(2));
+    let mut removed = base.clone();
+    assert!(removed.remove_encoded_entry(&key_two));
+    assert_clone_family_join_arms("removed entry clone", &base, &removed);
+
+    let mut topology = base.clone();
+    let mut descendant = key_two.clone();
+    descendant.extend_from_slice(&[0xAA, 0xBB]);
+    assert!(topology.create_path(&descendant).unwrap());
+    assert_clone_family_join_arms("value-free topology clone", &base, &topology);
+
+    let mut pruned = topology.clone();
+    assert!(pruned.remove_branches_at(&key_two));
+    assert_clone_family_join_arms("pruned topology clone", &topology, &pruned);
+
+    let mut subtrie_removed = base.clone();
+    assert!(subtrie_removed.remove_subtrie_at(&key_two));
+    assert_clone_family_join_arms("removed subtrie clone", &base, &subtrie_removed);
+
+    let mut greatest_removed = base.clone();
+    assert!(greatest_removed
+        .remove_greatest_map_entry()
+        .unwrap()
+        .is_some());
+    assert_clone_family_join_arms("removed greatest clone", &base, &greatest_removed);
+
+    let mut replaced_subtrie = base.clone();
+    replaced_subtrie
+        .replace_subtrie(&[], CursorKind::Prefix, &map([(8, 80), (9, 90)]))
+        .unwrap();
+    assert_clone_family_join_arms("replaced subtrie clone", &base, &replaced_subtrie);
 }
 
 #[test]
