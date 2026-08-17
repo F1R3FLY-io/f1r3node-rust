@@ -4655,6 +4655,25 @@ topology, encoded key, EPM1/protobuf/bincode byte, hash, COMM schedule, charge, 
 No PathMap source changes. Recording the rejection prevents a future performance claim from
 silently reviving a measured regression.
 
+**Dormant typed `ParBag` authority foundation (2026-08-17; pgmcp experiment 257).** Checkpoints
+`7ea86db75`, `6fcbb520e`, and `6807be503` expose stack-safe direct component decoders, define one
+versioned `PathMap<Multiplicity>` authority for all nine unordered top-level `Par` component
+families, and stream protobuf component fields directly from its distinct trie endpoints. The key
+domain binds family tag and canonical component bytes; ACT/bincode persistence is the direct trie
+image. Tests compare the streamed protobuf bytes with the existing generated repeated-field
+encoder, validate all component families, reject malformed/trailing images, and exercise depth
+4,096 without native recursion. The existing generated `Par` remains the runtime and serialization
+authority: no extern-path substitution or production caller is active at this checkpoint.
+
+Experiment 257 accepts exact membership for the preregistered 256/4,096-cardinality cells and
+records the fixed-cost losses at cardinalities 1 and 16 as diagnostics. This is
+`NO_PRODUCTION_CHANGE_MEASURED`, not authorization for a silent representation or wire migration.
+No accepted Rholang program, value, equality/order/hash result, protobuf or bincode byte, post-state
+or event hash, COMM choice, charge, settlement, EPathMap mode, or PathMap crate source changes. A
+future authoritative cutover must receive its own register continuation with complete legacy-byte
+and play/replay equivalence evidence, explicit handling of `locally_free` and `connective_used`, and
+the full release gates. Stack-safety report §5.16.5.10 and its durable TSV preserve the experiment.
+
 
 **Dormant RSpace matching-cursor foundation (2026-08-15; pgmcp `rspace-shared-match-pda`).**
 `f1r3node-rust-mettail@71d378e73` extends the existing descriptor pass with exhaustive,

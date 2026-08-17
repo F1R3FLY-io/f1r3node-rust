@@ -924,6 +924,22 @@ than native recursion.
 
 ## Migration and completion
 
+The typed authority foundation is now concrete rather than hypothetical. Checkpoint `7ea86db75`
+exposes the generated stack-safe decoder machine at each top-level component root; `6fcbb520e`
+defines the single `RPB1` `PathMap<Multiplicity>` authority with typed byte-native operations and a
+direct ACT/bincode image; and `6807be503` streams protobuf component fields without a production
+entry-vector materialization. The generated repeated-field `Par` remains authoritative until root
+metadata, all production callers, equality/order/hash/debug/clone/drop behavior, cold storage, and
+play/replay have crossed the same verified boundary. This staging is not a permanent hybrid design.
+
+Pgmcp experiment 257 supplies the first causal membership result. Including canonical query-key
+encoding, the `ParBag` takes 4.81%–5.72% of legacy scan time at 256 elements and 0.32%–0.48% at
+4,096, while cardinalities 1 and 16 expose fixed-cost losses. The accepted primary result supports
+the trie authority at realistic cardinalities but does not settle small-cardinality dispatch,
+construction, mutation, algebra, serialization, matching, or COMM throughput. Those remain
+separately preregistered decisions; no empirical cutoff enters production without an independently
+justified representation law and experiment.
+
 The migration order is lawful Bag, RhoPathV1 codec, authoritative index, multiplicity-native
 reservation PDA, retained automaton, direct pattern-over-trie traversal, replay/cold-store
 integration, and final removal of compatibility materializations. Through `697db373b`, the first

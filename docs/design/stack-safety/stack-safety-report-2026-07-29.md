@@ -3933,6 +3933,54 @@ term after a wildcard separately forces the terminal query to run rather than tr
 prefix as a complete verdict. Root fallback and the 4,096-terminal chain prevent unsupported or
 shared-root candidates from being pruned vacuously.
 
+##### 5.16.5.10 Authoritative `ParBag` exact-membership crossover
+
+Checkpoint `6fcbb520e` adds the typed foundation for the final `Par` authority: one versioned
+`PathMap<Multiplicity>` stores the nine unordered top-level component families. A complete key is
+the `RPB1` domain, a protobuf-aligned family tag, and that component's canonical stack-safe bincode
+bytes. Exact membership therefore remains byte-native after key construction; it neither scans nor
+reconstructs a `Par`, component vector, hash set, or side index. Checkpoint `6807be503` also streams
+protobuf component fields directly from distinct trie endpoints, decoding each endpoint once and
+expanding only the protobuf-required multiplicity on output. The existing repeated fields remain
+the migration oracle and production authority at this checkpoint; no runtime cutover is inferred
+from a library foundation.
+
+Pgmcp experiment 257 measures the full query cost, including canonical key encoding. Each timed
+sample is the same deterministic 64-query batch: 32 present queries, biased toward late vector
+positions, and 32 absent queries. Fixtures and both representations are built before timing. The
+single admitted run used ten warmups and 82 retained samples per arm per cell, alternated arm order,
+and covered shared-prefix and diverse-prefix payloads at 1, 16, 256, and 4,096 distinct components.
+The preflight observed 89.06% aggregate CPU idle and no `cargo` or `rustc`; the run was pinned to CPU
+8 under `MemoryMax=8G` and `MemorySwapMax=0`. It completed in 58.78 s with 1,039,692 KiB peak process
+RSS and identical present-count checksums in every sample.
+
+| topology / cardinality | vector mean (ns) | `ParBag` mean (ns) | median paired ratio | paired treatment minus control (ns), 99% half-width |
+|---|---:|---:|---:|---:|
+| shared / 1 | 325.354 | 2,813.195 | 8.676012 | +2,487.841 ± 13.173 |
+| shared / 16 | 3,110.439 | 3,232.695 | 1.035530 | +122.256 ± 21.321 |
+| shared / 256 | 71,291.988 | 3,424.500 | 0.048112 | $`-67{,}867.488 \mathbin{\pm} 427.588`$ |
+| shared / 4,096 | 1,176,695.805 | 3,801.207 | 0.003213 | $`-1{,}172{,}894.598 \mathbin{\pm} 1{,}466.965`$ |
+| diverse / 1 | 323.476 | 2,992.537 | 9.129283 | +2,669.061 ± 202.840 |
+| diverse / 16 | 2,936.280 | 3,417.134 | 1.144153 | +480.854 ± 145.053 |
+| diverse / 256 | 67,455.122 | 3,861.707 | 0.057160 | $`-63{,}593.415 \mathbin{\pm} 326.918`$ |
+| diverse / 4,096 | 1,131,003.207 | 5,614.537 | 0.004830 | $`-1{,}125{,}388.671 \mathbin{\pm} 923.962`$ |
+
+The preregistered primary cells are 256 and 4,096; all four independently satisfy the maximum
+0.80 median-ratio guard and have a paired 99% interval wholly below zero. Pgmcp therefore accepts
+the locked primary hypothesis (Welch $`t=-20.2480`$, $`p=5.8718\times10^{-60}`$, Cohen's
+$`d=-1.5811`$, 328 samples per arm). The non-normality warning is retained: the corroborating
+Mann–Whitney result is also positive and Cliff's delta is $`-1.0`$, but it does not replace the locked
+test. Cardinalities 1 and 16 are diagnostics and expose a real fixed-cost crossover rather than a
+universal win. They cannot veto or rescue the primary result, and they do not justify a hidden
+empirical threshold. Any small-cardinality specialization must be a new preregistered treatment
+with a representation-law rationale and its own correctness and memory guards.
+
+The 1,312 raw observations, cell summaries, resource envelope, and log digest are preserved in
+[`measurements/parbag-exact-membership-2026-08-17.tsv`](measurements/parbag-exact-membership-2026-08-17.tsv);
+pgmcp artifact 336 and finalized experiment 257 hold the corresponding audit trail. This experiment
+measures exact membership only. Construction, algebra, clone/update, protobuf streaming, complete
+`Par` matching, and end-to-end RSpace COMM throughput remain separate causal questions.
+
 #### 5.16.6 Sparse relational-row reuse inside the production PDA [SS-A10 refinement]
 
 ##### 5.16.6.1 The repeated-work defect
@@ -8730,6 +8778,7 @@ done
 | [`measurements/epathmap-restrict-prefix-frontier-2026-08-17.tsv`](measurements/epathmap-restrict-prefix-frontier-2026-08-17.tsv) | experiment 254's focused-zipper/native-restrict frontier, all 540 paired raw timings across nine cells, exact topology/value guards, resources, sealed run identifiers, and selected singleton/bulk dispatch (§5.16.7.9) |
 | [`measurements/epathmap-map-meet-zipper-2026-08-17.tsv`](measurements/epathmap-map-meet-zipper-2026-08-17.tsv) | experiment 255's topology-reconstruction/synchronized-zipper map intersection, all 540 paired raw timings across nine cells, exact EntryTrie/error and value-free-topology guards, resources, finalized run digests, warnings, and selected production disposition (§5.16.7.10) |
 | [`measurements/epathmap-set-subtract-into-2026-08-17.tsv`](measurements/epathmap-set-subtract-into-2026-08-17.tsv) | experiment 256's whole-map/destructive-root set subtraction, all 480 paired raw timings across eight cells, exact EntryTrie/EPM1 and operand non-mutation guards, resources, finalized run digests, robust rejection, and retained production disposition (§5.16.7.11) |
+| [`measurements/parbag-exact-membership-2026-08-17.tsv`](measurements/parbag-exact-membership-2026-08-17.tsv) | experiment 257's legacy repeated-vector/typed `ParBag` exact-membership comparison, all 1,312 raw observations across eight cardinality/topology cells, crossover diagnostics, resource envelope, log digest, and accepted primary decision (§5.16.5.10) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of
