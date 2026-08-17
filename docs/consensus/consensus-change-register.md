@@ -2671,6 +2671,13 @@ the verdict axis.
   theorem reduces the remaining semantic obligation to the concrete generated Rust compiler's two
   superset premises; it does not assume or establish those premises for schema families that are not
   yet generated, including associative-commutative matching.
+- checkpoint `5f768e7ce` discharges the concrete generated-compiler premise for exact, hole, and
+  ordered RMP1 instructions. Rocq proves compilation preserves every spatial success and that
+  unsupported forms have no compilation derivation. The executable differential observes all
+  **58** generated root programs and requires every successfully compiled recursive-oracle success
+  to accept the target structure; the matcher group passes **23/23**. **EQUIVALENCE PROVEN FOR THE
+  SUPPORTED COMPILER SLICE.** AC compilation and generated play/replay schedules remain separate
+  retirement obligations.
 
 The abstract filter-composition clause of the retirement gate is now proved. This entry retires as
 `OPTIMIZATION_MEASURED_NEUTRAL` only after the campaign's generated
@@ -4409,6 +4416,14 @@ automaton. Its 256-receive differential pins the same COMM, event trace, and pos
 reducing spatial calls to one, and unsupported patterns remain root fallbacks. This is additional
 CBR-053 evidence, not retirement: generated schedule/replay and the formal no-false-negative theorem
 still govern the `UNVERIFIED` axes.
+
+`f1r3node-rust-mettail@5f768e7ce` subsequently proves the supported compiler slice's
+no-false-negative property. The Rocq relation covers exact, hole, and ordered RMP1 instructions and
+proves compilation preserves every spatial success; unsupported forms fail closed to fallback. A
+concrete differential covers all 58 generated message roots and checks the production query against
+every successful case in the independent recursive-oracle corpus. This narrows CBR-053's remaining
+`UNVERIFIED` surface to AC compilation and generated end-to-end play/replay schedules; it does not
+retire those axes or introduce a consensus change.
 
 ### B.2 The original commit-level exemptions
 
