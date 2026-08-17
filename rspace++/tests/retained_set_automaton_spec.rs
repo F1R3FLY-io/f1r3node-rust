@@ -274,3 +274,80 @@ fn singleton_bag_with_multiple_terminal_depths_uses_the_linear_product() {
     // matcher rejects the two shorter exact patterns during CandidateScan.
     assert_eq!(selected, vec![true, true, true, false]);
 }
+
+#[test]
+fn representation_stats_expose_eligibility_and_terminal_sharing() {
+    let repeated = Pattern::SequenceFirst {
+        expected: encode_structural_sequence([b"record".as_slice(), b"tail".as_slice()]),
+        first: b"record".to_vec(),
+    };
+    let candidates = vec![
+        waiting(vec![repeated.clone()]),
+        waiting(vec![repeated]),
+        waiting(vec![Pattern::SequenceSecond {
+            expected: encode_structural_sequence([b"head".as_slice(), b"class".as_slice()]),
+            second: b"class".to_vec(),
+        }]),
+        waiting(vec![Pattern::Exact(b"alpha".to_vec())]),
+        waiting(vec![Pattern::Any]),
+    ];
+
+    let automaton = RetainedSetAutomaton::compile(&Matcher, &candidates);
+    let stats = automaton.stats();
+
+    assert_eq!(stats.candidate_count, 5);
+    assert_eq!(stats.indexed_candidate_count, 4);
+    assert_eq!(stats.pattern_count, 5);
+    assert_eq!(stats.indexed_pattern_count, 4);
+    assert_eq!(stats.fallback_pattern_count, 1);
+    assert_eq!(stats.terminal_count, 5);
+    assert_eq!(stats.distinct_terminal_path_count, 4);
+    assert_eq!(stats.shared_terminal_count, 1);
+    assert_eq!(stats.live_terminal_count, stats.terminal_count);
+    assert_eq!(stats.dead_terminal_count, 0);
+    assert!(stats.maximum_terminal_depth > 0);
+}
+
+#[test]
+fn immutable_rebuilds_never_accumulate_dead_terminals() {
+    let corpus = (0usize..512)
+        .map(|index| waiting(vec![Pattern::Exact(format!("record/{index:08x}").into_bytes())]))
+        .collect::<Vec<_>>();
+
+    for live in [1usize, 16, 128, 256, 511, 512] {
+        let automaton = RetainedSetAutomaton::compile(&Matcher, &corpus[..live]);
+        let stats = automaton.stats();
+        assert_eq!(stats.candidate_count, live);
+        assert_eq!(stats.terminal_count, live);
+        assert_eq!(stats.live_terminal_count, live);
+        assert_eq!(stats.dead_terminal_count, 0);
+    }
+}
+
+#[test]
+fn deep_and_wide_automata_compile_select_and_drop_on_a_tiny_stack() {
+    std::thread::Builder::new()
+        .stack_size(128 * 1024)
+        .spawn(|| {
+            let deep = vec![0x5a; 1_000_000];
+            let deep_candidates = vec![waiting(vec![Pattern::Exact(deep.clone())])];
+            let deep_automaton = RetainedSetAutomaton::compile(&Matcher, &deep_candidates);
+            assert_eq!(deep_automaton.matching_candidates(&deep, &[0]), vec![true]);
+            assert!(deep_automaton.stats().maximum_terminal_depth >= deep.len());
+            drop(deep_automaton);
+
+            let wide_candidates = (0..20_000)
+                .map(|_| waiting(vec![Pattern::Any]))
+                .collect::<Vec<_>>();
+            let wide_automaton = RetainedSetAutomaton::compile(&Matcher, &wide_candidates);
+            let selected = wide_automaton.matching_candidates(b"datum", &[0]);
+            assert_eq!(selected.len(), wide_candidates.len());
+            assert!(selected.into_iter().all(|candidate| candidate));
+            assert_eq!(wide_automaton.stats().distinct_terminal_path_count, 1);
+            assert_eq!(wide_automaton.stats().shared_terminal_count, 19_999);
+            drop(wide_automaton);
+        })
+        .expect("tiny-stack automaton worker")
+        .join()
+        .expect("deep/wide automaton operations remain stack safe");
+}

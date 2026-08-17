@@ -32,8 +32,14 @@ use super::logging::{BasicLogger, StepCommObserver};
 use super::r#match::Match;
 use super::metrics_constants::{
     CHANGES_SPAN, CONSUME_COMM_LABEL, HISTORY_CHECKPOINT_SPAN, LOCKED_CONSUME_SPAN,
-    LOCKED_PRODUCE_SPAN, PRODUCE_COMM_LABEL, RESET_SPAN, REVERT_SOFT_CHECKPOINT_SPAN,
-    RSPACE_METRICS_SOURCE, RSPACE_PRODUCE_UNCONSUMED_DATUM_STORED_METRIC,
+    LOCKED_PRODUCE_SPAN, PRODUCE_COMM_LABEL, RESET_SPAN, RETAINED_AUTOMATON_CACHE_HIT_METRIC,
+    RETAINED_AUTOMATON_CANDIDATES_METRIC, RETAINED_AUTOMATON_COMPILE_METRIC,
+    RETAINED_AUTOMATON_COMPILE_NS_METRIC, RETAINED_AUTOMATON_DISTINCT_TERMINAL_PATHS_METRIC,
+    RETAINED_AUTOMATON_FALLBACK_PATTERNS_METRIC, RETAINED_AUTOMATON_INDEXED_CANDIDATES_METRIC,
+    RETAINED_AUTOMATON_INDEXED_PATTERNS_METRIC, RETAINED_AUTOMATON_PATTERNS_METRIC,
+    RETAINED_AUTOMATON_SHARED_TERMINALS_METRIC, RETAINED_AUTOMATON_TERMINALS_METRIC,
+    REVERT_SOFT_CHECKPOINT_SPAN, RSPACE_METRICS_SOURCE,
+    RSPACE_PRODUCE_UNCONSUMED_DATUM_STORED_METRIC,
 };
 use super::replay_rspace::ReplayRSpace;
 use super::retained_set_automaton::RetainedSetAutomaton;
@@ -1064,13 +1070,18 @@ where
                     cached.version == version &&
                         cached.automaton.candidate_count() == candidates.len()
                 }) {
+                    metrics::counter!(
+                        RETAINED_AUTOMATON_CACHE_HIT_METRIC,
+                        "source" => RSPACE_METRICS_SOURCE
+                    )
+                    .increment(1);
                     return Some(cached.automaton.matching_candidates_with_resting(
                         &datum_path,
                         &bind_positions,
                         Some(resting_data.stored_availability()),
                     ));
                 }
-                let automaton = RetainedSetAutomaton::compile(&**self.matcher, candidates);
+                let automaton = self.compile_retained_set_automaton(candidates);
                 let selection = automaton.matching_candidates_with_resting(
                     &datum_path,
                     &bind_positions,
@@ -1080,13 +1091,46 @@ where
                     .insert(channels.to_vec(), CachedRetainedSetAutomaton { version, automaton });
                 return Some(selection);
             }
-            None => RetainedSetAutomaton::compile(&**self.matcher, candidates),
+            None => self.compile_retained_set_automaton(candidates),
         };
         Some(automaton.matching_candidates_with_resting(
             &datum_path,
             &bind_positions,
             Some(resting_data.stored_availability()),
         ))
+    }
+
+    fn compile_retained_set_automaton(
+        &self,
+        candidates: &[WaitingContinuation<P, K>],
+    ) -> RetainedSetAutomaton {
+        let started = Instant::now();
+        let automaton = RetainedSetAutomaton::compile(&**self.matcher, candidates);
+        let stats = automaton.stats();
+        let increment = |metric: &'static str, value: u64| {
+            metrics::counter!(metric, "source" => RSPACE_METRICS_SOURCE).increment(value);
+        };
+        let count = |value: usize| u64::try_from(value).unwrap_or(u64::MAX);
+        increment(RETAINED_AUTOMATON_COMPILE_METRIC, 1);
+        increment(
+            RETAINED_AUTOMATON_COMPILE_NS_METRIC,
+            u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
+        );
+        increment(RETAINED_AUTOMATON_CANDIDATES_METRIC, count(stats.candidate_count));
+        increment(
+            RETAINED_AUTOMATON_INDEXED_CANDIDATES_METRIC,
+            count(stats.indexed_candidate_count),
+        );
+        increment(RETAINED_AUTOMATON_PATTERNS_METRIC, count(stats.pattern_count));
+        increment(RETAINED_AUTOMATON_INDEXED_PATTERNS_METRIC, count(stats.indexed_pattern_count));
+        increment(RETAINED_AUTOMATON_FALLBACK_PATTERNS_METRIC, count(stats.fallback_pattern_count));
+        increment(RETAINED_AUTOMATON_TERMINALS_METRIC, count(stats.terminal_count));
+        increment(
+            RETAINED_AUTOMATON_DISTINCT_TERMINAL_PATHS_METRIC,
+            count(stats.distinct_terminal_path_count),
+        );
+        increment(RETAINED_AUTOMATON_SHARED_TERMINALS_METRIC, count(stats.shared_terminal_count));
+        automaton
     }
 
     /// `E(S)` for this space — see

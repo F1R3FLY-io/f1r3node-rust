@@ -46,7 +46,7 @@ impl RhoPathCaptureId {
     pub(crate) const fn path(self) -> [u8; 4] { self.0.to_be_bytes() }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RhoPathQueryAtom {
     Exact(Vec<u8>),
     Capture(RhoPathCaptureId),
@@ -54,7 +54,7 @@ pub enum RhoPathQueryAtom {
     Match(RhoMatchQuery),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum CompiledRhoPathQueryAtom {
     Exact {
         inner_frame: Vec<u8>,
@@ -65,14 +65,14 @@ pub(crate) enum CompiledRhoPathQueryAtom {
     Match(RhoMatchQuery),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RhoMatchQueryPart {
     Exact(Vec<u8>),
     Capture(RhoPathCaptureId),
     Wildcard,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum CompiledRhoMatchQueryPart {
     Exact {
         inner_frame: Vec<u8>,
@@ -88,7 +88,7 @@ enum CompiledRhoMatchQueryPart {
 /// RhoPathV1 datum-structure frame. Wildcards and captures consume exactly one
 /// self-delimiting RMP1 value. Repeated capture identifiers compare their
 /// canonical escaped byte slices without decoding a `Par`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RhoMatchQuery {
     parts: Vec<CompiledRhoMatchQueryPart>,
 }
@@ -231,7 +231,7 @@ impl RhoMatchQuery {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RhoPathQuery {
     atoms: Vec<CompiledRhoPathQueryAtom>,
     accepts_remainder: bool,

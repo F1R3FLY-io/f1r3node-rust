@@ -81,3 +81,7 @@ harness = false
 [[bench]]
 name = "rspace_retained_bag_product"
 harness = false
+
+[[bench]]
+name = "rspace_retained_automaton_build"
+harness = false

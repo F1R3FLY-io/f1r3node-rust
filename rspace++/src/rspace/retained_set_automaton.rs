@@ -38,12 +38,36 @@ struct Terminal {
     query: Option<RhoPathQuery>,
 }
 
+/// Immutable representation and eligibility facts for one compiled retained
+/// automaton revision.
+///
+/// A compiled automaton contains only the live continuation slice supplied to
+/// [`RetainedSetAutomaton::compile`]. It therefore has no tombstones or dead
+/// transitions: a continuation-version change replaces the complete derived
+/// value atomically. Keeping that invariant observable prevents an unmeasured
+/// dead/live rebuild threshold from being introduced later.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RetainedSetAutomatonStats {
+    pub candidate_count: usize,
+    pub indexed_candidate_count: usize,
+    pub pattern_count: usize,
+    pub indexed_pattern_count: usize,
+    pub fallback_pattern_count: usize,
+    pub terminal_count: usize,
+    pub distinct_terminal_path_count: usize,
+    pub shared_terminal_count: usize,
+    pub live_terminal_count: usize,
+    pub dead_terminal_count: usize,
+    pub maximum_terminal_depth: usize,
+}
+
 #[derive(Debug)]
 pub struct RetainedSetAutomaton {
     segments: Vec<PathMap<TerminalId>>,
     terminal_depths: Vec<Vec<usize>>,
     terminals: Vec<Terminal>,
     candidate_count: usize,
+    stats: RetainedSetAutomatonStats,
 }
 
 impl RetainedSetAutomaton {
@@ -61,11 +85,17 @@ impl RetainedSetAutomaton {
             .collect::<Vec<_>>();
         let mut terminal_depths = vec![Vec::new(); segment_count];
         let mut terminals = Vec::new();
+        let mut indexed_candidate_count = 0usize;
+        let mut pattern_count = 0usize;
+        let mut indexed_pattern_count = 0usize;
+        let mut fallback_pattern_count = 0usize;
+        let mut maximum_terminal_depth = 0usize;
         for (candidate_index, candidate) in candidates.iter().enumerate() {
             let candidate_id = CandidateId(
                 u64::try_from(candidate_index)
                     .expect("a Rust Vec candidate index always fits in a u64"),
             );
+            let mut candidate_is_indexed = false;
             for (segment, pattern) in candidate.patterns.iter().enumerate() {
                 let (path, query) = if matcher.supports_rho_path_candidate_pruning() {
                     match matcher
@@ -87,19 +117,45 @@ impl RetainedSetAutomaton {
                 // be traversed as one zipper product. Fresh paths are framed
                 // on demand below; no singleton Bag is constructed for them.
                 let path = RhoPathV1::relative_datum_structure_prefix(&path);
+                pattern_count += 1;
+                if path.is_empty() {
+                    fallback_pattern_count += 1;
+                } else {
+                    indexed_pattern_count += 1;
+                    candidate_is_indexed = true;
+                }
+                maximum_terminal_depth = maximum_terminal_depth.max(path.len());
                 terminal_depths[segment].push(path.len());
                 insert_terminal(&mut segments[segment], &mut terminals, &path, candidate_id, query);
             }
+            indexed_candidate_count += usize::from(candidate_is_indexed);
         }
         for depths in &mut terminal_depths {
             depths.sort_unstable();
             depths.dedup();
         }
+        let distinct_terminal_path_count =
+            segments.iter().map(|segment| segment.iter().count()).sum();
+        let terminal_count = terminals.len();
+        let stats = RetainedSetAutomatonStats {
+            candidate_count: candidates.len(),
+            indexed_candidate_count,
+            pattern_count,
+            indexed_pattern_count,
+            fallback_pattern_count,
+            terminal_count,
+            distinct_terminal_path_count,
+            shared_terminal_count: terminal_count.saturating_sub(distinct_terminal_path_count),
+            live_terminal_count: terminal_count,
+            dead_terminal_count: 0,
+            maximum_terminal_depth,
+        };
         Self {
             segments,
             terminal_depths,
             terminals,
             candidate_count: candidates.len(),
+            stats,
         }
     }
 
@@ -143,6 +199,8 @@ impl RetainedSetAutomaton {
     }
 
     pub fn candidate_count(&self) -> usize { self.candidate_count }
+
+    pub const fn stats(&self) -> RetainedSetAutomatonStats { self.stats }
 }
 
 fn insert_terminal(

@@ -117,6 +117,27 @@ pub const RSPACE_MATCHER_SPATIAL_BACKTRACK_METRIC: &str = "rspace.matcher.spatia
 pub const RSPACE_PRODUCE_UNCONSUMED_DATUM_STORED_METRIC: &str =
     "rspace.produce.unconsumed_datum_stored";
 
+// Retained receive-shape automaton observability. The cumulative candidate and
+// pattern counters make production eligibility fractions computable without
+// sampling or retaining decoded patterns. Compile counters are emitted only
+// when a continuation-group revision changes; cache hits remain a separate
+// hot-path counter.
+pub const RETAINED_AUTOMATON_CACHE_HIT_METRIC: &str = "rspace.retained_automaton.cache_hit";
+pub const RETAINED_AUTOMATON_COMPILE_METRIC: &str = "rspace.retained_automaton.compile";
+pub const RETAINED_AUTOMATON_COMPILE_NS_METRIC: &str = "rspace.retained_automaton.compile_ns";
+pub const RETAINED_AUTOMATON_CANDIDATES_METRIC: &str = "rspace.retained_automaton.candidates";
+pub const RETAINED_AUTOMATON_INDEXED_CANDIDATES_METRIC: &str =
+    "rspace.retained_automaton.indexed_candidates";
+pub const RETAINED_AUTOMATON_PATTERNS_METRIC: &str = "rspace.retained_automaton.patterns";
+pub const RETAINED_AUTOMATON_INDEXED_PATTERNS_METRIC: &str =
+    "rspace.retained_automaton.indexed_patterns";
+pub const RETAINED_AUTOMATON_FALLBACK_PATTERNS_METRIC: &str =
+    "rspace.retained_automaton.fallback_patterns";
+pub const RETAINED_AUTOMATON_TERMINALS_METRIC: &str = "rspace.retained_automaton.terminals";
+pub const RETAINED_AUTOMATON_DISTINCT_TERMINAL_PATHS_METRIC: &str =
+    "rspace.retained_automaton.distinct_terminal_paths";
+pub const RETAINED_AUTOMATON_SHARED_TERMINALS_METRIC: &str =
+    "rspace.retained_automaton.shared_terminals";
 // Cold-path history reader — bottleneck #2 backing-store instrumentation.
 pub const HISTORY_FETCH_DATA_CALLS_METRIC: &str = "history.fetch_data.calls";
 pub const HISTORY_FETCH_DATA_TIME_NS_METRIC: &str = "history.fetch_data.time_ns";
