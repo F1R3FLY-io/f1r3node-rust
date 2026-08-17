@@ -1,0 +1,29 @@
+# Associative-commutative EPathMap exact-key matching: decoded-entry control versus canonical-byte PathMap algebra.
+# Benchmark harness: 48e6f7d3c. Byte-native treatment: 92240a452. Final moving-zipper treatment: 03685f4c7.
+# Host: AMD Ryzen Threadripper PRO 5975WX, 32 physical cores, SMT disabled; CPU 8 pinned; performance governor; no competing Cargo or rustc process at preflight.
+# Command: systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 taskset -c 8 cargo bench -p rholang --bench epathmap_ac_exact
+# Fixture: exact EPathMap set and map patterns at 16, 256, and 4,096 entries plus a wildcard remainder, which forces the production general PathMachine. Fixture construction and cloning are outside the timed interval.
+# Criterion: 82 post-warm-up samples per arm/cell; 2 s warm-up; 5 s requested measurement interval; 99% confidence; 1% significance.
+# Primary pgmcp experiment/hypothesis: 233, cardinality 256, lower mean latency is better. All six final-treatment comparisons against the original decoded control are accepted with p << 0.01.
+# Protocol note: pgmcp later recommended 8,030 samples per arm for the observed effect/variance, despite accepting the preregistered 82-sample run. Treat these as decisive engineering measurements under the locked protocol, not as satisfaction of the later power recommendation.
+# Provenance note: Criterion rotated the first treatment into its on-disk `base` before the final run. A subsequently synthesized combined metric consequently duplicated treatment data in both arms and is invalid. It is excluded. The per-cell control samples were recorded in pgmcp before rotation and are the sole decision controls below.
+# Correctness: models EPathMap algebra 8/8; Rholang spatial EPathMap 6/6; matcher legacy 50/50; fusion differential 6/6; replay equivalence 1/1; live COMM 5/5; release models+rholang 2,013/2,013 with 11 skipped under MemoryMax=12G and zero swap.
+date	control_commit	treatment_commit	experiment_id	mode	cardinality	arm	samples	raw_mean_ns	control_to_final_speedup	mean_reduction_percent	welch_p	cohen_d	mean_difference_ci_low_ns	mean_difference_ci_high_ns	memory_max_mib	swap_max_mib	cpu_affinity	result
+2026-08-16	48e6f7d3c	03685f4c7	233	set	16	decoded_entry_control	82	28193.1847	NA	0.000000	NA	NA	NA	NA	8192	0	8	control
+2026-08-16	48e6f7d3c	92240a452	233	set	16	byte_native_exact_mask	82	3256.7875	NA	88.448316	NA	NA	NA	NA	8192	0	8	intermediate-treatment
+2026-08-16	48e6f7d3c	03685f4c7	233	set	16	byte_native_final	82	3452.0906	8.166989	87.755585	4.89e-122	-36.53	-24951	-24531	8192	0	8	accepted-secondary
+2026-08-16	48e6f7d3c	03685f4c7	233	set	256	decoded_entry_control	82	440098.3556	NA	0.000000	NA	NA	NA	NA	8192	0	8	primary-control
+2026-08-16	48e6f7d3c	92240a452	233	set	256	byte_native_exact_mask	82	39981.9516	NA	90.915224	NA	NA	NA	NA	8192	0	8	intermediate-treatment
+2026-08-16	48e6f7d3c	03685f4c7	233	set	256	byte_native_final	82	41903.6112	10.502636	90.478580	1.69e-154	-104.06	-399384	-397006	8192	0	8	accepted-primary
+2026-08-16	48e6f7d3c	03685f4c7	233	set	4096	decoded_entry_control	82	6487930.8939	NA	0.000000	NA	NA	NA	NA	8192	0	8	control
+2026-08-16	48e6f7d3c	92240a452	233	set	4096	byte_native_exact_mask	82	457259.5005	NA	92.952152	NA	NA	NA	NA	8192	0	8	intermediate-treatment
+2026-08-16	48e6f7d3c	03685f4c7	233	set	4096	byte_native_final	82	475806.0839	13.635662	92.666289	6.51e-199	-225.50	-6020397	-6003853	8192	0	8	accepted-secondary
+2026-08-16	48e6f7d3c	03685f4c7	233	map	16	decoded_entry_control	82	40253.2367	NA	0.000000	NA	NA	NA	NA	8192	0	8	control
+2026-08-16	48e6f7d3c	92240a452	233	map	16	byte_native_exact_mask	82	12787.4339	NA	68.232532	NA	NA	NA	NA	8192	0	8	intermediate-treatment
+2026-08-16	48e6f7d3c	03685f4c7	233	map	16	byte_native_final	82	13402.5243	3.003407	66.704480	2.58e-254	-78.94	-26956	-26746	8192	0	8	accepted-secondary
+2026-08-16	48e6f7d3c	03685f4c7	233	map	256	decoded_entry_control	82	678118.6122	NA	0.000000	NA	NA	NA	NA	8192	0	8	primary-control
+2026-08-16	48e6f7d3c	92240a452	233	map	256	byte_native_exact_mask	82	219692.6095	NA	67.602628	NA	NA	NA	NA	8192	0	8	intermediate-treatment
+2026-08-16	48e6f7d3c	03685f4c7	233	map	256	byte_native_final	82	215934.5109	3.140390	68.156823	6.97e-159	-97.89	-463650	-460718	8192	0	8	accepted-primary
+2026-08-16	48e6f7d3c	03685f4c7	233	map	4096	decoded_entry_control	82	11227741.7886	NA	0.000000	NA	NA	NA	NA	8192	0	8	control
+2026-08-16	48e6f7d3c	92240a452	233	map	4096	byte_native_exact_mask	82	3219097.5039	NA	71.329074	NA	NA	NA	NA	8192	0	8	intermediate-treatment
+2026-08-16	48e6f7d3c	03685f4c7	233	map	4096	byte_native_final	82	3096373.7360	3.626094	72.422115	3.59e-129	-43.56	-8189325	-8073411	8192	0	8	accepted-secondary

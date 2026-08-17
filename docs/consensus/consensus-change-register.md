@@ -594,7 +594,7 @@ is a *future* fork, not a present one).
 | [CBR-042](#cbr-042) | N | …and on the **bincode** wire too — `U(m)` verbatim and contiguous, then the values (FORM ②), so the reader never decodes a trie key | `3a32cf07` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-043](#cbr-043) | N | …but of **the entries that surface WRITES**. FORM ② keyed lf-blanked values by the *unblanked* entries, putting an entry's `locally_free` on the event hash | `8cf0b770` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-044](#cbr-044) | N | EPathMap becomes a homogeneous PathMap set/map and both codecs carry one versioned EPM1 trie snapshot; generated protobuf PDAs remove the read ceiling | `26876b65` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
-| [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized datum-first/receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`, `0f9beb5f0`, `87679597d`, `9a746f2bf`, `514659e2b`, `27557c374`, `ad395c357`, `61accc170`; benchmarks `7bc5c6994`, `7b3254573`; pgmcp experiments 224, 225, 226, 229 | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
+| [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized datum-first/receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`, `0f9beb5f0`, `87679597d`, `9a746f2bf`, `514659e2b`, `27557c374`, `ad395c357`, `61accc170`, `92240a452`, `03685f4c7`; benchmarks `7bc5c6994`, `7b3254573`, `48e6f7d3c`; pgmcp experiments 224, 225, 226, 229, 233 | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
 | [CBR-L07](#cbr-l07) | L | `List.last()` in MeTTaIL's Rholang | `bbceb6d9`, `6e543c01` | · | · | · | · | · | ● | · | PERMISSIVE | **W** |
 | [CBR-L08](#cbr-l08) | L | The kv element-category gate — a Name in a kv slot is refused, not silently dropped | *in flight* | ● | ● | ● | ● | ● | ● | ○ | REGRESSIVE | **W** |
 | [CBR-L10](#cbr-l10) | L | A pathmap's entries come from a projection, not a field | `832d510f` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
@@ -2322,7 +2322,7 @@ Legacy protobuf fields are read-only migration inputs; removing them is a later 
 
 | | |
 |---|---|
-| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`, `0f9beb5f0`, `87679597d`, `9a746f2bf`, `514659e2b`, `27557c374`, `ad395c357`, `61accc170`; benchmarks `7bc5c6994`, `7b3254573`; pgmcp experiments 224, 225, 226, 229 |
+| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`, `0f9beb5f0`, `87679597d`, `9a746f2bf`, `514659e2b`, `27557c374`, `ad395c357`, `61accc170`, `92240a452`, `03685f4c7`; benchmarks `7bc5c6994`, `7b3254573`, `48e6f7d3c`; pgmcp experiments 224, 225, 226, 229, 233 |
 | Status | LANDED ON CAMPAIGN BRANCH; VERIFICATION OPEN |
 | Direction | UNVERIFIED |
 | Evidence grade | UNVERIFIED |
@@ -2562,6 +2562,22 @@ replay produces the play roots and exhausts the replay data. The complete focuse
 module passes **12/12** under an 8 GiB, zero-swap scope. This is test-only evidence: generated
 associative-commutative compilation and schedules remain open, so CBR-053 remains `UNVERIFIED`.
 
+Checkpoints `92240a452` and `03685f4c7` extend the same byte-native boundary through exact EPathMap
+matching after an RSpace Bag candidate reaches the spatial matcher. Exact keys are classified from
+canonical metadata without allocation, stored in a mode-independent `PathMap<()>` mask, and applied
+by encoded-key subtraction or selection. `PathMap<Par>` values remain the target's authority. Only
+dynamic key patterns decode, exactly once, because their Rholang binding/connective semantics cannot
+be decided by raw equality. Map subtraction reuses one moving write zipper on one copy-on-write root;
+free remainders select raw surviving entries and wildcard remainders materialize nothing.
+
+Experiment 233's six 82-sample cells report **8.17–13.64×** lower mean latency for set fixtures and
+**3.00–3.63×** for map fixtures across 16, 256, and 4,096 entries. Focused algebra, matcher, fusion,
+replay, and live-COMM differentials pass; the capped release `models` plus `rholang` gate passes
+**2,013/2,013** with 11 skipped. These checkpoints preserve the spatial verdict authority and do not
+add a second candidate filter, wire image, EPathMap mode, or RSpace state representation. They
+strengthen the associative-commutative implementation evidence but do not discharge the remaining
+generated AC schedule/post-state obligation, so CBR-053 remains `UNVERIFIED`.
+
 #### (b) How it may break consensus
 
 | Axis | Verdict |
@@ -2596,7 +2612,7 @@ subsets before any datum decode or spatial-match state allocation. A flat `Vec`,
 `BTreeMap` transition authority would lose that shared-prefix property and is not the selected
 design.
 
-The current containment argument has fifteen independently checked parts:
+The current containment argument has sixteen independently checked parts:
 
 1. exact-ground `BindPattern` and matching `ListParWithRandom` values use the same canonical
    structural sequence;
@@ -2628,6 +2644,9 @@ The current containment argument has fifteen independently checked parts:
 15. the datum-first product walks both the arriving datum and authoritative resting Bag, admits
     every reached prefix terminal conservatively, keeps residual checks at the spatial oracle, and
     preserves predecessor order through the original candidate bitmap.
+16. exact EPathMap keys remain in their canonical byte domain through classification, subtraction,
+    selection, and remainder capture; any key requiring dynamic Rholang semantics decodes exactly
+    once and still delegates its verdict to the existing spatial matcher.
 
 Cache-counter saturation returns `None` and recompiles instead of accepting a stale trie. Cache hits
 borrow the trie under a sharded map guard and perform no `PathMap` clone. Empty groups remove their
@@ -2686,6 +2705,14 @@ the verdict axis.
   remains **16,257** treatment edges versus **699,263** nominal calls. Competing pgmcp and `rustc`
   workloads make earlier wall time and RSS inadmissible as comparative evidence. **MEASURED for
   semantics/work counts; resource verdict OPEN.**
+- byte-native EPathMap exact algebra at `92240a452` and `03685f4c7`: canonical metadata
+  classification, raw `PathMap<()>` masks, encoded-key subtraction/selection, and moving-zipper map
+  subtraction preserve exact and dynamic-key spatial results. Focused model algebra passes **8/8**,
+  EPathMap spatial **6/6**, legacy matcher **50/50**, fusion **6/6**, replay **1/1**, and live COMM
+  **5/5**; the release `models` plus `rholang` gate passes **2,013/2,013** with 11 skipped. Pgmcp
+  experiment 233 accepts all six set/map cardinality cells; exact timings and the excluded invalid
+  synthesized metric are retained in the stack-safety report §5.16.7. **MEASURED for
+  semantics/performance; complete generated AC schedule/post-state proof OPEN.**
 - generated resting-data differential: **64 corpora** with identical selected result, RSpace event
   trace, and post-state maps under full and indexed scans. **MEASURED.**
 - both changed libraries plus all tests and benchmark targets compile under a **5 GiB** resident-set

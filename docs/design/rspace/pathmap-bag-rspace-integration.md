@@ -6,7 +6,7 @@ Campaign: `campaign-4131-rspace-pathmap-integration`
 
 Experiment: `rspace-pathmap-end-to-end-layout-2026-08-15`
 Last updated: 2026-08-16
-Current implementation checkpoint: `304dc13e9`
+Current implementation checkpoint: `d659157f2`
 
 ## Purpose and scope
 
@@ -151,7 +151,8 @@ The layout experiment remains open until the preregistered A/B/C comparison sele
 | Receive-first Bag/query product | `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `697db373b`, `514659e2b`, `27557c374`; pgmcp `rspace-pattern-over-pathmap` and experiment 220 | synchronized borrowed read zippers over the authoritative `PathMap<Multiplicity>` Bag and derived fixed-width `PathMap<CandidatePosition>` index; exact terms, whole-term wildcard/free-variable captures, ordered list remainder, and nested variables across every ordered single-expression schema family use generated cursor events; exact nested instruction prefixes descend the trie before a stack-safe byte PDA skips subvalues; nonlinear Rholang capture levels and associative-commutative carriers fail closed to the authoritative spatial matcher; canonical order is restored before that oracle; 8/8 query/product cases, 64 generated differential corpora, and 11/11 query compiler cases pass; a structural zero/one-candidate base case removes the measured singleton regression without an empirical cutoff; post-repair throughput improves 48.7–53.4% at 16 entries and 239–257× at 4,096; experiment 220 rejects per-byte borrowed `TrieRef` focuses by 61.953% at the 256-candidate primary and retains the mutable read-zipper product | ordered nested product implemented; associative-commutative schema coverage and equivalence campaign open |
 | Generated full-schema cursor | `71d378e73`, `697db373b`, `5f768e7ce`; pgmcp `rspace-shared-match-pda` | the shared descriptor pass emits tag-ordered `RhoMatchProgram` tables plus exhaustive `ParCursor` accessors for all 58 messages and five oneofs; `RhoPathCursor` traverses optional, sequence, map, scalar, and oneof shapes with a heap worklist; the Rholang query compiler now consumes that cursor for every ordered single-expression family; EPathMap is a native trie delegation event and does not force `trie_snapshot()`; Rocq proves exact/hole/ordered compilation preserves spatial success, and the executable compiler differential observes every generated root while checking recursive-oracle successes | schema traversal, ordered compiler soundness, and the direct retained-automaton/Bag product are implemented; associative-commutative instructions and complete generated schedules remain open |
 | Generated structural match path | `155ecdf54`, `d858058d4`, `edd166671`, `b6b53d1b3`, `697db373b`; pgmcp `rhopath-v1-codec`, `rspace-shared-match-pda` | stable generated type IDs and field/oneof tags drive a self-delimiting `RMP1` token stream; datum, exact receive-pattern, and ordered nested-query literal runs use one event encoder; EPathMap contributes mode, cardinality, and a domain-separated BLAKE2b-256 digest streamed by a native logical zipper DFS; the zero-copy byte cursor validates descriptor-exact child types and oneof payloads and locates a subtree extent iteratively; nested query execution distinguishes one-layer in-memory frames from two-layer stored PathMap frames; map values deliberately remain a conservative oracle-checked lane | exact, whole-term, and all ordered single-expression nested instructions live; associative-commutative instructions remain open |
-| AC element candidate Bag | `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`; pgmcp `rspace-ac-multiplicity-matcher` | the existing stack-safe augmenting-path PDA remains authoritative; every unordered `Par` field root now uses generated RhoPath queries against exact structural-plus-canonical-bincode identity paths in `Bag` (`PathMap<Multiplicity>`), including `Send`, `Receive`, `New`, `Expr`, `Match`, `Bundle`, `GUnforgeable`, and `ReceiveBind`; dynamic receives conservatively decline ordered pruning because their binds are AC; fixed-width nonzero `u64` group identifiers reach original positions only as ordering witnesses; unsupported/nonselective/nonlinear patterns use the complete domain and structural collisions reach the spatial oracle; adjacent byte-identical normalized targets reuse one encoded identity; true duplicates record search visitation as Bag multiplicities while all-distinct targets retain the smaller one-bit lane; indistinguishable universal remainder vertices are quotient-compressed into initial occupancy plus one generic heap-PDA displacement cursor, and the final remainder is the target Bag minus the term-consumed Bag; exact diagonal and 128-send controls require 128 edges, the width-128 remainder control requires one term edge, and the unchanged 51-sample displacement control remains exhaustive at 16,257 treatment edges versus 699,263 nominal calls | candidate membership, final residual multiplicity, duplicate search visitation, and compact remainder occupancy are Bag-authoritative; term assignment/reservation deltas, constrained-first dynamic AC search, residual-state memoization, native EPathMap algebra, valid resource comparison, and full assurance remain open |
+| AC element candidate Bag | `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`; pgmcp `rspace-ac-multiplicity-matcher` | the existing stack-safe augmenting-path PDA remains authoritative; every unordered `Par` field root now uses generated RhoPath queries against exact structural-plus-canonical-bincode identity paths in `Bag` (`PathMap<Multiplicity>`), including `Send`, `Receive`, `New`, `Expr`, `Match`, `Bundle`, `GUnforgeable`, and `ReceiveBind`; dynamic receives conservatively decline ordered pruning because their binds are AC; fixed-width nonzero `u64` group identifiers reach original positions only as ordering witnesses; unsupported/nonselective/nonlinear patterns use the complete domain and structural collisions reach the spatial oracle; adjacent byte-identical normalized targets reuse one encoded identity; true duplicates record search visitation as Bag multiplicities while all-distinct targets retain the smaller one-bit lane; indistinguishable universal remainder vertices are quotient-compressed into initial occupancy plus one generic heap-PDA displacement cursor, and the final remainder is the target Bag minus the term-consumed Bag; exact diagonal and 128-send controls require 128 edges, the width-128 remainder control requires one term edge, and the unchanged 51-sample displacement control remains exhaustive at 16,257 treatment edges versus 699,263 nominal calls | candidate membership, final residual multiplicity, duplicate search visitation, and compact remainder occupancy are Bag-authoritative; term assignment/reservation deltas, constrained-first dynamic AC search, residual-state memoization, valid resource comparison, and full assurance remain open |
+| Byte-native EPathMap AC algebra | `48e6f7d3c`, `92240a452`, `03685f4c7`, `1196fe2cc`, `d659157f2`; pgmcp experiment 233 | exact set/map pattern keys are classified from allocation-free canonical metadata; exact target subtraction and selection operate on raw encoded `PathMap<()>` masks; map values remain borrowed `Par` payloads; dynamic keys decode exactly once at their semantic boundary; one moving write zipper applies lexicographically ordered map-key subtraction to one copy-on-write root | implemented and measured; mean latency is 8.17–13.64× lower for sets and 3.00–3.63× lower for maps across 16/256/4,096 entries; dynamic semantic matching remains deliberately decoded |
 | Retained-automaton/Bag product walk | `ad395c357`, `61accc170`; pgmcp `rspace-retained-set-automaton`; experiments 224, 225, 226, and 229; replication artifact 320 | an iterative synchronized zipper product intersects every retained-transition segment with the authoritative `PathMap<Multiplicity>` Bag in the same escaped byte domain; the unrelated fresh datum remains a zero-allocation byte stream; one distinct Bag key and at most one eligible non-root terminal depth use zero or one exact PathMap lookup, while multi-depth and multi-key cases retain the linear zipper product; no datum decode, Bag flattening, or occurrence expansion occurs; artifact 320 confirms 4.476× and 13.338× wins at shared/256 and shared/4,096, and records diverse-prefix wins of 1.059× and 7.803× at the same cardinalities; both cardinality-16 causal-selector cells retain fixed-cost losses, while existing end-to-end COMM measurements win at 16 because they include avoided spatial work | implemented and measured; shape-sensitive causal fixed costs and allocation/RSS comparison remain visible; no empirical cutoff is inferred from the selector-only microbenchmark |
 | Layout selection and performance verdict | pgmcp experiments 208, 224, 225, 226, and 229 | retained-receive slice passes its preregistered five-percent throughput threshold at 99% confidence; resting-data pruning is non-regressing at one entry after the structural base-case repair and passes from 16 through 4,096; the direct datum-first product wins at the preregistered shared/256 and large cells after two rejected designs; full workload matrix, allocations, and final layout selection remain open | partial measurement accepted |
 
@@ -302,6 +303,27 @@ differential module passes 12/12, affected matcher integration suites pass 81/81
 production-library lint passes. These are semantic and deterministic-work observations, not an
 uncontended latency, allocation, or RSS comparison.
 
+Checkpoints `92240a452` and `03685f4c7` close the separate EPathMap exact-key projection defect.
+The predecessor decoded every exact set key or map key into `Par`, built a mode-shaped EPathMap mask,
+then converted that mask back into encoded trie paths before subtraction. The selected design keeps
+the classification, mask, subtraction, and selection lanes in the canonical byte domain:
+
+- `declared_canonical_path_flags` reads declared metadata without allocating a `locally_free`
+  vector;
+- the exact mask is always a `PathMap<()>`, independent of whether the target is a set or map;
+- set difference uses native exact encoded-key subtraction;
+- map difference mutates one copy-on-write root through a moving write zipper and prunes an empty
+  terminal before advancing to the next sorted path; and
+- map selection walks source and destination zippers together and borrows each existing `Par`
+  value, preserving the target's value authority.
+
+Only a dynamic pattern key crosses the semantic boundary into `Par`, and it is decoded exactly once
+during pattern preparation. A concrete map key paired with a dynamic value compares the canonical
+key bytes and runs the spatial matcher only on the already-stored value. A free remainder selects
+the surviving raw entries directly; a wildcard remainder does not materialize them. This is the
+same boundary used elsewhere in the design: bytes decide exact structure, while decoded terms are
+reserved for language semantics that cannot be answered from structure alone.
+
 Identical complete records are indistinguishable Bag occurrences. A repeated-channel receive may
 reserve the same trie key repeatedly while its multiplicity remains positive, but exhaustive
 enumeration emits one multiset-distinct rendezvous rather than factorially many permutations of
@@ -403,6 +425,32 @@ The optimized path is staged and directional:
 4. Enumerate multi-channel reservations with an explicit pushdown automaton whose frames contain zipper positions, residual multiplicities, bindings, and rollback state.
 5. Evaluate the continuation guard only at complete leaves and backtrack iteratively after rejection.
 6. Commit the least admissible reservation under the existing consensus order.
+
+**Algorithm 2 (Byte-native exact EPathMap matching).** An exact-key constraint is already represented
+in the same canonical byte language as the target trie. Decoding and re-encoding would add work
+without adding information.
+
+```pseudocode
+prepare(pattern_entry):
+    metadata := scan_canonical_key_metadata(pattern_entry.key_bytes)
+    if metadata declares no dynamic matching:
+        exact_mask.insert(pattern_entry.key_bytes)
+        retain map value pattern, if any
+    else:
+        decode key exactly once
+        retain decoded dynamic key pattern and value pattern
+
+match(target):
+    residual := target subtract_encoded_keys exact_mask
+    for each prepared dynamic entry in source order:
+        execute directional spatial semantics
+        on success, remove the selected encoded key from residual
+    materialize residual only when a free remainder binds it
+```
+
+The procedure is literate pseudocode for the production `PathMachine`, not a second implementation.
+The actual driver retains explicit jobs and frames, so native-stack use is independent of term depth
+and entry count.
 
 Production matching is directional: receive patterns match produced data. Symmetric Martelli-Montanari unification is an experiment for contexts that genuinely require variables on both sides; it is not silently substituted for receive semantics. Ordered children use linear PDA traversal. Associative-commutative collections use multiplicity-aware residual Bags rather than expanded vectors.
 
@@ -606,6 +654,39 @@ explicit exact-prefix-overlap test that deletes a leaf between adjacent updates.
 measurement ledger is
 [`rspace-bag-delta-cursor-2026-08-16.tsv`](../stack-safety/measurements/rspace-bag-delta-cursor-2026-08-16.tsv).
 
+Experiment 233 isolates exact EPathMap matching inside the general associative-commutative
+`PathMachine`. Each fixture has 16, 256, or 4,096 exact entries plus a wildcard remainder, so the
+benchmark cannot take the trivial exact-whole-value equality path. Construction and fixture cloning
+remain outside the timed interval. The control decodes exact keys and rebuilds a typed mask; the
+treatment classifies canonical metadata without allocation, constructs one raw unit-valued key
+mask, and executes native encoded-key subtraction/selection. Map subtraction additionally reuses one
+moving write zipper across sorted keys.
+
+| mode | cardinality | decoded control mean | final byte-native mean | speedup |
+|---|---:|---:|---:|---:|
+| set | 16 | 28.193 µs | 3.452 µs | 8.17× |
+| set | 256 | 440.098 µs | 41.904 µs | 10.50× |
+| set | 4,096 | 6.488 ms | 475.806 µs | 13.64× |
+| map | 16 | 40.253 µs | 13.403 µs | 3.00× |
+| map | 256 | 678.119 µs | 215.935 µs | 3.14× |
+| map | 4,096 | 11.228 ms | 3.096 ms | 3.63× |
+
+All six comparisons pass the locked one-sided Welch decision at the one-percent significance level;
+the two cardinality-256 primary cells reduce mean latency by **90.48%** for sets and **68.16%** for
+maps. The first byte-native checkpoint and final zipper checkpoint were run separately. Unchanged set
+work shows a four-to-six-percent run-level shift between them, so the final treatment is compared
+causally with the original control rather than claiming that all between-treatment movement is due
+to the zipper alone.
+
+Criterion rotated the first treatment into its on-disk `base` before the final run. A subsequently
+synthesized combined metric therefore duplicated treatment observations in both arms and is invalid;
+it is excluded from every decision. Pgmcp retains the valid per-cell controls recorded before that
+rotation. Pgmcp also issued a later 8,030-sample power recommendation despite the preregistered
+82-sample protocol; the measurements are accepted under the locked protocol but are not represented
+as satisfying that later recommendation. Raw means, confidence intervals, provenance, and the
+correctness matrix are retained in
+[`epathmap-ac-byte-native-2026-08-16.tsv`](../stack-safety/measurements/epathmap-ac-byte-native-2026-08-16.tsv).
+
 ### Cross-project PathMap implementation review
 
 A read-only review of libdictenstein commits `ba004a4`, `86e658c`, and `0abeae4` identified four
@@ -675,6 +756,7 @@ The implementation evidence available at this checkpoint is:
 | generated structural match path | 3/3 encoder gates, 6/6 token-codec gates, 4/4 models RSpace-path, and 11/11 Rholang compiler gates | exhaustive-corpus determinism and adjacent-term distinction; all 66 descriptor shapes have platform-independent length/digest goldens and decode/re-encode byte identities; canonical EPathMap digest golden; insertion-order independence; set/map separation; deliberate map-value false-positive lane; snapshot remains cold; 20,000-deep/wide encoding and 20,000-level token round trip on 256 KiB; exact, whole-term, and ordered nested query behavior preserved |
 | nested RMP1 instruction PDA | 9/9 framing/query cases plus the 8/8 product suite | one- and two-layer escaping agree; every tested shallow token truncation fails closed; a 20,000-level nested value matches on a 128 KiB worker stack; a zero-heavy 256-candidate production differential preserves the result with 256-to-1 spatial pruning |
 | AC element candidate Bag | 53/53 matcher-library tests plus 22/22 affected RSpace suites at the candidate-cut checkpoint; 17/17 focused matcher-library and 10/10 RhoPath after `2d91c4394`; 18/18 focused matcher-library and strict production lint after `bbe91b90f`; duplicate/permutation and semantic-oracle controls after `3a70ddc58`; adjacent-identity controls after `ad5d37a59`; 12/12 spatial differential and 81/81 matcher integrations after `26b72b096` | exact diagonal, ordered nested ESet, and generalized unordered-Send controls each require 128 successful edges at width 128 and agree with the recursive oracle; one run of 64 byte-identical targets requires one exact identity encoding; the width-128 remainder control evaluates one term edge and captures 127 residual sends; exact target identity follows framed RMP1 structure in an authoritative Bag, residuals use native Bag subtraction, and byte-identical search visitation uses multiplicities; all 651 bounded binary target/pattern cases agree with the recursive oracle; the unchanged 51-sample adversarial displacement gate remains exhaustive at 16,257 treatment edges versus 699,263 nominal calls; contended earlier runs invalidate comparative debug durations, so no post-Bag throughput or RSS claim is made |
+| byte-native EPathMap AC algebra | pgmcp experiment 233; 8/8 model algebra, 6/6 focused EPathMap spatial, 50/50 legacy matcher, 6/6 fusion differential, 1/1 replay, 5/5 live COMM, and 2,013/2,013 release models+rholang tests | exact keys remain canonical bytes through metadata classification, mask construction, subtraction, selection, and remainder capture; dynamic keys decode once; final mean latency is 87.76–92.67% lower for set fixtures and 66.70–72.42% lower for map fixtures; changed-source strict lint passes, while aggregate all-target lint remains blocked by unrelated pre-existing warnings |
 | standalone Bag algebra and compact image | 23/23 Bag integration tests; 1/1 isolated allocation gate; 183/183 EPathMap codec and representation tests; strict `-D warnings` lint for the affected RSpace and models libraries | reversible normalized deltas apply and revert atomically; exact-key join/meet/subtraction agree with randomized `BTreeMap` and legacy `HashMultiSet` oracles even when one key prefixes another; raw ACTree03 and bincode byte images round-trip canonically; malformed, noncanonical, zero-valued, and dangling-terminal images are refused; a 200,000-byte compressed key round-trips on a 256 KiB stack; multiplicity 1 and `u64::MAX` allocate one trie entry with the same construction-allocation count; adjacent exact-prefix deletion verifies cursor pruning and subsequent navigation; the shared reader leaves EPathMap behavior unchanged |
 | Bag algebra and live-commit formal laws | complete bounded formal bundle | Rocq proves exact-key independence, sum monoid, distributive max/min lattice, subtraction conservation, normalized/canonical delta apply/revert, nonpersistent-Stored candidate projection, permutation-invariant play/replay deltas, and atomic publication; Verus `--no-cheating` proves the executable `u64` boundary; TLC checks 2,628 live-commit states in addition to the PDA and matcher models; mCRL2 proves branching bisimulation with the atomic reference contract and that partial publication is unreachable |
 | standalone Bag microbenchmark | 15/15 comparative treatment pairs plus 6 logical-multiplicity points | construction wins at every tested cardinality; the full exact-lookup sweep wins or is operationally neutral; clone/update wins from 16 keys but regresses at one; one-key construction time is flat through `u64::MAX`; 39,912 KiB aggregate process RSS is recorded but is not a comparative memory claim |
@@ -797,8 +879,8 @@ permutation-invariant play/replay delta, and atomic publication equations in Roc
 publication in mCRL2. Those results close the abstract live-commit obligation, but they do not prove
 the generated query compiler or every complete RSpace schedule and post-state. Term-assignment and
 reservation deltas during augmenting search, constrained-first dynamic search, residual-state
-memoization, native EPathMap algebra, concrete generated-compiler soundness, complete schedule/replay
-equivalence, experiment selection, full formal closure, and legacy-boundary retirement remain open
+memoization, concrete generated-compiler soundness, complete schedule/replay equivalence, remaining
+dynamic EPathMap search, experiment selection, full formal closure, and legacy-boundary retirement remain open
 and visible in the pgmcp subtree. Set, Map, and
 merkleization experiments are independent treatments and cannot be promoted merely because the Bag
 treatment succeeds.

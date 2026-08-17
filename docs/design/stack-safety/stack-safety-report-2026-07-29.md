@@ -14,8 +14,9 @@
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
 **Report date** 2026-07-29, revised through 2026-08-16
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
-**Living closure head** `f1r3node-rust-mettail@9a746f2bf` (adaptive exact-key/moving-zipper Bag
-deltas over one privately forked PathMap root, following atomic accepted-match Bag publication,
+**Living closure head** `f1r3node-rust-mettail@d659157f2` (byte-native exact-key EPathMap
+subtraction/selection with one moving map write zipper, following adaptive exact-key/moving-zipper
+Bag deltas over one privately forked PathMap root and atomic accepted-match Bag publication,
 PathMap-pruned ordered elements inside the stack-safe associative-commutative matcher, and generated ordered-expression datum-first/receive-first
 RhoPath queries in retained PathMap automata and the Bag/position product, following sparse relational-row reuse in the
 production spatial-matcher pushdown automaton (PDA), complete-message protobuf ingress bounds, `InterpreterError`
@@ -468,6 +469,7 @@ register rows (SS-C5…SS-C13, SS-Y6) and the stack-safety consequences.
   - [5.14 Resource closure — heap and deterministic time [SS-E3]](#514-resource-closure--heap-and-deterministic-time-ss-e3)
   - [5.15 Subject depth distributions [SS-E4]](#515-subject-depth-distributions-ss-e4)
   - [5.16 Spatial matcher and PathMap-native retry PDA [SS-A10]](#516-spatial-matcher-and-pathmap-native-retry-pda-ss-a10)
+    - [5.16.7 Byte-native exact-key EPathMap algebra inside the production PDA](#5167-byte-native-exact-key-epathmap-algebra-inside-the-production-pda)
   - [5.17 EPathMap evaluator and clone-family teardown integration [SS-C11]](#517-epathmap-evaluator-and-clone-family-teardown-integration-ss-c11)
   - [5.18 Recursive-carrier lifecycle and weighted-logic closure [SS-G8]](#518-recursive-carrier-lifecycle-and-weighted-logic-closure-ss-g8)
   - [5.19 Direct EPM1 canonical validation and fold-construction closure [SS-C12]](#519-direct-epm1-canonical-validation-and-fold-construction-closure-ss-c12)
@@ -476,6 +478,8 @@ register rows (SS-C5…SS-C13, SS-Y6) and the stack-safety consequences.
   - [5.22 Canonical-GLL boundary-summary closure [SS-G45]](#522-canonical-gll-boundary-summary-closure-ss-g45)
   - [5.23 Slotted-state and indexed-channel closure [SS-G46]](#523-slotted-state-and-indexed-channel-closure-ss-g46)
   - [5.24 Certified persistent-root production-driver closure [SS-G47]](#524-certified-persistent-root-production-driver-closure-ss-g47)
+  - [5.25 Positional AC remainder reconstruction and co-install progress closure [SS-G48]](#525-positional-ac-remainder-reconstruction-and-co-install-progress-closure-ss-g48)
+  - [5.26 Retained FLT candidate-matcher integration [SS-G49]](#526-retained-flt-candidate-matcher-integration-ss-g49)
 - [6. Discussion](#6-discussion)
   - [6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces](#61-why-the-explicit-worklist-shape-and-why-it-is-smaller-than-what-it-replaces)
   - [6.2 Why the SCC is the unit of conversion](#62-why-the-scc-is-the-unit-of-conversion)
@@ -3966,6 +3970,100 @@ approximately 1.2 GiB peak memory. Both runs used the ordinary Rust stack, zero 
 
 No new stack-fix identifier is allocated: D-E4 changes repeated heap work inside SS-A10's already
 stack-safe PDA, not the traversal's native-stack complexity class.
+
+#### 5.16.7 Byte-native exact-key EPathMap algebra inside the production PDA
+
+##### 5.16.7.1 The projection defect
+
+The general associative-commutative `PathMachine` was already an explicit heap-backed PDA, but its
+exact EPathMap preparation discarded the representation advantage it had been given. Each exact set
+or map key was decoded to `Par`; a second EPathMap was constructed as a typed mask; subtraction then
+encoded those keys again to reach the target's trie. The implementation therefore paid decode,
+allocation, and re-encoding cost for an equality fact already present in canonical bytes.
+
+This defect did not consume depth-proportional native stack. It was nevertheless on the same hot
+matcher path and retained allocation proportional to exact-key count. A larger stack, `stacker`, or
+an artificial traversal limit could not repair it.
+
+##### 5.16.7.2 Selected representation boundary
+
+`f1r3node-rust-mettail@92240a452` makes exact-key matching byte-native. Allocation-free canonical
+metadata distinguishes an exact key from one that requires semantic matching. Exact set and map keys
+enter one mode-independent `PathMap<()>` mask. `EntryTrie::subtract_encoded_keys` and
+`select_encoded_keys` apply that mask directly to the target's existing trie; map values remain
+stored as `Par` payloads and are borrowed only when their value pattern is evaluated.
+
+A dynamic key is different: Rholang matching can bind variables or evaluate connectives, which raw
+equality cannot answer. It is decoded exactly once during pattern preparation and retained across
+search. A concrete map key with a dynamic value compares raw key bytes and runs the spatial matcher
+only on the value. A free remainder selects surviving raw entries, while a wildcard remainder
+materializes nothing. This boundary is therefore semantic rather than cardinality-tuned:
+
+```text
+exact key       canonical bytes -> PathMap mask/algebra
+dynamic key     canonical bytes -> one Par decode -> spatial semantics
+stored map value PathMap<Par>    -> borrow existing Par -> spatial semantics
+```
+
+`f1r3node-rust-mettail@03685f4c7` then gives map subtraction one copy-on-write root and one moving
+write zipper across lexicographically ordered encoded keys. Deletion uses `remove_val(false)` and
+`prune_ascend`; selection advances paired read/write zippers and never clones a source value merely
+to decide membership. Set subtraction already delegates the equivalent unit-valued PathMap
+operation. Neither checkpoint modifies PathMap, EPM1, protobuf, bincode, or the homogeneous
+`Empty | Set(PathMap<()>) | Map(PathMap<Par>)` model.
+
+##### 5.16.7.3 Causal measurement
+
+Pgmcp experiment 233 measures 16, 256, and 4,096 exact entries plus one wildcard remainder, which
+forces the production general `PathMachine`. Criterion used 82 post-warm-up samples, 99% confidence,
+one-percent significance, a two-second warm-up, and a five-second requested measurement interval.
+The executable was pinned to CPU 8 on the 32-physical-core, simultaneous-multithreading-disabled AMD
+Ryzen Threadripper PRO 5975WX host and ran under an 8 GiB resident-memory cap with zero swap. No
+Cargo or rustc process competed at preflight.
+
+| mode | cardinality | decoded control mean | final byte-native mean | reduction | speedup |
+|---|---:|---:|---:|---:|---:|
+| set | 16 | 28.193 µs | 3.452 µs | 87.76% | 8.17× |
+| set | 256 | 440.098 µs | 41.904 µs | 90.48% | 10.50× |
+| set | 4,096 | 6.488 ms | 475.806 µs | 92.67% | 13.64× |
+| map | 16 | 40.253 µs | 13.403 µs | 66.70% | 3.00× |
+| map | 256 | 678.119 µs | 215.935 µs | 68.16% | 3.14× |
+| map | 4,096 | 11.228 ms | 3.096 ms | 72.42% | 3.63× |
+
+All six final-treatment comparisons against the original control pass the locked one-sided Welch
+decision with `p < 4.9e-122`; the exact cell statistics are in
+[`measurements/epathmap-ac-byte-native-2026-08-16.tsv`](measurements/epathmap-ac-byte-native-2026-08-16.tsv).
+The unchanged set lane moved four to six percent between the first byte-native run and the later
+zipper run, so the table does not attribute every between-treatment difference to the zipper.
+
+Criterion rotated the first treatment into its on-disk `base` before the final run. A synthesized
+combined metric created afterward consequently contains treatment data in both arms and is invalid;
+it is excluded. Pgmcp retains the valid per-cell controls recorded before that rotation. Pgmcp also
+issued a later 8,030-sample power recommendation; this run satisfies the locked 82-sample protocol,
+not that later recommendation.
+
+##### 5.16.7.4 Equivalence, recursion census, and consensus disposition
+
+The model algebra passes **8/8**; focused EPathMap spatial matching **6/6**; legacy matcher **50/50**;
+fusion differential **6/6**; replay equivalence **1/1**; and live COMM **5/5**. The capped release
+`models` plus `rholang` gate passes **2,013/2,013** with 11 skipped under `MemoryMax=12G` and zero
+swap. Production libraries, affected tests, and the benchmark pass strict Clippy with warnings
+denied. Aggregate all-target Clippy remains blocked by 105 pre-existing warnings in unrelated test
+targets; no warning names an affected source.
+
+The hand-written recursion census initially reported one component after 2,012 of 2,013 release
+tests had passed. Inspection showed a conservative textual same-name collision involving generated
+iterator methods such as `next`, not a runtime call cycle. Exact dispositions now record the
+generated `Vec<RhoPathStep>` cursor, independent iterative fold loops, RMP1 compiler loop, spatial
+leaf adapters, and the `Job`/`FrameStack` matcher PDA. Structural exact-set anti-vacuity replaces a
+stale numerical floor. The repaired census and the full release rerun pass.
+
+No new stack-fix identifier is allocated: the production machine was already stack-safe, and these
+checkpoints remove projection and repeated-root heap work inside it. Matching verdicts, binding order,
+remainder values, EPathMap mode, EPM1 bytes, protobuf/bincode bytes, event/post-state hashes, COMM
+selection, and D3 communication-prefix accounting are unchanged. This is measured implementation
+evidence within active CBR-053, not a new consensus decision and not closure of CBR-053's remaining
+associative-commutative schedule obligations.
 
 ---
 
@@ -7973,6 +8071,7 @@ done
 | [`measurements/rspace-bag-delta-cursor-2026-08-16.tsv`](measurements/rspace-bag-delta-cursor-2026-08-16.tsv) | experiment 219's root-replay/moving-write-zipper samples, adaptive selection, resource bound, and sealed pgmcp digests (§5.16.5) |
 | [`measurements/rspace-query-product-trieref-2026-08-16.tsv`](measurements/rspace-query-product-trieref-2026-08-16.tsv) | experiment 220's paired-read-zipper/borrowed-`TrieRef` query-product samples, exact-vector oracle, rejected treatment, resource bound, hashes, and sealed pgmcp digests (§5.16.5) |
 | [`measurements/rspace-retained-bag-product-2026-08-16.tsv`](measurements/rspace-retained-bag-product-2026-08-16.tsv) | experiments 224/225's rejected datum-first traversals, experiments 226/229's accepted singleton/single-depth schedule, exact-final-source means/statistics, release/package/formal gates, resource protocol, and sealed pgmcp digests (§5.16.5) |
+| [`measurements/epathmap-ac-byte-native-2026-08-16.tsv`](measurements/epathmap-ac-byte-native-2026-08-16.tsv) | experiment 233's decoded-key control, byte-native exact-mask treatment, final moving-zipper treatment, per-cell statistics, protocol deviation, and capped equivalence gates (§5.16.7) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of
