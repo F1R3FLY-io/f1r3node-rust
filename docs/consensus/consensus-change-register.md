@@ -2562,6 +2562,23 @@ replay produces the play roots and exhausts the replay data. The complete focuse
 module passes **12/12** under an 8 GiB, zero-swap scope. This is test-only evidence: generated
 associative-commutative compilation and schedules remain open, so CBR-053 remains `UNVERIFIED`.
 
+Checkpoint `4f63119c0` records two derived-representation decisions without changing the transition
+relation. First, every retained automaton remains an immutable projection of one complete live
+continuation-group revision. Publication replaces the whole derived value, so every terminal is live
+and no tombstone or dead-transition threshold exists. Second, pgmcp experiment 241 rejects replacing
+each terminal's owned residual `RhoPathQuery` with a fixed-width `QueryId` into a hash-consed arena.
+The arena treatment selected the exact same candidate vectors but regressed construction by 28.59%,
+10.27%, and 5.98% at 16, 256, and 4,096 candidates. Production therefore retains the predecessor's
+owned residual-query representation.
+
+Neither decision changes terminal keys, candidate order, fallback behavior, residual-query meaning,
+the authoritative spatial verdict, RSpace Bag multiplicity, stored bytes, wire bytes, or post-state
+publication. The new counters observe compile/cache, eligibility, and terminal-sharing facts only;
+they do not participate in evaluation. Focused release gates pass **11/11** automaton cases plus
+**1/1** isolated allocation case, including one-million-byte depth and 20,000-terminal width on a
+128 KiB stack. This strengthens implementation and resource evidence but does not discharge the
+generated associative-commutative schedule/post-state obligation, so CBR-053 remains `UNVERIFIED`.
+
 Checkpoints `92240a452` and `03685f4c7` extend the same byte-native boundary through exact EPathMap
 matching after an RSpace Bag candidate reaches the spatial matcher. Exact keys are classified from
 canonical metadata without allocation, stored in a mode-independent `PathMap<()>` mask, and applied

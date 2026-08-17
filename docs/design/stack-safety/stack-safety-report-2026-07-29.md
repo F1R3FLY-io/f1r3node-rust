@@ -3785,7 +3785,43 @@ scope; no Cargo or rustc process competed at preflight. The scope cap is not a c
 measurement. Raw summaries, rejected designs, statistics, and sealed pgmcp digests are
 [`measurements/rspace-retained-bag-product-2026-08-16.tsv`](measurements/rspace-retained-bag-product-2026-08-16.tsv).
 
-##### 5.16.5.6 What it cost
+##### 5.16.5.6 Immutable revision lifecycle and residual-query representation
+
+Checkpoint `4f63119c0` makes the retained automaton's lifecycle and eligibility observable. Each
+compiled value is an immutable projection of one complete live continuation-group revision. A
+version change constructs and publishes a replacement; it does not mutate the old value or append
+tombstones. Therefore $`L = T`$ and $`D = 0`$, where $`L`$ is the live-terminal count, $`T`$ is
+the terminal-arena length, and $`D`$ is the dead-terminal count. A proposed dead/live rebuild
+threshold cannot improve this representation because its predicate is unreachable. The focused
+regression rebuilds slices from 1 through 512 candidates and observes the invariant at every size.
+
+Operational counters now expose total and indexed candidates, total/indexed/fallback patterns,
+total and distinct terminal paths, shared terminals, compile count/time, and cache hits. These
+counters permit captured-workload eligibility and terminal-sharing measurements without decoding
+stored records or retaining a second collection. They do not alter the authoritative
+`PathMap<TerminalId>`, its candidate order, or the `Bag(PathMap<Multiplicity>)` product.
+
+Experiment 241 asked whether identical residual `RhoPathQuery` programs should be hash-consed into
+an append-only arena addressed by fixed-width `QueryId` values. The local treatment used a transient
+hash table with full equality on collisions; the control kept one owned query per terminal. Both
+arms constructed the same transition chain and passed an exact-selection preflight. The one-shot
+CPU-8 run collected 82 post-warm-up samples per arm and cardinality under an 8 GiB, zero-swap scope.
+The arena regressed mean construction latency by **28.59%** at 16 candidates, **10.27%** at 256,
+and **5.98%** at 4,096. At the preregistered 4,096-candidate primary, control was
+**1,685,976.60 ns** and treatment was **1,786,732.56 ns**. The one-sided Welch test rejected the
+predicted decrease ($`t = 173.2981`$, $`p = 1.0`$, Cohen's $`d = 27.0646`$; 95% mean-difference
+interval $`[99,607.55, 101,904.37],\mathrm{ns}`$). Production consequently retains owned residual
+queries; the rejected arena exists only inside the reproducibility benchmark.
+
+The resulting production automaton compiles, selects, and drops a one-million-byte-deep terminal
+and a 20,000-terminal-wide chain on a 128 KiB worker stack. A separate counting allocator confirms
+that doubling 1,024 live terminals to 2,048 remains below threefold growth in both allocation count
+and allocated bytes. The focused release gate passes **11/11** automaton cases plus **1/1** isolated
+allocation case, and strict Clippy passes for the production library, both tests, and the benchmark.
+The raw summaries, sealed pgmcp run digests, preregistration, and rejection are recorded in
+[`measurements/rspace-retained-query-arena-2026-08-16.tsv`](measurements/rspace-retained-query-arena-2026-08-16.tsv).
+
+##### 5.16.5.7 What it cost
 
 Native-stack complexity changes from $`\Theta(b)`$ to $`O(1)`$. Explicit control storage is
 $`O(b)`$, which is the irreducible selected-candidate/frame frontier. Search time and output storage
@@ -3819,7 +3855,7 @@ the live nested frontier and repeated-capture count, while native-stack use rema
 associative-commutative schema instructions and allocation-per-COMM
 remeasurement remain open measured questions rather than settled claims.
 
-##### 5.16.5.7 What is still recursive
+##### 5.16.5.8 What is still recursive
 
 No candidate-selection or enabled-rendezvous recursion remains. The first production-only pgmcp run
 after SS-A11 reported two direct findings and three mutual clusters across the wider target. Source
@@ -3838,7 +3874,7 @@ is the reducer's eleven-function evaluator SCC.
 This repair introduces no depth limit, stack-growing dependency, PathMap fork, or non-trie fallback
 representation.
 
-##### 5.16.5.8 Anti-vacuity
+##### 5.16.5.9 Anti-vacuity
 
 The 20,000-bind test enters both public modes on a 256 KiB thread: `consume` must return all 20,000
 data candidates, while `enabled_rendezvous` must enumerate exactly one 20,000-candidate selection.
@@ -8071,6 +8107,7 @@ done
 | [`measurements/rspace-bag-delta-cursor-2026-08-16.tsv`](measurements/rspace-bag-delta-cursor-2026-08-16.tsv) | experiment 219's root-replay/moving-write-zipper samples, adaptive selection, resource bound, and sealed pgmcp digests (§5.16.5) |
 | [`measurements/rspace-query-product-trieref-2026-08-16.tsv`](measurements/rspace-query-product-trieref-2026-08-16.tsv) | experiment 220's paired-read-zipper/borrowed-`TrieRef` query-product samples, exact-vector oracle, rejected treatment, resource bound, hashes, and sealed pgmcp digests (§5.16.5) |
 | [`measurements/rspace-retained-bag-product-2026-08-16.tsv`](measurements/rspace-retained-bag-product-2026-08-16.tsv) | experiments 224/225's rejected datum-first traversals, experiments 226/229's accepted singleton/single-depth schedule, exact-final-source means/statistics, release/package/formal gates, resource protocol, and sealed pgmcp digests (§5.16.5) |
+| [`measurements/rspace-retained-query-arena-2026-08-16.tsv`](measurements/rspace-retained-query-arena-2026-08-16.tsv) | experiment 241's owned-query control and rejected hash-consed query-arena treatment, exact per-cell means, resource protocol, stack/allocation gates, and sealed pgmcp digests (§5.16.5) |
 | [`measurements/epathmap-ac-byte-native-2026-08-16.tsv`](measurements/epathmap-ac-byte-native-2026-08-16.tsv) | experiment 233's decoded-key control, byte-native exact-mask treatment, final moving-zipper treatment, per-cell statistics, protocol deviation, and capped equivalence gates (§5.16.7) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 

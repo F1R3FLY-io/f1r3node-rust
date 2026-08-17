@@ -1,0 +1,19 @@
+# RSpace retained-automaton residual-query representation experiment.
+# Source checkpoint: 4f63119c0. Production retains one owned RhoPathQuery per terminal; the rejected QueryId/query-arena treatment remains benchmark-local for reproducibility.
+# Host: AMD Ryzen Threadripper PRO 5975WX, 32 physical cores, SMT disabled; CPU 8 pinned.
+# Command: systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 -p AllowedCPUs=8 taskset -c 8 cargo bench -p rspace_plus_plus --bench rspace_retained_automaton_build -- --noplot
+# Fixture: identical ordered residual query, distinct continuation body per candidate, one PathMap<TerminalId> chain, and exact selection-vector equality before timing.
+# Criterion: one shot; 82 post-warm-up samples per arm/cell; 2 s warm-up; 5 s requested measurement; 99% confidence; 1% significance; no competing Cargo or rustc process at preflight.
+# Pgmcp experiment 241: REJECTED. Primary 4096-candidate Welch t=173.2980645611, one-sided p=1.0, Cohen's d=27.0646106705, treatment-minus-control 95% CI [99607.5543,101904.3730] ns.
+# Operational guardrails also failed: treatment regressions were 28.593416% at 16, 10.274248% at 256, and 5.976119% at 4096.
+# Control run: 80d65cd5-586c-409d-ba25-cb98aeb77aa3; sha256:33929ad669a3246c34b50d62cfb157e0ba4b6e9d507c7ac7696feeca8126cb18.
+# Treatment run: 0caa9704-bd51-4579-a3e5-84f1fb999589; sha256:71d6bfe8237ff113fef85fceb30bf989083019a83cc6e83195e67ee52b5e80a4.
+# Pgmcp artifacts: 322 captured the console report; 323 corrected interval-midpoint summaries to exact means computed from times[i]/iters[i].
+# Correctness/resource gates after retaining owned queries: 11/11 focused release automaton tests, 1/1 isolated allocation-slope test, one-million-byte depth and 20,000-terminal width on 128 KiB, and strict focused Clippy.
+date	production_commit	experiment_id	cardinality	arm	samples	raw_mean_ns	raw_stddev_ns	treatment_over_control_ratio	memory_max_mib	swap_max_mib	cpu_affinity	result
+2026-08-16	4f63119c0	241	16	control_owned_query	82	5651.180444	6.558398	NA	8192	0	8	control-retained
+2026-08-16	4f63119c0	241	16	treatment_query_arena	82	7267.045996	8.560146	1.285934	8192	0	8	rejected-small-guardrail
+2026-08-16	4f63119c0	241	256	control_owned_query	82	101382.109553	498.375249	NA	8192	0	8	control-retained
+2026-08-16	4f63119c0	241	256	treatment_query_arena	82	111798.358448	129.917564	1.102742	8192	0	8	rejected-small-guardrail
+2026-08-16	4f63119c0	241	4096	control_owned_query	82	1685976.596338	4057.022365	NA	8192	0	8	primary-control-retained
+2026-08-16	4f63119c0	241	4096	treatment_query_arena	82	1786732.559993	3355.436820	1.059761	8192	0	8	statistically-rejected-primary
