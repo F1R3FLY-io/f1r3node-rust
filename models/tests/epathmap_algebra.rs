@@ -1,7 +1,10 @@
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, EPathMap, Expr, Par};
+use models::rust::canonical_path::encode_trie_path;
 use models::rust::epathmap_trie_codec::EPathMapMode;
-use models::rust::rhoapi_ext::EPathMapAlgebraError;
+use models::rust::rhoapi_ext::{EPathMapAlgebraError, EntryTrie};
+use models::rust::utils::new_freevar_par;
+use pathmap::PathMap;
 
 fn gint(value: i64) -> Par {
     Par::default().with_exprs(vec![Expr {
@@ -170,6 +173,45 @@ fn map_algebra_preserves_associations_and_rejects_unequal_overlaps() {
         .unwrap();
     assert_map_value(&masked, 1, Some(10));
     assert_map_value(&masked, 2, None);
+}
+
+#[test]
+fn encoded_key_masks_specialize_subtraction_and_selection_without_mode_conversion() {
+    let mut mask = PathMap::new();
+    mask.insert(encode_trie_path(&gint(2)), ());
+
+    let set = set([1, 2, 3]);
+    let set_difference = set.entry_trie().subtract_encoded_keys(&mask);
+    let set_selection = set.entry_trie().select_encoded_keys(&mask);
+    assert_eq!(set_difference.mode(), EPathMapMode::Set);
+    assert_eq!(set_values(&set_difference), vec![1, 3]);
+    assert_eq!(set_values(&set_selection), vec![2]);
+
+    let map = map([(1, 10), (2, 20), (3, 30)]);
+    let map_difference = map.entry_trie().subtract_encoded_keys(&mask);
+    let map_selection = map.entry_trie().select_encoded_keys(&mask);
+    assert_eq!(map_difference.mode(), EPathMapMode::Map);
+    assert_map_value(&map_difference, 1, Some(10));
+    assert_map_value(&map_difference, 2, None);
+    assert_map_value(&map_difference, 3, Some(30));
+    assert_eq!(map_selection.mode(), EPathMapMode::Map);
+    assert_map_value(&map_selection, 1, None);
+    assert_map_value(&map_selection, 2, Some(20));
+    assert_map_value(&map_selection, 3, None);
+}
+
+#[test]
+fn canonical_key_flags_are_read_without_decoding_a_par_projection() {
+    let exact = encode_trie_path(&gint(7));
+    let exact_metadata = EntryTrie::encoded_key_metadata(&exact).expect("exact canonical key");
+    assert!(!exact_metadata.connective_used);
+    assert!(exact_metadata.locally_free_is_empty);
+
+    let dynamic = encode_trie_path(&new_freevar_par(3, vec![0b0000_1000]));
+    let dynamic_metadata =
+        EntryTrie::encoded_key_metadata(&dynamic).expect("dynamic canonical key");
+    assert!(dynamic_metadata.connective_used);
+    assert!(!dynamic_metadata.locally_free_is_empty);
 }
 
 #[test]

@@ -92,6 +92,31 @@ fn map_match_subtracts_exact_pairs_and_binds_key_and_value() {
 }
 
 #[test]
+fn dynamic_map_value_under_an_exact_key_matches_without_dynamic_key_semantics() {
+    let target_map = EPathMap::new_map(
+        [(gint(1), gint(10)), (gint(2), gint(20))],
+        vec![],
+        false,
+        None,
+    );
+    let pattern_map = EPathMap::new_map(
+        [
+            (gint(1), gint(10)),
+            (gint(2), new_freevar_par(0, Vec::new())),
+        ],
+        vec![],
+        true,
+        None,
+    );
+
+    let mut matcher = SpatialMatcherContext::new();
+    assert!(matcher
+        .spatial_match_result(carrier(target_map, false), carrier(pattern_map, true))
+        .is_some());
+    assert_eq!(matcher.free_map.get(&0), Some(&gint(20)));
+}
+
+#[test]
 fn set_and_map_modes_never_cross_match() {
     let target_map = EPathMap::new_map([(gint(1), gint(10))], vec![], false, None);
     let pattern_set = EPathMap::new(vec![new_freevar_par(0, Vec::new())], vec![], true, None);

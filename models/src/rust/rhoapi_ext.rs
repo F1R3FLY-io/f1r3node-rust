@@ -39,8 +39,9 @@ use prost::encoding::{self, DecodeContext};
 use prost::DecodeError;
 
 use super::canonical_path::{
-    declared_canonical_path_metadata, decode_trie_path, encode_trie_path,
-    encode_trie_path_with_stability, validate_canonical_path, CanonicalPathMetadata,
+    declared_canonical_path_flags, declared_canonical_path_metadata, decode_trie_path,
+    encode_trie_path, encode_trie_path_with_stability, validate_canonical_path,
+    CanonicalPathMetadata, CodecError,
 };
 use super::epathmap_trie_codec::{self, EPathMapMode, EPathMapRepr};
 use super::pathmap_crate_type_mapper::{
@@ -365,6 +366,15 @@ impl fmt::Display for EPathMapEmptyModeError {
 
 impl std::error::Error for EPathMapEmptyModeError {}
 
+/// Allocation-free semantic flags read from an EPathMap's canonical encoded
+/// key. The key remains the authoritative representation; this is not a
+/// decoded `Par` projection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EPathMapEncodedKeyMetadata {
+    pub connective_used: bool,
+    pub locally_free_is_empty: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EPathMapAlgebraError {
     ModeMismatch {
@@ -620,6 +630,19 @@ impl EntryTrie {
     pub fn representation(&self) -> &EPathMapRepr<Par> { &self.repr }
 
     pub fn mode(&self) -> EPathMapMode { self.repr.mode() }
+
+    /// Inspect a canonical key in-place without allocating or materializing a
+    /// `Par`. Callers normally obtain `encoded_key` from one of the raw zipper
+    /// visitors, which guarantees that it is an EntryTrie key.
+    pub fn encoded_key_metadata(
+        encoded_key: &[u8],
+    ) -> Result<EPathMapEncodedKeyMetadata, CodecError> {
+        let flags = declared_canonical_path_flags(encoded_key)?;
+        Ok(EPathMapEncodedKeyMetadata {
+            connective_used: flags.connective_used,
+            locally_free_is_empty: flags.locally_free_is_empty,
+        })
+    }
 
     fn invalidate_derived(&mut self) {
         self.trie_snapshot = Arc::new(OnceLock::new());
@@ -1359,6 +1382,50 @@ impl EntryTrie {
                 Ok(Self::algebra_result(EPathMapRepr::Map(difference)))
             }
             _ => Err(self.mode_mismatch(other)),
+        }
+    }
+
+    /// Remove the values named by a mode-independent encoded-key mask.
+    ///
+    /// Set mode delegates the complete operation to PathMap's native lattice
+    /// subtraction. Map mode uses an O(1) CoW root clone and removes the mask's
+    /// encoded keys without decoding, re-encoding, or manufacturing dummy
+    /// `Par` values. Derived folds are recomputed once for the final trie.
+    pub fn subtract_encoded_keys(&self, keys: &RholangSetPathMap) -> Self {
+        match &self.repr {
+            EPathMapRepr::Empty => Self::default(),
+            EPathMapRepr::Set(left) => Self::algebra_result(EPathMapRepr::Set(left.subtract(keys))),
+            EPathMapRepr::Map(left) => {
+                let mut difference = left.clone();
+                for (key, ()) in keys.iter() {
+                    if let Some(removed) = difference.remove(&key) {
+                        crate::rust::rholang::par_children::dismantle(removed);
+                    }
+                }
+                Self::algebra_result(EPathMapRepr::Map(difference))
+            }
+        }
+    }
+
+    /// Select the values named by a mode-independent encoded-key mask.
+    ///
+    /// This is the byte-native counterpart of rebuilding an EPathMap remainder
+    /// through decoded `Par` entries. Set mode uses PathMap meet directly; map
+    /// mode copies only selected associated values while retaining canonical
+    /// keys and their prefix compression.
+    pub fn select_encoded_keys(&self, keys: &RholangSetPathMap) -> Self {
+        match &self.repr {
+            EPathMapRepr::Empty => Self::default(),
+            EPathMapRepr::Set(left) => Self::algebra_result(EPathMapRepr::Set(left.meet(keys))),
+            EPathMapRepr::Map(left) => {
+                let mut selected = RholangMapPathMap::new();
+                for (key, ()) in keys.iter() {
+                    if let Some(value) = left.get(&key) {
+                        selected.insert(&key, value.clone());
+                    }
+                }
+                Self::algebra_result(EPathMapRepr::Map(selected))
+            }
         }
     }
 

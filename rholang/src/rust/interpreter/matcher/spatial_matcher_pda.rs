@@ -19,7 +19,7 @@ use models::rust::canonical_path::decode_trie_path;
 use models::rust::epathmap_trie_codec::EPathMapMode;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
-use models::rust::rhoapi_ext::OwnedEPathMapEntry;
+use models::rust::rhoapi_ext::{EntryTrie, OwnedEPathMapEntry};
 use models::rust::rholang::bincode_encoder;
 use models::rust::rholang::implicits::{single_expr, vector_par};
 use models::rust::rholang::match_path::encode_match_path;
@@ -2209,7 +2209,15 @@ fn finish_list(context: &mut SpatialMatcherContext, machine: ListMachine) -> Job
 enum PathPattern {
     Remainder,
     Set(Arc<Par>),
-    Map(Arc<(Par, Par)>),
+    /// A dynamic map value under a concrete canonical key. Keeping the key in
+    /// its encoded form makes candidate rejection a direct PathMap-key byte
+    /// comparison and avoids decoding either side's key.
+    MapExactKey {
+        encoded_key: Arc<[u8]>,
+        value: Arc<Par>,
+    },
+    /// A dynamic key requires the full semantic pair matcher.
+    MapDynamicKey(Arc<(Par, Par)>),
 }
 
 #[derive(Clone)]
@@ -2233,11 +2241,10 @@ enum PathRemainder {
 
 struct PathMachine {
     target: EPathMap,
-    pattern: EPathMap,
+    dynamic_patterns: std::vec::IntoIter<PathPattern>,
     assignments: pathmap::PathMap<PathAssignment>,
     remainder: PathRemainder,
     remainder_roots: usize,
-    dynamic_cursor: Vec<u8>,
     roots_finished: bool,
     seen: pathmap::PathMap<()>,
     search: Vec<PathSearchFrame>,
@@ -2273,13 +2280,16 @@ fn init_path(
     if matches!(remainder, PathRemainder::None) && target.len() == 1 && pattern.len() == 1 {
         return init_single_path(context, target, pattern, frames);
     }
-    let Some((target, dynamic_patterns)) = prepare_exact_path_entries(&target, &pattern) else {
+    let Some((target, dynamic_patterns)) = prepare_path_entries(&target, &pattern) else {
         return Job::Return(false);
     };
+    let dynamic_pattern_count = dynamic_patterns.len();
     let target_count = target.len();
     match remainder {
-        PathRemainder::None if dynamic_patterns != target_count => return Job::Return(false),
-        PathRemainder::Wildcard | PathRemainder::Free(_) if dynamic_patterns > target_count => {
+        PathRemainder::None if dynamic_pattern_count != target_count => return Job::Return(false),
+        PathRemainder::Wildcard | PathRemainder::Free(_)
+            if dynamic_pattern_count > target_count =>
+        {
             return Job::Return(false);
         }
         _ => {}
@@ -2287,15 +2297,14 @@ fn init_path(
 
     let mut machine = PathMachine {
         target,
-        pattern,
+        dynamic_patterns: dynamic_patterns.into_iter(),
         assignments: pathmap::PathMap::new(),
         remainder,
         remainder_roots: if matches!(remainder, PathRemainder::Free(_)) {
-            target_count - dynamic_patterns
+            target_count - dynamic_pattern_count
         } else {
             0
         },
-        dynamic_cursor: Vec::new(),
         roots_finished: false,
         seen: pathmap::PathMap::new(),
         search: Vec::new(),
@@ -2328,13 +2337,15 @@ fn init_single_path(
     };
     let pair = match (target, pattern) {
         (OwnedEPathMapEntry::Set(target), OwnedEPathMapEntry::Set(pattern)) => {
-            let decoded_pattern =
-                decode_trie_path(&pattern).expect("set pattern key is a canonical Par path");
-            if !decoded_pattern.connective_used {
+            let metadata = EntryTrie::encoded_key_metadata(&pattern)
+                .expect("set pattern key is a canonical Par path");
+            if !metadata.connective_used {
                 // A concrete set member is its canonical PathMap key. The
                 // compressed bytes are therefore the complete equality test.
                 return Job::Return(target == pattern);
             }
+            let decoded_pattern =
+                decode_trie_path(&pattern).expect("dynamic set pattern key must decode once");
             MatchPair::Par(
                 decode_trie_path(&target).expect("set target key is a canonical Par path"),
                 decoded_pattern,
@@ -2350,9 +2361,9 @@ fn init_single_path(
                 value: pattern_value,
             },
         ) => {
-            let decoded_pattern_key =
-                decode_trie_path(&pattern_key).expect("map pattern key is a canonical Par path");
-            if !decoded_pattern_key.connective_used {
+            let metadata = EntryTrie::encoded_key_metadata(&pattern_key)
+                .expect("map pattern key is a canonical Par path");
+            if !metadata.connective_used {
                 // Canonical PathMap key bytes are the equality representation.
                 // A concrete singleton key therefore needs neither Par decoding
                 // nor a second PDA continuation: compare the compressed bytes
@@ -2365,6 +2376,8 @@ fn init_single_path(
                 }
                 MatchPair::Par(target_value, pattern_value)
             } else {
+                let decoded_pattern_key = decode_trie_path(&pattern_key)
+                    .expect("dynamic map pattern key must decode once");
                 MatchPair::ParPair(
                     (
                         decode_trie_path(&target_key)
@@ -2388,15 +2401,13 @@ impl PathMachine {
         let root = if self.remainder_roots != 0 {
             self.remainder_roots -= 1;
             Some(PathPattern::Remainder)
-        } else if let Some((key, pattern)) =
-            next_dynamic_path_pattern(&self.pattern, &self.dynamic_cursor)
-        {
-            self.dynamic_cursor = key;
-            Some(pattern)
         } else {
-            self.roots_finished = true;
-            None
+            self.dynamic_patterns.next()
         };
+
+        if root.is_none() {
+            self.roots_finished = true;
+        }
 
         if let Some(pattern) = root {
             self.seen = pathmap::PathMap::new();
@@ -2495,7 +2506,29 @@ fn step_path(
                 });
                 return match_job(MatchPair::Par(target, pattern.as_ref().clone()));
             }
-            PathPattern::Map(pattern) => {
+            PathPattern::MapExactKey {
+                encoded_key,
+                value: pattern_value,
+            } => {
+                if target_key.as_slice() != encoded_key.as_ref() {
+                    continue;
+                }
+                let target_value = machine
+                    .target
+                    .entry_trie()
+                    .get_map_value_by_encoded_key(&target_key)
+                    .expect("PathMap target mode was checked")
+                    .expect("a PathMap candidate key names a value")
+                    .clone();
+                let snapshot = context.free_map.clone();
+                frames.push(Frame::PathEdge {
+                    machine: Box::new(machine),
+                    target_key,
+                    snapshot,
+                });
+                return match_job(MatchPair::Par(target_value, pattern_value.as_ref().clone()));
+            }
+            PathPattern::MapDynamicKey(pattern) => {
                 let key = decode_trie_path(&target_key)
                     .expect("map-mode EPathMap keys are canonical Par paths");
                 let value = machine
@@ -2518,52 +2551,30 @@ fn step_path(
 }
 
 fn path_target_is_concrete(target: &EPathMap, key: &[u8]) -> bool {
+    let key_metadata =
+        EntryTrie::encoded_key_metadata(key).expect("EPathMap target keys are canonical Par paths");
     match target.mode() {
         EPathMapMode::Empty => false,
-        EPathMapMode::Set => decode_trie_path(key)
-            .expect("set-mode EPathMap keys are canonical Par paths")
-            .locally_free
-            .is_empty(),
+        EPathMapMode::Set => key_metadata.locally_free_is_empty,
         EPathMapMode::Map => {
-            let key_par =
-                decode_trie_path(key).expect("map-mode EPathMap keys are canonical Par paths");
             let value = target
                 .entry_trie()
                 .get_map_value_by_encoded_key(key)
                 .expect("PathMap target mode was checked")
                 .expect("a PathMap candidate key names a value");
-            key_par.locally_free.is_empty() && value.locally_free.is_empty()
+            key_metadata.locally_free_is_empty && value.locally_free.is_empty()
         }
     }
 }
 
 fn finish_path(context: &mut SpatialMatcherContext, machine: PathMachine) -> Job {
-    let mut remainder_map = EPathMap::default();
+    let mut remainder_keys =
+        matches!(machine.remainder, PathRemainder::Free(_)).then(pathmap::PathMap::new);
     let mut maps = Vec::with_capacity(machine.assignments.val_count());
     for (target_key, assignment) in machine.assignments {
         if matches!(assignment.pattern, PathPattern::Remainder) {
-            match machine.target.mode() {
-                EPathMapMode::Empty => {}
-                EPathMapMode::Set => {
-                    remainder_map.insert_entry(
-                        decode_trie_path(&target_key)
-                            .expect("set-mode EPathMap keys are canonical Par paths"),
-                    );
-                }
-                EPathMapMode::Map => {
-                    let key = decode_trie_path(&target_key)
-                        .expect("map-mode EPathMap keys are canonical Par paths");
-                    let value = machine
-                        .target
-                        .entry_trie()
-                        .get_map_value_by_encoded_key(&target_key)
-                        .expect("PathMap target mode was checked")
-                        .expect("an assigned PathMap key names a value")
-                        .clone();
-                    remainder_map
-                        .insert_map_entry(key, value)
-                        .expect("a fresh remainder preserves homogeneous map mode");
-                }
+            if let Some(keys) = &mut remainder_keys {
+                keys.insert(&target_key, ());
             }
         }
         maps.push(assignment.free_map);
@@ -2574,6 +2585,11 @@ fn finish_path(context: &mut SpatialMatcherContext, machine: PathMachine) -> Job
     };
     context.free_map = updated;
     if let PathRemainder::Free(level) = machine.remainder {
+        let entries = machine
+            .target
+            .entry_trie()
+            .select_encoded_keys(&remainder_keys.expect("free remainder collected a key mask"));
+        let remainder_map = EPathMap::new(entries, Vec::new(), false, None);
         let bound = context
             .free_map
             .get(&level)
@@ -2587,9 +2603,16 @@ fn finish_path(context: &mut SpatialMatcherContext, machine: PathMachine) -> Job
     Job::Return(true)
 }
 
-fn prepare_exact_path_entries(target: &EPathMap, pattern: &EPathMap) -> Option<(EPathMap, usize)> {
-    let mut exact_mask = EPathMap::default();
-    let mut dynamic = 0usize;
+fn prepare_path_entries(
+    target: &EPathMap,
+    pattern: &EPathMap,
+) -> Option<(EPathMap, Vec<PathPattern>)> {
+    // Canonical key bytes are the authoritative trie representation. Exact
+    // entries flow into one mode-independent PathMap<()> mask without a
+    // decode/re-encode round trip. Dynamic patterns cross the semantic boundary
+    // exactly once here and are retained by the PDA for every retry.
+    let mut exact_mask = pathmap::PathMap::new();
+    let mut dynamic_patterns = Vec::new();
     let mut valid = true;
 
     match pattern.mode() {
@@ -2598,13 +2621,15 @@ fn prepare_exact_path_entries(target: &EPathMap, pattern: &EPathMap) -> Option<(
             pattern
                 .entry_trie()
                 .for_each_raw_set_entry(|encoded| {
-                    let entry = decode_trie_path(encoded)
+                    let metadata = EntryTrie::encoded_key_metadata(encoded)
                         .expect("set-mode EPathMap keys are canonical Par paths");
-                    if entry.connective_used {
-                        dynamic += 1;
+                    if metadata.connective_used {
+                        let entry = decode_trie_path(encoded)
+                            .expect("dynamic set pattern key must decode once");
+                        dynamic_patterns.push(PathPattern::Set(Arc::new(entry)));
                     } else {
                         valid &= target.contains_encoded_key(encoded);
-                        exact_mask.insert_entry(entry);
+                        exact_mask.insert(encoded, ());
                     }
                 })
                 .expect("PathMap pattern mode was checked");
@@ -2613,10 +2638,20 @@ fn prepare_exact_path_entries(target: &EPathMap, pattern: &EPathMap) -> Option<(
             pattern
                 .entry_trie()
                 .for_each_raw_map_entry(|encoded, pattern_value| {
-                    let key = decode_trie_path(encoded)
+                    let metadata = EntryTrie::encoded_key_metadata(encoded)
                         .expect("map-mode EPathMap keys are canonical Par paths");
-                    if key.connective_used || pattern_value.connective_used {
-                        dynamic += 1;
+                    if metadata.connective_used {
+                        let key = decode_trie_path(encoded)
+                            .expect("dynamic map pattern key must decode once");
+                        dynamic_patterns.push(PathPattern::MapDynamicKey(Arc::new((
+                            key,
+                            pattern_value.clone(),
+                        ))));
+                    } else if pattern_value.connective_used {
+                        dynamic_patterns.push(PathPattern::MapExactKey {
+                            encoded_key: Arc::from(encoded),
+                            value: Arc::new(pattern_value.clone()),
+                        });
                     } else {
                         valid &= target
                             .entry_trie()
@@ -2624,9 +2659,7 @@ fn prepare_exact_path_entries(target: &EPathMap, pattern: &EPathMap) -> Option<(
                             .ok()
                             .flatten()
                             == Some(pattern_value);
-                        exact_mask
-                            .insert_map_entry(key, Par::default())
-                            .expect("an exact mask preserves homogeneous map mode");
+                        exact_mask.insert(encoded, ());
                     }
                 })
                 .expect("PathMap pattern mode was checked");
@@ -2635,10 +2668,7 @@ fn prepare_exact_path_entries(target: &EPathMap, pattern: &EPathMap) -> Option<(
     if !valid {
         return None;
     }
-    let entries = target
-        .entry_trie()
-        .try_subtract(exact_mask.entry_trie())
-        .ok()?;
+    let entries = target.entry_trie().subtract_encoded_keys(&exact_mask);
     Some((
         EPathMap::new(
             entries,
@@ -2646,35 +2676,8 @@ fn prepare_exact_path_entries(target: &EPathMap, pattern: &EPathMap) -> Option<(
             target.connective_used,
             target.remainder.clone(),
         ),
-        dynamic,
+        dynamic_patterns,
     ))
-}
-
-fn next_dynamic_path_pattern(pattern: &EPathMap, after: &[u8]) -> Option<(Vec<u8>, PathPattern)> {
-    let mut cursor = after.to_vec();
-    loop {
-        let key = pattern.next_value_key(&cursor)?;
-        cursor = key.clone();
-        let decoded =
-            decode_trie_path(&key).expect("EPathMap pattern keys are canonical Par paths");
-        match pattern.mode() {
-            EPathMapMode::Empty => return None,
-            EPathMapMode::Set if decoded.connective_used => {
-                return Some((key, PathPattern::Set(Arc::new(decoded))));
-            }
-            EPathMapMode::Set => {}
-            EPathMapMode::Map => {
-                let value = pattern
-                    .entry_trie()
-                    .get_map_value_by_encoded_key(&key)
-                    .expect("PathMap pattern mode was checked")
-                    .expect("a PathMap pattern key names a value");
-                if decoded.connective_used || value.connective_used {
-                    return Some((key, PathPattern::Map(Arc::new((decoded, value.clone())))));
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]

@@ -1416,6 +1416,12 @@ pub(crate) struct CanonicalPathMetadata {
     pub(crate) connective_used: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CanonicalPathFlags {
+    pub(crate) connective_used: bool,
+    pub(crate) locally_free_is_empty: bool,
+}
+
 #[derive(Clone)]
 enum CanonicalBacking<'a> {
     Borrowed(&'a [u8]),
@@ -1919,23 +1925,33 @@ fn skip_declared_bytes(path: &[u8], cursor: &mut usize, count: usize) -> Result<
     Ok(())
 }
 
-pub(crate) fn declared_canonical_path_metadata(
+struct DeclaredCanonicalPathMetadata<'a> {
+    stable: bool,
+    reducer_eval_identity: bool,
+    locally_free: &'a [u8],
+    connective_used: bool,
+}
+
+/// Read the metadata declared by a canonical key without constructing its
+/// semantic `Par`. The returned locally-free bitmap borrows the escape payload,
+/// so callers that need only flags pay no allocation.
+fn scan_declared_canonical_path_metadata(
     path: &[u8],
-) -> Result<CanonicalPathMetadata, CodecError> {
+) -> Result<DeclaredCanonicalPathMetadata<'_>, CodecError> {
     if path_declares_stable(path)? {
-        return Ok(CanonicalPathMetadata {
+        return Ok(DeclaredCanonicalPathMetadata {
             stable: true,
             reducer_eval_identity: true,
-            locally_free: Vec::new(),
+            locally_free: &[],
             connective_used: false,
         });
     }
 
     if path[0] != tag::ESCAPE {
-        return Ok(CanonicalPathMetadata {
+        return Ok(DeclaredCanonicalPathMetadata {
             stable: false,
             reducer_eval_identity: false,
-            locally_free: Vec::new(),
+            locally_free: &[],
             connective_used: false,
         });
     }
@@ -1952,7 +1968,7 @@ pub(crate) fn declared_canonical_path_metadata(
     let payload = &path[cursor..payload_end];
     let mut payload_cursor = 0usize;
     let mut has_expr = false;
-    let mut locally_free = Vec::new();
+    let mut locally_free = &[][..];
     let mut connective_used = false;
     while payload_cursor < payload.len() {
         let key = read_uv(payload, &mut payload_cursor, payload.len())?;
@@ -1983,7 +1999,7 @@ pub(crate) fn declared_canonical_path_metadata(
                 if field == 5 {
                     has_expr = true;
                 } else if field == 9 {
-                    locally_free = payload[payload_cursor..end].to_vec();
+                    locally_free = &payload[payload_cursor..end];
                 }
                 payload_cursor = end;
             }
@@ -1996,11 +2012,31 @@ pub(crate) fn declared_canonical_path_metadata(
             _ => return Err(CodecError::EscapePayloadInvalid),
         }
     }
-    Ok(CanonicalPathMetadata {
+    Ok(DeclaredCanonicalPathMetadata {
         stable: false,
         reducer_eval_identity: !has_expr,
         locally_free,
         connective_used,
+    })
+}
+
+pub(crate) fn declared_canonical_path_flags(path: &[u8]) -> Result<CanonicalPathFlags, CodecError> {
+    let metadata = scan_declared_canonical_path_metadata(path)?;
+    Ok(CanonicalPathFlags {
+        connective_used: metadata.connective_used,
+        locally_free_is_empty: metadata.locally_free.is_empty(),
+    })
+}
+
+pub(crate) fn declared_canonical_path_metadata(
+    path: &[u8],
+) -> Result<CanonicalPathMetadata, CodecError> {
+    let metadata = scan_declared_canonical_path_metadata(path)?;
+    Ok(CanonicalPathMetadata {
+        stable: metadata.stable,
+        reducer_eval_identity: metadata.reducer_eval_identity,
+        locally_free: metadata.locally_free.to_vec(),
+        connective_used: metadata.connective_used,
     })
 }
 
