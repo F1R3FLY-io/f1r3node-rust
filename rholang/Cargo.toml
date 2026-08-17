@@ -88,6 +88,10 @@ epathmap-fusion-differential = []
 # library. The default build has neither the toggle nor its branch, preventing
 # a runtime configuration from changing consensus candidate filtering.
 spatial-matcher-connective-domain-differential = []
+# Compiles the TEST/BENCHMARK-ONLY immutable-versus-consuming candidate-mask
+# algebra selector into the library. Default/production builds contain no
+# runtime toggle or alternate consensus path.
+spatial-matcher-candidate-mask-algebra-differential = []
 # Pass the Phase 7 measurement-only hooks through to `models` while running the
 # interpreter corpus. Disabled in every production/default build.
 phase7-depth-histograms = ["models/phase7-depth-histograms"]
@@ -109,3 +113,8 @@ harness = false
 name = "spatial_matcher_connective_domains"
 harness = false
 required-features = ["spatial-matcher-connective-domain-differential"]
+
+[[bench]]
+name = "spatial_matcher_candidate_mask_algebra"
+harness = false
+required-features = ["spatial-matcher-candidate-mask-algebra-differential"]

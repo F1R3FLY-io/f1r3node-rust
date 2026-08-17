@@ -28,6 +28,8 @@ use super::recursive_oracle::spatial_matcher::{
     SpatialMatcher as RecursiveSpatialMatcher, SpatialMatcherContext as RecursiveContext,
 };
 use super::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
+#[cfg(feature = "spatial-matcher-candidate-mask-algebra-differential")]
+use super::spatial_matcher_pda::benchmark_match_par_list_candidate_mask_algebra;
 use super::spatial_matcher_pda::{
     match_par_list_with_stats, match_send_list_with_remainder_stats, match_send_list_with_stats,
     send_target_index_shape,
@@ -883,6 +885,61 @@ fn connective_candidate_plan_compilation_and_matching_are_stack_safe_at_depth_tw
     handle
         .join()
         .expect("the candidate compiler and matcher use constant native stack");
+}
+
+#[cfg(feature = "spatial-matcher-candidate-mask-algebra-differential")]
+#[test]
+fn consuming_candidate_mask_algebra_preserves_verdicts_and_captures() {
+    let integer = |value| new_gint_par(value, Vec::new(), false);
+    let disjunction = |ps| connective(ConnOrBody(ConnectiveBody { ps }));
+    let conjunction = |ps| connective(ConnAndBody(ConnectiveBody { ps }));
+
+    let cases = vec![
+        (
+            "nested finite union and intersection",
+            vec![integer(0), integer(1), integer(4)],
+            vec![
+                disjunction(vec![integer(1), integer(3)]),
+                conjunction(vec![
+                    disjunction(vec![integer(2), integer(4)]),
+                    disjunction(vec![integer(4), integer(5)]),
+                ]),
+                integer(0),
+            ],
+        ),
+        (
+            "duplicate target positions",
+            vec![integer(7), integer(7), integer(9)],
+            vec![
+                disjunction(vec![integer(7), integer(8)]),
+                conjunction(vec![integer(7), disjunction(vec![integer(6), integer(7)])]),
+                integer(9),
+            ],
+        ),
+        (
+            "empty finite domain rejects",
+            vec![integer(0), integer(1)],
+            vec![integer(0), disjunction(Vec::new())],
+        ),
+        (
+            "universal arm retains capture",
+            vec![integer(0), integer(1)],
+            vec![
+                disjunction(vec![integer(9), new_freevar_par(0, Vec::new())]),
+                integer(1),
+            ],
+        ),
+    ];
+
+    for (label, targets, patterns) in cases {
+        let control = benchmark_match_par_list_candidate_mask_algebra(
+            targets.clone(),
+            patterns.clone(),
+            false,
+        );
+        let treatment = benchmark_match_par_list_candidate_mask_algebra(targets, patterns, true);
+        assert_eq!(treatment, control, "{label}");
+    }
 }
 
 #[test]

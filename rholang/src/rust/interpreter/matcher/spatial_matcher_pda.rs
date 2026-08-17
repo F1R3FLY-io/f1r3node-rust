@@ -7,7 +7,11 @@
 //! `Job`/`Frame` pushdown automaton. A nested pattern therefore grows heap work
 //! storage, never the native call stack.
 
-#[cfg(any(test, feature = "spatial-matcher-connective-domain-differential"))]
+#[cfg(any(
+    test,
+    feature = "spatial-matcher-connective-domain-differential",
+    feature = "spatial-matcher-candidate-mask-algebra-differential"
+))]
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::num::NonZeroU64;
@@ -25,6 +29,8 @@ use models::rust::rholang::implicits::{single_expr, vector_par};
 use models::rust::rholang::match_path::encode_match_path;
 use models::rust::rholang::match_schema_tables::ParCursor;
 use models::rust::utils::*;
+#[cfg(feature = "spatial-matcher-candidate-mask-algebra-differential")]
+use pathmap::zipper::ZipperWriting;
 use pathmap::PathMap;
 use rspace_plus_plus::rspace::bag::Bag;
 use rspace_plus_plus::rspace::rho_path::{RhoPathQuery, RhoPathV1, StructuralSequenceEncoder};
@@ -63,6 +69,14 @@ thread_local! {
     static FORCE_CONNECTIVE_DOMAIN_ALL: Cell<bool> = const { Cell::new(false) };
 }
 
+#[cfg(feature = "spatial-matcher-candidate-mask-algebra-differential")]
+thread_local! {
+    /// Benchmark-only causal treatment. The default build always uses the
+    /// established immutable whole-map algebra, so this experiment cannot
+    /// become a runtime consensus configuration.
+    static USE_CONSUMING_CANDIDATE_MASK_ALGEBRA: Cell<bool> = const { Cell::new(false) };
+}
+
 #[cfg(feature = "spatial-matcher-connective-domain-differential")]
 fn with_connective_domain_mode<T>(optimized: bool, body: impl FnOnce() -> T) -> T {
     FORCE_CONNECTIVE_DOMAIN_ALL.with(|force_all| {
@@ -70,6 +84,41 @@ fn with_connective_domain_mode<T>(optimized: bool, body: impl FnOnce() -> T) -> 
         let result = body();
         force_all.set(previous);
         result
+    })
+}
+
+#[cfg(feature = "spatial-matcher-candidate-mask-algebra-differential")]
+fn with_candidate_mask_algebra_mode<T>(consuming: bool, body: impl FnOnce() -> T) -> T {
+    USE_CONSUMING_CANDIDATE_MASK_ALGEBRA.with(|enabled| {
+        let previous = enabled.replace(consuming);
+        let result = body();
+        enabled.set(previous);
+        result
+    })
+}
+
+/// Benchmark/test-only production-list entry for isolating the candidate-mask
+/// reduction primitive. Both arms retain native connective domains and execute
+/// the same matcher; only immutable whole-map algebra versus consuming zipper
+/// algebra changes. Returning the committed `FreeMap` makes semantic
+/// differential tests compare captures as well as the verdict.
+#[cfg(feature = "spatial-matcher-candidate-mask-algebra-differential")]
+pub fn benchmark_match_par_list_candidate_mask_algebra(
+    targets: Vec<Par>,
+    patterns: Vec<Par>,
+    consuming: bool,
+) -> (Option<()>, FreeMap) {
+    with_candidate_mask_algebra_mode(consuming, || {
+        let mut context = SpatialMatcherContext::new();
+        let request = ListRequest::new(
+            targets.into_iter().map(MatchValue::Par).collect(),
+            patterns.into_iter().map(MatchValue::Par).collect(),
+            Merger::Identity,
+            None,
+            false,
+        );
+        let result = drive_job(&mut context, Job::ListInit(request));
+        (result, context.free_map)
     })
 }
 
@@ -1875,6 +1924,41 @@ impl ListTargetIndex {
         Some(result)
     }
 
+    /// Unite two owned, prefix-free candidate sets. The benchmark-only branch
+    /// consumes the right trie directly into the left trie; the production
+    /// branch remains the established immutable whole-map operation until the
+    /// causal experiment has a statistical verdict.
+    fn union_position_masks(left: PathMap<()>, right: PathMap<()>) -> PathMap<()> {
+        #[cfg(feature = "spatial-matcher-candidate-mask-algebra-differential")]
+        if USE_CONSUMING_CANDIDATE_MASK_ALGEBRA.with(Cell::get) {
+            let mut result = left;
+            {
+                let mut zipper = result.write_zipper();
+                zipper.join_map_into(right);
+            }
+            return result;
+        }
+        left.join(&right)
+    }
+
+    /// Intersect two owned, prefix-free candidate sets. The treatment mutates
+    /// the already-owned left root through one zipper and borrows the right
+    /// root. Candidate paths are fixed-width nonempty `u64` encodings, avoiding
+    /// the documented root-value exception of `join_map_into`.
+    fn intersect_position_masks(left: PathMap<()>, right: PathMap<()>) -> PathMap<()> {
+        #[cfg(feature = "spatial-matcher-candidate-mask-algebra-differential")]
+        if USE_CONSUMING_CANDIDATE_MASK_ALGEBRA.with(Cell::get) {
+            let mut result = left;
+            {
+                let source = right.read_zipper();
+                let mut zipper = result.write_zipper();
+                zipper.meet_into(&source, true);
+            }
+            return result;
+        }
+        left.meet(&right)
+    }
+
     /// Evaluate candidate union/intersection directly as PathMap lattice
     /// operations. Fixed-width big-endian position keys are prefix-free, so
     /// the generic trie lattice is exactly finite-set union/intersection here.
@@ -1916,7 +2000,7 @@ impl ListTargetIndex {
                         let mut operands = operands.into_iter().flatten();
                         let mut result = operands.next().unwrap_or_default();
                         for operand in operands {
-                            result = result.join(&operand);
+                            result = Self::union_position_masks(result, operand);
                         }
                         values.push(Some(result));
                     }
@@ -1932,7 +2016,7 @@ impl ListTargetIndex {
                         continue;
                     };
                     for operand in operands {
-                        result = result.meet(&operand);
+                        result = Self::intersect_position_masks(result, operand);
                     }
                     values.push(Some(result));
                 }
