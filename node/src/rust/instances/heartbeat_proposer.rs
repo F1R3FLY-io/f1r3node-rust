@@ -1020,15 +1020,10 @@ fn effective_frontier_chase_cap(
 }
 
 fn select_lag_recovery_leader(
-    mut validators: Vec<Validator>,
-    last_finalized_block: &BlockHash,
+    validators: Vec<Validator>,
+    _last_finalized_block: &BlockHash,
 ) -> Option<Validator> {
-    validators.sort();
-    let leader_seed = last_finalized_block.iter().fold(0usize, |seed, byte| {
-        seed.wrapping_mul(31).wrapping_add(usize::from(*byte))
-    });
-    let leader_index = leader_seed % validators.len();
-    validators.into_iter().nth(leader_index)
+    validators.into_iter().min()
 }
 
 /// Unit tests for HeartbeatProposer configuration validation.
@@ -1057,18 +1052,22 @@ mod tests {
     }
 
     #[test]
-    fn lag_recovery_leader_is_stable_across_local_dag_views() {
+    fn lag_recovery_leader_is_stable_across_local_dag_and_lfb_views() {
         let first = Validator::from(vec![1]);
         let selected = Validator::from(vec![2]);
         let third = Validator::from(vec![3]);
-        let lfb = BlockHash::from(vec![4; 32]);
+        let first_lfb = BlockHash::from(vec![4; 32]);
+        let second_lfb = BlockHash::from(vec![5; 32]);
 
-        let leader =
-            select_lag_recovery_leader(vec![third.clone(), first.clone(), selected.clone()], &lfb);
-        let reordered = select_lag_recovery_leader(vec![selected.clone(), third, first], &lfb);
+        let leader = select_lag_recovery_leader(
+            vec![third.clone(), first.clone(), selected.clone()],
+            &first_lfb,
+        );
+        let reordered =
+            select_lag_recovery_leader(vec![selected, third, first.clone()], &second_lfb);
 
-        assert_eq!(leader, Some(selected.clone()));
-        assert_eq!(reordered, Some(selected));
+        assert_eq!(leader, Some(first.clone()));
+        assert_eq!(reordered, Some(first));
     }
 
     #[test]
