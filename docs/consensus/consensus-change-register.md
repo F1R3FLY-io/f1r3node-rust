@@ -4635,6 +4635,26 @@ stack-depth limit, `RUST_MIN_STACK`, or `stacker` dependency. Stack-safety repor
 its durable 540-pair TSV retain the algorithms, statistical warnings, resource envelope, finalized
 run digests, and selected disposition. PathMap itself is unmodified.
 
+**CBR-023 living-set continuation (2026-08-17, rejected set-mode destructive subtraction;
+pgmcp experiment 256).** Experimental checkpoint `f1r3node-rust-mettail@6ae89dd21` freezes
+set-mode whole-map `PathMap::subtract` and exposes a root-focused treatment that clones the left
+`PathMap<()>` and invokes `WriteZipper::subtract_into`. Exact EntryTrie/EPM1 and operand
+non-mutation differentials cover disjoint, identical, overlapping, singleton-right, sparse-right,
+deep-prefix, and value-free-topology operands. Map mode is excluded because `Par` has no lawful
+distributive lattice.
+
+The locked criterion rejects the predicted improvement ($`t=0.3778`$, $`p=0.6472`$, Cohen's
+$`d=0.0244`$). All six value-bearing cells are slower by 0.46%–2.66%, five paired 99% intervals
+exclude zero in the regressing direction, and both topology-only cells are indistinguishable.
+Checkpoint `5ffcc7f70` removes the experiment-only feature/API/test/harness and retains the
+original whole-map operation. Pgmcp artifact 335 and stack-safety report §5.16.7.11 preserve all
+480 pairs and the robust-test, resource, and run-digest evidence.
+
+This is `NO_PRODUCTION_CHANGE_MEASURED`. No selected code path, Rholang result, EPathMap mode or
+topology, encoded key, EPM1/protobuf/bincode byte, hash, COMM schedule, charge, or post-state moves.
+No PathMap source changes. Recording the rejection prevents a future performance claim from
+silently reviving a measured regression.
+
 
 **Dormant RSpace matching-cursor foundation (2026-08-15; pgmcp `rspace-shared-match-pda`).**
 `f1r3node-rust-mettail@71d378e73` extends the existing descriptor pass with exhaustive,

@@ -3621,6 +3621,7 @@ swap, and two-core CPU quota**. **MEASURED:**
 | unchanged EPathMap map-union clone family | repeat the exact zipper union even when both operands are unchanged aliases of one map | **pgmcp experiment 253 accepted; 180 paired samples across three cells; every map mutation class has an exact identity-detachment regression** | shared `EntryTrie::trie_snapshot` cell identity proves an unchanged clone family without forcing the snapshot; union returns a COW clone in 126–212 ns instead of 2.104–6.306 ms, while independently equal maps do not trigger and remain statistically neutral; selected at `15165852c` |
 | EPathMap prefix-restriction frontier | construct a durable result by focusing and grafting each selector prefix independently | **pgmcp experiment 254 accepted for bulk restriction and rejected the blanket singleton treatment; 540 paired samples across nine cells; exact keys, `Par` associations, value-free endpoints, and ACTree03 topology agree** | dispatch exactly one value-bearing selector to one focused zipper graft and every other cardinality to native `PathMap::restrict`; the singleton specialization is 116.4 ns faster, while native bulk restriction lowers mean latency 35.96%–98.82%; selected at `c460eb922` |
 | exact EPathMap map intersection | build two `PathMap<()>` topology masks, meet them, reconstruct a `PathMap<Par>`, and scan values again | **pgmcp experiment 255 accepted; 540 paired samples across nine cells; exact EntryTrie/error and ACTree03 differentials cover disjoint/equal/overlapping tries, sparse values, value-free topology, and early/late conflicts** | one synchronized left/right/destination zipper traversal intersects child masks, copies only equal shared values, and preserves the first canonical conflict; every cell improves by 18.89%–99.65%, strict models lint and 19 focused/algebra tests pass, and production checkpoint `b193ea746` removes the reconstruction path |
+| set-mode EPathMap destructive subtraction | native whole-map `PathMap::subtract` | **pgmcp experiment 256 rejected root-focused `subtract_into`; 480 paired samples across eight cells; exact EntryTrie/EPM1 and operand non-mutation differentials include value-free topology** | retain whole-map subtraction: the treatment is slower in every value-bearing cell by 0.46%–2.66%, five paired 99% intervals exclude zero in the regressing direction, and the two topology-only cells are indistinguishable; experiment surface removed at `5ffcc7f70` |
 | datum-first retained-automaton × Bag product | resting data disabled the retained prefilter and forced the full canonical continuation scan | **pgmcp experiments 224 and 225 rejected; 226 and exact-final-source 229 accepted; full-matrix replication artifact 320; 82 samples per arm/cell; 8/8 release regressions; 12/12 benchmark preflights; 428/428 complete package tests; strict changed-target lint; Rocq proof pass** | `ad395c357` adds the conservative fresh-or-resting product and `61accc170` selects the bounded traversal: zero/one exact PathMap prefix lookup for a singleton Bag with zero/one eligible terminal depth, otherwise the linear synchronized zipper product; artifact 320 confirms shared speedups of 4.476× at 256 and 13.338× at 4,096 and records diverse speedups of 1.059× and 7.803×; both cardinality-16 causal-selector cells lose to the trivial scan, but the existing end-to-end COMM experiments win at 16 because they include avoided spatial matching work; native-stack use is constant, no record is decoded or flattened, and no empirical cutoff is inferred |
 | Bag formal laws | informal implementation equations | **Rocq and Verus `--no-cheating` plus TLC and mCRL2 pass inside the complete bounded bundle** | `8e4938ec6` proves exact-key multiplicity algebra and normalized/canonical deltas in Rocq, plus executable checked-`u64` apply/revert in Verus; `21ece399d` adds the live-commit Rocq bridge, a 2,628-state TLC model, branching bisimulation, and no-partial-publication proof; the earlier focused Rocq/Verus proofs used 351,028 KiB and 261,824 KiB peak RSS respectively with zero swap; Z3 and all three TLC models pass |
 | standalone Bag microbenchmark | legacy `HashMultiSet` controls | **15/15 comparative pairs plus 6 logical-multiplicity points** | construction improves 20.5–54.6%; the full exact-lookup sweep improves except for an operationally neutral 0.236% loss at 4,096; copy-on-write clone/update improves from 16 keys but loses 65.9% at one; one-key construction remains approximately 76 ns through `u64::MAX`; aggregate benchmark-process RSS is 39,912 KiB, not a comparative per-operation memory result |
@@ -4659,6 +4660,58 @@ Clippy passes. Set mode still uses lawful native `PathMap<()>` meet. Map mode re
 `PathMap<Par>` and changes no public result, conflict order, EPM1/protobuf/bincode byte, hash, COMM,
 charge, or post-state. PathMap itself is unmodified. The change is a `BYTE_NEUTRAL_MEASURED`
 continuation of retired CBR-023.
+
+##### 5.16.7.11 Whole-map subtraction already beats destructive root mutation
+
+Set-mode EPathMap subtraction is eligible for PathMap's distributive-lattice algebra because its
+carrier is `PathMap<()>`. Production called whole-map `PathMap::subtract`, which computes the
+persistent difference directly. The remaining algebra audit asked whether a seemingly more
+specialized route could reuse the left root more effectively: clone the left map, open one write
+zipper at its root, and invoke `subtract_into` against a right read zipper. Map mode was excluded
+before measurement because `Par` has no lawful distributive lattice, and manufacturing one merely
+to call a generic operation would change the contract.
+
+Pgmcp experiment 256 froze the whole-map call at `7b16eaa83` and introduced only an
+experiment-gated treatment at `6ae89dd21`. Before timing, every fixture required exact EntryTrie
+and EPM1 equality and byte-identical left and right operands after both operations. Eight cells use
+2,048 nominal entries and cover disjoint roots, identical sets, half overlap, singleton and sparse
+right operands, a 128-byte shared prefix, identical value-free topology, and partially overlapping
+value-free topology.
+
+| cell | whole-map mean | `subtract_into` mean | treatment change |
+|---|---:|---:|---:|
+| disjoint roots | 900.036 µs | 920.023 µs | **+2.22%** |
+| identical sets | 67.883 µs | 68.195 µs | +0.46% |
+| half overlap | 497.305 µs | 505.289 µs | **+1.61%** |
+| singleton right | 918.101 µs | 926.065 µs | **+0.87%** |
+| sparse right | 886.214 µs | 909.782 µs | **+2.66%** |
+| 128-byte shared prefix | 478.102 µs | 490.755 µs | **+2.65%** |
+| identical value-free topology | 68.482 µs | 68.052 µs | -0.63%, indistinguishable |
+| partially overlapping value-free topology | 43.681 µs | 43.569 µs | -0.26%, indistinguishable |
+
+Five of the six value-bearing cells have paired 99% intervals excluding zero in the regressing
+direction; the identical-set cell and both topology-only cells are indistinguishable. The locked
+pooled Welch criterion rejects the predicted improvement ($`t=0.3778`$, $`p=0.6472`$, Cohen's
+$`d=0.0244`$, treatment-minus-control 95% confidence interval **[-37.711 µs, 55.693 µs]**).
+Both pooled arms reject normality. The corroborating Mann–Whitney test detects a distribution shift
+($`p=0.0008304`$, Cliff's $`\delta=0.1246`$), but its direction agrees with the value-bearing
+paired evidence: the treatment is slower, not faster. No cell reaches the separate 3% severe-
+regression guard; that guard does not convert a treatment with no demonstrated benefit into an
+adoptable optimization.
+
+The single preregistered run retained 60 paired, interleaved, order-rotated samples after ten
+warmups in every cell. Preflight measured **81.53%** aggregate idle, **98.33%** idle on pinned CPU
+8, **50 GiB** available memory, and zero swap. The 8 GiB no-swap scope completed in **0.87 s** and
+peaked at **106,340 KiB** resident set size. Pgmcp artifact 335 and
+[`measurements/epathmap-set-subtract-into-2026-08-17.tsv`](measurements/epathmap-set-subtract-into-2026-08-17.tsv)
+retain every sample, finalized run digest, the exact resource envelope, and the source-log digest.
+
+Production therefore retains whole-map `PathMap::subtract`. Checkpoint `5ffcc7f70` removes the
+experiment-only feature, treatment API, differential test, and harness; the complete rejected
+implementation remains recoverable at `6ae89dd21`. The selected ten-case EPathMap topology suite
+passes. Neither candidate recurses or imposes a traversal-depth cap, and the experiment changes no
+EPathMap value, mode, topology, EPM1/protobuf/bincode byte, hash, COMM, charge, post-state, or
+PathMap source.
 
 
 ---
@@ -8676,6 +8729,7 @@ done
 | [`measurements/epathmap-map-join-clone-family-2026-08-17.tsv`](measurements/epathmap-map-join-clone-family-2026-08-17.tsv) | experiment 253's exact-zipper control and selected mutation-invalidated clone-family identity, all 180 paired raw timings, mutation-detachment matrix, independent-equality guard, resources, sealed run identifiers, and production disposition (§5.16.7.8) |
 | [`measurements/epathmap-restrict-prefix-frontier-2026-08-17.tsv`](measurements/epathmap-restrict-prefix-frontier-2026-08-17.tsv) | experiment 254's focused-zipper/native-restrict frontier, all 540 paired raw timings across nine cells, exact topology/value guards, resources, sealed run identifiers, and selected singleton/bulk dispatch (§5.16.7.9) |
 | [`measurements/epathmap-map-meet-zipper-2026-08-17.tsv`](measurements/epathmap-map-meet-zipper-2026-08-17.tsv) | experiment 255's topology-reconstruction/synchronized-zipper map intersection, all 540 paired raw timings across nine cells, exact EntryTrie/error and value-free-topology guards, resources, finalized run digests, warnings, and selected production disposition (§5.16.7.10) |
+| [`measurements/epathmap-set-subtract-into-2026-08-17.tsv`](measurements/epathmap-set-subtract-into-2026-08-17.tsv) | experiment 256's whole-map/destructive-root set subtraction, all 480 paired raw timings across eight cells, exact EntryTrie/EPM1 and operand non-mutation guards, resources, finalized run digests, robust rejection, and retained production disposition (§5.16.7.11) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of
