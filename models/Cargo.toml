@@ -310,6 +310,11 @@ name = "epathmap_pathmap_native"
 path = "benches/epathmap_pathmap_native.rs"
 harness = false
 
+[[bench]]
+name = "par_bag_exact_membership"
+path = "benches/par_bag_exact_membership.rs"
+harness = false
+
 # The heap-profile subject. One arm per run (`MASSIF_ARM`), so `massif`'s
 # snapshots describe ONE mechanism instead of superimposing three.
 [[bench]]
