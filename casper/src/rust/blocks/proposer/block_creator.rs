@@ -1864,10 +1864,71 @@ fn current_proposal_validators(casper_snapshot: &CasperSnapshot) -> Vec<Validato
     validators
 }
 
-fn recovered_deploy_leader(casper_snapshot: &CasperSnapshot) -> Option<Validator> {
-    current_proposal_validators(casper_snapshot)
-        .first()
+const RECOVERY_LEADER_ACTIVITY_ROUNDS: i64 = 4;
+const RECOVERY_LEADER_MIN_ACTIVITY_WINDOW: i64 = 8;
+const MAX_RECOVERY_LEADER_SCAN_BLOCKS: usize = 4096;
+
+fn select_recovered_deploy_leader(
+    validators: &[Validator],
+    recent_finalized_validators: &HashSet<Validator>,
+) -> Option<Validator> {
+    validators
+        .iter()
+        .find(|validator| recent_finalized_validators.contains(*validator))
+        .or_else(|| validators.first())
         .cloned()
+}
+
+fn recent_finalized_validators(
+    casper_snapshot: &CasperSnapshot,
+    validators: &[Validator],
+) -> HashSet<Validator> {
+    let Some(lfb_height) = casper_snapshot
+        .dag
+        .block_number(&casper_snapshot.last_finalized_block)
+    else {
+        return HashSet::new();
+    };
+    let validator_count = i64::try_from(validators.len()).unwrap_or(i64::MAX);
+    let activity_window = validator_count
+        .saturating_mul(RECOVERY_LEADER_ACTIVITY_ROUNDS)
+        .max(RECOVERY_LEADER_MIN_ACTIVITY_WINDOW);
+    if lfb_height < activity_window {
+        return HashSet::new();
+    }
+    let min_height = lfb_height.saturating_sub(activity_window);
+    let validator_set: HashSet<Validator> = validators.iter().cloned().collect();
+    let mut recent = HashSet::new();
+    let mut visited = HashSet::new();
+    let mut frontier = vec![casper_snapshot.last_finalized_block.clone()];
+
+    while let Some(block_hash) = frontier.pop() {
+        if !visited.insert(block_hash.clone()) {
+            continue;
+        }
+        if visited.len() > MAX_RECOVERY_LEADER_SCAN_BLOCKS {
+            return HashSet::new();
+        }
+        let metadata = match casper_snapshot.dag.lookup(&block_hash) {
+            Ok(Some(metadata)) => metadata,
+            _ => return HashSet::new(),
+        };
+        if metadata.block_number < min_height {
+            continue;
+        }
+        if validator_set.contains(&metadata.sender) {
+            recent.insert(metadata.sender.clone());
+        }
+        frontier.extend(metadata.parents);
+    }
+
+    recent
+}
+
+fn recovered_deploy_leader(casper_snapshot: &CasperSnapshot) -> Option<Validator> {
+    let validators = current_proposal_validators(casper_snapshot);
+    let recent = recent_finalized_validators(casper_snapshot, &validators);
+    select_recovered_deploy_leader(&validators, &recent)
 }
 
 fn is_recovered_deploy_leader(
@@ -3476,6 +3537,37 @@ mod tests {
         }
     }
 
+    fn append_finalized_metadata(
+        snapshot: &mut CasperSnapshot,
+        height: i64,
+        sender: Validator,
+        parent: Option<BlockHash>,
+    ) -> BlockHash {
+        let hash = invalid_block_hash(height as u8);
+        snapshot.dag.dag_set.insert(hash.clone());
+        snapshot.dag.block_number_map.insert(hash.clone(), height);
+        snapshot
+            .dag
+            .block_metadata_index
+            .write()
+            .add(models::rust::block_metadata::BlockMetadata {
+                block_hash: hash.clone(),
+                parents: parent.into_iter().collect(),
+                sender,
+                justifications: Vec::new(),
+                weight_map: BTreeMap::new(),
+                block_number: height,
+                sequence_number: height as i32,
+                invalid: false,
+                directly_finalized: true,
+                finalized: true,
+                fault_tolerance_value: 1.0,
+            })
+            .expect("insert finalized metadata");
+        snapshot.last_finalized_block = hash.clone();
+        hash
+    }
+
     fn set_last_finalized_height(snapshot: &mut CasperSnapshot, height: i64) {
         let hash = invalid_block_hash(height as u8);
         snapshot.dag.dag_set.insert(hash.clone());
@@ -3836,6 +3928,59 @@ mod tests {
             &rejected_deploy_buffer
         )
         .expect("stored rejected deploy in scope remains unresolved"));
+    }
+
+    #[test]
+    fn recovered_deploy_leader_fails_over_after_finalized_inactivity() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.on_chain_state.active_validators = vec![validator(3), validator(1), validator(2)];
+        let mut parent = None;
+        for height in 1..=20 {
+            let sender = if height == 1 {
+                validator(1)
+            } else if height % 2 == 0 {
+                validator(2)
+            } else {
+                validator(3)
+            };
+            parent = Some(append_finalized_metadata(
+                &mut snapshot,
+                height,
+                sender,
+                parent,
+            ));
+            if height == 7 {
+                assert!(is_recovered_deploy_leader(
+                    &snapshot,
+                    &validator_identity(1)
+                ));
+                assert!(!is_recovered_deploy_leader(
+                    &snapshot,
+                    &validator_identity(2)
+                ));
+            }
+        }
+
+        assert!(is_recovered_deploy_leader(
+            &snapshot,
+            &validator_identity(2)
+        ));
+        assert!(!is_recovered_deploy_leader(
+            &snapshot,
+            &validator_identity(1)
+        ));
+
+        append_finalized_metadata(&mut snapshot, 21, validator(1), parent);
+
+        assert!(is_recovered_deploy_leader(
+            &snapshot,
+            &validator_identity(1)
+        ));
+        assert!(!is_recovered_deploy_leader(
+            &snapshot,
+            &validator_identity(2)
+        ));
     }
 
     #[test]
