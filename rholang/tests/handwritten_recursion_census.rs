@@ -189,6 +189,49 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
         Disposition::Measured("gate subjects `substitute`, `substitute_no_sort`"),
     ),
     // ── matcher ────────────────────────────────────────────────────────────────────
+    (
+        "models/src/rust/rholang/match_schema.rs",
+        Disposition::Measured(
+            "`RhoPathCursor::next` is an explicit `Vec<RhoPathStep>` machine; the textual \
+             self-loop is `BTreeMap::Iter::next`, not cursor recursion. \
+             `match_schema_cursor::deep_and_wide_cursor_walks_fit_a_small_native_stack` \
+             drives depth and width 20,000 on a 256 KiB stack",
+        ),
+    ),
+    (
+        "rholang/src/rust/interpreter/matcher/fold_match.rs",
+        Disposition::Measured(
+            "the two overloaded `FoldMatch::fold_match` methods are independent iterative \
+             slice walks; the scanner joins their shared name. Gate subject `free_check` \
+             measures the former width recursion and the spatial subjects drive both folds",
+        ),
+    ),
+    (
+        "rholang/src/rust/interpreter/matcher/match.rs",
+        Disposition::NotATermDepthCycle(
+            "the RMP1 query compiler performs one `for` walk over the generated explicit-\
+             worklist `RhoPathCursor`. The conservative graph merges trait `get`, generated \
+             cursor `next`, and same-name query helpers across files; none calls upward into \
+             the query compiler. Generated cursor identity and replay equivalence gate the result",
+        ),
+    ),
+    (
+        "rholang/src/rust/interpreter/matcher/spatial_matcher.rs",
+        Disposition::NotATermDepthCycle(
+            "the overloaded public `SpatialMatcher::spatial_match` implementations are leaf \
+             adapters that delegate to `spatial_matcher_pda`; the textual scanner joins their \
+             shared trait-method name but no adapter calls another adapter",
+        ),
+    ),
+    (
+        "rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs",
+        Disposition::Measured(
+            "all heterogeneous descent is the explicit `Job`/`FrameStack` PDA. Gate subjects \
+             `spatial_binding`, `spatial_concrete_binders`, `spatial_epathmap_map_depth`, \
+             `spatial_epathmap_set_wide`, and `spatial_epathmap_map_wide` cover depth, width, \
+             concrete, set, and map lanes; the recursive oracle is test-only",
+        ),
+    ),
     // ── codecs and canonical form ──────────────────────────────────────────────────
     (
         "models/src/rust/canonical_path.rs",
