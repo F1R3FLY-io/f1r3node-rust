@@ -3617,6 +3617,8 @@ swap, and two-core CPU quota**. **MEASURED:**
 | receive-first query-product `TrieRef` experiment | synchronized mutable read zippers | **pgmcp experiment 220 rejected; 82 samples per arm at 16, 256, and 4,096 candidates; exact sorted candidate vectors agree; 31/31 focused and 419/419 complete package tests; strict changed-target lint passes** | `514659e2b` freezes the zipper control and tests per-byte borrowed `TrieRef` focuses; the treatment regresses mean latency 83.041%, 61.953%, and 55.549%, respectively; `27557c374` restores the control in production while retaining the falsified treatment as a benchmark; both machines remain iterative heap PDAs with constant native-stack use |
 | owned candidate-mask consuming algebra | immutable whole-map `PathMap::join` / `meet` | **pgmcp experiment 249 rejected; 30 samples per arm in five cells; exact verdict/FreeMap differential, feature-free build, and release benchmark build pass** | `join_map_into` / `meet_into` slow every measured cell: +2.432% at the width-4,096 primary and +0.438% to +0.975% across four guards; production retains the immutable operations, the tested treatment is recoverable at `855004971`, and the rejected feature/benchmark is removed from the selected tree |
 | EPathMap member-prefix restriction | decode each selector key to `Par`, rebuild its segment vector and prefix key, and clone map selector values into a same-typed mask | **pgmcp experiment 250 accepted; 180 samples per arm across three cells; exact EntryTrie differential, 67/67 codec/path integration, 8/8 algebra, feature-free build, and strict lint pass** | scan canonical segment extents in place, borrow each branch-prefix slice, use unit values or empty `Par` sentinels only to mark mask positions, and retain native `PathMap::restrict`; mean latency falls 11.31% for sets, 12.22% for maps with 64-byte selector values, and 9.27% for maps with 4,096-byte selector values; selected at `a351b82e5` |
+| exact EPathMap map union | rebuild all right topology and then reinsert every right value | **pgmcp experiment 252 accepted; 300 paired samples across five cells; exact EntryTrie/EPM1 differential covers exhaustive small maps, deep prefixes, value-free topology, conflicts, and neutral operands** | traverse the right and a COW clone of the left with synchronized zippers, graft complete right-only compressed branches, and inspect only overlapping topology; means fall 99.93%–99.97% for disjoint roots, 49.59% at half overlap, and 20.36%–22.33% for equal maps; selected at `a6e62b76f` |
+| unchanged EPathMap map-union clone family | repeat the exact zipper union even when both operands are unchanged aliases of one map | **pgmcp experiment 253 accepted; 180 paired samples across three cells; every map mutation class has an exact identity-detachment regression** | shared `EntryTrie::trie_snapshot` cell identity proves an unchanged clone family without forcing the snapshot; union returns a COW clone in 126–212 ns instead of 2.104–6.306 ms, while independently equal maps do not trigger and remain statistically neutral; selected at `15165852c` |
 | datum-first retained-automaton × Bag product | resting data disabled the retained prefilter and forced the full canonical continuation scan | **pgmcp experiments 224 and 225 rejected; 226 and exact-final-source 229 accepted; full-matrix replication artifact 320; 82 samples per arm/cell; 8/8 release regressions; 12/12 benchmark preflights; 428/428 complete package tests; strict changed-target lint; Rocq proof pass** | `ad395c357` adds the conservative fresh-or-resting product and `61accc170` selects the bounded traversal: zero/one exact PathMap prefix lookup for a singleton Bag with zero/one eligible terminal depth, otherwise the linear synchronized zipper product; artifact 320 confirms shared speedups of 4.476× at 256 and 13.338× at 4,096 and records diverse speedups of 1.059× and 7.803×; both cardinality-16 causal-selector cells lose to the trivial scan, but the existing end-to-end COMM experiments win at 16 because they include avoided spatial matching work; native-stack use is constant, no record is decoded or flattened, and no empirical cutoff is inferred |
 | Bag formal laws | informal implementation equations | **Rocq and Verus `--no-cheating` plus TLC and mCRL2 pass inside the complete bounded bundle** | `8e4938ec6` proves exact-key multiplicity algebra and normalized/canonical deltas in Rocq, plus executable checked-`u64` apply/revert in Verus; `21ece399d` adds the live-commit Rocq bridge, a 2,628-state TLC model, branching bisimulation, and no-partial-publication proof; the earlier focused Rocq/Verus proofs used 351,028 KiB and 261,824 KiB peak RSS respectively with zero swap; Z3 and all three TLC models pass |
 | standalone Bag microbenchmark | legacy `HashMultiSet` controls | **15/15 comparative pairs plus 6 logical-multiplicity points** | construction improves 20.5–54.6%; the full exact-lookup sweep improves except for an operationally neutral 0.236% loss at 4,096; copy-on-write clone/update improves from 16 keys but loses 65.9% at one; one-key construction remains approximately 76 ns through `u64::MAX`; aggregate benchmark-process RSS is 39,912 KiB, not a comparative per-operation memory result |
@@ -4411,6 +4413,127 @@ source totality repair is not misclassified as equivalence: it replaces an imple
 valid `setSubtrie` input with the already-ruled intended behavior and therefore continues retired
 CBR-009's `BUG_FIX_RULED_NONCONSENSUS` evidence. No PathMap source, EPathMap representation, EPM1,
 protobuf, or bincode format changes.
+
+##### 5.16.7.7 Exact map union grafts right-only compressed branches
+
+Map-mode EPathMap union has a stricter value law than an ordinary `PathMap` lattice. A key present
+in only one operand is retained with its associated `Par`; a key present in both operands is retained
+only when the two values are exactly equal under canonical `Par::cmp`; unequal values return
+`EPathMapAlgebraError::ValueConflict`. Inventing `Lattice` for `Par` would weaken that contract.
+The predecessor therefore reconstructed the right operand's complete topology and then iterated all
+right values again to insert or compare them in a copy-on-write (COW) clone of the left operand.
+That preserved semantics but discarded PathMap's ability to share a complete compressed branch.
+
+The selected implementation at `a6e62b76f` performs one synchronized, iterative zipper traversal.
+The source zipper reads the right operand, while a write zipper mutates a COW clone of the left.
+At shared topology it compares only co-located values and descends into the union of relevant child
+paths. At a right child absent from the destination, `graft` attaches the entire source subtrie and
+the traversal skips its descendants. Value-free topology is retained because branch existence, not
+only value positions, drives the walk.
+
+```text
+procedure exact_map_union(left, right):
+    destination := COW_CLONE(left)
+    source      := READ_ZIPPER(right)
+    target      := WRITE_ZIPPER(destination)
+    overlap     := 0
+
+    compare_or_insert_focus(source, target, overlap)
+    for each right child in an explicit depth-first frame stack:
+        if target has no corresponding child:
+            target.graft(source)
+            continue with the next sibling
+
+        compare_or_insert_focus(source, target, overlap)
+        push the source child mask
+
+    return (destination, len(left) + len(right) - overlap)
+```
+
+`compare_or_insert_focus` increments `overlap` for one exactly equal shared value, clones a right
+value only when shared topology lacks that value, and rejects unequal shared values. When a complete
+right-only branch is grafted, its compressed nodes and values remain structurally shared; no
+entry-list, decoded key, topology mask, or serialization image is constructed. The explicit child-
+mask frame vector makes native-stack use independent of trie depth.
+
+Pgmcp experiment 252 compares that algorithm with the exact reconstructed predecessor. Each operand
+contains 2,048 entries. Five cells cover disjoint roots with 64-byte and 4,096-byte map values,
+half-overlapping roots, independently constructed equal maps, and unchanged clone-family maps. The
+last cell was initially labelled “shared root,” but PathMap deliberately does not expose
+`shared_node_id()` at the trie root; it therefore measured equal-map overlap rather than an identity
+shortcut. Experiment 253 below supplies the correct identity proof. The differential asserts exact
+`EntryTrie` and EPM1 equality before timing and additionally covers exhaustive small maps, deep
+shared prefixes, value-free topology, unequal conflicts, and neutral operands.
+
+| cell | reconstructed mean | zipper/graft mean | reduction |
+|---|---:|---:|---:|
+| disjoint roots, 64-byte values | 2.036245 ms | 0.001366 ms | 99.93% |
+| disjoint roots, 4,096-byte values | 5.830758 ms | 0.001704 ms | 99.97% |
+| half overlap, 64-byte values | 1.452944 ms | 0.732373 ms | 49.59% |
+| independently equal, 64-byte values | 1.499339 ms | 1.194033 ms | 20.36% |
+| unchanged clone family, 64-byte values | 1.485905 ms | 1.154147 ms | 22.33% |
+
+The pooled locked verdict accepts the treatment ($`t=-17.8851`$,
+$`p=8.5490\times10^{-52}`$, Cohen's $`d=-1.4603`$, treatment-minus-control 95% confidence
+interval **[-2.047 ms, -1.642 ms]**). Both arms depart from normality; Cliff's
+$`\delta=-1`$ and Mann–Whitney $`p=0`$ agree. Preflight measured **68.05%** aggregate idle and
+**95.68%** idle on pinned CPU 8. The 8 GiB, zero-swap scope completed in **1.93 s**, peaked at
+**106,504 KiB** resident set size, and retained 60 paired, interleaved, order-rotated samples after
+10 warmups in each cell. Pgmcp artifact 331 and
+[`measurements/epathmap-map-join-zipper-graft-2026-08-17.tsv`](measurements/epathmap-map-join-zipper-graft-2026-08-17.tsv)
+preserve all 300 pairs, run identifiers, the source-log digest, and the classification correction.
+
+##### 5.16.7.8 Mutation-invalidated clone identity makes unchanged map union constant-time
+
+The general zipper union must still visit every shared value because independently constructed maps
+can be equal or can hide one unequal value. An unchanged `EntryTrie::clone`, however, already has a
+stronger witness. Clones share the same `Arc<OnceLock<Vec<u8>>>` snapshot cell, and every operation
+that can mutate map topology, keys, or values replaces that `Arc` before the result can participate
+in another union. Pointer equality of the cells therefore proves that both operands remain in the
+same unchanged map clone family. Testing the pointer does **not** force or serialize the EPM1 image.
+
+```text
+procedure exact_map_union_with_identity(left, right):
+    if left.mode = Map and right.mode = Map
+       and ptr_eq(left.trie_snapshot_cell, right.trie_snapshot_cell):
+        return COW_CLONE(left)
+
+    return exact_map_union(left, right)
+```
+
+This is an identity proof, not an equality heuristic. Independently constructed equal maps have
+different cells and execute the complete exact zipper algorithm. The permanent regression suite
+starts with one clone family and proves detachment after every mutation class: insertion, value
+replacement, exact removal, greatest-entry removal, value-free topology creation, branch pruning,
+subtrie removal, and root subtrie replacement. It compares exact `EntryTrie` state and EPM1 bytes,
+including the unequal-value conflict after mutation.
+
+Pgmcp experiment 253 uses 2,048-entry maps and 60 retained paired samples after 10 warmups per cell.
+Two clone-family cells vary associated-value size; an independently constructed equal-map cell is
+the non-trigger guard.
+
+| cell | exact zipper mean | identity mean | change |
+|---|---:|---:|---:|
+| unchanged clone family, 64-byte values | 2.104369 ms | 0.000126 ms | -99.9940% |
+| unchanged clone family, 4,096-byte values | 6.305779 ms | 0.000212 ms | -99.9966% |
+| independently equal, 64-byte values | 1.218417 ms | 1.219631 ms | +0.0996% |
+
+The independently equal guard's paired interval includes zero; the optimization neither triggers
+nor creates a material secondary regression. The pooled locked verdict accepts the treatment
+($`t=-16.3444`$, $`p=3.5889\times10^{-39}`$, Cohen's $`d=-1.7229`$, 95% interval
+**[-3.141 ms, -2.465 ms]**). Nonparametric robustness agrees (Cliff's
+$`\delta=-0.8849`$, Mann–Whitney $`p=0`$). Preflight measured **73.61%** aggregate idle and
+**92.23%** idle on pinned CPU 8. The 8 GiB, zero-swap scope completed in **1.24 s** and peaked at
+**107,168 KiB** resident set size. One long-running Casper finalizer existed, but approximately 23
+of 32 physical cores were idle, satisfying the campaign's benchmark admission rule. Pgmcp artifact
+332 and
+[`measurements/epathmap-map-join-clone-family-2026-08-17.tsv`](measurements/epathmap-map-join-clone-family-2026-08-17.tsv)
+preserve all 180 pairs, run identifiers, and the source-log digest.
+
+Both selected changes are byte- and verdict-neutral continuations of the existing EPathMap algebra.
+They change no mode, Rholang result, conflict, EPM1/protobuf/bincode byte, hash, COMM, charge, or
+post-state. They add no PathMap patch, stack-depth bound, decoded shadow collection, or artificial
+`Par` lattice.
 
 ---
 
@@ -8423,6 +8546,8 @@ done
 | [`measurements/rspace-ac-connective-domain-algebra-2026-08-17.tsv`](measurements/rspace-ac-connective-domain-algebra-2026-08-17.tsv) | experiment 248's universal-domain control and PathMap join/meet treatment, six per-cell estimates, primary decision statistics, guardrails, resource protocol, and sealed pgmcp digests (§5.16.6.5) |
 | [`measurements/rspace-ac-candidate-mask-consuming-algebra-2026-08-17.tsv`](measurements/rspace-ac-candidate-mask-consuming-algebra-2026-08-17.tsv) | experiment 249's immutable whole-map control and rejected consuming-zipper treatment, five per-cell estimates, resource protocol, sealed pgmcp digests, and selected production disposition (§5.16.6.6) |
 | [`measurements/epathmap-member-prefix-restrict-2026-08-17.tsv`](measurements/epathmap-member-prefix-restrict-2026-08-17.tsv) | experiment 250's decoded-key control and selected byte-native member-prefix mask builder, all 360 paired raw timings, per-cell statistics, resource protocol, sealed pgmcp run identifiers, and selected production disposition (§5.16.7.5) |
+| [`measurements/epathmap-map-join-zipper-graft-2026-08-17.tsv`](measurements/epathmap-map-join-zipper-graft-2026-08-17.tsv) | experiment 252's reconstructed map-union control and selected synchronized zipper/graft treatment, all 300 paired raw timings, exact semantics, root-identity probe correction, resources, sealed run identifiers, and production disposition (§5.16.7.7) |
+| [`measurements/epathmap-map-join-clone-family-2026-08-17.tsv`](measurements/epathmap-map-join-clone-family-2026-08-17.tsv) | experiment 253's exact-zipper control and selected mutation-invalidated clone-family identity, all 180 paired raw timings, mutation-detachment matrix, independent-equality guard, resources, sealed run identifiers, and production disposition (§5.16.7.8) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of

@@ -4553,6 +4553,38 @@ contract. Model tests, the five Rholang operation specs, and all eight exact tri
 pass. Stack-safety report §5.16.7.6 and its durable TSV contain the algorithm, raw measurements,
 resource envelope, pgmcp identifiers, and classification boundary. PathMap itself is unmodified.
 
+**CBR-023 living-set continuation (2026-08-17, exact EPathMap map-union zipper graft and clone
+identity; pgmcp experiments 252 and 253).** Experimental checkpoint
+`f1r3node-rust-mettail@75ded65bf` freezes the reconstructed right-topology/value-reinsertion control.
+Selected checkpoint `a6e62b76f` instead traverses the right operand and a copy-on-write clone of the
+left with synchronized zippers. A right-only branch is grafted as one compressed PathMap subtrie;
+shared topology is traversed and its co-located `Par` values are compared exactly. An unequal shared
+value therefore returns the same `ValueConflict`, and value-free topology remains part of the exact
+result. No `Par` lattice, decoded entry vector, topology shadow map, or PathMap modification is
+introduced.
+
+Experiment 252's exhaustive-small, deep-prefix, value-free, conflict, neutral, exact-`EntryTrie`,
+and EPM1 differentials pass. Across five 2,048-entry cells the selected union reduces mean latency
+by **99.93%–99.97%** for disjoint roots, **49.59%** at half overlap, and **20.36%–22.33%** for
+equal-map overlap. The attempted root-sharing probe was not treated as evidence: PathMap deliberately
+withholds `shared_node_id()` at the root. That limitation led to a separate exact identity mechanism,
+not a heuristic interpretation of the measurement.
+
+Checkpoints `0b9806fa8` and `9ca1637f8` isolate and verify that mechanism; selected checkpoint
+`15165852c` retains it. Every unchanged `EntryTrie::clone` shares the same snapshot-cell `Arc`, while
+every map mutation replaces the cell. Pointer equality therefore proves one unchanged clone family
+without forcing the EPM1 snapshot. Such a union returns one COW clone in **126–212 ns** instead of
+**2.104–6.306 ms** in experiment 253. Independently constructed equal maps do not trigger; their
+mean changes by only **+0.0996%** and the paired interval contains zero. Permanent regressions prove
+identity detachment after insertion, value replacement, exact/greatest/subtrie removal, value-free
+topology creation, branch pruning, and subtrie replacement.
+
+Both changes are `BYTE_NEUTRAL_MEASURED` optimizations within CBR-023's existing
+`EQUIVALENCE_PROVEN` set. They change no EPathMap mode, Rholang value or conflict, matching verdict,
+binding, EPM1/protobuf/bincode byte, hash, COMM schedule, charge, or post-state. Stack-safety report
+§§5.16.7.7–5.16.7.8 and the two durable TSV ledgers contain the algorithms, all 480 timing pairs,
+resource envelopes, run identifiers, and statistical verdicts. PathMap itself is unmodified.
+
 **Dormant RSpace matching-cursor foundation (2026-08-15; pgmcp `rspace-shared-match-pda`).**
 `f1r3node-rust-mettail@71d378e73` extends the existing descriptor pass with exhaustive,
 ascending-tag `RhoMatchProgram` tables, typed `ParCursor` accessors, and the heap-worklist
