@@ -48,8 +48,8 @@ use super::pathmap_crate_type_mapper::{
     eval_stable_par, reducer_eval_identity_par, PathFrameError, PathFrames,
 };
 use super::pathmap_integration::{
-    cursor_entry_key as encode_cursor_entry_key, entry_key_at as encode_entry_key_at, par_to_path,
-    segments_to_key, CursorKind, RholangMapPathMap, RholangSetPathMap,
+    cursor_entry_key as encode_cursor_entry_key, entry_key_at as encode_entry_key_at,
+    entry_key_branch_prefix, segments_to_key, CursorKind, RholangMapPathMap, RholangSetPathMap,
 };
 use super::pathmap_native_query::{
     collect_child_segments, next_value_key, path_prefix_exists, subtrie_value_count,
@@ -1461,6 +1461,47 @@ impl EntryTrie {
     }
 
     pub fn try_restrict_member_prefixes(&self, other: &Self) -> Result<Self, EPathMapAlgebraError> {
+        match (&self.repr, &other.repr) {
+            (EPathMapRepr::Empty, _) | (_, EPathMapRepr::Empty) => Ok(Self::default()),
+            (EPathMapRepr::Set(left), EPathMapRepr::Set(right)) => {
+                let mut prefixes = RholangSetPathMap::new();
+                for (key, ()) in right.iter() {
+                    let prefix = entry_key_branch_prefix(&key)
+                        .expect("set-mode EPathMap keys are canonical_path encodings");
+                    prefixes.insert(prefix, ());
+                }
+                Ok(Self::algebra_result(EPathMapRepr::Set(
+                    left.restrict(&prefixes),
+                )))
+            }
+            (EPathMapRepr::Map(left), EPathMapRepr::Map(right)) => {
+                let mut prefixes = pathmap::PathMap::new();
+                for (key, _) in right.iter() {
+                    let prefix = entry_key_branch_prefix(&key)
+                        .expect("map-mode EPathMap keys are canonical_path encodings");
+                    // `PathMap::restrict` consults only the mask's value
+                    // positions, but its same-value-type API requires a
+                    // `PathMap<Par>`. Never clone selector payloads merely to
+                    // populate that topology mask.
+                    prefixes.insert(prefix, Par::default());
+                }
+                Ok(Self::algebra_result(EPathMapRepr::Map(
+                    left.restrict(&prefixes),
+                )))
+            }
+            _ => Err(self.mode_mismatch(other)),
+        }
+    }
+
+    /// Pre-byte-native decoded-key control retained only for the causal
+    /// member-prefix restriction benchmark.
+    #[cfg(feature = "epathmap-restrict-differential")]
+    pub fn try_restrict_member_prefixes_decoded_control(
+        &self,
+        other: &Self,
+    ) -> Result<Self, EPathMapAlgebraError> {
+        use super::pathmap_integration::par_to_path;
+
         match (&self.repr, &other.repr) {
             (EPathMapRepr::Empty, _) | (_, EPathMapRepr::Empty) => Ok(Self::default()),
             (EPathMapRepr::Set(left), EPathMapRepr::Set(right)) => {

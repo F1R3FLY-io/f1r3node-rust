@@ -3,7 +3,8 @@ use models::rhoapi::{EList, EPathMap, Expr, Par};
 use models::rust::canonical_path::encode_trie_path;
 use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
 use models::rust::pathmap_integration::{
-    create_set_pathmap_from_elements, par_to_path, segments_to_key, RholangSetPathMap,
+    create_set_pathmap_from_elements, entry_key_branch_prefix, par_to_path, segments_to_key,
+    RholangSetPathMap,
 };
 
 fn make_string_par(s: &str) -> Par {
@@ -36,6 +37,44 @@ fn make_list_of(ps: Vec<Par>) -> Par {
         }],
         ..Default::default()
     }
+}
+
+#[test]
+fn encoded_entry_branch_prefix_matches_the_semantic_reference_for_both_codec_arms() {
+    let corpus = [
+        make_int_par(7),
+        // A bare payload can end in TERM. The byte-native conversion must use
+        // segment boundaries rather than stripping the final byte.
+        make_string_par("\0"),
+        make_list_of(vec![]),
+        make_list_of(vec![make_int_par(7)]),
+        make_list_of(vec![make_string_par("a"), make_string_par("\0")]),
+    ];
+
+    for entry in corpus {
+        let encoded = encode_trie_path(&entry);
+        let expected = segments_to_key(&par_to_path(&entry), false);
+        assert_eq!(
+            entry_key_branch_prefix(&encoded),
+            Some(expected.as_slice()),
+            "encoded key {encoded:02x?}"
+        );
+    }
+}
+
+#[test]
+fn encoded_entry_branch_prefix_rejects_incomplete_or_noncanonical_top_level_shapes() {
+    let first = encode_trie_path(&make_int_par(1));
+    let second = encode_trie_path(&make_int_par(2));
+    let mut unterminated_split = first.clone();
+    unterminated_split.extend_from_slice(&second);
+
+    assert_eq!(entry_key_branch_prefix(&[]), None);
+    assert_eq!(entry_key_branch_prefix(&unterminated_split), None);
+
+    let mut bytes_after_terminator = encode_trie_path(&make_list_of(vec![make_int_par(1)]));
+    bytes_after_terminator.push(0x01);
+    assert_eq!(entry_key_branch_prefix(&bytes_after_terminator), None);
 }
 
 fn make_list_par(elements: Vec<&str>) -> Par {

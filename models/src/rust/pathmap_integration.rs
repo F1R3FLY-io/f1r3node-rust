@@ -24,8 +24,8 @@ use pathmap::PathMap;
 
 use crate::rhoapi::{Par, Var};
 use crate::rust::canonical_path::{
-    decode_trie_path, encode_trie_path, encode_trie_segment, split_carrier_list, tag,
-    takes_split_arm,
+    decode_trie_path, encode_trie_path, encode_trie_segment, segment_extent, split_carrier_list,
+    tag, takes_split_arm,
 };
 
 /// Prefix-compressed set of canonical Rholang entry paths.  The key is the
@@ -402,6 +402,45 @@ pub fn segments_to_key(segments: &[Vec<u8>], terminate: bool) -> Vec<u8> {
         key.push(tag::TERM);
     }
     key
+}
+
+/// Borrow the BRANCH prefix named by an already-canonical ENTRY key.
+///
+/// EPathMap stores two top-level key shapes:
+///
+/// - a bare entry is exactly one self-delimiting codec segment, so its branch
+///   prefix is the whole key;
+/// - a split-list entry is zero or more codec segments followed by the path
+///   terminator, so its branch prefix is the key without that terminator.
+///
+/// This is the encoded-key counterpart of
+/// `segments_to_key(par_to_path(decode_trie_path(key)), false)`, but it borrows
+/// from `key`, constructs no `Par`, and allocates no segment vector. Testing the
+/// final byte alone would be wrong (`GString("\0")` legitimately ends in
+/// `0x00`), so the terminator is recognized only at a boundary established by
+/// the codec's own [`segment_extent`] parser.
+///
+/// `None` means the bytes are not one of the two complete top-level key shapes.
+pub fn entry_key_branch_prefix(key: &[u8]) -> Option<&[u8]> {
+    let mut cursor = 0usize;
+    let mut segments = 0usize;
+
+    loop {
+        match key.get(cursor).copied() {
+            Some(tag::TERM) => {
+                return (cursor + 1 == key.len()).then_some(&key[..cursor]);
+            }
+            Some(_) => {
+                let extent = segment_extent(&key[cursor..])?;
+                if extent == 0 {
+                    return None;
+                }
+                cursor = cursor.checked_add(extent)?;
+                segments += 1;
+            }
+            None => return (segments == 1).then_some(key),
+        }
+    }
 }
 
 /// The trie key of the ENTRY named by `path_par`, as reached from a cursor
