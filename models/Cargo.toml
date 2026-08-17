@@ -30,9 +30,6 @@ schnorr_secp256k1_experimental = ["crypto/schnorr_secp256k1_experimental"]
 # Phase 7 measurement only. The implementation lives under `tests/support` and
 # production call sites compile to nothing unless this feature is selected.
 phase7-depth-histograms = []
-# Experiment 255 only: expose the synchronized zipper map-meet treatment.
-# Disabled in default and production builds.
-epathmap-meet-differential = []
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
@@ -308,12 +305,6 @@ harness = false
 name = "epathmap_pathmap_native"
 path = "benches/epathmap_pathmap_native.rs"
 harness = false
-
-[[bench]]
-name = "epathmap_map_meet_zipper"
-path = "benches/epathmap_map_meet_zipper.rs"
-harness = false
-required-features = ["epathmap-meet-differential"]
 
 # The heap-profile subject. One arm per run (`MASSIF_ARM`), so `massif`'s
 # snapshots describe ONE mechanism instead of superimposing three.

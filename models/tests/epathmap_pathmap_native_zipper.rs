@@ -265,28 +265,24 @@ fn map_algebra_includes_value_free_topology_without_a_par_lattice() {
     assert_ne!(disjoint, *left.entry_trie());
 }
 
-#[cfg(feature = "epathmap-meet-differential")]
 #[test]
-fn exact_map_meet_zipper_treatment_matches_the_reconstructed_control() {
-    fn assert_same(left: &EPathMap, right: &EPathMap) {
-        let control = left.entry_trie().try_meet(right.entry_trie());
-        let treatment = left
+fn exact_map_meet_preserves_common_topology_and_first_conflict() {
+    fn assert_topology(left: &EPathMap, right: &EPathMap, expected: &EPathMap) {
+        let actual = left
             .entry_trie()
-            .try_meet_zipper_treatment(right.entry_trie());
-        match (&control, &treatment) {
-            (Ok(control), Ok(treatment)) => {
-                assert_eq!(control, treatment);
-                assert_eq!(control.trie_snapshot(), treatment.trie_snapshot());
-            }
-            (Err(control), Err(treatment)) => assert_eq!(control, treatment),
-            _ => panic!("map-meet control and treatment dispositions differ"),
-        }
+            .try_meet(right.entry_trie())
+            .expect("compatible map meet succeeds");
+        assert_eq!(actual, *expected.entry_trie());
+        assert_eq!(
+            actual.trie_snapshot(),
+            expected.entry_trie().trie_snapshot()
+        );
     }
 
     let common_topology = list([7, 8]);
     let left_topology = topology_only(EPathMapMode::Map, &common_topology);
     let right_topology = topology_only(EPathMapMode::Map, &common_topology);
-    assert_same(&left_topology, &right_topology);
+    assert_topology(&left_topology, &right_topology, &left_topology);
 
     let first = list([1]);
     let second = list([2]);
@@ -296,9 +292,20 @@ fn exact_map_meet_zipper_treatment_matches_the_reconstructed_control() {
     let mut right = map([(second.clone(), gint(20))]);
     left.create_path(&second_key).unwrap();
     right.create_path(&first_key).unwrap();
-    assert_same(&left, &right);
+    let mut expected = topology_only(EPathMapMode::Map, &first);
+    assert!(expected.create_path(&second_key).unwrap());
+    assert_topology(&left, &right, &expected);
 
     let conflict_left = map([(first.clone(), gint(10)), (second.clone(), gint(20))]);
     let conflict_right = map([(first, gint(11)), (second, gint(21))]);
-    assert_same(&conflict_left, &conflict_right);
+    assert_eq!(
+        conflict_left
+            .entry_trie()
+            .try_meet(conflict_right.entry_trie())
+            .expect_err("the first unequal shared value conflicts"),
+        EPathMapAlgebraError::ValueConflict {
+            operation: "meet",
+            encoded_key: first_key,
+        }
+    );
 }

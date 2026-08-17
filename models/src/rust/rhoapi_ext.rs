@@ -253,27 +253,6 @@ where V: Clone + Send + Sync + Unpin {
     drop(map.remove(prefix));
 }
 
-/// Recreate only the terminating topology paths below a prefixed destination.
-/// Value positions are installed separately so set members can retain the
-/// historical setSubtrie composition rule and map values remain associated.
-fn compose_topology<DestinationValue, SourceValue>(
-    destination: &mut pathmap::PathMap<DestinationValue>,
-    prefix: &[u8],
-    source: &pathmap::PathMap<SourceValue>,
-) where
-    DestinationValue: Clone + Send + Sync + Unpin,
-    SourceValue: Clone + Send + Sync + Unpin,
-{
-    for relative in source.read_zipper().into_path_iter() {
-        let mut absolute = Vec::with_capacity(prefix.len() + relative.len());
-        absolute.extend_from_slice(prefix);
-        absolute.extend_from_slice(&relative);
-        if !absolute.is_empty() {
-            destination.create_path(absolute);
-        }
-    }
-}
-
 /// Clone one absolute prefix subtrie without constructing a singleton mask.
 ///
 /// This is the one-prefix specialization of PathMap's prefix restriction
@@ -506,7 +485,6 @@ fn join_exact_map_with_grafts(
 /// values stop at the first canonical byte path, matching the predecessor's
 /// value-iterator order. A value-free endpoint is retained only when both
 /// source branches terminate at that exact path.
-#[cfg(feature = "epathmap-meet-differential")]
 fn meet_exact_map_with_zippers(
     left: &RholangMapPathMap,
     right: &RholangMapPathMap,
@@ -578,19 +556,6 @@ fn meet_exact_map_with_zippers(
         }
     }
     Ok(intersection)
-}
-
-/// Re-type a PathMap's terminating topology as a membership trie. Values are
-/// deliberately excluded: this mask exists only where a structural
-/// algebraic operation must be applied to `PathMap<Par>` without inventing an
-/// unlawful lattice for `Par`.
-fn topology_mask<V>(source: &pathmap::PathMap<V>) -> RholangSetPathMap
-where V: Clone + Send + Sync + Unpin {
-    let mut mask = RholangSetPathMap::new();
-    for leaf in source.read_zipper().into_path_iter() {
-        mask.insert(leaf, ());
-    }
-    mask
 }
 
 fn key_after_dropping_segments(key: &[u8], count: usize) -> Option<Vec<u8>> {
@@ -1547,9 +1512,6 @@ impl EntryTrie {
         }
     }
 
-    #[inline]
-    fn exact_map_value_eq(left: &Par, right: &Par) -> bool { left.cmp(right) == Ordering::Equal }
-
     fn mode_mismatch(&self, other: &Self) -> EPathMapAlgebraError {
         EPathMapAlgebraError::ModeMismatch {
             left: self.mode(),
@@ -1599,40 +1561,6 @@ impl EntryTrie {
     }
 
     pub fn try_meet(&self, other: &Self) -> Result<Self, EPathMapAlgebraError> {
-        match (&self.repr, &other.repr) {
-            (EPathMapRepr::Empty, _) | (_, EPathMapRepr::Empty) => Ok(Self::default()),
-            (EPathMapRepr::Set(left), EPathMapRepr::Set(right)) => {
-                Ok(Self::algebra_result(EPathMapRepr::Set(left.meet(right))))
-            }
-            (EPathMapRepr::Map(left), EPathMapRepr::Map(right)) => {
-                let mut intersection = pathmap::PathMap::new();
-                let topology = topology_mask(left).meet(&topology_mask(right));
-                compose_topology(&mut intersection, &[], &topology);
-                let keys = if self.len <= other.len { left } else { right };
-                for (key, _) in keys.iter() {
-                    let (Some(left_value), Some(right_value)) = (left.get(&key), right.get(&key))
-                    else {
-                        continue;
-                    };
-                    if !Self::exact_map_value_eq(left_value, right_value) {
-                        return Err(EPathMapAlgebraError::ValueConflict {
-                            operation: "meet",
-                            encoded_key: key,
-                        });
-                    }
-                    intersection.insert(&key, left_value.clone());
-                }
-                Ok(Self::algebra_result(EPathMapRepr::Map(intersection)))
-            }
-            _ => Err(self.mode_mismatch(other)),
-        }
-    }
-
-    /// Experiment 255 treatment. Production [`Self::try_meet`] remains the
-    /// frozen topology-mask/reconstruction control until the preregistered
-    /// causal measurement selects or rejects this zipper intersection.
-    #[cfg(feature = "epathmap-meet-differential")]
-    pub fn try_meet_zipper_treatment(&self, other: &Self) -> Result<Self, EPathMapAlgebraError> {
         match (&self.repr, &other.repr) {
             (EPathMapRepr::Empty, _) | (_, EPathMapRepr::Empty) => Ok(Self::default()),
             (EPathMapRepr::Set(left), EPathMapRepr::Set(right)) => {
