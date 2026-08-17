@@ -2620,8 +2620,18 @@ analysis. The depth-20,000 singleton AND/OR gate completes in 0.18 s on a 256 Ki
 15 focused production/recursive-oracle differential tests agree on verdict and `FreeMap`, including
 compound whole-target acceptance and proper-subset refusal. In the width-128 rejecting connective
 chain, each of 51 exact-counter replicates falls from 699,263 nominal edge visits to 254 production
-visits. Pgmcp experiment 248 remains open for the preregistered release-latency and regression
-guardrails, so these deterministic counters are not presented as a timing verdict.
+visits.
+
+Benchmark checkpoint `efc48ab0d` and pgmcp experiment 248 isolate the domain algebra from the common
+ownership repairs. The accepted one-shot, CPU-pinned release run contains 30 samples per arm in each
+of six cells. At the width-4,096 rejecting-OR primary, mean latency falls from 28.660772087 s to
+0.735045683 s (**97.435360%**, **38.991824×**); Welch's one-sided
+`p = 4.0078949761e-60`, Cohen's `d = -141.2628425324`, and the treatment-minus-control 95% interval
+is [-28.030114307 s, -27.821338501 s]. The exact-diagonal and Send-remainder guardrails regress only
+0.185406% and 0.167339%; duplicate exact, successful OR, and successful AND improve. The scope uses
+8 GiB `MemoryMax`, zero swap, one pinned CPU, and peaks at 251.7 MiB RSS. Finalized sample digests and
+exact estimates are committed in the stack-safety report's
+[`rspace-ac-connective-domain-algebra-2026-08-17.tsv`](../design/stack-safety/measurements/rspace-ac-connective-domain-algebra-2026-08-17.tsv).
 
 This checkpoint introduces no new byte lane, RSpace state carrier, PathMap crate behavior, match
 authority, candidate order, or metering rule. It strengthens the inner associative-commutative

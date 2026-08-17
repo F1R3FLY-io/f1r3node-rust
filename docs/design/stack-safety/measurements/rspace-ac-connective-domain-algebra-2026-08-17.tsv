@@ -1,0 +1,29 @@
+# RSpace associative-commutative connective-domain algebra: universal-domain control versus PathMap union/intersection treatment.
+# Production implementation: 4f022ad9b. Causal benchmark harness and measured source: efc48ab0d79cf0e9458ddf1535acae090ea60228.
+# Host: AMD Ryzen Threadripper PRO 5975WX, 32 physical cores, SMT disabled; CPU 8 pinned; performance governor; no competing Cargo or rustc process at preflight.
+# Preflight utilization: 86.25% aggregate idle; CPU 8 was 99.33% idle.
+# Command: systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 taskset -c 8 cargo bench -p rholang --bench spatial_matcher_connective_domains --features spatial-matcher-connective-domain-differential -- --noplot --save-baseline exp248-final
+# Arms: control forces the predecessor All candidate domain for a pure connective carrier; treatment uses the production PathMap<()> join/meet domain. Both arms contain the same ownership, iterator, and stack-safety repairs.
+# Fixture: the preregistered primary is a width-4,096 rejecting OR chain. Five width-256 guardrails cover an exact diagonal, successful OR, successful AND, duplicate exact targets, and a Send remainder. Fixture construction/cloning is outside the timed interval.
+# Criterion: one scientific run; 30 post-warm-up samples per arm/cell; 2 s warm-up; 5 s requested measurement interval; 99% confidence; 1% significance.
+# Pgmcp experiment/hypothesis 248: ACCEPTED. Primary Welch t=-547.1086365660, one-sided p=4.0078949761e-60, Cohen's d=-141.2628425324, treatment-minus-control 95% CI [-28030114307.2690,-27821338501.0643] ns.
+# Robustness: Cliff's delta=-1.0 and Mann-Whitney p=3.0198510359e-11. Primary mean latency falls 97.435360%, from 28.6607720873 s to 0.7350456831 s (38.991824x speedup), exceeding the preregistered 5% requirement.
+# Guardrails: exact diagonal +0.185406%; Send remainder +0.167339%; duplicate exact -0.134776%; successful OR -93.272221%; successful AND -93.653571%. Every regression is below the preregistered 5% ceiling.
+# Correctness/resource preflight: 15/15 focused recursive-oracle differentials with exact FreeMap equality; 51/51 deterministic edge-count replicates; depth-20,000 AND and OR on a 256 KiB stack; strict production-library Clippy.
+# Scope: 1012.593 s wall; 999.044 s CPU; 251.7 MiB peak RSS; 8,192 MiB MemoryMax; zero swap.
+# Control run: 2404cfb5-e166-49df-8c77-1a70b21b1d4f; sha256:52c9e8c563ea17a35e85097972b13a8e18670620987f634f7fd34aa8c3be98af.
+# Treatment run: ef5ec5b2-570f-4e39-ab6d-83e0ecc76867; sha256:a04bad9f1c35701e6462e154771db4a249e0ba6bc77f1eefc92c3aac6ed712c8.
+# Pgmcp artifact 326 preserves the complete one-shot console report; its source log SHA-256 is bb50edc689dd56973a348a3d235826a9d137681e29dd2db9ecdbee4382c1e8cf.
+date	source_commit	experiment_id	workload	cardinality	arm	samples	raw_mean_ns	raw_stddev_ns	median_ns	mean_ci_low_ns	mean_ci_high_ns	treatment_over_control_ratio	mean_change_percent	control_speedup	memory_max_mib	peak_rss_mib	swap_max_mib	cpu_affinity	result
+2026-08-17	efc48ab0d79cf0e9458ddf1535acae090ea60228	248	primary_rejecting_or_chain	4096	control	30	28660772087.300000	279486035.627870	28669453246.000000	28561124931.936670	28759642571.460835	NA	NA	NA	8192	251.7	0	8	primary-control
+2026-08-17	efc48ab0d79cf0e9458ddf1535acae090ea60228	248	primary_rejecting_or_chain	4096	treatment	30	735045683.133333	6876745.868774	735090522.500000	732686622.214167	737539374.474167	0.025646403	-97.435360	38.991824	8192	251.7	0	8	accepted-primary
+2026-08-17	efc48ab0d79cf0e9458ddf1535acae090ea60228	248	guard_exact_diagonal	256	control	30	2291220.542823	5072.148417	2291545.119130	2289380.109162	2292972.814202	NA	NA	NA	8192	251.7	0	8	guard-control
+2026-08-17	efc48ab0d79cf0e9458ddf1535acae090ea60228	248	guard_exact_diagonal	256	treatment	30	2295468.605143	6916.815049	2296457.897143	2293025.960336	2297883.940203	1.001854061	0.185406	0.998149	8192	251.7	0	8	within-guardrail
+2026-08-17	efc48ab0d79cf0e9458ddf1535acae090ea60228	248	guard_positive_or	256	control	30	54584445.744444	358142.846133	54495686.166667	54464875.487222	54716778.911389	NA	NA	NA	8192	251.7	0	8	guard-control
+2026-08-17	efc48ab0d79cf0e9458ddf1535acae090ea60228	248	guard_positive_or	256	treatment	30	3672320.725079	8772.426872	3670808.849145	3669368.165339	3675531.808235	0.067277787	-93.272221	14.863747	8192	251.7	0	8	accepted-secondary
+2026-08-17	efc48ab0d79cf0e9458ddf1535acae090ea60228	248	guard_positive_and	256	control	30	80540736.677778	133821.868213	80536084.166667	80491986.296944	80585976.160278	NA	NA	NA	8192	251.7	0	8	guard-control
+2026-08-17	efc48ab0d79cf0e9458ddf1535acae090ea60228	248	guard_positive_and	256	treatment	30	5111460.792116	53554.717987	5097382.111111	5096187.317351	5133223.219630	0.063464292	-93.653571	15.756892	8192	251.7	0	8	accepted-secondary
+2026-08-17	efc48ab0d79cf0e9458ddf1535acae090ea60228	248	guard_duplicate_exact	256	control	30	281805355.533333	1235127.777141	281396689.000000	281394836.323333	282257328.340000	NA	NA	NA	8192	251.7	0	8	guard-control
+2026-08-17	efc48ab0d79cf0e9458ddf1535acae090ea60228	248	guard_duplicate_exact	256	treatment	30	281425549.166667	961577.424229	281146928.000000	281131573.127500	281799187.737500	0.998652239	-0.134776	1.001350	8192	251.7	0	8	within-guardrail
+2026-08-17	efc48ab0d79cf0e9458ddf1535acae090ea60228	248	guard_send_remainder	256	control	30	3033569.078862	13410.457328	3031639.737648	3028968.149870	3038397.372065	NA	NA	NA	8192	251.7	0	8	guard-control
+2026-08-17	efc48ab0d79cf0e9458ddf1535acae090ea60228	248	guard_send_remainder	256	treatment	30	3038645.413645	17478.944232	3037704.681612	3032940.576009	3045281.163005	1.001673387	0.167339	0.998329	8192	251.7	0	8	within-guardrail
