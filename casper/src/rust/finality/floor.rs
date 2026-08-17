@@ -89,33 +89,71 @@ fn state_parent_of(
     }
 }
 
+/// Metadata for a block on a state lineage. Absence here is not a fork: the
+/// walk has left the blocks this node holds, and nothing about the two
+/// lineages' relationship follows from that. Raising keeps the distinction the
+/// caller depends on; returning "no meet" would hand back a verdict derived
+/// from local retention.
+fn lineage_meta(
+    dag: &KeyValueDagRepresentation,
+    hash: &BlockHash,
+) -> Result<models::rust::block_metadata::BlockMetadata, CasperError> {
+    dag.lookup(hash)
+        .map_err(CasperError::KvStoreError)?
+        .ok_or_else(|| {
+            CasperError::Other(format!(
+                "state lineage truncated at {}: this node does not hold that block, so \
+                 the lineages' relationship is undecidable here — this is NOT a \
+                 disconnected lineage",
+                PrettyPrinter::build_string_bytes(hash),
+            ))
+        })
+}
+
+/// The outcome of walking two state lineages toward each other. Truncation is
+/// deliberately NOT a variant: a lineage that leaves the blocks this node holds
+/// is unreadable, not disconnected, and the two must never collapse into one
+/// answer — the callers turn `Disconnected` into a containment refusal and a
+/// skipped floor candidate, so deciding it from local retention would make the
+/// floor node-local, which R-DET forbids.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StateLineage {
+    /// The lineages meet at this block.
+    Meet(BlockHash),
+    /// Both lineages reached a root without meeting — a genuinely incompatible fork.
+    Disconnected,
+}
+
 /// The meet of two blocks' state lineages: the lowest common ancestor in
 /// the state-parent tree. Every block has exactly one state-parent, so two
-/// lineages from a common root meet exactly once; `None` means the
-/// lineages share no root — a genuinely incompatible fork.
+/// lineages from a common root meet exactly once.
+///
+/// The walk is deliberately unbounded. A depth cap would be a node-local limit
+/// on a value every node must derive identically, so two nodes with different
+/// caps could return different verdicts; the depth is only reported.
 fn state_lineage_meet(
     dag: &KeyValueDagRepresentation,
     a: &BlockHash,
     b: &BlockHash,
-) -> Result<Option<BlockHash>, CasperError> {
+) -> Result<StateLineage, CasperError> {
     let mut a = a.clone();
     let mut b = b.clone();
     let mut steps: usize = 0;
     loop {
         if a == b {
-            return Ok(Some(a));
+            return Ok(StateLineage::Meet(a));
         }
-        let meta_a = dag.lookup_unsafe(&a)?;
-        let meta_b = dag.lookup_unsafe(&b)?;
+        let meta_a = lineage_meta(dag, &a)?;
+        let meta_b = lineage_meta(dag, &b)?;
         if meta_a.block_number > meta_b.block_number {
             match state_parent_of(&meta_a)? {
                 Some(parent) => a = parent,
-                None => return Ok(None),
+                None => return Ok(StateLineage::Disconnected),
             }
         } else if meta_b.block_number > meta_a.block_number {
             match state_parent_of(&meta_b)? {
                 Some(parent) => b = parent,
-                None => return Ok(None),
+                None => return Ok(StateLineage::Disconnected),
             }
         } else {
             match (state_parent_of(&meta_a)?, state_parent_of(&meta_b)?) {
@@ -123,7 +161,7 @@ fn state_lineage_meet(
                     a = pa;
                     b = pb;
                 }
-                _ => return Ok(None),
+                _ => return Ok(StateLineage::Disconnected),
             }
         }
         steps += 1;
@@ -214,7 +252,7 @@ pub(crate) fn state_contains(
         trace_containment(cand, x, "same-block", 0);
         return Ok(true);
     }
-    let Some(meet) = state_lineage_meet(dag, &cand.hash, &x.hash)? else {
+    let StateLineage::Meet(meet) = state_lineage_meet(dag, &cand.hash, &x.hash)? else {
         trace_containment(cand, x, "disconnected-lineages", 0);
         return Ok(false);
     };
@@ -519,11 +557,11 @@ async fn derive_floor(
                 }
                 if re_merged {
                     match state_lineage_meet(dag, &cand.hash, &other.hash)? {
-                        Some(meet) => {
+                        StateLineage::Meet(meet) => {
                             segment_introduced_sigs(dag, block_store, &cand.hash, &meet, &mut memo)?
                                 .is_empty()
                         }
-                        None => false,
+                        StateLineage::Disconnected => false,
                     }
                 } else {
                     false
@@ -1872,6 +1910,69 @@ mod frontier_determinism_tests {
         assert!(
             finalized,
             "the derive_floor result must be Finalized over the justification snapshot (T-FIN)"
+        );
+    }
+
+    // ---- state-lineage: truncation is not a fork ----
+
+    fn md_base(hash: Bytes, parents: Vec<Bytes>, num: i64, base: Bytes) -> BlockMetadata {
+        let sender = Bytes::from_static(b"sender");
+        let mut meta = md_wm(hash, parents, num, &sender, vec![]);
+        meta.merge_base = base;
+        meta
+    }
+
+    /// "I cannot read that history" and "these lineages share no root" are
+    /// different facts with the same shape, and only the second is a verdict.
+    /// `state_contains` turns a missing meet into containment-refused and
+    /// `derive_floor` turns it into candidate-skipped, so answering it from what
+    /// this node happens to hold would make the floor node-local — the thing
+    /// R-DET forbids. A lineage that leaves the blocks we hold must raise, and
+    /// must stay distinguishable from one that genuinely diverges.
+    #[test]
+    fn truncated_state_lineage_is_an_error_not_a_disconnection() {
+        let root = Bytes::from_static(b"root");
+        let gone = Bytes::from_static(b"never-downloaded");
+        let a = Bytes::from_static(b"a");
+        let b = Bytes::from_static(b"b");
+
+        // `a`'s state lineage runs off the blocks this node holds; `b`'s is whole.
+        let dag = build_dag(vec![
+            md_base(root.clone(), vec![], 1, Bytes::new()),
+            md_base(a.clone(), vec![root.clone()], 5, gone.clone()),
+            md_base(b.clone(), vec![root.clone()], 5, root.clone()),
+        ]);
+
+        let err = state_lineage_meet(&dag, &a, &b)
+            .expect_err("a lineage that leaves the held blocks cannot yield a verdict");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("state lineage"),
+            "the error must name the state-lineage walk so truncation is not read as \
+             a fork; got {msg}"
+        );
+    }
+
+    /// The other half: two lineages that both reach a root without meeting are
+    /// genuinely disconnected, and that IS a verdict the caller may act on.
+    #[test]
+    fn disconnected_state_lineages_are_reported_as_disconnected() {
+        let root_a = Bytes::from_static(b"root-a");
+        let root_b = Bytes::from_static(b"root-b");
+        let a = Bytes::from_static(b"a");
+        let b = Bytes::from_static(b"b");
+
+        let dag = build_dag(vec![
+            md_base(root_a.clone(), vec![], 1, Bytes::new()),
+            md_base(root_b.clone(), vec![], 1, Bytes::new()),
+            md_base(a.clone(), vec![root_a.clone()], 5, root_a.clone()),
+            md_base(b.clone(), vec![root_b.clone()], 5, root_b.clone()),
+        ]);
+
+        let meet = state_lineage_meet(&dag, &a, &b).expect("rooted lineages must not raise");
+        assert!(
+            matches!(meet, StateLineage::Disconnected),
+            "two lineages that reach separate roots share no state history"
         );
     }
 
