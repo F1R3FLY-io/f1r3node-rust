@@ -560,15 +560,67 @@ open.
 
 ## Native PathMap operations
 
-| Need | Native mechanism |
-|---|---|
-| Exact multiplicity | `get` or a zipper descended to the complete key |
-| Increment/decrement | One write zipper; remove and prune at zero |
-| Prefix discovery | Read zipper rooted at the structural prefix |
-| Join, meet, difference | Exact-key pointwise Bag algorithms using PathMap lookup and copy-on-write updates; PathMap's generic prefix-aware lattice is deliberately not substituted |
-| Copy-on-write snapshots | `PathMap::clone` structural sharing |
-| Compact snapshots | `ArenaCompactTree` produced directly from a read zipper |
-| Repeated-subtrie sharing | `merkleize`, only after end-to-end evidence justifies its construction cost |
+PathMap operations fall into two semantic families that must not be conflated:
+
+- **Exact finite-support algebra** treats each complete byte path as one independent key. Bag
+  multiplicity, EPathMap membership, and fixed-width candidate positions use this relation.
+- **Prefix-language algebra** treats a value-bearing path as a prefix wildcard over every descendant.
+  `restrict` intentionally implements this relation.
+
+For a data trie $`D`$ and a value-bearing prefix trie $`Q`$, restriction is:
+
+```math
+\operatorname{restrict}(D,Q)
+=
+\{(k,v)\in D\mid \exists q\in\operatorname{dom}(Q):q\preceq k\}.
+```
+
+Here $`q\preceq k`$ means that byte path $`q`$ is a prefix of byte path $`k`$. PathMap's current
+implementation tests value-bearing paths, not merely dangling topology. A value at the restriction
+root therefore admits the complete left operand. This rule is desirable for compiled wildcard
+prefixes and wrong for exact Bag membership unless prefix-freedom is independently proved at the
+specific boundary.
+
+### Operation-by-operation decision matrix
+
+This table is a living closure ledger. **Adopted** means the production integration already uses the
+operation and executable semantic evidence exists. **Experiment** means a causal control/treatment
+comparison is required before promotion. **Ineligible** means the operation's contract differs from
+the Rholang/RSpace contract; it is not a performance judgment.
+
+| PathMap operation family | Required semantics and current production use | Decision and next evidence |
+|---|---|---|
+| `get`, `contains`, exact zipper descent | One complete encoded path identifies one Bag occurrence class, EPathMap member, or associated value. | **Adopted.** Bag count/update, EPathMap membership, retained terminals, and candidate catalogs use direct encoded-key lookup; no decoded entry vector or membership memo is permitted. |
+| Prefix-rooted read zipper | Enumerate or test only descendants below one known structural prefix without constructing a result trie. | **Adopted.** Bag `visit_prefix`, AC target queries, RSpace catalogs, and EPathMap navigation use the focused zipper. It is the control for single-prefix `restrict`, because allocating a restricted result may add work when no bulk prefix algebra is needed. |
+| Whole-map `join` / `meet` | Union/intersection of value-bearing paths, with value collision behavior supplied by the value lattice. | **Adopted where lawful.** EPathMap sets and fixed-width `u64` candidate-position masks use `PathMap<()>`; experiment 248 accepts candidate join/meet with a 97.435% primary mean-latency reduction. `Par` has deliberately no invented lattice, so EPathMap maps perform exact conflict checks. |
+| Whole-map `subtract` | Remove exact members when all stored keys at the boundary are prefix-independent. | **Adopted for `PathMap<()>` EPathMap key masks.** Map values use one moving write zipper so a dummy `Par` lattice is unnecessary. Standalone Bag remains exact-key and uses its own pointwise operation because arbitrary Bag keys may prefix one another. |
+| Whole-map/zipper `restrict` and inverse `restricting` | Keep every left value beneath any value-bearing right prefix; `restricting` instead populates destination stems with corresponding source subtries. Preserve source values and compressed subtries. | **Adopted but not yet performance-isolated** for EPathMap `subtrie`, set/map `try_restrict`, and member-prefix restriction. **Experiment** for bulk AC prefix masks, in-place private subtries, inverse stem population, and RSpace derived candidate maps. Controls must include one focused zipper, overlapping/disjoint prefixes, root wildcard, empty mask, singleton bypass, deep shared prefixes, and residual-query fallback. |
+| Zipper `join_map_into` / `join_into_take` | Consume an owned temporary union operand and reuse its trie nodes instead of constructing another whole-map result. | **Experiment.** Candidate-position unions own every temporary mask and have no root value; compare against experiment 248's selected whole-map `join`. `join_into_take` is eligible only if its extra source write zipper beats `join_map_into`. |
+| Zipper `meet_into` / `meet_2` | Destructively intersect a private temporary trie at its current focus. | **Experiment** for candidate-position intersections and topology masks. `meet_2` remains experimental in PathMap and is not production-eligible without an API-stability justification and a distinct measured advantage. |
+| Zipper `subtract_into` | Destructively subtract a mask from one private copy-on-write subtrie. | **Experiment** for set-mode EPathMap subtraction and derived masks. Map-mode exact values still require explicit removal and stack-safe dismantling of removed `Par` values. |
+| `graft`, `graft_map`, `take_map` | Replace, consume, or extract a complete subtrie in one structural operation. | **Experiment** for disjoint EPathMap-map branches, subtree extraction, and set-automaton publication. These are not merge operations: an overlap must retain exact value-conflict checks, and the current root-value feature behavior must be pinned. |
+| `insert_prefix`, `remove_prefix`, `join_k_path_into`, `meet_k_path_into` | Shift or quotient a common byte prefix, or collapse a fixed number of bytes across every descendant. | **Conditionally eligible.** RMP1/EPM1 segment boundaries are variable-length, so EPathMap `drop_head(count)` cannot substitute a fixed byte count. Exact common framing prefixes and generated automaton state quotients receive dedicated semantic tests before an experiment. |
+| `remove_unmasked_branches` plus `child_mask` | Retain only byte-labelled children allowed by a transition mask without visiting excluded branches. | **Experiment** for generated set-automaton frontiers and byte-native malformed-input rejection. It is preferable to a flat child loop only when mutation or a durable restricted subtrie is required; read-only traversal already intersects child masks without allocation. |
+| Persistent `PathMap::clone` plus moving write zipper | Fork one root, reuse the longest common prefix across sorted updates, and publish only after complete validation. | **Adopted.** Experiments 218 and 219 select one Bag COW root and an adaptive direct/singleton versus moving/multi-key update. Clone is structural sharing, not occurrence expansion. |
+| Read-zipper pair / `TrieRef` | Traverse two heterogeneous-value tries over their common byte topology. | **Adopted paired zippers.** Experiment 220 rejects rebuilding a borrowed `TrieRef` focus per byte by 55.5–83.0%. Native `restrict` requires equal value types, so it cannot directly replace the `PathMap<Multiplicity>` × `PathMap<CandidatePosition>` or `PathMap<TerminalId>` products. |
+| `PrefixZipper` | Present an existing trie below a virtual prefix without copying or rewriting its paths. | **Experiment** for RMP1 framing layers and compact-image delegation. The virtual prefix must preserve canonical byte comparisons and cannot become a second serialization. |
+| `OverlayZipper` | Traverse the union topology of heterogeneous tries with borrowed value mapping. | **Not currently eligible for a production dependency.** Its `val_count` is unimplemented and PathMap describes the API as awaiting algebra-policy redesign. A narrow benchmark may remain an experimental control. |
+| `ProductZipper` / `DependentProductZipperG` | Form Cartesian concatenations of tries, not same-path intersections. | **Conditionally eligible** for generated term/set-automaton composition. They do not replace the current heterogeneous synchronized intersection. The dependent form is explicitly experimental and currently clones its enrolment closure, so it requires stronger evidence than the stable manual PDA. |
+| `ZipperHead` and forked zippers | Create simultaneous disjoint readers/writers with runtime exclusivity checks. | **Not selected for ordinary updates.** PathMap documents a high runtime cost; RSpace's atomic Bag publication already owns one private COW root under one lock. Evaluate only for a genuinely parallel, disjoint-subtree workload. |
+| Cached jumping catamorphism | Compute a pure subtree fold once per structurally shared DAG node and skip monotone path bytes. | **Experiment** for Bag `(distinct_len, cardinality)`, topology summaries, allocation accounting, and immutable snapshot hashes. It is preferable to logical-path iteration only if shared subtries make the fold cheaper and the result remains exactly equal. |
+| Side-effecting catamorphism / anamorphism | Visit every logical path in deterministic order or construct a trie from a seed. | **Conditionally eligible** for codecs and generated tries. Direct ACT zipper serialization and existing one-pass builders are controls; a morphism must not add value-stack growth, duplicate canonical encoding, or unpredictable callback order. |
+| `ArenaCompactTree::from_zipper` | Emit one prefix-compressed ACTree03 image directly from a read zipper. | **Adopted.** EPathMap and Bag snapshots contain no `Vec<Par>`/entry-list projection. Canonical iterative readers reject malformed, alternate, value-free, and zero-multiplicity images. |
+| `merkleize` | Hash-cons identical physical subtries to improve DAG sharing after construction. | **Experiment only.** Measure construction time, peak allocation/RSS, lookup and mutation cost, compact-image size, and retained-state lifetime for EPathMap, Bag, and automata. Do not merkleize a hot mutable trie merely because the operation exists. |
+
+### Audit closure rule
+
+No operation is selected from API reputation alone. For every **Experiment** row, the exact current
+implementation is frozen as the control, the operation's semantic preconditions are executable
+tests, and the run is preregistered in pgmcp before samples exist. Every accepted treatment must
+preserve result values, `FreeMap`, candidate order, COMM choice, event history, play/replay roots,
+protobuf and bincode bytes, EPM1/RMP1 images, hashing, cost accounting, malformed-input behavior,
+and bounded native-stack use. Accepted and rejected results remain in the scientific ledger so an
+unsuccessful operation is not repeatedly rediscovered.
 
 No production operation may flatten the trie merely to perform an operation already supplied by
 PathMap. The decoded-object catalog is derived, shared, and invalidatable rather than a second
