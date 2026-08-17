@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
@@ -79,6 +80,7 @@ const STACK_RED_ZONE: usize = 1024 * 1024; // 1 MB
 
 /// Size of each new stack segment allocated when the red zone is reached.
 const STACK_GROW_SIZE: usize = 2 * 1024 * 1024; // 2 MB
+const SINGLE_TERM_YIELD_INTERVAL: u64 = 256;
 
 /// A Future wrapper that dynamically grows the thread stack during polling.
 ///
@@ -113,6 +115,13 @@ impl<F: Future> Future for StackGrowingFuture<F> {
 /**
  * Reduce is the interface for evaluating Rholang expressions.
  */
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EvalWorkStats {
+    pub single_term_evaluations: u64,
+    pub yielded_single_term_evaluations: u64,
+    pub spawned_eval_tasks: u64,
+}
+
 #[derive(Clone)]
 pub struct DebruijnInterpreter {
     pub space: RhoISpace,
@@ -122,6 +131,9 @@ pub struct DebruijnInterpreter {
     pub mergeable_tags: Arc<HashMap<Par, MergeType>>,
     pub cost: _cost,
     pub substitute: Substitute,
+    pub(crate) single_term_evaluations: Arc<AtomicU64>,
+    pub(crate) yielded_single_term_evaluations: Arc<AtomicU64>,
+    pub(crate) spawned_eval_tasks: Arc<AtomicU64>,
 }
 
 type Application = Option<(
@@ -142,6 +154,23 @@ trait Method {
  * @param persistent  True if the write should remain in the tuplespace indefinitely.
  */
 impl DebruijnInterpreter {
+    pub fn eval_work_stats(&self) -> EvalWorkStats {
+        EvalWorkStats {
+            single_term_evaluations: self.single_term_evaluations.load(Ordering::Relaxed),
+            yielded_single_term_evaluations: self
+                .yielded_single_term_evaluations
+                .load(Ordering::Relaxed),
+            spawned_eval_tasks: self.spawned_eval_tasks.load(Ordering::Relaxed),
+        }
+    }
+
+    pub fn reset_eval_work_stats(&self) {
+        self.single_term_evaluations.store(0, Ordering::Relaxed);
+        self.yielded_single_term_evaluations
+            .store(0, Ordering::Relaxed);
+        self.spawned_eval_tasks.store(0, Ordering::Relaxed);
+    }
+
     pub fn eval<'a>(
         &'a self,
         par: Par,
@@ -226,6 +255,20 @@ impl DebruijnInterpreter {
                 term_split_limit
             )))
         } else {
+            metrics::counter!("reducer.eval_par.calls", "source" => "rholang").increment(1);
+            metrics::counter!("reducer.eval_par.term_count", "source" => "rholang")
+                .increment(terms.len() as u64);
+
+            if let [term] = terms.as_slice() {
+                let evaluation = self.single_term_evaluations.fetch_add(1, Ordering::Relaxed) + 1;
+                if evaluation.is_multiple_of(SINGLE_TERM_YIELD_INTERVAL) {
+                    self.yielded_single_term_evaluations
+                        .fetch_add(1, Ordering::Relaxed);
+                    tokio::task::yield_now().await;
+                }
+                return self.generated_message_eval(term, env, rand).await;
+            }
+
             // Collect errors from all parallel execution paths (pars)
             // parTraverseSafe
             let futures: Vec<
@@ -257,10 +300,8 @@ impl DebruijnInterpreter {
                 })
                 .collect();
 
-            metrics::counter!("reducer.eval_par.calls", "source" => "rholang").increment(1);
-            metrics::counter!("reducer.eval_par.term_count", "source" => "rholang")
-                .increment(futures.len() as u64);
-
+            self.spawned_eval_tasks
+                .fetch_add(futures.len() as u64, Ordering::Relaxed);
             let spawn_start = std::time::Instant::now();
             let handles: Vec<JoinHandle<Result<(), InterpreterError>>> =
                 futures.into_iter().map(|fut| tokio::spawn(fut)).collect();
@@ -7093,6 +7134,9 @@ impl DebruijnInterpreter {
             mergeable_tags,
             cost: cost.clone(),
             substitute: Substitute { cost: cost.clone() },
+            single_term_evaluations: Arc::new(AtomicU64::new(0)),
+            yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
+            spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
         });
 
         reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();
