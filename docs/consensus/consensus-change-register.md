@@ -4101,7 +4101,7 @@ material now lives.
 | `CBR-006` | `8853f839` | A `matches` pattern is substituted at `depth + 1` | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-007` | `b219e199`, `dc383ed1` | A connective attempt owns its own `FreeMap` — the isolation law at four more sites | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-008` | `a1feb437` | A relative path below the root built a key no `Par` can have | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
-| `CBR-009` | `ce7bb4fd` | `setSubtrie` stopped dropping bare source entries | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
+| `CBR-009` | `ce7bb4fd`; native-graft continuation `366786fdf` | `setSubtrie` stopped dropping bare source entries | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history); `366786fdf` removes a later PathMap-reconstruction panic on the same valid bare-source domain, preserves singleton-split precedence, and passes the exact 8/8 trie-entry invariant suite; stack-safety report §5.16.7.6 |
 | `CBR-010` | `0a6d2ce0`, `5aacebc3` | Path readers ask the codec instead of guessing | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-015` | `76de7d44` | `cursor_kind` reaches the printer, whose output is replay-compared | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-016` | `ca84d535`, `4290303c` | An environment variable leaves the consensus byte path | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
@@ -4525,6 +4525,33 @@ optimization in CBR-023's `EQUIVALENCE_PROVEN` set: it changes no Rholang value 
 match verdict, binding, EPathMap mode, EPM1/protobuf/bincode byte, hash, COMM schedule, charge, or
 post-state. PathMap is not modified. Stack-safety report §5.16.7.5 and its durable TSV contain the
 algorithm, raw measurements, resource envelope, and pgmcp identifiers.
+
+**CBR-023 and CBR-009 living-set continuation (2026-08-17, native EPathMap `setSubtrie` zipper
+graft; pgmcp experiment 251).** `f1r3node-rust-mettail@cc6f7e94b` compares the reconstructed
+`setSubtrie` predecessor with a native PathMap write-zipper graft; `366786fdf` removes the
+experimental control and retains the selected implementation. The destination branch is removed
+with the existing native operation, the complete compressed source root is grafted copy-on-write,
+and only bare value positions are relocated to satisfy the child-composition codec law. Set mode
+remains `PathMap<()>`; map mode remains `PathMap<Par>` and moves each affected value between
+PathMap slots without cloning it. Value-free topology, neutral empty, homogeneous mode selection,
+and empty-source behavior are unchanged.
+
+On the predecessor-defined split-key domain, exact control/treatment `EntryTrie` and EPM1 equality
+is asserted before timing. Experiment 251 accepts the native graft with **21.42%**, **36.22%**, and
+**60.04%** lower mean latency for set, map/64-byte-value, and map/4,096-byte-value cells,
+respectively. That domain is a `BYTE_NEUTRAL_MEASURED` optimization in CBR-023's
+`EQUIVALENCE_PROVEN` set: no Rholang result, match verdict, binding, EPathMap mode, serialization
+byte, hash, COMM, charge, or post-state changes.
+
+The valid bare-source domain is classified separately. The reconstructed predecessor could create a
+terminal topology path and then panic while extending it for the composed value. The selected graft
+returns the intended child entries; when bare `x` and singleton split `[x]` collide, the
+singleton-split entry retains the predecessor's canonical precedence. This changes the immediate
+predecessor from no result to a result and is therefore **not** claimed byte-neutral. It continues
+retired CBR-009's `BUG_FIX_RULED_NONCONSENSUS` ruling for the same bare-source `setSubtrie`
+contract. Model tests, the five Rholang operation specs, and all eight exact trie-entry invariants
+pass. Stack-safety report §5.16.7.6 and its durable TSV contain the algorithm, raw measurements,
+resource envelope, pgmcp identifiers, and classification boundary. PathMap itself is unmodified.
 
 **Dormant RSpace matching-cursor foundation (2026-08-15; pgmcp `rspace-shared-match-pda`).**
 `f1r3node-rust-mettail@71d378e73` extends the existing descriptor pass with exhaustive,

@@ -1219,9 +1219,10 @@ impl EntryTrie {
     }
 
     /// Replace the branch at `cursor_segments` with `source`, preserving the
-    /// homogeneous PathMap specialization.  Source topology is copied with a
-    /// native zipper walk; value keys are composed directly from codec bytes,
-    /// and map values never leave their associated slots.
+    /// homogeneous PathMap specialization. Source topology is grafted through
+    /// a native write zipper so the compressed root is shared copy-on-write.
+    /// Only bare value positions are relocated for the child-composition codec
+    /// law; map values move between PathMap slots without cloning.
     pub fn replace_subtrie(
         &mut self,
         cursor_segments: &[Vec<u8>],

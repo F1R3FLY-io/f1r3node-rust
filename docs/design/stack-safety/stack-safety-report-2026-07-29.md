@@ -4334,6 +4334,84 @@ already delegates to native `restrict`, and no unmeasured zipper rewrite is sele
 is unchanged. No Rholang value, matching verdict, EPathMap mode, EPM1/protobuf/bincode byte, hash,
 COMM, charge, or post-state changes.
 
+##### 5.16.7.6 `setSubtrie` grafts the compressed source root instead of reconstructing it
+
+`EntryTrie::replace_subtrie` replaces one destination branch with a complete source EPathMap.
+The predecessor first removed the destination branch, enumerated every terminating source path to
+recreate topology, then enumerated every value again to allocate a composed key and reinsert it.
+Map mode consequently cloned every associated `Par`. That algorithm preserved neither PathMap's
+compressed source root nor its copy-on-write (CoW) sharing.
+
+The selected implementation at `cc6f7e94b` / `366786fdf` removes the destination branch and
+grafts the source read zipper into a write zipper positioned at the destination prefix. PathMap can
+therefore share the complete compressed source root until either alias is mutated. One canonical
+codec distinction still requires a sparse normalization pass: a standalone bare source entry
+`x` is stored at `enc(x)`, whereas every entry composed below a cursor is a child and is stored at
+`enc(cursor) ++ enc(x) ++ TERM`. Split-list entries already contain their terminal byte and remain
+at the grafted path.
+
+```text
+procedure graft_composed_subtrie(destination, prefix, source):
+    destination.write_zipper_at(prefix).graft(source.read_zipper())
+
+    for each source value position key:
+        if key is a split-list key:
+            continue
+
+        bare_target  := prefix ++ key
+        split_target := prefix ++ key ++ TERM
+        value := destination.remove(bare_target)
+
+        if source contains key ++ TERM:
+            dispose value
+            // The canonical singleton-split entry already occupies split_target.
+        else:
+            destination.insert(split_target, value)
+```
+
+Set mode specializes the value operation to `()`; map mode moves the existing `Par` between
+PathMap slots and dismantles a displaced bare alias without recursively dropping it. If a source
+contains both bare `x` and singleton split `[x]`, both compose to the same child key and the
+singleton-split value wins, matching the predecessor's canonical source iteration. Value-free
+topology is grafted unchanged. Neutral-empty behavior, set/map specialization, mode-mismatch errors,
+and empty-source cursor naming retain their existing branches.
+
+The experiment deliberately times only the predecessor's defined split-key domain. On a valid bare
+source, its topology pass first created a terminal and its value pass then tried to extend that
+terminal, causing PathMap to reject the impossible mutation. Crediting removal of that failure to a
+latency result would be vacuous. Pgmcp experiment 251 therefore uses a 2,048-entry split source and
+replaces 2,048 entries while preserving 2,048 unrelated destination entries. Exact `EntryTrie` and
+EPM1 equality is asserted before timing. One preregistered run retained 60 paired, interleaved,
+order-rotated samples after 10 warmups in each cell.
+
+| cell | reconstructed mean | native-graft mean | reduction | speedup |
+|---|---:|---:|---:|---:|
+| set | 4.958 ms | 3.896 ms | 21.42% | 1.273× |
+| map, 64-byte values | 6.159 ms | 3.928 ms | 36.22% | 1.568× |
+| map, 4,096-byte values | 10.795 ms | 4.314 ms | 60.04% | 2.503× |
+
+The locked pooled verdict accepts the treatment ($`t=-17.1799`$,
+$`p=3.2614\times10^{-40}`$, Cohen's $`d=-1.8109`$, treatment-minus-control 95% confidence
+interval **[-3.632 ms, -2.884 ms]**). Both arms fail the normality diagnostic, so the robustness
+result is material: Cliff's $`\delta=-1`$ and Mann–Whitney $`p=0`$ agree. Every cell's paired
+$`\alpha=0.01`$ interval excludes zero in the predicted direction. The increasing benefit with
+larger map values supports the CoW/value-clone mechanism rather than an unrelated constant-factor
+effect.
+
+Preflight measured **53.30%** aggregate idle and **85.95%** idle on pinned CPU 8. The 8 GiB,
+zero-swap scope completed in **2.89 s** and peaked at **106,596 KiB** resident set size. The selected
+tree passes model zipper/algebra **8/8**, Rholang `setSubtrie` **5/5**, standalone exact trie-entry
+invariants **8/8**, formatting, and strict model-library Clippy. The experimental differential passed
+**9/9** before its control was removed. Pgmcp artifact 330 and
+[`measurements/epathmap-setsubtrie-zipper-graft-2026-08-17.tsv`](measurements/epathmap-setsubtrie-zipper-graft-2026-08-17.tsv)
+retain the log digest, resource envelope, run identifiers, and all 360 raw timings.
+
+The split-domain optimization is byte- and verdict-neutral and continues retired CBR-023. The bare
+source totality repair is not misclassified as equivalence: it replaces an implementation panic on
+valid `setSubtrie` input with the already-ruled intended behavior and therefore continues retired
+CBR-009's `BUG_FIX_RULED_NONCONSENSUS` evidence. No PathMap source, EPathMap representation, EPM1,
+protobuf, or bincode format changes.
+
 ---
 
 ### 5.17 EPathMap evaluator and clone-family teardown integration [SS-C11]
