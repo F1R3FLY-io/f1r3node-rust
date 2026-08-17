@@ -155,9 +155,15 @@ impl DagOperations {
     /// Conceptually, the LUCA is the lowest point at which the histories of b1 and b2 diverge.
     /// We compute by finding the first block that is the "lowest" (has highest blocknum) block common
     /// for both blocks' ancestors.
+    /// `floor` is the oldest block the DAG is guaranteed to hold — the node's
+    /// approved block. A DAG restored from LFS is truncated below it, so a
+    /// walk that descends past it asks for parents that were never downloaded.
+    /// Nothing below the approved block can be an answer anyway: it is
+    /// finalized, so no fork under it is live.
     pub async fn lowest_universal_common_ancestor_many(
         blocks: &[BlockMetadata],
         dag: &KeyValueDagRepresentation,
+        floor: &BlockMetadata,
     ) -> Result<BlockMetadata, KvStoreError> {
         if blocks.is_empty() {
             return Err(KvStoreError::InvalidArgument(
@@ -192,6 +198,18 @@ impl DagOperations {
                 current.iter().skip(1).cloned(),
             );
 
+            // The head is the highest remaining block, so once it is down to the
+            // floor everything else is too and no further descent can raise the
+            // answer. Checked BEFORE expanding, so a parent below the floor is
+            // never read — that is the parent a truncated DAG does not hold.
+            // The floor need not be an ancestor of an input that was itself below
+            // it: such an input is under finality and carries no fork-choice
+            // weight, and callers use this result as the bound of the region they
+            // score, not as a proven ancestor.
+            if head.block_number <= floor.block_number {
+                return Ok(floor.clone());
+            }
+
             let mut next: BTreeSet<ReverseOrderedBlockMetadata> = tail.collect();
 
             for parent_hash in &head.parents {
@@ -215,11 +233,12 @@ impl DagOperations {
         b1: &BlockMetadata,
         b2: &BlockMetadata,
         dag: &KeyValueDagRepresentation,
+        floor: &BlockMetadata,
     ) -> Result<BlockMetadata, KvStoreError> {
         if b1 == b2 {
             return Ok(b1.clone());
         }
 
-        Self::lowest_universal_common_ancestor_many(&[b1.clone(), b2.clone()], dag).await
+        Self::lowest_universal_common_ancestor_many(&[b1.clone(), b2.clone()], dag, floor).await
     }
 }

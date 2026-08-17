@@ -407,12 +407,19 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     let parent_hashes: Vec<BlockHash> = parents.iter().map(|b| b.block_hash.clone()).collect();
     let parent_metas = dag.lookups_unsafe(parent_hashes.clone())?;
 
+    let approved_meta = models::rust::block_metadata::BlockMetadata::from_block(
+        &this.approved_block,
+        false,
+        None,
+        None,
+    );
     let lca = if parent_metas.is_empty() {
         this.approved_block.block_hash.clone()
     } else {
         crate::rust::util::dag_operations::DagOperations::lowest_universal_common_ancestor_many(
             &parent_metas,
             &dag,
+            &approved_meta,
         )
         .await?
         .block_hash

@@ -114,6 +114,8 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
             None,
         );
 
+        let genesis_meta = BlockMetadata::from_block(&genesis, false, None, None);
+
         // DAG Looks like this:
         //
         //        b9   b10
@@ -188,67 +190,68 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
             .get_representation()
             .expect("dag representation");
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b1, &b5, &dag)
+        let result = DagOperations::lowest_universal_common_ancestor(&b1, &b5, &dag, &genesis_meta)
             .await
             .unwrap();
         assert_eq!(result, b1);
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b2, &b3, &dag)
+        let result = DagOperations::lowest_universal_common_ancestor(&b2, &b3, &dag, &genesis_meta)
             .await
             .unwrap();
         assert_eq!(result, b1);
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b3, &b2, &dag)
+        let result = DagOperations::lowest_universal_common_ancestor(&b3, &b2, &dag, &genesis_meta)
             .await
             .unwrap();
         assert_eq!(result, b1);
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b6, &b7, &dag)
+        let result = DagOperations::lowest_universal_common_ancestor(&b6, &b7, &dag, &genesis_meta)
             .await
             .unwrap();
         assert_eq!(result, b1);
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b2, &b2, &dag)
+        let result = DagOperations::lowest_universal_common_ancestor(&b2, &b2, &dag, &genesis_meta)
             .await
             .unwrap();
         assert_eq!(result, b2);
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b10, &b9, &dag)
-            .await
-            .unwrap();
+        let result =
+            DagOperations::lowest_universal_common_ancestor(&b10, &b9, &dag, &genesis_meta)
+                .await
+                .unwrap();
         assert_eq!(result, b8);
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b3, &b7, &dag)
+        let result = DagOperations::lowest_universal_common_ancestor(&b3, &b7, &dag, &genesis_meta)
             .await
             .unwrap();
         assert_eq!(result, b3);
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b3, &b8, &dag)
+        let result = DagOperations::lowest_universal_common_ancestor(&b3, &b8, &dag, &genesis_meta)
             .await
             .unwrap();
         assert_eq!(result, b1);
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b4, &b5, &dag)
+        let result = DagOperations::lowest_universal_common_ancestor(&b4, &b5, &dag, &genesis_meta)
             .await
             .unwrap();
         assert_eq!(result, b3);
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b4, &b6, &dag)
+        let result = DagOperations::lowest_universal_common_ancestor(&b4, &b6, &dag, &genesis_meta)
             .await
             .unwrap();
         assert_eq!(result, b1);
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b7, &b7, &dag)
+        let result = DagOperations::lowest_universal_common_ancestor(&b7, &b7, &dag, &genesis_meta)
             .await
             .unwrap();
         assert_eq!(result, b7);
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b7, &b8, &dag)
+        let result = DagOperations::lowest_universal_common_ancestor(&b7, &b8, &dag, &genesis_meta)
             .await
             .unwrap();
         assert_eq!(result, b1);
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b8, &b9, &dag)
+        let result = DagOperations::lowest_universal_common_ancestor(&b8, &b9, &dag, &genesis_meta)
             .await
             .unwrap();
         assert_eq!(result, b8);
@@ -256,6 +259,7 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
         let result = DagOperations::lowest_universal_common_ancestor_many(
             &[b8.clone(), b9.clone(), b10.clone()],
             &dag,
+            &genesis_meta,
         )
         .await
         .unwrap();
@@ -264,10 +268,106 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
         let result = DagOperations::lowest_universal_common_ancestor_many(
             &[b2.clone(), b3.clone(), b4.clone()],
             &dag,
+            &genesis_meta,
         )
         .await
         .unwrap();
         assert_eq!(result, b1);
+
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    })
+    .await
+    .expect("Test should complete successfully");
+}
+
+/// A DAG restored from LFS holds blocks whose parents were never downloaded:
+/// the node syncs a window below its approved block and stops. The LUCA walk
+/// descends by parent, so on a braided DAG — where a block's secondary parents
+/// reach below the approved block — it walks out of that window and asks for a
+/// block that is not there, which fails the whole snapshot.
+///
+/// The approved block is the floor: it is finalized, so no fork beneath it is
+/// live, and it is the oldest block the DAG is guaranteed to hold. Reaching it
+/// means the answer is it.
+#[tokio::test]
+async fn luca_stops_at_the_approved_block_when_the_dag_is_truncated() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // Never inserted: the history below the sync window.
+        let truncated = BlockHash::from(b"parent-below-the-lfs-frontier".to_vec());
+
+        let (f1, f2, anchor, t1, t2) = {
+            let mut build = |parents: Vec<BlockHash>, number: i32| -> BlockMetadata {
+                let block = create_block(
+                    &mut block_store,
+                    &mut block_dag_storage,
+                    parents,
+                    &genesis,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(number),
+                    None,
+                    None,
+                );
+                BlockMetadata::from_block(&block, false, None, None)
+            };
+
+            // Retained below the approved block, their own parents truncated away.
+            let f1 = build(vec![truncated.clone()], 5);
+            let f2 = build(vec![truncated.clone()], 5);
+            let anchor = build(vec![f1.block_hash.clone()], 10);
+            // Braided: each tip reaches the approved block AND a block under it,
+            // so the two tips do not converge until the walk is already below.
+            let t1 = build(vec![anchor.block_hash.clone(), f1.block_hash.clone()], 11);
+            let t2 = build(vec![anchor.block_hash.clone(), f2.block_hash.clone()], 11);
+            (f1, f2, anchor, t1, t2)
+        };
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+
+        let result = DagOperations::lowest_universal_common_ancestor_many(
+            &[t1.clone(), t2.clone()],
+            &dag,
+            &anchor,
+        )
+        .await
+        .expect("the walk must stop at the approved block, not read past the sync window");
+        assert_eq!(
+            result, anchor,
+            "two tips that only converge below the approved block must resolve to it"
+        );
+
+        // A stale input already below the floor carries no fork-choice information;
+        // the answer is still the floor, not the stale block the walk happened to end on.
+        let result = DagOperations::lowest_universal_common_ancestor_many(
+            &[t1.clone(), f2.clone()],
+            &dag,
+            &anchor,
+        )
+        .await
+        .expect("a below-floor input must not drag the walk past the sync window");
+        assert_eq!(result, anchor, "a below-floor input resolves to the floor");
+
+        let _ = f1;
 
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     })

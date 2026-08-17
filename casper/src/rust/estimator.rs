@@ -212,7 +212,7 @@ impl Estimator {
         let result = if filtered_lm.is_empty() {
             genesis.block_hash.clone()
         } else {
-            DagOperations::lowest_universal_common_ancestor_many(&filtered_lm, block_dag)
+            DagOperations::lowest_universal_common_ancestor_many(&filtered_lm, block_dag, genesis)
                 .await?
                 .block_hash
         };
