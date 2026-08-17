@@ -181,6 +181,10 @@ name = "bincode_decoder_shapes"
 path = "tests/bincode_decoder_shapes.rs"
 
 [[test]]
+name = "par_bag"
+path = "tests/par_bag.rs"
+
+[[test]]
 name = "par_protobuf_stack_safety"
 path = "tests/par_protobuf_stack_safety.rs"
 
