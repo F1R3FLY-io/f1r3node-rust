@@ -4508,6 +4508,24 @@ schedule, charge, EPathMap mode, EPM1 snapshot, PathMap topology, or zipper/alge
 The PathMap crate is untouched. Stack-safety report §5.16.6, its durable TSV, and the committed
 scientific ledger retain the experiment and closure evidence.
 
+**CBR-023 living-set continuation (2026-08-17, byte-native EPathMap member-prefix restriction;
+pgmcp experiment 250).** `f1r3node-rust-mettail@a1c5ff661` replaces only the mask-construction
+front end of `EntryTrie::try_restrict_member_prefixes`; `a351b82e5` removes the accepted
+experiment's decoded control and retains the selected implementation. Canonical segment extents now
+identify the branch-prefix slice in place. The same native `PathMap::restrict` remains the algebraic
+authority, set mode still uses `PathMap<()>`, map mode still uses `PathMap<Par>`, and every surviving
+map value still comes from the left/base trie. An empty `Par` in a map mask marks only a prefix value
+position and is unobservable in the result.
+
+Exact control/treatment `EntryTrie` equality, both canonical codec arms, embedded terminal bytes,
+empty-list root restriction, malformed-shape rejection, the 67-case path-integration suite, and the
+8-case EPathMap algebra suite pass. Experiment 250 accepts the implementation with **9.27%–12.22%**
+lower mean latency across all three preregistered cells. This is a `BYTE_NEUTRAL_MEASURED` heap/work
+optimization in CBR-023's `EQUIVALENCE_PROVEN` set: it changes no Rholang value or method semantics,
+match verdict, binding, EPathMap mode, EPM1/protobuf/bincode byte, hash, COMM schedule, charge, or
+post-state. PathMap is not modified. Stack-safety report §5.16.7.5 and its durable TSV contain the
+algorithm, raw measurements, resource envelope, and pgmcp identifiers.
+
 **Dormant RSpace matching-cursor foundation (2026-08-15; pgmcp `rspace-shared-match-pda`).**
 `f1r3node-rust-mettail@71d378e73` extends the existing descriptor pass with exhaustive,
 ascending-tag `RhoMatchProgram` tables, typed `ParCursor` accessors, and the heap-worklist

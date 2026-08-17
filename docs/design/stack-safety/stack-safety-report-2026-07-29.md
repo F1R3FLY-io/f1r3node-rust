@@ -3616,6 +3616,7 @@ swap, and two-core CPU quota**. **MEASURED:**
 | live accepted-match Bag transaction | per-selected-datum hot-store lock and removal | **23/23 Bag; 18/18 data index; 17/17 guarded play/replay; 146/146 broad RSpace integration; Rocq/TLC/mCRL2 live-commit proof; experiments 218 and 219 accepted under their locked statistical criteria** | `cd01ea721` normalizes exact selected identities, commits one COW root under one lock, preserves fresh/persistent candidates, and rejects underflow or malformed paths without mutation; `21ece399d` proves candidate projection, play/replay delta equality, atomic publication, all seven invariants over 2,628 TLC states, branching bisimulation, and no partial-publication reachability; `0f9beb5f0` removes the redundant outer root clone while retaining the `BagDelta`-owned atomic root, lowering singleton median latency 5.671% with no secondary-cardinality regression; `87679597d` measures one moving write zipper and `9a746f2bf` selects it only for multi-key deltas after the singleton regressed 8.289%; broad gate 3 min 6.13 s, 489,848 KiB peak RSS, zero swap under 12 GiB `MemoryMax` and four-core quota; affected strict Clippy passes, while the intentionally broader all-test Clippy reaches unrelated pre-existing warnings and is not claimed |
 | receive-first query-product `TrieRef` experiment | synchronized mutable read zippers | **pgmcp experiment 220 rejected; 82 samples per arm at 16, 256, and 4,096 candidates; exact sorted candidate vectors agree; 31/31 focused and 419/419 complete package tests; strict changed-target lint passes** | `514659e2b` freezes the zipper control and tests per-byte borrowed `TrieRef` focuses; the treatment regresses mean latency 83.041%, 61.953%, and 55.549%, respectively; `27557c374` restores the control in production while retaining the falsified treatment as a benchmark; both machines remain iterative heap PDAs with constant native-stack use |
 | owned candidate-mask consuming algebra | immutable whole-map `PathMap::join` / `meet` | **pgmcp experiment 249 rejected; 30 samples per arm in five cells; exact verdict/FreeMap differential, feature-free build, and release benchmark build pass** | `join_map_into` / `meet_into` slow every measured cell: +2.432% at the width-4,096 primary and +0.438% to +0.975% across four guards; production retains the immutable operations, the tested treatment is recoverable at `855004971`, and the rejected feature/benchmark is removed from the selected tree |
+| EPathMap member-prefix restriction | decode each selector key to `Par`, rebuild its segment vector and prefix key, and clone map selector values into a same-typed mask | **pgmcp experiment 250 accepted; 180 samples per arm across three cells; exact EntryTrie differential, 67/67 codec/path integration, 8/8 algebra, feature-free build, and strict lint pass** | scan canonical segment extents in place, borrow each branch-prefix slice, use unit values or empty `Par` sentinels only to mark mask positions, and retain native `PathMap::restrict`; mean latency falls 11.31% for sets, 12.22% for maps with 64-byte selector values, and 9.27% for maps with 4,096-byte selector values; selected at `a351b82e5` |
 | datum-first retained-automaton × Bag product | resting data disabled the retained prefilter and forced the full canonical continuation scan | **pgmcp experiments 224 and 225 rejected; 226 and exact-final-source 229 accepted; full-matrix replication artifact 320; 82 samples per arm/cell; 8/8 release regressions; 12/12 benchmark preflights; 428/428 complete package tests; strict changed-target lint; Rocq proof pass** | `ad395c357` adds the conservative fresh-or-resting product and `61accc170` selects the bounded traversal: zero/one exact PathMap prefix lookup for a singleton Bag with zero/one eligible terminal depth, otherwise the linear synchronized zipper product; artifact 320 confirms shared speedups of 4.476× at 256 and 13.338× at 4,096 and records diverse speedups of 1.059× and 7.803×; both cardinality-16 causal-selector cells lose to the trivial scan, but the existing end-to-end COMM experiments win at 16 because they include avoided spatial matching work; native-stack use is constant, no record is decoded or flattened, and no empirical cutoff is inferred |
 | Bag formal laws | informal implementation equations | **Rocq and Verus `--no-cheating` plus TLC and mCRL2 pass inside the complete bounded bundle** | `8e4938ec6` proves exact-key multiplicity algebra and normalized/canonical deltas in Rocq, plus executable checked-`u64` apply/revert in Verus; `21ece399d` adds the live-commit Rocq bridge, a 2,628-state TLC model, branching bisimulation, and no-partial-publication proof; the earlier focused Rocq/Verus proofs used 351,028 KiB and 261,824 KiB peak RSS respectively with zero swap; Z3 and all three TLC models pass |
 | standalone Bag microbenchmark | legacy `HashMultiSet` controls | **15/15 comparative pairs plus 6 logical-multiplicity points** | construction improves 20.5–54.6%; the full exact-lookup sweep improves except for an operationally neutral 0.236% loss at 4,096; copy-on-write clone/update improves from 16 keys but loses 65.9% at one; one-key construction remains approximately 76 ns through `u64::MAX`; aggregate benchmark-process RSS is 39,912 KiB, not a comparative per-operation memory result |
@@ -4264,6 +4265,74 @@ remainder values, EPathMap mode, EPM1 bytes, protobuf/bincode bytes, event/post-
 selection, and D3 communication-prefix accounting are unchanged. This is measured implementation
 evidence within active CBR-053, not a new consensus decision and not closure of CBR-053's remaining
 associative-commutative schedule obligations.
+
+##### 5.16.7.5 Member-prefix restriction keeps `restrict` and removes its decoded mask builder
+
+`EntryTrie::try_restrict_member_prefixes` asks a prefix question, not an exact-key question: every
+entry in the left trie whose canonical byte key begins at a branch named by the right trie survives.
+The operation already ended in PathMap's native `restrict`, which preserves prefix compression and
+can return an identity that shares the left root by copy-on-write. The avoidable work was entirely in
+building its mask. For every selector, the predecessor decoded a complete `Par`, re-split it into a
+`Vec<Vec<u8>>`, allocated the concatenated prefix, and dismantled the decoded term. Map mode also
+cloned the selector's associated `Par` even though `restrict` consults only the mask's value
+**position** and takes every surviving value from the left map.
+
+The selected conversion at `a1c5ff661` / `a351b82e5` parses the already-canonical key in place. Its
+rule is exact for both top-level codec arms:
+
+```text
+procedure branch_prefix(canonical_entry_key):
+    cursor := 0
+    segment_count := 0
+    loop:
+        if key[cursor] is TERM at a codec-segment boundary:
+            accept only when TERM is the final byte
+            return key[0 .. cursor]                  // split-list branch
+        if cursor equals key.length:
+            accept only when segment_count equals 1
+            return the complete key                  // bare-entry branch
+        extent := canonical_segment_extent(key[cursor ..])
+        reject when no complete segment exists
+        cursor := cursor + extent
+        segment_count := segment_count + 1
+```
+
+The boundary qualification is load-bearing: a bare `GString("\0")` legitimately ends in byte
+`0x00`, so stripping the last byte would confuse it with a split-list terminator. The codec-law tests
+cover bare integers, embedded-NUL strings, empty/singleton/multi-element lists, concatenated bare
+segments, and bytes after a terminator. Set masks store `()`; map masks store `Par::default()` only
+because `PathMap::restrict` has a homogeneous value type. The existing value-provenance test proves
+that no sentinel can escape into the result.
+
+Pgmcp experiment 250 compared the decoded predecessor with this byte-native builder while both arms
+used the identical production `PathMap::restrict`. One preregistered run used 60 retained paired,
+interleaved, order-rotated samples after 10 warmups per cell. The 4,096-entry base had 256 shared
+prefix buckets and 64 selector prefixes. Preflight measured **82.35%** aggregate idle and **94.95%**
+idle on pinned CPU 8; the 8 GiB zero-swap scope peaked at **317,480 KiB** and completed in **3.49 s**.
+
+| cell | decoded control mean | byte-native mean | change | paired conclusion at $`\alpha=0.01`$ |
+|---|---:|---:|---:|---|
+| set | 920.859 µs | 816.719 µs | -11.31% | interval excludes zero; treatment faster |
+| map, 64-byte selector values | 977.293 µs | 857.911 µs | -12.22% | interval excludes zero; treatment faster |
+| map, 4,096-byte selector values | 948.610 µs | 860.682 µs | -9.27% | interval excludes zero; treatment faster |
+
+The locked pooled verdict accepts the treatment ($`t=-44.4521`$,
+$`p=9.6952\times10^{-147}`$, Cohen's $`d=-4.6857`$, treatment-minus-control 95% confidence
+interval **[-108.410 µs, -99.223 µs]**). The nonparametric robustness result agrees (Cliff's
+$`\delta=-1`$, Mann–Whitney $`p=0`$). Exact control/treatment `EntryTrie` equality is asserted before
+timing; the selected 67/67 path integration tests, 8/8 algebra tests, and strict default-library lint
+pass under the same resource policy. The benchmark-only decoded control and feature are removed from
+the selected tree, but remain reproducible at `a1c5ff661`; pgmcp artifact 329 and
+[`measurements/epathmap-member-prefix-restrict-2026-08-17.tsv`](measurements/epathmap-member-prefix-restrict-2026-08-17.tsv)
+retain all 360 raw timings.
+
+This result does **not** justify using prefix restriction for Bag exact membership: distinct Bag keys
+may prefix one another, so multiplicity subtraction remains exact-key and pointwise. It also does not
+justify replacing heterogeneous synchronized-zipper products such as `PathMap<Multiplicity>` ×
+`PathMap<TerminalId>`; `restrict` requires one value type. The existing single-prefix `subtrie`
+already delegates to native `restrict`, and no unmeasured zipper rewrite is selected. PathMap itself
+is unchanged. No Rholang value, matching verdict, EPathMap mode, EPM1/protobuf/bincode byte, hash,
+COMM, charge, or post-state changes.
 
 ---
 
@@ -8275,6 +8344,7 @@ done
 | [`measurements/epathmap-ac-byte-native-2026-08-16.tsv`](measurements/epathmap-ac-byte-native-2026-08-16.tsv) | experiment 233's decoded-key control, byte-native exact-mask treatment, final moving-zipper treatment, per-cell statistics, protocol deviation, and capped equivalence gates (§5.16.7) |
 | [`measurements/rspace-ac-connective-domain-algebra-2026-08-17.tsv`](measurements/rspace-ac-connective-domain-algebra-2026-08-17.tsv) | experiment 248's universal-domain control and PathMap join/meet treatment, six per-cell estimates, primary decision statistics, guardrails, resource protocol, and sealed pgmcp digests (§5.16.6.5) |
 | [`measurements/rspace-ac-candidate-mask-consuming-algebra-2026-08-17.tsv`](measurements/rspace-ac-candidate-mask-consuming-algebra-2026-08-17.tsv) | experiment 249's immutable whole-map control and rejected consuming-zipper treatment, five per-cell estimates, resource protocol, sealed pgmcp digests, and selected production disposition (§5.16.6.6) |
+| [`measurements/epathmap-member-prefix-restrict-2026-08-17.tsv`](measurements/epathmap-member-prefix-restrict-2026-08-17.tsv) | experiment 250's decoded-key control and selected byte-native member-prefix mask builder, all 360 paired raw timings, per-cell statistics, resource protocol, sealed pgmcp run identifiers, and selected production disposition (§5.16.7.5) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of
