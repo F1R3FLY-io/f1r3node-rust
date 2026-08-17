@@ -1,16 +1,24 @@
+use std::collections::BTreeSet;
+use std::sync::Arc;
+
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
     BindPattern, EAnd, EDiv, EEq, EGt, EGte, ELt, ELte, EMatches, EMethod, EMinus, EMinusMinus,
     EMod, EMult, ENeg, ENeq, ENot, EOr, EPercentPercent, EPlus, EPlusPlus, Expr, ListParWithRandom,
-    Par,
+    Par, TaggedContinuation,
 };
 use models::rust::utils::{
     new_elist_par, new_eplus_par, new_eset_par, new_freevar_par, new_freevar_var, new_wildcard_par,
 };
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rspace_plus_plus::rspace::r#match::Match;
+use rspace_plus_plus::rspace::replay_rspace::ReplayRSpace;
 use rspace_plus_plus::rspace::rho_path::RhoPathEncode;
+use rspace_plus_plus::rspace::rspace::RSpace;
+use rspace_plus_plus::rspace::rspace_interface::{ISpace, MaybeProduceResult};
+use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
 fn integer(value: i64) -> Par {
     let mut par = Par::default();
@@ -405,4 +413,316 @@ fn unordered_nested_variables_remain_on_the_spatial_fallback() {
         free_count: 1,
     };
     assert!(matcher.rho_path_query(&pattern).is_none());
+}
+
+#[derive(Clone)]
+struct GeneratedRSpaceCase {
+    name: &'static str,
+    pattern: BindPattern,
+    matching: ListParWithRandom,
+    nonmatching: [ListParWithRandom; 2],
+}
+
+fn generated_rspace_cases() -> Vec<GeneratedRSpaceCase> {
+    let mut cases = Vec::new();
+    macro_rules! push_binary_case {
+        ($name:literal, $variant:ident, $body:ident) => {{
+            let expression = |left: Par, right: Par, connective_used: bool| {
+                Par::default()
+                    .with_exprs(vec![Expr {
+                        expr_instance: Some(ExprInstance::$variant($body {
+                            p1: Some(left),
+                            p2: Some(right),
+                        })),
+                    }])
+                    .with_connective_used(connective_used)
+            };
+            cases.push(GeneratedRSpaceCase {
+                name: $name,
+                pattern: BindPattern {
+                    patterns: vec![expression(new_freevar_par(0, Vec::new()), integer(7), true)],
+                    remainder: None,
+                    free_count: 1,
+                },
+                matching: datum(expression(integer(11), integer(7), false)),
+                nonmatching: [
+                    datum(expression(integer(11), integer(8), false)),
+                    datum(expression(integer(12), integer(9), false)),
+                ],
+            });
+        }};
+    }
+    push_binary_case!("EMult", EMultBody, EMult);
+    push_binary_case!("EDiv", EDivBody, EDiv);
+    push_binary_case!("EMod", EModBody, EMod);
+    push_binary_case!("EPercentPercent", EPercentPercentBody, EPercentPercent);
+    push_binary_case!("EPlus", EPlusBody, EPlus);
+    push_binary_case!("EPlusPlus", EPlusPlusBody, EPlusPlus);
+    push_binary_case!("EMinusMinus", EMinusMinusBody, EMinusMinus);
+    push_binary_case!("EMinus", EMinusBody, EMinus);
+    push_binary_case!("ELt", ELtBody, ELt);
+    push_binary_case!("ELte", ELteBody, ELte);
+    push_binary_case!("EGt", EGtBody, EGt);
+    push_binary_case!("EGte", EGteBody, EGte);
+    push_binary_case!("EEq", EEqBody, EEq);
+    push_binary_case!("ENeq", ENeqBody, ENeq);
+    push_binary_case!("EAnd", EAndBody, EAnd);
+    push_binary_case!("EOr", EOrBody, EOr);
+
+    let not = |value: Par, connective_used: bool| {
+        Par::default()
+            .with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::ENotBody(ENot { p: Some(value) })),
+            }])
+            .with_connective_used(connective_used)
+    };
+    let neg = |value: Par, connective_used: bool| {
+        Par::default()
+            .with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::ENegBody(ENeg { p: Some(value) })),
+            }])
+            .with_connective_used(connective_used)
+    };
+    cases.push(GeneratedRSpaceCase {
+        name: "ENot",
+        pattern: BindPattern {
+            patterns: vec![not(new_freevar_par(0, Vec::new()), true)],
+            remainder: None,
+            free_count: 1,
+        },
+        matching: datum(not(integer(11), false)),
+        nonmatching: [datum(neg(integer(11), false)), datum(integer(8))],
+    });
+    cases.push(GeneratedRSpaceCase {
+        name: "ENeg",
+        pattern: BindPattern {
+            patterns: vec![neg(new_freevar_par(0, Vec::new()), true)],
+            remainder: None,
+            free_count: 1,
+        },
+        matching: datum(neg(integer(11), false)),
+        nonmatching: [datum(not(integer(11), false)), datum(integer(9))],
+    });
+
+    let matches = |target: Par, exact_pattern: Par, connective_used: bool| {
+        Par::default()
+            .with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::EMatchesBody(EMatches {
+                    target: Some(target),
+                    pattern: Some(exact_pattern),
+                })),
+            }])
+            .with_connective_used(connective_used)
+    };
+    cases.push(GeneratedRSpaceCase {
+        name: "EMatches",
+        pattern: BindPattern {
+            patterns: vec![matches(new_freevar_par(0, Vec::new()), integer(7), true)],
+            remainder: None,
+            free_count: 1,
+        },
+        matching: datum(matches(integer(11), integer(7), false)),
+        nonmatching: [
+            datum(matches(integer(11), integer(8), false)),
+            datum(matches(integer(12), integer(9), false)),
+        ],
+    });
+    cases.push(GeneratedRSpaceCase {
+        name: "EMethod",
+        pattern: BindPattern {
+            patterns: vec![method(new_freevar_par(0, Vec::new()), integer(7), true)],
+            remainder: None,
+            free_count: 1,
+        },
+        matching: datum(method(integer(11), integer(7), false)),
+        nonmatching: [
+            datum(method(integer(11), integer(8), false)),
+            datum(method(integer(12), integer(9), false)),
+        ],
+    });
+    cases.push(GeneratedRSpaceCase {
+        name: "EList",
+        pattern: BindPattern {
+            patterns: vec![list(vec![new_freevar_par(0, Vec::new()), integer(7)], true)],
+            remainder: None,
+            free_count: 1,
+        },
+        matching: datum(list(vec![integer(11), integer(7)], false)),
+        nonmatching: [
+            datum(list(vec![integer(11), integer(8)], false)),
+            datum(list(vec![integer(12), integer(9)], false)),
+        ],
+    });
+    cases
+}
+
+#[derive(Clone, Default)]
+struct FullScanMatcher;
+
+impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for FullScanMatcher {
+    fn get(&self, pattern: &BindPattern, datum: &ListParWithRandom) -> Option<ListParWithRandom> {
+        Matcher.get(pattern, datum)
+    }
+
+    fn check_commit(
+        &self,
+        continuation: &TaggedContinuation,
+        matched: &[&ListParWithRandom],
+    ) -> bool {
+        Matcher.check_commit(continuation, matched)
+    }
+}
+
+type RhoSpace = RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
+type RhoReplay = ReplayRSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
+
+async fn space_pair<M>(matcher: M) -> (RhoSpace, RhoReplay)
+where M: Match<BindPattern, ListParWithRandom, TaggedContinuation> + 'static {
+    let mut manager = InMemoryStoreManager::new();
+    let stores = manager
+        .r_space_stores()
+        .await
+        .expect("in-memory RSpace stores");
+    RSpace::create_with_replay(stores, Arc::new(Box::new(matcher)))
+        .expect("play/replay RSpace pair")
+}
+
+async fn run_generated_workload<S>(
+    space: &S,
+    cases: &[GeneratedRSpaceCase],
+) -> Vec<MaybeProduceResult<Par, BindPattern, ListParWithRandom, TaggedContinuation>>
+where
+    S: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+{
+    let mut results = Vec::with_capacity(cases.len());
+    for (index, case) in cases.iter().enumerate() {
+        let channel = integer(10_000 + i64::try_from(index).expect("bounded case index"));
+        for nonmatching in &case.nonmatching {
+            assert!(
+                space
+                    .produce(channel.clone(), nonmatching.clone(), false)
+                    .await
+                    .unwrap_or_else(|error| panic!("{}: nonmatching produce: {error}", case.name))
+                    .is_none(),
+                "{}: a nonmatching datum cannot fire",
+                case.name
+            );
+        }
+        assert!(
+            space
+                .consume(
+                    vec![channel.clone()],
+                    vec![case.pattern.clone()],
+                    TaggedContinuation::default(),
+                    false,
+                    BTreeSet::new(),
+                )
+                .await
+                .unwrap_or_else(|error| panic!("{}: consume: {error}", case.name))
+                .is_none(),
+            "{}: the receive must wait after both negative controls",
+            case.name
+        );
+        let result = space
+            .produce(channel, case.matching.clone(), false)
+            .await
+            .unwrap_or_else(|error| panic!("{}: matching produce: {error}", case.name));
+        assert!(result.is_some(), "{}: matching datum must fire", case.name);
+        results.push(result);
+    }
+    results
+}
+
+#[tokio::test]
+async fn generated_ordered_queries_preserve_play_replay_results_logs_and_roots() {
+    let cases = generated_rspace_cases();
+    assert_eq!(
+        cases.len(),
+        21,
+        "the generated ordered eligibility corpus changed"
+    );
+
+    let (control, control_replay) = space_pair(FullScanMatcher).await;
+    let (indexed, indexed_replay) = space_pair(Matcher).await;
+    let control_empty = control
+        .create_checkpoint()
+        .await
+        .expect("control empty checkpoint");
+    let indexed_empty = indexed
+        .create_checkpoint()
+        .await
+        .expect("indexed empty checkpoint");
+    assert_eq!(control_empty.root, indexed_empty.root, "empty roots");
+
+    let control_results = run_generated_workload(&control, &cases).await;
+    let indexed_results = run_generated_workload(&indexed, &cases).await;
+    assert_eq!(indexed_results, control_results, "play results");
+    assert_eq!(
+        indexed.to_map().await,
+        control.to_map().await,
+        "play hot stores"
+    );
+
+    let control_point = control
+        .create_checkpoint()
+        .await
+        .expect("control checkpoint");
+    let indexed_point = indexed
+        .create_checkpoint()
+        .await
+        .expect("indexed checkpoint");
+    assert_eq!(indexed_point.log, control_point.log, "play event histories");
+    assert_eq!(
+        indexed_point.root, control_point.root,
+        "play post-state roots"
+    );
+
+    control_replay
+        .rig_and_reset(control_empty.root, control_point.log.clone())
+        .await
+        .expect("rig control replay");
+    indexed_replay
+        .rig_and_reset(indexed_empty.root, indexed_point.log.clone())
+        .await
+        .expect("rig indexed replay");
+    let control_replay_results = run_generated_workload(&control_replay, &cases).await;
+    let indexed_replay_results = run_generated_workload(&indexed_replay, &cases).await;
+    assert_eq!(
+        control_replay_results, control_results,
+        "control replay results"
+    );
+    assert_eq!(
+        indexed_replay_results, indexed_results,
+        "indexed replay results"
+    );
+    assert_eq!(
+        indexed_replay.to_map().await,
+        control_replay.to_map().await,
+        "replay hot stores"
+    );
+
+    let control_replay_point = control_replay
+        .create_checkpoint()
+        .await
+        .expect("control replay checkpoint");
+    let indexed_replay_point = indexed_replay
+        .create_checkpoint()
+        .await
+        .expect("indexed replay checkpoint");
+    assert_eq!(
+        control_replay_point.root, control_point.root,
+        "control replay root"
+    );
+    assert_eq!(
+        indexed_replay_point.root, indexed_point.root,
+        "indexed replay root"
+    );
+    control_replay
+        .check_replay_data()
+        .await
+        .expect("control rig exhausted");
+    indexed_replay
+        .check_replay_data()
+        .await
+        .expect("indexed rig exhausted");
 }
