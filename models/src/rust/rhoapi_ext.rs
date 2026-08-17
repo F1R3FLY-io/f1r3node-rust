@@ -382,19 +382,6 @@ where V: Clone + Send + Sync + Unpin {
     mask
 }
 
-#[cfg(feature = "epathmap-setsubtrie-differential")]
-fn composed_subtrie_member_key(prefix: &[u8], source_key: &[u8]) -> Vec<u8> {
-    let (segments, _) = decode_cursor(source_key);
-    let segment_bytes = segments.iter().map(Vec::len).sum::<usize>();
-    let mut absolute = Vec::with_capacity(prefix.len() + segment_bytes + 1);
-    absolute.extend_from_slice(prefix);
-    for segment in segments {
-        absolute.extend_from_slice(&segment);
-    }
-    absolute.push(super::canonical_path::tag::TERM);
-    absolute
-}
-
 fn key_after_dropping_segments(key: &[u8], count: usize) -> Option<Vec<u8>> {
     let (segments, _) = decode_cursor(key);
     if segments.len() <= count {
@@ -1293,100 +1280,6 @@ impl EntryTrie {
                 let mut destination = base.clone();
                 remove_subtrie_native(&mut destination, &prefix);
                 graft_composed_map_subtrie(&mut destination, &prefix, source_map);
-                EPathMapRepr::Map(destination)
-            }
-            (EPathMapRepr::Set(_), EPathMapRepr::Map(_))
-            | (EPathMapRepr::Map(_), EPathMapRepr::Set(_)) => {
-                return Err(EPathMapAlgebraError::ModeMismatch {
-                    left: left_mode,
-                    right: right_mode,
-                });
-            }
-        };
-
-        *self = Self::algebra_result(repr);
-        Ok(())
-    }
-
-    /// Reconstructed-topology control retained only for the causal native
-    /// zipper-graft benchmark.
-    #[cfg(feature = "epathmap-setsubtrie-differential")]
-    pub fn replace_subtrie_reconstructed_control(
-        &mut self,
-        cursor_segments: &[Vec<u8>],
-        cursor_kind: CursorKind,
-        source: &Self,
-    ) -> Result<(), EPathMapAlgebraError> {
-        let prefix = segments_to_key(cursor_segments, false);
-        let left_mode = self.mode();
-        let right_mode = source.mode();
-
-        let repr = match (&self.repr, &source.repr) {
-            (EPathMapRepr::Empty, EPathMapRepr::Empty) => {
-                if cursor_segments.is_empty() {
-                    EPathMapRepr::Empty
-                } else {
-                    return Err(EPathMapAlgebraError::AmbiguousEmpty {
-                        operation: "setSubtrie",
-                    });
-                }
-            }
-            (EPathMapRepr::Set(base), EPathMapRepr::Empty) => {
-                let mut destination = base.clone();
-                remove_subtrie_native(&mut destination, &prefix);
-                if !cursor_segments.is_empty() {
-                    let key = encode_cursor_entry_key(cursor_segments, cursor_kind, &destination);
-                    destination.insert(key, ());
-                }
-                EPathMapRepr::Set(destination)
-            }
-            (EPathMapRepr::Map(base), EPathMapRepr::Empty) => {
-                let mut destination = base.clone();
-                remove_subtrie_native(&mut destination, &prefix);
-                if !cursor_segments.is_empty() {
-                    let key = encode_cursor_entry_key(cursor_segments, cursor_kind, &destination);
-                    destination.create_path(key);
-                }
-                EPathMapRepr::Map(destination)
-            }
-            (EPathMapRepr::Empty, EPathMapRepr::Set(source_map)) => {
-                let mut destination = RholangSetPathMap::new();
-                compose_topology(&mut destination, &prefix, source_map);
-                for (source_key, ()) in source_map.iter() {
-                    destination.insert(composed_subtrie_member_key(&prefix, &source_key), ());
-                }
-                EPathMapRepr::Set(destination)
-            }
-            (EPathMapRepr::Set(base), EPathMapRepr::Set(source_map)) => {
-                let mut destination = base.clone();
-                remove_subtrie_native(&mut destination, &prefix);
-                compose_topology(&mut destination, &prefix, source_map);
-                for (source_key, ()) in source_map.iter() {
-                    destination.insert(composed_subtrie_member_key(&prefix, &source_key), ());
-                }
-                EPathMapRepr::Set(destination)
-            }
-            (EPathMapRepr::Empty, EPathMapRepr::Map(source_map)) => {
-                let mut destination = RholangMapPathMap::new();
-                compose_topology(&mut destination, &prefix, source_map);
-                for (source_key, value) in source_map.iter() {
-                    destination.insert(
-                        composed_subtrie_member_key(&prefix, &source_key),
-                        value.clone(),
-                    );
-                }
-                EPathMapRepr::Map(destination)
-            }
-            (EPathMapRepr::Map(base), EPathMapRepr::Map(source_map)) => {
-                let mut destination = base.clone();
-                remove_subtrie_native(&mut destination, &prefix);
-                compose_topology(&mut destination, &prefix, source_map);
-                for (source_key, value) in source_map.iter() {
-                    destination.insert(
-                        composed_subtrie_member_key(&prefix, &source_key),
-                        value.clone(),
-                    );
-                }
                 EPathMapRepr::Map(destination)
             }
             (EPathMapRepr::Set(_), EPathMapRepr::Map(_))
@@ -2868,17 +2761,6 @@ impl EPathMap {
     ) -> Result<(), EPathMapAlgebraError> {
         self.ps
             .replace_subtrie(cursor_segments, cursor_kind, &source.ps)
-    }
-
-    #[cfg(feature = "epathmap-setsubtrie-differential")]
-    pub fn replace_subtrie_reconstructed_control(
-        &mut self,
-        cursor_segments: &[Vec<u8>],
-        cursor_kind: CursorKind,
-        source: &EPathMap,
-    ) -> Result<(), EPathMapAlgebraError> {
-        self.ps
-            .replace_subtrie_reconstructed_control(cursor_segments, cursor_kind, &source.ps)
     }
 
     #[allow(deprecated)]

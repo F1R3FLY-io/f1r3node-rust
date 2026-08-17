@@ -30,9 +30,6 @@ schnorr_secp256k1_experimental = ["crypto/schnorr_secp256k1_experimental"]
 # Phase 7 measurement only. The implementation lives under `tests/support` and
 # production call sites compile to nothing unless this feature is selected.
 phase7-depth-histograms = []
-# Benchmark-only reconstructed-topology control for the native PathMap zipper
-# graft experiment. Disabled in every default/production build.
-epathmap-setsubtrie-differential = []
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
@@ -308,12 +305,6 @@ harness = false
 name = "epathmap_pathmap_native"
 path = "benches/epathmap_pathmap_native.rs"
 harness = false
-
-[[bench]]
-name = "epathmap_setsubtrie_graft"
-path = "benches/epathmap_setsubtrie_graft.rs"
-harness = false
-required-features = ["epathmap-setsubtrie-differential"]
 
 # The heap-profile subject. One arm per run (`MASSIF_ARM`), so `massif`'s
 # snapshots describe ONE mechanism instead of superimposing three.
