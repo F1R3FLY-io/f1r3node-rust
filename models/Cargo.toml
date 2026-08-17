@@ -189,6 +189,10 @@ name = "par_protobuf_stack_safety"
 path = "tests/par_protobuf_stack_safety.rs"
 
 [[test]]
+name = "pathmap_par"
+path = "tests/pathmap_par.rs"
+
+[[test]]
 name = "pathmap_integration_tests"
 path = "tests/pathmap_integration_tests.rs"
 

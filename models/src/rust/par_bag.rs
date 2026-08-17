@@ -890,16 +890,32 @@ impl ParBag {
     /// `Par` wrapper and are deliberately outside this component Bag.
     pub fn protobuf_components_encoded_len(&self) -> Result<usize, ParBagProtobufError> {
         let mut total = 0usize;
-        self.add_protobuf_family_len::<Send>(&mut total)?;
-        self.add_protobuf_family_len::<Receive>(&mut total)?;
-        self.add_protobuf_family_len::<New>(&mut total)?;
-        self.add_protobuf_family_len::<Expr>(&mut total)?;
-        self.add_protobuf_family_len::<Match>(&mut total)?;
-        self.add_protobuf_family_len::<GUnforgeable>(&mut total)?;
-        self.add_protobuf_family_len::<Connective>(&mut total)?;
-        self.add_protobuf_family_len::<Bundle>(&mut total)?;
-        self.add_protobuf_family_len::<If>(&mut total)?;
+        self.add_protobuf_components_before_root_metadata_len(&mut total)?;
+        self.add_protobuf_components_after_root_metadata_len(&mut total)?;
         Ok(total)
+    }
+
+    pub(crate) fn add_protobuf_components_before_root_metadata_len(
+        &self,
+        total: &mut usize,
+    ) -> Result<(), ParBagProtobufError> {
+        self.add_protobuf_family_len::<Send>(total)?;
+        self.add_protobuf_family_len::<Receive>(total)?;
+        self.add_protobuf_family_len::<New>(total)?;
+        self.add_protobuf_family_len::<Expr>(total)?;
+        self.add_protobuf_family_len::<Match>(total)?;
+        self.add_protobuf_family_len::<GUnforgeable>(total)?;
+        self.add_protobuf_family_len::<Connective>(total)?;
+        Ok(())
+    }
+
+    pub(crate) fn add_protobuf_components_after_root_metadata_len(
+        &self,
+        total: &mut usize,
+    ) -> Result<(), ParBagProtobufError> {
+        self.add_protobuf_family_len::<Bundle>(total)?;
+        self.add_protobuf_family_len::<If>(total)?;
+        Ok(())
     }
 
     /// Stream protobuf fields from trie endpoints directly into a caller's
@@ -912,6 +928,15 @@ impl ParBag {
         &self,
         output: &mut impl BufMut,
     ) -> Result<(), ParBagProtobufError> {
+        self.encode_protobuf_components_before_root_metadata(output)?;
+        self.encode_protobuf_components_after_root_metadata(output)?;
+        Ok(())
+    }
+
+    pub(crate) fn encode_protobuf_components_before_root_metadata(
+        &self,
+        output: &mut impl BufMut,
+    ) -> Result<(), ParBagProtobufError> {
         self.encode_protobuf_family::<Send>(output)?;
         self.encode_protobuf_family::<Receive>(output)?;
         self.encode_protobuf_family::<New>(output)?;
@@ -919,6 +944,13 @@ impl ParBag {
         self.encode_protobuf_family::<Match>(output)?;
         self.encode_protobuf_family::<GUnforgeable>(output)?;
         self.encode_protobuf_family::<Connective>(output)?;
+        Ok(())
+    }
+
+    pub(crate) fn encode_protobuf_components_after_root_metadata(
+        &self,
+        output: &mut impl BufMut,
+    ) -> Result<(), ParBagProtobufError> {
         self.encode_protobuf_family::<Bundle>(output)?;
         self.encode_protobuf_family::<If>(output)?;
         Ok(())
