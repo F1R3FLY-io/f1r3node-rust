@@ -7,7 +7,7 @@
 //! `Job`/`Frame` pushdown automaton. A nested pattern therefore grows heap work
 //! storage, never the native call stack.
 
-#[cfg(test)]
+#[cfg(any(test, feature = "spatial-matcher-connective-domain-differential"))]
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::num::NonZeroU64;
@@ -53,6 +53,66 @@ pub(super) fn match_par(
 thread_local! {
     static LIST_RELATION_STATS: Cell<RelationalMatchStats> =
         Cell::new(RelationalMatchStats::default());
+}
+
+#[cfg(feature = "spatial-matcher-connective-domain-differential")]
+thread_local! {
+    /// Benchmark-only causal control. The feature is absent from every
+    /// default/production build, so candidate filtering cannot become a
+    /// runtime consensus configuration.
+    static FORCE_CONNECTIVE_DOMAIN_ALL: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(feature = "spatial-matcher-connective-domain-differential")]
+fn with_connective_domain_mode<T>(optimized: bool, body: impl FnOnce() -> T) -> T {
+    FORCE_CONNECTIVE_DOMAIN_ALL.with(|force_all| {
+        let previous = force_all.replace(!optimized);
+        let result = body();
+        force_all.set(previous);
+        result
+    })
+}
+
+/// Benchmark-only production-list entry. Both arms execute the same matcher;
+/// the control changes only pure-connective candidate compilation to `All`.
+#[cfg(feature = "spatial-matcher-connective-domain-differential")]
+pub fn benchmark_match_par_list(
+    targets: Vec<Par>,
+    patterns: Vec<Par>,
+    optimized: bool,
+) -> Option<()> {
+    with_connective_domain_mode(optimized, || {
+        let mut context = SpatialMatcherContext::new();
+        let request = ListRequest::new(
+            targets.into_iter().map(MatchValue::Par).collect(),
+            patterns.into_iter().map(MatchValue::Par).collect(),
+            Merger::Identity,
+            None,
+            false,
+        );
+        drive_job(&mut context, Job::ListInit(request))
+    })
+}
+
+/// Benchmark-only remainder guardrail for the same production list PDA.
+#[cfg(feature = "spatial-matcher-connective-domain-differential")]
+pub fn benchmark_match_send_list_with_remainder(
+    targets: Vec<Send>,
+    patterns: Vec<Send>,
+    remainder: i32,
+    optimized: bool,
+) -> Option<()> {
+    with_connective_domain_mode(optimized, || {
+        let mut context = SpatialMatcherContext::new();
+        let request = ListRequest::new(
+            targets.into_iter().map(MatchValue::Send).collect(),
+            patterns.into_iter().map(MatchValue::Send).collect(),
+            Merger::Identity,
+            Some(remainder),
+            false,
+        );
+        drive_job(&mut context, Job::ListInit(request))
+    })
 }
 
 #[cfg(test)]
@@ -1464,6 +1524,11 @@ fn single_connective_carrier(pattern: &Par) -> Option<&Connective> {
 }
 
 fn compile_par_candidate_plan(root: &Par, captures: &mut PathMap<()>) -> ListCandidatePlan {
+    #[cfg(feature = "spatial-matcher-connective-domain-differential")]
+    if single_connective_carrier(root).is_some() && FORCE_CONNECTIVE_DOMAIN_ALL.with(Cell::get) {
+        return ListCandidatePlan::All;
+    }
+
     let mut work = vec![CandidateCompileWork::Enter(root)];
     let mut values = Vec::new();
 
