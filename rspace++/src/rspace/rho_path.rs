@@ -674,8 +674,22 @@ impl RhoPathV1 {
     /// a second, subtly different escaping implementation.
     pub fn relative_datum_structure_prefix(structure_prefix: &[u8]) -> Vec<u8> {
         let mut output = Vec::with_capacity(structure_prefix.len());
-        append_frame_prefix(&mut output, structure_prefix);
+        output.extend(Self::relative_datum_structure_prefix_bytes(structure_prefix));
         output
+    }
+
+    /// Stream the channel-relative structure prefix without allocating its
+    /// escaped representation.
+    ///
+    /// Hot retained-automaton lookups use this iterator to descend their
+    /// PathMap directly. The owned helper above remains the appropriate API
+    /// when a prefix has to outlive the traversal.
+    pub(crate) fn relative_datum_structure_prefix_bytes(
+        structure_prefix: &[u8],
+    ) -> impl Iterator<Item = u8> + '_ {
+        structure_prefix.iter().flat_map(|byte| {
+            std::iter::once(*byte).chain((*byte == ESCAPE).then_some(ESCAPED_ZERO))
+        })
     }
 
     /// Encode one complete datum key relative to an already-selected channel

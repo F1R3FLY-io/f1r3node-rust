@@ -380,6 +380,13 @@ impl<A: Clone> CandidatePool<A> {
 
     pub fn is_empty(&self) -> bool { !self.fresh_available && self.availability.is_empty() }
 
+    /// Authoritative multiplicities for the stored (non-fresh) candidates.
+    ///
+    /// Retained receive automata use this borrowed root for a read-only zipper
+    /// product. The Bag remains owned by the pool; callers cannot mutate it or
+    /// flatten it into a positional collection.
+    pub(crate) fn stored_availability(&self) -> &Bag { &self.availability }
+
     pub fn next_available(&self, start: usize) -> Option<usize> {
         (start..self.len()).find(|position| self.is_available(*position))
     }

@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
+use rspace_plus_plus::rspace::bag::Bag;
 use rspace_plus_plus::rspace::internal::WaitingContinuation;
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::retained_set_automaton::RetainedSetAutomaton;
 use rspace_plus_plus::rspace::rho_path::{
-    RhoPathQuery, RhoPathQueryAtom, encode_structural_sequence,
+    RhoPathQuery, RhoPathQueryAtom, RhoPathV1, encode_structural_sequence,
 };
 
 #[derive(Clone, Default)]
@@ -163,4 +164,23 @@ fn structural_queries_use_exact_trie_prefixes_and_filter_after_wildcards() {
     assert_eq!(selected_second.iter().filter(|selected| **selected).count(), 2);
     assert!(selected_second[256 + 0x5A]);
     assert!(selected_second[candidates.len() - 1]);
+}
+
+#[test]
+fn retained_segments_product_walk_the_authoritative_resting_bag() {
+    let candidates = vec![
+        waiting(vec![Pattern::Exact(b"resting/alpha".to_vec())]),
+        waiting(vec![Pattern::Exact(b"resting/beta".to_vec())]),
+        waiting(vec![Pattern::Any]),
+    ];
+    let automaton = RetainedSetAutomaton::compile(&Matcher, &candidates);
+    let mut resting = Bag::new();
+    resting
+        .insert(&RhoPathV1::relative_datum_key(b"resting/alpha", b"identity/alpha"))
+        .expect("resting multiplicity");
+
+    let selected =
+        automaton.matching_candidates_with_resting(b"unrelated/fresh", &[0], Some(&resting));
+
+    assert_eq!(selected, vec![true, false, true]);
 }

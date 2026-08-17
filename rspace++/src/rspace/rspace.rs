@@ -980,7 +980,7 @@ where
         data: Datum<A>,
     ) -> MaybeProduceCandidate<C, P, A, K> {
         let store = self.get_store();
-        let fresh_datum_is_required = store.get_candidate_pool(&bat_channel).is_empty();
+        let bat_channel_pool = store.get_candidate_pool(&bat_channel);
         let fetch_matching_continuations =
             |channels: Vec<C>| -> Vec<(WaitingContinuation<P, K>, i32)> {
                 let (version, continuations) = store.get_continuations_versioned(&channels);
@@ -990,7 +990,7 @@ where
                     version,
                     &bat_channel,
                     &data.a,
-                    fresh_datum_is_required,
+                    &bat_channel_pool,
                 );
                 let mut ordered = self.shuffle_with_index(continuations);
                 if let Some(selection) = selection {
@@ -1017,7 +1017,11 @@ where
          * In this version, we also add the produced data directly to this cache.
          */
         let fetch_matching_data = |channel| -> (C, CandidatePool<A>) {
-            let mut pool = store.get_candidate_pool(&channel);
+            let mut pool = if channel == bat_channel {
+                bat_channel_pool.clone()
+            } else {
+                store.get_candidate_pool(&channel)
+            };
             if channel == bat_channel {
                 pool.prepend_fresh(data.clone());
             }
@@ -1038,11 +1042,8 @@ where
         version: Option<ContinuationVersion>,
         bat_channel: &C,
         datum: &A,
-        fresh_datum_is_required: bool,
+        resting_data: &CandidatePool<A>,
     ) -> Option<Vec<bool>> {
-        if !fresh_datum_is_required {
-            return None;
-        }
         if candidates.is_empty() {
             self.retained_set_automata.remove(channels);
             return Some(Vec::new());
@@ -1063,21 +1064,29 @@ where
                     cached.version == version &&
                         cached.automaton.candidate_count() == candidates.len()
                 }) {
-                    return Some(
-                        cached
-                            .automaton
-                            .matching_candidates(&datum_path, &bind_positions),
-                    );
+                    return Some(cached.automaton.matching_candidates_with_resting(
+                        &datum_path,
+                        &bind_positions,
+                        Some(resting_data.stored_availability()),
+                    ));
                 }
                 let automaton = RetainedSetAutomaton::compile(&**self.matcher, candidates);
-                let selection = automaton.matching_candidates(&datum_path, &bind_positions);
+                let selection = automaton.matching_candidates_with_resting(
+                    &datum_path,
+                    &bind_positions,
+                    Some(resting_data.stored_availability()),
+                );
                 self.retained_set_automata
                     .insert(channels.to_vec(), CachedRetainedSetAutomaton { version, automaton });
                 return Some(selection);
             }
             None => RetainedSetAutomaton::compile(&**self.matcher, candidates),
         };
-        Some(automaton.matching_candidates(&datum_path, &bind_positions))
+        Some(automaton.matching_candidates_with_resting(
+            &datum_path,
+            &bind_positions,
+            Some(resting_data.stored_availability()),
+        ))
     }
 
     /// `E(S)` for this space — see

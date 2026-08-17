@@ -254,6 +254,77 @@ Qed.
 
 End RetainedPathQuery.
 
+(** The datum-first retained automaton now intersects its transition trie
+    directly with the authoritative resting-data Bag.  The fresh datum can
+    run both prefix and residual checks immediately.  A stored datum reached
+    by the PathMap product runs only the prefix check here; the ordinary
+    candidate PDA remains the authority for its residual query and spatial
+    bindings.  Consequently the product may retain a false positive, but the
+    theorem below rules out a false negative for either source. *)
+Section RetainedBagProduct.
+
+Context {Pattern Datum : Type}.
+Variable spatial_accepts : Pattern -> Datum -> Prop.
+Variable query_eligible : Pattern -> bool.
+Variable retained_prefix_accepts : Pattern -> Datum -> bool.
+Variable residual_query_accepts : Pattern -> Datum -> bool.
+Variable stored_occurrence : Datum -> Prop.
+
+Hypothesis successful_match_has_product_prefix :
+  forall pattern datum,
+    query_eligible pattern = true ->
+    spatial_accepts pattern datum ->
+    retained_prefix_accepts pattern datum = true.
+
+Hypothesis successful_fresh_match_passes_residual :
+  forall pattern datum,
+    query_eligible pattern = true ->
+    spatial_accepts pattern datum ->
+    residual_query_accepts pattern datum = true.
+
+Definition pool_spatial_accepts
+    (pattern : Pattern) (fresh : Datum) : Prop :=
+  spatial_accepts pattern fresh \/
+  exists resting,
+    stored_occurrence resting /\ spatial_accepts pattern resting.
+
+Definition retained_bag_product_selects
+    (pattern : Pattern) (fresh : Datum) : Prop :=
+  query_eligible pattern = false \/
+  (retained_prefix_accepts pattern fresh = true /\
+   residual_query_accepts pattern fresh = true) \/
+  exists resting,
+    stored_occurrence resting /\
+    retained_prefix_accepts pattern resting = true.
+
+Theorem retained_bag_product_has_no_false_negative :
+  forall pattern fresh,
+    pool_spatial_accepts pattern fresh ->
+    retained_bag_product_selects pattern fresh.
+Proof.
+  intros pattern fresh accepted.
+  destruct (query_eligible pattern) eqn:eligible.
+  - right. destruct accepted as [fresh_accepted | [resting [stored accepted]]].
+    + left. split.
+      * now apply successful_match_has_product_prefix.
+      * now apply successful_fresh_match_passes_residual.
+    + right. exists resting. split; [exact stored|].
+      now apply successful_match_has_product_prefix.
+  - now left.
+Qed.
+
+Corollary retained_bag_product_rejection_proves_no_pool_match :
+  forall pattern fresh,
+    ~ retained_bag_product_selects pattern fresh ->
+    ~ pool_spatial_accepts pattern fresh.
+Proof.
+  intros pattern fresh rejected accepted.
+  apply rejected.
+  now apply retained_bag_product_has_no_false_negative.
+Qed.
+
+End RetainedBagProduct.
+
 (** Concrete semantic bridge for the generated ordered RhoPath compiler.
 
     [rho_value] abstracts one descriptor node after canonical RMP1 encoding.

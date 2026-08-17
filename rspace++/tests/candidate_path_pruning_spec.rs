@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use proptest::prelude::*;
 use rspace_plus_plus::rspace::candidate_order::deterministic_candidate_hash;
@@ -83,6 +83,37 @@ impl Match<Pattern, String, String> for CountingMatcher {
     }
 
     fn supports_rho_path_candidate_pruning(&self) -> bool { self.pruning }
+}
+
+#[derive(Clone)]
+struct ToggleCountingMatcher {
+    inner: CountingMatcher,
+    enabled: Arc<AtomicBool>,
+}
+
+impl Match<Pattern, String, String> for ToggleCountingMatcher {
+    fn get(&self, pattern: &Pattern, datum: &String) -> Option<String> {
+        self.enabled
+            .load(Ordering::Relaxed)
+            .then(|| self.inner.get(pattern, datum))
+            .flatten()
+    }
+
+    fn retained_pattern_path(&self, pattern: &Pattern) -> Option<Vec<u8>> {
+        self.inner.retained_pattern_path(pattern)
+    }
+
+    fn retained_datum_path(&self, datum: &String) -> Option<Vec<u8>> {
+        self.inner.retained_datum_path(datum)
+    }
+
+    fn rho_path_query(&self, pattern: &Pattern) -> Option<RhoPathQuery> {
+        self.inner.rho_path_query(pattern)
+    }
+
+    fn supports_rho_path_candidate_pruning(&self) -> bool {
+        self.inner.supports_rho_path_candidate_pruning()
+    }
 }
 
 fn sequence_value(first: &[u8], second: &[u8]) -> String {
@@ -219,6 +250,22 @@ async fn space(pruning: bool) -> (TestSpace, Arc<AtomicUsize>, Arc<AtomicUsize>)
     };
     let space = RSpace::create(stores, Arc::new(Box::new(matcher))).expect("RSpace");
     (space, calls, path_queries)
+}
+
+async fn toggle_space(pruning: bool, enabled: Arc<AtomicBool>) -> (TestSpace, Arc<AtomicUsize>) {
+    let mut manager = InMemoryStoreManager::new();
+    let stores = manager.r_space_stores().await.expect("in-memory stores");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let matcher = ToggleCountingMatcher {
+        inner: CountingMatcher {
+            pruning,
+            calls: Arc::clone(&calls),
+            path_queries: Arc::new(AtomicUsize::new(0)),
+        },
+        enabled,
+    };
+    let space = RSpace::create(stores, Arc::new(Box::new(matcher))).expect("RSpace");
+    (space, calls)
 }
 
 fn last_canonical_value(channel: &str, values: &[String]) -> String {
@@ -553,6 +600,64 @@ async fn datum_first_retained_queries_filter_waiting_continuations_before_spatia
 
     assert_eq!(indexed_result, control_result);
     assert_eq!(control_calls.load(Ordering::Relaxed), 256);
+    assert_eq!(indexed_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(indexed.take_event_log().await, control.take_event_log().await);
+    assert_eq!(indexed.to_map().await, control.to_map().await);
+}
+
+#[tokio::test]
+async fn retained_automaton_bag_product_preserves_a_resting_only_comm() {
+    let channel = "candidate-retained-resting-product".to_string();
+    let channels = vec![channel.clone()];
+    let resting_second = b"resting/class".to_vec();
+    let resting = sequence_value(b"resting/head", &resting_second);
+    let fresh = sequence_value(b"fresh/head", b"fresh/class");
+    let pattern = Pattern::SequenceSecond {
+        expected: resting.clone(),
+        second: resting_second,
+    };
+
+    let enabled = Arc::new(AtomicBool::new(false));
+    let (control, control_calls) = toggle_space(false, Arc::clone(&enabled)).await;
+    let (indexed, indexed_calls) = toggle_space(true, Arc::clone(&enabled)).await;
+    for space in [&control, &indexed] {
+        assert!(
+            space
+                .install(
+                    channels.clone(),
+                    vec![pattern.clone()],
+                    "installed/continuation".to_string(),
+                )
+                .await
+                .expect("install")
+                .is_none()
+        );
+        assert!(
+            space
+                .produce(channel.clone(), resting.clone(), false)
+                .await
+                .expect("resting produce")
+                .is_none()
+        );
+        drop(space.take_event_log().await);
+    }
+    enabled.store(true, Ordering::Relaxed);
+    control_calls.store(0, Ordering::Relaxed);
+    indexed_calls.store(0, Ordering::Relaxed);
+
+    let control_result = control
+        .produce(channel.clone(), fresh.clone(), false)
+        .await
+        .expect("control fresh produce")
+        .expect("the installed continuation matches resting data");
+    let indexed_result = indexed
+        .produce(channel, fresh, false)
+        .await
+        .expect("indexed fresh produce")
+        .expect("the retained product preserves the resting-only COMM");
+
+    assert_eq!(indexed_result, control_result);
+    assert_eq!(control_calls.load(Ordering::Relaxed), 2);
     assert_eq!(indexed_calls.load(Ordering::Relaxed), 1);
     assert_eq!(indexed.take_event_log().await, control.take_event_log().await);
     assert_eq!(indexed.to_map().await, control.to_map().await);
