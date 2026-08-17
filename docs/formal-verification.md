@@ -22,6 +22,12 @@ Two rules distinguish this repo's practice from decorative verification:
    — see commit `8763bc8e`, which closed a divergence between
    `compute_parents_post_state` and the Rocq `Selection.v` merge-scope
    proof by changing the Rust, with a backstop test pinning the alignment.
+3. **A refuted required claim blocks completion.** Narrowing a theorem around
+   the counterexample does not discharge the original safety or liveness claim.
+4. **Distributed decisions require cross-view claims.** Local purity does not
+   prove that honest nodes with different local views select the same result.
+5. **Consensus liveness includes resource bounds.** A semantically correct path
+   fails verification when unbounded work prevents validation progress.
 
 ## The verification stack
 
@@ -76,6 +82,9 @@ and reused by every verified area:
 | Deploy lifecycle | [`formal/tlaplus/deploy_lifecycle/`](../formal/tlaplus/deploy_lifecycle) | No re-proposal of finalized/toxic deploys |
 | Block admission | [`formal/tlaplus/block_admission/`](../formal/tlaplus/block_admission) | Byte-bounded inbound pipeline (below) |
 | Replay cache | proptest invariants in `replay_cache.rs` | Entry/byte caps, accounting-equals-live-sum, admission contract, LRU order |
+| Recovery leader | [`formal/tlaplus/recovery_leader/`](../formal/tlaplus/recovery_leader) | Cross-view leader agreement for one bonded validator set |
+| Replay liveness | [`formal/tlaplus/replay_liveness/`](../formal/tlaplus/replay_liveness) | Linear work for the persistent-contract empty-store replay path |
+| Promotion convergence | [`formal/tlaplus/fork_choice/PromotionConvergence.tla`](../formal/tlaplus/fork_choice/PromotionConvergence.tla) | Novel-signature gating and eventual GHOST restoration |
 
 ## Worked example: byte-bounded block admission
 
@@ -140,8 +149,22 @@ curl -sSL -o ~/.tla/tla2tools.jar \
   https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
 echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  $HOME/.tla/tla2tools.jar" | shasum -a 256 -c -
 
-# Full gating frontier (what nightly CI runs)
-TLA_TOOLS_JAR=~/.tla/tla2tools.jar bash scripts/ci/check-tla-invariants.sh
+# Activate the Rocq installation
+# Replace `default` when Rocq uses another opam switch.
+eval "$(opam env --switch=default)"
+
+# Run the same bounded TLA+ and Rocq gates that scheduled CI runs.
+TLA_TOOLS_JAR="$HOME/.tla/tla2tools.jar" \
+  bash scripts/ci/check-formal-invariants.sh --all
+
+# Run the manual-dispatch exhaustive tier locally.
+TLA_TOOLS_JAR="$HOME/.tla/tla2tools.jar" \
+  bash scripts/ci/check-formal-invariants.sh --all --exhaustive
+
+# Run one CI formal job locally.
+bash scripts/ci/check-formal-invariants.sh --rocq
+TLA_TOOLS_JAR="$HOME/.tla/tla2tools.jar" \
+  bash scripts/ci/check-formal-invariants.sh --tla
 
 # One area, including its expected-violation configs
 cd formal/tlaplus/block_admission
@@ -154,3 +177,13 @@ PROPTEST_CASES=10000 cargo test -p casper --lib replay_cache
 # Kani (requires cargo-kani)
 cargo kani -p casper --harness <harness_name>
 ```
+
+The exhaustive TLA+ tier uses the same 45-minute per-configuration limit as CI.
+
+On macOS, install GNU core utilities to provide `gtimeout` for that limit:
+
+```bash
+brew install coreutils
+```
+
+Expected-violation configurations remain outside the gating list. Run those configurations manually to confirm their counterexamples.
