@@ -2434,6 +2434,17 @@ differential module passes 12/12 and the affected matcher integration suites pas
 checks strengthen the ordering and residual evidence, but generated-query soundness and complete
 schedule/replay and post-state equivalence remain open; CBR-053 remains `UNVERIFIED`.
 
+Pgmcp experiment 246 tested—but did not retain—incremental term occupancy for that same remainder
+machine. Experimental checkpoint `facfedf15` updated a normalized `BagDelta` only after a complete
+augmenting root succeeded and passed the recursive-oracle corpus, including all 651 bounded cases
+and an explicit displacement/cancellation witness. Its 4,096-target mean improved only 0.369%; the
+one-sided p-value was 0.09776 and the 95% treatment-minus-control interval crossed zero, below the
+preregistered 5% requirement. Checkpoint `eb5d4c580` restores the predecessor final assignment
+scan. Because the selected production state is byte-for-byte the pre-experiment matcher
+implementation, this negative experiment changes no parser surface, matching result, `FreeMap`,
+COMM choice, event, post-state, codec, hash, or cost-accounting behavior. It therefore adds evidence
+to CBR-053 without adding a new consensus change.
+
 Checkpoint `0d7a6a3f8` adds normalized reversible deltas to the same exact-key Bag authority.
 Checkpoint `cd01ea721` makes that delta the live accepted-match datum commit carrier in both play and
 replay. Every nonpersistent stored identity selected by one COMM is accumulated before mutation;
@@ -2722,6 +2733,12 @@ the verdict axis.
   remains **16,257** treatment edges versus **699,263** nominal calls. Competing pgmcp and `rustc`
   workloads make earlier wall time and RSS inadmissible as comparative evidence. **MEASURED for
   semantics/work counts; resource verdict OPEN.**
+- incremental AC term reservations at experimental `facfedf15` and retained-control `eb5d4c580`:
+  pgmcp experiment 246 measured 82 samples per arm at 16, 256, and 4,096 targets on pinned CPU 8.
+  The primary treatment mean was **80.623 ms** versus **80.921 ms** control, a **0.369%**
+  improvement with a one-sided p-value of **0.09776**; 16 regressed **2.140%** and 256 improved
+  **1.269%**. The treatment is **REJECTED**, production retains the control, and no consensus axis
+  moves.
 - byte-native EPathMap exact algebra at `92240a452` and `03685f4c7`: canonical metadata
   classification, raw `PathMap<()>` masks, encoded-key subtraction/selection, and moving-zipper map
   subtraction preserve exact and dynamic-key spatial results. Focused model algebra passes **8/8**,

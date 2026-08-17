@@ -1,0 +1,21 @@
+# RSpace associative-commutative (AC) remainder term-reservation experiment.
+# Experimental checkpoint: facfedf15. Accepted production checkpoint: eb5d4c580.
+# Production retains allocation-free augmenting-path assignment commits and reconstructs the term-consumed Bag with the final assignment scan. The rejected treatment is preserved at facfedf15.
+# Host: AMD Ryzen Threadripper PRO 5975WX, 32 physical cores, one thread per core; CPU 8 pinned; frequency boost enabled.
+# Command: systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 taskset -c 8 cargo bench -p rholang --bench spatial_matcher_remainder --features rspace-reservation-delta-differential -- --noplot
+# Fixture: 16, 256, or 4,096 unordered Send targets; one exact selected Send; one free Par remainder. Fixture cloning and output validation were outside the timed interval.
+# Arms: control_final_assignment_scan is the exact predecessor. treatment_committed_bag_delta updates normalized PathMap BagDelta occupancy only while unwinding a proven-successful augmenting root.
+# Criterion: one shot; 82 post-warm-up samples per arm/cell; 2 s warm-up; 5 s requested measurement; 99% confidence; 1% significance; no competing Cargo or rustc process at launch.
+# Pgmcp experiment 246: REJECTED. Primary 4,096-target Welch t=-1.3004161478, one-sided p=0.0977577644, Cohen's d=-0.2030908818, treatment-minus-control 95% CI [-751450.3234,155020.9576] ns.
+# Robustness: both arms depart from normality; Mann-Whitney p=0.4347523821 and Cliff's delta=-0.0707911957 agree that the observed primary difference is not persuasive.
+# Operational criterion also failed: the treatment improved the 4,096-target mean by only 0.368526%, below the preregistered 5% threshold. The 16-target regression was 2.139636%, within the 5% small-cell guardrail; 256 improved 1.269048%.
+# Control run: 9772a30c-21ac-4ebb-b5b5-263ca5383173; sha256:53f174512c683c934f7b88df9ff3c08a7f6ff4817cd180df29344faff07fade3.
+# Treatment run: 2e911371-9a2b-4d93-8b15-14634f2ffa20; sha256:f7a0afdaef554367211327653b1a066b9a47a90bfaa09c2e02c35c2b5da81442.
+# Pgmcp artifact 324 preserves the one-shot console report. Semantic preflight: 14/14, including all 651 bounded oracle cases and a displacement path with three additions, one normalized removal, and final cardinality two. Accepted-state postflight: 13/13 plus strict production-library Clippy.
+date	experimental_commit	production_commit	experiment_id	cardinality	arm	samples	raw_mean_ns	raw_stddev_ns	treatment_over_control_ratio	memory_max_mib	swap_max_mib	cpu_affinity	result
+2026-08-17	facfedf15	eb5d4c580	246	16	control_final_assignment_scan	82	325270.903042	798.093463	NA	8192	0	8	control-retained
+2026-08-17	facfedf15	eb5d4c580	246	16	treatment_committed_bag_delta	82	332230.516578	1238.242981	1.021396	8192	0	8	within-small-cell-guardrail
+2026-08-17	facfedf15	eb5d4c580	246	256	control_final_assignment_scan	82	4855203.880863	28473.164166	NA	8192	0	8	control-retained
+2026-08-17	facfedf15	eb5d4c580	246	256	treatment_committed_bag_delta	82	4793589.015009	24972.325316	0.987310	8192	0	8	secondary-small-improvement
+2026-08-17	facfedf15	eb5d4c580	246	4096	control_final_assignment_scan	82	80920918.560976	1698290.517756	NA	8192	0	8	primary-control-retained
+2026-08-17	facfedf15	eb5d4c580	246	4096	treatment_committed_bag_delta	82	80622703.878049	1195027.899804	0.996315	8192	0	8	statistically-and-operationally-rejected
