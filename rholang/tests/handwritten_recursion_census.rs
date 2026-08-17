@@ -390,7 +390,6 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
 /// A numerical floor becomes stale precisely when this campaign succeeds at retiring a cycle.
 /// Exact set equality catches missing roots, scanner regressions, new cycles, and retired cycles
 /// without requiring a human to bless a progressively smaller magic number.
-
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
