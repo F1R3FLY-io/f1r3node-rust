@@ -594,7 +594,7 @@ is a *future* fork, not a present one).
 | [CBR-042](#cbr-042) | N | …and on the **bincode** wire too — `U(m)` verbatim and contiguous, then the values (FORM ②), so the reader never decodes a trie key | `3a32cf07` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-043](#cbr-043) | N | …but of **the entries that surface WRITES**. FORM ② keyed lf-blanked values by the *unblanked* entries, putting an entry's `locally_free` on the event hash | `8cf0b770` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-044](#cbr-044) | N | EPathMap becomes a homogeneous PathMap set/map and both codecs carry one versioned EPM1 trie snapshot; generated protobuf PDAs remove the read ceiling | `26876b65` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
-| [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized datum-first/receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`, `0f9beb5f0`, `87679597d`, `9a746f2bf`, `514659e2b`, `27557c374`, `ad395c357`, `61accc170`, `92240a452`, `03685f4c7`; benchmarks `7bc5c6994`, `7b3254573`, `48e6f7d3c`; pgmcp experiments 224, 225, 226, 229, 233 | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
+| [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized datum-first/receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`, `0f9beb5f0`, `87679597d`, `9a746f2bf`, `514659e2b`, `27557c374`, `ad395c357`, `61accc170`, `92240a452`, `03685f4c7`, `4f022ad9b`; benchmarks `7bc5c6994`, `7b3254573`, `48e6f7d3c`; pgmcp experiments 224, 225, 226, 229, 233, 248 | ○ | ? | ○ | ○ | ? | ○ | ○ | UNVERIFIED | **?** |
 | [CBR-L07](#cbr-l07) | L | `List.last()` in MeTTaIL's Rholang | `bbceb6d9`, `6e543c01` | · | · | · | · | · | ● | · | PERMISSIVE | **W** |
 | [CBR-L08](#cbr-l08) | L | The kv element-category gate — a Name in a kv slot is refused, not silently dropped | *in flight* | ● | ● | ● | ● | ● | ● | ○ | REGRESSIVE | **W** |
 | [CBR-L10](#cbr-l10) | L | A pathmap's entries come from a projection, not a field | `832d510f` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
@@ -2322,7 +2322,7 @@ Legacy protobuf fields are read-only migration inputs; removing them is a later 
 
 | | |
 |---|---|
-| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`, `0f9beb5f0`, `87679597d`, `9a746f2bf`, `514659e2b`, `27557c374`, `ad395c357`, `61accc170`, `92240a452`, `03685f4c7`; benchmarks `7bc5c6994`, `7b3254573`, `48e6f7d3c`; pgmcp experiments 224, 225, 226, 229, 233 |
+| Commit(s) | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`, `0f9beb5f0`, `87679597d`, `9a746f2bf`, `514659e2b`, `27557c374`, `ad395c357`, `61accc170`, `92240a452`, `03685f4c7`, `4f022ad9b`; benchmarks `7bc5c6994`, `7b3254573`, `48e6f7d3c`; pgmcp experiments 224, 225, 226, 229, 233, 248 |
 | Status | LANDED ON CAMPAIGN BRANCH; VERIFICATION OPEN |
 | Direction | UNVERIFIED |
 | Evidence grade | UNVERIFIED |
@@ -2605,6 +2605,28 @@ replay, and live-COMM differentials pass; the capped release `models` plus `rhol
 add a second candidate filter, wire image, EPathMap mode, or RSpace state representation. They
 strengthen the associative-commutative implementation evidence but do not discharge the remaining
 generated AC schedule/post-state obligation, so CBR-053 remains `UNVERIFIED`.
+
+Checkpoint `4f022ad9b` compiles a conservative candidate-domain algebra for pure connective
+elements inside the existing unordered spatial matcher. Supported `ConnOr` children are combined
+with native `PathMap<()>` `join`; supported `ConnAnd` children are combined with `meet`. Unsupported
+OR arms make the result universal, unsupported AND arms contribute no restriction, and negation is
+never compiled by complementing a conservative query. Fixed-width big-endian `u64` target-position
+keys are prefix-free, so the generally prefix-aware PathMap lattice implements exact finite-set
+union/intersection at this derived boundary. The resulting positions are sorted back into the
+predecessor order before the unchanged spatial PDA decides any match or binding.
+
+The same checkpoint removes clone-amplifying connective continuations and repeated suffix-bound
+analysis. The depth-20,000 singleton AND/OR gate completes in 0.18 s on a 256 KiB native stack; all
+15 focused production/recursive-oracle differential tests agree on verdict and `FreeMap`, including
+compound whole-target acceptance and proper-subset refusal. In the width-128 rejecting connective
+chain, each of 51 exact-counter replicates falls from 699,263 nominal edge visits to 254 production
+visits. Pgmcp experiment 248 remains open for the preregistered release-latency and regression
+guardrails, so these deterministic counters are not presented as a timing verdict.
+
+This checkpoint introduces no new byte lane, RSpace state carrier, PathMap crate behavior, match
+authority, candidate order, or metering rule. It strengthens the inner associative-commutative
+superset and stack/resource evidence within CBR-053. It does not yet prove every generated
+associative-commutative play/replay schedule and post-state, so CBR-053 remains `UNVERIFIED`.
 
 #### (b) How it may break consensus
 

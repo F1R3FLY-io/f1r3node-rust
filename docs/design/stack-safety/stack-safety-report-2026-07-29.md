@@ -256,7 +256,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-A7** | Stage G | f1r3node | `normalize_ann_proc`'s 26-fn SCC $`\rightarrow`$ `norm_drive` | 7,261 $`\rightarrow`$ **0** | **yes** | [5.1](#51-family-a--the-substitution-sorting-normalisation-and-evaluation-cores) |
 | **SS-A8** | `26876b65` | f1r3node | generated recursive `Par` family surfaces: `Clone`, `Drop`, `PartialEq`, `Hash`, `Ord`, `Debug`, protobuf `Message` encode/length/merge/clear, and `Oneof` encode/length/merge | recursive derive/host calls $`\rightarrow`$ **generated explicit PDAs** | **yes** | [5.12](#512-generated-par-pda-closure-ss-a8-ss-e2) |
 | **SS-A9** | `e2cf939f`, `26d3e3b9` | f1r3node | node JSON boundary: `Par`/`Expr`/`Bundle`/`EPathMap` $`\rightarrow`$ `RhoExpr`, plus `RhoExpr` `Clone`, `Drop`, `Serialize`, and `Debug` | recursive calls/derives $`\rightarrow`$ explicit PDAs; depth 16,384 on a 256 KiB stack | **yes** | [5.13](#513-the-node-json-boundary-ss-a9) |
-| **SS-A10** | `78611b11`, `6799b406`, `fc497f94`, `98bb3d5e`, `acfd194f`, `714d618c`, `6f1412ee`, `3a3db311` | f1r3node | heterogeneous spatial-matcher SCC, including concrete binders, connective rollback, subset retry, sparse relational-row reuse, `PathMap<()>` and `PathMap<Par>` | ~70,237 B/level debug on the recursive binding path $`\rightarrow`$ **0**; depth 4,096 and width 65,536; retained matcher RSS slope eliminated; repeated edge evaluations reduced 42.68× on the D-E4 displacement control | **yes** | [5.16](#516-spatial-matcher-and-pathmap-native-retry-pda-ss-a10) |
+| **SS-A10** | `78611b11`, `6799b406`, `fc497f94`, `98bb3d5e`, `acfd194f`, `714d618c`, `6f1412ee`, `3a3db311`, `4f022ad9b` | f1r3node | heterogeneous spatial-matcher SCC, including concrete binders, connective rollback, subset retry, sparse relational-row reuse, PathMap connective-domain algebra, `PathMap<()>` and `PathMap<Par>` | ~70,237 B/level debug on the recursive binding path $`\rightarrow`$ **0**; depth 4,096 and width 65,536; retained matcher RSS slope eliminated; the AND/OR depth-20,000 gate completes in 0.18 s on 256 KiB; the width-128 connective displacement witness falls from 699,263 nominal edge visits to 254 authoritative visits | **yes** | [5.16](#516-spatial-matcher-and-pathmap-native-retry-pda-ss-a10) |
 | **SS-A11** | `8b81f223` | f1r3node | RSpace guarded candidate selector and enabled-rendezvous enumerator $`\rightarrow`$ one shared explicit-frame depth-first-search PDA | host recursion $`\Theta(b)`$ in receive-bind count $`b \rightarrow O(1)`$ native stack; **20,000 binds** on **256 KiB** in **2.61 s / 96,216 KiB RSS** | **yes** | [5.16.5](#5165-rspace-candidate-selection-and-enumeration-pda-ss-a11) |
 | **SS-B1** | `a929a2d6` | f1r3node | expression-evaluator SCC $`\rightarrow`$ `eval_drive` | overflow $`\approx`$ 1.5k $`\rightarrow`$ OK at 50,000 | **yes** | [5.2.1](#521-the-expression-evaluator-trampoline-a929a2d6) |
 | **SS-B2** | `29856679`, `55b97f84`, `a0a50473` | f1r3node | five async join sites detached | 300 s $`\rightarrow`$ **93.7 s CPU** | **yes** (heap chain) | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
@@ -3611,7 +3611,7 @@ swap, and two-core CPU quota**. **MEASURED:**
 | nested `RMP1` instruction PDA | unpruned nested spatial scan | **9/9 framing/query cases plus the 8/8 product suite** | one- and two-layer escaping; every tested shallow token truncation rejected; 20,000 levels on 128 KiB; zero-heavy 256-candidate result equivalence with 256-to-1 spatial pruning |
 | datum-first retained structural queries | root fallback for every non-ground pattern | **9/9 combined production pruning cases** | identical COMM result/event trace/post-state map and 256-to-1 spatial calls for a canonically last waiting receive; unsupported patterns remain root fallbacks |
 | retained-filter and generated compiler soundness | no theorem connecting both prefilters to canonical selection | **Rocq composition and exact/hole/ordered compiler theorems plus complete bounded formal bundle and 21-family ordered play/replay differential** | exact-prefix and residual-query superset premises imply no false negatives and preservation of the first canonical spatial success; supported generated compilation preserves every spatial success, all 58 generated roots are exercised, every recursive-oracle success that compiles is accepted by the production query, and the supported ordered schedule preserves results, event histories, stores, and roots through play and replay; Rocq, Verus 6/6, Z3, all three exhaustive TLC models, and the live-commit mCRL2 checks pass; associative-commutative compilation and schedules remain open |
-| AC element candidate Bag | full unordered target scan | **8,256 to 128 exact diagonal spatial edges; 128 ordered-nested ESet edges; 128 generalized Send edges from 16,384 possible pairs; one real edge for a width-128 remainder; 16,257 exhaustive displacement edges in each of 51 samples; experiment 246 rejected incremental term reservations** | the initial fixed-width candidate cut passed 53/53 matcher and 22/22 RSpace tests; `2d91c4394` makes exact multiplicity and residual subtraction Bag-authoritative; `bbe91b90f` extends exact stack-safe keys/queries to every unordered `Par` field root and passes 18/18 focused matcher plus strict lint; `3a70ddc58` uses Bag visitation only for true duplicates; `ad5d37a59` encodes one identity for 64 adjacent duplicates without merging metadata-distinct values; `26b72b096` quotient-compresses universal remainder vertices, passes all 651 bounded recursive-oracle cases, 12/12 spatial differential tests, and 81/81 matcher integrations; experiment 246's semantically equivalent `BagDelta` treatment improved the 4,096-target mean only 0.369% with a one-sided p-value of 0.09776, and `eb5d4c580` retains the final assignment scan; [raw measurements](measurements/rspace-ac-term-reservation-delta-2026-08-17.tsv) remain part of this living report |
+| AC element candidate Bag | full unordered target scan | **8,256 to 128 exact diagonal spatial edges; 128 ordered-nested ESet edges; 128 generalized Send edges from 16,384 possible pairs; one real edge for a width-128 remainder; 254 connective-displacement edges versus 699,263 nominal visits in each of 51 exact-counter samples; experiment 246 rejected incremental term reservations; experiment 248 timing remains open** | the initial fixed-width candidate cut passed 53/53 matcher and 22/22 RSpace tests; `2d91c4394` makes exact multiplicity and residual subtraction Bag-authoritative; `bbe91b90f` extends exact stack-safe keys/queries to every unordered `Par` field root and passes 18/18 focused matcher plus strict lint; `3a70ddc58` uses Bag visitation only for true duplicates; `ad5d37a59` encodes one identity for 64 adjacent duplicates without merging metadata-distinct values; `26b72b096` quotient-compresses universal remainder vertices, passes all 651 bounded recursive-oracle cases, 12/12 spatial differential tests, and 81/81 matcher integrations; experiment 246's semantically equivalent `BagDelta` treatment improved the 4,096-target mean only 0.369% with a one-sided p-value of 0.09776, and `eb5d4c580` retains the final assignment scan; `4f022ad9b` intersects/joins conservative PathMap candidate masks before deterministic position materialization and removes quadratic connective ownership/bound recomputation; [raw reservation measurements](measurements/rspace-ac-term-reservation-delta-2026-08-17.tsv) remain part of this living report |
 | standalone Bag delta and compact-trie codec | no direct Bag codec or normalized reversible transition carrier | **200,000-byte compressed key round-trips on 256 KiB; 23/23 Bag tests; 1/1 allocation gate; 183/183 affected EPathMap tests** | `0d7a6a3f8` adds atomic exact-key delta apply/revert; `1560f4371` uses raw canonical ACTree03 with native `u64` value slots and a shared iterative reader; `46aaa6472` adds legacy parity, prefix, algebra, delta, deep/wide, Merkle-image, and multiplicity-allocation evidence; `87679597d` adds the exact-prefix cursor/pruning regression; malformed/noncanonical/zero/dangling images fail closed and strict lint passes |
 | live accepted-match Bag transaction | per-selected-datum hot-store lock and removal | **23/23 Bag; 18/18 data index; 17/17 guarded play/replay; 146/146 broad RSpace integration; Rocq/TLC/mCRL2 live-commit proof; experiments 218 and 219 accepted under their locked statistical criteria** | `cd01ea721` normalizes exact selected identities, commits one COW root under one lock, preserves fresh/persistent candidates, and rejects underflow or malformed paths without mutation; `21ece399d` proves candidate projection, play/replay delta equality, atomic publication, all seven invariants over 2,628 TLC states, branching bisimulation, and no partial-publication reachability; `0f9beb5f0` removes the redundant outer root clone while retaining the `BagDelta`-owned atomic root, lowering singleton median latency 5.671% with no secondary-cardinality regression; `87679597d` measures one moving write zipper and `9a746f2bf` selects it only for multi-key deltas after the singleton regressed 8.289%; broad gate 3 min 6.13 s, 489,848 KiB peak RSS, zero swap under 12 GiB `MemoryMax` and four-core quota; affected strict Clippy passes, while the intentionally broader all-test Clippy reaches unrelated pre-existing warnings and is not claimed |
 | receive-first query-product `TrieRef` experiment | synchronized mutable read zippers | **pgmcp experiment 220 rejected; 82 samples per arm at 16, 256, and 4,096 candidates; exact sorted candidate vectors agree; 31/31 focused and 419/419 complete package tests; strict changed-target lint passes** | `514659e2b` freezes the zipper control and tests per-byte borrowed `TrieRef` focuses; the treatment regresses mean latency 83.041%, 61.953%, and 55.549%, respectively; `27557c374` restores the control in production while retaining the falsified treatment as a benchmark; both machines remain iterative heap PDAs with constant native-stack use |
@@ -4022,6 +4022,93 @@ approximately 1.2 GiB peak memory. Both runs used the ordinary Rust stack, zero 
 
 No new stack-fix identifier is allocated: D-E4 changes repeated heap work inside SS-A10's already
 stack-safe PDA, not the traversal's native-stack complexity class.
+
+##### 5.16.6.5 PathMap connective-domain algebra and ownership closure
+
+Commit `f1r3node-rust-mettail@4f022ad9b` removes the next repeated-work layer without
+changing the spatial matcher that decides an edge. Before the checkpoint, a list element whose sole
+carrier was `ConnOr` or `ConnAnd` compiled to the universal candidate domain. The sparse relation
+therefore avoided re-evaluating an edge, but it still had to ask the authoritative matcher about
+every previously unseen target. The new compiler builds a conservative domain expression:
+
+```text
+exact structural atom       -> Query(RhoPathQuery)
+OR(p1, ..., pn)             -> Union(compile(p1), ..., compile(pn))
+AND(p1, ..., pn)            -> Intersection(compile(p1), ..., compile(pn))
+NOT(p), unsupported carrier -> All
+empty OR                    -> Empty
+empty AND                   -> All
+```
+
+`All` means “do not prune”; it never means “accept.” An unsupported arm of an OR therefore makes
+the whole union `All`, while an unsupported arm of an AND contributes no restriction. Negation is
+not compiled by complementing a conservative query, because the complement of a superset is an
+unsound subset. The original spatial PDA still evaluates every surviving edge and remains the sole
+verdict and binding authority.
+
+The target index maps each generated structural prefix to fixed-width, big-endian `u64` positions.
+Those eight-byte keys are prefix-free: no encoded position is a proper prefix of another. Native
+`PathMap<()>` lattice operations therefore implement exact finite position-set algebra at this
+boundary despite PathMap's generally prefix-aware lattice semantics. Union uses `join`, intersection
+uses `meet`, and only the final algebraic result is materialized and sorted into predecessor target
+order. Query lookup retains the existing prefix zipper visit. The intermediate tries retain
+PathMap's persistent copy-on-write sharing; no `Vec<Par>`, hash-set reconstruction, trie snapshot,
+or PathMap crate change is introduced.
+
+The implementation is an explicit work machine rather than a recursive compiler. In literate
+pseudocode, its invariant is that the value stack contains exactly one compiled plan for every
+completed `Enter` task:
+
+```text
+work <- [Enter(root)]
+values <- []
+while work is not empty:
+    task <- pop(work)
+    if task is Enter(pure OR children):
+        push(ReduceUnion(number of children))
+        push each child as Enter in reverse source order
+    else if task is Enter(pure AND children):
+        push(ReduceIntersection(number of children))
+        push each child as Enter in reverse source order
+    else if task is Enter(other pattern):
+        push(conservative atom query or All/Empty)
+    else if task is ReduceUnion(n):
+        push(join of the last n values)
+    else if task is ReduceIntersection(n):
+        push(meet of the last n values)
+assert values contains exactly one plan
+```
+
+The first depth-20,000 diagnostic exposed a separate ownership defect before this algorithm could be
+called resource-safe. An OR continuation retained `Arc<[Par]>` and cloned the selected child, so a
+singleton chain copied every recursive suffix. The 8 GiB, zero-swap systemd scope was OOM-killed
+after **43.746 s** with an **8 GiB peak**. Replacing indexed clones with owning iterators removed the
+heap explosion, but the next run was still interrupted after **98.768 s** at **208.1 MiB peak**:
+each pure-connective `Par` recomputed cardinality bounds over its complete remaining suffix, giving
+$`\Theta(d^2)`$ work at nesting depth $`d`$.
+
+The final checkpoint moves connective plans, candidate/remainder pairs, and AND/OR children through
+owning iterator frames. The final AND or OR branch consumes the remaining target owner instead of
+cloning it. Cardinality analysis gains a borrowed entry, and a `Par` containing exactly one
+connective with no remainder transitions directly to that connective. This transition is equivalent
+to the general subset machine: every proper-subset candidate leaves a nonempty complement, which
+must fail against the empty residual pattern, so only the whole target can succeed. Compound-target
+positive and proper-subset negative cases compare both verdict and `FreeMap` with the independent
+recursive oracle.
+
+After both root causes were removed, one test builds, matches, and destroys a depth-20,000 singleton
+OR chain and a depth-20,000 singleton AND chain on a **256 KiB** native thread stack in **0.18 s**.
+The complete focused equivalence module passes **15/15**. Its width-128 rejecting connective chain
+records **699,263** nominal edge visits and **254** production visits in each of 51 exact-counter
+replicates, while the successful diagonal remains **128** production edges. Strict production-library
+Clippy passes with warnings denied. The broader all-test lint reaches 107 pre-existing warnings in
+unrelated normalizer and pretty-printer tests; no warning names an affected source.
+
+These counters establish causal work reduction and non-vacuity; they are not a latency verdict.
+Pgmcp experiment 248 remains preregistered for an idle-host, CPU-pinned release comparison at width
+4,096 with at least 30 samples per arm, a five-percent primary improvement requirement, and
+five-percent guardrails. Generated end-to-end associative-commutative RSpace schedule and post-state
+equivalence also remains an active CBR-053 obligation.
 
 #### 5.16.7 Byte-native exact-key EPathMap algebra inside the production PDA
 
