@@ -67,6 +67,36 @@ fn protobuf_merge_accumulates_multiplicity_without_a_repeated_field_collection()
 }
 
 #[test]
+fn first_component_uses_canonical_family_order_and_preserves_multiplicity() {
+    let source = models::par_from_default! {
+        exprs: vec![
+            Expr {
+                expr_instance: Some(ExprInstance::GInt(9)),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::GInt(3)),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::GInt(3)),
+            },
+        ],
+        ..GeneratedPar::default()
+    };
+    let value = Par::import_generated(&source).expect("import");
+
+    let (first, multiplicity) = value
+        .first::<Expr>()
+        .expect("decode first expression")
+        .expect("expression family is nonempty");
+    assert_eq!(first.expr_instance, Some(ExprInstance::GInt(3)));
+    assert_eq!(multiplicity.get(), 2);
+    assert!(Par::default()
+        .first::<Expr>()
+        .expect("empty lookup")
+        .is_none());
+}
+
+#[test]
 fn protobuf_decode_dispatches_every_component_family_from_a_chunked_buffer() {
     let mut source = par_corpus::all_par_fields();
     source.sends.retain(|send| send.chan.is_some());

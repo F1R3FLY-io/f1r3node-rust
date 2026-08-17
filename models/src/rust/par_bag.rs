@@ -963,6 +963,31 @@ impl ParBag {
             })
     }
 
+    /// Decode only the lexicographically first endpoint in one constructor
+    /// family. The zipper traversal stops immediately after that endpoint;
+    /// it does not scan or collect the remaining family.
+    pub fn first<T: ParBagComponent>(&self) -> Result<Option<(T, Multiplicity)>, ParBagCodecError> {
+        enum Stop {
+            Found,
+            Codec(ParBagCodecError),
+        }
+
+        let mut first = None;
+        let result =
+            self.components
+                .try_visit_prefix(&component_prefix(T::TAG), |path, multiplicity| {
+                    let (tag, payload) = split_key(path).map_err(Stop::Codec)?;
+                    debug_assert_eq!(tag, T::TAG);
+                    let value = decode_exact::<T>(payload).map_err(Stop::Codec)?;
+                    first = Some((value, multiplicity));
+                    Err(Stop::Found)
+                });
+        match result {
+            Ok(()) | Err(Stop::Found) => Ok(first),
+            Err(Stop::Codec(error)) => Err(error),
+        }
+    }
+
     pub fn sum(&self, other: &Self) -> Result<Self, BagError> {
         self.components
             .sum(&other.components)

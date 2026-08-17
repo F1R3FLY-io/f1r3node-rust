@@ -128,6 +128,12 @@ impl Par {
         self.components.try_visit_decoded(visitor)
     }
 
+    pub fn first<T: ParBagComponent>(
+        &self,
+    ) -> Result<Option<(T, Multiplicity)>, super::par_bag::ParBagCodecError> {
+        self.components.first::<T>()
+    }
+
     /// Insert one occurrence and join its independently-derived root metadata.
     /// The caller supplies the same cached summary it computed while building
     /// the component, so no second AST traversal is introduced here.
