@@ -77,8 +77,9 @@ if ! ls "$ROCQ_DIR"/theories/*.v >/dev/null 2>&1; then
 elif command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]]; then
   # shellcheck disable=SC1090
   eval "$(opam env 2>/dev/null)" 2>/dev/null || true
-  ( cd "$ROCQ_DIR" && coq_makefile -f _CoqProject -o Makefile ) >/dev/null 2>&1
-  if capped make -C "$ROCQ_DIR" -j1 >/tmp/fc_rocq_build.log 2>&1; then
+  ( cd "$ROCQ_DIR" && coq_makefile -f _CoqProject -o Makefile.local ) >/dev/null 2>&1
+  if capped make -C "$ROCQ_DIR" -f Makefile.local -j1 >/tmp/fc_rocq_build.log 2>&1; then
+    rm -f "$ROCQ_DIR"/Makefile.local "$ROCQ_DIR"/Makefile.local.conf "$ROCQ_DIR"/.Makefile.local.d
     pass "Rocq build (Foundation, Score, Filter, TieBreak, Lca, Rank, Bound, GuardBridge, MainTheorem)"
     tmpd=$(mktemp -d)
     chk="$tmpd/GateCheck.v"
@@ -123,6 +124,7 @@ EOF
       fail "coqchk kernel re-check FAILED (see /tmp/fc_coqchk.log)"; tail -10 /tmp/fc_coqchk.log | sed 's/^/      /'
     fi
   else
+    rm -f "$ROCQ_DIR"/Makefile.local "$ROCQ_DIR"/Makefile.local.conf "$ROCQ_DIR"/.Makefile.local.d
     fail "Rocq build failed (see /tmp/fc_rocq_build.log)"; tail -20 /tmp/fc_rocq_build.log | sed 's/^/      /'
   fi
 else

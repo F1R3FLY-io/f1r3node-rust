@@ -45,7 +45,7 @@ const DEPLOY_SIG_BYTES_ESTIMATE: f64 = 65.0;
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DeployBranchScore {
     deploy_sig_count: usize,
-    latest_deploy_block_number: i64,
+    earliest_deploy_block_number: i64,
     root_block_number: i64,
 }
 
@@ -53,21 +53,21 @@ fn better_deploy_branch_score(
     candidate: (&DeployBranchScore, &BlockHash),
     current: (&DeployBranchScore, &BlockHash),
 ) -> bool {
-    candidate
+    current
         .0
-        .deploy_sig_count
-        .cmp(&current.0.deploy_sig_count)
+        .earliest_deploy_block_number
+        .cmp(&candidate.0.earliest_deploy_block_number)
         .then_with(|| {
             candidate
                 .0
-                .latest_deploy_block_number
-                .cmp(&current.0.latest_deploy_block_number)
+                .deploy_sig_count
+                .cmp(&current.0.deploy_sig_count)
         })
         .then_with(|| {
-            candidate
+            current
                 .0
                 .root_block_number
-                .cmp(&current.0.root_block_number)
+                .cmp(&candidate.0.root_block_number)
         })
         .then_with(|| current.1.cmp(candidate.1))
         .is_gt()
@@ -78,7 +78,7 @@ fn branch_unfinalized_user_deploy_score(
     block_store: &KeyValueBlockStore,
     root_hash: &BlockHash,
     last_finalized_block: &BlockHash,
-) -> Result<Option<DeployBranchScore>, CasperError> {
+) -> Result<Option<(DeployBranchScore, Vec<Bytes>)>, CasperError> {
     let last_finalized_number = dag
         .lookup(last_finalized_block)?
         .map(|meta| meta.block_number)
@@ -87,7 +87,7 @@ fn branch_unfinalized_user_deploy_score(
     let mut stack = vec![root_hash.clone()];
     let mut seen: HashSet<BlockHash> = HashSet::new();
     let mut deploy_sigs: HashSet<Bytes> = HashSet::new();
-    let mut latest_deploy_block_number: Option<i64> = None;
+    let mut earliest_deploy_block_number: Option<i64> = None;
 
     while let Some(block_hash) = stack.pop() {
         if !seen.insert(block_hash.clone())
@@ -104,9 +104,9 @@ fn branch_unfinalized_user_deploy_score(
 
         if let Some(sigs) = block_store.deploy_sigs(&block_hash)? {
             if !sigs.is_empty() {
-                latest_deploy_block_number = Some(
-                    latest_deploy_block_number
-                        .map(|current| current.max(block_meta.block_number))
+                earliest_deploy_block_number = Some(
+                    earliest_deploy_block_number
+                        .map(|current| current.min(block_meta.block_number))
                         .unwrap_or(block_meta.block_number),
                 );
                 for sig in sigs {
@@ -118,10 +118,18 @@ fn branch_unfinalized_user_deploy_score(
         stack.extend(block_meta.parents.iter().cloned());
     }
 
-    Ok(latest_deploy_block_number.map(|latest| DeployBranchScore {
-        deploy_sig_count: deploy_sigs.len(),
-        latest_deploy_block_number: latest,
-        root_block_number: root_meta.block_number,
+    let deploy_sig_count = deploy_sigs.len();
+    let mut deploy_sigs: Vec<Bytes> = deploy_sigs.into_iter().collect();
+    deploy_sigs.sort();
+    Ok(earliest_deploy_block_number.map(|earliest| {
+        (
+            DeployBranchScore {
+                deploy_sig_count,
+                earliest_deploy_block_number: earliest,
+                root_block_number: root_meta.block_number,
+            },
+            deploy_sigs,
+        )
     }))
 }
 
@@ -135,7 +143,8 @@ fn prefer_deploy_support_main_parent(
         return Ok(parents);
     }
 
-    let mut scored: Vec<Option<DeployBranchScore>> = Vec::with_capacity(parents.len());
+    let mut scored: Vec<Option<(DeployBranchScore, Vec<Bytes>)>> =
+        Vec::with_capacity(parents.len());
     for parent in &parents {
         scored.push(branch_unfinalized_user_deploy_score(
             dag,
@@ -145,11 +154,29 @@ fn prefer_deploy_support_main_parent(
         )?);
     }
 
+    // A sibling may claim the main-parent slot only with deploy sigs the
+    // ghost main's own unfinalized ancestry does not already carry. Without
+    // this, every re-inclusion of a rejected deploy mints a fresh
+    // deploy-carrying block on the proposer's own branch, promotion pins each
+    // validator's main parent to its own chain, the finalizer (which credits
+    // agreement down main-parent chains only) never accumulates two
+    // validators on any candidate, nothing finalizes, and retention keeps
+    // re-including — a closed liveness loop. Once the convergent chain covers
+    // the sigs (original or merged), promotion pressure must vanish so
+    // LMD-GHOST convergence resumes.
+    let main_sig_set: HashSet<Bytes> = scored[0]
+        .as_ref()
+        .map(|(_, sigs)| sigs.iter().cloned().collect())
+        .unwrap_or_default();
+
     let mut best: Option<(usize, &DeployBranchScore)> = None;
-    for (idx, score) in scored.iter().enumerate() {
-        let Some(score) = score.as_ref() else {
+    for (idx, score) in scored.iter().enumerate().skip(1) {
+        let Some((score, sigs)) = score.as_ref() else {
             continue;
         };
+        if sigs.iter().all(|sig| main_sig_set.contains(sig)) {
+            continue;
+        }
         let replace = best
             .as_ref()
             .map(|(best_idx, best_score)| {
@@ -167,9 +194,17 @@ fn prefer_deploy_support_main_parent(
     let Some((best_idx, best_score)) = best else {
         return Ok(parents);
     };
-    if best_idx == 0 {
-        return Ok(parents);
+    if let Some((main_score, _)) = scored[0].as_ref() {
+        if !better_deploy_branch_score(
+            (best_score, &parents[best_idx].block_hash),
+            (main_score, &parents[0].block_hash),
+        ) {
+            return Ok(parents);
+        }
     }
+    let Some((_, promoted_deploy_sigs)) = scored[best_idx].as_ref() else {
+        return Ok(parents);
+    };
 
     let original_main = parents[0].block_hash.clone();
     let promoted = parents[best_idx].block_hash.clone();
@@ -177,12 +212,22 @@ fn prefer_deploy_support_main_parent(
     let promoted_parent = reordered.remove(best_idx);
     reordered.insert(0, promoted_parent);
     tracing::info!(
+        target: "f1r3fly.casper.deploy_lifecycle",
+        event = "parent_promoted",
+        deploy_sigs = ?promoted_deploy_sigs.iter().map(hex::encode).collect::<Vec<_>>(),
+        original_main = %hex::encode(&original_main),
+        promoted_main = %hex::encode(&promoted),
+        earliest_deploy_block = best_score.earliest_deploy_block_number,
+        promoted_root_block = best_score.root_block_number,
+        "deploy lifecycle"
+    );
+    tracing::info!(
         target: "f1r3fly.casper.deploy_support",
-        "Parent selection promoted deploy-carrying branch for canonical support: original_main={}, promoted_main={}, deploy_sigs={}, latest_deploy_block={}, promoted_root_block={}",
+        "Parent selection promoted deploy-carrying branch for canonical support: original_main={}, promoted_main={}, deploy_sigs={}, earliest_deploy_block={}, promoted_root_block={}",
         PrettyPrinter::build_string_bytes(&original_main),
         PrettyPrinter::build_string_bytes(&promoted),
         best_score.deploy_sig_count,
-        best_score.latest_deploy_block_number,
+        best_score.earliest_deploy_block_number,
         best_score.root_block_number
     );
     Ok(reordered)
@@ -1546,6 +1591,261 @@ mod tests {
         assert_eq!(reordered[1].block_hash, empty.block_hash);
     }
 
+    #[tokio::test]
+    async fn deploy_support_skips_candidate_covered_by_main_ancestry() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+        let genesis = block_implicits::get_random_block(
+            Some(0),
+            Some(0),
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let deploy = crate::rust::util::construct_deploy::basic_deploy_data(
+            0,
+            None,
+            Some("test".to_string()),
+        )
+        .expect("deploy");
+        let deploy_block = block_implicits::get_random_block(
+            Some(1),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(vec![genesis.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(vec![ProcessedDeploy::empty(deploy)]),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let rival = block_implicits::get_random_block(
+            Some(2),
+            Some(2),
+            None,
+            None,
+            None,
+            None,
+            Some(2),
+            Some(vec![deploy_block.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let mid = block_implicits::get_random_block(
+            Some(2),
+            Some(3),
+            None,
+            None,
+            None,
+            None,
+            Some(2),
+            Some(vec![deploy_block.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let cover_main = block_implicits::get_random_block(
+            Some(3),
+            Some(4),
+            None,
+            None,
+            None,
+            None,
+            Some(3),
+            Some(vec![mid.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+
+        for block in [&genesis, &deploy_block, &rival, &mid, &cover_main] {
+            block_store.put_block_message(block).expect("store block");
+        }
+        dag_storage
+            .insert(&genesis, InsertMode::Approved)
+            .expect("insert genesis");
+        for block in [&deploy_block, &rival, &mid, &cover_main] {
+            dag_storage
+                .insert(block, InsertMode::Normal)
+                .expect("insert block");
+        }
+
+        // Both branches carry the SAME deploy sigs (the shared `deploy_block`
+        // ancestor). The pre-fix tie-break promoted `rival` for its older
+        // root, pinning the main parent to the stale branch on every
+        // snapshot; the covered-sig gate must keep the ghost main in place.
+        let dag = dag_storage.get_representation().expect("dag");
+        let reordered = prefer_deploy_support_main_parent(
+            &dag,
+            &block_store,
+            vec![cover_main.clone(), rival.clone()],
+            &genesis.block_hash,
+        )
+        .expect("prefer deploy support");
+
+        assert_eq!(reordered[0].block_hash, cover_main.block_hash);
+        assert_eq!(reordered[1].block_hash, rival.block_hash);
+    }
+
+    #[tokio::test]
+    async fn deploy_support_promotes_novel_sigs_over_covered_main() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+        let genesis = block_implicits::get_random_block(
+            Some(0),
+            Some(0),
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let covered = crate::rust::util::construct_deploy::basic_deploy_data(
+            0,
+            None,
+            Some("test".to_string()),
+        )
+        .expect("covered deploy");
+        let novel = crate::rust::util::construct_deploy::basic_deploy_data(
+            1,
+            None,
+            Some("test".to_string()),
+        )
+        .expect("novel deploy");
+        let deploy_block = block_implicits::get_random_block(
+            Some(1),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(vec![genesis.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(vec![ProcessedDeploy::empty(covered)]),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let mid = block_implicits::get_random_block(
+            Some(2),
+            Some(2),
+            None,
+            None,
+            None,
+            None,
+            Some(2),
+            Some(vec![deploy_block.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let cover_main = block_implicits::get_random_block(
+            Some(3),
+            Some(3),
+            None,
+            None,
+            None,
+            None,
+            Some(3),
+            Some(vec![mid.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let novel_tip = block_implicits::get_random_block(
+            Some(1),
+            Some(4),
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(vec![genesis.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(vec![ProcessedDeploy::empty(novel)]),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+
+        for block in [&genesis, &deploy_block, &mid, &cover_main, &novel_tip] {
+            block_store.put_block_message(block).expect("store block");
+        }
+        dag_storage
+            .insert(&genesis, InsertMode::Approved)
+            .expect("insert genesis");
+        for block in [&deploy_block, &mid, &cover_main, &novel_tip] {
+            dag_storage
+                .insert(block, InsertMode::Normal)
+                .expect("insert block");
+        }
+
+        // The candidate carries a sig the main's ancestry does NOT cover and
+        // outscores it (older root on the earliest/count tie): promotion must
+        // still fire for genuinely un-merged deploy branches.
+        let dag = dag_storage.get_representation().expect("dag");
+        let reordered = prefer_deploy_support_main_parent(
+            &dag,
+            &block_store,
+            vec![cover_main.clone(), novel_tip.clone()],
+            &genesis.block_hash,
+        )
+        .expect("prefer deploy support");
+
+        assert_eq!(reordered[0].block_hash, novel_tip.block_hash);
+        assert_eq!(reordered[1].block_hash, cover_main.block_hash);
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // Fork-choice FV — T-MP STAGE 2 (formal/rocq/fork_choice/theories/GuardBridge.v
     // seam (3)). LOCAL-ONLY verification; not consensus code.
@@ -1782,13 +2082,38 @@ mod tests {
     /// A `(DeployBranchScore, BlockHash)` over DELIBERATELY tiny domains, so ties at
     /// every lexicographic level — and hence the reversed hash tie-break at :68 — are
     /// hit constantly rather than vanishingly rarely.
+    #[test]
+    fn deploy_support_prioritizes_oldest_unfinalized_deploy() {
+        let older = DeployBranchScore {
+            deploy_sig_count: 1,
+            earliest_deploy_block_number: 1,
+            root_block_number: 3,
+        };
+        let newer = DeployBranchScore {
+            deploy_sig_count: 100,
+            earliest_deploy_block_number: 2,
+            root_block_number: 4,
+        };
+        let older_hash = prost::bytes::Bytes::from_static(b"older");
+        let newer_hash = prost::bytes::Bytes::from_static(b"newer");
+
+        assert!(better_deploy_branch_score(
+            (&older, &older_hash),
+            (&newer, &newer_hash)
+        ));
+        assert!(!better_deploy_branch_score(
+            (&newer, &newer_hash),
+            (&older, &older_hash)
+        ));
+    }
+
     fn arb_scored_branch() -> impl Strategy<Value = (DeployBranchScore, BlockHash)> {
         (0usize..3, 0i64..3, 0i64..3, 0u8..4).prop_map(
-            |(deploy_sig_count, latest_deploy_block_number, root_block_number, hash_byte)| {
+            |(deploy_sig_count, earliest_deploy_block_number, root_block_number, hash_byte)| {
                 (
                     DeployBranchScore {
                         deploy_sig_count,
-                        latest_deploy_block_number,
+                        earliest_deploy_block_number,
                         root_block_number,
                     },
                     prost::bytes::Bytes::from(vec![hash_byte]),

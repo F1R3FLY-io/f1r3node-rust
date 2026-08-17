@@ -26,10 +26,12 @@ cat >"$TMP/bin/poetry" <<'EOF'
 set -euo pipefail
 xml=
 collect=false
+selectors=()
 for arg in "$@"; do
 	case "$arg" in
 	--junitxml=*) xml=${arg#*=} ;;
 	--collect-only) collect=true ;;
+	integration-tests/test/tests/*/) selectors+=("$arg") ;;
 	esac
 done
 if [ "$collect" = true ]; then
@@ -39,18 +41,26 @@ if [ "$collect" = true ]; then
 		*)
 			printf '%s\n' \
 				'integration-tests/test/tests/shared/test_beta.py::test_one' \
-				'integration-tests/test/tests/custom/test_alpha.py::test_two'
+				'integration-tests/test/tests/custom/test_alpha.py::test_two' \
+				'integration-tests/test/tests/standalone/test_gamma.py::test_three'
 			exit 0
 			;;
 	esac
 fi
 [ -n "$xml" ]
-case "${FAKE_MODE:-pass}" in
-	pass) body='<testcase name="one"/><testcase name="two"/>'; status=0 ;;
-	skip) body='<testcase name="one"><skipped/></testcase><testcase name="two"/>'; status=0 ;;
-	short) body='<testcase name="one"/>'; status=0 ;;
-	fail) body='<testcase name="one"><failure/></testcase><testcase name="two"/>'; status=1 ;;
-	no-report) exit 0 ;;
+[ "${#selectors[@]}" -eq 1 ]
+suite=${selectors[0]%/}
+suite=${suite##*/}
+printf '%s\n' "$suite" >>"${FAKE_CALLS:?}"
+body="<testcase name=\"$suite\"/>"
+status=0
+case "${FAKE_MODE:-pass}:$suite" in
+	skip:custom) body='<testcase name="custom"><skipped/></testcase>' ;;
+	short:standalone) body= ;;
+	fail:custom) body='<testcase name="custom"><failure/></testcase>'; status=1 ;;
+	no-report:custom) exit 0 ;;
+	timeout:shared) sleep 5 ;;
+	pass:* | skip:* | short:* | fail:* | no-report:* | timeout:*) ;;
 	*) exit 2 ;;
 esac
 printf '<testsuites><testsuite>%s</testsuite></testsuites>\n' "$body" >"$xml"
@@ -64,15 +74,21 @@ run_preflight() {
 	NODE_REPO_DIR="$TMP/node" \
 	PREFLIGHT_PROFILE_FILE="$1" \
 	PREFLIGHT_OUTPUT_DIR="$2" \
-	PREFLIGHT_TIMEOUT_SECONDS=30 \
+	PREFLIGHT_TIMEOUT_SECONDS="${4:-30}" \
 	FAKE_MODE="${3:-pass}" \
+	FAKE_CALLS="$2/calls" \
 		"$RUNNER"
 }
 
 run_preflight "$TMP/profile" "$TMP/pass"
-grep -Fq 'tests=2 collected=2 failures=0 errors=0 skipped=0' "$TMP/pass/report.txt"
+grep -Fq 'tests=3 collected=3 failures=0 errors=0 skipped=0' "$TMP/pass/report.txt"
 test "$(cat "$TMP/pass/result")" = passed
 test "$(cat "$TMP/pass/selection.txt")" = "$(cat "$TMP/profile")"
+test "$(cat "$TMP/pass/calls")" = $'shared\ncustom\nstandalone'
+test -f "$TMP/pass/junit-shared.xml"
+test -f "$TMP/pass/junit-custom.xml"
+test -f "$TMP/pass/junit-standalone.xml"
+test "$(grep -o '<testcase ' "$TMP/pass/junit.xml" | wc -l)" -eq 3
 
 if run_preflight "$TMP/profile" "$TMP/skip" skip; then
 	printf 'preflight accepted a skipped test\n' >&2
@@ -97,6 +113,14 @@ if run_preflight "$TMP/profile" "$TMP/no-report" no-report; then
 	exit 1
 fi
 test "$(cat "$TMP/no-report/result")" = failed
+
+if run_preflight "$TMP/profile" "$TMP/timeout" timeout 1; then
+	printf 'preflight accepted a global timeout\n' >&2
+	exit 1
+fi
+test "$(cat "$TMP/timeout/result")" = failed
+test "$(cat "$TMP/timeout/calls")" = shared
+grep -Fq 'suite_statuses=shared:124 custom:124 standalone:124' "$TMP/timeout/report.txt"
 
 if run_preflight "$TMP/profile" "$TMP/collection-fail" collection-fail; then
 	printf 'preflight accepted a collection failure\n' >&2

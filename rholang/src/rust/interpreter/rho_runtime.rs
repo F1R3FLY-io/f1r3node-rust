@@ -1,5 +1,6 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/RhoRuntime.scala
 use std::collections::HashMap;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -1162,6 +1163,9 @@ async fn setup_reducer(
         mergeable_tags,
         cost: cost.clone(),
         substitute: Substitute { cost: cost.clone() },
+        single_term_evaluations: Arc::new(AtomicU64::new(0)),
+        yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
+        spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
     });
 
     reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();

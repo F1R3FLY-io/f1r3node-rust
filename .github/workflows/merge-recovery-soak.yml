@@ -188,7 +188,35 @@ env:
   # wait for registry state visibility after deploy finalization, which closes
   # the finalized-block versus canonical-effect race from CI run 31856863708.
   # Verified that c4dbcd5 is the protected main tip and matches main exactly.
-  SYSTEM_INTEGRATION_REF: c4dbcd5488ba6d38a4212d1eb4c13ac55d0953a4
+  #
+  # 2026-08-15: bumped to the SI PR #117 main merge. Bonding and convergence
+  # now use dedicated shards, bond-map assertions handle epoch-boundary
+  # activation, and finalization checks select canonical finalized blocks
+  # instead of arbitrary orphan candidates. Verified that afcce4b1 is the
+  # protected main tip, all PR checks passed, and the bonding lifecycle passed
+  # locally against the node image built from master 35674b389.
+  #
+  # 2026-08-15: bumped to the reviewed SI PR #118 head. The convergence test
+  # now accepts finalized FT at or above FTT and checks monotonicity. Boundary
+  # bond blocks accept either valid closeBlock transition map, while a later
+  # finalized block must contain the exact activated map. Retired log snapshots
+  # now retain test-owner allowances without leaking allowances across tests,
+  # with focused unit coverage. Bond-map assertions use the finalization
+  # resolver's canonical deploy block instead of an orphaned first inclusion.
+  # Verified that 735a7b95 is the immutable PR head, the local bonding suite
+  # passed, and the local repin helper and workflow security invariants pass.
+  #
+  # 2026-08-15: bumped to the SI PR #119 main merge. Observer LFS coverage now
+  # runs in a dedicated shard and requires exact finalized multi-parent block
+  # metadata before observer attachment. Verified that 28b24d9c is the local
+  # and remote main tip, and the workflow security invariants pass.
+  #
+  # 2026-08-16: bumped to the SI PR #120 main merge. The harness uses common
+  # finalized anchors and repairs active-set, epoch-boundary, port-reuse,
+  # lifecycle-tracker, and bridge-read behavior from the failed preflight.
+  # Verified that 22121713 is the immutable GitHub merge commit. The focused
+  # concurrency suite and workflow security invariants pass.
+  SYSTEM_INTEGRATION_REF: 22121713d8874ac84f94f4b3ddb30dda78fa7f88
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
@@ -687,7 +715,7 @@ jobs:
     needs: schedule_gate
     if: needs.schedule_gate.outputs.should_run == 'true' && needs.schedule_gate.outputs.canary != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 30
     permissions:
       contents: read
       statuses: write
@@ -704,17 +732,17 @@ jobs:
         run: |
           current=""
           read_ok=false
-          for attempt in 1 2 3; do
+          for attempt in 1 2 3 4 5 6 7; do
             if current="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}/status" \
               --jq '[.statuses[] | select(.context == "Soak Integration Preflight")][0] // {} | [(.state // ""), (.target_url // "")] | @tsv')"; then
               read_ok=true
               break
             fi
-            [ "$attempt" -eq 3 ] || sleep 5
+            [ "$attempt" -eq 7 ] || sleep "$(( attempt >= 5 ? 240 : 15 * (1 << (attempt - 1)) ))"
           done
           if [ "$read_ok" != "true" ]; then
-            echo "::error::could not read the current integration preflight status"
-            exit 1
+            echo "::warning::could not read the current integration preflight status; continuing without a pending status (the finalize job publishes the terminal status)"
+            exit 0
           fi
           IFS=$'\t' read -r current_state current_url <<<"$current"
           prefix="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/"
@@ -753,7 +781,7 @@ jobs:
               esac
             fi
           fi
-          for attempt in 1 2 3; do
+          for attempt in 1 2 3 4 5 6 7; do
             if gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${TARGET_SHA}" \
               -f state=pending \
               -f context="Soak Integration Preflight" \
@@ -761,10 +789,10 @@ jobs:
               -f target_url="$RUN_URL" >/dev/null; then
               exit 0
             fi
-            [ "$attempt" -eq 3 ] || sleep 5
+            [ "$attempt" -eq 7 ] || sleep "$(( attempt >= 5 ? 240 : 15 * (1 << (attempt - 1)) ))"
           done
-          echo "::error::could not publish the pending integration preflight status"
-          exit 1
+          echo "::warning::could not publish the pending integration preflight status; continuing without it (the finalize job publishes the terminal status)"
+          exit 0
 
   launch_runner:
     name: Launch Oracle Cloud Soak Runner
@@ -1737,7 +1765,7 @@ jobs:
     needs: [schedule_gate, preflight_pending, launch_runner, soak]
     if: always() && needs.schedule_gate.outputs.should_run == 'true' && needs.schedule_gate.outputs.canary != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 30
     permissions:
       contents: read
       statuses: write
@@ -1758,13 +1786,13 @@ jobs:
         run: |
           current=""
           read_ok=false
-          for attempt in 1 2 3; do
+          for attempt in 1 2 3 4 5 6 7; do
             if current="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}/status" \
               --jq '[.statuses[] | select(.context == "Soak Integration Preflight")][0] // {} | [(.state // ""), (.target_url // "")] | @tsv')"; then
               read_ok=true
               break
             fi
-            [ "$attempt" -eq 3 ] || sleep 5
+            [ "$attempt" -eq 7 ] || sleep "$(( attempt >= 5 ? 240 : 15 * (1 << (attempt - 1)) ))"
           done
           if [ "$read_ok" != "true" ]; then
             echo "::error::could not read the current integration preflight status"
@@ -1779,6 +1807,11 @@ jobs:
           fi
           own_run_id="${BASH_REMATCH[1]}"
           own_attempt="${BASH_REMATCH[3]:-0}"
+          if [ -z "$current_url" ]; then
+            echo "no pending status exists (degraded publish during an outage); publishing the terminal status directly"
+            current_run_id="$own_run_id"
+            current_attempt="$own_attempt"
+          else
           current_tail="${current_url#"$prefix"}"
           if [ "$current_tail" = "$current_url" ] || ! [[ "$current_tail" =~ ^([0-9]+)(/attempts/([0-9]+))?$ ]]; then
             echo "::error::the current preflight status has no valid owner"
@@ -1786,6 +1819,7 @@ jobs:
           fi
           current_run_id="${BASH_REMATCH[1]}"
           current_attempt="${BASH_REMATCH[3]:-0}"
+          fi
           current_is_newer=false
           if [ "${#current_run_id}" -gt "${#own_run_id}" ] || \
             { [ "${#current_run_id}" -eq "${#own_run_id}" ] && [[ "$current_run_id" > "$own_run_id" ]]; }; then
@@ -1826,7 +1860,7 @@ jobs:
           elif [ "$SOAK_RESULT" = "cancelled" ]; then
             description="Integration preflight was cancelled"
           fi
-          for attempt in 1 2 3; do
+          for attempt in 1 2 3 4 5 6 7; do
             if gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${TARGET_SHA}" \
               -f state="$state" \
               -f context="Soak Integration Preflight" \
@@ -1834,7 +1868,7 @@ jobs:
               -f target_url="$RUN_URL" >/dev/null; then
               exit 0
             fi
-            [ "$attempt" -eq 3 ] || sleep 5
+            [ "$attempt" -eq 7 ] || sleep "$(( attempt >= 5 ? 240 : 15 * (1 << (attempt - 1)) ))"
           done
           echo "::error::could not finalize the integration preflight status"
           exit 1
