@@ -69,11 +69,11 @@
              and stage 1's sort is one too. No parent is lost or duplicated, so
              the parent MULTISET is preserved.
          (b) dbetter_strict_total_order        - `better_deploy_branch_score`
-             (:48-70) is a STRICT TOTAL order: irreflexive, asymmetric, transitive,
+             (:48-68) is a STRICT TOTAL order: irreflexive, asymmetric, transitive,
              and total on distinct hashes. It is lexicographic on
-             (deploy_sig_count, latest_deploy_block_number, root_block_number),
-             each DESCENDING, with a final REVERSED hash tie-break (the SMALLER
-             block hash wins, :68). Distinct parents have distinct (cryptographic)
+             (earliest_deploy_block_number ASC, deploy_sig_count DESC,
+             root_block_number ASC, block_hash ASC). Distinct parents have distinct
+             cryptographic hashes, so the last key makes the order total.
              hashes, so on the real parent list it is total. Hence:
          (c) dbest_hash_perm_invariant / main_parent_pipeline_deterministic - the
              promoted branch is the UNIQUE argmax, so WHICH parent is promoted is
@@ -372,10 +372,10 @@ Qed.
    Stage 2 - the deploy-support promotion (snapshot.rs:124-185)
    --------------------------------------------------------------------------- *)
 
-(* `DeployBranchScore` (snapshot.rs:41-46). The Rust fields are
-     deploy_sig_count           : usize
-     latest_deploy_block_number : i64
-     root_block_number          : i64
+(* `DeployBranchScore` (snapshot.rs:45-49). The Rust fields are
+     deploy_sig_count             : usize
+     earliest_deploy_block_number : i64
+     root_block_number            : i64
    and all three are modeled as `nat`. That is FAITHFUL for the order-theoretic
    content proved below - the Rust comparison is `Ord`'s lexicographic order, and
    `nat`'s order agrees with `usize`'s / `i64`'s on the non-negative range - and
@@ -387,33 +387,31 @@ Qed.
    :81, is a traversal CUTOFF (:97), not a score field, so it never enters the
    order.) *)
 Record dscore : Type := mkDScore {
-  d_sigs   : nat;   (* deploy_sig_count            *)
-  d_latest : nat;   (* latest_deploy_block_number  *)
-  d_root   : nat    (* root_block_number           *)
+  d_earliest : nat;   (* earliest_deploy_block_number *)
+  d_sigs     : nat;   (* deploy_sig_count             *)
+  d_root     : nat    (* root_block_number            *)
 }.
 
-(* `better_deploy_branch_score` (snapshot.rs:48-70) as a PROPOSITION:
+(* `better_deploy_branch_score` (snapshot.rs:51-68) as a PROPOSITION:
    `dbetter (sa,ha) (sb,hb)` reads "candidate (sa,ha) BEATS current (sb,hb)".
-   The Rust chains `candidate.cmp(current)` on deploy_sig_count (:52-55), then
-   latest_deploy_block_number (:56-61), then root_block_number (:62-67) - each
-   DESCENDING, bigger wins - then `current.1.cmp(candidate.1)` (:68), which is
-   REVERSED, so the SMALLER hash wins - and takes `.is_gt()` (:69). *)
+   The Rust order is earliest deploy height ASC, deploy count DESC, root height
+   ASC, then block hash ASC. *)
 Definition dbetter (a b : dscore * BlockHash) : Prop :=
   let (sa, ha) := a in
   let (sb, hb) := b in
-  d_sigs sb < d_sigs sa
-  \/ (d_sigs sb = d_sigs sa /\ d_latest sb < d_latest sa)
-  \/ (d_sigs sb = d_sigs sa /\ d_latest sb = d_latest sa /\ d_root sb < d_root sa)
-  \/ (d_sigs sb = d_sigs sa /\ d_latest sb = d_latest sa /\ d_root sb = d_root sa
+  d_earliest sa < d_earliest sb
+  \/ (d_earliest sa = d_earliest sb /\ d_sigs sb < d_sigs sa)
+  \/ (d_earliest sa = d_earliest sb /\ d_sigs sb = d_sigs sa /\ d_root sa < d_root sb)
+  \/ (d_earliest sa = d_earliest sb /\ d_sigs sb = d_sigs sa /\ d_root sa = d_root sb
       /\ ha < hb).
 
 Definition dbetterb (a b : dscore * BlockHash) : bool :=
   let (sa, ha) := a in
   let (sb, hb) := b in
-  (d_sigs sb <? d_sigs sa)
-  || ((d_sigs sb =? d_sigs sa) && (d_latest sb <? d_latest sa))
-  || ((d_sigs sb =? d_sigs sa) && (d_latest sb =? d_latest sa) && (d_root sb <? d_root sa))
-  || ((d_sigs sb =? d_sigs sa) && (d_latest sb =? d_latest sa) && (d_root sb =? d_root sa)
+  (d_earliest sa <? d_earliest sb)
+  || ((d_earliest sa =? d_earliest sb) && (d_sigs sb <? d_sigs sa))
+  || ((d_earliest sa =? d_earliest sb) && (d_sigs sb =? d_sigs sa) && (d_root sa <? d_root sb))
+  || ((d_earliest sa =? d_earliest sb) && (d_sigs sb =? d_sigs sa) && (d_root sa =? d_root sb)
       && (ha <? hb)).
 
 Lemma dbetterb_true_iff : forall a b, dbetterb a b = true <-> dbetter a b.
@@ -471,6 +469,47 @@ Proof.
   split; [exact dbetter_irrefl |].
   split; [exact dbetter_asym |].
   split; [exact dbetter_trans | exact dbetter_total].
+Qed.
+
+Definition DeploySig := nat.
+
+Definition signature_covered (main_sigs : list DeploySig) (sig : DeploySig) : bool :=
+  existsb (Nat.eqb sig) main_sigs.
+
+Definition has_novel_signature
+    (main_sigs candidate_sigs : list DeploySig) : bool :=
+  existsb (fun sig => negb (signature_covered main_sigs sig)) candidate_sigs.
+
+Lemma signature_covered_true_iff :
+  forall main_sigs sig, signature_covered main_sigs sig = true <-> In sig main_sigs.
+Proof.
+  intros main_sigs sig. unfold signature_covered. rewrite existsb_exists.
+  split.
+  - intros [x [Hin Heq]]. apply Nat.eqb_eq in Heq. subst x. exact Hin.
+  - intros Hin. exists sig. split; [exact Hin | apply Nat.eqb_refl].
+Qed.
+
+Theorem promotion_gate_requires_novel :
+  forall main_sigs candidate_sigs,
+    has_novel_signature main_sigs candidate_sigs = true ->
+    exists sig, In sig candidate_sigs /\ ~ In sig main_sigs.
+Proof.
+  intros main_sigs candidate_sigs H.
+  unfold has_novel_signature in H. apply existsb_exists in H.
+  destruct H as [sig [Hin Hnovel]]. exists sig. split; [exact Hin |].
+  apply negb_true_iff in Hnovel. intro Hmain.
+  apply signature_covered_true_iff in Hmain. rewrite Hmain in Hnovel. discriminate.
+Qed.
+
+Theorem covered_branch_cannot_promote :
+  forall main_sigs candidate_sigs,
+    (forall sig, In sig candidate_sigs -> In sig main_sigs) ->
+    has_novel_signature main_sigs candidate_sigs = false.
+Proof.
+  intros main_sigs candidate_sigs Hcovered.
+  destruct (has_novel_signature main_sigs candidate_sigs) eqn:Hgate; [| reflexivity].
+  exfalso. apply promotion_gate_requires_novel in Hgate.
+  destruct Hgate as [sig [Hin Hnot]]. apply Hnot. apply Hcovered. exact Hin.
 Qed.
 
 Section DeployPromotion.

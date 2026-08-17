@@ -95,3 +95,15 @@ Fork-choice proof drift can therefore merge without a Rocq rebuild.
 Do not claim formal discharge for PR 280 until FV-2, FV-3, and FV-4 have evidence.
 
 The convergence test supplies liveness evidence. It does not prove replay observational equivalence.
+
+## Follow-up formal artifacts
+
+The follow-up adds these mandatory claims:
+
+- `docs/claims/consensus-cross-view-determinism.md`
+- `docs/claims/fork-choice-convergence.md`
+- `docs/claims/replay-liveness-bound.md`
+
+The follow-up also adds bounded TLA+ models for recovery leadership, promotion convergence, and replay work.
+
+The replay selection-equivalence claim remains pending. The formal work does not declare complete discharge.
