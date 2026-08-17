@@ -195,7 +195,21 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
             proto_util::block_number(block) < proto_util::block_number(approved_block)
         })?;
 
-        Ok(!already_processed && shard_of_interest && version_of_interest && !old_block)
+        // A block this node requested to satisfy a missing dependency is of
+        // interest whatever its height. Dropping it as "old" is why a joiner
+        // can never acquire pre-anchor history: it requests the dependency,
+        // receives it, discards it here, and the dependent block retries
+        // forever — 23,643 attempts on one block before the shard's finality
+        // stalled behind the joiner's idle stake. The `old_block` filter still
+        // does its real job, since unsolicited gossip is never in this set.
+        let requested_as_dependency = self
+            .dependencies
+            .was_requested_as_dependency(&block.block_hash)?;
+
+        Ok(!already_processed
+            && shard_of_interest
+            && version_of_interest
+            && (!old_block || requested_as_dependency))
     }
 
     /// check block format and store if check passed
@@ -852,6 +866,10 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
             })?;
         quarantine.retain(|_, until| *until > now_ms);
         Ok(())
+    }
+
+    pub fn was_requested_as_dependency(&self, hash: &BlockHash) -> Result<bool, CasperError> {
+        self.block_retriever.was_requested_as_dependency(hash)
     }
 
     /// Equivalent to Scala's: requestMissingDependencies = (deps: Set[BlockHash]) => { ... }
