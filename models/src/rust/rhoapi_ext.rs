@@ -1493,45 +1493,6 @@ impl EntryTrie {
         }
     }
 
-    /// Pre-byte-native decoded-key control retained only for the causal
-    /// member-prefix restriction benchmark.
-    #[cfg(feature = "epathmap-restrict-differential")]
-    pub fn try_restrict_member_prefixes_decoded_control(
-        &self,
-        other: &Self,
-    ) -> Result<Self, EPathMapAlgebraError> {
-        use super::pathmap_integration::par_to_path;
-
-        match (&self.repr, &other.repr) {
-            (EPathMapRepr::Empty, _) | (_, EPathMapRepr::Empty) => Ok(Self::default()),
-            (EPathMapRepr::Set(left), EPathMapRepr::Set(right)) => {
-                let mut prefixes = RholangSetPathMap::new();
-                for (key, ()) in right.iter() {
-                    let entry = decode_trie_path(&key)
-                        .expect("set-mode EPathMap keys are canonical_path encodings");
-                    prefixes.insert(segments_to_key(&par_to_path(&entry), false), ());
-                    crate::rust::rholang::par_children::dismantle(entry);
-                }
-                Ok(Self::algebra_result(EPathMapRepr::Set(
-                    left.restrict(&prefixes),
-                )))
-            }
-            (EPathMapRepr::Map(left), EPathMapRepr::Map(right)) => {
-                let mut prefixes = pathmap::PathMap::new();
-                for (key, value) in right.iter() {
-                    let entry = decode_trie_path(&key)
-                        .expect("map-mode EPathMap keys are canonical_path encodings");
-                    prefixes.insert(segments_to_key(&par_to_path(&entry), false), value.clone());
-                    crate::rust::rholang::par_children::dismantle(entry);
-                }
-                Ok(Self::algebra_result(EPathMapRepr::Map(
-                    left.restrict(&prefixes),
-                )))
-            }
-            _ => Err(self.mode_mismatch(other)),
-        }
-    }
-
     /// Add every entry of `other` — the set union that `graft` performs.
     ///
     /// ★ **A trie-to-trie walk, not a materialise-and-reinsert.** This used to be
