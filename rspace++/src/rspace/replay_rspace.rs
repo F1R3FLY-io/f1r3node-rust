@@ -52,6 +52,18 @@ pub struct ReplayRSpace<C, P, A, K> {
     produce_counter: Arc<Mutex<BTreeMap<Produce, i32>>>,
     matcher: Arc<Box<dyn Match<P, A, K>>>,
     pub replay_data: Arc<Mutex<MultisetMultiMap<IOEvent, COMM>>>,
+    // Secondary index over `replay_data`: consume.hash -> produce.hash ->
+    // recorded COMMs containing both. A persistent contract's single consume
+    // key can hold one recorded COMM PER FIRE (100k+ for a hot loop), and
+    // `locked_consume` previously cloned that entire multiset on every
+    // replayed fire — O(n^2) COMM clones across a deploy's replay, which
+    // turned seconds of execution into hours of validation (the PR #280
+    // convergence stall). The index narrows each fire to the COMMs whose
+    // produce is actually present in the hot store (almost always exactly
+    // one). Kept strictly in sync with `replay_data` (rig populates, clears
+    // clear, remove_bindings_for prunes); on any miss the caller falls back
+    // to the full multiset scan, so behavior is unchanged in edge cases.
+    consume_replay_index: Arc<Mutex<HashMap<Blake2b256Hash, HashMap<Blake2b256Hash, Vec<COMM>>>>>,
     logger: Arc<Mutex<Box<dyn RSpaceLogger<C, P, A, K>>>>,
     replay_waiting_continuations_estimate: Arc<AtomicI64>,
     // Fixed-size striped locks — mirrors the RSpace fix in rspace.rs (PR #72).
@@ -186,6 +198,10 @@ where
 
     async fn clear(&self) -> Result<(), RSpaceError> {
         self.replay_data.lock().expect("replay data lock").clear();
+        self.consume_replay_index
+            .lock()
+            .expect("consume replay index lock")
+            .clear();
         self.reset(&RadixHistory::empty_root_node_hash()).await
     }
 
@@ -304,10 +320,23 @@ where
         // Create and prepare the ReplayData table
         let replay_data = self.replay_data.lock().expect("replay data lock");
         replay_data.clear();
+        let mut consume_index = self
+            .consume_replay_index
+            .lock()
+            .expect("consume replay index lock");
+        consume_index.clear();
 
         for event in comm_events {
             match event {
                 Event::Comm(comm) => {
+                    for produce in &comm.produces {
+                        consume_index
+                            .entry(comm.consume.hash.clone())
+                            .or_default()
+                            .entry(produce.hash.clone())
+                            .or_default()
+                            .push(comm.clone());
+                    }
                     let comm_cloned = comm.clone();
                     let (consume, produces) = (comm_cloned.consume, comm_cloned.produces);
                     let produce_io_events: Vec<IOEvent> = produces
@@ -437,6 +466,7 @@ where
             event_log: Arc::new(Mutex::new(Vec::new())),
             produce_counter: Arc::new(Mutex::new(BTreeMap::new())),
             replay_data: Arc::new(Mutex::new(MultisetMultiMap::empty())),
+            consume_replay_index: Arc::new(Mutex::new(HashMap::new())),
             logger: Arc::new(Mutex::new(Box::new(BasicLogger::new()))),
             replay_waiting_continuations_estimate: Arc::new(AtomicI64::new(0)),
             phase_a_locks: Self::new_striped_locks(),
@@ -464,6 +494,7 @@ where
             event_log: Arc::new(Mutex::new(Vec::new())),
             produce_counter: Arc::new(Mutex::new(BTreeMap::new())),
             replay_data: Arc::new(Mutex::new(MultisetMultiMap::empty())),
+            consume_replay_index: Arc::new(Mutex::new(HashMap::new())),
             logger: Arc::new(Mutex::new(logger)),
             replay_waiting_continuations_estimate: Arc::new(AtomicI64::new(0)),
             phase_a_locks: Self::new_striped_locks(),
@@ -595,18 +626,74 @@ where
             source: consume_ref.clone(),
         };
 
-        let comms_option = self
-            .replay_data
-            .lock()
-            .unwrap()
-            .map
-            .get(&IOEvent::Consume(consume_ref.clone()))
-            .map(|comms| {
-                comms
-                    .iter()
-                    .map(|tuple| tuple.0.clone())
-                    .collect::<Vec<_>>()
-            });
+        // Fast path: a persistent contract's consume key can hold one
+        // recorded COMM per fire (100k+ for a hot loop), and the replayed
+        // re-consume of such a contract runs BEFORE its next produce exists,
+        // so the hot store holds no data for its channels. The old path
+        // cloned the whole COMM multiset and ran the matcher over every
+        // candidate against that empty data — deterministically None, at
+        // O(n) clones per fire, O(n^2) per replay (the PR #280 convergence
+        // stall). With zero store data the outcome is always
+        // store_waiting_continuation, so take it directly. When data IS
+        // present, narrow candidates through the consume/produce index;
+        // any miss falls back to the full clone, preserving behavior.
+        let present_produce_hashes: HashSet<Blake2b256Hash> = channels
+            .iter()
+            .flat_map(|c| self.get_store().get_data(c))
+            .map(|d| d.source.hash)
+            .collect();
+        if present_produce_hashes.is_empty() {
+            let recorded = self
+                .replay_data
+                .lock()
+                .unwrap()
+                .map
+                .contains_key(&IOEvent::Consume(consume_ref.clone()));
+            if recorded {
+                tracing::trace!(target: "f1r3fly.rspace.ops", channels = ?consume_ref.channel_hashes, "replay.consume STALL-B: recorded COMM exists but no data in store yet (matcher would find no candidate)");
+            } else {
+                tracing::trace!(target: "f1r3fly.rspace.ops", channels = ?consume_ref.channel_hashes, "replay.consume STALL-A: no recorded COMM for this consume (validator did a consume absent from the proposer's trace -> execution diverged)");
+            }
+            return Ok(self.store_waiting_continuation(channels, wk));
+        }
+        let comms_option = {
+            let full = || {
+                self.replay_data
+                    .lock()
+                    .unwrap()
+                    .map
+                    .get(&IOEvent::Consume(consume_ref.clone()))
+                    .map(|comms| {
+                        comms
+                            .iter()
+                            .map(|tuple| tuple.0.clone())
+                            .collect::<Vec<_>>()
+                    })
+            };
+            let narrowed: Option<Vec<COMM>> = {
+                let index = self
+                    .consume_replay_index
+                    .lock()
+                    .expect("consume replay index lock");
+                index.get(&consume_ref.hash).map(|by_produce| {
+                    let mut out: Vec<COMM> = Vec::new();
+                    for hash in &present_produce_hashes {
+                        if let Some(comms) = by_produce.get(hash) {
+                            for comm in comms {
+                                if !out.contains(comm) {
+                                    out.push(comm.clone());
+                                }
+                            }
+                        }
+                    }
+                    out
+                })
+            };
+            match narrowed {
+                Some(comms) if !comms.is_empty() => Some(comms),
+                _ => full(),
+            }
+        };
         match comms_option {
             None => {
                 tracing::trace!(target: "f1r3fly.rspace.ops", channels = ?consume_ref.channel_hashes, "replay.consume STALL-A: no recorded COMM for this consume (validator did a consume absent from the proposer's trace -> execution diverged)");
@@ -941,6 +1028,27 @@ where
     }
 
     fn remove_bindings_for(&self, comm_ref: COMM) {
+        {
+            let mut index = self
+                .consume_replay_index
+                .lock()
+                .expect("consume replay index lock");
+            if let Some(by_produce) = index.get_mut(&comm_ref.consume.hash) {
+                for produce in &comm_ref.produces {
+                    if let Some(comms) = by_produce.get_mut(&produce.hash) {
+                        if let Some(pos) = comms.iter().position(|c| c == &comm_ref) {
+                            comms.remove(pos);
+                        }
+                        if comms.is_empty() {
+                            by_produce.remove(&produce.hash);
+                        }
+                    }
+                }
+                if by_produce.is_empty() {
+                    index.remove(&comm_ref.consume.hash);
+                }
+            }
+        }
         let replay_data = self.replay_data.lock().expect("replay data lock");
         replay_data.remove_binding_in_place(&IOEvent::Consume(comm_ref.consume.clone()), &comm_ref);
 

@@ -27,9 +27,11 @@ struct TestContext {
 }
 
 impl TestContext {
-    async fn new() -> Self {
+    async fn new(validators_num: usize) -> Self {
+        let parameters =
+            GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(validators_num));
         let genesis = GenesisBuilder::new()
-            .build_genesis_with_parameters(None)
+            .build_genesis_with_parameters(Some(parameters))
             .await
             .unwrap();
 
@@ -156,7 +158,7 @@ fn assert_touched_integer_add_channels_single_valued(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
-    let ctx = TestContext::new().await;
+    let ctx = TestContext::new(2).await;
     let shard_id = ctx.genesis.genesis_block.shard_id.clone();
 
     // Two validators, no synchrony constraint, unlimited parents so the
@@ -330,6 +332,21 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
             .await
             .expect("sync merge_block 1 -> 0");
     }
+    nodes.sort_by(|left, right| {
+        left.validator_id_opt
+            .as_ref()
+            .expect("left validator identity")
+            .public_key
+            .bytes
+            .cmp(
+                &right
+                    .validator_id_opt
+                    .as_ref()
+                    .expect("right validator identity")
+                    .public_key
+                    .bytes,
+            )
+    });
     assert!(
         nodes[0].contains(&merge_block.block_hash),
         "validator 0 must observe merge_block before recovery propose"
@@ -491,7 +508,7 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() {
-    let ctx = TestContext::new().await;
+    let ctx = TestContext::new(3).await;
     let shard_id = ctx.genesis.genesis_block.shard_id.clone();
 
     let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)

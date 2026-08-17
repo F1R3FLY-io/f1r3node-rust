@@ -37,8 +37,9 @@ struct TestContext {
 
 impl TestContext {
     async fn new() -> Self {
+        let parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(2));
         let genesis = GenesisBuilder::new()
-            .build_genesis_with_parameters(None)
+            .build_genesis_with_parameters(Some(parameters))
             .await
             .unwrap();
 
@@ -289,6 +290,21 @@ async fn finalized_noncanonical_deploy_is_reproposed_after_canonical_rejection()
             .await
             .expect("sync the rejecting merge");
     }
+    fixture.nodes.sort_by(|left, right| {
+        left.validator_id_opt
+            .as_ref()
+            .expect("left validator identity")
+            .public_key
+            .bytes
+            .cmp(
+                &right
+                    .validator_id_opt
+                    .as_ref()
+                    .expect("right validator identity")
+                    .public_key
+                    .bytes,
+            )
+    });
 
     fixture.nodes[0]
         .block_dag_storage
