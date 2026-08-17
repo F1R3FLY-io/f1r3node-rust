@@ -4609,6 +4609,33 @@ byte, hash, COMM schedule, charge, or post-state. Stack-safety report §5.16.7.9
 identifiers, and selected disposition. The experiment-only feature and benchmark were removed;
 PathMap itself is unmodified.
 
+**CBR-023 living-set continuation (2026-08-17, exact EPathMap map intersection;
+pgmcp experiment 255).** Experimental checkpoint `f1r3node-rust-mettail@b7a58c177` freezes the
+map-mode topology-mask/reconstruction predecessor and introduces a synchronized left/right/
+destination zipper treatment. The treatment descends only through common child masks, copies an
+associated `Par` only when both operands store an equal value at the same encoded key, preserves a
+value-free endpoint only when both source branches terminate there, and stops at the same first
+canonical unequal shared value. Exact EntryTrie/error and ACTree03 differentials cover disjoint,
+overlapping, independently equal, deep-prefix, sparse-association, topology-only, early-conflict,
+and late-conflict cases before timing.
+
+Pgmcp accepts the treatment ($`t=-8.2763`$, $`p=1.9160\times10^{-16}`$, Cohen's
+$`d=-0.5037`$); every one of nine cells improves by **18.89%–99.65%**, and no preregistered 3%
+per-cell guard activates. Selected checkpoint `b193ea746` makes the zipper product the sole
+map-mode `try_meet`, removes both same-shaped topology masks and their reconstruction pass, and
+retires the experiment-only feature/API/harness. The permanent topology/conflict suite passes
+10/10, the broader algebra suite passes 9/9 including the deep-value small-stack gate, and strict
+models library/test lint passes.
+
+This is a `BYTE_NEUTRAL_MEASURED` heap/work optimization within CBR-023's
+`EQUIVALENCE_PROVEN` set. It changes no EPathMap mode, set/map distinction, Rholang value, conflict
+operation or encoded key, matching verdict, binding, EPM1/protobuf/bincode byte, hash, COMM
+schedule, charge, or post-state. It adds no artificial `Par` lattice, decoded shadow collection,
+stack-depth limit, `RUST_MIN_STACK`, or `stacker` dependency. Stack-safety report §5.16.7.10 and
+its durable 540-pair TSV retain the algorithms, statistical warnings, resource envelope, finalized
+run digests, and selected disposition. PathMap itself is unmodified.
+
+
 **Dormant RSpace matching-cursor foundation (2026-08-15; pgmcp `rspace-shared-match-pda`).**
 `f1r3node-rust-mettail@71d378e73` extends the existing descriptor pass with exhaustive,
 ascending-tag `RhoMatchProgram` tables, typed `ParCursor` accessors, and the heap-worklist
