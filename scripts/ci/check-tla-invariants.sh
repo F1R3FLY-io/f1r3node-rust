@@ -13,6 +13,11 @@
 #   • slashing/MC_JustificationProjection.tla / .cfg
 #   • slashing/MC_WithdrawFlow.tla / .cfg
 #   • block_admission/MC_BlockAdmission.tla / .cfg
+#   • deploy_lifecycle/MC_DeployLifecycle.tla / .cfg
+#   • fork_choice/MC_ForkChoice.tla / .cfg
+#   • fork_choice/MC_PromotionConvergence.tla / .cfg
+#   • recovery_leader/MC_RecoveryLeader.tla / .cfg
+#   • replay_liveness/MC_ReplayHotLoop.tla / .cfg
 #
 # A non-zero exit code from TLC for any post-fix configuration is a CI
 # failure; the pre-fix configurations (e.g. MC_ConcurrentTracker_pre_fix)
@@ -84,6 +89,11 @@ POST_FIX_CONFIGS=(
     slashing/MC_JustificationProjection
     slashing/MC_WithdrawFlow
     block_admission/MC_BlockAdmission
+    deploy_lifecycle/MC_DeployLifecycle
+    fork_choice/MC_ForkChoice
+    fork_choice/MC_PromotionConvergence
+    recovery_leader/MC_RecoveryLeader
+    replay_liveness/MC_ReplayHotLoop
 )
 
 if [[ "${RUN_EXHAUSTIVE_TLA:-0}" == "1" ]]; then
@@ -103,6 +113,8 @@ TLC_PER_CONFIG_TIMEOUT="${TLC_PER_CONFIG_TIMEOUT:-45m}"
 TIMEOUT_CMD=""
 if command -v timeout >/dev/null 2>&1; then
     TIMEOUT_CMD="timeout --signal=TERM --kill-after=60 $TLC_PER_CONFIG_TIMEOUT"
+elif command -v gtimeout >/dev/null 2>&1; then
+    TIMEOUT_CMD="gtimeout --signal=TERM --kill-after=60 $TLC_PER_CONFIG_TIMEOUT"
 fi
 
 # Registered entries are hand-maintained above: a malformed entry or a
