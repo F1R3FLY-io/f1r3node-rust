@@ -111,6 +111,24 @@ fn leaf_and_subtrie_queries_preserve_set_and_map_semantics() {
 }
 
 #[test]
+fn focused_subtrie_preserves_a_value_free_endpoint() {
+    let endpoint = list([1, 7]);
+    let encoded = encode_trie_path(&endpoint);
+    for mode in [EPathMapMode::Set, EPathMapMode::Map] {
+        let source = topology_only(mode, &endpoint);
+        let selected = source.subtrie(&encoded);
+        assert_eq!(selected.mode(), mode);
+        assert_eq!(selected.len(), 0);
+        assert!(
+            !selected.is_empty(),
+            "a selected value-free endpoint remains observable in {mode:?} mode"
+        );
+        assert!(selected.path_prefix_exists(&encoded));
+        assert_eq!(selected.trie_snapshot(), source.trie_snapshot());
+    }
+}
+
+#[test]
 fn map_subtrie_replacement_and_drop_head_keep_values_in_pathmap_slots() {
     let mut destination = map([(list([0, 9]), gint(9)), (list([8]), gint(8))]);
     let source = map([(list([1]), gint(11)), (list([2]), gint(22))]);

@@ -274,6 +274,45 @@ fn compose_topology<DestinationValue, SourceValue>(
     }
 }
 
+/// Clone one absolute prefix subtrie without constructing a singleton mask.
+///
+/// This is the one-prefix specialization of PathMap's prefix restriction
+/// relation. The source and destination zippers remain focused at the same
+/// absolute byte path, so `graft` can share the complete compressed descendant
+/// root. `create_path` is required for the otherwise invisible case where the
+/// selected focus is itself a value-free endpoint with no descendants.
+fn focused_subtrie_clone<V>(source: &pathmap::PathMap<V>, prefix: &[u8]) -> pathmap::PathMap<V>
+where V: Clone + Send + Sync + Unpin {
+    use pathmap::zipper::{Zipper, ZipperValues, ZipperWriting};
+
+    if prefix.is_empty() {
+        return source.clone();
+    }
+
+    let source_focus = source.read_zipper_at_path(prefix);
+    if !source_focus.path_exists() {
+        return pathmap::PathMap::new();
+    }
+
+    let focus_value = source_focus.val().cloned();
+    let mut selected = pathmap::PathMap::new();
+    {
+        let mut destination = selected.write_zipper_at_path(prefix);
+        destination.create_path();
+        destination.graft(&source_focus);
+
+        // `graft_root_vals` is a PathMap feature, not an integration
+        // precondition. Carry the selected focus value in either build.
+        if let Some(value) = focus_value {
+            if destination.val().is_none() {
+                let replaced = destination.set_val(value);
+                debug_assert!(replaced.is_none());
+            }
+        }
+    }
+    selected
+}
+
 /// Graft a set-mode source at `prefix`, then normalize the one codec-arm
 /// difference between a standalone entry and a composed child entry.
 ///
@@ -1152,28 +1191,16 @@ impl EntryTrie {
         }
     }
 
-    /// Keep the trie rooted under `prefix` with PathMap's native restriction
-    /// algebra.  Values stay in their specialization and keys stay compressed;
-    /// no decoded member or key/value vector is constructed.
+    /// Keep the trie rooted under one `prefix` with a focused PathMap zipper.
+    /// Values stay in their specialization and the complete compressed subtrie
+    /// is shared copy-on-write; no singleton mask, decoded member, or key/value
+    /// vector is constructed. Multi-prefix restriction remains delegated to
+    /// PathMap's native `restrict` algebra below.
     pub fn subtrie(&self, prefix: &[u8]) -> Self {
         let repr = match &self.repr {
             EPathMapRepr::Empty => EPathMapRepr::Empty,
-            EPathMapRepr::Set(map) => {
-                let restricted = if prefix.is_empty() {
-                    map.clone()
-                } else {
-                    map.restrict(&pathmap::PathMap::single(prefix, ()))
-                };
-                EPathMapRepr::Set(restricted)
-            }
-            EPathMapRepr::Map(map) => {
-                let restricted = if prefix.is_empty() {
-                    map.clone()
-                } else {
-                    map.restrict(&pathmap::PathMap::single(prefix, Par::default()))
-                };
-                EPathMapRepr::Map(restricted)
-            }
+            EPathMapRepr::Set(map) => EPathMapRepr::Set(focused_subtrie_clone(map, prefix)),
+            EPathMapRepr::Map(map) => EPathMapRepr::Map(focused_subtrie_clone(map, prefix)),
         };
         Self::algebra_result(repr)
     }
@@ -1606,12 +1633,30 @@ impl EntryTrie {
     pub fn try_restrict(&self, other: &Self) -> Result<Self, EPathMapAlgebraError> {
         match (&self.repr, &other.repr) {
             (EPathMapRepr::Empty, _) | (_, EPathMapRepr::Empty) => Ok(Self::default()),
-            (EPathMapRepr::Set(left), EPathMapRepr::Set(right)) => Ok(Self::algebra_result(
-                EPathMapRepr::Set(left.restrict(right)),
-            )),
-            (EPathMapRepr::Map(left), EPathMapRepr::Map(right)) => Ok(Self::algebra_result(
-                EPathMapRepr::Map(left.restrict(right)),
-            )),
+            (EPathMapRepr::Set(left), EPathMapRepr::Set(right)) => {
+                let restricted = if other.len == 1 {
+                    let (prefix, ()) = right
+                        .iter()
+                        .next()
+                        .expect("one set selector value has one encoded path");
+                    focused_subtrie_clone(left, &prefix)
+                } else {
+                    left.restrict(right)
+                };
+                Ok(Self::algebra_result(EPathMapRepr::Set(restricted)))
+            }
+            (EPathMapRepr::Map(left), EPathMapRepr::Map(right)) => {
+                let restricted = if other.len == 1 {
+                    let (prefix, _) = right
+                        .iter()
+                        .next()
+                        .expect("one map selector value has one encoded path");
+                    focused_subtrie_clone(left, &prefix)
+                } else {
+                    left.restrict(right)
+                };
+                Ok(Self::algebra_result(EPathMapRepr::Map(restricted)))
+            }
             _ => Err(self.mode_mismatch(other)),
         }
     }
@@ -1620,6 +1665,17 @@ impl EntryTrie {
         match (&self.repr, &other.repr) {
             (EPathMapRepr::Empty, _) | (_, EPathMapRepr::Empty) => Ok(Self::default()),
             (EPathMapRepr::Set(left), EPathMapRepr::Set(right)) => {
+                if other.len == 1 {
+                    let (key, ()) = right
+                        .iter()
+                        .next()
+                        .expect("one set selector value has one encoded path");
+                    let prefix = entry_key_branch_prefix(&key)
+                        .expect("set-mode EPathMap keys are canonical_path encodings");
+                    return Ok(Self::algebra_result(EPathMapRepr::Set(
+                        focused_subtrie_clone(left, prefix),
+                    )));
+                }
                 let mut prefixes = RholangSetPathMap::new();
                 for (key, ()) in right.iter() {
                     let prefix = entry_key_branch_prefix(&key)
@@ -1631,6 +1687,17 @@ impl EntryTrie {
                 )))
             }
             (EPathMapRepr::Map(left), EPathMapRepr::Map(right)) => {
+                if other.len == 1 {
+                    let (key, _) = right
+                        .iter()
+                        .next()
+                        .expect("one map selector value has one encoded path");
+                    let prefix = entry_key_branch_prefix(&key)
+                        .expect("map-mode EPathMap keys are canonical_path encodings");
+                    return Ok(Self::algebra_result(EPathMapRepr::Map(
+                        focused_subtrie_clone(left, prefix),
+                    )));
+                }
                 let mut prefixes = pathmap::PathMap::new();
                 for (key, _) in right.iter() {
                     let prefix = entry_key_branch_prefix(&key)
