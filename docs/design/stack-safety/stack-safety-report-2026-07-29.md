@@ -278,7 +278,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-C11** | `b30a1568`; mettail harness `bb98055b`, `9dccb346` | cross-repository | reducer-identity EPathMaps retain their native root; shared clone-family teardown releases one root without PathMap copy-on-write; E-6a binds the index once per phase | 4,119,482 $`\rightarrow`$ 278,527 allocation events; treatment 18.730 ms vs 32.281 ms control; PathMap clone/drop ladders remain **0 B/level** | measured-neutral optimization; no new traversal or PathMap change | [5.17](#517-epathmap-evaluator-and-clone-family-teardown-integration-ss-c11) |
 | **SS-C12** | this checkpoint; pgmcp #5193, #5282, #5283 | f1r3node | direct ACTree03 replay, range-backed canonical-key/value worklist, and exact deferred EPathMap fold construction; exhaustive comparison residues and malformed-gate resource closure | decoder/canonicalizer host re-entry $`\Theta(d) \rightarrow O(1)`$ native stack; repeated trie reconstruction/hash $`\Theta(d^2) \rightarrow \Theta(d)`$; depth **20,000** on **256 KiB**; malformed gate **6.12 GiB $`\rightarrow`$ 682,548 KiB** peak | **yes** for the decoder SCC; byte/acceptance neutral under CBR-044 and retired CBR-023 | [5.19](#519-direct-epm1-canonical-validation-and-fold-construction-closure-ss-c12) |
 | **SS-C13** | this checkpoint; pgmcp #5192 | cross-repository | one shared borrowed/owned canonical-`Par` PDA suspends native read/owned EPathMap zippers directly; set keys remain `PathMap<()>`, map values remain `PathMap<Par>` until their entry is current | all-entry decoded-key/value-pointer frontier $`\rightarrow O(1)`$ live trie cursors plus the current decoded key and structural frontier; **20,000** levels on **256 KiB**; integration **3/3** | **yes**; borrowed/owned preorder equality, independent recursive receive-count oracle, and existing forward/reverse raw-zipper order gates | [5.20](#520-semantic-scc-constructor-and-pathmap-streaming-closure-ss-g43-ss-c13) |
-| **SS-C14** | `2142b2273`; pgmcp experiment 258 | f1r3node | dormant `ParBag` RPB2 key: family tag + prefix-free score-order key + canonical protobuf body; ACT import decodes, sorts, and re-keys one current endpoint; protobuf output copies stored bodies without a `Vec` or decoded shadow | native stack remains $`O(1)`$ through the existing generated protobuf/sorter PDAs and iterative score-key parser; exact lookup is one PathMap probe after $`O(k)`$ prepared-key construction for key length $`k`$ | **yes**; all-family byte oracle, malformed/noncanonical ACT rejection, nested-metadata witness, depth 4,096, and experiment 258's 1,312 checksum-guarded observations | [5.27](#527-canonical-protobuf-key-parbag-and-prepared-key-closure-ss-c14) |
+| **SS-C14** | `2142b2273`; pgmcp experiment 258 | f1r3node | dormant `ParBag` RPB2 key: family tag + prefix-free score-order key + canonical protobuf body; ACT import decodes, canonicalizes, and re-keys one current endpoint; protobuf output traverses trie order and copies stored bodies without a `Vec`, decoded shadow, or element sort | native stack remains $`O(1)`$ through the existing hand-written sorter worklist, generated protobuf PDAs, and iterative score-key parser; exact lookup is one PathMap probe after $`O(k)`$ prepared-key construction for key length $`k`$ | **yes**; all-family byte oracle, malformed/noncanonical ACT rejection, nested-metadata witness, depth 4,096, and experiment 258's 1,312 checksum-guarded observations | [5.27](#527-canonical-protobuf-key-parbag-and-prepared-key-closure-ss-c14) |
 | **SS-D1** | `d2591fa1` | f1r3node | task-spawn boundary per-branch deep clone | 2,867 $`\rightarrow`$ **0** *(this site)* | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D2** | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies | incl. $`O(n^2)`$ $`\rightarrow`$ $`O(n)`$ | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D3** | `9082d12c` | f1r3node | `inj_attempt` read-back clone $`\rightarrow`$ by-move | 2,852 $`\rightarrow`$ **0** | **yes** | [5.5.3](#553-the-three-repairs) |
@@ -8010,7 +8010,7 @@ The implementation uses three stack-safe algorithms over this single authority:
 
 ```text
 PREPARE(x):
-  canonical := generated_stack_safe_sort(x)
+  canonical := existing_sort_drive_worklist(x)
   key := RPB2 || family_tag(x)
   append_prefix_free_score(key, canonical.score)
   generated_protobuf_pda_append(key, canonical.term)
@@ -8032,8 +8032,9 @@ VALIDATE_ACT(image):
   return bag
 ```
 
-`STREAM_PROTOBUF` never decodes an endpoint and never constructs a repeated-field `Vec`, legacy
-`Par`, or entry projection. `VALIDATE_ACT` decodes only the current endpoint, and exact re-keying
+`STREAM_PROTOBUF` consumes PathMap's existing lexicographic zipper order; it performs no element
+sort. It never decodes an endpoint and never constructs a repeated-field `Vec`, legacy `Par`, or
+entry projection. `VALIDATE_ACT` decodes only the current endpoint, and exact re-keying
 rejects unknown protobuf fields, noncanonical child order, invalid score encodings, invalid family
 tags, and alternate encodings of an otherwise accepted value. Nested `locally_free` bytes remain in
 the protobuf body and have a dedicated round-trip witness. The exact encoded-length pass uses the
@@ -8086,9 +8087,10 @@ The permanent suite covers all nine families, exact multiplicities and Bag algeb
 detachment, family-prefix removal, canonical legacy protobuf order, encoded-length equality,
 impossible output-length rejection, canonical ACT round-trip, malformed domain/tag/order/body
 rejection, unknown-field rejection, nested `locally_free`, and depth 4,096. The score-order extent
-parser is iterative; sorting, protobuf encode/decode, clone, equality, and teardown use the already
-generated PDAs. No recursive fallback, traversal cap, `RUST_MIN_STACK`, `stacker`, decoded all-entry
-frontier, or PathMap source change exists.
+parser is iterative; component canonicalization uses the existing hand-written `sort_drive`
+worklist, while protobuf encode/decode, clone, equality, and teardown use the generated PDAs. No
+recursive fallback, traversal cap, `RUST_MIN_STACK`, `stacker`, decoded all-entry frontier, or
+PathMap source change exists.
 
 RPB2 keys are longer than a payload-only key because they deliberately retain both order and body.
 That space buys direct canonical traversal, byte-native network emission, exact validation, and
