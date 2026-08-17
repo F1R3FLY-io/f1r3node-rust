@@ -189,10 +189,13 @@ enum Frame {
     RestoreOnFailure {
         snapshot: FreeMap,
     },
-    OrBranch {
+    AndBranch {
         target: Box<Par>,
-        patterns: Arc<[Par]>,
-        next: usize,
+        patterns: std::vec::IntoIter<Par>,
+    },
+    OrBranch {
+        target: Option<Box<Par>>,
+        patterns: std::vec::IntoIter<Par>,
         snapshot: FreeMap,
     },
     Not {
@@ -299,17 +302,26 @@ fn resume(
             }
             Job::Return(result)
         }
+        Frame::AndBranch { target, patterns } => {
+            if result {
+                start_and_branch(*target, patterns, frames)
+            } else {
+                Job::Return(false)
+            }
+        }
         Frame::OrBranch {
             target,
             patterns,
-            next,
             snapshot,
         } => {
             context.free_map = snapshot;
             if result {
                 Job::Return(true)
+            } else if let Some(target) = target {
+                start_or_branch(context, *target, patterns, frames)
             } else {
-                start_or_branch(context, *target, patterns, next, frames)
+                debug_assert!(patterns.len() == 0);
+                Job::Return(false)
             }
         }
         Frame::Not { snapshot } => {
@@ -446,7 +458,6 @@ fn evaluate_pair(
     }
 }
 
-#[derive(Clone)]
 struct ConnectivePlan {
     connective: Connective,
     bounds: (ParCount, ParCount),
@@ -456,17 +467,15 @@ struct ConnectivePlan {
 struct ParConnectiveState {
     target: Par,
     pattern: Par,
-    plans: Arc<[ConnectivePlan]>,
-    next: usize,
+    plans: std::vec::IntoIter<ConnectivePlan>,
     remainder_level: Option<i32>,
     wildcard: bool,
 }
 
 struct ConnectiveCandidates {
     parent: ParConnectiveState,
-    connective: Connective,
-    candidates: Vec<(Par, Par)>,
-    next: usize,
+    connective: Option<Connective>,
+    candidates: std::vec::IntoIter<(Par, Par)>,
     free_map_is_unreachable: bool,
 }
 
@@ -506,6 +515,21 @@ fn evaluate_par(target: Par, mut pattern: Par) -> Job {
             })),
         })
     });
+
+    // A Par carrying only one connective and no remainder can only accept the
+    // whole target. The general `sub_pars` machine may enumerate proper
+    // subsets, but every such branch subsequently fails when the nonempty
+    // complement is matched against the empty residual pattern. Transitioning
+    // directly is therefore equivalent and prevents a depth-d unary
+    // connective chain from recomputing bounds over all d suffixes (O(d^2)).
+    if remainder_level.is_none() && !wildcard && single_connective_carrier(&pattern).is_some() {
+        let connective = pattern
+            .connectives
+            .pop()
+            .expect("a single-connective carrier owns one connective");
+        return match_job(MatchPair::Connective(target, connective));
+    }
+
     let count = ParCount::new(&pattern);
     let min_remainder = count.clone();
     let max_remainder = if wildcard || remainder_level.is_some() {
@@ -516,8 +540,7 @@ fn evaluate_par(target: Par, mut pattern: Par) -> Job {
     let individual: Vec<_> = pattern
         .connectives
         .iter()
-        .cloned()
-        .map(|connective| count.min_max_con(connective))
+        .map(|connective| count.min_max_con_ref(connective))
         .collect();
     let mut remainder_bounds = vec![(min_remainder, max_remainder)];
     for bounds in individual.iter().rev() {
@@ -543,19 +566,17 @@ fn evaluate_par(target: Par, mut pattern: Par) -> Job {
     Job::ParConnectives(Box::new(ParConnectiveState {
         target,
         pattern,
-        plans: plans.into(),
-        next: 0,
+        plans: plans.into_iter(),
         remainder_level,
         wildcard,
     }))
 }
 
 fn step_par_connectives(mut state: ParConnectiveState, frames: &mut FrameStack) -> Job {
-    let Some(plan) = state.plans.get(state.next).cloned() else {
+    let Some(plan) = state.plans.next() else {
         return start_par_fields(state, frames);
     };
-    state.next += 1;
-    let candidates = sub_pars(
+    let candidates: Vec<_> = sub_pars(
         &state.target,
         &plan.bounds.0,
         &plan.bounds.1,
@@ -575,9 +596,8 @@ fn step_par_connectives(mut state: ParConnectiveState, frames: &mut FrameStack) 
     );
     Job::ConnectiveCandidates(Box::new(ConnectiveCandidates {
         parent: state,
-        connective: plan.connective,
-        candidates,
-        next: 0,
+        connective: Some(plan.connective),
+        candidates: candidates.into_iter(),
         free_map_is_unreachable,
     }))
 }
@@ -587,12 +607,25 @@ fn step_connective_candidates(
     mut state: ConnectiveCandidates,
     frames: &mut FrameStack,
 ) -> Job {
-    let Some((candidate, remainder)) = state.candidates.get(state.next).cloned() else {
+    let Some((candidate, remainder)) = state.candidates.next() else {
         return Job::Return(false);
     };
-    state.next += 1;
     let snapshot = (!state.free_map_is_unreachable).then(|| context.free_map.clone());
-    let connective = state.connective.clone();
+    // Every candidate except the last needs a reusable connective. Move the
+    // final one so singleton candidate searches never clone a recursively
+    // nested connective merely to satisfy continuation ownership.
+    let connective = if state.candidates.len() == 0 {
+        state
+            .connective
+            .take()
+            .expect("a candidate search retains its connective")
+    } else {
+        state
+            .connective
+            .as_ref()
+            .expect("a non-final candidate retains its connective")
+            .clone()
+    };
     frames.push(Frame::ConnectiveCandidate {
         state: Box::new(state),
         snapshot,
@@ -712,15 +745,10 @@ fn evaluate_connective(
         Some(ConnAndBody(ConnectiveBody { ps })) => {
             let snapshot = context.free_map.clone();
             frames.push(Frame::RestoreOnFailure { snapshot });
-            start_jobs(
-                ps.into_iter()
-                    .map(|pattern| match_job(MatchPair::Par(target.clone(), pattern)))
-                    .collect(),
-                frames,
-            )
+            start_and_branch(target, ps.into_iter(), frames)
         }
         Some(ConnOrBody(ConnectiveBody { ps })) => {
-            start_or_branch(context, target, ps.into(), 0, frames)
+            start_or_branch(context, target, ps.into_iter(), frames)
         }
         Some(ConnNotBody(pattern)) => {
             let snapshot = context.free_map.clone();
@@ -761,21 +789,45 @@ fn evaluate_connective(
     }
 }
 
+fn start_and_branch(
+    target: Par,
+    mut patterns: std::vec::IntoIter<Par>,
+    frames: &mut FrameStack,
+) -> Job {
+    let Some(pattern) = patterns.next() else {
+        return Job::Return(true);
+    };
+    if patterns.len() == 0 {
+        // The final conjunct consumes the sole remaining target owner. This
+        // makes singleton AND chains linear even when the target is large.
+        match_job(MatchPair::Par(target, pattern))
+    } else {
+        frames.push(Frame::AndBranch {
+            target: Box::new(target.clone()),
+            patterns,
+        });
+        match_job(MatchPair::Par(target, pattern))
+    }
+}
+
 fn start_or_branch(
     context: &mut SpatialMatcherContext,
     target: Par,
-    patterns: Arc<[Par]>,
-    next: usize,
+    mut patterns: std::vec::IntoIter<Par>,
     frames: &mut FrameStack,
 ) -> Job {
-    let Some(pattern) = patterns.get(next).cloned() else {
+    // Move the next branch out of the connective. Cloning through an
+    // `Arc<[Par]>` here made a depth-d singleton OR chain copy every
+    // remaining subtree, turning an otherwise iterative walk into O(d^2)
+    // allocation and an 8 GiB failure at depth 20,000.
+    let Some(pattern) = patterns.next() else {
         return Job::Return(false);
     };
     let snapshot = context.free_map.clone();
+    let retained_target = (patterns.len() != 0).then(|| Box::new(target.clone()));
     frames.push(Frame::OrBranch {
-        target: Box::new(target.clone()),
+        target: retained_target,
         patterns,
-        next: next + 1,
         snapshot,
     });
     match_job(MatchPair::Par(target, pattern))
@@ -1243,6 +1295,30 @@ impl MatchValue {
         Some(RhoPathQuery::structural_sequence(atoms, false))
     }
 
+    /// Compile the conservative byte-native candidate domain for one AC row.
+    ///
+    /// Ordinary values retain the generated single-query compiler. A `Par`
+    /// whose only semantic content is one connective receives a small algebra
+    /// over those same queries: disjunction is candidate-set union and
+    /// conjunction is candidate-set intersection. The compilation walk is an
+    /// explicit heap PDA, so arbitrarily nested connective formulas do not
+    /// consume native stack. Unsupported positive arms denote `All`; this can
+    /// only admit extra candidates. Negation also denotes `All`, because the
+    /// complement of a conservative superset would be unsound. The spatial
+    /// matcher remains the sole edge authority.
+    fn rho_path_candidate_plan(
+        &self,
+        context: &SpatialMatcherContext,
+        captures: &mut PathMap<()>,
+    ) -> ListCandidatePlan {
+        match self {
+            Self::Par(pattern) => compile_par_candidate_plan(pattern, captures),
+            _ => self
+                .rho_path_query(context, captures)
+                .map_or(ListCandidatePlan::All, ListCandidatePlan::Query),
+        }
+    }
+
     fn connective_used(&self, _context: &SpatialMatcherContext) -> bool {
         match self {
             MatchValue::Par(value) => value.connective_used,
@@ -1313,6 +1389,147 @@ impl MatchValue {
             _ => None,
         }
     }
+}
+
+enum CandidateCompileWork<'a> {
+    Enter(&'a Par),
+    FinishUnion(usize),
+    FinishIntersection(usize),
+}
+
+/// Candidate-set expression produced by the connective compiler.
+///
+/// `All` is the deliberate conservative fallback and `Empty` is reserved for
+/// connectives whose authoritative matcher always refuses (`VarRef`/absent or
+/// an empty disjunction). Query leaves contain only the already-proved RMP1
+/// compiler output; this layer adds no byte interpretation of its own.
+enum ListCandidatePlan {
+    All,
+    Empty,
+    Query(RhoPathQuery),
+    Union(Vec<ListCandidatePlan>),
+    Intersection(Vec<ListCandidatePlan>),
+}
+
+impl ListCandidatePlan {
+    fn union(mut operands: Vec<Self>) -> Self {
+        if operands.iter().any(|operand| matches!(operand, Self::All)) {
+            return Self::All;
+        }
+        operands.retain(|operand| !matches!(operand, Self::Empty));
+        match operands.len() {
+            0 => Self::Empty,
+            1 => operands.pop().expect("one union operand remains"),
+            _ => Self::Union(operands),
+        }
+    }
+
+    fn intersection(mut operands: Vec<Self>) -> Self {
+        if operands
+            .iter()
+            .any(|operand| matches!(operand, Self::Empty))
+        {
+            return Self::Empty;
+        }
+        operands.retain(|operand| !matches!(operand, Self::All));
+        match operands.len() {
+            0 => Self::All,
+            1 => operands.pop().expect("one intersection operand remains"),
+            _ => Self::Intersection(operands),
+        }
+    }
+
+    fn needs_target_index(&self) -> bool {
+        match self {
+            Self::All | Self::Empty => false,
+            Self::Query(query) => query.retained_prefix().len() > 1,
+            Self::Union(operands) | Self::Intersection(operands) => {
+                operands.iter().any(Self::needs_target_index)
+            }
+        }
+    }
+}
+
+fn single_connective_carrier(pattern: &Par) -> Option<&Connective> {
+    (pattern.sends.is_empty()
+        && pattern.receives.is_empty()
+        && pattern.news.is_empty()
+        && pattern.exprs.is_empty()
+        && pattern.matches.is_empty()
+        && pattern.unforgeables.is_empty()
+        && pattern.bundles.is_empty()
+        && pattern.connectives.len() == 1
+        && pattern.conditionals.is_empty())
+    .then(|| &pattern.connectives[0])
+}
+
+fn compile_par_candidate_plan(root: &Par, captures: &mut PathMap<()>) -> ListCandidatePlan {
+    let mut work = vec![CandidateCompileWork::Enter(root)];
+    let mut values = Vec::new();
+
+    while let Some(next) = work.pop() {
+        match next {
+            CandidateCompileWork::Enter(pattern) => {
+                let Some(connective) = single_connective_carrier(pattern) else {
+                    let plan = rho_path_query_atom(pattern, captures)
+                        .map(|atom| {
+                            ListCandidatePlan::Query(RhoPathQuery::structural_sequence(
+                                [atom],
+                                false,
+                            ))
+                        })
+                        .unwrap_or(ListCandidatePlan::All);
+                    values.push(plan);
+                    continue;
+                };
+
+                match connective.connective_instance.as_ref() {
+                    Some(ConnOrBody(ConnectiveBody { ps })) => {
+                        work.push(CandidateCompileWork::FinishUnion(ps.len()));
+                        work.extend(ps.iter().rev().map(CandidateCompileWork::Enter));
+                    }
+                    Some(ConnAndBody(ConnectiveBody { ps })) => {
+                        work.push(CandidateCompileWork::FinishIntersection(ps.len()));
+                        work.extend(ps.iter().rev().map(CandidateCompileWork::Enter));
+                    }
+                    // A conservative child query Q satisfies success ⊆ Q.
+                    // Complementing it would reverse that inclusion, so NOT
+                    // deliberately contributes no pruning.
+                    Some(ConnNotBody(_))
+                    | Some(ConnBool(_))
+                    | Some(ConnInt(_))
+                    | Some(ConnString(_))
+                    | Some(ConnUri(_))
+                    | Some(ConnByteArray(_)) => values.push(ListCandidatePlan::All),
+                    // These arms are unconditional refusal in
+                    // `evaluate_connective`, hence their candidate set really
+                    // is empty rather than merely unknown.
+                    Some(VarRefBody(_)) | None => values.push(ListCandidatePlan::Empty),
+                }
+            }
+            CandidateCompileWork::FinishUnion(arity) => {
+                let split = values
+                    .len()
+                    .checked_sub(arity)
+                    .expect("connective union has one value per child");
+                let operands = values.split_off(split);
+                values.push(ListCandidatePlan::union(operands));
+            }
+            CandidateCompileWork::FinishIntersection(arity) => {
+                let split = values
+                    .len()
+                    .checked_sub(arity)
+                    .expect("connective intersection has one value per child");
+                let operands = values.split_off(split);
+                values.push(ListCandidatePlan::intersection(operands));
+            }
+        }
+    }
+
+    debug_assert_eq!(values.len(), 1, "candidate compiler leaves one root value");
+    values
+        .pop()
+        .expect("candidate compiler emits its root value")
 }
 
 fn expr_connective_used(expr: &Expr) -> bool {
@@ -1564,13 +1781,13 @@ impl ListTargetIndex {
         &self.groups[group_index]
     }
 
-    fn positions_matching(&self, query: &RhoPathQuery) -> Option<Box<[u64]>> {
+    fn position_mask_matching(&self, query: &RhoPathQuery) -> Option<PathMap<()>> {
         let structural_prefix = query.retained_prefix();
         if structural_prefix.len() <= 1 {
             return None;
         }
         let prefix = RhoPathV1::relative_datum_structure_prefix(&structural_prefix);
-        let mut result = Vec::new();
+        let mut result = PathMap::new();
         self.bag.visit_prefix(&prefix, |key, multiplicity| {
             let id = self
                 .group_ids
@@ -1585,11 +1802,94 @@ impl ListTargetIndex {
                 Some(group.positions.len())
             );
             if query.matches_structure(&group.structure) {
-                result.extend_from_slice(&group.positions);
+                for position in &group.positions {
+                    result.insert(position.to_be_bytes(), ());
+                }
             }
         });
-        result.sort_unstable();
-        Some(result.into_boxed_slice())
+        Some(result)
+    }
+
+    /// Evaluate candidate union/intersection directly as PathMap lattice
+    /// operations. Fixed-width big-endian position keys are prefix-free, so
+    /// the generic trie lattice is exactly finite-set union/intersection here.
+    /// `None` denotes the universal domain and remains an algebraic identity
+    /// for intersection / annihilator for union.
+    fn positions_matching_plan(&self, root: &ListCandidatePlan) -> Option<Box<[u64]>> {
+        enum Work<'a> {
+            Enter(&'a ListCandidatePlan),
+            FinishUnion(usize),
+            FinishIntersection(usize),
+        }
+
+        let mut work = vec![Work::Enter(root)];
+        let mut values: Vec<Option<PathMap<()>>> = Vec::new();
+        while let Some(next) = work.pop() {
+            match next {
+                Work::Enter(ListCandidatePlan::All) => values.push(None),
+                Work::Enter(ListCandidatePlan::Empty) => values.push(Some(PathMap::new())),
+                Work::Enter(ListCandidatePlan::Query(query)) => {
+                    values.push(self.position_mask_matching(query));
+                }
+                Work::Enter(ListCandidatePlan::Union(operands)) => {
+                    work.push(Work::FinishUnion(operands.len()));
+                    work.extend(operands.iter().rev().map(Work::Enter));
+                }
+                Work::Enter(ListCandidatePlan::Intersection(operands)) => {
+                    work.push(Work::FinishIntersection(operands.len()));
+                    work.extend(operands.iter().rev().map(Work::Enter));
+                }
+                Work::FinishUnion(arity) => {
+                    let split = values
+                        .len()
+                        .checked_sub(arity)
+                        .expect("candidate union has one domain per operand");
+                    let operands = values.split_off(split);
+                    if operands.iter().any(Option::is_none) {
+                        values.push(None);
+                    } else {
+                        let mut operands = operands.into_iter().flatten();
+                        let mut result = operands.next().unwrap_or_default();
+                        for operand in operands {
+                            result = result.join(&operand);
+                        }
+                        values.push(Some(result));
+                    }
+                }
+                Work::FinishIntersection(arity) => {
+                    let split = values
+                        .len()
+                        .checked_sub(arity)
+                        .expect("candidate intersection has one domain per operand");
+                    let mut operands = values.split_off(split).into_iter().flatten();
+                    let Some(mut result) = operands.next() else {
+                        values.push(None);
+                        continue;
+                    };
+                    for operand in operands {
+                        result = result.meet(&operand);
+                    }
+                    values.push(Some(result));
+                }
+            }
+        }
+
+        debug_assert_eq!(values.len(), 1, "candidate plan leaves one root domain");
+        let mask = values
+            .pop()
+            .expect("candidate plan emits its root domain")?;
+        let mut positions = mask
+            .into_iter()
+            .map(|(key, ())| {
+                let bytes: [u8; 8] = key
+                    .as_slice()
+                    .try_into()
+                    .expect("candidate position paths are fixed-width u64 keys");
+                u64::from_be_bytes(bytes)
+            })
+            .collect::<Vec<_>>();
+        positions.sort_unstable();
+        Some(positions.into_boxed_slice())
     }
 }
 
@@ -1789,15 +2089,14 @@ fn init_list(
     // remain only the deterministic ordering witness.
     let patterns = request.patterns;
     let mut captures = PathMap::new();
-    let queries = patterns
+    let candidate_plans = patterns
         .iter()
-        .map(|pattern| pattern.rho_path_query(context, &mut captures))
+        .map(|pattern| pattern.rho_path_candidate_plan(context, &mut captures))
         .collect::<Box<[_]>>();
     let needs_target_index = request.remainder.is_some()
-        || queries
+        || candidate_plans
             .iter()
-            .flatten()
-            .any(|query| query.retained_prefix().len() > 1);
+            .any(ListCandidatePlan::needs_target_index);
     #[cfg(test)]
     if needs_target_index {
         update_list_relation_stats(|stats| stats.target_index_builds += 1);
@@ -1805,19 +2104,28 @@ fn init_list(
     let target_index = needs_target_index
         .then(|| ListTargetIndex::from_targets(&request.targets))
         .flatten();
-    let candidate_domains = queries
+    let candidate_domains = candidate_plans
         .iter()
-        .map(|query| {
-            query
-                .as_ref()
-                .and_then(|query| {
-                    target_index
-                        .as_ref()
-                        .and_then(|index| index.positions_matching(query))
-                })
-                .map_or(ListCandidateDomain::All, ListCandidateDomain::Indexed)
+        .map(|plan| {
+            match plan {
+                ListCandidatePlan::Empty => Some(Vec::new().into_boxed_slice()),
+                _ => target_index
+                    .as_ref()
+                    .and_then(|index| index.positions_matching_plan(plan)),
+            }
+            .map_or(ListCandidateDomain::All, ListCandidateDomain::Indexed)
         })
         .collect::<Box<[_]>>();
+    // Constraint exhaustion is order-independent. Refusing here avoids
+    // evaluating earlier broad rows when a later byte-native domain is
+    // already empty, while leaving every successful matching and binding
+    // decision to the historical root order below.
+    if candidate_domains
+        .iter()
+        .any(|domain| domain.len(target_len) == 0)
+    {
+        return Job::Return(false);
+    }
     let relation = LazyRelation::new(std::iter::repeat_n(true, patterns.len()));
 
     let seen_targets = ListSeenTargets::new(target_index.as_ref(), target_len);

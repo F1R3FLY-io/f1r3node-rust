@@ -728,12 +728,17 @@ fn production_list_pda_relational_counters_meet_preregistered_controls() {
 
     let mut control_samples = Vec::with_capacity(SAMPLES);
     let mut treatment_samples = Vec::with_capacity(SAMPLES);
-    let indexed_chain_evaluations = WIDTH * WIDTH - (WIDTH - 1);
+    // Pattern zero has the singleton domain `{1}`. Each interior disjunction
+    // has two exact candidates and the last has one in-range candidate, so
+    // PathMap union reduces the complete semantic relation to exactly
+    // `1 + 2*(WIDTH-2) + 1` evaluated edges. The nominal Cartesian oracle is
+    // retained above as the before-work witness.
+    let connective_domain_evaluations = 2 * (WIDTH - 1);
     for _ in 0..SAMPLES {
         let mut context = SpatialMatcherContext::new();
         let (result, stats) = match_par_list_with_stats(&mut context, integers(), chain_patterns());
         assert!(result.is_none());
-        assert_eq!(stats.edge_evaluations, indexed_chain_evaluations);
+        assert_eq!(stats.edge_evaluations, connective_domain_evaluations);
         assert!(stats.relation_row_reuses > 0);
         assert!(stats.cached_edge_visits > 0);
         assert!(stats.successful_edge_evaluations <= 2 * WIDTH);
@@ -745,6 +750,139 @@ fn production_list_pda_relational_counters_meet_preregistered_controls() {
     println!(
         "D_E4_PRODUCTION_COUNTERS width={WIDTH} control={control_samples:?} treatment={treatment_samples:?} invariant={diagonal_control}"
     );
+}
+
+#[test]
+fn production_list_pda_connective_candidate_algebra_is_conservative_and_exactly_ordered() {
+    let integer = |value| new_gint_par(value, Vec::new(), false);
+    let disjunction = |ps| connective(ConnOrBody(ConnectiveBody { ps }));
+    let conjunction = |ps| connective(ConnAndBody(ConnectiveBody { ps }));
+
+    let targets = vec![integer(0), integer(1), integer(4)];
+    let patterns = vec![
+        disjunction(vec![integer(1), integer(3)]),
+        conjunction(vec![
+            disjunction(vec![integer(2), integer(4)]),
+            disjunction(vec![integer(4), integer(5)]),
+        ]),
+        integer(0),
+    ];
+    let mut context = SpatialMatcherContext::new();
+    let (result, stats) =
+        match_par_list_with_stats(&mut context, targets.clone(), patterns.clone());
+    assert!(result.is_some());
+    assert_eq!(
+        stats.edge_evaluations, 3,
+        "union produces [1], nested intersection produces [4], and exact zero produces [0]"
+    );
+
+    compare(
+        "PathMap connective-domain algebra preserves the recursive oracle",
+        new_eset_par(targets, Vec::new(), false, None, Vec::new(), false),
+        new_eset_par(patterns, Vec::new(), true, None, Vec::new(), true),
+    );
+
+    // Empty OR is authoritative refusal, so its empty derived domain may fail
+    // before any broader row. Empty AND is true and therefore deliberately
+    // compiles to All rather than to an empty set.
+    let mut context = SpatialMatcherContext::new();
+    let (result, stats) =
+        match_par_list_with_stats(&mut context, vec![integer(0), integer(1)], vec![
+            integer(0),
+            disjunction(Vec::new()),
+        ]);
+    assert!(result.is_none());
+    assert_eq!(stats.edge_evaluations, 0);
+
+    let mut context = SpatialMatcherContext::new();
+    let (result, stats) =
+        match_par_list_with_stats(&mut context, vec![integer(0), integer(1)], vec![
+            integer(0),
+            conjunction(Vec::new()),
+        ]);
+    assert!(result.is_some());
+    assert!(stats.edge_evaluations >= 2);
+
+    // NOT cannot safely complement a conservative query. In OR it annihilates
+    // pruning (union with All); in AND the exact positive arm remains a sound
+    // necessary condition. Both paths still obtain their verdict from the
+    // spatial matcher.
+    let negated_two = connective(ConnNotBody(integer(2)));
+    let mut context = SpatialMatcherContext::new();
+    let (result, or_stats) =
+        match_par_list_with_stats(&mut context, vec![integer(0), integer(1)], vec![
+            disjunction(vec![integer(9), negated_two.clone()]),
+            integer(1),
+        ]);
+    assert!(result.is_some());
+    assert!(or_stats.edge_evaluations >= 2);
+
+    let mut context = SpatialMatcherContext::new();
+    let (result, and_stats) =
+        match_par_list_with_stats(&mut context, vec![integer(0), integer(1)], vec![
+            conjunction(vec![integer(0), negated_two]),
+            integer(1),
+        ]);
+    assert!(result.is_some());
+    assert_eq!(and_stats.edge_evaluations, 2);
+
+    // A pure connective carrier is evaluated directly against the whole Par.
+    // Proper subsets must not be accepted merely because one connective arm
+    // matches them; these compound cases prove the fast transition against
+    // the pre-PDA oracle in both directions.
+    let mut compound = integer(0);
+    let mut second = integer(1);
+    compound.exprs.append(&mut second.exprs);
+    compare(
+        "pure OR carrier accepts the whole compound target",
+        compound.clone(),
+        disjunction(vec![integer(9), compound.clone()]),
+    );
+    compare(
+        "pure OR carrier rejects a matching proper subset",
+        compound.clone(),
+        disjunction(vec![integer(0)]),
+    );
+    compare(
+        "pure AND carrier constrains the whole compound target",
+        compound.clone(),
+        conjunction(vec![compound, connective(ConnNotBody(integer(9)))]),
+    );
+}
+
+#[test]
+fn connective_candidate_plan_compilation_and_matching_are_stack_safe_at_depth_twenty_thousand() {
+    const DEPTH: usize = 20_000;
+    let handle = std::thread::Builder::new()
+        .name("connective-candidate-plan-depth".into())
+        .stack_size(256 * 1024)
+        .spawn(|| {
+            for conjunction in [false, true] {
+                let mut nested = new_gint_par(1, Vec::new(), false);
+                for _ in 0..DEPTH {
+                    nested = connective(if conjunction {
+                        ConnAndBody(ConnectiveBody { ps: vec![nested] })
+                    } else {
+                        ConnOrBody(ConnectiveBody { ps: vec![nested] })
+                    });
+                }
+                let mut context = SpatialMatcherContext::new();
+                let (result, stats) = match_par_list_with_stats(
+                    &mut context,
+                    vec![
+                        new_gint_par(0, Vec::new(), false),
+                        new_gint_par(1, Vec::new(), false),
+                    ],
+                    vec![new_gint_par(0, Vec::new(), false), nested],
+                );
+                assert!(result.is_some());
+                assert_eq!(stats.edge_evaluations, 2);
+            }
+        })
+        .expect("the tiny-stack candidate compiler worker starts");
+    handle
+        .join()
+        .expect("the candidate compiler and matcher use constant native stack");
 }
 
 #[test]

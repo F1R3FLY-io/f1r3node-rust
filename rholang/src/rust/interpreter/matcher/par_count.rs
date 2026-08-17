@@ -85,12 +85,22 @@ impl ParCount {
         }
     }
 
-    pub fn min_max_par(&self, par: Par) -> (ParCount, ParCount) {
-        self.min_max_drive(CountNode::Par(&par))
-    }
+    pub fn min_max_par(&self, par: Par) -> (ParCount, ParCount) { self.min_max_par_ref(&par) }
 
     pub fn min_max_con(&self, con: Connective) -> (ParCount, ParCount) {
-        self.min_max_drive(CountNode::Connective(&con))
+        self.min_max_con_ref(&con)
+    }
+
+    /// Borrowed entry used by the production PDA while it still owns the AST.
+    /// Avoids cloning an entire recursive connective solely to compute bounds.
+    pub fn min_max_par_ref(&self, par: &Par) -> (ParCount, ParCount) {
+        self.min_max_drive(CountNode::Par(par))
+    }
+
+    /// Borrowed entry used by the production PDA while it still owns the AST.
+    /// The legacy owned method remains for source compatibility.
+    pub fn min_max_con_ref(&self, con: &Connective) -> (ParCount, ParCount) {
+        self.min_max_drive(CountNode::Connective(con))
     }
 
     /// Defunctionalized evaluator for the mutually recursive
