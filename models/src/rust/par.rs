@@ -10,10 +10,14 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
-use prost::bytes::BufMut;
+use prost::bytes::{Buf, BufMut};
+use prost::encoding::wire_type::WireType;
+use prost::encoding::{self, DecodeContext};
+use prost::{DecodeError, Message};
 use rspace_plus_plus::rspace::bag::BagError;
 
-use super::par_bag::{ParBag, ParBagProtobufError};
+use super::par_bag::{ParBag, ParBagComponent, ParBagProtobufError};
+use crate::rhoapi::{Bundle, Connective, Expr, GUnforgeable, If, Match, New, Receive, Send};
 
 #[derive(Debug)]
 pub enum ParProtobufError {
@@ -155,5 +159,100 @@ impl Hash for Par {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.components.hash(state);
         self.connective_used.hash(state);
+    }
+}
+
+fn take_length_delimited_component<B>(
+    wire_type: WireType,
+    buf: &mut B,
+) -> Result<prost::bytes::buf::Take<&mut B>, DecodeError>
+where
+    B: Buf,
+{
+    encoding::check_wire_type(WireType::LengthDelimited, wire_type)?;
+    let length = encoding::decode_varint(buf)?;
+    if length > buf.remaining() as u64 {
+        return Err(par_decode_error("buffer underflow"));
+    }
+    Ok((&mut *buf).take(length as usize))
+}
+
+fn insert_component<T: ParBagComponent>(
+    components: &mut ParBag,
+    value: &T,
+) -> Result<(), DecodeError> {
+    components
+        .insert(value)
+        .map(|_| ())
+        .map_err(|error| par_decode_error(error.to_string()))
+}
+
+/// `DecodeError::new` is the only constructor Prost 0.14 exposes to external
+/// `Message` implementations for implementation-specific invariant failures.
+/// Keeping that dependency in one place makes the required Prost 0.15 API
+/// adaptation local if its announced removal occurs.
+#[allow(deprecated)]
+fn par_decode_error(description: impl Into<std::borrow::Cow<'static, str>>) -> DecodeError {
+    DecodeError::new(description)
+}
+
+impl Message for Par {
+    fn encode_raw(&self, buf: &mut impl BufMut) {
+        self.encode_protobuf(buf)
+            .expect("PathMap-backed Par invariant: protobuf output length is representable");
+    }
+
+    fn merge_field(
+        &mut self,
+        tag: u32,
+        wire_type: WireType,
+        buf: &mut impl Buf,
+        ctx: DecodeContext,
+    ) -> Result<(), DecodeError> {
+        macro_rules! merge_component {
+            ($component:ty, $decode:path) => {{
+                let body = take_length_delimited_component(wire_type, buf)?;
+                let value: $component = $decode(body)?;
+                insert_component(&mut self.components, &value)
+            }};
+        }
+
+        match tag {
+            1 => merge_component!(Send, crate::rust::rholang::protobuf_decoder::decode_send),
+            2 => merge_component!(
+                Receive,
+                crate::rust::rholang::protobuf_decoder::decode_receive
+            ),
+            4 => merge_component!(New, crate::rust::rholang::protobuf_decoder::decode_new),
+            5 => merge_component!(Expr, crate::rust::rholang::protobuf_decoder::decode_expr),
+            6 => merge_component!(Match, crate::rust::rholang::protobuf_decoder::decode_match),
+            7 => merge_component!(
+                GUnforgeable,
+                crate::rust::rholang::protobuf_decoder::decode_g_unforgeable
+            ),
+            8 => merge_component!(
+                Connective,
+                crate::rust::rholang::protobuf_decoder::decode_connective
+            ),
+            9 => encoding::bytes::merge(wire_type, &mut self.locally_free, buf, ctx),
+            10 => encoding::bool::merge(wire_type, &mut self.connective_used, buf, ctx),
+            11 => merge_component!(
+                Bundle,
+                crate::rust::rholang::protobuf_decoder::decode_bundle
+            ),
+            12 => merge_component!(If, crate::rust::rholang::protobuf_decoder::decode_if),
+            _ => crate::rust::rholang::protobuf_decoder::skip_unknown_field(wire_type, tag, buf),
+        }
+    }
+
+    fn encoded_len(&self) -> usize {
+        self.protobuf_encoded_len()
+            .expect("PathMap-backed Par invariant: protobuf output length is representable")
+    }
+
+    fn clear(&mut self) {
+        self.components = ParBag::default();
+        self.locally_free.clear();
+        self.connective_used = false;
     }
 }

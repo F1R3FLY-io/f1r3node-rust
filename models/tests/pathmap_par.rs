@@ -3,6 +3,10 @@ use models::rhoapi::{Expr, Par as GeneratedPar};
 use models::rust::par::Par;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
+use prost::bytes::Buf;
+use prost::Message;
+
+mod par_corpus;
 
 #[test]
 fn pathmap_par_streams_the_exact_canonical_protobuf_surface() {
@@ -37,10 +41,69 @@ fn pathmap_par_streams_the_exact_canonical_protobuf_surface() {
         expected.len()
     );
     assert_eq!(actual.protobuf_bytes().expect("collected bytes"), expected);
+    let decoded = Par::decode(expected.as_slice()).expect("decode into PathMap-backed Par");
+    assert_eq!(decoded, actual);
+    assert_eq!(decoded.locally_free(), actual.locally_free());
     assert_eq!(actual.components().distinct_len(), 2);
     assert_eq!(actual.components().cardinality(), 3);
     assert_eq!(actual.locally_free(), [0x05]);
     assert!(actual.connective_used());
+}
+
+#[test]
+fn protobuf_merge_accumulates_multiplicity_without_a_repeated_field_collection() {
+    let occurrence = models::par_from_default! {
+        exprs: vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(11)),
+        }],
+        ..GeneratedPar::default()
+    };
+    let mut bytes = models::rust::rholang::protobuf_encoder::encode_to_vec(&occurrence);
+    bytes.extend_from_within(..);
+
+    let decoded = Par::decode(bytes.as_slice()).expect("decode repeated occurrence");
+    assert_eq!(decoded.components().distinct_len(), 1);
+    assert_eq!(decoded.components().cardinality(), 2);
+}
+
+#[test]
+fn protobuf_decode_dispatches_every_component_family_from_a_chunked_buffer() {
+    let mut source = par_corpus::all_par_fields();
+    source.sends.retain(|send| send.chan.is_some());
+    for receive in &mut source.receives {
+        receive.binds.retain(|bind| bind.source.is_some());
+    }
+    source.news.retain(|new_node| new_node.p.is_some());
+    source.exprs.truncate(1);
+    for match_node in &mut source.matches {
+        match_node
+            .cases
+            .retain(|case| case.pattern.is_some() && case.source.is_some());
+    }
+    source.bundles.retain(|bundle| bundle.body.is_some());
+    for conditional in &mut source.conditionals {
+        conditional
+            .if_false
+            .get_or_insert_with(GeneratedPar::default);
+    }
+
+    let expected = models::rust::rholang::protobuf_encoder::encode_to_vec(
+        &ParSortMatcher::sort_match(&source).term,
+    );
+    let split = expected.len() / 2;
+    let chunks = (&expected[..split]).chain(&expected[split..]);
+    let decoded = Par::decode(chunks).expect("decode every component family across chunks");
+    let imported = Par::import_generated(&source).expect("import every component family");
+
+    assert_eq!(decoded, imported);
+    assert_eq!(decoded.locally_free(), imported.locally_free());
+    assert_eq!(decoded.protobuf_bytes().expect("re-encode"), expected);
+}
+
+#[test]
+fn protobuf_decode_rejects_truncated_component_bodies() {
+    let malformed = [0x0a, 0x05, 0x00];
+    assert!(Par::decode(malformed.as_slice()).is_err());
 }
 
 #[test]
