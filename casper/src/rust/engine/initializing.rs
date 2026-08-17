@@ -863,50 +863,26 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             .collect();
 
         let mut inserted = 0usize;
-        let mut below_min = 0usize;
 
         // Add sorted DAG in order from approved block to oldest
-        for hash in height_map
-            .values()
-            .flat_map(|hashes| hashes.iter())
-            .cloned()
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-        {
+        for hash in blocks_for_dag(&height_map) {
             // NOTE: This is not in original Scala code. Added because we changed block_store
             // to Option<KeyValueBlockStore> to support moving it in create_casper_and_transition_to_running
             let block = self.block_store.get_unsafe(&hash);
             // If sender has stake 0 in approved block, this means that sender has been slashed and block is invalid
             let is_invalid = invalid_blocks.contains(&block.block_hash.to_vec());
-            // The requester deliberately reaches one level below the bound — it
-            // lowers `lower_bound` to `height - 1` for latest messages because
-            // the boundary's parents are needed — so cutting at `min_height`
-            // here discards blocks the download went and got. Blocks at
-            // `min_height` then have parents and justifications the DAG does
-            // not hold, and every lookup_unsafe that walks up from them fails
-            // with DAGStorageMissingHash: incoming blocks fail validation and
-            // the heartbeat cannot run.
-            let block_height = proto_util::block_number(&block);
-            let block_height_ok = block_height >= min_height - 1;
-
-            // Add block to DAG
-            if block_height_ok {
-                add_block_to_dag(self, &block, is_invalid).await?;
-                inserted += 1;
-            } else {
-                below_min += 1;
-            }
+            add_block_to_dag(self, &block, is_invalid).await?;
+            inserted += 1;
         }
 
         // What the horizon walk will actually see. The requester's `finished`
         // count is not this number — it counts downloads, and anything the
-        // height map dropped or the min-height filter cut never reaches the DAG.
+        // height map dropped never reaches the DAG. `min_height` is the
+        // requester's bound, reported because the DAG now reaches below it.
         tracing::info!(
             inserted,
-            below_min,
             min_height,
-            height_map_entries = height_map.values().map(|h| h.len()).sum::<usize>(),
+            lowest_height = height_map.keys().next(),
             "Blocks for approved state added to DAG."
         );
         Ok(())
@@ -1487,5 +1463,65 @@ impl<T: TransportLayer + Send + Sync>
             .send_to_bootstrap(self.rp_conf_ask, Arc::new(message_proto))
             .await?;
         Ok(())
+    }
+}
+
+/// The blocks the restored DAG must hold, highest height first.
+///
+/// The height map is the requester's own record of what it downloaded and
+/// validated, and it fetched each of those because something needs it — it
+/// reaches below its own bound to pick up the parents of every latest message.
+/// A second bound applied here can only disagree with the first, and the DAG
+/// then holds blocks whose parents it threw away.
+fn blocks_for_dag(height_map: &BTreeMap<i64, HashSet<BlockHash>>) -> Vec<BlockHash> {
+    height_map
+        .iter()
+        .rev()
+        .flat_map(|(_, hashes)| hashes.iter().cloned())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hash(tag: &[u8]) -> BlockHash { BlockHash::from(tag.to_vec()) }
+
+    /// An LFS restore must keep every block it fetched. The requester lowers its
+    /// own bound to `height - 1` for each latest message, so the download reaches
+    /// under `min_height` by design; discarding those leaves the DAG's oldest
+    /// blocks with parents it does not hold, and every walk that expands them
+    /// dies on DAGStorageMissingHash. Observed twice: block #82 dropped under a
+    /// window starting at 84, then #68 under one starting at 70 — each time the
+    /// block had been downloaded from every peer moments earlier.
+    #[test]
+    fn every_downloaded_block_reaches_the_dag() {
+        let deep = hash(b"below-the-window");
+        let boundary = hash(b"at-the-window");
+        let tip = hash(b"tip");
+        let height_map = BTreeMap::from([
+            (68, HashSet::from([deep.clone()])),
+            (70, HashSet::from([boundary.clone()])),
+            (120, HashSet::from([tip.clone()])),
+        ]);
+
+        let selected = blocks_for_dag(&height_map);
+
+        assert!(
+            selected.contains(&deep),
+            "a block the requester downloaded below the window must still reach the \
+             DAG; dropping it leaves #70's ancestry unresolvable"
+        );
+        assert_eq!(
+            selected.len(),
+            3,
+            "every height-map entry is a block that was fetched and validated"
+        );
+        assert_eq!(
+            selected.first(),
+            Some(&tip),
+            "highest height first: inserting descending keeps each sender's latest \
+             message at its highest sequence number"
+        );
     }
 }
