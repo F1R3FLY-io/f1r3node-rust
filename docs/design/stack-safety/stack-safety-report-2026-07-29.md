@@ -3324,7 +3324,8 @@ stack. These are test-harness elapsed times under a 5 GiB zero-swap cap, not sta
 measurements.
 
 Checkpoint `bbdd22887` adds the lossless inverse at the token layer. A validated path iterates its
-borrowed typed tokens and re-emits canonical RMP1 bytes into one output buffer; it never rebuilds a
+borrowed typed tokens and re-emits canonical **Rholang Match Path format version 1 (RMP1)** bytes
+into one output buffer; it never rebuilds a
 recursive `Par`. This boundary is deliberate because the EPathMap token contains a
 domain-separated key-topology digest and is not an invertible serialization of map values. The
 complete 66-shape descriptor corpus now passes encode/validate/token-re-encode byte identity, and a
@@ -3335,8 +3336,7 @@ width. The 20,000-level re-encode also passes on the existing 256 KiB worker sta
 native-stack slope, `RUST_MIN_STACK`, `stacker`, or an artificial traversal bound.
 
 Checkpoint `b6b53d1b3` activates an ordered nested-query PDA without decoding `Par`. The compiler
-reuses the generated event encoder to divide an EList or ETuple pattern into exact **Rholang Match
-Path format version 1 (RMP1)** byte runs and
+reuses the generated event encoder to divide an EList or ETuple pattern into exact RMP1 byte runs and
 whole-`Par` capture or wildcard instructions. Unsupported unordered, associative-commutative,
 remainder-bearing, connective, or otherwise unrecognized shapes fail closed to the existing spatial
 scan. At execution, the first exact instruction run is escaped twice and descended directly through
@@ -3398,6 +3398,14 @@ every successful case in the independent recursive-oracle corpus to the producti
 matcher group passes **23/23**, the formal manifest and RMP1 cursor suites pass **12/12**, and Rocq
 kernel checking succeeds under a 4 GiB / zero-swap cap. This is a semantic and constant-native-stack
 result; it adds no benchmark sample and does not close AC compilation or generated play/replay.
+
+Checkpoint `304dc13e9` supplies the missing generated play/replay schedule for the supported ordered
+slice. Each of the 21 eligible expression families drives the real control and PathMap-indexed
+RSpaces through two negative data, a waiting receive, and one matching datum. Play results, event
+histories, stores, and checkpoint roots agree; rigged replay reproduces the play roots and exhausts
+the replay data. The complete focused retained-path module passes **12/12** under an 8 GiB,
+zero-swap scope. The test adds no native recursion, artificial traversal bound, or benchmark sample.
+Associative-commutative compilation and generated schedules remain open.
 
 Checkpoint `250e96c80` adds a PathMap-native candidate domain in front of the already-iterative
 `ListMachine` augmenting-path PDA. Each compatible unordered target is encoded through the shared
@@ -3576,13 +3584,13 @@ swap, and two-core CPU quota**. **MEASURED:**
 | RSpace actions with retained indexing enabled | same 41-case semantic corpus | **41/41** | consume/produce, joins, persistence, checkpoint, reset, and soft-revert |
 | receive-first Bag/query product | full canonical scan | **8/8 query/product cases plus 64 generated corpora** | flat and nested 256-to-1 spatial-call witnesses, exact/wildcard/repeated-capture/ordered-remainder/nested ordered traversal, embedded-zero and double-escape framing, structural false-positive oracle check, singleton zero-query base case, and identical result/event/post-state maps |
 | framed-query native stack | recursive framing not admitted | **one million encoded bytes on a 128 KiB worker stack** | iterative double-frame scanner; no recursion, depth/width cap, `RUST_MIN_STACK`, or `stacker` |
-| Rholang query compiler | spatial oracle only | **11/11 focused matcher cases; 61/61 complete matcher group** | every ordered binary/unary/method/matches/list/tuple family uses the generated cursor and agrees with the spatial oracle; unordered/AC shapes and repeated capture levels fall back |
+| Rholang query compiler | spatial oracle only | **12/12 focused retained-path cases; 61/61 complete matcher group** | every ordered binary/unary/method/matches/list/tuple family uses the generated cursor and agrees with the spatial oracle; all 21 eligible families additionally preserve play/replay results, event histories, stores, and checkpoint roots; unordered/AC shapes and repeated capture levels fall back |
 | generated Rholang matching cursor | no schema-complete cursor | **4/4 cursor cases plus 21/21 schema/exhaustiveness/registration cases** | all 58 descriptor messages and five oneofs are generated from one pass; a 20,000-deep EList spine and a 20,000-wide term traverse on 256 KiB; EPathMap yields one native-trie delegation event without forcing its snapshot |
 | generated Rholang structural match path | canonical-path exact terms only | **3/3 encoder cases; 6/6 token-codec cases; 4/4 models RSpace-path cases; 11/11 Rholang compiler cases** | complete-schema deterministic tokens; all 66 descriptor-corpus shapes have fixed length/digest goldens and token round trips; canonical EPathMap digest golden and insertion-order witness; deliberate value-insensitive false-positive lane; 20,000-deep/wide encoding and 20,000-level re-encoding on 256 KiB; exact/whole-term/ordered-nested production query paths agree with the spatial oracle |
 | encoded `RMP1` validation/navigation | no byte-side schema validator | **6/6 byte-cursor cases plus 4/4 generated-schema cases** | descriptor-exact fields, child types, and oneof payloads; malformed classes fail closed; all exhaustive-corpus node subtrees validate and all 66 complete paths re-encode identically; validated paths compare and hash by canonical bytes; 20,000-level validation, deepest-subtree extent discovery, and token re-emission complete on 256 KiB |
 | nested `RMP1` instruction PDA | unpruned nested spatial scan | **9/9 framing/query cases plus the 8/8 product suite** | one- and two-layer escaping; every tested shallow token truncation rejected; 20,000 levels on 128 KiB; zero-heavy 256-candidate result equivalence with 256-to-1 spatial pruning |
 | datum-first retained structural queries | root fallback for every non-ground pattern | **9/9 combined production pruning cases** | identical COMM result/event trace/post-state map and 256-to-1 spatial calls for a canonically last waiting receive; unsupported patterns remain root fallbacks |
-| retained-filter and generated compiler soundness | no theorem connecting both prefilters to canonical selection | **Rocq composition and exact/hole/ordered compiler theorems plus complete bounded formal bundle** | exact-prefix and residual-query superset premises imply no false negatives and preservation of the first canonical spatial success; supported generated compilation preserves every spatial success, all 58 generated roots are exercised, and every recursive-oracle success that compiles is accepted by the production query; Rocq, Verus 6/6, Z3, all three exhaustive TLC models, and the live-commit mCRL2 checks pass; AC compilation and generated schedules remain open |
+| retained-filter and generated compiler soundness | no theorem connecting both prefilters to canonical selection | **Rocq composition and exact/hole/ordered compiler theorems plus complete bounded formal bundle and 21-family ordered play/replay differential** | exact-prefix and residual-query superset premises imply no false negatives and preservation of the first canonical spatial success; supported generated compilation preserves every spatial success, all 58 generated roots are exercised, every recursive-oracle success that compiles is accepted by the production query, and the supported ordered schedule preserves results, event histories, stores, and roots through play and replay; Rocq, Verus 6/6, Z3, all three exhaustive TLC models, and the live-commit mCRL2 checks pass; associative-commutative compilation and schedules remain open |
 | AC element candidate Bag | full unordered target scan | **8,256 to 128 exact diagonal spatial edges; 128 ordered-nested ESet edges; 128 generalized Send edges from 16,384 possible pairs; one real edge for a width-128 remainder; 16,257 exhaustive displacement edges in each of 51 samples** | the initial fixed-width candidate cut passed 53/53 matcher and 22/22 RSpace tests; `2d91c4394` makes exact multiplicity and residual subtraction Bag-authoritative; `bbe91b90f` extends exact stack-safe keys/queries to every unordered `Par` field root and passes 18/18 focused matcher plus strict lint; `3a70ddc58` uses Bag visitation only for true duplicates; `ad5d37a59` encodes one identity for 64 adjacent duplicates without merging metadata-distinct values; `26b72b096` quotient-compresses universal remainder vertices, passes all 651 bounded recursive-oracle cases, 12/12 spatial differential tests, and 81/81 matcher integrations; isolated pre-Bag counter process was 56.90 s and 100.8 MiB RSS under 4 GiB/zero swap; competing processes invalidate post-Bag durations, so no new throughput or RSS claim is inferred |
 | standalone Bag delta and compact-trie codec | no direct Bag codec or normalized reversible transition carrier | **200,000-byte compressed key round-trips on 256 KiB; 23/23 Bag tests; 1/1 allocation gate; 183/183 affected EPathMap tests** | `0d7a6a3f8` adds atomic exact-key delta apply/revert; `1560f4371` uses raw canonical ACTree03 with native `u64` value slots and a shared iterative reader; `46aaa6472` adds legacy parity, prefix, algebra, delta, deep/wide, Merkle-image, and multiplicity-allocation evidence; `87679597d` adds the exact-prefix cursor/pruning regression; malformed/noncanonical/zero/dangling images fail closed and strict lint passes |
 | live accepted-match Bag transaction | per-selected-datum hot-store lock and removal | **23/23 Bag; 18/18 data index; 17/17 guarded play/replay; 146/146 broad RSpace integration; Rocq/TLC/mCRL2 live-commit proof; experiments 218 and 219 accepted under their locked statistical criteria** | `cd01ea721` normalizes exact selected identities, commits one COW root under one lock, preserves fresh/persistent candidates, and rejects underflow or malformed paths without mutation; `21ece399d` proves candidate projection, play/replay delta equality, atomic publication, all seven invariants over 2,628 TLC states, branching bisimulation, and no partial-publication reachability; `0f9beb5f0` removes the redundant outer root clone while retaining the `BagDelta`-owned atomic root, lowering singleton median latency 5.671% with no secondary-cardinality regression; `87679597d` measures one moving write zipper and `9a746f2bf` selects it only for multi-key deltas after the singleton regressed 8.289%; broad gate 3 min 6.13 s, 489,848 KiB peak RSS, zero swap under 12 GiB `MemoryMax` and four-core quota; affected strict Clippy passes, while the intentionally broader all-test Clippy reaches unrelated pre-existing warnings and is not claimed |
@@ -3709,7 +3717,7 @@ Mean regressions at 16 and 4,096 candidates are **83.041%** and **55.549%**. Pat
 `TrieRef` is appropriate for stable query-start views, but its descendant operation reconstructs
 in-node focus-key state; doing that for each byte loses to a zipper that moves and ascends in place.
 Checkpoint `27557c374` therefore retains paired mutable read zippers in production. Native-stack
-complexity remains `O(1)`; this decision changes the explicit heap control representation, not the
+complexity remains $`O(1)`$; this decision changes the explicit heap control representation, not the
 PDA or its accepted candidates.
 
 An earlier attempt was stopped when the user clarified that another coverage suite was merely

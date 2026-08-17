@@ -2554,6 +2554,14 @@ consensus neutrality. Release automaton tests pass 8/8, the causal benchmark pre
 fresh-or-resting composition theorem recompiles. Full generated schedule/replay/post-state closure
 remains open, so CBR-053 remains `UNVERIFIED`.
 
+Checkpoint `304dc13e9` closes that schedule obligation for the currently supported ordered compiler
+slice. For each of the 21 eligible expression families, two nonmatching data are stored before the
+receive and matching datum. Real control and PathMap-indexed RSpaces produce identical play results,
+event histories, stores, and checkpoint roots. The same histories are then rigged and replayed;
+replay produces the play roots and exhausts the replay data. The complete focused retained-path
+module passes **12/12** under an 8 GiB, zero-swap scope. This is test-only evidence: generated
+associative-commutative compilation and schedules remain open, so CBR-053 remains `UNVERIFIED`.
+
 #### (b) How it may break consensus
 
 | Axis | Verdict |
