@@ -4585,6 +4585,30 @@ binding, EPM1/protobuf/bincode byte, hash, COMM schedule, charge, or post-state.
 §§5.16.7.7–5.16.7.8 and the two durable TSV ledgers contain the algorithms, all 480 timing pairs,
 resource envelopes, run identifiers, and statistical verdicts. PathMap itself is unmodified.
 
+**CBR-023 living-set continuation (2026-08-17, measured EPathMap prefix-restriction frontier;
+pgmcp experiment 254).** Experimental checkpoint `f1r3node-rust-mettail@87f367b83` compares a
+focused zipper/graft union with one native `PathMap::restrict` across singleton, bulk, overlapping,
+empty, root, no-hit, deep-shared, and fallback-dominated masks. Exact encoded keys, associated `Par`
+values, value-free endpoints, and ACTree03 topology agree before timing. The pooled result accepts
+native restriction, and all eight non-singleton cells improve by **35.96%–98.82%**. The separately
+preregistered singleton guard rejects a blanket treatment: one focused zipper is **116.4 ns** faster.
+
+Selected checkpoint `c460eb922` therefore dispatches exactly one value-bearing selector to a
+focused read/write zipper graft and every other selector cardinality to native `restrict`.
+`EntryTrie::subtrie` uses the same one-prefix primitive. Set mode remains `PathMap<()>`; map mode
+remains `PathMap<Par>`. The focused operation carries a focus value explicitly and creates the
+destination path before grafting, so value-free topology remains observable. It constructs no
+decoded member vector, entry list, hash map, same-shaped shadow trie, or serialization snapshot.
+
+Both nine-case EPathMap suites, the complete models strict-Clippy surface, and the capped complete
+models run (**551 passed, 0 failed, 3 child-entry tests ignored**) pass. This is a
+`BYTE_NEUTRAL_MEASURED` heap/work optimization within CBR-023's `EQUIVALENCE_PROVEN` set: it changes
+no Rholang value or method contract, match verdict, binding, EPathMap mode, EPM1/protobuf/bincode
+byte, hash, COMM schedule, charge, or post-state. Stack-safety report §5.16.7.9 and its durable
+540-pair TSV retain the hypothesis, algorithms, raw measurements, resource envelope, sealed run
+identifiers, and selected disposition. The experiment-only feature and benchmark were removed;
+PathMap itself is unmodified.
+
 **Dormant RSpace matching-cursor foundation (2026-08-15; pgmcp `rspace-shared-match-pda`).**
 `f1r3node-rust-mettail@71d378e73` extends the existing descriptor pass with exhaustive,
 ascending-tag `RhoMatchProgram` tables, typed `ParCursor` accessors, and the heap-worklist

@@ -3619,6 +3619,7 @@ swap, and two-core CPU quota**. **MEASURED:**
 | EPathMap member-prefix restriction | decode each selector key to `Par`, rebuild its segment vector and prefix key, and clone map selector values into a same-typed mask | **pgmcp experiment 250 accepted; 180 samples per arm across three cells; exact EntryTrie differential, 67/67 codec/path integration, 8/8 algebra, feature-free build, and strict lint pass** | scan canonical segment extents in place, borrow each branch-prefix slice, use unit values or empty `Par` sentinels only to mark mask positions, and retain native `PathMap::restrict`; mean latency falls 11.31% for sets, 12.22% for maps with 64-byte selector values, and 9.27% for maps with 4,096-byte selector values; selected at `a351b82e5` |
 | exact EPathMap map union | rebuild all right topology and then reinsert every right value | **pgmcp experiment 252 accepted; 300 paired samples across five cells; exact EntryTrie/EPM1 differential covers exhaustive small maps, deep prefixes, value-free topology, conflicts, and neutral operands** | traverse the right and a COW clone of the left with synchronized zippers, graft complete right-only compressed branches, and inspect only overlapping topology; means fall 99.93%–99.97% for disjoint roots, 49.59% at half overlap, and 20.36%–22.33% for equal maps; selected at `a6e62b76f` |
 | unchanged EPathMap map-union clone family | repeat the exact zipper union even when both operands are unchanged aliases of one map | **pgmcp experiment 253 accepted; 180 paired samples across three cells; every map mutation class has an exact identity-detachment regression** | shared `EntryTrie::trie_snapshot` cell identity proves an unchanged clone family without forcing the snapshot; union returns a COW clone in 126–212 ns instead of 2.104–6.306 ms, while independently equal maps do not trigger and remain statistically neutral; selected at `15165852c` |
+| EPathMap prefix-restriction frontier | construct a durable result by focusing and grafting each selector prefix independently | **pgmcp experiment 254 accepted for bulk restriction and rejected the blanket singleton treatment; 540 paired samples across nine cells; exact keys, `Par` associations, value-free endpoints, and ACTree03 topology agree** | dispatch exactly one value-bearing selector to one focused zipper graft and every other cardinality to native `PathMap::restrict`; the singleton specialization is 116.4 ns faster, while native bulk restriction lowers mean latency 35.96%–98.82%; selected at `c460eb922` |
 | datum-first retained-automaton × Bag product | resting data disabled the retained prefilter and forced the full canonical continuation scan | **pgmcp experiments 224 and 225 rejected; 226 and exact-final-source 229 accepted; full-matrix replication artifact 320; 82 samples per arm/cell; 8/8 release regressions; 12/12 benchmark preflights; 428/428 complete package tests; strict changed-target lint; Rocq proof pass** | `ad395c357` adds the conservative fresh-or-resting product and `61accc170` selects the bounded traversal: zero/one exact PathMap prefix lookup for a singleton Bag with zero/one eligible terminal depth, otherwise the linear synchronized zipper product; artifact 320 confirms shared speedups of 4.476× at 256 and 13.338× at 4,096 and records diverse speedups of 1.059× and 7.803×; both cardinality-16 causal-selector cells lose to the trivial scan, but the existing end-to-end COMM experiments win at 16 because they include avoided spatial matching work; native-stack use is constant, no record is decoded or flattened, and no empirical cutoff is inferred |
 | Bag formal laws | informal implementation equations | **Rocq and Verus `--no-cheating` plus TLC and mCRL2 pass inside the complete bounded bundle** | `8e4938ec6` proves exact-key multiplicity algebra and normalized/canonical deltas in Rocq, plus executable checked-`u64` apply/revert in Verus; `21ece399d` adds the live-commit Rocq bridge, a 2,628-state TLC model, branching bisimulation, and no-partial-publication proof; the earlier focused Rocq/Verus proofs used 351,028 KiB and 261,824 KiB peak RSS respectively with zero swap; Z3 and all three TLC models pass |
 | standalone Bag microbenchmark | legacy `HashMultiSet` controls | **15/15 comparative pairs plus 6 logical-multiplicity points** | construction improves 20.5–54.6%; the full exact-lookup sweep improves except for an operationally neutral 0.236% loss at 4,096; copy-on-write clone/update improves from 16 keys but loses 65.9% at one; one-key construction remains approximately 76 ns through `u64::MAX`; aggregate benchmark-process RSS is 39,912 KiB, not a comparative per-operation memory result |
@@ -4534,6 +4535,65 @@ Both selected changes are byte- and verdict-neutral continuations of the existin
 They change no mode, Rholang result, conflict, EPM1/protobuf/bincode byte, hash, COMM, charge, or
 post-state. They add no PathMap patch, stack-depth bound, decoded shadow collection, or artificial
 `Par` lattice.
+
+##### 5.16.7.9 Prefix restriction has a measured singleton/bulk frontier
+
+`PathMap::restrict` implements a prefix language over all value-bearing selector paths. It is the
+right algebraic primitive for a durable multi-prefix result because it traverses the source and mask
+as compressed tries. A selector with exactly one value-bearing path is different: constructing a
+singleton mask and entering the whole-map algebra can cost more than focusing one read zipper and
+grafting that already-compressed source subtrie into the same absolute path of a new destination.
+The hypothesis for pgmcp experiment 254 was therefore deliberately two-sided: native restriction
+should win the pooled bulk workload, but a preregistered 3% per-cell guard would retain any
+semantically justified specialization rather than hiding it in the pooled result.
+
+The frozen control focuses a source read zipper at every selector prefix, creates the corresponding
+destination path, and grafts the complete compressed subtrie. It explicitly transfers a value at the
+focus because `graft_root_vals` is not an integration precondition. The treatment calls native
+`PathMap::restrict` once with the same typed selector trie. Before timing, both arms must agree on
+every encoded key, every associated map-mode `Par`, and the complete ACTree03 image. The last check
+is necessary because a selected endpoint may have topology without a value. Nine 4,096-value cells
+exercise one prefix, 64 disjoint prefixes with 64-byte and 4,096-byte values, nested overlaps, empty
+and root masks, a disjoint no-hit mask, a 128-byte shared prefix, and a root-fallback-plus-exact mask.
+
+| cell | focused-graft mean | native `restrict` mean | treatment change |
+|---|---:|---:|---:|
+| singleton prefix | 200.550 ns | 316.950 ns | **+58.04%** |
+| 64 disjoint prefixes, 64-byte values | 8.356883 µs | 1.241500 µs | **-85.14%** |
+| 64 disjoint prefixes, 4,096-byte values | 8.424700 µs | 1.373717 µs | **-83.69%** |
+| nested overlapping prefixes | 25.858317 µs | 0.306917 µs | **-98.81%** |
+| empty mask | 76.167 ns | 38.883 ns | **-48.95%** |
+| root mask | 60.083 ns | 37.917 ns | **-36.89%** |
+| disjoint no-hit mask | 3.567683 µs | 42.133 ns | **-98.82%** |
+| 128-byte deep shared prefix | 14.304800 µs | 1.258833 µs | **-91.20%** |
+| root fallback plus exact prefixes | 57.933 ns | 37.100 ns | **-35.96%** |
+
+The pooled locked verdict accepts native restriction ($`t=-17.4912`$,
+$`p=5.5466\times10^{-55}`$, Cohen's $`d=-1.0645`$, treatment-minus-control 95% confidence
+interval **[-6.952 µs, -5.548 µs]**). Cliff's $`\delta=-0.5050`$ and Mann–Whitney $`p=0`$
+agree. The singleton guard rejects a blanket treatment: its focused zipper is **116.4 ns faster**
+and the paired interval excludes zero. This yields a semantic cardinality dispatch, not a fitted
+threshold: exactly one value-bearing selector uses the focused zipper; zero or at least two use
+native `restrict`. `EntryTrie::subtrie`, which is intrinsically a one-prefix request, uses the same
+focused primitive.
+
+The selected implementation at `c460eb922` supports `PathMap<()>` set mode and `PathMap<Par>` map
+mode without a decoded projection or same-shaped shadow. The endpoint regression proves that a
+value-free focus survives. Both nine-case EPathMap suites pass, the complete models strict-Clippy
+surface passes, and the complete capped models test run reports **551 passed, 0 failed, 3 ignored**
+across 45 binaries; the ignored tests are child-process entry points exercised by their parent
+gates. Both algorithms remain iterative PathMap traversals, so the selection adds no recursion,
+native-stack slope, depth cap, `RUST_MIN_STACK`, or `stacker` dependency.
+
+One preregistered run retained 60 paired, interleaved, order-rotated samples after 10 warmups in each
+cell. Preflight measured **81.87%** aggregate idle and **97.99%** idle on pinned CPU 8; **52 GiB** was
+available. The 8 GiB, zero-swap scope peaked at **24,808 KiB** resident set size. Pgmcp artifact 333
+and
+[`measurements/epathmap-restrict-prefix-frontier-2026-08-17.tsv`](measurements/epathmap-restrict-prefix-frontier-2026-08-17.tsv)
+preserve all 540 pairs, sealed run identifiers, the exact workload, and source-log digest. The
+benchmark-only feature and control were removed after selection and remain recoverable at
+`87f367b83`. No PathMap source or serialization format changes; the result extends retired CBR-023's
+`EQUIVALENCE_PROVEN` evidence.
 
 ---
 
@@ -8548,6 +8608,7 @@ done
 | [`measurements/epathmap-member-prefix-restrict-2026-08-17.tsv`](measurements/epathmap-member-prefix-restrict-2026-08-17.tsv) | experiment 250's decoded-key control and selected byte-native member-prefix mask builder, all 360 paired raw timings, per-cell statistics, resource protocol, sealed pgmcp run identifiers, and selected production disposition (§5.16.7.5) |
 | [`measurements/epathmap-map-join-zipper-graft-2026-08-17.tsv`](measurements/epathmap-map-join-zipper-graft-2026-08-17.tsv) | experiment 252's reconstructed map-union control and selected synchronized zipper/graft treatment, all 300 paired raw timings, exact semantics, root-identity probe correction, resources, sealed run identifiers, and production disposition (§5.16.7.7) |
 | [`measurements/epathmap-map-join-clone-family-2026-08-17.tsv`](measurements/epathmap-map-join-clone-family-2026-08-17.tsv) | experiment 253's exact-zipper control and selected mutation-invalidated clone-family identity, all 180 paired raw timings, mutation-detachment matrix, independent-equality guard, resources, sealed run identifiers, and production disposition (§5.16.7.8) |
+| [`measurements/epathmap-restrict-prefix-frontier-2026-08-17.tsv`](measurements/epathmap-restrict-prefix-frontier-2026-08-17.tsv) | experiment 254's focused-zipper/native-restrict frontier, all 540 paired raw timings across nine cells, exact topology/value guards, resources, sealed run identifiers, and selected singleton/bulk dispatch (§5.16.7.9) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of
