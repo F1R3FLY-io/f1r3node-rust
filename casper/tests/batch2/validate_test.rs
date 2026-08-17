@@ -996,6 +996,86 @@ async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deplo
     .await
 }
 
+/// The duplicate scan walks the block's ancestry, and a storage failure during
+/// that walk used to be swallowed: the expansion returned nothing, the walk ended
+/// early, and the block passed. So a DAG that cannot be read all the way down —
+/// a truncated one, or a damaged one — silently ADMITS the repeat deploy the scan
+/// exists to reject. A validator that cannot read the set it must scan has to
+/// refuse the verdict, not return the one that absence produces.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_validation_should_surface_a_storage_failure_not_admit_the_deploy() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+
+        // Genesis carries the deploy: it is the duplicate the scan must find.
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // Reaching genesis means expanding this block's parents, and one of them
+        // is not in the DAG — so the expansion fails and the walk stops here.
+        let mid = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![
+                genesis.block_hash.clone(),
+                Bytes::from(b"ancestor-absent-from-this-dag".to_vec()),
+            ],
+            &genesis,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let head = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![mid.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![deploy]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut casper_snapshot = mk_casper_snapshot(dag);
+
+        let result = Validate::repeat_deploy(&head, &mut casper_snapshot, &block_store, 50, None);
+        assert!(
+            matches!(result, Either::Left(BlockError::BlockException(_))),
+            "an unreadable ancestry must surface as a storage failure; got {:?} — \
+             a swallowed error admits the repeated deploy carried by genesis",
+            result
+        );
+    })
+    .await
+}
+
 /// The retry gate at the validity layer: a re-inclusion whose kept
 /// rejection is LIVE (above the block's frozen floor) is
 /// `PrematureDeployRetry` — never a legal recovery, never

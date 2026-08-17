@@ -655,7 +655,10 @@ impl Validate {
         }
 
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block");
-        let maybe_duplicated_block_metadata = dag_ops::bf_traverse_find(
+        // A failed expansion is not an empty one: swallowing it ends the scan
+        // early, and "found no duplicate" is then a statement about what could
+        // be read, not about the chain. That verdict admits the repeat.
+        let maybe_duplicated_block_metadata = match dag_ops::try_bf_traverse_find(
             init_parents,
             |block_metadata| {
                 proto_util::get_parent_metadatas_above_block_number(
@@ -663,12 +666,14 @@ impl Validate {
                     earliest_block_number,
                     &s.dag,
                 )
-                .unwrap_or_default()
             },
             |block_metadata| {
                 block_store.has_any_deploy_sig_unsafe(&block_metadata.block_hash, &deploy_key_set)
             },
-        );
+        ) {
+            Ok(found) => found,
+            Err(e) => return Either::Left(BlockError::BlockException(CasperError::from(e))),
+        };
 
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block-log");
         let maybe_error = maybe_duplicated_block_metadata.map(|duplicated_block_metadata| {
