@@ -50,12 +50,22 @@ use crate::rust::casper::CasperShardConf;
 
 /// Compute the set of rspace roots a joiner needs in its local roots store
 /// before transitioning to Running. Walks every block in the DAG with
-/// `height ≥ LFB.height − (max_parent_depth + depth_buffer)` and emits
-/// both its `pre_state_hash` and `post_state_hash`, deduped, ordered by
-/// descending block_number (LFB-side first — most likely to be referenced
-/// as a parent by an early incoming block). Within a single block the
-/// post-state is emitted before the pre-state so the joiner imports the
-/// "outer" state before its merge intermediate.
+/// `height ≥ min_block_number` and emits both its `pre_state_hash` and
+/// `post_state_hash`, deduped, ordered by descending block_number (LFB-side
+/// first — most likely to be referenced as a parent by an early incoming
+/// block). Within a single block the post-state is emitted before the
+/// pre-state so the joiner imports the "outer" state before its merge
+/// intermediate.
+///
+/// `min_block_number` MUST be the same bound the caller gives the block
+/// requester and the mergeable-channel replay — [`lfs_min_block_number`].
+/// Deriving a narrower one here is what broke joiner sync: the replay resets
+/// rspace history to the pre-state of every block from that bound upward, so
+/// any block it reaches whose roots were not synced fails
+/// `validate_and_set_current_root` and the node never reaches Running. The
+/// parent-reachability window is only one of the two constraints in that
+/// bound, and it is the narrower one whenever `deploy_lifespan` exceeds
+/// `max_parent_depth + depth_buffer`.
 ///
 /// Including pre-states is what fixes multi-parent merge intermediates:
 /// these hashes only ever exist as the result of the proposer's
@@ -70,6 +80,7 @@ pub fn compute_forward_horizon_roots(
     block_store: &KeyValueBlockStore,
     lfb: &BlockMessage,
     casper_shard_conf: &CasperShardConf,
+    min_block_number: i64,
 ) -> Result<Vec<Blake2b256Hash>, KvStoreError> {
     if casper_shard_conf.max_parent_depth == i32::MAX {
         // Depth check disabled — joiner can validate against any historical
@@ -79,9 +90,7 @@ pub fn compute_forward_horizon_roots(
     }
 
     let lfb_height = lfb.body.state.block_number;
-    let horizon_depth = (casper_shard_conf.max_parent_depth as i64)
-        + (casper_shard_conf.mergeable_channels_gc_depth_buffer as i64);
-    let min_height = std::cmp::max(0, lfb_height - horizon_depth);
+    let min_height = std::cmp::max(0, min_block_number);
 
     if min_height > lfb_height {
         return Ok(Vec::new());

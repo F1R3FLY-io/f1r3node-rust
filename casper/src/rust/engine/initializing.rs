@@ -666,9 +666,11 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             );
         }
 
-        // Forward-horizon rspace history sync — ship rspace post-state for
-        // every block within `max_parent_depth + depth_buffer` of LFB so
-        // subsequent block validation never hits `UnknownRootError`. See
+        // Forward-horizon rspace history sync — ship rspace state for every
+        // block from `min_block_number_for_deploy_lifespan` up, the same bound
+        // the block requester used and the mergeable-channel replay below
+        // walks, so neither that replay nor subsequent block validation hits
+        // `UnknownRootError`. See
         // `casper/src/rust/util/rspace_history_horizon.rs` for the
         // reachability calc and `casper/src/rust/engine/lfs_horizon_requester.rs`
         // for the orchestrator. Companion to the proposer-side
@@ -682,6 +684,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     &self.block_store,
                     &approved_block.candidate.block,
                     &self.casper_shard_conf,
+                    min_block_number_for_deploy_lifespan,
                 )
                 .map_err(|e| CasperError::KvStoreError(e))?;
 

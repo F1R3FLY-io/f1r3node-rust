@@ -466,6 +466,8 @@ pub async fn stream<T: HorizonRequesterOps>(
     let path_to_root = Arc::new(Mutex::new(path_to_root_init));
     let root_progress = Arc::new(Mutex::new(HashMap::new()));
 
+    let requested_root_count = filtered.len();
+
     // Bounded request queue (cap 2 — one resend + one new). Matches
     // tuple_space_requester::stream channel sizing.
     let (request_tx, mut request_rx) = mpsc::channel::<bool>(2);
@@ -539,9 +541,13 @@ pub async fn stream<T: HorizonRequesterOps>(
                     let is_finished = current_state.is_finished();
 
                     if is_finished {
+                        // `ST` is keyed by chunk PATH, not by root: pagination
+                        // adds paths as cursors advance, so this count exceeds
+                        // the root count and must not be reported as roots.
                         tracing::info!(
-                            "LFS forward-horizon: complete (all {} roots synced)",
-                            current_state.len()
+                            "LFS forward-horizon: complete ({} chunk paths done for {} roots requested)",
+                            current_state.len(),
+                            requested_root_count
                         );
                         yield current_state;
                         break;
