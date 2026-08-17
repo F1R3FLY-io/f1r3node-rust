@@ -3592,6 +3592,7 @@ dependencies = [
  "opentelemetry-zipkin",
  "opentelemetry_sdk 0.20.0",
  "parking_lot",
+ "proptest",
  "prost 0.14.4",
  "rand 0.9.5",
  "regex",

@@ -65,6 +65,7 @@ impl ReportingCasper for NoopReportingCasper {
 pub struct RhoReporterCasper {
     rspace_store: RSpaceStore,
     block_dag_storage: BlockDagKeyValueStorage,
+    replay_lock: Arc<crate::rust::util::rholang::runtime_manager::ReplayLock>,
     external_services: rholang::rust::interpreter::external_services::ExternalServices,
 }
 
@@ -74,6 +75,11 @@ impl ReportingCasper for RhoReporterCasper {
         use crate::rust::genesis::genesis::Genesis;
         use crate::rust::util::proto_util;
 
+        let _replay_permit = self
+            .replay_lock
+            .acquire_reporting()
+            .await
+            .map_err(|error| format!("Replay semaphore closed: {}", error))?;
         let reporting_rspace = ReportingRuntime::create_reporting_rspace(self.rspace_store.clone())
             .map_err(|e| format!("Failed to create reporting rspace: {}", e))?;
 
@@ -253,11 +259,13 @@ pub fn noop() -> Arc<dyn ReportingCasper> { Arc::new(NoopReportingCasper) }
 pub fn rho_reporter(
     rspace_store: &RSpaceStore,
     block_dag_storage: &BlockDagKeyValueStorage,
+    replay_lock: Arc<crate::rust::util::rholang::runtime_manager::ReplayLock>,
     external_services: rholang::rust::interpreter::external_services::ExternalServices,
 ) -> Arc<dyn ReportingCasper> {
     Arc::new(RhoReporterCasper {
         rspace_store: rspace_store.clone(),
         block_dag_storage: block_dag_storage.clone(),
+        replay_lock,
         external_services,
     })
 }

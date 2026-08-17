@@ -1358,7 +1358,26 @@ pub async fn compute_parents_post_state(
                     let mut by_block: HashMap<BlockHash, Vec<Bytes>> = HashMap::new();
                     for record in &rejected_user_records {
                         let (sig, src_block) = (&record.sig, &record.carrier);
+                        tracing::info!(
+                            target: "f1r3fly.casper.deploy_lifecycle",
+                            event = "merge_rejected",
+                            deploy_sig = %hex::encode(sig),
+                            carrier = %hex::encode(src_block),
+                            duplicate = record.duplicate,
+                            floor_hash = %hex::encode(&floor_hash),
+                            floor_block = floor_block_number,
+                            "deploy lifecycle"
+                        );
                         if record.duplicate {
+                            tracing::info!(
+                                target: "f1r3fly.casper.deploy_lifecycle",
+                                event = "buffer_suppressed",
+                                deploy_sig = %hex::encode(sig),
+                                carrier = %hex::encode(src_block),
+                                reason = "duplicate_rejection",
+                                floor_block = floor_block_number,
+                                "deploy lifecycle"
+                            );
                             tracing::debug!(
                                 target: "f1r3fly.casper.recovery",
                                 "RejectedDeployBuffer populate: skipped duplicate-flagged sig {} from {}",
@@ -1367,17 +1386,27 @@ pub async fn compute_parents_post_state(
                             );
                             continue;
                         }
-                        if floor_won.contains(sig)
-                            || rejected_sig_has_visible_non_source_win(
-                                block_store,
-                                &visible_blocks,
-                                sig,
-                                src_block,
-                            )?
-                        {
+                        let floor_won_sig = floor_won.contains(sig);
+                        let visible_non_source_win = rejected_sig_has_visible_non_source_win(
+                            block_store,
+                            &visible_blocks,
+                            sig,
+                            src_block,
+                        )?;
+                        if floor_won_sig {
+                            tracing::info!(
+                                target: "f1r3fly.casper.deploy_lifecycle",
+                                event = "buffer_suppressed",
+                                deploy_sig = %hex::encode(sig),
+                                carrier = %hex::encode(src_block),
+                                reason = "floor_win",
+                                visible_non_source_win,
+                                floor_block = floor_block_number,
+                                "deploy lifecycle"
+                            );
                             tracing::debug!(
                                 target: "f1r3fly.casper.recovery",
-                                "RejectedDeployBuffer populate: skipped already-won sig {} from {}",
+                                "RejectedDeployBuffer populate: skipped floor-won sig {} from {}",
                                 PrettyPrinter::build_string_bytes(sig),
                                 PrettyPrinter::build_string_bytes(src_block)
                             );
@@ -1395,6 +1424,15 @@ pub async fn compute_parents_post_state(
                             Ok(Some(block)) => {
                                 for pd in &block.body.deploys {
                                     if sig_set.contains(&pd.deploy.sig) {
+                                        tracing::info!(
+                                            target: "f1r3fly.casper.deploy_lifecycle",
+                                            event = "buffer_candidate",
+                                            deploy_sig = %hex::encode(&pd.deploy.sig),
+                                            carrier = %hex::encode(&src_block),
+                                            carrier_block = block.body.state.block_number,
+                                            floor_block = floor_block_number,
+                                            "deploy lifecycle"
+                                        );
                                         deploys_to_buffer.push(pd.deploy.clone());
                                     }
                                 }
@@ -1429,8 +1467,19 @@ pub async fn compute_parents_post_state(
                     if !deploys_to_buffer.is_empty() {
                         match buffer.lock() {
                             Ok(mut guard) => {
-                                if let Err(err) = guard.add(deploys_to_buffer) {
+                                if let Err(err) = guard.add(deploys_to_buffer.clone()) {
                                     tracing::warn!("RejectedDeployBuffer add failed: {}", err);
+                                } else {
+                                    for deploy in &deploys_to_buffer {
+                                        tracing::info!(
+                                            target: "f1r3fly.casper.deploy_lifecycle",
+                                            event = "buffer_added",
+                                            deploy_sig = %hex::encode(&deploy.sig),
+                                            valid_after_block = deploy.data.valid_after_block_number,
+                                            floor_block = floor_block_number,
+                                            "deploy lifecycle"
+                                        );
+                                    }
                                 }
                             }
                             Err(_) => {
@@ -1709,7 +1758,7 @@ mod backstop_tests {
     }
 
     #[tokio::test]
-    async fn visible_non_source_win_in_lower_block_still_blocks_recovery_admission() {
+    async fn visible_non_source_win_in_lower_block_is_detected() {
         let mut kvm = InMemoryStoreManager::new();
         let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
             .await
