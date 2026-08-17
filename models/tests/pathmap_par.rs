@@ -1,6 +1,7 @@
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{Expr, Par as GeneratedPar};
+use models::rhoapi::{ETuple, Expr, Par as GeneratedPar};
 use models::rust::par::Par;
+use models::rust::par_ext::ParExt;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 use prost::bytes::Buf;
@@ -94,6 +95,34 @@ fn first_component_uses_canonical_family_order_and_preserves_multiplicity() {
         .first::<Expr>()
         .expect("empty lookup")
         .is_none());
+}
+
+#[test]
+fn scalar_and_tuple_extractors_do_not_depend_on_repeated_field_borrows() {
+    let cases = [
+        ExprInstance::GString("value".to_owned()),
+        ExprInstance::GInt(41),
+        ExprInstance::GBool(true),
+        ExprInstance::ETupleBody(ETuple {
+            ps: vec![GeneratedPar::default()],
+            ..ETuple::default()
+        }),
+    ];
+
+    for expr_instance in cases {
+        let generated = models::par_from_default! {
+            exprs: vec![Expr {
+                expr_instance: Some(expr_instance),
+            }],
+            ..GeneratedPar::default()
+        };
+        let pathmap = Par::import_generated(&generated).expect("import scalar Par");
+
+        assert_eq!(pathmap.get_g_string(), generated.get_g_string());
+        assert_eq!(pathmap.get_g_int(), generated.get_g_int());
+        assert_eq!(pathmap.get_g_bool(), generated.get_g_bool());
+        assert_eq!(pathmap.get_e_tuple_body(), generated.get_e_tuple_body());
+    }
 }
 
 #[test]
