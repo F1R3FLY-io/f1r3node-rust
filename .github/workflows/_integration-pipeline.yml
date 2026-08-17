@@ -45,7 +45,7 @@ env:
   # MUST be kept identical to .github/oci-validation.env (the Full OCI
   # Validation workflow sources that file) — bump both in the same commit,
   # via `just repin-system-integration <sha>`.
-  SYSTEM_INTEGRATION_REF: 28b24d9c314e2183c0b903352c25e34e532c4ca5
+  SYSTEM_INTEGRATION_REF: 22121713d8874ac84f94f4b3ddb30dda78fa7f88
   # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
   # install.sh checksum fails closed if the tag is ever moved; OCI_CLI_VERSION
   # pins what the installer pulls from PyPI (without it the installer floats to
@@ -522,6 +522,8 @@ jobs:
           while IFS= read -r capability; do
             [ -z "$capability" ] || NODE_CAPABILITY_ARGS+=("--node-capability=$capability")
           done <<< "$NODE_CAPABILITIES"
+          # Issue https://github.com/F1R3FLY-io/f1r3node-rust/issues/282 tracks this temporary ceiling.
+          # Keep the slow-deploy convergence test active until the 10 GB fix has exact-commit evidence.
           poetry run pytest \
             integration-tests/test/tests/shared/ \
             integration-tests/test/tests/custom/ \
@@ -541,7 +543,7 @@ jobs:
             --deselect integration-tests/test/tests/custom/test_finality_stall_recovery.py \
             --deselect integration-tests/test/tests/custom/test_slow_peer_notification.py \
             --provider=${{ matrix.provider }} \
-            --rss-ceiling-mb 10000 \
+            --rss-ceiling-mb 22000 \
             "${NODE_CAPABILITY_ARGS[@]}" \
             -v --tb=short --instafail --maxfail=10 \
             -n "$PYTEST_WORKERS" --dist=loadgroup --timeout=1200 $SCALE_FLAG

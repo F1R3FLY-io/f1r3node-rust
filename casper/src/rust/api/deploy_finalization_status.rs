@@ -95,19 +95,12 @@ struct ResolverState {
     valid_after_block_number: i64,
     first_seen_block_hash: BlockHash,
     rejection_count: u32,
-    /// Highest-block-number `is_failed=true` inclusion + its block hash.
-    /// Tracked symmetrically with `clean_finalized_event` so the
-    /// post-loop step can apply the same canonical-descendant gate to
-    /// both — a failed inclusion in a non-main-chain finalized sibling
-    /// must NOT terminate the state machine when a later canonical
-    /// clean inclusion exists.
-    failed_finalized_event: Option<(i64, BlockHash)>,
-    /// Highest-block-number clean inclusion + its block hash. Tracked
-    /// together so the post-loop invalidation step can do a canonical-
-    /// descendant ancestry comparison against `latest_rejected_event`.
-    clean_finalized_event: Option<(i64, BlockHash)>,
+    failed_finalized_events: Vec<(i64, BlockHash)>,
+    clean_finalized_events: Vec<(i64, BlockHash)>,
     latest_event: Option<(i64, BlockHash)>,
     latest_rejected_event: Option<(i64, BlockHash)>,
+    finalized_rejected_events: Vec<(i64, BlockHash)>,
+    unfinalized_rejected_events: Vec<(i64, BlockHash)>,
 }
 
 impl ResolverState {
@@ -121,10 +114,12 @@ impl ResolverState {
             valid_after_block_number,
             first_seen_block_hash,
             rejection_count: 0,
-            failed_finalized_event: None,
-            clean_finalized_event: None,
+            failed_finalized_events: Vec::new(),
+            clean_finalized_events: Vec::new(),
             latest_event: None,
             latest_rejected_event: None,
+            finalized_rejected_events: Vec::new(),
+            unfinalized_rejected_events: Vec::new(),
         }
     }
 }
@@ -246,9 +241,9 @@ fn bfs_finalized_window(
     block_store: &KeyValueBlockStore,
     deploy_lifespan: i64,
     per_sig: &mut HashMap<Bytes, ResolverState>,
-) -> ApiErr<()> {
+) -> ApiErr<HashSet<BlockHash>> {
     if per_sig.is_empty() {
-        return Ok(());
+        return Ok(HashSet::new());
     }
 
     let lfb_hash = dag.last_finalized_block();
@@ -258,8 +253,14 @@ fn bfs_finalized_window(
             PrettyPrinter::build_string_bytes(&lfb_hash),
         )
     })?;
-    let scan_floor =
-        crate::rust::util::deploy_window::earliest_valid_after(lfb_height, deploy_lifespan)?.max(0);
+    let active_sig_floor = per_sig
+        .values()
+        .map(|state| state.valid_after_block_number)
+        .min()
+        .unwrap_or(lfb_height);
+    let rolling_floor =
+        crate::rust::util::deploy_window::earliest_valid_after(lfb_height, deploy_lifespan)?;
+    let scan_floor = rolling_floor.min(active_sig_floor).max(0);
 
     // Active sigs as a HashSet for O(1) membership checks during body scans.
     // Cloning sig bytes once here avoids per-block-per-sig clones.
@@ -328,21 +329,13 @@ fn bfs_finalized_window(
                     .get_mut(&pd.deploy.sig)
                     .expect("active_sigs and per_sig must agree on key set");
                 if pd.is_failed {
-                    if state
-                        .failed_finalized_event
-                        .as_ref()
-                        .map(|(h, _)| height > *h)
-                        .unwrap_or(true)
-                    {
-                        state.failed_finalized_event = Some((height, candidate_hash.clone()));
-                    }
-                } else if state
-                    .clean_finalized_event
-                    .as_ref()
-                    .map(|(h, _)| height > *h)
-                    .unwrap_or(true)
-                {
-                    state.clean_finalized_event = Some((height, candidate_hash.clone()));
+                    state
+                        .failed_finalized_events
+                        .push((height, candidate_hash.clone()));
+                } else {
+                    state
+                        .clean_finalized_events
+                        .push((height, candidate_hash.clone()));
                 }
             }
         }
@@ -353,11 +346,17 @@ fn bfs_finalized_window(
                     .get_mut(&rd.sig)
                     .expect("active_sigs and per_sig must agree on key set");
                 state.rejection_count = state.rejection_count.saturating_add(1);
-                if state
-                    .latest_rejected_event
-                    .as_ref()
-                    .map(|(h, _)| height > *h)
-                    .unwrap_or(true)
+                if !rd.duplicate {
+                    state
+                        .finalized_rejected_events
+                        .push((height, candidate_hash.clone()));
+                }
+                if !rd.duplicate
+                    && state
+                        .latest_rejected_event
+                        .as_ref()
+                        .map(|(h, _)| height > *h)
+                        .unwrap_or(true)
                 {
                     state.latest_rejected_event = Some((height, candidate_hash.clone()));
                 }
@@ -371,6 +370,81 @@ fn bfs_finalized_window(
                 .latest_event
                 .as_ref()
                 .map(|(h, _)| height > *h)
+                .unwrap_or(true)
+            {
+                state.latest_event = Some((height, candidate_hash.clone()));
+            }
+        }
+    }
+
+    Ok(visited)
+}
+
+fn scan_visible_unfinalized_rejections(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    deploy_lifespan: i64,
+    finalized_window: &HashSet<BlockHash>,
+    per_sig: &mut HashMap<Bytes, ResolverState>,
+) -> ApiErr<()> {
+    if per_sig.is_empty() {
+        return Ok(());
+    }
+
+    let lfb_height = dag
+        .block_number(&dag.last_finalized_block())
+        .ok_or_else(|| eyre::eyre!("deploy_finalization_status: LFB height is unavailable"))?;
+    let active_sig_floor = per_sig
+        .values()
+        .map(|state| state.valid_after_block_number)
+        .min()
+        .unwrap_or(lfb_height);
+    let rolling_floor =
+        crate::rust::util::deploy_window::earliest_valid_after(lfb_height, deploy_lifespan)?;
+    let scan_floor = rolling_floor.min(active_sig_floor).max(0);
+    let active_sigs: HashSet<Bytes> = per_sig.keys().cloned().collect();
+    let mut visited: HashSet<BlockHash> = HashSet::new();
+    let mut frontier: Vec<BlockHash> = dag
+        .latest_message_hashes()
+        .into_iter()
+        .map(|(_, hash)| hash)
+        .collect();
+
+    while let Some(candidate_hash) = frontier.pop() {
+        if !visited.insert(candidate_hash.clone()) {
+            continue;
+        }
+        let Some(height) = dag.block_number(&candidate_hash) else {
+            continue;
+        };
+        if height < scan_floor || finalized_window.contains(&candidate_hash) {
+            continue;
+        }
+        let Some(candidate_block) = block_store.get(&candidate_hash)? else {
+            continue;
+        };
+        for parent in &candidate_block.header.parents_hash_list {
+            if !visited.contains(parent) {
+                frontier.push(parent.clone());
+            }
+        }
+        for rejected in &candidate_block.body.rejected_deploys {
+            if rejected.duplicate || !active_sigs.contains(&rejected.sig) {
+                continue;
+            }
+            let state = per_sig
+                .get_mut(&rejected.sig)
+                .expect("active_sigs and per_sig must agree on key set");
+            state
+                .unfinalized_rejected_events
+                .push((height, candidate_hash.clone()));
+            if state
+                .latest_event
+                .as_ref()
+                .map(|(event_height, event_hash)| {
+                    height > *event_height
+                        || (height == *event_height && candidate_hash > *event_hash)
+                })
                 .unwrap_or(true)
             {
                 state.latest_event = Some((height, candidate_hash.clone()));
@@ -397,104 +471,44 @@ fn finalize_sig_state(
     deploy_lifespan: i64,
     state: ResolverState,
 ) -> ApiErr<DeployFinalizationStatus> {
-    // A rejection invalidates a clean inclusion only when the
-    // rejection block is a CANONICAL-CHAIN DESCENDANT of the clean
-    // block. Two reasons height alone is wrong:
-    //
-    //  1. Multi-parent DAGs: blocks at the same height can be siblings
-    //     on separate chains. A rejection in a sibling at the same or
-    //     higher height does not affect the deploy's effects in a
-    //     canonical block on a different chain.
-    //  2. Recovery cycles via the rejected-deploy buffer produce
-    //     rejection events in non-canonical sibling blocks (validators
-    //     racing to recover the same deploy). Counting these as "after"
-    //     the clean inclusion creates a positive feedback loop where
-    //     the deploy stays Pending while the buffer keeps re-proposing.
-    //
-    // Two conditions must BOTH hold for a rejection to invalidate a
-    // clean inclusion:
-    //
-    //   (a) `is_in_main_chain(clean_block, reject_block)` — clean is
-    //       in reject's main-parent ancestry. Necessary so the
-    //       rejection is "downstream" of the clean inclusion.
-    //   (b) `is_in_main_chain(reject_block, lfb)` — reject is itself
-    //       on LFB's main-parent chain (i.e., canonical). Necessary
-    //       because (a) alone is satisfied even by non-canonical
-    //       sibling blocks: a sibling fork B' that has the canonical
-    //       clean block A as its main parent will pass (a) yet sit
-    //       outside LFB's main chain. Without (b) the resolver
-    //       reports false-Pending for sigs that are genuinely in
-    //       canonical state — exactly the recovery-cycle case the
-    //       comment above warns about.
-    //
-    // Same-block (clean and rejection in the SAME block — e.g., a
-    // recovery proposal whose merge step also dedup-rejected an older
-    // copy in scope) is not a "descendant" and must not invalidate.
-    // Same gate, applied symmetrically to clean and failed inclusions.
-    //
-    // Failed events: drop the event if either (a) the failed block is
-    // not on LFB's main-parent chain (visited via secondary parent in
-    // BFS — finalized but not canonical), or (b) a canonical-descendant
-    // rejection nullifies the failed inclusion the same way it nullifies
-    // a clean one. Without this, a stale `is_failed=true` event in a
-    // non-canonical sibling pins the resolver at `Failed` and preempts
-    // a later canonical clean inclusion — `repeat_deploy` then exempts
-    // the sig as a recovery candidate, allowing double-execution of a
-    // canonically clean deploy.
     let lfb_hash = dag.last_finalized_block();
 
     let canonical_block = |block: &BlockHash| -> ApiErr<bool> {
         Ok(block == &lfb_hash || dag.is_in_main_chain(block, &lfb_hash)?)
     };
 
-    // Resolve clean event with two invalidation rules:
-    //
-    //   (i) Non-canonical clean + canonical reject: the merge that
-    //       integrated the non-canonical chain rejected this deploy, so
-    //       its effects are not in canonical state.
-    //   (ii) Canonical clean + canonical-descendant reject: the existing
-    //        `is_in_main_chain` rule — a rejection downstream of a
-    //        canonical clean inclusion invalidates that inclusion.
-    //
-    // Without (i), a non-canonical clean event survives whenever the
-    // rejection isn't a main-parent ancestor — which is true by
-    // construction of any non-canonical clean — letting the resolver
-    // report `Finalized` for a sig whose effects are not in canonical
-    // state.
-    let mut clean_canonical: Option<(i64, BlockHash)> = state.clean_finalized_event.clone();
-    if let (Some((_, clean_block)), Some((_, reject_block))) =
-        (&state.clean_finalized_event, &state.latest_rejected_event)
-    {
-        let reject_is_canonical = canonical_block(reject_block)?;
-        let clean_is_canonical = canonical_block(clean_block)?;
-        if !clean_is_canonical && reject_is_canonical {
-            clean_canonical = None;
-        } else if reject_is_canonical
-            && clean_block != reject_block
-            && dag.is_in_main_chain(clean_block, reject_block)?
-        {
-            clean_canonical = None;
+    let rejection_invalidates = |inclusion_height: i64| {
+        state
+            .finalized_rejected_events
+            .iter()
+            .any(|(reject_height, _)| *reject_height > inclusion_height)
+    };
+
+    let mut clean_candidates = state.clean_finalized_events.clone();
+    clean_candidates.sort_by(|(left_height, left_hash), (right_height, right_hash)| {
+        right_height
+            .cmp(left_height)
+            .then_with(|| right_hash.cmp(left_hash))
+    });
+    let mut clean_canonical: Option<(i64, BlockHash)> = None;
+    for (height, block) in clean_candidates {
+        if !rejection_invalidates(height) {
+            clean_canonical = Some((height, block));
+            break;
         }
     }
 
-    // Resolve failed event with the symmetric gate: it must be on the
-    // main chain, AND not invalidated by a canonical-descendant rejection.
+    let mut failed_candidates = state.failed_finalized_events.clone();
+    failed_candidates.sort_by(|(left_height, left_hash), (right_height, right_hash)| {
+        right_height
+            .cmp(left_height)
+            .then_with(|| right_hash.cmp(left_hash))
+    });
     let mut failed_canonical: Option<(i64, BlockHash)> = None;
-    if let Some((failed_height, failed_block)) = &state.failed_finalized_event {
-        if canonical_block(failed_block)? {
-            let mut keep = true;
-            if let Some((_, reject_block)) = &state.latest_rejected_event {
-                let reject_is_canonical = canonical_block(reject_block)?;
-                let reject_is_canonical_descendant = failed_block != reject_block
-                    && reject_is_canonical
-                    && dag.is_in_main_chain(failed_block, reject_block)?;
-                if reject_is_canonical_descendant {
-                    keep = false;
-                }
-            }
-            if keep {
-                failed_canonical = Some((*failed_height, failed_block.clone()));
-            }
+    for (height, block) in failed_candidates {
+        if canonical_block(&block)? && !rejection_invalidates(height) {
+            failed_canonical = Some((height, block));
+            break;
         }
     }
 
@@ -511,6 +525,25 @@ fn finalize_sig_state(
         (None, Some(_)) => true,
         _ => false,
     };
+    let mut unresolved_rejected_event: Option<(i64, BlockHash)> = None;
+    if let Some((clean_height, clean_block)) = &clean_canonical {
+        if clean_finalized_height == Some(*clean_height) {
+            for (reject_height, reject_block) in &state.unfinalized_rejected_events {
+                if reject_height > clean_height
+                    && dag.is_dag_ancestor(clean_block, reject_block)?
+                    && unresolved_rejected_event
+                        .as_ref()
+                        .map(|(current_height, current_block)| {
+                            reject_height > current_height
+                                || (reject_height == current_height && reject_block > current_block)
+                        })
+                        .unwrap_or(true)
+                {
+                    unresolved_rejected_event = Some((*reject_height, reject_block.clone()));
+                }
+            }
+        }
+    }
 
     // Account for latest_block_hash via the first-seen lookup —
     // covers the case where the sig lives only in a non-finalized
@@ -553,7 +586,7 @@ fn finalize_sig_state(
 
     let final_state = if failed_finalized {
         DeployFinalizationState::Failed
-    } else if clean_finalized_height.is_some() {
+    } else if clean_finalized_height.is_some() && unresolved_rejected_event.is_none() {
         DeployFinalizationState::Finalized
     } else if expired {
         DeployFinalizationState::Expired
@@ -561,12 +594,38 @@ fn finalize_sig_state(
         DeployFinalizationState::Pending
     };
 
-    let _ = state.sig_bytes; // no longer needed past finalize
+    let latest_block_hash = latest_event.map(|(_, hash)| hash);
+    if state.rejection_count > 0
+        || unresolved_rejected_event.is_some()
+        || !matches!(&final_state, DeployFinalizationState::Pending)
+    {
+        tracing::info!(
+            target: "f1r3fly.casper.deploy_lifecycle",
+            event = "status_resolved",
+            deploy_sig = %hex::encode(&state.sig_bytes),
+            resolved_state = ?final_state,
+            rejection_count = state.rejection_count,
+            valid_after_block = state.valid_after_block_number,
+            lfb_hash = %hex::encode(&lfb_hash),
+            lfb_height,
+            clean_height = ?clean_canonical.as_ref().map(|(height, _)| *height),
+            clean_block = ?clean_canonical.as_ref().map(|(_, hash)| hex::encode(hash)),
+            failed_height = ?failed_canonical.as_ref().map(|(height, _)| *height),
+            failed_block = ?failed_canonical.as_ref().map(|(_, hash)| hex::encode(hash)),
+            rejected_height = ?state.latest_rejected_event.as_ref().map(|(height, _)| *height),
+            rejected_block = ?state.latest_rejected_event.as_ref().map(|(_, hash)| hex::encode(hash)),
+            unfinalized_rejected_height = ?unresolved_rejected_event.as_ref().map(|(height, _)| *height),
+            unfinalized_rejected_block = ?unresolved_rejected_event.as_ref().map(|(_, hash)| hex::encode(hash)),
+            latest_block = ?latest_block_hash.as_ref().map(hex::encode),
+            expired,
+            "deploy lifecycle"
+        );
+    }
 
     Ok(DeployFinalizationStatus {
         state: final_state,
         rejection_count: state.rejection_count,
-        latest_block_hash: latest_event.map(|(_, h)| h),
+        latest_block_hash,
     })
 }
 
@@ -612,7 +671,14 @@ fn resolve_from_state(
 ) -> ApiErr<DeployFinalizationStatus> {
     let mut per_sig: HashMap<Bytes, ResolverState> = HashMap::new();
     per_sig.insert(state.sig_bytes.clone(), state);
-    bfs_finalized_window(dag, block_store, deploy_lifespan, &mut per_sig)?;
+    let finalized_window = bfs_finalized_window(dag, block_store, deploy_lifespan, &mut per_sig)?;
+    scan_visible_unfinalized_rejections(
+        dag,
+        block_store,
+        deploy_lifespan,
+        &finalized_window,
+        &mut per_sig,
+    )?;
     let (_, state) = per_sig
         .into_iter()
         .next()
