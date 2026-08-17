@@ -29,8 +29,8 @@ use super::recursive_oracle::spatial_matcher::{
 };
 use super::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
 use super::spatial_matcher_pda::{
-    match_par_list_with_stats, match_send_list_with_remainder_stats, match_send_list_with_stats,
-    send_target_index_shape,
+    match_par_list_with_remainder_stats, match_par_list_with_stats,
+    match_send_list_with_remainder_stats, match_send_list_with_stats, send_target_index_shape,
 };
 
 fn compare(label: &str, target: Par, pattern: Par) {
@@ -830,6 +830,10 @@ fn production_list_pda_computes_remainder_as_bag_difference_without_filler_edges
     assert_eq!(stats.target_index_builds, 1);
     assert_eq!(stats.edge_evaluations, 1);
     assert_eq!(stats.successful_edge_evaluations, 1);
+    assert_eq!(stats.term_reservation_commits, 1);
+    assert_eq!(stats.term_reservation_additions, 1);
+    assert_eq!(stats.term_reservation_removals, 0);
+    assert_eq!(stats.term_reservation_final_cardinality, 1);
     assert_eq!(
         context.free_map.get(&0),
         Some(&models::par_from_default! {
@@ -850,6 +854,52 @@ fn production_list_pda_computes_remainder_as_bag_difference_without_filler_edges
             connective_used: true,
             ..Default::default()
         },
+    );
+}
+
+#[test]
+fn committed_term_reservations_normalize_a_remainder_displacement_path() {
+    let integer = |value| new_gint_par(value, Vec::new(), false);
+    let targets = vec![integer(0), integer(1), integer(2)];
+    let patterns = vec![
+        connective(ConnOrBody(ConnectiveBody {
+            ps: vec![integer(1), integer(2)],
+        })),
+        integer(0),
+    ];
+
+    let mut context = SpatialMatcherContext::new();
+    let (result, stats) =
+        match_par_list_with_remainder_stats(&mut context, targets.clone(), patterns.clone(), 0);
+
+    assert!(result.is_some());
+    assert_eq!(stats.term_reservation_commits, 2);
+    assert_eq!(stats.term_reservation_additions, 3);
+    assert_eq!(stats.term_reservation_removals, 1);
+    assert_eq!(stats.term_reservation_final_cardinality, 2);
+    assert_eq!(
+        context.free_map.get(&0),
+        Some(&new_eset_par(
+            vec![integer(1)],
+            Vec::new(),
+            false,
+            None,
+            Vec::new(),
+            false,
+        ))
+    );
+
+    compare(
+        "committed BagDelta normalizes a displaced term before remainder capture",
+        new_eset_par(targets, Vec::new(), false, None, Vec::new(), false),
+        new_eset_par(
+            patterns,
+            Vec::new(),
+            true,
+            Some(models::rust::utils::new_freevar_var(0)),
+            Vec::new(),
+            true,
+        ),
     );
 }
 

@@ -84,6 +84,10 @@ chromadb = ["dep:chroma", "dep:rust-bert"]
 # paths. NEVER enabled in production builds — without it no runtime-flippable fusion path
 # exists (a runtime flag would be a node-divergence hazard under a latent parity bug).
 epathmap-fusion-differential = []
+# Compiles a benchmark-only switch that compares the predecessor final
+# assignment scan with incremental BagDelta term reservations. Production
+# builds have no switch and always use the reservation delta.
+rspace-reservation-delta-differential = []
 # Pass the Phase 7 measurement-only hooks through to `models` while running the
 # interpreter corpus. Disabled in every production/default build.
 phase7-depth-histograms = ["models/phase7-depth-histograms"]
@@ -100,3 +104,8 @@ harness = false
 [[bench]]
 name = "epathmap_ac_exact"
 harness = false
+
+[[bench]]
+name = "spatial_matcher_remainder"
+harness = false
+required-features = ["rspace-reservation-delta-differential"]

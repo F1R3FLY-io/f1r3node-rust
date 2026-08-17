@@ -20,6 +20,10 @@ pub struct RelationalMatchStats {
     pub cached_edge_visits: usize,
     pub relation_row_reuses: usize,
     pub augmenting_frames: usize,
+    pub term_reservation_commits: usize,
+    pub term_reservation_additions: usize,
+    pub term_reservation_removals: usize,
+    pub term_reservation_final_cardinality: usize,
 }
 
 /// Result ownership shared between a retained relation edge and a live

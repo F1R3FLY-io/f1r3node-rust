@@ -70,6 +70,14 @@ impl SpatialMatcherContext {
     }
 }
 
+/// Select the predecessor final-assignment scan (`false`) or incremental
+/// BagDelta term reservations (`true`) in the benchmark-only differential
+/// build. Default production builds do not contain this switch.
+#[cfg(feature = "rspace-reservation-delta-differential")]
+pub fn set_term_reservation_delta_enabled(enabled: bool) {
+    spatial_matcher_pda::set_term_reservation_delta_enabled(enabled);
+}
+
 impl Default for SpatialMatcherContext {
     fn default() -> Self { Self::new() }
 }

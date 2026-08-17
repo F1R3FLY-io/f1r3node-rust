@@ -7,7 +7,7 @@
 //! `Job`/`Frame` pushdown automaton. A nested pattern therefore grows heap work
 //! storage, never the native call stack.
 
-#[cfg(test)]
+#[cfg(any(test, feature = "rspace-reservation-delta-differential"))]
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::num::NonZeroU64;
@@ -26,7 +26,7 @@ use models::rust::rholang::match_path::encode_match_path;
 use models::rust::rholang::match_schema_tables::ParCursor;
 use models::rust::utils::*;
 use pathmap::PathMap;
-use rspace_plus_plus::rspace::bag::Bag;
+use rspace_plus_plus::rspace::bag::{Bag, BagDelta, Multiplicity};
 use rspace_plus_plus::rspace::rho_path::{RhoPathQuery, RhoPathV1, StructuralSequenceEncoder};
 
 use super::exports::*;
@@ -55,6 +55,22 @@ thread_local! {
         Cell::new(RelationalMatchStats::default());
 }
 
+#[cfg(feature = "rspace-reservation-delta-differential")]
+thread_local! {
+    static TERM_RESERVATION_DELTA_ENABLED: Cell<bool> = const { Cell::new(true) };
+}
+
+#[cfg(feature = "rspace-reservation-delta-differential")]
+pub(super) fn set_term_reservation_delta_enabled(enabled: bool) {
+    TERM_RESERVATION_DELTA_ENABLED.set(enabled);
+}
+
+#[cfg(feature = "rspace-reservation-delta-differential")]
+fn term_reservation_delta_enabled() -> bool { TERM_RESERVATION_DELTA_ENABLED.get() }
+
+#[cfg(not(feature = "rspace-reservation-delta-differential"))]
+const fn term_reservation_delta_enabled() -> bool { true }
+
 #[cfg(test)]
 fn update_list_relation_stats(update: impl FnOnce(&mut RelationalMatchStats)) {
     LIST_RELATION_STATS.with(|stats| {
@@ -76,6 +92,26 @@ pub(super) fn match_par_list_with_stats(
         patterns.into_iter().map(MatchValue::Par).collect(),
         Merger::Identity,
         None,
+        false,
+    );
+    let result = drive_job(context, Job::ListInit(request));
+    let stats = LIST_RELATION_STATS.with(Cell::get);
+    (result, stats)
+}
+
+#[cfg(test)]
+pub(super) fn match_par_list_with_remainder_stats(
+    context: &mut SpatialMatcherContext,
+    targets: Vec<Par>,
+    patterns: Vec<Par>,
+    remainder: i32,
+) -> (Option<()>, RelationalMatchStats) {
+    LIST_RELATION_STATS.with(|stats| stats.set(RelationalMatchStats::default()));
+    let request = ListRequest::new(
+        targets.into_iter().map(MatchValue::Par).collect(),
+        patterns.into_iter().map(MatchValue::Par).collect(),
+        Merger::ESet,
+        Some(remainder),
         false,
     );
     let result = drive_job(context, Job::ListInit(request));
@@ -1716,6 +1752,12 @@ struct ListMachine {
     patterns: Arc<[MatchValue]>,
     candidate_domains: Box<[ListCandidateDomain]>,
     assignments: Vec<Option<ListAssignment>>,
+    /// Net term occupancy relative to the empty Bag. This is updated only
+    /// when one complete augmenting path commits; speculative edges never
+    /// touch it. Its additions are therefore exactly the currently
+    /// term-consumed target multiplicities, while normalized removals must be
+    /// empty after every successful root.
+    term_reservations: Option<BagDelta>,
     root_pattern: usize,
     seen_targets: ListSeenTargets,
     search: Vec<ListSearchFrame>,
@@ -1805,6 +1847,9 @@ fn init_list(
     let target_index = needs_target_index
         .then(|| ListTargetIndex::from_targets(&request.targets))
         .flatten();
+    let term_reservations =
+        (request.remainder.is_some() && target_index.is_some() && term_reservation_delta_enabled())
+            .then(BagDelta::new);
     let candidate_domains = queries
         .iter()
         .map(|query| {
@@ -1841,6 +1886,7 @@ fn init_list(
         targets: request.targets.into(),
         target_index,
         assignments,
+        term_reservations,
         patterns: patterns.into(),
         candidate_domains,
         root_pattern: 0,
@@ -1906,6 +1952,62 @@ impl ListMachine {
         self.accept_edge(target_index, ListAssignment::Remainder)
     }
 
+    fn commit_term_reservation(&mut self, position: usize, replacement: &ListAssignment) {
+        let reservations = self
+            .term_reservations
+            .as_mut()
+            .expect("term-reservation commits require an enabled delta");
+        let target_index = self
+            .target_index
+            .as_ref()
+            .expect("term reservations require the authoritative target Bag");
+        let is_term =
+            |assignment: &ListAssignment| matches!(assignment, ListAssignment::Term { .. });
+        let was_term = self.assignments[position]
+            .as_ref()
+            .is_some_and(|assignment| is_term(assignment));
+
+        // This path is already known to augment successfully, so the
+        // assignment transition is committed rather than speculative. A
+        // term-to-remainder transition cancels occupancy from an earlier root;
+        // a remainder/empty-to-term transition adds the new occupancy. A
+        // term-to-term reassignment leaves target occupancy unchanged.
+        if was_term && !is_term(replacement) {
+            reservations
+                .record_removal(
+                    &target_index.group_at_position(position).key,
+                    Multiplicity::ONE,
+                )
+                .expect("a committed displacement removes reserved term occupancy");
+            #[cfg(test)]
+            update_list_relation_stats(|stats| stats.term_reservation_removals += 1);
+        } else if !was_term && is_term(replacement) {
+            reservations
+                .record_addition(
+                    &target_index.group_at_position(position).key,
+                    Multiplicity::ONE,
+                )
+                .expect("term occupancy cannot exceed the target Bag");
+            #[cfg(test)]
+            update_list_relation_stats(|stats| stats.term_reservation_additions += 1);
+        }
+
+        debug_assert!(reservations.additions().is_subbag_of(&target_index.bag));
+    }
+
+    fn finish_term_reservation_commit(&self) {
+        let reservations = self
+            .term_reservations
+            .as_ref()
+            .expect("term-reservation commits require an enabled delta");
+        assert!(
+            reservations.removals().is_empty(),
+            "a successful augmenting root cannot leave negative term occupancy"
+        );
+        #[cfg(test)]
+        update_list_relation_stats(|stats| stats.term_reservation_commits += 1);
+    }
+
     fn accept_edge(mut self, target_index: usize, assignment: ListAssignment) -> Job {
         self.seen_targets
             .insert(self.target_index.as_ref(), target_index);
@@ -1919,14 +2021,35 @@ impl ListMachine {
             });
         match displaced {
             None => {
-                self.assignments[target_index] = Some(assignment);
-                self.search.pop();
-                while let Some(mut parent) = self.search.pop() {
-                    let (parent_target, parent_assignment) = parent
-                        .pending
-                        .take()
-                        .expect("an augmenting list parent has one displaced edge");
-                    self.assignments[parent_target] = Some(parent_assignment);
+                if self.term_reservations.is_none() {
+                    // Exact predecessor for lists without a captured
+                    // remainder and for the benchmark control arm.
+                    self.assignments[target_index] = Some(assignment);
+                    self.search.pop();
+                    while let Some(mut parent) = self.search.pop() {
+                        let (parent_target, parent_assignment) = parent
+                            .pending
+                            .take()
+                            .expect("an augmenting list parent has one displaced edge");
+                        self.assignments[parent_target] = Some(parent_assignment);
+                    }
+                } else {
+                    // The root is now proven augmentable. Commit occupancy and
+                    // assignment transitions together while unwinding the
+                    // explicit search stack; no temporary replacement list or
+                    // speculative Bag mutation is needed.
+                    self.search.pop();
+                    self.commit_term_reservation(target_index, &assignment);
+                    self.assignments[target_index] = Some(assignment);
+                    while let Some(mut parent) = self.search.pop() {
+                        let (parent_target, parent_assignment) = parent
+                            .pending
+                            .take()
+                            .expect("an augmenting list parent has one displaced edge");
+                        self.commit_term_reservation(parent_target, &parent_assignment);
+                        self.assignments[parent_target] = Some(parent_assignment);
+                    }
+                    self.finish_term_reservation_commit();
                 }
                 self.root_pattern += 1;
                 self.start_next_root();
@@ -2102,6 +2225,7 @@ fn finish_list(context: &mut SpatialMatcherContext, machine: ListMachine) -> Job
         targets,
         target_index,
         assignments,
+        term_reservations,
         mut relation,
         merger,
         remainder,
@@ -2110,19 +2234,48 @@ fn finish_list(context: &mut SpatialMatcherContext, machine: ListMachine) -> Job
     } = machine;
     relation.clear();
 
-    let bag_remainder = remainder.and_then(|_| {
-        target_index.as_ref().map(|target_index| {
-            let mut consumed = Bag::new();
-            for (target_position, assignment) in assignments.iter().enumerate() {
-                if !matches!(assignment, Some(ListAssignment::Term { .. })) {
-                    continue;
-                }
-                consumed
+    #[cfg(test)]
+    if let (Some(target_index), Some(reservations)) =
+        (target_index.as_ref(), term_reservations.as_ref())
+    {
+        let mut recomputed = Bag::new();
+        for (target_position, assignment) in assignments.iter().enumerate() {
+            if matches!(assignment, Some(ListAssignment::Term { .. })) {
+                recomputed
                     .insert(&target_index.group_at_position(target_position).key)
                     .expect("a successful assignment cannot exceed target multiplicity");
             }
-            debug_assert!(consumed.is_subbag_of(&target_index.bag));
-            target_index.bag.subtract(&consumed)
+        }
+        assert_eq!(reservations.additions(), &recomputed);
+        assert!(reservations.removals().is_empty());
+        update_list_relation_stats(|stats| {
+            stats.term_reservation_final_cardinality +=
+                usize::try_from(reservations.additions().cardinality())
+                    .expect("a live target slice originated as an addressable Vec");
+        });
+    }
+
+    let bag_remainder = remainder.and_then(|_| {
+        target_index.as_ref().map(|target_index| {
+            if let Some(reservations) = term_reservations.as_ref() {
+                debug_assert!(reservations.removals().is_empty());
+                debug_assert!(reservations.additions().is_subbag_of(&target_index.bag));
+                target_index.bag.subtract(reservations.additions())
+            } else {
+                // Exact predecessor retained only in the compile-time
+                // differential build: recover consumed term multiplicities by
+                // scanning all final assignments.
+                let mut consumed = Bag::new();
+                for (target_position, assignment) in assignments.iter().enumerate() {
+                    if matches!(assignment, Some(ListAssignment::Term { .. })) {
+                        consumed
+                            .insert(&target_index.group_at_position(target_position).key)
+                            .expect("a successful assignment cannot exceed target multiplicity");
+                    }
+                }
+                debug_assert!(consumed.is_subbag_of(&target_index.bag));
+                target_index.bag.subtract(&consumed)
+            }
         })
     });
 
