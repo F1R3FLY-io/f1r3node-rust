@@ -1449,7 +1449,7 @@ impl EntryTrie {
         }
     }
 
-    pub fn try_join(&self, other: &Self) -> Result<Self, EPathMapAlgebraError> {
+    fn try_join_exact_zipper(&self, other: &Self) -> Result<Self, EPathMapAlgebraError> {
         match (&self.repr, &other.repr) {
             (EPathMapRepr::Empty, _) => Ok(other.clone()),
             (_, EPathMapRepr::Empty) => Ok(self.clone()),
@@ -1474,6 +1474,28 @@ impl EntryTrie {
             }
             _ => Err(self.mode_mismatch(other)),
         }
+    }
+
+    pub fn try_join(&self, other: &Self) -> Result<Self, EPathMapAlgebraError> {
+        if matches!(
+            (&self.repr, &other.repr),
+            (EPathMapRepr::Map(_), EPathMapRepr::Map(_))
+        ) && Arc::ptr_eq(&self.trie_snapshot, &other.trie_snapshot)
+        {
+            // `EntryTrie::clone` shares this cell and every mutation replaces
+            // it. Pointer identity therefore proves that both operands still
+            // own the same immutable map root and entry-derived metadata.
+            return Ok(self.clone());
+        }
+        self.try_join_exact_zipper(other)
+    }
+
+    #[cfg(feature = "epathmap-map-join-clone-family-differential")]
+    pub fn try_join_clone_family_control(
+        &self,
+        other: &Self,
+    ) -> Result<Self, EPathMapAlgebraError> {
+        self.try_join_exact_zipper(other)
     }
 
     pub fn try_meet(&self, other: &Self) -> Result<Self, EPathMapAlgebraError> {

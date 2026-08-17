@@ -65,6 +65,42 @@ fn assert_map_value(entries: &models::rust::rhoapi_ext::EntryTrie, key: i64, val
     assert_eq!(actual, value);
 }
 
+#[cfg(feature = "epathmap-map-join-clone-family-differential")]
+fn assert_clone_family_join_arms(label: &str, left: &EPathMap, right: &EPathMap) {
+    let control = left
+        .entry_trie()
+        .try_join_clone_family_control(right.entry_trie());
+    let treatment = left.entry_trie().try_join(right.entry_trie());
+    assert_eq!(control, treatment, "join result mismatch: {label}");
+    if let (Ok(control), Ok(treatment)) = (control, treatment) {
+        assert_eq!(control, treatment, "EntryTrie mismatch: {label}");
+        assert_eq!(
+            control.trie_snapshot(),
+            treatment.trie_snapshot(),
+            "EPM1 mismatch: {label}"
+        );
+    }
+}
+
+#[cfg(feature = "epathmap-map-join-clone-family-differential")]
+#[test]
+fn clone_family_map_join_shortcut_is_invalidated_by_every_mutation() {
+    let base = map([(0, 0), (1, 10), (2, 20)]);
+    let shared = base.clone();
+    assert_clone_family_join_arms("unchanged clone family", &base, &shared);
+
+    let independent = map([(0, 0), (1, 10), (2, 20)]);
+    assert_clone_family_join_arms("independently equal", &base, &independent);
+
+    let mut extended = base.clone();
+    extended.insert_map_entry(gint(3), gint(30)).unwrap();
+    assert_clone_family_join_arms("extended clone", &base, &extended);
+
+    let mut replaced = base.clone();
+    replaced.insert_map_entry(gint(2), gint(999)).unwrap();
+    assert_clone_family_join_arms("conflicting clone", &base, &replaced);
+}
+
 #[test]
 fn empty_is_mode_neutral_for_the_partial_algebra() {
     let empty = EPathMap::default();
