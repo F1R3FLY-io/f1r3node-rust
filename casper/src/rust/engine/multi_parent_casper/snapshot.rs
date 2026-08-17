@@ -154,11 +154,29 @@ fn prefer_deploy_support_main_parent(
         )?);
     }
 
+    // A sibling may claim the main-parent slot only with deploy sigs the
+    // ghost main's own unfinalized ancestry does not already carry. Without
+    // this, every re-inclusion of a rejected deploy mints a fresh
+    // deploy-carrying block on the proposer's own branch, promotion pins each
+    // validator's main parent to its own chain, the finalizer (which credits
+    // agreement down main-parent chains only) never accumulates two
+    // validators on any candidate, nothing finalizes, and retention keeps
+    // re-including — a closed liveness loop. Once the convergent chain covers
+    // the sigs (original or merged), promotion pressure must vanish so
+    // LMD-GHOST convergence resumes.
+    let main_sig_set: HashSet<Bytes> = scored[0]
+        .as_ref()
+        .map(|(_, sigs)| sigs.iter().cloned().collect())
+        .unwrap_or_default();
+
     let mut best: Option<(usize, &DeployBranchScore)> = None;
-    for (idx, score) in scored.iter().enumerate() {
-        let Some((score, _)) = score.as_ref() else {
+    for (idx, score) in scored.iter().enumerate().skip(1) {
+        let Some((score, sigs)) = score.as_ref() else {
             continue;
         };
+        if sigs.iter().all(|sig| main_sig_set.contains(sig)) {
+            continue;
+        }
         let replace = best
             .as_ref()
             .map(|(best_idx, best_score)| {
@@ -176,12 +194,17 @@ fn prefer_deploy_support_main_parent(
     let Some((best_idx, best_score)) = best else {
         return Ok(parents);
     };
+    if let Some((main_score, _)) = scored[0].as_ref() {
+        if !better_deploy_branch_score(
+            (best_score, &parents[best_idx].block_hash),
+            (main_score, &parents[0].block_hash),
+        ) {
+            return Ok(parents);
+        }
+    }
     let Some((_, promoted_deploy_sigs)) = scored[best_idx].as_ref() else {
         return Ok(parents);
     };
-    if best_idx == 0 {
-        return Ok(parents);
-    }
 
     let original_main = parents[0].block_hash.clone();
     let promoted = parents[best_idx].block_hash.clone();
@@ -1566,6 +1589,261 @@ mod tests {
 
         assert_eq!(reordered[0].block_hash, deploy_parent.block_hash);
         assert_eq!(reordered[1].block_hash, empty.block_hash);
+    }
+
+    #[tokio::test]
+    async fn deploy_support_skips_candidate_covered_by_main_ancestry() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+        let genesis = block_implicits::get_random_block(
+            Some(0),
+            Some(0),
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let deploy = crate::rust::util::construct_deploy::basic_deploy_data(
+            0,
+            None,
+            Some("test".to_string()),
+        )
+        .expect("deploy");
+        let deploy_block = block_implicits::get_random_block(
+            Some(1),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(vec![genesis.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(vec![ProcessedDeploy::empty(deploy)]),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let rival = block_implicits::get_random_block(
+            Some(2),
+            Some(2),
+            None,
+            None,
+            None,
+            None,
+            Some(2),
+            Some(vec![deploy_block.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let mid = block_implicits::get_random_block(
+            Some(2),
+            Some(3),
+            None,
+            None,
+            None,
+            None,
+            Some(2),
+            Some(vec![deploy_block.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let cover_main = block_implicits::get_random_block(
+            Some(3),
+            Some(4),
+            None,
+            None,
+            None,
+            None,
+            Some(3),
+            Some(vec![mid.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+
+        for block in [&genesis, &deploy_block, &rival, &mid, &cover_main] {
+            block_store.put_block_message(block).expect("store block");
+        }
+        dag_storage
+            .insert(&genesis, InsertMode::Approved)
+            .expect("insert genesis");
+        for block in [&deploy_block, &rival, &mid, &cover_main] {
+            dag_storage
+                .insert(block, InsertMode::Normal)
+                .expect("insert block");
+        }
+
+        // Both branches carry the SAME deploy sigs (the shared `deploy_block`
+        // ancestor). The pre-fix tie-break promoted `rival` for its older
+        // root, pinning the main parent to the stale branch on every
+        // snapshot; the covered-sig gate must keep the ghost main in place.
+        let dag = dag_storage.get_representation().expect("dag");
+        let reordered = prefer_deploy_support_main_parent(
+            &dag,
+            &block_store,
+            vec![cover_main.clone(), rival.clone()],
+            &genesis.block_hash,
+        )
+        .expect("prefer deploy support");
+
+        assert_eq!(reordered[0].block_hash, cover_main.block_hash);
+        assert_eq!(reordered[1].block_hash, rival.block_hash);
+    }
+
+    #[tokio::test]
+    async fn deploy_support_promotes_novel_sigs_over_covered_main() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+        let genesis = block_implicits::get_random_block(
+            Some(0),
+            Some(0),
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let covered = crate::rust::util::construct_deploy::basic_deploy_data(
+            0,
+            None,
+            Some("test".to_string()),
+        )
+        .expect("covered deploy");
+        let novel = crate::rust::util::construct_deploy::basic_deploy_data(
+            1,
+            None,
+            Some("test".to_string()),
+        )
+        .expect("novel deploy");
+        let deploy_block = block_implicits::get_random_block(
+            Some(1),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(vec![genesis.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(vec![ProcessedDeploy::empty(covered)]),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let mid = block_implicits::get_random_block(
+            Some(2),
+            Some(2),
+            None,
+            None,
+            None,
+            None,
+            Some(2),
+            Some(vec![deploy_block.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let cover_main = block_implicits::get_random_block(
+            Some(3),
+            Some(3),
+            None,
+            None,
+            None,
+            None,
+            Some(3),
+            Some(vec![mid.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let novel_tip = block_implicits::get_random_block(
+            Some(1),
+            Some(4),
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(vec![genesis.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(vec![ProcessedDeploy::empty(novel)]),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+
+        for block in [&genesis, &deploy_block, &mid, &cover_main, &novel_tip] {
+            block_store.put_block_message(block).expect("store block");
+        }
+        dag_storage
+            .insert(&genesis, InsertMode::Approved)
+            .expect("insert genesis");
+        for block in [&deploy_block, &mid, &cover_main, &novel_tip] {
+            dag_storage
+                .insert(block, InsertMode::Normal)
+                .expect("insert block");
+        }
+
+        // The candidate carries a sig the main's ancestry does NOT cover and
+        // outscores it (older root on the earliest/count tie): promotion must
+        // still fire for genuinely un-merged deploy branches.
+        let dag = dag_storage.get_representation().expect("dag");
+        let reordered = prefer_deploy_support_main_parent(
+            &dag,
+            &block_store,
+            vec![cover_main.clone(), novel_tip.clone()],
+            &genesis.block_hash,
+        )
+        .expect("prefer deploy support");
+
+        assert_eq!(reordered[0].block_hash, novel_tip.block_hash);
+        assert_eq!(reordered[1].block_hash, cover_main.block_hash);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
