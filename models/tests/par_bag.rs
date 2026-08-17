@@ -268,8 +268,14 @@ fn protobuf_streams_legacy_canonical_order_without_reconstructing_production_vec
     oracle.locally_free.clear();
     oracle.connective_used = false;
     let expected = models::rust::rholang::protobuf_encoder::encode_to_vec(&oracle);
-    let actual = bag.protobuf_components_to_vec().expect("stream");
+    let mut actual = Vec::new();
+    bag.encode_protobuf_components(&mut actual)
+        .expect("direct stream");
     assert_eq!(actual, expected);
+    assert_eq!(
+        bag.protobuf_components_bytes().expect("collected stream"),
+        actual
+    );
     assert_eq!(
         bag.protobuf_components_encoded_len().expect("length"),
         actual.len()
@@ -286,7 +292,7 @@ fn deep_component_import_and_act_validation_are_stack_safe() {
         ParBag::from_compact_bytes(&bytes).expect("deep decode"),
         bag
     );
-    let protobuf = bag.protobuf_components_to_vec().expect("deep protobuf");
+    let protobuf = bag.protobuf_components_bytes().expect("deep protobuf");
     let decoded = Par::decode(protobuf.as_slice()).expect("stack-safe Par protobuf decoder");
     assert_eq!(decoded.exprs.len(), 1);
 }

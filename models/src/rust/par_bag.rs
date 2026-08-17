@@ -902,21 +902,38 @@ impl ParBag {
         Ok(total)
     }
 
-    /// Stream protobuf fields from trie endpoints in canonical tag/key order.
+    /// Stream protobuf fields from trie endpoints directly into a caller's
+    /// output buffer in canonical tag/key order.
+    ///
     /// The canonical protobuf body is copied directly `Multiplicity` times;
-    /// no component decode, repeated-field `Vec`, or legacy `Par` is involved.
-    pub fn protobuf_components_to_vec(&self) -> Result<Vec<u8>, ParBagProtobufError> {
+    /// no component decode, repeated-field `Vec`, legacy `Par`, intermediate
+    /// byte buffer, or element sort is involved.
+    pub fn encode_protobuf_components(
+        &self,
+        output: &mut impl BufMut,
+    ) -> Result<(), ParBagProtobufError> {
+        self.encode_protobuf_family::<Send>(output)?;
+        self.encode_protobuf_family::<Receive>(output)?;
+        self.encode_protobuf_family::<New>(output)?;
+        self.encode_protobuf_family::<Expr>(output)?;
+        self.encode_protobuf_family::<Match>(output)?;
+        self.encode_protobuf_family::<GUnforgeable>(output)?;
+        self.encode_protobuf_family::<Connective>(output)?;
+        self.encode_protobuf_family::<Bundle>(output)?;
+        self.encode_protobuf_family::<If>(output)?;
+        Ok(())
+    }
+
+    /// Collect the direct protobuf stream into its final `Vec<u8>` payload.
+    ///
+    /// This convenience is intended for complete-message boundaries and
+    /// tests. Streaming serializers should call
+    /// [`Self::encode_protobuf_components`] so no intermediate output buffer is
+    /// allocated.
+    pub fn protobuf_components_bytes(&self) -> Result<Vec<u8>, ParBagProtobufError> {
         let encoded_len = self.protobuf_components_encoded_len()?;
         let mut output = Vec::with_capacity(encoded_len);
-        self.encode_protobuf_family::<Send>(&mut output)?;
-        self.encode_protobuf_family::<Receive>(&mut output)?;
-        self.encode_protobuf_family::<New>(&mut output)?;
-        self.encode_protobuf_family::<Expr>(&mut output)?;
-        self.encode_protobuf_family::<Match>(&mut output)?;
-        self.encode_protobuf_family::<GUnforgeable>(&mut output)?;
-        self.encode_protobuf_family::<Connective>(&mut output)?;
-        self.encode_protobuf_family::<Bundle>(&mut output)?;
-        self.encode_protobuf_family::<If>(&mut output)?;
+        self.encode_protobuf_components(&mut output)?;
         debug_assert_eq!(output.len(), encoded_len);
         Ok(output)
     }
