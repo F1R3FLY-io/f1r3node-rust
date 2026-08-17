@@ -499,6 +499,87 @@ fn join_exact_map_with_grafts(
     Ok((joined, overlap))
 }
 
+/// Exact map intersection without constructing same-shaped topology masks.
+///
+/// The two read zippers advance only through byte children present in both
+/// tries. Equal values at a shared focus are copied into the result; unequal
+/// values stop at the first canonical byte path, matching the predecessor's
+/// value-iterator order. A value-free endpoint is retained only when both
+/// source branches terminate at that exact path.
+#[cfg(feature = "epathmap-meet-differential")]
+fn meet_exact_map_with_zippers(
+    left: &RholangMapPathMap,
+    right: &RholangMapPathMap,
+) -> Result<RholangMapPathMap, EPathMapAlgebraError> {
+    use pathmap::utils::BitMask;
+    use pathmap::zipper::{Zipper, ZipperMoving, ZipperValues, ZipperWriting};
+
+    fn intersect_focus(
+        destination: &mut (impl ZipperWriting<Par> + ZipperValues<Par>),
+        left: &impl ZipperValues<Par>,
+        right: &impl ZipperValues<Par>,
+        encoded_key: &[u8],
+    ) -> Result<(), EPathMapAlgebraError> {
+        if let (Some(left_value), Some(right_value)) = (left.val(), right.val()) {
+            if left_value.cmp(right_value) != Ordering::Equal {
+                return Err(EPathMapAlgebraError::ValueConflict {
+                    operation: "meet",
+                    encoded_key: encoded_key.to_vec(),
+                });
+            }
+            let replaced = destination.set_val(left_value.clone());
+            debug_assert!(replaced.is_none(), "an intersection focus is visited once");
+        }
+        Ok(())
+    }
+
+    let mut intersection = RholangMapPathMap::new();
+    {
+        let mut left = left.read_zipper();
+        let mut right = right.read_zipper();
+        let mut destination = intersection.write_zipper();
+
+        intersect_focus(&mut destination, &left, &right, left.path())?;
+        let left_children = left.child_mask();
+        let right_children = right.child_mask();
+        if left_children.is_empty_mask()
+            && right_children.is_empty_mask()
+            && !left.path().is_empty()
+        {
+            destination.create_path();
+        }
+
+        let mut levels = vec![(left_children & right_children).iter()];
+        while let Some(children) = levels.last_mut() {
+            let Some(byte) = children.next() else {
+                levels.pop();
+                if !levels.is_empty() {
+                    let left_ascended = left.ascend_byte();
+                    let right_ascended = right.ascend_byte();
+                    let destination_ascended = destination.ascend_byte();
+                    debug_assert!(left_ascended && right_ascended && destination_ascended);
+                }
+                continue;
+            };
+
+            left.descend_to_byte(byte);
+            right.descend_to_byte(byte);
+            destination.descend_to_byte(byte);
+            debug_assert!(left.path_exists() && right.path_exists());
+            debug_assert_eq!(left.path(), right.path());
+
+            intersect_focus(&mut destination, &left, &right, left.path())?;
+            let left_children = left.child_mask();
+            let right_children = right.child_mask();
+            if left_children.is_empty_mask() && right_children.is_empty_mask() {
+                destination.create_path();
+            }
+            levels.push((left_children & right_children).iter());
+        }
+    }
+    Ok(intersection)
+}
+
 /// Re-type a PathMap's terminating topology as a membership trie. Values are
 /// deliberately excluded: this mask exists only where a structural
 /// algebraic operation must be applied to `PathMap<Par>` without inventing an
@@ -1543,6 +1624,23 @@ impl EntryTrie {
                 }
                 Ok(Self::algebra_result(EPathMapRepr::Map(intersection)))
             }
+            _ => Err(self.mode_mismatch(other)),
+        }
+    }
+
+    /// Experiment 255 treatment. Production [`Self::try_meet`] remains the
+    /// frozen topology-mask/reconstruction control until the preregistered
+    /// causal measurement selects or rejects this zipper intersection.
+    #[cfg(feature = "epathmap-meet-differential")]
+    pub fn try_meet_zipper_treatment(&self, other: &Self) -> Result<Self, EPathMapAlgebraError> {
+        match (&self.repr, &other.repr) {
+            (EPathMapRepr::Empty, _) | (_, EPathMapRepr::Empty) => Ok(Self::default()),
+            (EPathMapRepr::Set(left), EPathMapRepr::Set(right)) => {
+                Ok(Self::algebra_result(EPathMapRepr::Set(left.meet(right))))
+            }
+            (EPathMapRepr::Map(left), EPathMapRepr::Map(right)) => Ok(Self::algebra_result(
+                EPathMapRepr::Map(meet_exact_map_with_zippers(left, right)?),
+            )),
             _ => Err(self.mode_mismatch(other)),
         }
     }

@@ -264,3 +264,41 @@ fn map_algebra_includes_value_free_topology_without_a_par_lattice() {
     assert_eq!(disjoint.len(), 0);
     assert_ne!(disjoint, *left.entry_trie());
 }
+
+#[cfg(feature = "epathmap-meet-differential")]
+#[test]
+fn exact_map_meet_zipper_treatment_matches_the_reconstructed_control() {
+    fn assert_same(left: &EPathMap, right: &EPathMap) {
+        let control = left.entry_trie().try_meet(right.entry_trie());
+        let treatment = left
+            .entry_trie()
+            .try_meet_zipper_treatment(right.entry_trie());
+        match (&control, &treatment) {
+            (Ok(control), Ok(treatment)) => {
+                assert_eq!(control, treatment);
+                assert_eq!(control.trie_snapshot(), treatment.trie_snapshot());
+            }
+            (Err(control), Err(treatment)) => assert_eq!(control, treatment),
+            _ => panic!("map-meet control and treatment dispositions differ"),
+        }
+    }
+
+    let common_topology = list([7, 8]);
+    let left_topology = topology_only(EPathMapMode::Map, &common_topology);
+    let right_topology = topology_only(EPathMapMode::Map, &common_topology);
+    assert_same(&left_topology, &right_topology);
+
+    let first = list([1]);
+    let second = list([2]);
+    let first_key = encode_trie_path(&first);
+    let second_key = encode_trie_path(&second);
+    let mut left = map([(first.clone(), gint(10))]);
+    let mut right = map([(second.clone(), gint(20))]);
+    left.create_path(&second_key).unwrap();
+    right.create_path(&first_key).unwrap();
+    assert_same(&left, &right);
+
+    let conflict_left = map([(first.clone(), gint(10)), (second.clone(), gint(20))]);
+    let conflict_right = map([(first, gint(11)), (second, gint(21))]);
+    assert_same(&conflict_left, &conflict_right);
+}
