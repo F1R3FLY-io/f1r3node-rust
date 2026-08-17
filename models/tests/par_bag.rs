@@ -1,16 +1,43 @@
 use std::collections::BTreeMap;
 
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{Bundle, Connective, Expr, GUnforgeable, If, Match, New, Par, Receive, Send};
+use models::rhoapi::{Bundle, Expr, GUnforgeable, Par, Send};
 use models::rust::par_bag::{
-    with_component_key, ParBag, ParBagCodecError, ParBagProtobufError, ParComponentTag,
-    PAR_BAG_KEY_DOMAIN,
+    with_component_key, CanonicalParBagKey, ParBag, ParBagCodecError, ParBagProtobufError,
+    ParComponentTag, PAR_BAG_KEY_DOMAIN,
 };
+use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
+use models::rust::rholang::sorter::sortable::Sortable;
 use prost::Message as _;
 use rspace_plus_plus::rspace::bag::{Bag, Multiplicity};
 
 mod par_corpus;
 use par_corpus as corpus;
+
+/// The shared codec corpus intentionally contains missing required children so
+/// protobuf decoders exercise absent-field behavior. Canonical sorting has
+/// always rejected those shapes; ParBag's domain is the sortable runtime AST.
+fn canonical_par_corpus() -> Par {
+    let mut par = corpus::all_par_fields();
+    par.sends.retain(|send| send.chan.is_some());
+    for receive in &mut par.receives {
+        receive.binds.retain(|bind| bind.source.is_some());
+    }
+    par.news.retain(|new_node| new_node.p.is_some());
+    par.exprs.truncate(1);
+    for match_node in &mut par.matches {
+        match_node
+            .cases
+            .retain(|case| case.pattern.is_some() && case.source.is_some());
+    }
+    par.bundles.retain(|bundle| bundle.body.is_some());
+    for conditional in &mut par.conditionals {
+        if conditional.if_false.is_none() {
+            conditional.if_false = Some(Par::default());
+        }
+    }
+    par
+}
 
 fn occurrence_count(par: &Par) -> usize {
     par.sends.len()
@@ -38,7 +65,7 @@ fn empty_par_is_one_unambiguous_empty_trie() {
 
 #[test]
 fn legacy_import_preserves_every_typed_occurrence() {
-    let par = corpus::all_par_fields();
+    let par = canonical_par_corpus();
     let bag = ParBag::import_legacy(&par).expect("import");
     assert_eq!(bag.cardinality(), occurrence_count(&par) as u128);
 
@@ -87,9 +114,39 @@ fn equal_occurrences_collapse_to_one_path_with_checked_multiplicity() {
 }
 
 #[test]
+fn compiled_typed_keys_reuse_the_exact_authoritative_path() {
+    let present = Expr {
+        expr_instance: Some(ExprInstance::GString("rho:prepared".into())),
+    };
+    let absent = Expr {
+        expr_instance: Some(ExprInstance::GString("rho:absent".into())),
+    };
+    let present_key = CanonicalParBagKey::compile(&present);
+    let absent_key = CanonicalParBagKey::compile(&absent);
+    assert_eq!(
+        present_key.as_bytes(),
+        with_component_key(&present, <[u8]>::to_vec)
+    );
+
+    let mut bag = ParBag::new();
+    bag.insert_key_many(&present_key, Multiplicity::new(3).expect("positive"))
+        .expect("insert compiled key");
+    assert!(bag.contains_key(&present_key));
+    assert!(!bag.contains_key(&absent_key));
+    assert_eq!(bag.count_key(&present_key), 3);
+    assert_eq!(
+        bag.remove_key_many(&present_key, Multiplicity::new(2).expect("positive")),
+        Some(Multiplicity::new(1).expect("positive"))
+    );
+    assert_eq!(bag.remove_key(&present_key), None);
+}
+
+#[test]
 fn constructor_tags_prevent_cross_type_key_collisions() {
-    let bundle = Bundle::default();
-    let send = Send::default();
+    let mut bundle = Bundle::default();
+    bundle.body = Some(Par::default());
+    let mut send = Send::default();
+    send.chan = Some(Par::default());
     let bundle_key = with_component_key(&bundle, <[u8]>::to_vec);
     let send_key = with_component_key(&send, <[u8]>::to_vec);
 
@@ -108,7 +165,7 @@ fn constructor_tags_prevent_cross_type_key_collisions() {
 
 #[test]
 fn typed_prefix_cursor_decodes_only_the_requested_family() {
-    let par = corpus::all_par_fields();
+    let par = canonical_par_corpus();
     let bag = ParBag::import_legacy(&par).expect("import");
     let mut decoded = Vec::new();
     bag.try_visit_decoded::<Expr, ()>(|value, multiplicity| {
@@ -136,7 +193,7 @@ fn encoded_cursor_exposes_the_canonical_payload_without_decoding() {
     bag.insert_many(&value, Multiplicity::new(7).expect("positive"))
         .expect("insert");
 
-    let expected = models::rust::rholang::bincode_encoder::encode(&value);
+    let expected = models::rust::rholang::protobuf_encoder::encode_to_vec(&value);
     let mut visits = 0usize;
     bag.visit_encoded::<Expr>(|entry| {
         visits += 1;
@@ -148,7 +205,7 @@ fn encoded_cursor_exposes_the_canonical_payload_without_decoding() {
 
 #[test]
 fn clone_is_copy_on_write_and_family_removal_is_prefix_native() {
-    let par = corpus::all_par_fields();
+    let par = canonical_par_corpus();
     let original = ParBag::import_legacy(&par).expect("import");
     let mut changed = original.clone();
     let expected_distinct = changed.family_distinct_len::<Expr>();
@@ -184,7 +241,7 @@ fn exact_bag_algebra_preserves_multiplicity_laws() {
 
 #[test]
 fn direct_act_image_round_trips_without_an_entry_projection() {
-    let bag = ParBag::import_legacy(&corpus::all_par_fields()).expect("import");
+    let bag = ParBag::import_legacy(&canonical_par_corpus()).expect("import");
     let bytes = bag.compact_bytes();
     assert_eq!(ParBag::from_compact_bytes(&bytes).expect("decode"), bag);
 
@@ -193,41 +250,19 @@ fn direct_act_image_round_trips_without_an_entry_projection() {
     assert_eq!(decoded, bag);
 }
 
-fn canonical_component_par(bag: &ParBag) -> Par {
-    let mut par = Par::default();
-    macro_rules! expand {
-        ($ty:ty, $field:ident) => {
-            bag.try_visit_decoded::<$ty, ()>(|value, multiplicity| {
-                for _ in 0..multiplicity.get() {
-                    par.$field.push(value.clone());
-                }
-                Ok(())
-            })
-            .expect("valid ParBag")
-        };
-    }
-    expand!(Send, sends);
-    expand!(Receive, receives);
-    expand!(New, news);
-    expand!(Expr, exprs);
-    expand!(Match, matches);
-    expand!(GUnforgeable, unforgeables);
-    expand!(Connective, connectives);
-    expand!(Bundle, bundles);
-    expand!(If, conditionals);
-    par
-}
-
 #[test]
-fn protobuf_streams_canonical_trie_order_without_reconstructing_production_vecs() {
-    let mut source = corpus::all_par_fields();
+fn protobuf_streams_legacy_canonical_order_without_reconstructing_production_vecs() {
+    let mut source = canonical_par_corpus();
     source.exprs.push(source.exprs[0].clone());
+    source.exprs.reverse();
     let bag = ParBag::import_legacy(&source).expect("import");
 
-    // Test-only oracle: reconstruct the canonical repeated fields and hand
-    // them to the already-proven generated encoder. Production calls the
-    // ParBag streamer directly and never builds this projection.
-    let oracle = canonical_component_par(&bag);
+    // Independent legacy oracle: the canonical sorter orders the original
+    // repeated fields by (score, emitted protobuf body). Production traverses
+    // only the RPB2 trie and copies its stored bodies directly.
+    let mut oracle = ParSortMatcher::sort_match(&source).term;
+    oracle.locally_free.clear();
+    oracle.connective_used = false;
     let expected = models::rust::rholang::protobuf_encoder::encode_to_vec(&oracle);
     let actual = bag.protobuf_components_to_vec().expect("stream");
     assert_eq!(actual, expected);
@@ -277,9 +312,9 @@ fn protobuf_expansion_rejects_impossible_output_length_before_allocating() {
 fn act_import_rejects_every_key_outside_the_typed_language() {
     let invalid_paths = [
         vec![],
-        b"BAD\x01\x05".to_vec(),
-        b"RPB\x01\xff".to_vec(),
-        b"RPB\x01\x05".to_vec(),
+        b"BAD\x02\x05".to_vec(),
+        b"RPB\x02\xff".to_vec(),
+        b"RPB\x02\x05".to_vec(),
     ];
 
     let mut observed = BTreeMap::new();
@@ -296,32 +331,52 @@ fn act_import_rejects_every_key_outside_the_typed_language() {
         Some(ParBagCodecError::KeyTooShort { .. })
     ));
     assert!(matches!(
-        observed.get(b"BAD\x01\x05".as_slice()),
+        observed.get(b"BAD\x02\x05".as_slice()),
         Some(ParBagCodecError::InvalidDomain { .. })
     ));
     assert!(matches!(
-        observed.get(b"RPB\x01\xff".as_slice()),
+        observed.get(b"RPB\x02\xff".as_slice()),
         Some(ParBagCodecError::InvalidTag(0xff))
     ));
     assert!(matches!(
-        observed.get(b"RPB\x01\x05".as_slice()),
-        Some(ParBagCodecError::ComponentDecode { .. })
+        observed.get(b"RPB\x02\x05".as_slice()),
+        Some(ParBagCodecError::InvalidOrderKey { .. })
     ));
 }
 
 #[test]
-fn exact_key_validation_rejects_a_valid_payload_with_trailing_bytes() {
+fn exact_key_validation_rejects_noncanonical_unknown_protobuf_fields() {
     let value = GUnforgeable::default();
     let mut key = with_component_key(&value, <[u8]>::to_vec);
-    key.push(0xaa);
+    // Unknown varint field 100. The protobuf machine accepts and ignores it,
+    // but regenerating the canonical RPB2 key removes it.
+    key.extend_from_slice(&[0xa0, 0x06, 0x01]);
     let mut raw = Bag::new();
     raw.insert(&key).expect("raw Bag");
 
     assert!(matches!(
         ParBag::from_compact_bytes(&raw.compact_bytes()),
-        Err(ParBagCodecError::TrailingComponentBytes {
-            tag: ParComponentTag::GUnforgeable,
-            ..
+        Err(ParBagCodecError::NonCanonicalComponent {
+            tag: ParComponentTag::GUnforgeable
         })
     ));
+}
+
+#[test]
+fn protobuf_component_bodies_preserve_nested_locally_free_metadata() {
+    let mut value = Send::default();
+    let mut channel = Par::default();
+    channel.locally_free = vec![0x80, 0x01];
+    value.chan = Some(channel);
+    let mut bag = ParBag::new();
+    bag.insert(&value).expect("insert");
+
+    bag.try_visit_decoded::<Send, ()>(|decoded, multiplicity| {
+        assert_eq!(multiplicity.get(), 1);
+        assert_eq!(decoded.chan.expect("channel").locally_free, vec![
+            0x80, 0x01
+        ]);
+        Ok(())
+    })
+    .expect("decode stored protobuf body");
 }

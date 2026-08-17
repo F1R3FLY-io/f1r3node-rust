@@ -8,16 +8,20 @@
 //! Each complete trie key is:
 //!
 //! ```text
-//!     "RPB"  0x01  constructor-tag  stack-safe canonical bincode payload
-//!      └domain┘     └── type split ─┘ └──── one complete occurrence ─────┘
+//!     "RPB"  0x02  constructor-tag  order-key  canonical protobuf body
+//!      └domain┘     └── type split ─┘ └──── one complete occurrence ────┘
 //! ```
 //!
-//! The PathMap endpoint delimits the payload. Given the constructor tag, the
-//! generated bincode PDA determines the exact payload extent; canonical ACT
-//! import rejects a key unless that extent is the whole suffix. Identical typed
-//! occurrences therefore share one prefix-compressed path whose value is their
-//! checked `u64` multiplicity. Ordered children remain ordered *inside* their
-//! component payload.
+//! `order-key` is the prefix-free, lexicographically order-preserving image of
+//! the component's score tree.  The protobuf body is consequently both the
+//! exact tie-break used by canonical Rholang sorting and the bytes emitted on
+//! the legacy protobuf surface.  Serialization walks the trie and copies those
+//! bytes directly: it never decodes a component or constructs `Vec<Par>`.
+//!
+//! Canonical ACT import decodes the body with the generated stack-safe protobuf
+//! PDA, sorts it, regenerates the complete key, and requires byte equality.
+//! Identical typed occurrences therefore share one prefix-compressed path whose
+//! value is their checked `u64` multiplicity.
 
 use std::cell::RefCell;
 use std::fmt;
@@ -26,20 +30,32 @@ use std::marker::PhantomData;
 use prost::bytes::BufMut;
 use prost::encoding::{encode_key, encoded_len_varint, key_len, WireType};
 use rspace_plus_plus::rspace::bag::{Bag, BagCodecError, BagError, Multiplicity};
-use rspace_plus_plus::rspace::serializers::cold_store_decode::{
-    ColdStoreDecode, ColdStoreDecodeError,
-};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::rhoapi::expr::ExprInstance;
+use crate::rhoapi::g_unforgeable::UnfInstance;
 use crate::rhoapi::{Bundle, Connective, Expr, GUnforgeable, If, Match, New, Par, Receive, Send};
-use crate::rust::rholang::bincode_encoder;
-use crate::rust::rholang::bincode_schema::BincodeNode;
+use crate::rust::rholang::protobuf_encoder;
+use crate::rust::rholang::protobuf_schema::{ProtobufDescent, ProtobufNode};
+use crate::rust::rholang::sorter::bundle_sort_matcher::BundleSortMatcher;
+use crate::rust::rholang::sorter::connective_sort_matcher::ConnectiveSortMatcher;
+use crate::rust::rholang::sorter::expr_sort_matcher::ExprSortMatcher;
+use crate::rust::rholang::sorter::if_sort_matcher::IfSortMatcher;
+use crate::rust::rholang::sorter::match_sort_matcher::MatchSortMatcher;
+use crate::rust::rholang::sorter::new_sort_matcher::NewSortMatcher;
+use crate::rust::rholang::sorter::receive_sort_matcher::ReceiveSortMatcher;
+use crate::rust::rholang::sorter::score_tree::{
+    encode_order_key, order_key_extent, Score, ScoredTerm,
+};
+use crate::rust::rholang::sorter::send_sort_matcher::SendSortMatcher;
+use crate::rust::rholang::sorter::sortable::Sortable;
+use crate::rust::rholang::sorter::unforgeable_sort_matcher::UnforgeableSortMatcher;
 
 /// Domain and version prefix for every authoritative ParBag component key.
 ///
 /// The version byte is part of the trie path, so a future encoding cannot
 /// silently collide with or reinterpret this key language.
-pub const PAR_BAG_KEY_DOMAIN: [u8; 4] = *b"RPB\x01";
+pub const PAR_BAG_KEY_DOMAIN: [u8; 4] = *b"RPB\x02";
 const PAR_BAG_KEY_HEADER_LEN: usize = PAR_BAG_KEY_DOMAIN.len() + 1;
 
 /// Constructor-family tags, chosen to match the corresponding `Par` protobuf
@@ -85,30 +101,263 @@ mod sealed {
 ///
 /// Sealing prevents downstream code from assigning an already-used tag to a
 /// different byte language and breaking the one-key/one-type invariant.
-pub trait ParBagComponent:
-    sealed::Sealed + BincodeNode + ColdStoreDecode + Sized + 'static
-{
+pub trait ParBagComponent: sealed::Sealed + ProtobufNode + Sized + 'static {
     const TAG: ParComponentTag;
+
+    fn canonicalize(value: &Self) -> ScoredTerm<Self>;
+
+    /// Append the score-order key and canonical protobuf body for one value.
+    ///
+    /// The default is the complete stack-safe canonical sorter. Components
+    /// whose entire constructor family is already a canonical leaf override
+    /// this to avoid allocating a traversal, score tree, and cloned term on
+    /// every exact lookup.
+    fn append_key_suffix(value: &Self, out: &mut Vec<u8>) {
+        let scored = Self::canonicalize(value);
+        encode_order_key(&scored.score, out);
+        protobuf_encoder::encode_into(&scored.term, out);
+    }
+
+    fn decode_protobuf(payload: &[u8]) -> Result<Self, prost::DecodeError>;
 }
 
 macro_rules! impl_par_bag_component {
-    ($ty:ty, $tag:ident) => {
+    ($ty:ty, $tag:ident, $sorter:ty, $decoder:ident) => {
         impl sealed::Sealed for $ty {}
         impl ParBagComponent for $ty {
             const TAG: ParComponentTag = ParComponentTag::$tag;
+
+            fn canonicalize(value: &Self) -> ScoredTerm<Self> {
+                <$sorter as Sortable<Self>>::sort_match(value)
+            }
+
+            fn decode_protobuf(payload: &[u8]) -> Result<Self, prost::DecodeError> {
+                crate::rust::rholang::protobuf_decoder::$decoder(payload)
+            }
         }
     };
 }
 
-impl_par_bag_component!(Send, Send);
-impl_par_bag_component!(Receive, Receive);
-impl_par_bag_component!(New, New);
-impl_par_bag_component!(Expr, Expr);
-impl_par_bag_component!(Match, Match);
-impl_par_bag_component!(GUnforgeable, GUnforgeable);
-impl_par_bag_component!(Connective, Connective);
-impl_par_bag_component!(Bundle, Bundle);
-impl_par_bag_component!(If, If);
+impl_par_bag_component!(Send, Send, SendSortMatcher, decode_send);
+impl_par_bag_component!(Receive, Receive, ReceiveSortMatcher, decode_receive);
+impl_par_bag_component!(New, New, NewSortMatcher, decode_new);
+impl_par_bag_component!(Match, Match, MatchSortMatcher, decode_match);
+impl_par_bag_component!(
+    Connective,
+    Connective,
+    ConnectiveSortMatcher,
+    decode_connective
+);
+impl_par_bag_component!(Bundle, Bundle, BundleSortMatcher, decode_bundle);
+impl_par_bag_component!(If, If, IfSortMatcher, decode_if);
+
+/// Append one score atom without first materializing `Tree<ScoreAtom>`.
+/// These are exactly the bytes produced by `score_tree::encode_order_key`.
+#[inline]
+fn append_int_score_atom(out: &mut Vec<u8>, value: i64) {
+    out.extend_from_slice(&[1, 1]);
+    out.extend_from_slice(&((value as u64) ^ (1u64 << 63)).to_be_bytes());
+}
+
+#[inline]
+fn append_terminated_score_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    // Canonical text/channel identifiers overwhelmingly contain no NUL. Keep
+    // that path one bulk copy; enter the escaping loop only when required.
+    if !bytes.contains(&0) {
+        out.extend_from_slice(bytes);
+        out.extend_from_slice(&[0, 0]);
+        return;
+    }
+    for &byte in bytes {
+        if byte == 0 {
+            out.extend_from_slice(&[0, 0xff]);
+        } else {
+            out.push(byte);
+        }
+    }
+    out.extend_from_slice(&[0, 0]);
+}
+
+#[inline]
+fn append_string_score_atom(out: &mut Vec<u8>, value: &str) {
+    out.extend_from_slice(&[1, 2]);
+    append_terminated_score_bytes(out, value.as_bytes());
+}
+
+#[inline]
+fn append_bytes_score_atom(out: &mut Vec<u8>, value: &[u8]) {
+    out.extend_from_slice(&[1, 3]);
+    append_terminated_score_bytes(out, value);
+}
+
+#[inline]
+fn begin_score_node(out: &mut Vec<u8>, constructor: i32) {
+    out.push(2);
+    append_int_score_atom(out, i64::from(constructor));
+}
+
+#[inline]
+fn end_score_node(out: &mut Vec<u8>) { out.push(0); }
+
+/// Encode a schema node whose protobuf shape has at most one non-recursive
+/// message edge. This is still the generated protobuf program: it merely
+/// specializes the general PDA's zero/one-edge cases so a ground value does
+/// not allocate the PDA's length table and two obligation stacks.
+///
+/// `false` is returned before writing anything when the node contains a
+/// sequence, map, PathMap snapshot, or a message grandchild. Such nodes use the
+/// full generated stack-safe machine.
+fn append_shallow_protobuf(value: &dyn ProtobufNode, out: &mut Vec<u8>) -> bool {
+    let (_, descent) = value.protobuf_len_step(0);
+    match descent {
+        ProtobufDescent::Done => {
+            assert!(matches!(value.protobuf_emit(0, out), ProtobufDescent::Done));
+        }
+        ProtobufDescent::Node { resume, tag, node } => {
+            let (child_len, child_descent) = node.protobuf_len_step(0);
+            if !matches!(child_descent, ProtobufDescent::Done)
+                || !matches!(
+                    value.protobuf_len_step(usize::from(resume)).1,
+                    ProtobufDescent::Done
+                )
+            {
+                return false;
+            }
+
+            let emitted = value.protobuf_emit(0, out);
+            assert!(matches!(
+                emitted,
+                ProtobufDescent::Node {
+                    resume: emitted_resume,
+                    tag: emitted_tag,
+                    ..
+                } if emitted_resume == resume && emitted_tag == tag
+            ));
+            encode_key(tag, WireType::LengthDelimited, out);
+            prost::encoding::encode_varint(child_len, out);
+            assert!(matches!(node.protobuf_emit(0, out), ProtobufDescent::Done));
+            assert!(matches!(
+                value.protobuf_emit(usize::from(resume), out),
+                ProtobufDescent::Done
+            ));
+        }
+        ProtobufDescent::Seq { .. }
+        | ProtobufDescent::Map { .. }
+        | ProtobufDescent::EPathMapSnapshot { .. } => return false,
+    }
+    true
+}
+
+/// Ground `Expr`s and absent `Expr` are canonical leaves. Encode their exact
+/// score directly instead of starting the general mutually-recursive sorter.
+/// Returns false for every arm that can contain or reorder child structure.
+fn append_leaf_expr_score(value: &Expr, out: &mut Vec<u8>) -> bool {
+    let constructor = match value.expr_instance.as_ref() {
+        None => Score::ABSENT,
+        Some(ExprInstance::GBool(_)) => Score::BOOL,
+        Some(ExprInstance::GInt(_)) => Score::INT,
+        Some(ExprInstance::GString(_)) => Score::STRING,
+        Some(ExprInstance::GUri(_)) => Score::URI,
+        Some(ExprInstance::GByteArray(_)) => Score::EBYTEARR,
+        Some(ExprInstance::GDouble(_)) => Score::DOUBLE,
+        Some(ExprInstance::GBigInt(_)) => Score::BIG_INT,
+        Some(ExprInstance::GBigRat(_)) => Score::BIG_RAT,
+        Some(ExprInstance::GFixedPoint(_)) => Score::FIXED_POINT,
+        Some(_) => return false,
+    };
+    begin_score_node(out, constructor);
+
+    match value.expr_instance.as_ref() {
+        None => {}
+        Some(ExprInstance::GBool(value)) => {
+            // Historical canonical order deliberately places true before false.
+            append_int_score_atom(out, i64::from(!*value));
+        }
+        Some(ExprInstance::GInt(value)) => append_int_score_atom(out, *value),
+        Some(ExprInstance::GString(value)) | Some(ExprInstance::GUri(value)) => {
+            append_string_score_atom(out, value);
+        }
+        Some(ExprInstance::GByteArray(value)) | Some(ExprInstance::GBigInt(value)) => {
+            append_bytes_score_atom(out, value);
+        }
+        Some(ExprInstance::GDouble(bits)) => append_int_score_atom(out, *bits as i64),
+        Some(ExprInstance::GBigRat(value)) => {
+            append_bytes_score_atom(out, &value.numerator);
+            append_bytes_score_atom(out, &value.denominator);
+        }
+        Some(ExprInstance::GFixedPoint(value)) => {
+            append_bytes_score_atom(out, &value.unscaled);
+            out.push(2);
+            append_int_score_atom(out, i64::from(value.scale));
+            end_score_node(out);
+        }
+        Some(_) => unreachable!("non-leaf Expr returned before score emission"),
+    }
+    end_score_node(out);
+    true
+}
+
+impl sealed::Sealed for Expr {}
+impl ParBagComponent for Expr {
+    const TAG: ParComponentTag = ParComponentTag::Expr;
+
+    fn canonicalize(value: &Self) -> ScoredTerm<Self> {
+        <ExprSortMatcher as Sortable<Expr>>::sort_match(value)
+    }
+
+    fn append_key_suffix(value: &Self, out: &mut Vec<u8>) {
+        if !append_leaf_expr_score(value, out) {
+            let scored = Self::canonicalize(value);
+            encode_order_key(&scored.score, out);
+            protobuf_encoder::encode_into(&scored.term, out);
+            return;
+        }
+        assert!(
+            append_shallow_protobuf(value, out),
+            "ground Expr has at most one non-recursive protobuf message edge"
+        );
+    }
+
+    fn decode_protobuf(payload: &[u8]) -> Result<Self, prost::DecodeError> {
+        crate::rust::rholang::protobuf_decoder::decode_expr(payload)
+    }
+}
+
+impl sealed::Sealed for GUnforgeable {}
+impl ParBagComponent for GUnforgeable {
+    const TAG: ParComponentTag = ParComponentTag::GUnforgeable;
+
+    fn canonicalize(value: &Self) -> ScoredTerm<Self> {
+        <UnforgeableSortMatcher as Sortable<GUnforgeable>>::sort_match(value)
+    }
+
+    fn append_key_suffix(value: &Self, out: &mut Vec<u8>) {
+        let (constructor, bytes) = match value.unf_instance.as_ref() {
+            None => (Score::ABSENT, None),
+            Some(UnfInstance::GPrivateBody(value)) => (Score::PRIVATE, Some(value.id.as_slice())),
+            Some(UnfInstance::GDeployerIdBody(value)) => {
+                (Score::DEPLOYER_AUTH, Some(value.public_key.as_slice()))
+            }
+            Some(UnfInstance::GDeployIdBody(value)) => {
+                (Score::DEPLOY_ID, Some(value.sig.as_slice()))
+            }
+            Some(UnfInstance::GSysAuthTokenBody(_)) => (Score::SYS_AUTH_TOKEN, None),
+        };
+        begin_score_node(out, constructor);
+        if let Some(bytes) = bytes {
+            append_bytes_score_atom(out, bytes);
+        }
+        end_score_node(out);
+        assert!(
+            append_shallow_protobuf(value, out),
+            "GUnforgeable has exactly one non-recursive protobuf message edge"
+        );
+    }
+
+    fn decode_protobuf(payload: &[u8]) -> Result<Self, prost::DecodeError> {
+        crate::rust::rholang::protobuf_decoder::decode_g_unforgeable(payload)
+    }
+}
 
 /// Failure to decode or validate the typed key language of a ParBag image.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,14 +370,15 @@ pub enum ParBagCodecError {
         found: [u8; 4],
     },
     InvalidTag(u8),
+    InvalidOrderKey {
+        tag: ParComponentTag,
+    },
     ComponentDecode {
         tag: ParComponentTag,
-        source: ColdStoreDecodeError,
+        reason: String,
     },
-    TrailingComponentBytes {
+    NonCanonicalComponent {
         tag: ParComponentTag,
-        consumed: usize,
-        available: usize,
     },
 }
 
@@ -144,17 +394,15 @@ impl fmt::Display for ParBagCodecError {
                 write!(formatter, "invalid ParBag key domain/version: {found:02x?}")
             }
             Self::InvalidTag(tag) => write!(formatter, "invalid ParBag component tag {tag}"),
-            Self::ComponentDecode { tag, source } => {
-                write!(formatter, "invalid {tag:?} component payload: {source}")
+            Self::InvalidOrderKey { tag } => {
+                write!(formatter, "invalid {tag:?} canonical order key")
             }
-            Self::TrailingComponentBytes {
-                tag,
-                consumed,
-                available,
-            } => write!(
-                formatter,
-                "{tag:?} component consumed {consumed} of {available} payload bytes"
-            ),
+            Self::ComponentDecode { tag, reason } => {
+                write!(formatter, "invalid {tag:?} protobuf component body: {reason}")
+            }
+            Self::NonCanonicalComponent { tag } => {
+                write!(formatter, "non-canonical {tag:?} ParBag key")
+            }
         }
     }
 }
@@ -163,7 +411,6 @@ impl std::error::Error for ParBagCodecError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Bag(error) => Some(error),
-            Self::ComponentDecode { source, .. } => Some(source),
             _ => None,
         }
     }
@@ -247,9 +494,9 @@ const KEY_BUFFER_CAPACITY: usize = 256;
 const KEY_BUFFER_SHRINK_THRESHOLD: usize = 1 << 20;
 
 thread_local! {
-    /// Reused complete-key buffer. `bincode_encoder::encode_into` appends the
-    /// payload directly after the domain and tag, avoiding both a payload copy
-    /// and a second temporary byte vector in the steady state.
+    /// Reused complete-key buffer. The sorter and generated protobuf encoder
+    /// append directly after the domain and tag, avoiding a second temporary
+    /// byte vector in the steady state.
     static KEY_BUFFER: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(KEY_BUFFER_CAPACITY));
 }
 
@@ -270,7 +517,7 @@ where T: ParBagComponent {
         Ok(mut key) => {
             key.clear();
             key.extend_from_slice(&component_prefix(T::TAG));
-            bincode_encoder::encode_into(value, &mut key);
+            T::append_key_suffix(value, &mut key);
             let result = callback(&key);
             if key.capacity() > KEY_BUFFER_SHRINK_THRESHOLD {
                 key.shrink_to(KEY_BUFFER_CAPACITY);
@@ -280,29 +527,20 @@ where T: ParBagComponent {
         Err(_) => {
             let mut key = Vec::with_capacity(KEY_BUFFER_CAPACITY);
             key.extend_from_slice(&component_prefix(T::TAG));
-            bincode_encoder::encode_into(value, &mut key);
+            T::append_key_suffix(value, &mut key);
             callback(&key)
         }
     })
 }
 
 fn decode_exact<T: ParBagComponent>(payload: &[u8]) -> Result<T, ParBagCodecError> {
-    let (value, consumed) =
-        T::cold_decode_prefix(payload).map_err(|source| ParBagCodecError::ComponentDecode {
-            tag: T::TAG,
-            source,
-        })?;
-    if consumed != payload.len() {
-        return Err(ParBagCodecError::TrailingComponentBytes {
-            tag: T::TAG,
-            consumed,
-            available: payload.len(),
-        });
-    }
-    Ok(value)
+    T::decode_protobuf(payload).map_err(|source| ParBagCodecError::ComponentDecode {
+        tag: T::TAG,
+        reason: source.to_string(),
+    })
 }
 
-fn validate_key(path: &[u8]) -> Result<(), ParBagCodecError> {
+fn split_key(path: &[u8]) -> Result<(ParComponentTag, &[u8]), ParBagCodecError> {
     if path.len() < PAR_BAG_KEY_HEADER_LEN {
         return Err(ParBagCodecError::KeyTooShort { length: path.len() });
     }
@@ -313,17 +551,35 @@ fn validate_key(path: &[u8]) -> Result<(), ParBagCodecError> {
     }
     let tag_byte = path[PAR_BAG_KEY_DOMAIN.len()];
     let tag = ParComponentTag::from_byte(tag_byte).ok_or(ParBagCodecError::InvalidTag(tag_byte))?;
-    let payload = &path[PAR_BAG_KEY_HEADER_LEN..];
+    let suffix = &path[PAR_BAG_KEY_HEADER_LEN..];
+    let order_len = order_key_extent(suffix).ok_or(ParBagCodecError::InvalidOrderKey { tag })?;
+    Ok((tag, &suffix[order_len..]))
+}
+
+fn validate_typed_key<T: ParBagComponent>(
+    path: &[u8],
+    payload: &[u8],
+) -> Result<(), ParBagCodecError> {
+    let value = decode_exact::<T>(payload)?;
+    let canonical = with_component_key(&value, <[u8]>::to_vec);
+    if canonical != path {
+        return Err(ParBagCodecError::NonCanonicalComponent { tag: T::TAG });
+    }
+    Ok(())
+}
+
+fn validate_key(path: &[u8]) -> Result<(), ParBagCodecError> {
+    let (tag, payload) = split_key(path)?;
     match tag {
-        ParComponentTag::Send => drop(decode_exact::<Send>(payload)?),
-        ParComponentTag::Receive => drop(decode_exact::<Receive>(payload)?),
-        ParComponentTag::New => drop(decode_exact::<New>(payload)?),
-        ParComponentTag::Expr => drop(decode_exact::<Expr>(payload)?),
-        ParComponentTag::Match => drop(decode_exact::<Match>(payload)?),
-        ParComponentTag::GUnforgeable => drop(decode_exact::<GUnforgeable>(payload)?),
-        ParComponentTag::Connective => drop(decode_exact::<Connective>(payload)?),
-        ParComponentTag::Bundle => drop(decode_exact::<Bundle>(payload)?),
-        ParComponentTag::If => drop(decode_exact::<If>(payload)?),
+        ParComponentTag::Send => validate_typed_key::<Send>(path, payload)?,
+        ParComponentTag::Receive => validate_typed_key::<Receive>(path, payload)?,
+        ParComponentTag::New => validate_typed_key::<New>(path, payload)?,
+        ParComponentTag::Expr => validate_typed_key::<Expr>(path, payload)?,
+        ParComponentTag::Match => validate_typed_key::<Match>(path, payload)?,
+        ParComponentTag::GUnforgeable => validate_typed_key::<GUnforgeable>(path, payload)?,
+        ParComponentTag::Connective => validate_typed_key::<Connective>(path, payload)?,
+        ParComponentTag::Bundle => validate_typed_key::<Bundle>(path, payload)?,
+        ParComponentTag::If => validate_typed_key::<If>(path, payload)?,
     }
     Ok(())
 }
@@ -343,6 +599,41 @@ impl<'a, T: ParBagComponent> EncodedParComponent<'a, T> {
     pub const fn multiplicity(&self) -> Multiplicity { self.multiplicity }
 
     pub fn decode(self) -> Result<T, ParBagCodecError> { decode_exact::<T>(self.payload) }
+}
+
+/// One owned, canonical ParBag trie key compiled from a typed component.
+///
+/// RSpace pattern/channel plans are long-lived relative to individual trie
+/// probes. They should construct this value once and reuse its bytes, avoiding
+/// repeated canonical sorting and serialization in the matching loop. The
+/// phantom component type makes it impossible to pass an `Expr` key to a
+/// `Send`-typed API; the key owns one boxed byte slice and carries no shadow AST
+/// or architecture-dependent identifier.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CanonicalParBagKey<T: ParBagComponent> {
+    bytes: Box<[u8]>,
+    marker: PhantomData<fn() -> T>,
+}
+
+impl<T: ParBagComponent> CanonicalParBagKey<T> {
+    pub fn compile(value: &T) -> Self {
+        with_component_key(value, |bytes| Self {
+            bytes: bytes.into(),
+            marker: PhantomData,
+        })
+    }
+
+    pub fn as_bytes(&self) -> &[u8] { &self.bytes }
+}
+
+impl<T: ParBagComponent> fmt::Debug for CanonicalParBagKey<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CanonicalParBagKey")
+            .field("tag", &T::TAG)
+            .field("bytes", &self.bytes)
+            .finish()
+    }
 }
 
 /// One homogeneous PathMap-backed multiset containing every top-level `Par`
@@ -411,12 +702,31 @@ impl ParBag {
         with_component_key(value, |key| self.components.contains(key))
     }
 
+    /// Exact membership for a key compiled once by the matcher/channel plan.
+    #[inline]
+    pub fn contains_key<T: ParBagComponent>(&self, key: &CanonicalParBagKey<T>) -> bool {
+        self.components.contains(key.as_bytes())
+    }
+
     pub fn count<T: ParBagComponent>(&self, value: &T) -> u64 {
         with_component_key(value, |key| self.components.count(key))
     }
 
+    #[inline]
+    pub fn count_key<T: ParBagComponent>(&self, key: &CanonicalParBagKey<T>) -> u64 {
+        self.components.count(key.as_bytes())
+    }
+
     pub fn insert<T: ParBagComponent>(&mut self, value: &T) -> Result<Multiplicity, BagError> {
         with_component_key(value, |key| self.components.insert(key))
+    }
+
+    #[inline]
+    pub fn insert_key<T: ParBagComponent>(
+        &mut self,
+        key: &CanonicalParBagKey<T>,
+    ) -> Result<Multiplicity, BagError> {
+        self.components.insert(key.as_bytes())
     }
 
     pub fn insert_many<T: ParBagComponent>(
@@ -427,8 +737,25 @@ impl ParBag {
         with_component_key(value, |key| self.components.insert_many(key, amount))
     }
 
+    #[inline]
+    pub fn insert_key_many<T: ParBagComponent>(
+        &mut self,
+        key: &CanonicalParBagKey<T>,
+        amount: Multiplicity,
+    ) -> Result<Multiplicity, BagError> {
+        self.components.insert_many(key.as_bytes(), amount)
+    }
+
     pub fn remove<T: ParBagComponent>(&mut self, value: &T) -> Option<Multiplicity> {
         with_component_key(value, |key| self.components.remove(key))
+    }
+
+    #[inline]
+    pub fn remove_key<T: ParBagComponent>(
+        &mut self,
+        key: &CanonicalParBagKey<T>,
+    ) -> Option<Multiplicity> {
+        self.components.remove(key.as_bytes())
     }
 
     pub fn remove_many<T: ParBagComponent>(
@@ -439,12 +766,30 @@ impl ParBag {
         with_component_key(value, |key| self.components.remove_many(key, amount))
     }
 
+    #[inline]
+    pub fn remove_key_many<T: ParBagComponent>(
+        &mut self,
+        key: &CanonicalParBagKey<T>,
+        amount: Multiplicity,
+    ) -> Option<Multiplicity> {
+        self.components.remove_many(key.as_bytes(), amount)
+    }
+
     pub fn try_remove_many<T: ParBagComponent>(
         &mut self,
         value: &T,
         amount: Multiplicity,
     ) -> Result<Option<Multiplicity>, BagError> {
         with_component_key(value, |key| self.components.try_remove_many(key, amount))
+    }
+
+    #[inline]
+    pub fn try_remove_key_many<T: ParBagComponent>(
+        &mut self,
+        key: &CanonicalParBagKey<T>,
+        amount: Multiplicity,
+    ) -> Result<Option<Multiplicity>, BagError> {
+        self.components.try_remove_many(key.as_bytes(), amount)
     }
 
     /// Remove one entire constructor family with one prefix operation.
@@ -477,9 +822,11 @@ impl ParBag {
     ) {
         self.components
             .visit_prefix(&component_prefix(T::TAG), |path, multiplicity| {
-                debug_assert!(path.len() >= PAR_BAG_KEY_HEADER_LEN);
+                let (tag, payload) = split_key(path)
+                    .expect("ParBag invariant: every stored component key was validated");
+                debug_assert_eq!(tag, T::TAG);
                 visitor(EncodedParComponent {
-                    payload: &path[PAR_BAG_KEY_HEADER_LEN..],
+                    payload,
                     multiplicity,
                     marker: PhantomData,
                 });
@@ -496,8 +843,9 @@ impl ParBag {
     {
         self.components
             .try_visit_prefix(&component_prefix(T::TAG), |path, multiplicity| {
-                let value = decode_exact::<T>(&path[PAR_BAG_KEY_HEADER_LEN..])
-                    .map_err(ParBagVisitError::Codec)?;
+                let (tag, payload) = split_key(path).map_err(ParBagVisitError::Codec)?;
+                debug_assert_eq!(tag, T::TAG);
+                let value = decode_exact::<T>(payload).map_err(ParBagVisitError::Codec)?;
                 visitor(value, multiplicity).map_err(ParBagVisitError::Visitor)
             })
     }
@@ -555,8 +903,8 @@ impl ParBag {
     }
 
     /// Stream protobuf fields from trie endpoints in canonical tag/key order.
-    /// Each distinct payload is decoded once and emitted `Multiplicity` times;
-    /// no repeated-field `Vec` or legacy `Par` is materialized.
+    /// The canonical protobuf body is copied directly `Multiplicity` times;
+    /// no component decode, repeated-field `Vec`, or legacy `Par` is involved.
     pub fn protobuf_components_to_vec(&self) -> Result<Vec<u8>, ParBagProtobufError> {
         let encoded_len = self.protobuf_components_encoded_len()?;
         let mut output = Vec::with_capacity(encoded_len);
@@ -574,51 +922,55 @@ impl ParBag {
     }
 
     fn add_protobuf_family_len<T>(&self, total: &mut usize) -> Result<(), ParBagProtobufError>
-    where T: ParBagComponent + crate::rust::rholang::protobuf_schema::ProtobufNode {
-        self.try_visit_decoded::<T, ParBagProtobufError>(|value, multiplicity| {
-            let body_len = crate::rust::rholang::protobuf_encoder::encoded_len(&value);
-            let body_len_u64 = u64::try_from(body_len).map_err(|_| {
-                ParBagProtobufError::EncodedLengthOverflow {
-                    tag: T::TAG,
-                    multiplicity: multiplicity.get(),
-                    one_occurrence_bytes: body_len,
-                }
-            })?;
-            let one_occurrence = key_len(T::TAG.byte().into())
-                .checked_add(encoded_len_varint(body_len_u64))
-                .and_then(|framing| framing.checked_add(body_len))
-                .ok_or(ParBagProtobufError::EncodedLengthOverflow {
-                    tag: T::TAG,
-                    multiplicity: multiplicity.get(),
-                    one_occurrence_bytes: body_len,
+    where T: ParBagComponent {
+        let mut result = Ok(());
+        self.visit_encoded::<T>(|entry| {
+            if result.is_err() {
+                return;
+            }
+            result = (|| {
+                let multiplicity = entry.multiplicity();
+                let body_len = entry.payload().len();
+                let body_len_u64 = u64::try_from(body_len).map_err(|_| {
+                    ParBagProtobufError::EncodedLengthOverflow {
+                        tag: T::TAG,
+                        multiplicity: multiplicity.get(),
+                        one_occurrence_bytes: body_len,
+                    }
                 })?;
-            let repetitions = usize::try_from(multiplicity.get()).map_err(|_| {
-                ParBagProtobufError::EncodedLengthOverflow {
-                    tag: T::TAG,
-                    multiplicity: multiplicity.get(),
-                    one_occurrence_bytes: one_occurrence,
-                }
-            })?;
-            let family_len = one_occurrence.checked_mul(repetitions).ok_or(
-                ParBagProtobufError::EncodedLengthOverflow {
-                    tag: T::TAG,
-                    multiplicity: multiplicity.get(),
-                    one_occurrence_bytes: one_occurrence,
-                },
-            )?;
-            *total = total.checked_add(family_len).ok_or(
-                ParBagProtobufError::EncodedLengthOverflow {
-                    tag: T::TAG,
-                    multiplicity: multiplicity.get(),
-                    one_occurrence_bytes: one_occurrence,
-                },
-            )?;
-            Ok(())
-        })
-        .map_err(|error| match error {
-            ParBagVisitError::Codec(error) => ParBagProtobufError::Codec(error),
-            ParBagVisitError::Visitor(error) => error,
-        })
+                let one_occurrence = key_len(T::TAG.byte().into())
+                    .checked_add(encoded_len_varint(body_len_u64))
+                    .and_then(|framing| framing.checked_add(body_len))
+                    .ok_or(ParBagProtobufError::EncodedLengthOverflow {
+                        tag: T::TAG,
+                        multiplicity: multiplicity.get(),
+                        one_occurrence_bytes: body_len,
+                    })?;
+                let repetitions = usize::try_from(multiplicity.get()).map_err(|_| {
+                    ParBagProtobufError::EncodedLengthOverflow {
+                        tag: T::TAG,
+                        multiplicity: multiplicity.get(),
+                        one_occurrence_bytes: one_occurrence,
+                    }
+                })?;
+                let family_len = one_occurrence.checked_mul(repetitions).ok_or(
+                    ParBagProtobufError::EncodedLengthOverflow {
+                        tag: T::TAG,
+                        multiplicity: multiplicity.get(),
+                        one_occurrence_bytes: one_occurrence,
+                    },
+                )?;
+                *total = total.checked_add(family_len).ok_or(
+                    ParBagProtobufError::EncodedLengthOverflow {
+                        tag: T::TAG,
+                        multiplicity: multiplicity.get(),
+                        one_occurrence_bytes: one_occurrence,
+                    },
+                )?;
+                Ok(())
+            })();
+        });
+        result
     }
 
     fn encode_protobuf_family<T>(
@@ -626,21 +978,18 @@ impl ParBag {
         output: &mut impl BufMut,
     ) -> Result<(), ParBagProtobufError>
     where
-        T: ParBagComponent + crate::rust::rholang::protobuf_schema::ProtobufNode,
+        T: ParBagComponent,
     {
-        self.try_visit_decoded::<T, ParBagProtobufError>(|value, multiplicity| {
+        self.visit_encoded::<T>(|entry| {
+            let payload = entry.payload();
+            let multiplicity = entry.multiplicity();
             for _ in 0..multiplicity.get() {
                 encode_key(T::TAG.byte().into(), WireType::LengthDelimited, output);
-                crate::rust::rholang::protobuf_encoder::encode_length_delimited_body_into(
-                    &value, output,
-                );
+                prost::encoding::encode_varint(payload.len() as u64, output);
+                output.put_slice(payload);
             }
-            Ok(())
-        })
-        .map_err(|error| match error {
-            ParBagVisitError::Codec(error) => ParBagProtobufError::Codec(error),
-            ParBagVisitError::Visitor(error) => error,
-        })
+        });
+        Ok(())
     }
 }
 
@@ -662,5 +1011,101 @@ impl<'de> Deserialize<'de> for ParBag {
     where D: Deserializer<'de> {
         let components = Bag::deserialize(deserializer)?;
         Self::try_from_bag(components).map_err(serde::de::Error::custom)
+    }
+}
+
+#[cfg(test)]
+mod fast_key_tests {
+    use super::*;
+    use crate::rhoapi::{
+        GBigRational, GDeployId, GDeployerId, GFixedPoint, GPrivate, GSysAuthToken,
+    };
+
+    fn generic_key<T: ParBagComponent>(value: &T) -> Vec<u8> {
+        let scored = T::canonicalize(value);
+        let mut key = component_prefix(T::TAG).to_vec();
+        encode_order_key(&scored.score, &mut key);
+        protobuf_encoder::encode_into(&scored.term, &mut key);
+        key
+    }
+
+    #[test]
+    fn every_leaf_expr_fast_key_is_byte_identical_to_the_general_sorter() {
+        let values = [
+            Expr::default(),
+            Expr {
+                expr_instance: Some(ExprInstance::GBool(true)),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::GBool(false)),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::GInt(i64::MIN)),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::GString("a\0b".into())),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::GUri("rho:id".into())),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::GByteArray(vec![0, 1, 0xff])),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::GDouble((-0.0f64).to_bits())),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::GBigInt(vec![0x80, 0])),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::GBigRat(GBigRational {
+                    numerator: vec![0xff],
+                    denominator: vec![0, 2],
+                })),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::GFixedPoint(GFixedPoint {
+                    unscaled: vec![1, 0],
+                    scale: u32::MAX,
+                })),
+            },
+        ];
+
+        for value in values {
+            assert_eq!(
+                with_component_key(&value, <[u8]>::to_vec),
+                generic_key(&value),
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_unforgeable_fast_key_is_byte_identical_to_the_general_sorter() {
+        let values = [
+            GUnforgeable::default(),
+            GUnforgeable {
+                unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![0, 1] })),
+            },
+            GUnforgeable {
+                unf_instance: Some(UnfInstance::GDeployIdBody(GDeployId { sig: vec![2, 0] })),
+            },
+            GUnforgeable {
+                unf_instance: Some(UnfInstance::GDeployerIdBody(GDeployerId {
+                    public_key: vec![3, 0],
+                })),
+            },
+            GUnforgeable {
+                unf_instance: Some(UnfInstance::GSysAuthTokenBody(GSysAuthToken {})),
+            },
+        ];
+
+        for value in values {
+            assert_eq!(
+                with_component_key(&value, <[u8]>::to_vec),
+                generic_key(&value),
+                "{value:?}"
+            );
+        }
     }
 }

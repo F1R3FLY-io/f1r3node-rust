@@ -1,23 +1,27 @@
-//! Preregistered experiment 257: exact typed Par-component membership.
+//! Preregistered experiment 258: prepared exact Par-component membership.
 //!
-//! Control: the current repeated `Vec<Expr>` authority, scanned with exact
-//! equality. Treatment: `ParBag::contains`, including canonical component-key
-//! encoding and the exact PathMap lookup. Fixture construction is outside the
-//! timed region. Every retained repetition times both arms in alternating
-//! order over the same deterministic 50/50 present/absent query batch.
+//! Control: dynamic `ParBag::contains`, including canonical component-key
+//! encoding. Treatment: `ParBag::contains_key` over typed keys compiled once
+//! with the RSpace-style matcher plan outside the timed region. Every retained
+//! repetition times both arms in alternating order over the same deterministic
+//! 50/50 present/absent query batch.
+//!
+//! Experiment 257's legacy-Vec comparison remains reproducible at its pinned
+//! `8f68bdb0c` git ref and in the committed raw measurement ledger.
 
 use std::hint::black_box;
 use std::time::Instant;
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
-use models::rust::par_bag::ParBag;
+use models::rust::par_bag::{CanonicalParBagKey, ParBag};
 
 const CARDINALITIES: [usize; 4] = [1, 16, 256, 4_096];
 const QUERY_PAIRS: usize = 32;
 const QUERIES_PER_BATCH: usize = QUERY_PAIRS * 2;
 const WARMUP: usize = 10;
-// pgmcp experiment 257's power protocol requires at least 82 retained samples.
+// Experiment 258 requires 30; retain 82 for cell-wise paired 99% intervals and
+// direct comparability with experiment 257.
 const REPS: usize = 82;
 const Z_001: f64 = 2.576;
 
@@ -37,8 +41,8 @@ impl Topology {
 
     fn value(self, ordinal: usize) -> Expr {
         let text = match self {
-            // Constant-width ordinal keeps the bincode string-length prefix
-            // identical, exposing the long shared payload prefix to PathMap.
+            // Constant-width ordinal exposes a long shared score/protobuf
+            // payload prefix to PathMap's prefix compression.
             Self::Shared => format!("rho:parbag:shared:component:{ordinal:016x}"),
             // Multiplicative scrambling makes the first payload bytes vary;
             // this is the low-prefix-reuse counter-topology.
@@ -58,6 +62,7 @@ struct Fixture {
     legacy: Vec<Expr>,
     pathmap: ParBag,
     queries: Vec<Expr>,
+    prepared_queries: Vec<CanonicalParBagKey<Expr>>,
 }
 
 impl Fixture {
@@ -78,21 +83,25 @@ impl Fixture {
             queries.push(topology.value(present));
             queries.push(topology.value(cardinality + query));
         }
+        let prepared_queries = queries.iter().map(CanonicalParBagKey::compile).collect();
 
         let fixture = Self {
             label: format!("{}/{}", topology.label(), cardinality),
             legacy,
             pathmap,
             queries,
+            prepared_queries,
         };
-        let control = fixture.control();
-        let treatment = fixture.treatment();
-        assert_eq!(control, QUERY_PAIRS, "control fixture checksum");
-        assert_eq!(treatment, control, "treatment semantic preflight");
+        let legacy = fixture.legacy();
+        let dynamic = fixture.dynamic();
+        let prepared = fixture.prepared();
+        assert_eq!(legacy, QUERY_PAIRS, "legacy fixture checksum");
+        assert_eq!(dynamic, legacy, "dynamic semantic preflight");
+        assert_eq!(prepared, legacy, "prepared semantic preflight");
         fixture
     }
 
-    fn control(&self) -> usize {
+    fn legacy(&self) -> usize {
         self.queries
             .iter()
             .filter(|query| {
@@ -103,10 +112,17 @@ impl Fixture {
             .count()
     }
 
-    fn treatment(&self) -> usize {
+    fn dynamic(&self) -> usize {
         self.queries
             .iter()
             .filter(|query| self.pathmap.contains(black_box(*query)))
+            .count()
+    }
+
+    fn prepared(&self) -> usize {
+        self.prepared_queries
+            .iter()
+            .filter(|query| self.pathmap.contains_key(black_box(*query)))
             .count()
     }
 }
@@ -153,9 +169,9 @@ fn run(fixture: &Fixture) {
             let arm = (repetition + slot) % 2;
             let started = Instant::now();
             let checksum = if arm == 0 {
-                fixture.control()
+                fixture.dynamic()
             } else {
-                fixture.treatment()
+                fixture.prepared()
             };
             elapsed[arm] = started.elapsed().as_nanos() as f64;
             assert_eq!(black_box(checksum), QUERY_PAIRS);
@@ -189,7 +205,7 @@ fn run(fixture: &Fixture) {
 
 fn main() {
     println!(
-        "PARBAG_EXPERIMENT\tid=257\treps={REPS}\twarmup={WARMUP}\tqueries_per_batch={QUERIES_PER_BATCH}\tpresent={QUERY_PAIRS}\tabsent={QUERY_PAIRS}"
+        "PARBAG_EXPERIMENT\tid=258\treps={REPS}\twarmup={WARMUP}\tqueries_per_batch={QUERIES_PER_BATCH}\tpresent={QUERY_PAIRS}\tabsent={QUERY_PAIRS}"
     );
     println!("LOADAVG\t{}", loadavg());
     for topology in [Topology::Shared, Topology::Diverse] {
