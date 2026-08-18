@@ -442,7 +442,9 @@ impl Validate {
                     Ok(Some(parent_block)) => parent_block,
                     Ok(None) => return Either::Left(BlockError::MissingBlocks),
                     Err(err) => {
-                        return Either::Left(BlockError::BlockException(CasperError::from(err)));
+                        return Either::Left(BlockError::from_validation_error(CasperError::from(
+                            err,
+                        )));
                     }
                 };
                 for bond in &parent_block.body.state.bonds {
@@ -612,7 +614,7 @@ impl Validate {
         if let Some(ctx) = floor_ctx {
             let rejected = match ctx.rejected_sigs(block_store, earliest_block_number) {
                 Ok(sigs) => sigs,
-                Err(e) => return Either::Left(BlockError::BlockException(e)),
+                Err(e) => return Either::Left(BlockError::from_validation_error(e)),
             };
             for pd in &block.body.deploys {
                 let sig = &pd.deploy.sig;
@@ -641,7 +643,7 @@ impl Validate {
                             InvalidBlock::PrematureDeployRetry,
                         ));
                     }
-                    Err(e) => return Either::Left(BlockError::BlockException(e)),
+                    Err(e) => return Either::Left(BlockError::from_validation_error(e)),
                 }
             }
         }
@@ -706,7 +708,7 @@ impl Validate {
             block_hash_string,
             current_block_hash_string
           );
-          return BlockError::BlockException(CasperError::RuntimeError(format!(
+          return BlockError::from_validation_error(CasperError::RuntimeError(format!(
             "InvalidRepeatDeploy duplicate-deploy invariant violated: block {} indexed as duplicate-deploy carrier for current block {} contains no matching deploy",
             block_hash_string,
             current_block_hash_string,
@@ -745,7 +747,7 @@ impl Validate {
         let current_time = match SystemTime::now().duration_since(UNIX_EPOCH) {
             Ok(d) => d.as_millis() as i64,
             Err(e) => {
-                return Either::Left(BlockError::BlockException(CasperError::from(e)));
+                return Either::Left(BlockError::from_validation_error(CasperError::from(e)));
             }
         };
 
@@ -803,7 +805,7 @@ impl Validate {
             .collect::<Result<Vec<BlockMetadata>, KvStoreError>>()
         {
             Ok(parents) => parents,
-            Err(e) => return Either::Left(BlockError::BlockException(CasperError::from(e))),
+            Err(e) => return Either::Left(BlockError::from_validation_error(CasperError::from(e))),
         };
 
         let max_block_number = parents
@@ -937,7 +939,7 @@ impl Validate {
                 Some(justification) => match s.dag.lookup(&justification.latest_block_hash) {
                     Ok(Some(block_metadata)) => block_metadata.sequence_number as i64,
                     Ok(None) => {
-                        return Either::Left(BlockError::BlockException(CasperError::from(
+                        return Either::Left(BlockError::from_validation_error(CasperError::from(
                             KvStoreError::KeyNotFound(format!(
                                 "Latest block hash {} is missing from block dag store.",
                                 PrettyPrinter::build_string_bytes(&justification.latest_block_hash)
@@ -945,7 +947,9 @@ impl Validate {
                         )));
                     }
                     Err(e) => {
-                        return Either::Left(BlockError::BlockException(CasperError::from(e)));
+                        return Either::Left(BlockError::from_validation_error(CasperError::from(
+                            e,
+                        )));
                     }
                 },
                 None => -1,
@@ -1177,7 +1181,7 @@ impl Validate {
                 let prev_block_meta = match s.dag.lookup(&prev_block_hash) {
                     Ok(Some(meta)) => meta,
                     Ok(None) => {
-                        return Either::Left(BlockError::BlockException(CasperError::from(
+                        return Either::Left(BlockError::from_validation_error(CasperError::from(
                             KvStoreError::KeyNotFound(format!(
                                 "Previous block {} not found in DAG",
                                 PrettyPrinter::build_string_bytes(&prev_block_hash)
@@ -1185,7 +1189,9 @@ impl Validate {
                         )));
                     }
                     Err(e) => {
-                        return Either::Left(BlockError::BlockException(CasperError::from(e)));
+                        return Either::Left(BlockError::from_validation_error(CasperError::from(
+                            e,
+                        )));
                     }
                 };
 
@@ -1358,7 +1364,7 @@ impl Validate {
     ///   per `block_status::is_slashable` and the T-9.3 catch-all dispatcher.
     /// * any other `CasperError` (storage I/O, runtime, history) — the local
     ///   node experienced an infrastructure failure unrelated to the block
-    ///   author's behavior. Propagate as `BlockError::BlockException(e)`;
+    ///   author's behavior. Propagate as `BlockError::from_validation_error(e)`;
     ///   do NOT slash the block sender for a fault attributable to local
     ///   infrastructure. Bug-fix rationale: see
     ///   docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14.
@@ -1397,7 +1403,7 @@ impl Validate {
                     PrettyPrinter::build_string_bytes(&block.block_hash),
                     infra_err
                 );
-                Either::Left(BlockError::BlockException(infra_err))
+                Either::Left(BlockError::from_validation_error(infra_err))
             }
         }
     }
@@ -1473,13 +1479,17 @@ impl Validate {
                     let new_justification = match s.dag.lookup_unsafe(new_justification_hash) {
                         Ok(metadata) => metadata,
                         Err(e) => {
-                            return Either::Left(BlockError::BlockException(CasperError::from(e)))
+                            return Either::Left(BlockError::from_validation_error(
+                                CasperError::from(e),
+                            ))
                         }
                     };
                     let cur_justification = match s.dag.lookup_unsafe(cur_justification_hash) {
                         Ok(metadata) => metadata,
                         Err(e) => {
-                            return Either::Left(BlockError::BlockException(CasperError::from(e)))
+                            return Either::Left(BlockError::from_validation_error(
+                                CasperError::from(e),
+                            ))
                         }
                     };
 
@@ -1495,7 +1505,7 @@ impl Validate {
 
                 Either::Right(ValidBlock::Valid)
             }
-            Err(e) => Either::Left(BlockError::BlockException(CasperError::from(e))),
+            Err(e) => Either::Left(BlockError::from_validation_error(CasperError::from(e))),
         }
     }
 
@@ -1510,7 +1520,7 @@ impl Validate {
             match epoch_for_block_number(block.body.state.block_number, epoch_length) {
                 Ok(epoch) => epoch,
                 Err(error) => {
-                    return Either::Left(BlockError::BlockException(CasperError::from(
+                    return Either::Left(BlockError::from_validation_error(CasperError::from(
                         SlashAuthError::from(error),
                     )))
                 }
@@ -1543,7 +1553,9 @@ impl Validate {
                 Ok(Some(metadata)) => metadata,
                 Ok(None) => continue,
                 Err(error) => {
-                    return Either::Left(BlockError::BlockException(CasperError::from(error)))
+                    return Either::Left(BlockError::from_validation_error(CasperError::from(
+                        error,
+                    )))
                 }
             };
             let target_activation_epoch = (*target_activation_epoch).into();
@@ -1561,7 +1573,7 @@ impl Validate {
             ) {
                 Ok(authorized) => authorized,
                 Err(error) => {
-                    return Either::Left(BlockError::BlockException(CasperError::from(
+                    return Either::Left(BlockError::from_validation_error(CasperError::from(
                         SlashAuthError::from(error),
                     )))
                 }
@@ -1576,7 +1588,9 @@ impl Validate {
                 Ok(Some(metadata)) => metadata,
                 Ok(None) => continue,
                 Err(error) => {
-                    return Either::Left(BlockError::BlockException(CasperError::from(error)))
+                    return Either::Left(BlockError::from_validation_error(CasperError::from(
+                        error,
+                    )))
                 }
             };
             if !metadata.invalid {
@@ -1598,7 +1612,7 @@ impl Validate {
             ) {
                 Ok(required) => required,
                 Err(error) => {
-                    return Either::Left(BlockError::BlockException(CasperError::from(
+                    return Either::Left(BlockError::from_validation_error(CasperError::from(
                         SlashAuthError::from(error),
                     )))
                 }
@@ -1650,7 +1664,7 @@ impl Validate {
                     Ok(floor) => floor,
                     Err(ex) => {
                         tracing::warn!("Failed to derive finalized floor for bonds cache: {}", ex);
-                        return Either::Left(BlockError::BlockException(ex));
+                        return Either::Left(BlockError::from_validation_error(ex));
                     }
                 };
                 let floor_block = match block_store.get(&floor.hash) {
@@ -1661,14 +1675,14 @@ impl Validate {
                             PrettyPrinter::build_string_bytes(&floor.hash)
                         ));
                         tracing::warn!("{}", err);
-                        return Either::Left(BlockError::BlockException(err));
+                        return Either::Left(BlockError::from_validation_error(err));
                     }
                     Err(ex) => {
                         tracing::warn!(
                             "Failed to read finalized-floor block for bonds cache: {}",
                             ex
                         );
-                        return Either::Left(BlockError::BlockException(ex.into()));
+                        return Either::Left(BlockError::from_validation_error(ex.into()));
                     }
                 };
                 proto_util::post_state_hash(&floor_block)
@@ -1700,7 +1714,7 @@ impl Validate {
             }
             Err(ex) => {
                 tracing::warn!("Failed to compute bonds from finalized-floor state: {}", ex);
-                Either::Left(BlockError::BlockException(ex))
+                Either::Left(BlockError::from_validation_error(ex))
             }
         }
     }
@@ -1734,7 +1748,7 @@ impl Validate {
             }
             Err(ex) => {
                 tracing::warn!("Failed to compute bonds from tuplespace hash: {}", ex);
-                Either::Left(BlockError::BlockException(ex))
+                Either::Left(BlockError::from_validation_error(ex))
             }
         }
     }
