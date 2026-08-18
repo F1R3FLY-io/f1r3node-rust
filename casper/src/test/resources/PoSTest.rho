@@ -22,10 +22,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
       test_bonding_fails_if_deposit_fails,
       test_bonding_fails_if_already_bonded,
       test_bonding_fails_if_bond_too_small,
-      test_pay_succeeds,
-      test_refund_succeeds,
       test_commit_random,
-      test_dont_reward_inactive_validators,
       test_bonding_failure,
       test_slashing_vaults_and_state,
       getPosBalance, getCoopBalance,
@@ -52,14 +49,11 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
               ("closeBlock finishes successfully", *test_close_block_finishes),
               ("bonding success", *test_bonding_succeeds),
               ("withdraw succeeds", *test_withdraw_succeeds),
-              ("validator is paid after withdraw", *test_validator_is_paid_after_withdraw),
+              ("validator bond is returned after quarantine", *test_validator_is_paid_after_withdraw),
               ("bonding fails if deposit fails", *test_bonding_fails_if_deposit_fails),
               ("multiple bondings work", *test_multiple_bonding_succeeds),
-              ("payment works", *test_pay_succeeds),
-              ("payment refund works", *test_refund_succeeds),
               ("bonding fails if already bonded", *test_bonding_fails_if_already_bonded),
               ("bonding fails if bond is too small", *test_bonding_fails_if_bond_too_small),
-              ("payment is not distributed to inactive validators", *test_dont_reward_inactive_validators),
               // TODO we should reimplement the random test in the future when it is available
               ("commited random matches its image", *test_commit_random),
               ("Slashing transfers funds appropriately", *test_slashing_vaults_and_state)
@@ -259,16 +253,19 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
               }
             }
           } |
-          // Tests that a withdrawing validator is only paid after their quarantine period finishes and that when they are paid,
-          // their bond is returned to their vault and they are paid the rewards they have accumulated.
+          // Tests that a withdrawing validator's bond remains quarantined until the quarantine
+          // period finishes and is then returned. Per-deploy `chargeDeploy` / `refundDeploy`
+          // escrow no longer exists: accepted deploy cost is settled from the COMMs-only supply
+          // pool by the Rust acceptance gate, so this PoS contract test deliberately expects no
+          // per-deploy reward mutation.
           // Caution: there is interaction between this test and test_withdraw_succeeds because block numbers are manipulated.
           contract test_validator_is_paid_after_withdraw(rhoSpec, _, ackCh) = {
-            new setupCh, bondCh, chargeCh, refundCh,
+            new setupCh, bondCh,
                 initialValidatorBalanceCh, finalValidatorBalanceCh,
                 initialBondsCh, finalBondsCh,
                 withdrawCh, closeBlockCh, epochCh, quarantineCh,
                 setBlockData(`rho:test:block:data:set`),
-                blockDataCh, rewardsCh, validatorRewardCh,
+                blockDataCh, rewardsCh,
                 intermediateValidatorBalanceCh, withdrawersCh
             in {
               prepareUser!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", *setupCh) |
@@ -281,26 +278,17 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                      @initialBonds            <- initialBondsCh &
                      @epochLength             <- epochCh &
                      @quarantineLength        <- quarantineCh) {
-                  match (100, 100, 0, 1) {
-                    (bondAmt, chargeAmt, refundAmt, blockNumber) => {
+                  match (100, 1) {
+                    (bondAmt, blockNumber) => {
                       @PoS!("bond", validatorDeployerId, bondAmt, *bondCh) |
                       for (@(true, _) <- bondCh) {
                         stdlog!("info", ("successfully bond.")) |
                         closeBlock!(*closeBlockCh) |
                         for (_ <- closeBlockCh) {
-                          prepareUser!("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", *setupCh) |
-                          for (@userPubKey, _, @userVault, @userDeployerId <- setupCh) {
-                            @PoS!("chargeDeploy", userDeployerId, chargeAmt, sysAuthToken, *chargeCh) |
-                            @PoS!("refundDeploy", refundAmt, sysAuthToken, *refundCh) |
-                            for (@(true, _) <- chargeCh &
-                                 @(true, _) <- refundCh){
-                              closeBlock!(*closeBlockCh) |
-                              for (_ <- closeBlockCh) {
-                                @PoS!("getRewards", *rewardsCh) |
-                                for (@rewards <- rewardsCh) {
-                                  stdlog!("info", ("After precharge and refund of the rewards", rewards)) |
-                                  validatorRewardCh!(rewards.getOrElse(validatorPubKey, 0)) |
-                                  for (@validatorReward <- validatorRewardCh) {
+                          @PoS!("getRewards", *rewardsCh) |
+                          for (@rewards <- rewardsCh) {
+                            match rewards.getOrElse(validatorPubKey, 0) {
+                              validatorReward => {
                                     setBlockData!("blockNumber", blockNumber, *blockDataCh) |
                                     stdlog!("info", ("Successfully set block number",  blockNumber)) |
                                     @PoS!("getWithdrawers", *withdrawersCh) |
@@ -335,12 +323,13 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                                     for (@finalBonds            <- finalBondsCh &
                                                          @finalWithdrawers      <- withdrawersCh &
                                                          @finalValidatorBalance <- finalValidatorBalanceCh) {
-                                                      stdlog!("info", ("validator rewards", validatorReward, finalValidatorBalance, initialValidatorBalance)) |
+                                                      stdlog!("info", ("validator quarantine settlement", validatorReward, finalValidatorBalance, initialValidatorBalance)) |
                                                       rhoSpec!("assertMany",
                                                         [
                                                           ((finalBonds, "==", initialBonds), "bonds don't change after the same user bonds and withdraws successfully"),
                                                           ((intermediateValidatorBalance, "==", initialValidatorBalance - bondAmt), "withdrawer is not paid before quarantine period is over"),
-                                                          ((validatorReward, "==", finalValidatorBalance - initialValidatorBalance), "after payment, validator's balance only changes by their accumulated rewards"),
+                                                          ((0, "==", validatorReward), "COMMs-only deploy accounting does not mutate PoS per-deploy rewards"),
+                                                          ((finalValidatorBalance, "==", initialValidatorBalance), "after quarantine, the validator receives exactly the original bond"),
                                                           ((false, "==", initialWithdrawers.contains(validatorPubKey)), "before validator withdraws, they should not be in withdrawers map"),
                                                           ((true, "==", intermediateWithdrawers.contains(validatorPubKey)), "after validator requests to withdraw and before quarantine is finished, they should be in withdrawers map"),
                                                           ((false, "==", finalWithdrawers.contains(validatorPubKey)), "after quarantine is finished, validator should not be in withdrawers map")
@@ -356,8 +345,6 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                         }
                                       }
                                     }
-                                  }
-                                }
                               }
                             }
                           }
@@ -432,169 +419,12 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
               }
             }
           } |
-          contract test_pay_succeeds(rhoSpec, _, ackCh) = {
-            new setupCh, closeBlockCh, retCh0, retCh1, initialPosBalanceCh, finalPosBalanceCh,
-                initialUser1BalanceCh, finalUser1BalanceCh,
-                initialRewardsCh, finalRewardsCh,
-                computeDelta, deltaRewardsCh, deltaSumCh, sumDelta,
-                isPositive, allRewardsPositiveCh, initialBondsCh, initialActiveCh
-            in {
-              prepareUser!("4444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444", *setupCh) |
-              for (@validatorPubKey, _, _, @validatorDeployerId <- setupCh) {
-                match (100, 100, 0) {
-                  (validatorBond, userCharge, userRefund) => {
-                    @PoS!("bond", validatorDeployerId, validatorBond, *setupCh) |
-                    for (@(true, _) <- setupCh) {
-                      closeBlock!(*closeBlockCh) |
-                      prepareUser!("5555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555", *setupCh) |
-                      for (_, _, @userVault, @userDeployerId <- setupCh &
-                           _                                 <- closeBlockCh) {
-                        getPosBalance!(*initialPosBalanceCh) |
-                        @userVault!("balance", *initialUser1BalanceCh) |
-                        @PoS!("getRewards", *initialRewardsCh) |
-                        @PoS!("getBonds", *initialBondsCh) |
-                        @PoS!("getActiveValidators", *initialActiveCh) |
-                        for (@initialPosBalance   <- initialPosBalanceCh &
-                             @initialUser1Balance <- initialUser1BalanceCh &
-                             @initialRewards      <- initialRewardsCh &
-                             @initialBonds        <- initialBondsCh &
-                             @initialActives      <- initialActiveCh) {
-                          stdlog!("info", ("bonding distribution and actives before precharge and refund", initialBonds, initialActives, initialRewards)) |
-                          @PoS!("chargeDeploy", userDeployerId, userCharge, sysAuthToken, *retCh0) |
-                          @PoS!("refundDeploy", userRefund, sysAuthToken, *retCh1) |
-                          for (@(true, _) <- retCh0 &
-                               @(true, _) <- retCh1) {
-                            closeBlock!(*closeBlockCh) |
-                            for (_ <- closeBlockCh) {
-                              getPosBalance!(*finalPosBalanceCh) |
-                              @userVault!("balance", *finalUser1BalanceCh) |
-                              @PoS!("getRewards", *finalRewardsCh) |
-                              for (@finalPosBalance   <- finalPosBalanceCh &
-                                   @finalUser1Balance <- finalUser1BalanceCh &
-                                   @finalRewards      <- finalRewardsCh) {
-                                stdlog!("info", ("Final rewards", finalRewards)) |
-                                @ListOps!("fold", finalRewards.toList(), {}, *computeDelta, *deltaRewardsCh) |
-                                contract computeDelta(@(pk, finalReward), @acc, resultCh) = {
-                                  resultCh!(acc.set(pk, finalReward - initialRewards.getOrElse(pk, 0)))
-                                } |
-                                for (@deltaRewards <- deltaRewardsCh) {
-                                  @ListOps!("forall", deltaRewards, *isPositive, *allRewardsPositiveCh) |
-                                  contract isPositive(@n, resultCh) = {
-                                    resultCh!(n > 0)
-                                  } |
-                                  @ListOps!("fold", deltaRewards.toList(), 0, *sumDelta, *deltaSumCh) |
-                                  contract sumDelta(@(_, delta), @acc, resultCh) = {
-                                    resultCh!(acc + delta)
-                                  } |
-                                  rhoSpec!("assertMany",
-                                    [
-                                      ((userCharge - userRefund, "==", initialUser1Balance - finalUser1Balance), "the user account decreases"),
-                                      ((userCharge - userRefund, "==", finalPosBalance - initialPosBalance), "the pos account increases"),
-                                      //TODO: active validator stake-weighted reward
-                                      ((19, "==", finalRewards.get(validatorPubKey)), "the validator's finalRewards is as expected"),
-                                      //TODO use arbitrary precision numbers instead of long ints
-                                      ((98, "== <-", *deltaSumCh), "the sum difference should equal the payment"),
-                                      ((true, "== <-", *allRewardsPositiveCh), "the rewards can only grow")
-                                    ],
-                                    *ackCh
-                                  )
-                                }
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          } |
-
-          contract test_refund_succeeds(rhoSpec, _, ackCh) = {
-            new prepareUserAck,
-                bondAck,
-                closeBlockAck,
-                posBalanceCh,
-                userBalanceCh,
-                rewardsCh,
-                chargeDeployAck,
-                refundDeployAck,
-                computeDelta, deltaRewardsCh, deltaSumCh, sumDelta,
-                isPositive, allRewardsPositiveCh
-            in {
-              prepareUser!("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", *prepareUserAck) |
-              for (@validatorPubKey, _, _, @validatorDeployerId <- prepareUserAck) {
-                match (100, 100, 50) {
-                  (validatorBond, userCharge, userRefund) => {
-                    @PoS!("bond", validatorDeployerId, validatorBond, *bondAck) |
-                    for (@(true, _) <- bondAck) {
-                      closeBlock!(*closeBlockAck) |
-                      prepareUser!("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", *prepareUserAck) |
-                      for (_, _, @userVault, @userDeployerId <- prepareUserAck &
-                           _                                 <- closeBlockAck) {
-                        getPosBalance!(*posBalanceCh) |
-                        @userVault!("balance", *userBalanceCh) |
-                        @PoS!("getRewards", *rewardsCh) |
-                        for (@initialPosBalance  <- posBalanceCh &
-                             @initialUserBalance <- userBalanceCh &
-                             @initialRewards     <- rewardsCh) {
-                          @PoS!("chargeDeploy", userDeployerId, userCharge, sysAuthToken, *chargeDeployAck) |
-                          @PoS!("refundDeploy", userRefund, sysAuthToken, *refundDeployAck) |
-                          for (@(true, _) <- chargeDeployAck &
-                               @(true, _) <- refundDeployAck) {
-                            closeBlock!(*closeBlockAck) |
-                            for (_ <- closeBlockAck) {
-                              getPosBalance!(*posBalanceCh) |
-                              @userVault!("balance", *userBalanceCh) |
-                              @PoS!("getRewards", *rewardsCh) |
-                              for (@finalPosBalance  <- posBalanceCh &
-                                   @finalUserBalance <- userBalanceCh &
-                                   @finalRewards     <- rewardsCh) {
-                                @ListOps!("fold", finalRewards.toList(), {}, *computeDelta, *deltaRewardsCh) |
-                                contract computeDelta(@(pk, finalReward), @acc, resultCh) = {
-                                  resultCh!(acc.set(pk, finalReward - initialRewards.getOrElse(pk, 0)))
-                                } |
-                                for (@deltaRewards <- deltaRewardsCh) {
-                                  @ListOps!("forall", deltaRewards, *isPositive, *allRewardsPositiveCh) |
-                                  contract isPositive(@n, resultCh) = {
-                                    resultCh!(n > 0)
-                                  } |
-                                  @ListOps!("fold", deltaRewards.toList(), 0, *sumDelta, *deltaSumCh) |
-                                  contract sumDelta(@(_, delta), @acc, resultCh) = {
-                                    resultCh!(acc + delta)
-                                  } |
-                                  rhoSpec!("assertMany",
-                                    [
-                                      ((userCharge - userRefund, "==", initialUserBalance - finalUserBalance), "the user account decreases"),
-                                      ((userCharge - userRefund, "==", finalPosBalance - initialPosBalance), "the pos account increases"),
-                                      //TODO: active validator stake-weighted reward
-                                      ((8, "==", finalRewards.get(validatorPubKey)), "the validator's finalRewards is as expected"),
-                                      //TODO use arbitrary precision numbers instead of long ints
-                                      ((50, "== <-", *deltaSumCh), "the sum difference should equal the payment"),
-                                      ((true, "== <-", *allRewardsPositiveCh), "the rewards can only grow")
-                                    ],
-                                    *ackCh
-                                  )
-                                }
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          } |
-
           contract test_bonding_fails_if_deposit_fails(rhoSpec, _, ackCh) = {
             test_bonding_failure!(*rhoSpec, "6666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666", 20000, "Bond deposit failed: Insufficient funds", *ackCh)
           } |
 
           contract test_bonding_fails_if_bond_too_small(rhoSpec, _, ackCh) = {
-            test_bonding_failure!(*rhoSpec, "7777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777", -1, "Bond is less than minimum!", *ackCh)
+            test_bonding_failure!(*rhoSpec, "7777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777", -1, "Bond amount must be positive.", *ackCh)
           } |
 
           contract test_bonding_fails_if_already_bonded(rhoSpec, _, ackCh) = {
@@ -656,39 +486,6 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                       ],
                       *ackCh
                     )
-                  }
-                }
-              }
-            }
-          } |
-
-          contract test_dont_reward_inactive_validators(rhoSpec, _, ackCh) = {
-            new setupCh, closeBlockCh, chargeCh,
-                refundCh, finalRewardsCh
-            in {
-              prepareUser!("9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999", *setupCh) |
-              for (@validatorPubKey, _, _, @validatorDeployerId <- setupCh) {
-                @PoS!("bond", validatorDeployerId, 100, *setupCh) |
-                for (@(true, _) <- setupCh) {
-                  prepareUser!("0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000", *setupCh) |
-                  for (@user1PubKey, _, @user1Vault, @user1DeployerId <- setupCh) {
-                    @PoS!("chargeDeploy", user1DeployerId, 100, sysAuthToken, *chargeCh) |
-                    @PoS!("refundDeploy", 10, sysAuthToken, *refundCh) |
-                    for (@(true, _) <- chargeCh &
-                         @(true, _) <- refundCh) {
-                      closeBlock!(*closeBlockCh) |
-                      for (_ <- closeBlockCh) {
-                        @PoS!("getRewards", *finalRewardsCh) |
-                        for(@finalRewards <- finalRewardsCh) {
-                          rhoSpec!("assertMany",
-                            [
-                              ((0, "==", finalRewards.get(validatorPubKey)), "the new validator should have no reward")
-                            ],
-                            *ackCh
-                          )
-                        }
-                      }
-                    }
                   }
                 }
               }
@@ -782,7 +579,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
           contract test_slashing_vaults_and_state(rhoSpec, _, ackCh) = {
             new setInvalidBlocks(`rho:test:casper:invalidBlocks:set`),
                 computeHash(`rho:crypto:keccak256Hash`), hashCh, invalidBlocksSetCh,
-                initialBondSumCh, chargeCh, refundCh, initialCoopBalanceCh, finalCoopBalanceCh,
+                initialBondSumCh, initialCoopBalanceCh, finalCoopBalanceCh,
                 setupCh, slashCh, slashedPkCh, activeValidatorsCh, withdrawersCh,
                 finalQuarantinedStakeCh, finalMintingHaltedCh,
                 initialPosBalanceCh, finalPosBalanceCh,
@@ -798,13 +595,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                 for (@activeValidators   <- activeValidatorsCh &
                      @initialBonds       <- initialBondsCh &
                      @initialCoopBalance <- initialCoopBalanceCh) {
-                  match (100, 0) {
-                    (chargeAmt, refundAmt) => {
-                      @PoS!("chargeDeploy", userDeployerId, chargeAmt, sysAuthToken, *chargeCh) |
-                      @PoS!("refundDeploy", refundAmt, sysAuthToken, *refundCh) |
-                      for (@(true, _) <- chargeCh &
-                           @(true, _) <- refundCh) {
-                        match activeValidators.toList().nth(3) {
+                  match activeValidators.toList().nth(3) {
                           slashedValidator => {
                             computeHash!(slashedValidator, *hashCh) |
                             for (@hash <- hashCh) {
@@ -890,9 +681,6 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                               }
                             }
                           }
-                        }
-                      }
-                    }
                   }
                 }
               }
