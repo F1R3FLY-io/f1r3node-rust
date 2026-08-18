@@ -6,6 +6,7 @@ use casper::rust::rholang::runtime::RuntimeOps;
 use casper::rust::util::construct_deploy;
 use hex;
 use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::Expr;
 use node::rust::rho_trie_traverser::RhoTrieTraverser;
 use rand::prelude::*;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime; // Import trait for runtime methods
@@ -189,17 +190,17 @@ new
         let good_map = RhoTrieTraverser::vec_par_map_to_map(
             &maps,
             |p| {
-                if let Some(expr) = p.exprs.first() {
-                    if let Some(ExprInstance::GByteArray(bytes)) = &expr.expr_instance {
-                        return bytes.clone();
+                if let Some((expr, _)) = p.first::<Expr>().expect("resident expression decodes") {
+                    if let Some(ExprInstance::GByteArray(bytes)) = expr.expr_instance {
+                        return bytes;
                     }
                 }
                 panic!("Invalid key format");
             },
             |p| {
-                if let Some(expr) = p.exprs.first() {
-                    if let Some(ExprInstance::GInt(i)) = &expr.expr_instance {
-                        return *i;
+                if let Some((expr, _)) = p.first::<Expr>().expect("resident expression decodes") {
+                    if let Some(ExprInstance::GInt(i)) = expr.expr_instance {
+                        return i;
                     }
                 }
                 panic!("Invalid value format");
@@ -209,8 +210,11 @@ new
         // 12. Verify all inserted key-value pairs are present and correct
         for (key, value, _) in &insert_key_values {
             let hashed_key = RhoTrieTraverser::keccak_key(key);
-            if let Some(expr) = hashed_key.exprs.first() {
-                if let Some(ExprInstance::GByteArray(bytes)) = &expr.expr_instance {
+            if let Some((expr, _)) = hashed_key
+                .first::<Expr>()
+                .expect("resident expression decodes")
+            {
+                if let Some(ExprInstance::GByteArray(bytes)) = expr.expr_instance {
                     let key_vec = bytes[(trie_depth as usize)..32].to_vec();
 
                     match good_map.get(&key_vec) {

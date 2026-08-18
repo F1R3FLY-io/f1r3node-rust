@@ -2,7 +2,9 @@ use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
 
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{Bundle, EPathMap, Expr, Par};
+use models::rhoapi::{
+    Bundle, Connective, EPathMap, Expr, GUnforgeable, Match, New, Par, Receive, Send,
+};
 use models::rust::epathmap_trie_codec::EPathMapMode;
 use num_bigint::BigInt;
 
@@ -124,14 +126,14 @@ fn drive(root: Work) -> Option<RhoExpr> {
                 values.push(Some(value.unwrap_or_else(nil_expr)));
             }
             Work::Par(mut par) => {
-                let has_process_fields = !par.sends.is_empty()
-                    || !par.receives.is_empty()
-                    || !par.news.is_empty()
-                    || !par.matches.is_empty()
-                    || !par.connectives.is_empty();
-                let exprs = std::mem::take(&mut par.exprs);
-                let unforgeables = std::mem::take(&mut par.unforgeables);
-                let bundles = std::mem::take(&mut par.bundles);
+                let has_process_fields = par.family_cardinality::<Send>() != 0
+                    || par.family_cardinality::<Receive>() != 0
+                    || par.family_cardinality::<New>() != 0
+                    || par.family_cardinality::<Match>() != 0
+                    || par.family_cardinality::<Connective>() != 0;
+                let exprs = par.take_occurrences::<Expr>();
+                let unforgeables = par.take_occurrences::<GUnforgeable>();
+                let bundles = par.take_occurrences::<Bundle>();
                 let arity = exprs.len() + unforgeables.len() + bundles.len();
                 work.push(Work::FinishPar {
                     arity,

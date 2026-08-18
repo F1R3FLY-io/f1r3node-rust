@@ -8,26 +8,31 @@
 use std::collections::HashMap;
 
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{Bundle, EPathMap, Expr, Par};
+use models::rhoapi::{
+    Bundle, Connective, EPathMap, Expr, GUnforgeable, Match, New, Par, Receive, Send,
+};
 use models::rust::epathmap_trie_codec::EPathMapMode;
 use num_bigint::BigInt;
 
 use super::{extract_key_from_expr, unforg_from_proto, RhoExpr, RhoPathMap, RhoPathMapBinding};
 
 pub(super) fn from_par(mut par: Par) -> Option<RhoExpr> {
-    let has_process_fields = !par.sends.is_empty()
-        || !par.receives.is_empty()
-        || !par.news.is_empty()
-        || !par.matches.is_empty()
-        || !par.connectives.is_empty();
+    let has_process_fields = par.family_cardinality::<Send>() != 0
+        || par.family_cardinality::<Receive>() != 0
+        || par.family_cardinality::<New>() != 0
+        || par.family_cardinality::<Match>() != 0
+        || par.family_cardinality::<Connective>() != 0;
 
-    let exprs = std::mem::take(&mut par.exprs)
+    let exprs = par
+        .take_occurrences::<Expr>()
         .into_iter()
         .filter_map(from_expr);
-    let unforgeables = std::mem::take(&mut par.unforgeables)
+    let unforgeables = par
+        .take_occurrences::<GUnforgeable>()
         .into_iter()
         .filter_map(unforg_from_proto);
-    let bundles = std::mem::take(&mut par.bundles)
+    let bundles = par
+        .take_occurrences::<Bundle>()
         .into_iter()
         .filter_map(from_bundle);
     let data: Vec<_> = exprs.chain(unforgeables).chain(bundles).collect();

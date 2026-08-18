@@ -64,7 +64,7 @@ pub async fn get_data_at(
 
     data.into_iter()
         .flat_map(|mut par| {
-            std::mem::take(&mut par.exprs)
+            par.take_occurrences::<Expr>()
                 .into_iter()
                 .map(|expr| PrettyPrinter::new().build_string_from_expr(&expr))
         })

@@ -120,23 +120,23 @@ pub fn decode_balance_datum(data: &[Par]) -> i64 {
 /// Decode a single par as a `(TOKEN_TAG, n)` balance tuple, if it is one.
 fn decode_one_balance_par(par: &Par) -> Option<i64> {
     // A balance datum is a single ETuple expr of arity 2: (GString TOKEN_TAG, GInt n).
-    let expr = par.exprs.first()?;
-    let ETuple { ps, .. } = match expr.expr_instance.as_ref()? {
+    let expr = par.first::<Expr>().ok()??.0;
+    let ETuple { ps, .. } = match expr.expr_instance? {
         ExprInstance::ETupleBody(etuple) => etuple,
         _ => return None,
     };
     if ps.len() != 2 {
         return None;
     }
-    let tag = match ps[0].exprs.first()?.expr_instance.as_ref()? {
-        ExprInstance::GString(s) => s.as_str(),
+    let tag = match ps[0].first::<Expr>().ok()??.0.expr_instance? {
+        ExprInstance::GString(s) => s,
         _ => return None,
     };
     if tag != TOKEN_TAG {
         return None;
     }
-    match ps[1].exprs.first()?.expr_instance.as_ref()? {
-        ExprInstance::GInt(n) => Some(*n),
+    match ps[1].first::<Expr>().ok()??.0.expr_instance? {
+        ExprInstance::GInt(n) => Some(n),
         _ => None,
     }
 }

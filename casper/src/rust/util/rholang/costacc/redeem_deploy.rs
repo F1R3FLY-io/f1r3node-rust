@@ -430,7 +430,11 @@ mod tests {
         let g = RedemptionOutcome::Guilty { penalty: 7 }.to_rholang_par();
         let b = RedemptionOutcome::Burned.to_rholang_par();
         for p in [&v, &g, &b] {
-            assert_eq!(p.exprs.len(), 1, "outcome par is a single tuple expr");
+            assert_eq!(
+                p.family_cardinality::<models::rhoapi::Expr>(),
+                1,
+                "outcome par is a single tuple expr"
+            );
         }
     }
 }

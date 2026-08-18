@@ -12,7 +12,7 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{
-    BindPattern, GPrivate, GUnforgeable, ListParWithRandom, Par, TaggedContinuation,
+    BindPattern, Expr, GPrivate, GUnforgeable, ListParWithRandom, Par, TaggedContinuation,
 };
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
@@ -1593,23 +1593,30 @@ impl RuntimeOps {
     }
 
     fn to_validator_vec(validators_par: Par) -> Result<Vec<Validator>, CasperError> {
-        if validators_par.exprs.is_empty() {
+        let Some((validators_expr, _)) = validators_par
+            .first::<Expr>()
+            .map_err(|error| CasperError::RuntimeError(error.to_string()))?
+        else {
             return Ok(Vec::new());
-        }
+        };
 
-        let ps = match validators_par.exprs[0].expr_instance.as_ref().unwrap() {
-            ExprInstance::ESetBody(set) => ParSetTypeMapper::eset_to_par_set(set.clone()).ps,
+        let ps = match validators_expr.expr_instance {
+            Some(ExprInstance::ESetBody(set)) => ParSetTypeMapper::eset_to_par_set(set).ps,
             _ => SortedParHashSet::create_from_empty(),
         };
 
         ps.map_iter(|v| {
-            if v.exprs.len() != 1 {
+            if v.family_cardinality::<Expr>() != 1 {
                 Err(CasperError::RuntimeError(
                     "Validator in bonds map wasn't a single string.".to_string(),
                 ))
             } else {
-                match v.exprs[0].expr_instance.as_ref().unwrap() {
-                    ExprInstance::GByteArray(g_byte_array) => Ok(g_byte_array.clone().into()),
+                match v
+                    .first::<Expr>()
+                    .map_err(|error| CasperError::RuntimeError(error.to_string()))?
+                    .and_then(|(expr, _)| expr.expr_instance)
+                {
+                    Some(ExprInstance::GByteArray(g_byte_array)) => Ok(g_byte_array.into()),
                     _ => Err(CasperError::RuntimeError(
                         "Expected GByteArray in validator data".to_string(),
                     )),
@@ -1620,34 +1627,45 @@ impl RuntimeOps {
     }
 
     fn to_bond_vec(bonds_map: Par) -> Result<Vec<Bond>, CasperError> {
-        if bonds_map.exprs.is_empty() {
+        let Some((bonds_expr, _)) = bonds_map
+            .first::<Expr>()
+            .map_err(|error| CasperError::RuntimeError(error.to_string()))?
+        else {
             return Ok(Vec::new());
-        }
+        };
 
-        let ps = match bonds_map.exprs[0].expr_instance.as_ref().unwrap() {
-            ExprInstance::EMapBody(map) => ParMapTypeMapper::emap_to_par_map(map.clone()).ps,
+        let ps = match bonds_expr.expr_instance {
+            Some(ExprInstance::EMapBody(map)) => ParMapTypeMapper::emap_to_par_map(map).ps,
             _ => SortedParMap::create_from_empty(),
         };
 
         ps.map_iter(|(validator, bond)| {
-            if validator.exprs.len() != 1 {
+            if validator.family_cardinality::<Expr>() != 1 {
                 Err(CasperError::RuntimeError(
                     "Validator in bonds map wasn't a single string.".to_string(),
                 ))
-            } else if bond.exprs.len() != 1 {
+            } else if bond.family_cardinality::<Expr>() != 1 {
                 Err(CasperError::RuntimeError(
                     "Stake in bonds map wasn't a single string.".to_string(),
                 ))
             } else {
-                let validator_name = match validator.exprs[0].expr_instance.as_ref().unwrap() {
-                    ExprInstance::GByteArray(g_byte_array) => Ok(g_byte_array.clone().into()),
+                let validator_name = match validator
+                    .first::<Expr>()
+                    .map_err(|error| CasperError::RuntimeError(error.to_string()))?
+                    .and_then(|(expr, _)| expr.expr_instance)
+                {
+                    Some(ExprInstance::GByteArray(g_byte_array)) => Ok(g_byte_array.into()),
                     _ => Err(CasperError::RuntimeError(
                         "Expected GByteArray in validator data".to_string(),
                     )),
                 }?;
 
-                let stake_amount = match bond.exprs[0].expr_instance.as_ref().unwrap() {
-                    ExprInstance::GInt(g_int) => Ok(*g_int),
+                let stake_amount = match bond
+                    .first::<Expr>()
+                    .map_err(|error| CasperError::RuntimeError(error.to_string()))?
+                    .and_then(|(expr, _)| expr.expr_instance)
+                {
+                    Some(ExprInstance::GInt(g_int)) => Ok(g_int),
                     _ => Err(CasperError::RuntimeError(
                         "Expected GInt in stake data".to_string(),
                     )),

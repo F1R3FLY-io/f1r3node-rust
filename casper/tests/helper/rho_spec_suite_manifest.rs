@@ -73,12 +73,13 @@ use std::fmt;
 use casper::rust::helper::test_result_collector::TestResult;
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{EPathMap, ETuple, Expr, Par};
+use models::rhoapi::{
+    Bundle, Connective, EPathMap, ETuple, Expr, If, Match, New, Par, Receive, Send,
+};
 use models::rust::canonical_path::decode_trie_path;
 use models::rust::epathmap_trie_codec::EPathMapMode;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::errors::InterpreterError;
-use typed_arena::Arena;
 
 /// The method name `RhoSpecContract.rho` dispatches a suite registration on.
 const TEST_SUITE_SELECTOR: &str = "testSuite";
@@ -244,56 +245,55 @@ pub fn registered_test_names(source: &str) -> Result<BTreeSet<String>, Interpret
 /// eight `new`/`for` levels before its registration) and this runs inside a `#[tokio::test]`
 /// worker whose stack is not the main thread's.
 pub fn collect_registered_test_names(root: &Par, names: &mut BTreeSet<String>) {
-    let arena = Arena::new();
-    let mut work: Vec<&Par> = vec![root];
+    let mut work = vec![root.clone()];
 
     while let Some(par) = work.pop() {
-        for send in &par.sends {
+        for send in par.decode_occurrences::<Send>() {
             if send.data.iter().any(is_test_suite_selector) {
                 harvest_registration(&send.data, names);
             }
-            work.extend(send.chan.as_ref());
-            work.extend(send.data.iter());
+            work.extend(send.chan);
+            work.extend(send.data);
         }
 
-        for receive in &par.receives {
-            for bind in &receive.binds {
-                work.extend(bind.patterns.iter());
-                work.extend(bind.source.as_ref());
+        for receive in par.decode_occurrences::<Receive>() {
+            for bind in receive.binds {
+                work.extend(bind.patterns);
+                work.extend(bind.source);
             }
-            work.extend(receive.body.as_ref());
-            work.extend(receive.condition.as_ref());
+            work.extend(receive.body);
+            work.extend(receive.condition);
         }
 
-        for new in &par.news {
-            work.extend(new.p.as_ref());
+        for new in par.decode_occurrences::<New>() {
+            work.extend(new.p);
         }
 
-        for r#match in &par.matches {
-            work.extend(r#match.target.as_ref());
-            for case in &r#match.cases {
-                work.extend(case.pattern.as_ref());
-                work.extend(case.source.as_ref());
-                work.extend(case.guard.as_ref());
+        for r#match in par.decode_occurrences::<Match>() {
+            work.extend(r#match.target);
+            for case in r#match.cases {
+                work.extend(case.pattern);
+                work.extend(case.source);
+                work.extend(case.guard);
             }
         }
 
-        for bundle in &par.bundles {
-            work.extend(bundle.body.as_ref());
+        for bundle in par.decode_occurrences::<Bundle>() {
+            work.extend(bundle.body);
         }
 
-        for conditional in &par.conditionals {
-            work.extend(conditional.condition.as_ref());
-            work.extend(conditional.if_true.as_ref());
-            work.extend(conditional.if_false.as_ref());
+        for conditional in par.decode_occurrences::<If>() {
+            work.extend(conditional.condition);
+            work.extend(conditional.if_true);
+            work.extend(conditional.if_false);
         }
 
-        for expr in &par.exprs {
-            push_expr_children(expr, &mut work, &arena);
+        for expr in par.decode_occurrences::<Expr>() {
+            push_expr_children(&expr, &mut work);
         }
 
-        for connective in &par.connectives {
-            push_connective_children(connective, &mut work);
+        for connective in par.decode_occurrences::<Connective>() {
+            push_connective_children(&connective, &mut work);
         }
     }
 }
@@ -305,8 +305,8 @@ pub fn collect_registered_test_names(root: &Par, names: &mut BTreeSet<String>) {
 /// carries exactly one list, so scanning all arguments cannot pick up a second one.
 fn harvest_registration(data: &[Par], names: &mut BTreeSet<String>) {
     for argument in data {
-        for expr in &argument.exprs {
-            let Some(ExprInstance::EListBody(list)) = &expr.expr_instance else {
+        for expr in argument.decode_occurrences::<Expr>() {
+            let Some(ExprInstance::EListBody(list)) = expr.expr_instance else {
                 continue;
             };
             for element in &list.ps {
@@ -320,16 +320,12 @@ fn harvest_registration(data: &[Par], names: &mut BTreeSet<String>) {
 
 /// The leading string of a `(name, *body)` (or `(name, *body, attempts)`) registration tuple.
 fn registered_name_of(element: &Par) -> Option<String> {
-    let [Expr {
-        expr_instance: Some(ExprInstance::ETupleBody(ETuple { ps, .. })),
-    }] = element.exprs.as_slice()
-    else {
+    let (expr, _) = element.first::<Expr>().ok()??;
+    let ExprInstance::ETupleBody(ETuple { ps, .. }) = expr.expr_instance? else {
         return None;
     };
-    match ps.first()?.exprs.as_slice() {
-        [Expr {
-            expr_instance: Some(ExprInstance::GString(name)),
-        }] => Some(name.clone()),
+    match ps.first()?.first::<Expr>().ok()??.0.expr_instance {
+        Some(ExprInstance::GString(name)) => Some(name),
         _ => None,
     }
 }
@@ -337,10 +333,10 @@ fn registered_name_of(element: &Par) -> Option<String> {
 /// Whether this argument is the literal `"testSuite"`.
 fn is_test_suite_selector(argument: &Par) -> bool {
     matches!(
-        argument.exprs.as_slice(),
-        [Expr {
+        argument.first::<Expr>().ok().flatten(),
+        Some((Expr {
             expr_instance: Some(ExprInstance::GString(selector)),
-        }] if selector == TEST_SUITE_SELECTOR
+        }, _)) if selector == TEST_SUITE_SELECTOR
     )
 }
 
@@ -350,7 +346,7 @@ fn is_test_suite_selector(argument: &Par) -> bool {
 /// `ExprInstance` variant must break this build, because a variant handled by a wildcard is a
 /// variant whose sub-terms are never searched, and an under-reporting extractor turns the floor
 /// in `RhoSpec::run_tests` back into the vacuity it replaced.
-fn push_expr_children<'a>(expr: &'a Expr, work: &mut Vec<&'a Par>, arena: &'a Arena<Par>) {
+fn push_expr_children(expr: &Expr, work: &mut Vec<Par>) {
     let Some(instance) = &expr.expr_instance else {
         return;
     };
@@ -371,8 +367,8 @@ fn push_expr_children<'a>(expr: &'a Expr, work: &mut Vec<&'a Par>, arena: &'a Ar
         ExprInstance::EVarBody(_) => {}
 
         // Unary.
-        ExprInstance::ENotBody(e) => work.extend(e.p.as_ref()),
-        ExprInstance::ENegBody(e) => work.extend(e.p.as_ref()),
+        ExprInstance::ENotBody(e) => work.extend(e.p.clone()),
+        ExprInstance::ENegBody(e) => work.extend(e.p.clone()),
 
         // Binary — arithmetic, comparison, logical, string, collection.
         ExprInstance::EMultBody(e) => push_pair(work, &e.p1, &e.p2),
@@ -394,34 +390,30 @@ fn push_expr_children<'a>(expr: &'a Expr, work: &mut Vec<&'a Par>, arena: &'a Ar
         ExprInstance::EMatchesBody(e) => push_pair(work, &e.target, &e.pattern),
 
         // Collection literals hold quoted processes directly.
-        ExprInstance::EListBody(e) => work.extend(e.ps.iter()),
-        ExprInstance::ETupleBody(e) => work.extend(e.ps.iter()),
-        ExprInstance::ESetBody(e) => work.extend(e.ps.iter()),
+        ExprInstance::EListBody(e) => work.extend(e.ps.iter().cloned()),
+        ExprInstance::ETupleBody(e) => work.extend(e.ps.iter().cloned()),
+        ExprInstance::ESetBody(e) => work.extend(e.ps.iter().cloned()),
         ExprInstance::EMapBody(e) => {
             for kv in &e.kvs {
                 push_pair(work, &kv.key, &kv.value);
             }
         }
-        ExprInstance::EPathmapBody(e) => push_epathmap_children(e, work, arena),
+        ExprInstance::EPathmapBody(e) => push_epathmap_children(e, work),
         ExprInstance::EZipperBody(e) => {
             if let Some(pathmap) = &e.pathmap {
-                push_epathmap_children(pathmap, work, arena);
+                push_epathmap_children(pathmap, work);
             }
         }
 
         // A method call's receiver and arguments are processes.
         ExprInstance::EMethodBody(e) => {
-            work.extend(e.target.as_ref());
-            work.extend(e.arguments.iter());
+            work.extend(e.target.clone());
+            work.extend(e.arguments.iter().cloned());
         }
     }
 }
 
-fn push_epathmap_children<'a>(
-    epathmap: &'a EPathMap,
-    work: &mut Vec<&'a Par>,
-    arena: &'a Arena<Par>,
-) {
+fn push_epathmap_children(epathmap: &EPathMap, work: &mut Vec<Par>) {
     match epathmap.mode() {
         EPathMapMode::Empty => {}
         EPathMapMode::Set => epathmap
@@ -429,7 +421,7 @@ fn push_epathmap_children<'a>(
             .for_each_raw_set_entry(|key| {
                 let par = decode_trie_path(key)
                     .expect("set-mode EPathMap keys are canonical_path encodings");
-                work.push(&*arena.alloc(par));
+                work.push(par);
             })
             .expect("the EPathMap mode was checked before set traversal"),
         EPathMapMode::Map => epathmap
@@ -437,8 +429,8 @@ fn push_epathmap_children<'a>(
             .for_each_raw_map_entry(|key, value| {
                 let key = decode_trie_path(key)
                     .expect("map-mode EPathMap keys are canonical_path encodings");
-                work.push(&*arena.alloc(key));
-                work.push(value);
+                work.push(key);
+                work.push(value.clone());
             })
             .expect("the EPathMap mode was checked before map traversal"),
     }
@@ -447,18 +439,15 @@ fn push_epathmap_children<'a>(
 /// Every `Par` reachable from a connective (a pattern-level term), pushed onto the worklist.
 ///
 /// ⚠ Exhaustive for the same reason as [`push_expr_children`].
-fn push_connective_children<'a>(
-    connective: &'a models::rhoapi::Connective,
-    work: &mut Vec<&'a Par>,
-) {
+fn push_connective_children(connective: &models::rhoapi::Connective, work: &mut Vec<Par>) {
     let Some(instance) = &connective.connective_instance else {
         return;
     };
 
     match instance {
-        ConnectiveInstance::ConnAndBody(body) => work.extend(body.ps.iter()),
-        ConnectiveInstance::ConnOrBody(body) => work.extend(body.ps.iter()),
-        ConnectiveInstance::ConnNotBody(par) => work.push(par),
+        ConnectiveInstance::ConnAndBody(body) => work.extend(body.ps.iter().cloned()),
+        ConnectiveInstance::ConnOrBody(body) => work.extend(body.ps.iter().cloned()),
+        ConnectiveInstance::ConnNotBody(par) => work.push(par.clone()),
         // A variable reference and the type connectives carry no sub-process.
         ConnectiveInstance::VarRefBody(_)
         | ConnectiveInstance::ConnBool(_)
@@ -469,7 +458,7 @@ fn push_connective_children<'a>(
     }
 }
 
-fn push_pair<'a>(work: &mut Vec<&'a Par>, left: &'a Option<Par>, right: &'a Option<Par>) {
-    work.extend(left.as_ref());
-    work.extend(right.as_ref());
+fn push_pair(work: &mut Vec<Par>, left: &Option<Par>, right: &Option<Par>) {
+    work.extend(left.clone());
+    work.extend(right.clone());
 }

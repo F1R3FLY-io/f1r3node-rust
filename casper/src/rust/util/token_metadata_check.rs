@@ -12,7 +12,7 @@
 // would fail to sign the UnapprovedBlock and the ceremony would stall without
 // a clear reason.
 
-use models::rhoapi::Par;
+use models::rhoapi::{Expr, Par};
 use models::rust::block::state_hash::StateHash;
 use rholang::rust::interpreter::rho_type::{RhoNumber, RhoString};
 
@@ -54,8 +54,8 @@ pub async fn read_on_chain_token_metadata(
 }
 
 fn parse_all_tuple(par: &Par) -> Option<(String, String, u32)> {
-    let expr = par.exprs.first()?;
-    let etuple = match expr.expr_instance.as_ref()? {
+    let expr = par.first::<Expr>().ok()??.0;
+    let etuple = match expr.expr_instance? {
         models::rhoapi::expr::ExprInstance::ETupleBody(t) => t,
         _ => return None,
     };

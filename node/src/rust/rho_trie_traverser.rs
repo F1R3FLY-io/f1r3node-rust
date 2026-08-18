@@ -78,9 +78,9 @@ impl RhoTrieTraverser {
         mut acc: Vec<i32>,
     ) -> Vec<i32> {
         let bytes = binary_array
-            .exprs
-            .first()
-            .and_then(|expr| expr.expr_instance.as_ref())
+            .first::<Expr>()
+            .expect("resident expression decodes")
+            .and_then(|(expr, _)| expr.expr_instance)
             .and_then(|instance| match instance {
                 ExprInstance::GByteArray(bytes) => Some(bytes),
                 _ => None,
@@ -108,8 +108,8 @@ impl RhoTrieTraverser {
     /// # Panics
     /// Panics if the Par is not a valid byte array or index is out of bounds
     pub fn nth_of_par(p: &Par, nth: usize) -> i32 {
-        if let Some(expr) = p.exprs.first() {
-            if let Some(ExprInstance::GByteArray(bs)) = &expr.expr_instance {
+        if let Some((expr, _)) = p.first::<Expr>().expect("resident expression decodes") {
+            if let Some(ExprInstance::GByteArray(bs)) = expr.expr_instance {
                 if nth < bs.len() {
                     return bs[nth] as i32; // convert to unsigned
                 }
@@ -272,12 +272,15 @@ impl RhoTrieTraverser {
 
         if let Some(first) = result.first() {
             if let Some(head_par) = first.a.pars.first() {
-                if let Some(head_expr) = head_par.exprs.first() {
-                    match &head_expr.expr_instance {
-                        Some(ExprInstance::GInt(i)) => return Ok(Some(Ok(*i))),
+                if let Some((head_expr, _)) = head_par
+                    .first::<Expr>()
+                    .expect("resident expression decodes")
+                {
+                    match head_expr.expr_instance {
+                        Some(ExprInstance::GInt(i)) => return Ok(Some(Ok(i))),
                         Some(ExprInstance::EMapBody(emap)) => {
                             // Convert EMap to ParMap using the existing mapper
-                            let par_map = ParMapTypeMapper::emap_to_par_map(emap.clone());
+                            let par_map = ParMapTypeMapper::emap_to_par_map(emap);
                             return Ok(Some(Err(par_map)));
                         }
                         _ => return Ok(None),
@@ -426,7 +429,7 @@ mod tests {
     fn test_keccak_key() {
         let key = RhoTrieTraverser::keccak_key("test");
         // Verify it's a byte array
-        if let Some(expr) = key.exprs.first() {
+        if let Some((expr, _)) = key.first::<Expr>().expect("resident expression decodes") {
             assert!(matches!(
                 expr.expr_instance,
                 Some(ExprInstance::GByteArray(_))
@@ -439,13 +442,15 @@ mod tests {
         let nyb_list = vec![1, 2, 3];
         let result = RhoTrieTraverser::node_list(&nyb_list);
 
-        if let Some(expr) = result.exprs.first() {
-            if let Some(ExprInstance::EListBody(elist)) = &expr.expr_instance {
+        if let Some((expr, _)) = result.first::<Expr>().expect("resident expression decodes") {
+            if let Some(ExprInstance::EListBody(elist)) = expr.expr_instance {
                 assert_eq!(elist.ps.len(), 3);
                 for (i, par) in elist.ps.iter().enumerate() {
-                    if let Some(par_expr) = par.exprs.first() {
-                        if let Some(ExprInstance::GInt(val)) = &par_expr.expr_instance {
-                            assert_eq!(*val, nyb_list[i] as i64);
+                    if let Some((par_expr, _)) =
+                        par.first::<Expr>().expect("resident expression decodes")
+                    {
+                        if let Some(ExprInstance::GInt(val)) = par_expr.expr_instance {
+                            assert_eq!(val, nyb_list[i] as i64);
                         }
                     }
                 }
@@ -477,9 +482,12 @@ mod tests {
         assert_eq!(token1, token2);
 
         // Verify the structure
-        assert_eq!(token1.unforgeables.len(), 1);
-        if let Some(unforgeable) = token1.unforgeables.first() {
-            if let Some(UnfInstance::GPrivateBody(private)) = &unforgeable.unf_instance {
+        assert_eq!(token1.family_cardinality::<GUnforgeable>(), 1);
+        if let Some((unforgeable, _)) = token1
+            .first::<GUnforgeable>()
+            .expect("resident unforgeable decodes")
+        {
+            if let Some(UnfInstance::GPrivateBody(private)) = unforgeable.unf_instance {
                 // Verify the ID is the expected length (32 bytes for Blake2b512Random.next())
                 assert_eq!(private.id.len(), 32);
 

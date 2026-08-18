@@ -1625,7 +1625,7 @@ async fn pos_validator_is_halted(
     // still in `mintingHalted` (halted), false iff un-halted (restored).
     results
         .iter()
-        .flat_map(|p| p.exprs.iter())
+        .flat_map(|p| p.decode_occurrences::<models::rhoapi::Expr>().into_iter())
         .find_map(|e| match e.expr_instance {
             Some(ExprInstance::GBool(b)) => Some(b),
             _ => None,

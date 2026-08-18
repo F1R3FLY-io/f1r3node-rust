@@ -121,8 +121,17 @@ mod tests {
 
         // Basic Par serialization should work
         assert!(json.contains("42"));
-        assert_eq!(par.sends.len(), decoded.sends.len());
-        assert_eq!(par.receives.len(), decoded.receives.len());
-        assert_eq!(par.exprs.len(), decoded.exprs.len());
+        assert_eq!(
+            par.family_cardinality::<models::rhoapi::Send>(),
+            decoded.family_cardinality::<models::rhoapi::Send>()
+        );
+        assert_eq!(
+            par.family_cardinality::<models::rhoapi::Receive>(),
+            decoded.family_cardinality::<models::rhoapi::Receive>()
+        );
+        assert_eq!(
+            par.family_cardinality::<models::rhoapi::Expr>(),
+            decoded.family_cardinality::<models::rhoapi::Expr>()
+        );
     }
 }

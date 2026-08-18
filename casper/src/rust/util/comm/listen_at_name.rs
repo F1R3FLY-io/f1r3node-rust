@@ -162,9 +162,13 @@ mod tests {
         assert!(result.is_ok());
 
         let par = result.unwrap();
-        assert!(!par.unforgeables.is_empty());
+        assert_ne!(par.family_cardinality::<models::rhoapi::GUnforgeable>(), 0);
         assert!(matches!(
-            par.unforgeables[0].unf_instance,
+            par.first::<models::rhoapi::GUnforgeable>()
+                .expect("resident unforgeable decodes")
+                .expect("private name carries one unforgeable")
+                .0
+                .unf_instance,
             Some(models::rhoapi::g_unforgeable::UnfInstance::GPrivateBody(_))
         ));
     }
