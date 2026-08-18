@@ -22,8 +22,8 @@ use futures::stream::StreamExt;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    ApprovedBlock, BlockMessage, CasperMessage, MergeableEntryRequest, MergeableEntryResponse,
-    StoreItemsMessage, StoreItemsMessageRequest,
+    ApprovedBlock, BlockMessage, CasperMessage, FloorCacheResponse, MergeableEntryRequest,
+    MergeableEntryResponse, StoreItemsMessage, StoreItemsMessageRequest,
 };
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
@@ -126,6 +126,32 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
     /// Handed through to Running: routes incoming `StoreItemsMessage`s to the
     /// runtime state requester once this node is past its restore.
     state_items_tx: Option<mpsc::Sender<StoreItemsMessage>>,
+    /// Routes incoming `FloorCacheResponse`s to `request_floor_cache`. Created
+    /// internally; both halves live here like the other sync channels.
+    floor_cache_tx: Arc<Mutex<Option<mpsc::Sender<FloorCacheResponse>>>>,
+    floor_cache_rx: Arc<Mutex<Option<mpsc::Receiver<FloorCacheResponse>>>>,
+}
+
+/// Write shipped floor-cache entries into the DAG's floor and frontier
+/// indices. Only entries that were SOLICITED and whose block this node holds
+/// are written — a peer cannot seed floors for blocks we did not ask about.
+/// The floor value itself may sit below the held window; a later walk that
+/// needs it defers and names it, which is one bounded fetch, not a crawl.
+fn apply_floor_cache_entries(
+    dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
+    solicited: &HashSet<BlockHash>,
+    entries: Vec<models::rust::casper::protocol::casper_message::FloorCacheEntry>,
+) -> Result<usize, CasperError> {
+    let mut written = 0usize;
+    for entry in entries {
+        if !solicited.contains(&entry.block_hash) || !dag.contains(&entry.block_hash) {
+            continue;
+        }
+        dag.put_cached_floor(entry.block_hash.clone(), entry.floor_hash)?;
+        dag.put_cached_frontier(entry.block_hash, entry.frontier_hash)?;
+        written += 1;
+    }
+    Ok(written)
 }
 
 impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
@@ -170,6 +196,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
         state_items_tx: Option<mpsc::Sender<StoreItemsMessage>>,
     ) -> Self {
+        let (floor_cache_tx, floor_cache_rx) = mpsc::channel::<FloorCacheResponse>(4);
         let state = Self {
             transport_layer,
             rp_conf_ask,
@@ -207,6 +234,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             estimator: Arc::new(Mutex::new(Some(estimator))),
             heartbeat_signal_ref,
             state_items_tx,
+            floor_cache_tx: Arc::new(Mutex::new(Some(floor_cache_tx))),
+            floor_cache_rx: Arc::new(Mutex::new(Some(floor_cache_rx))),
         };
         metrics::gauge!(
             INIT_BLOCK_MESSAGE_QUEUE_PENDING_METRIC,
@@ -380,6 +409,18 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
                     tracing::warn!(
                         "mergeable_message_tx sender is None; mergeable channel not available (message dropped)"
                     );
+                }
+                Ok(())
+            }
+            CasperMessage::FloorCacheResponse(resp) => {
+                let sender = self.floor_cache_tx.lock().unwrap().as_ref().cloned();
+                if let Some(tx) = sender {
+                    if tx.try_send(resp).is_err() {
+                        tracing::warn!(
+                            "floor-cache channel full or closed; dropping response (the \
+                             request loop re-asks)"
+                        );
+                    }
                 }
                 Ok(())
             }
@@ -803,6 +844,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             // hash, and a floor entry pointing at a block the DAG does not hold
             // reads back as a missing block rather than as a floor.
             self.seed_floor_caches(approved_block)?;
+            self.request_floor_cache(approved_block).await;
         } else {
             tracing::warn!(
                 "request_approved_state: block_request_stream returned no final state (None)"
@@ -954,6 +996,81 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 Either::Right(ValidBlock::Valid) => true,
                 _ => false,
             }
+        }
+    }
+
+    /// Receive finality for the restored window instead of re-deriving it.
+    ///
+    /// `floor_of_block` recurses until a CACHED floor or genesis, and a
+    /// restored node has cached floors for nothing below its anchor — so the
+    /// first sibling-branch validation walks toward genesis, surfacing one
+    /// missing ancient block per retry cycle. The responder computed every
+    /// window block's floor when it validated it; asking for those values
+    /// makes the recursion terminate inside the window at any chain height,
+    /// for O(window) bytes.
+    ///
+    /// Failure degrades to that crawl — alive and alarmed, never a wedge — so
+    /// this never fails the restore.
+    async fn request_floor_cache(&self, approved_block: &ApprovedBlock) {
+        const ATTEMPTS: u32 = 3;
+        const RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
+
+        // A genesis-anchored restore holds a parentless root, so every floor
+        // derivation terminates locally — the same discriminator guard_deferral
+        // and the settled door use. Nothing to ask for.
+        if proto_util::block_number(&approved_block.candidate.block) == 0 {
+            return;
+        }
+
+        let result: Result<(), CasperError> = async {
+            let dag = self.block_dag_storage.get_representation()?;
+            let hashes: Vec<BlockHash> = dag.dag_set.iter().cloned().collect();
+            let solicited: HashSet<BlockHash> = hashes.iter().cloned().collect();
+            let mut rx = self.floor_cache_rx.lock().unwrap().take().ok_or_else(|| {
+                CasperError::RuntimeError("floor-cache receiver not available".to_string())
+            })?;
+
+            let request = models::rust::casper::protocol::casper_message::FloorCacheRequest {
+                hashes: hashes.clone(),
+            };
+            for attempt in 1..=ATTEMPTS {
+                self.transport_layer
+                    .send_to_bootstrap(&self.rp_conf_ask, Arc::new(request.clone().to_proto()))
+                    .await?;
+                match tokio::time::timeout(RESPONSE_TIMEOUT, rx.recv()).await {
+                    Ok(Some(response)) => {
+                        let written =
+                            apply_floor_cache_entries(&dag, &solicited, response.entries)?;
+                        tracing::info!(
+                            written,
+                            requested = hashes.len(),
+                            "Floor cache received: restored blocks carry their finality"
+                        );
+                        return Ok(());
+                    }
+                    Ok(None) => {
+                        return Err(CasperError::RuntimeError(
+                            "floor-cache channel closed".to_string(),
+                        ));
+                    }
+                    Err(_) => {
+                        tracing::warn!(attempt, "floor-cache request timed out; retrying");
+                    }
+                }
+            }
+            Err(CasperError::RuntimeError(format!(
+                "no floor-cache response after {} attempts",
+                ATTEMPTS
+            )))
+        }
+        .await;
+
+        if let Err(e) = result {
+            tracing::warn!(
+                error = %e,
+                "Proceeding without the shipped floor cache: sibling-branch validation \
+                 will re-derive finality gap-by-gap (slow, not wrong)"
+            );
         }
     }
 
@@ -1683,6 +1800,78 @@ mod tests {
     use super::*;
 
     fn hash(tag: &[u8]) -> BlockHash { BlockHash::from(tag.to_vec()) }
+
+    /// Shipped floor entries are written only for blocks this node asked about
+    /// AND holds. Anything else in the response is a peer trying to seed
+    /// finality for blocks outside the window — ignored, not an error, so a
+    /// partially-covering response still lands everything legitimate.
+    #[test]
+    fn shipped_floor_entries_apply_only_to_solicited_held_blocks() {
+        use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+        use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+        use models::rust::casper::protocol::casper_message::FloorCacheEntry;
+        use parking_lot::RwLock as PlRwLock;
+        use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+        use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+
+        let held = BlockHash::from(vec![0x11; 32]);
+        let unheld = BlockHash::from(vec![0x22; 32]);
+        let floor = BlockHash::from(vec![0x33; 32]);
+
+        let mut dag_set = imbl::HashSet::new();
+        dag_set.insert(held.clone());
+        let dag = KeyValueDagRepresentation {
+            dag_set,
+            latest_messages_map: imbl::HashMap::new(),
+            child_map: imbl::HashMap::new(),
+            height_map: imbl::OrdMap::new(),
+            block_number_map: imbl::HashMap::new(),
+            main_parent_map: imbl::HashMap::new(),
+            self_justification_map: imbl::HashMap::new(),
+            invalid_blocks_set: imbl::HashSet::new(),
+            last_finalized_block_hash: prost::bytes::Bytes::new(),
+            finalized_blocks_set: imbl::HashSet::new(),
+            block_metadata_index: Arc::new(PlRwLock::new(BlockMetadataStore::new(
+                KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            ))),
+            floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            lifecycle: Arc::new(parking_lot::RwLock::new(
+                block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(
+                ),
+            )),
+        };
+
+        let entry = |hash: &BlockHash| FloorCacheEntry {
+            block_hash: hash.clone(),
+            floor_hash: floor.clone(),
+            frontier_hash: floor.clone(),
+        };
+        let solicited = HashSet::from([held.clone(), unheld.clone()]);
+        let written = apply_floor_cache_entries(&dag, &solicited, vec![
+            entry(&held),
+            entry(&unheld),
+            entry(&BlockHash::from(vec![0x44; 32])),
+        ])
+        .expect("apply");
+
+        assert_eq!(
+            written, 1,
+            "only the solicited AND held block is written; the unheld and the \
+             unsolicited entries are ignored"
+        );
+        assert_eq!(
+            dag.get_cached_floor(&held).expect("read"),
+            Some(floor.clone()),
+            "the held block's floor landed in the same cache its own validation \
+             would have filled"
+        );
+        assert_eq!(
+            dag.get_cached_floor(&unheld).expect("read"),
+            None,
+            "a peer cannot seed finality for a block this node does not hold"
+        );
+    }
 
     /// An LFS restore must keep every block it fetched. The requester lowers its
     /// own bound to `height - 1` for each latest message, so the download reaches

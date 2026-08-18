@@ -35,6 +35,8 @@ pub enum CasperMessage {
     StoreItemsMessage(StoreItemsMessage),
     MergeableEntryRequest(MergeableEntryRequest),
     MergeableEntryResponse(MergeableEntryResponse),
+    FloorCacheRequest(FloorCacheRequest),
+    FloorCacheResponse(FloorCacheResponse),
 }
 
 impl CasperMessage {
@@ -114,6 +116,14 @@ impl CasperMessage {
 
     pub fn from_mergeable_entry_response(proto: MergeableEntryResponseProto) -> Self {
         CasperMessage::MergeableEntryResponse(MergeableEntryResponse::from_proto(proto))
+    }
+
+    pub fn from_floor_cache_request(proto: FloorCacheRequestProto) -> Self {
+        CasperMessage::FloorCacheRequest(FloorCacheRequest::from_proto(proto))
+    }
+
+    pub fn from_floor_cache_response(proto: FloorCacheResponseProto) -> Self {
+        CasperMessage::FloorCacheResponse(FloorCacheResponse::from_proto(proto))
     }
 }
 
@@ -235,6 +245,70 @@ impl BlockApproval {
         BlockApprovalProto {
             candidate: Some(self.candidate.to_proto()),
             sig: Some(self.sig),
+        }
+    }
+}
+
+/// Ask a peer for its cached finalized-floor values for the named blocks.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FloorCacheRequest {
+    pub hashes: Vec<ByteString>,
+}
+
+impl FloorCacheRequest {
+    pub fn from_proto(proto: FloorCacheRequestProto) -> Self {
+        Self {
+            hashes: proto.hashes,
+        }
+    }
+
+    pub fn to_proto(self) -> FloorCacheRequestProto {
+        FloorCacheRequestProto {
+            hashes: self.hashes,
+        }
+    }
+}
+
+/// One block's cached floor and frontier, as the responder derived them when
+/// it validated the block.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FloorCacheEntry {
+    pub block_hash: ByteString,
+    pub floor_hash: ByteString,
+    pub frontier_hash: ByteString,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FloorCacheResponse {
+    pub entries: Vec<FloorCacheEntry>,
+}
+
+impl FloorCacheResponse {
+    pub fn from_proto(proto: FloorCacheResponseProto) -> Self {
+        Self {
+            entries: proto
+                .entries
+                .into_iter()
+                .map(|entry| FloorCacheEntry {
+                    block_hash: entry.block_hash,
+                    floor_hash: entry.floor_hash,
+                    frontier_hash: entry.frontier_hash,
+                })
+                .collect(),
+        }
+    }
+
+    pub fn to_proto(self) -> FloorCacheResponseProto {
+        FloorCacheResponseProto {
+            entries: self
+                .entries
+                .into_iter()
+                .map(|entry| FloorCacheEntryProto {
+                    block_hash: entry.block_hash,
+                    floor_hash: entry.floor_hash,
+                    frontier_hash: entry.frontier_hash,
+                })
+                .collect(),
         }
     }
 }
@@ -1396,6 +1470,40 @@ mod approved_block_tests {
             },
             required_sigs: 0,
         }
+    }
+
+    /// The finalized-floor cache travels with the LFS window. A restored node
+    /// cannot derive floors for blocks below its anchor — the derivation
+    /// recurses through history it deliberately does not keep — and without
+    /// them every sibling-branch validation crawls gap-by-gap toward genesis.
+    /// The responder computed these values when it validated the blocks; the
+    /// numbers are hashes only, a few KB for a window whose size is constant
+    /// in chain height.
+    #[test]
+    fn the_floor_cache_survives_the_wire() {
+        let entry = FloorCacheEntry {
+            block_hash: Bytes::from_static(b"window-block"),
+            floor_hash: Bytes::from_static(b"its-floor"),
+            frontier_hash: Bytes::from_static(b"its-frontier"),
+        };
+        let request = FloorCacheRequest {
+            hashes: vec![Bytes::from_static(b"window-block")],
+        };
+        let response = FloorCacheResponse {
+            entries: vec![entry],
+        };
+
+        assert_eq!(
+            FloorCacheRequest::from_proto(request.clone().to_proto()),
+            request,
+            "the requested hash set must survive the wire"
+        );
+        assert_eq!(
+            FloorCacheResponse::from_proto(response.clone().to_proto()),
+            response,
+            "every entry must survive intact: the receiver writes these into the \
+             same caches its own validation would have filled"
+        );
     }
 
     /// The seed rides on the ApprovedBlock, never inside its candidate: the

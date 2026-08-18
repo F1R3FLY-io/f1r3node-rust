@@ -4,10 +4,10 @@
 use comm::rust::rp::protocol_helper;
 use models::casper::{
     ApprovedBlockProto, ApprovedBlockRequestProto, BlockApprovalProto, BlockHashMessageProto,
-    BlockMessageProto, BlockRequestProto, ForkChoiceTipRequestProto, HasBlockProto,
-    HasBlockRequestProto, MergeableEntryRequestProto, MergeableEntryResponseProto,
-    NoApprovedBlockAvailableProto, StoreItemsMessageProto, StoreItemsMessageRequestProto,
-    UnapprovedBlockProto,
+    BlockMessageProto, BlockRequestProto, FloorCacheRequestProto, FloorCacheResponseProto,
+    ForkChoiceTipRequestProto, HasBlockProto, HasBlockRequestProto, MergeableEntryRequestProto,
+    MergeableEntryResponseProto, NoApprovedBlockAvailableProto, StoreItemsMessageProto,
+    StoreItemsMessageRequestProto, UnapprovedBlockProto,
 };
 use models::routing::{Packet, Protocol};
 use models::rust::block_hash::BlockHash;
@@ -73,6 +73,8 @@ pub enum CasperMessageProto {
     StoreItemsMessage(StoreItemsMessageProto),
     MergeableEntryRequest(MergeableEntryRequestProto),
     MergeableEntryResponse(MergeableEntryResponseProto),
+    FloorCacheRequest(FloorCacheRequestProto),
+    FloorCacheResponse(FloorCacheResponseProto),
 }
 
 /// Extract a Packet from a Protocol message
@@ -98,6 +100,10 @@ pub fn to_casper_message_proto(packet: &Packet) -> PacketParseResult<CasperMessa
         "StoreItemsMessage" => convert_store_items_message(packet),
         "MergeableEntryRequest" => convert_mergeable_entry_request(packet),
         "MergeableEntryResponse" => convert_mergeable_entry_response(packet),
+        "FloorCacheRequest" => parse_packet::<FloorCacheRequestProto>(packet)
+            .map(CasperMessageProto::FloorCacheRequest),
+        "FloorCacheResponse" => parse_packet::<FloorCacheResponseProto>(packet)
+            .map(CasperMessageProto::FloorCacheResponse),
         _ => PacketParseResult::IllegalPacket(format!("Unrecognized typeId: {}", packet.type_id)),
     }
 }
@@ -134,6 +140,12 @@ pub fn casper_message_from_proto(proto: CasperMessageProto) -> Result<CasperMess
         }
         CasperMessageProto::MergeableEntryRequest(proto) => {
             Ok(CasperMessage::from_mergeable_entry_request(proto))
+        }
+        CasperMessageProto::FloorCacheRequest(proto) => {
+            Ok(CasperMessage::from_floor_cache_request(proto))
+        }
+        CasperMessageProto::FloorCacheResponse(proto) => {
+            Ok(CasperMessage::from_floor_cache_response(proto))
         }
         CasperMessageProto::MergeableEntryResponse(proto) => {
             Ok(CasperMessage::from_mergeable_entry_response(proto))

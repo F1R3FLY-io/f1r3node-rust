@@ -325,6 +325,9 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                 }
                 Ok(())
             }
+            CasperMessage::FloorCacheRequest(req) => {
+                self.handle_floor_cache_request(peer, req.hashes).await
+            }
             CasperMessage::MergeableEntryRequest(req) => {
                 if self.disable_state_exporter {
                     tracing::debug!(
@@ -770,6 +773,54 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
     /// - Block present, no mergeable entry: respond with empty `serialized_entry`.
     /// - Block present and entry present: respond with raw bincode bytes from
     ///   the mergeable_store.
+    /// Serve cached finalized-floor values for the requested blocks.
+    ///
+    /// The values are pure functions of the named blocks, computed when this
+    /// node validated them. Entries this node does not have BOTH values for
+    /// are omitted — the requester derives those locally from its neighbours.
+    /// Capped so a hostile request cannot turn this into a scan.
+    async fn handle_floor_cache_request(
+        &self,
+        peer: PeerNode,
+        hashes: Vec<BlockHash>,
+    ) -> Result<(), CasperError> {
+        const FLOOR_CACHE_REQUEST_CAP: usize = 4_096;
+        if hashes.len() > FLOOR_CACHE_REQUEST_CAP {
+            tracing::warn!(
+                requested = hashes.len(),
+                cap = FLOOR_CACHE_REQUEST_CAP,
+                %peer,
+                "FloorCacheRequest over cap; ignoring"
+            );
+            return Ok(());
+        }
+        let dag = self.casper.block_dag().await?;
+        let mut entries = Vec::new();
+        for hash in hashes {
+            let (Some(floor), Some(frontier)) = (
+                dag.get_cached_floor(&hash)?,
+                dag.get_cached_frontier(&hash)?,
+            ) else {
+                continue;
+            };
+            entries.push(casper_message::FloorCacheEntry {
+                block_hash: hash,
+                floor_hash: floor,
+                frontier_hash: frontier,
+            });
+        }
+        tracing::info!(
+            entries = entries.len(),
+            %peer,
+            "Serving finalized-floor cache entries"
+        );
+        let resp = casper_message::FloorCacheResponse { entries };
+        self.transport
+            .stream_message_to_peer(&self.conf, &peer, Arc::new(resp.to_proto()))
+            .await?;
+        Ok(())
+    }
+
     async fn handle_mergeable_entry_request(
         &self,
         peer: PeerNode,

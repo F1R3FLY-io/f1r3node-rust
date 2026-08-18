@@ -92,6 +92,25 @@ message ApprovedBlockProto  {
   FinalizedFloorSeedProto floorSeed     = 3;
 }
 
+// The finalized-floor cache for a set of blocks, shipped so a restored node
+// receives finality for its window instead of re-deriving it from history it
+// does not keep. Values are pure functions of the named blocks, computed by
+// the responder when it validated them; trust is the same class as the
+// approved block itself — the peer that chose your anchor.
+message FloorCacheRequestProto {
+  repeated bytes hashes = 1;
+}
+
+message FloorCacheEntryProto {
+  bytes blockHash    = 1;
+  bytes floorHash    = 2;
+  bytes frontierHash = 3;
+}
+
+message FloorCacheResponseProto {
+  repeated FloorCacheEntryProto entries = 1;
+}
+
 message ApprovedBlockRequestProto {
   option (scalapb.message).extends = "CasperMessageProto";
   string identifier = 1;
