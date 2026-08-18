@@ -59,6 +59,14 @@ use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validate::Validate;
 use crate::rust::validator_identity::ValidatorIdentity;
 
+fn install_slot<V>(slot: &Arc<Mutex<Option<V>>>, value: V, name: &str) -> Result<(), CasperError> {
+    let mut guard = slot
+        .lock()
+        .map_err(|_| CasperError::RuntimeError(format!("Failed to acquire {} lock", name)))?;
+    *guard = Some(value);
+    Ok(())
+}
+
 /// Scala equivalent: `class Initializing[F[_]](...) extends Engine[F]`
 ///
 /// Initializing engine makes sure node receives Approved State and transitions to Running after
@@ -102,6 +110,10 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
     start_requester: Arc<Mutex<bool>>,
     init_started_at: Arc<Mutex<Option<Instant>>>,
     no_approved_block_retries: Arc<Mutex<u64>>,
+    /// Restore attempts that got an approved block and failed to use it. Kept
+    /// apart from `no_approved_block_retries`, which counts waiting for a peer
+    /// to have an answer at all: these are bounded, that one is not.
+    restore_failures: Arc<Mutex<u64>>,
     /// Event publisher for F1r3fly events
     event_publisher: F1r3flyEvents,
 
@@ -183,6 +195,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             start_requester: Arc::new(Mutex::new(true)),
             init_started_at: Arc::new(Mutex::new(None)),
             no_approved_block_retries: Arc::new(Mutex::new(0)),
+            restore_failures: Arc::new(Mutex::new(0)),
             event_publisher,
             block_retriever,
             engine_cell,
@@ -498,8 +511,103 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     "Approved block accepted during initialization"
                 );
             }
-            handle_approved_block(self, &approved_block).await?;
+            // The caller is a task the transport spawned for this message, and it
+            // logs an error and drops it. Anything left unhandled here is
+            // therefore lost, and the engine waits forever for a restore that
+            // already failed.
+            if let Err(err) = handle_approved_block(self, &approved_block).await {
+                self.recover_from_restore_failure(err).await?;
+            }
         }
+        Ok(())
+    }
+
+    /// Put the engine back where it stood before the approved block arrived, and
+    /// ask for one again.
+    ///
+    /// Two pieces of state outlive a failed attempt and would each defeat the
+    /// next one silently: `request_approved_state` TOOK the sync-channel
+    /// receivers, and `on_approved_block` closed the gate that lets an approved
+    /// block start a restore at all. Both are restored before re-requesting.
+    ///
+    /// Bounded, unlike the `NoApprovedBlockAvailable` retry. That one waits for a
+    /// peer that has no answer yet, and waiting is the right thing to do
+    /// indefinitely. This one had an answer and could not use it, which is a
+    /// fault to surface rather than to hide behind an endless loop.
+    pub async fn recover_from_restore_failure(&self, err: CasperError) -> Result<(), CasperError> {
+        const MAX_RESTORE_ATTEMPTS: u64 = 3;
+
+        let attempts = {
+            let mut failures = self.restore_failures.lock().map_err(|_| {
+                CasperError::RuntimeError("Failed to acquire restore_failures lock".to_string())
+            })?;
+            *failures += 1;
+            *failures
+        };
+
+        tracing::error!(
+            error = %err,
+            attempt = attempts,
+            "Approved-state restore failed; this node holds no state it can run on"
+        );
+
+        if attempts >= MAX_RESTORE_ATTEMPTS {
+            return Err(CasperError::RuntimeError(format!(
+                "approved-state restore failed {} times, giving up; last error: {}",
+                attempts, err
+            )));
+        }
+
+        self.reinstall_sync_channels()?;
+        {
+            let mut requester = self.start_requester.lock().map_err(|_| {
+                CasperError::RuntimeError("Failed to acquire start_requester lock".to_string())
+            })?;
+            *requester = true;
+        }
+
+        tracing::info!(
+            attempt = attempts,
+            "Re-requesting approved state after a failed restore"
+        );
+        self.transport_layer
+            .request_approved_block(&self.rp_conf_ask, Some(self.trim_state))
+            .await
+            .map_err(CasperError::CommError)
+    }
+
+    /// Fresh sync channels for a retry.
+    ///
+    /// `request_approved_state` takes each receiver out of its slot and hands it
+    /// to a requester, so a second attempt finds the slots empty and fails
+    /// before it starts. The pending counters go with them: they describe queues
+    /// that no longer exist.
+    fn reinstall_sync_channels(&self) -> Result<(), CasperError> {
+        // The sizing the engine is constructed with (see `engine::transition_to_initializing`).
+        const SYNC_CHANNEL_CAPACITY: usize = 50;
+
+        let (block_tx, block_rx) = mpsc::channel::<BlockMessage>(SYNC_CHANNEL_CAPACITY);
+        let (tuple_tx, tuple_rx) = mpsc::channel::<StoreItemsMessage>(SYNC_CHANNEL_CAPACITY);
+        let (mergeable_tx, mergeable_rx) =
+            mpsc::channel::<MergeableEntryResponse>(SYNC_CHANNEL_CAPACITY);
+
+        install_slot(&self.block_message_tx, block_tx, "block_message_tx")?;
+        install_slot(&self.block_message_rx, block_rx, "block_message_rx")?;
+        install_slot(&self.tuple_space_tx, tuple_tx, "tuple_space_tx")?;
+        install_slot(&self.tuple_space_rx, tuple_rx, "tuple_space_rx")?;
+        install_slot(
+            &self.mergeable_message_tx,
+            mergeable_tx,
+            "mergeable_message_tx",
+        )?;
+        install_slot(
+            &self.mergeable_message_rx,
+            mergeable_rx,
+            "mergeable_message_rx",
+        )?;
+
+        self.block_message_queue_pending.store(0, Ordering::Relaxed);
+        self.tuple_space_queue_pending.store(0, Ordering::Relaxed);
         Ok(())
     }
 
@@ -556,10 +664,20 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             None => unseeded_min_block_number,
         };
 
+        // How deep rspace state and the mergeable replay reach. Shallower than
+        // the block floor by design — see `lfs_min_state_block_number`.
+        let min_state_block_number =
+            crate::rust::util::rspace_history_horizon::lfs_min_state_block_number(
+                start_block_number,
+                self.casper_shard_conf.max_parent_depth,
+                self.casper_shard_conf.mergeable_channels_gc_depth_buffer,
+            );
+
         tracing::info!(
-            "request_approved_state: start (block {}, min_height {}, unseeded_min_height {}, seeded {})",
+            "request_approved_state: start (block {}, min_height {}, state_min_height {}, unseeded_min_height {}, seeded {})",
             PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true),
             min_block_number_for_deploy_lifespan,
+            min_state_block_number,
             unseeded_min_block_number,
             approved_block.floor_seed.is_some()
         );
@@ -687,10 +805,10 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         }
 
         // Forward-horizon rspace history sync — ship rspace state for every
-        // block from `min_block_number_for_deploy_lifespan` up, the same bound
-        // the block requester used and the mergeable-channel replay below
-        // walks, so neither that replay nor subsequent block validation hits
-        // `UnknownRootError`. See
+        // block from `min_state_block_number` up. That floor is the parent
+        // reach, NOT the block-download floor: state is only ever needed for
+        // blocks that can be executed, and `validate::parents` rejects any block
+        // naming a parent below the reach. See
         // `casper/src/rust/util/rspace_history_horizon.rs` for the
         // reachability calc and `casper/src/rust/engine/lfs_horizon_requester.rs`
         // for the orchestrator. Companion to the proposer-side
@@ -704,7 +822,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     &self.block_store,
                     &approved_block.candidate.block,
                     &self.casper_shard_conf,
-                    min_block_number_for_deploy_lifespan,
+                    min_state_block_number,
                 )
                 .map_err(CasperError::from)?;
 
@@ -806,11 +924,11 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // defensive companion path — it catches any block whose mergeable
         // entry was missed by the streaming response (e.g. a peer that
         // didn't ship one), and is a no-op when the cache is already warm.
-        self.replay_blocks_for_mergeable_channels(
-            approved_block,
-            min_block_number_for_deploy_lifespan,
-        )
-        .await?;
+        // Bounded by the state floor, not the block floor: the replay executes
+        // blocks, so it must not walk below the history the horizon sync just
+        // imported, and a block below the parent reach is never merged on.
+        self.replay_blocks_for_mergeable_channels(approved_block, min_state_block_number)
+            .await?;
 
         // Transition to Running state
         tracing::info!("request_approved_state: transitioning to Running");
