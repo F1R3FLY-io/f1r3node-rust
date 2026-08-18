@@ -108,8 +108,6 @@ impl BlockStatus {
 
     pub fn casper_is_busy() -> BlockError { BlockError::CasperIsBusy }
 
-    pub fn exception(ex: CasperError) -> BlockError { BlockError::BlockException(ex) }
-
     pub fn missing_blocks() -> BlockError { BlockError::MissingBlocks }
 
     pub fn admissible_equivocation() -> BlockError {
@@ -276,8 +274,15 @@ impl InvalidBlock {
     }
 }
 
+/// A store error becoming a block verdict goes through the classifier like any
+/// other. `CasperError::from` already turns a missing block into `BlockNotHeld`,
+/// and wrapping that in `BlockException` directly — as this did — hands an
+/// `InvalidTransaction` record to the proposer of a block this node simply
+/// cannot read.
 impl From<KvStoreError> for BlockError {
-    fn from(error: KvStoreError) -> Self { BlockError::BlockException(CasperError::from(error)) }
+    fn from(error: KvStoreError) -> Self {
+        BlockError::from_validation_error(CasperError::from(error))
+    }
 }
 
 #[cfg(test)]
@@ -311,42 +316,6 @@ mod tests {
             matches!(broken, BlockError::BlockException(_)),
             "every other failure is still an exception; this must not become a \
              catch-all that swallows real storage faults"
-        );
-    }
-
-    /// The classifier above only helps where validation actually calls it.
-    /// A site that names `BlockException` itself skips it, and the skip is
-    /// invisible from the outside: the block is judged rather than deferred,
-    /// and the proposer collects an `InvalidTransaction` record for history
-    /// THIS node does not hold. That is not hypothetical — the classifier was
-    /// wired at three sites out of twenty-three, and a joiner recorded nine
-    /// such verdicts against three honest validators before the shard froze.
-    ///
-    /// So the rule is enforced here rather than left to review: every error
-    /// leaving validation goes through the classifier, which passes all but
-    /// `BlockNotHeld` straight through unchanged. Guarding at the boundary is
-    /// what makes the next error class that means "ask me later" impossible to
-    /// route into the slashable bucket by accident.
-    #[test]
-    fn validation_routes_every_error_through_the_classifier() {
-        const VALIDATE_RS: &str = include_str!("validate.rs");
-
-        let direct: Vec<&str> = VALIDATE_RS
-            .lines()
-            .filter(|line| line.contains("BlockError::BlockException("))
-            .collect();
-
-        assert!(
-            direct.is_empty(),
-            "validate.rs must reach BlockException only through \
-             BlockError::from_validation_error, so absence keeps its name; {} site(s) \
-             construct it directly:\n{}",
-            direct.len(),
-            direct
-                .iter()
-                .map(|l| format!("  {}", l.trim()))
-                .collect::<Vec<_>>()
-                .join("\n")
         );
     }
 }

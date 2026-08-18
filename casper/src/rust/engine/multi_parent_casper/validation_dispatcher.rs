@@ -135,7 +135,7 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
             .await
             {
                 Ok(ctx) => floor_ctx = Some(ctx),
-                Err(ex) => return Ok(Either::Left(BlockError::BlockException(ex))),
+                Err(ex) => return Ok(Either::Left(BlockError::from_validation_error(ex))),
             }
         }
         let (validate_block_checkpoint_result, t2) = timed_step(
@@ -383,7 +383,7 @@ pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sy
             actual = %PrettyPrinter::build_string_no_limit(&block.body.state.pre_state_hash),
             "self-created block pre_state_hash mismatch"
         );
-        return Ok(Either::Left(BlockError::BlockException(
+        return Ok(Either::Left(BlockError::from_validation_error(
             CasperError::RuntimeError(msg),
         )));
     }
@@ -400,7 +400,7 @@ pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sy
             actual = %PrettyPrinter::build_string_no_limit(&block.body.state.post_state_hash),
             "self-created block post_state_hash mismatch"
         );
-        return Ok(Either::Left(BlockError::BlockException(
+        return Ok(Either::Left(BlockError::from_validation_error(
             CasperError::RuntimeError(msg),
         )));
     }

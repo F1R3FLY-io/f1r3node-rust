@@ -23,7 +23,7 @@ use rspace_plus_plus::rspace::history::Either;
 
 use super::replay_failure::ReplayFailure;
 use super::runtime_manager::RuntimeManager;
-use crate::rust::block_status::BlockStatus;
+use crate::rust::block_status::{BlockError, BlockStatus};
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
 use crate::rust::merging::block_index::BlockIndex;
@@ -484,7 +484,7 @@ pub async fn validate_block_checkpoint(
                 handle_errors(proto_util::post_state_hash(block), replay_result)
             }
         }
-        Err(ex) => Ok(Either::Left(BlockStatus::exception(ex))),
+        Err(ex) => Ok(Either::Left(BlockError::from_validation_error(ex))),
     }
 }
 
@@ -660,7 +660,7 @@ fn handle_errors(
                     "Internal errors encountered while processing deploy: {}",
                     msg
                 ));
-                Ok(Either::Left(BlockStatus::exception(exception)))
+                Ok(Either::Left(BlockError::from_validation_error(exception)))
             }
 
             ReplayFailure::ReplayStatusMismatch {
