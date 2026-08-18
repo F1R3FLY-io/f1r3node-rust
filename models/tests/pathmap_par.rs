@@ -329,6 +329,17 @@ fn parallel_composition_uses_bag_sum_and_metadata_join() {
     assert_eq!(combined.components().cardinality(), 2);
     assert_eq!(combined.locally_free(), [0b0000_0011]);
     assert!(combined.connective_used());
+
+    let scaled = combined.clone().scale_occurrences(7).expect("scale");
+    assert_eq!(scaled.components().distinct_len(), 1);
+    assert_eq!(scaled.components().cardinality(), 14);
+    assert_eq!(scaled.locally_free(), combined.locally_free());
+    assert_eq!(scaled.connective_used(), combined.connective_used());
+
+    let zero = combined.scale_occurrences(0).expect("zero scale");
+    assert!(zero.components().is_empty());
+    assert!(zero.locally_free().is_empty());
+    assert!(!zero.connective_used());
 }
 
 #[test]

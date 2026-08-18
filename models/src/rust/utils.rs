@@ -4,7 +4,9 @@ use expr::ExprInstance;
 use rspace_plus_plus::rspace::bag::Multiplicity;
 use serde::{Deserialize, Serialize};
 
-use super::par_bag::{ParBagCodecError, ParBagComponent, ParBagVisitError, ParComponentItem};
+use super::par_bag::{
+    BagError, ParBagCodecError, ParBagComponent, ParBagVisitError, ParComponentItem,
+};
 use super::par_map::ParMap;
 use super::par_map_type_mapper::ParMapTypeMapper;
 use super::par_set::ParSet;
@@ -53,11 +55,83 @@ generated_par_component!(Bundle, bundles);
 generated_par_component!(Connective, connectives);
 generated_par_component!(If, conditionals);
 
+fn scale_generated_family<T: Clone>(values: Vec<T>, factor: u64) -> Result<Vec<T>, BagError> {
+    match factor {
+        0 => return Ok(Vec::new()),
+        1 => return Ok(values),
+        _ => {}
+    }
+    let current = u64::try_from(values.len()).expect("a generated family length fits u64");
+    let factor_usize = usize::try_from(factor)
+        .map_err(|_| BagError::MultiplicityProductOverflow { current, factor })?;
+    let capacity = values
+        .len()
+        .checked_mul(factor_usize)
+        .ok_or(BagError::MultiplicityProductOverflow { current, factor })?;
+    let mut scaled = Vec::with_capacity(capacity);
+    for _ in 1..factor {
+        scaled.extend(values.iter().cloned());
+    }
+    scaled.extend(values);
+    Ok(scaled)
+}
+
 // Adding helper functions 'with_*' to protobuf message 'Par'
 impl Par {
     pub fn locally_free(&self) -> &[u8] { &self.locally_free }
 
     pub const fn connective_used(&self) -> bool { self.connective_used }
+
+    pub fn components_is_empty(&self) -> bool {
+        self.sends.is_empty()
+            && self.receives.is_empty()
+            && self.news.is_empty()
+            && self.exprs.is_empty()
+            && self.matches.is_empty()
+            && self.unforgeables.is_empty()
+            && self.bundles.is_empty()
+            && self.connectives.is_empty()
+            && self.conditionals.is_empty()
+    }
+
+    pub fn cardinality(&self) -> u64 {
+        [
+            self.sends.len(),
+            self.receives.len(),
+            self.news.len(),
+            self.exprs.len(),
+            self.matches.len(),
+            self.unforgeables.len(),
+            self.bundles.len(),
+            self.connectives.len(),
+            self.conditionals.len(),
+        ]
+        .into_iter()
+        .map(|length| u64::try_from(length).expect("a generated family length fits u64"))
+        .fold(0, u64::saturating_add)
+    }
+
+    pub fn cardinality_is_saturated(&self) -> bool {
+        let mut total = 0u64;
+        for length in [
+            self.sends.len(),
+            self.receives.len(),
+            self.news.len(),
+            self.exprs.len(),
+            self.matches.len(),
+            self.unforgeables.len(),
+            self.bundles.len(),
+            self.connectives.len(),
+            self.conditionals.len(),
+        ] {
+            let length = u64::try_from(length).expect("a generated family length fits u64");
+            let Some(next) = total.checked_add(length) else {
+                return true;
+            };
+            total = next;
+        }
+        false
+    }
 
     /// Visit each semantic occurrence without exposing the generated repeated
     /// field. This has the same call surface as the PathMap-backed `Par` and is
@@ -176,6 +250,45 @@ impl Par {
         self.connective_used = connective_used;
     }
 
+    pub fn parallel(mut self, mut other: Self) -> Result<Self, BagError> {
+        self.sends.append(&mut other.sends);
+        self.receives.append(&mut other.receives);
+        self.news.append(&mut other.news);
+        self.exprs.append(&mut other.exprs);
+        self.matches.append(&mut other.matches);
+        self.unforgeables.append(&mut other.unforgeables);
+        self.bundles.append(&mut other.bundles);
+        self.connectives.append(&mut other.connectives);
+        self.conditionals.append(&mut other.conditionals);
+        self.locally_free = union(
+            std::mem::take(&mut self.locally_free),
+            std::mem::take(&mut other.locally_free),
+        );
+        self.connective_used |= other.connective_used;
+        Ok(self)
+    }
+
+    pub fn scale_occurrences(mut self, factor: u64) -> Result<Self, BagError> {
+        match factor {
+            0 => return Ok(Self::default()),
+            1 => return Ok(self),
+            _ => {}
+        }
+        Ok(Self {
+            sends: scale_generated_family(std::mem::take(&mut self.sends), factor)?,
+            receives: scale_generated_family(std::mem::take(&mut self.receives), factor)?,
+            news: scale_generated_family(std::mem::take(&mut self.news), factor)?,
+            exprs: scale_generated_family(std::mem::take(&mut self.exprs), factor)?,
+            matches: scale_generated_family(std::mem::take(&mut self.matches), factor)?,
+            unforgeables: scale_generated_family(std::mem::take(&mut self.unforgeables), factor)?,
+            bundles: scale_generated_family(std::mem::take(&mut self.bundles), factor)?,
+            connectives: scale_generated_family(std::mem::take(&mut self.connectives), factor)?,
+            conditionals: scale_generated_family(std::mem::take(&mut self.conditionals), factor)?,
+            locally_free: std::mem::take(&mut self.locally_free),
+            connective_used: self.connective_used,
+        })
+    }
+
     pub fn with_sends(&self, new_sends: Vec<Send>) -> Par {
         let mut out = self.clone();
         out.sends = new_sends;
@@ -195,9 +308,23 @@ impl Par {
     }
 
     pub fn with_exprs(&self, new_exprs: Vec<Expr>) -> Par {
-        let mut out = self.clone();
-        out.exprs = new_exprs;
-        out
+        // Do not clone the family that is being replaced.  In particular,
+        // evaluator reassembly calls this once per nesting level; cloning the
+        // old recursive expression subtree here and immediately discarding it
+        // turns an otherwise-linear PDA traversal into quadratic work.
+        Par {
+            sends: self.sends.clone(),
+            receives: self.receives.clone(),
+            news: self.news.clone(),
+            exprs: new_exprs,
+            matches: self.matches.clone(),
+            unforgeables: self.unforgeables.clone(),
+            bundles: self.bundles.clone(),
+            connectives: self.connectives.clone(),
+            conditionals: self.conditionals.clone(),
+            locally_free: self.locally_free.clone(),
+            connective_used: self.connective_used,
+        }
     }
 
     pub fn with_matches(&self, new_matches: Vec<Match>) -> Par {
@@ -370,35 +497,10 @@ impl Par {
         }
     }
 
-    pub fn append(&self, mut other: Par) -> Par {
-        Par {
-            sends: [self.sends.clone(), std::mem::take(&mut other.sends)].concat(),
-            receives: [self.receives.clone(), std::mem::take(&mut other.receives)].concat(),
-            news: [self.news.clone(), std::mem::take(&mut other.news)].concat(),
-            exprs: [self.exprs.clone(), std::mem::take(&mut other.exprs)].concat(),
-            matches: [self.matches.clone(), std::mem::take(&mut other.matches)].concat(),
-            unforgeables: [
-                self.unforgeables.clone(),
-                std::mem::take(&mut other.unforgeables),
-            ]
-            .concat(),
-            bundles: [self.bundles.clone(), std::mem::take(&mut other.bundles)].concat(),
-            connectives: [
-                self.connectives.clone(),
-                std::mem::take(&mut other.connectives),
-            ]
-            .concat(),
-            conditionals: [
-                self.conditionals.clone(),
-                std::mem::take(&mut other.conditionals),
-            ]
-            .concat(),
-            locally_free: union(
-                self.locally_free.clone(),
-                std::mem::take(&mut other.locally_free),
-            ),
-            connective_used: self.connective_used || other.connective_used,
-        }
+    pub fn append(&self, other: Par) -> Par {
+        self.clone()
+            .parallel(other)
+            .expect("generated Par composition cannot overflow a compact multiplicity")
     }
 }
 

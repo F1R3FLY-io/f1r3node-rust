@@ -223,6 +223,18 @@ impl Par {
         })
     }
 
+    pub fn scale_occurrences(self, factor: u64) -> Result<Self, BagError> {
+        match factor {
+            0 => Ok(Self::default()),
+            1 => Ok(self),
+            _ => Ok(Self {
+                components: self.components.scale(factor)?,
+                locally_free: self.locally_free,
+                connective_used: self.connective_used,
+            }),
+        }
+    }
+
     fn replace_family<T: ParBagComponent>(&mut self, values: Vec<T>) {
         self.components.remove_family::<T>();
         for value in values {

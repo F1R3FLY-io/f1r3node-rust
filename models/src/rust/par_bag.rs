@@ -32,7 +32,8 @@ use std::sync::{Arc, OnceLock};
 
 use prost::bytes::BufMut;
 use prost::encoding::{encode_key, encoded_len_varint, key_len, WireType};
-use rspace_plus_plus::rspace::bag::{Bag, BagCodecError, BagError, Multiplicity};
+use rspace_plus_plus::rspace::bag::{Bag, BagCodecError};
+pub use rspace_plus_plus::rspace::bag::{BagError, Multiplicity};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::rhoapi::expr::ExprInstance;
@@ -1147,6 +1148,25 @@ impl ParBag {
         self.components
             .sum(&other.components)
             .map(Self::from_components)
+    }
+
+    pub fn scale(&self, factor: u64) -> Result<Self, BagError> {
+        match factor {
+            0 => return Ok(Self::new()),
+            1 => return Ok(self.clone()),
+            _ => {}
+        }
+        let components = self.components.scale(factor)?;
+        let mut metrics = self.aux.metrics;
+        for exact in &mut metrics.exact_cardinalities {
+            *exact = exact
+                .checked_mul(u128::from(factor))
+                .expect("scaled resident endpoint multiplicities fit exact u128 cardinality");
+        }
+        Ok(Self {
+            components,
+            aux: Arc::new(ParBagAux::new(metrics)),
+        })
     }
 
     pub fn join(&self, other: &Self) -> Self {

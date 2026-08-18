@@ -353,6 +353,22 @@ fn exact_bag_algebra_preserves_multiplicity_laws() {
 }
 
 #[test]
+fn scalar_multiplication_reuses_each_canonical_component_key() {
+    let value = Expr {
+        expr_instance: Some(ExprInstance::GInt(42)),
+    };
+    let mut source = ParBag::new();
+    source.insert(&value).expect("source");
+    let scaled = source.scale(17).expect("scaled");
+
+    assert_eq!(source.count(&value), 1);
+    assert_eq!(scaled.count(&value), 17);
+    assert_eq!(scaled.family_distinct_len::<Expr>(), 1);
+    assert_eq!(scaled.family_cardinality::<Expr>(), 17);
+    assert!(source.scale(0).expect("zero").is_empty());
+}
+
+#[test]
 fn direct_act_image_round_trips_without_an_entry_projection() {
     let bag = ParBag::import_legacy(&canonical_par_corpus()).expect("import");
     let bytes = bag.compact_bytes();

@@ -96,13 +96,16 @@
 //! same statement applies verbatim to the `?` abort path, and it is the
 //! disposition the hand-written machines already documented.
 //!
-//! ## ⚠ Scope: this driver serves **borrowing** traversals only
+//! ## ⚠ Scope: borrowed nodes and explicitly owned endpoint handles
 //!
-//! [`Traversal::Node`] is `Copy` and lifetime-parametric, which is a deliberate
-//! restriction with a name: work items **borrow** the input term. Pushing a
-//! child is a reference move and never a `<Par as Clone>::clone` (itself
-//! Θ(depth) at 15,914 B/level, debug), which is what makes the conversion a
-//! strict improvement rather than a trade.
+//! [`Traversal::Node`] is lifetime-parametric and moved through the work stack.
+//! The driver never copies or clones a node. Most traversals therefore use a
+//! `Copy` reference enum, so pushing a child remains a reference move and never
+//! a `<Par as Clone>::clone` (itself Θ(depth) at 15,914 B/level, debug).
+//! A byte-native container may instead decode one distinct endpoint into an
+//! owned handle whose continuation keeps it alive while borrowed descendants
+//! run. Supporting that ownership shape requires no driver branch or cost for
+//! the ordinary borrowed instances; it only removes an unused `Copy` bound.
 //!
 //! The **by-move** sibling — tearing a term *down* rather than reading it — is
 //! [`crate::rust::rholang::par_children::dismantle_all`], and it is a separate
@@ -629,8 +632,12 @@ pub enum Outcome<V, N> {
 /// `descend` is a direct, monomorphized call and not the 1.7×-slower table
 /// interpretation `bincode_schema.rs` §A2 measured.
 pub trait Traversal: Sized {
-    /// A **borrowed** input node. `Copy` because pushing a child must be a
-    /// reference move, never a deep clone.
+    /// An input node moved through the explicit work stack.
+    ///
+    /// Borrowing traversals should use compact `Copy` reference enums. A
+    /// byte-native collection traversal may use an owned endpoint handle when
+    /// it also keeps that endpoint alive for every descendant reference. The
+    /// driver itself never clones a node, so no trait bound is necessary.
     ///
     /// ⚠ **`where Self: 't` is REQUIRED, and it is a real statement.** Once
     /// [`Outcome::Tail`] made this GAT appear in [`Traversal::combine`]'s RETURN
@@ -641,7 +648,7 @@ pub trait Traversal: Sized {
     /// rather than `Self: 'static`, which would forbid a visitor that borrows its
     /// own configuration (an environment, an oracle) even when that borrow
     /// outlives the traversal.
-    type Node<'t>: Copy
+    type Node<'t>
     where Self: 't;
 
     /// The value one `Step` produces.
@@ -696,7 +703,7 @@ pub trait Traversal: Sized {
     ///
     /// An exact measure would need to say *"this node has been resumed `k`
     /// times"*, which requires **node identity**, and the driver has none: a
-    /// [`Traversal::Node`] is an opaque `Copy` value with no equality, no hash
+    /// [`Traversal::Node`] is an opaque value with no equality, no hash
     /// and no address it is willing to expose. (Requiring `Eq + Hash` on `Node`
     /// and keeping a visited map would cost a hash per node on the hot path, to
     /// catch a defect that is a programming error rather than a data-dependent

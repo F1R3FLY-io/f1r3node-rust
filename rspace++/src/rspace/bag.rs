@@ -6,7 +6,7 @@ use pathmap::PathMap;
 use pathmap::arena_compact::ArenaCompactTree;
 use pathmap::merkleization::MerkleizeResult;
 use pathmap::ring::{AlgebraicResult, COUNTER_IDENT, DistributiveLattice, Lattice, SELF_IDENT};
-use pathmap::zipper::{ZipperMoving, ZipperValues, ZipperWriting};
+use pathmap::zipper::{Zipper, ZipperMoving, ZipperValues, ZipperWriting};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::pathmap_codec::{CompactTrie, CompactTrieError};
@@ -15,6 +15,7 @@ use super::pathmap_codec::{CompactTrie, CompactTrieError};
 pub enum BagError {
     ZeroMultiplicity,
     MultiplicityOverflow { current: u64, added: u64 },
+    MultiplicityProductOverflow { current: u64, factor: u64 },
     InsufficientMultiplicity { available: u64, requested: u64 },
 }
 
@@ -24,6 +25,9 @@ impl fmt::Display for BagError {
             Self::ZeroMultiplicity => f.write_str("a stored bag multiplicity must be positive"),
             Self::MultiplicityOverflow { current, added } => {
                 write!(f, "bag multiplicity overflow: {current} + {added}")
+            }
+            Self::MultiplicityProductOverflow { current, factor } => {
+                write!(f, "bag multiplicity overflow: {current} * {factor}")
             }
             Self::InsufficientMultiplicity {
                 available,
@@ -100,6 +104,18 @@ impl Multiplicity {
             Ordering::Greater => Ok(Some(Self(self.0 - other.0))),
         }
     }
+
+    pub fn checked_mul(self, factor: u64) -> Result<Option<Self>, BagError> {
+        if factor == 0 {
+            return Ok(None);
+        }
+        self.0.checked_mul(factor).map(Self).map(Some).ok_or(
+            BagError::MultiplicityProductOverflow {
+                current: self.0,
+                factor,
+            },
+        )
+    }
 }
 
 impl TryFrom<u64> for Multiplicity {
@@ -167,6 +183,32 @@ pub struct Bag {
 }
 
 impl Bag {
+    fn move_to_next_value(cursor: &mut impl ZipperMoving) -> bool {
+        loop {
+            if cursor.descend_first_byte() {
+                if cursor.is_val() {
+                    return true;
+                }
+                if cursor.descend_until() && cursor.is_val() {
+                    return true;
+                }
+            } else {
+                loop {
+                    if cursor.to_next_sibling_byte() {
+                        if cursor.is_val() {
+                            return true;
+                        }
+                        break;
+                    }
+                    cursor.ascend_byte();
+                    if cursor.at_root() {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+
     const fn project_cardinality(exact: u128) -> u64 {
         if exact > u64::MAX as u128 {
             u64::MAX
@@ -384,6 +426,49 @@ impl Bag {
             result.insert_many(&path, multiplicity)?;
         }
         Ok(result)
+    }
+
+    /// Multiply every exact-path multiplicity with one copy-on-write zipper
+    /// traversal. A zero factor yields the additive identity; an overflowing
+    /// endpoint rejects the entire operation and leaves the source unchanged.
+    pub fn scale(&self, factor: u64) -> Result<Self, BagError> {
+        match factor {
+            0 => return Ok(Self::new()),
+            1 => return Ok(self.clone()),
+            _ => {}
+        }
+
+        let mut entries = self.entries.clone();
+        {
+            let mut cursor = entries.write_zipper();
+            if cursor.is_val() {
+                let current = cursor
+                    .val()
+                    .copied()
+                    .expect("a value-bearing Bag cursor has a multiplicity");
+                cursor.set_val(
+                    current
+                        .checked_mul(factor)?
+                        .expect("a positive factor preserves a positive multiplicity"),
+                );
+            }
+            while Self::move_to_next_value(&mut cursor) {
+                let current = cursor
+                    .val()
+                    .copied()
+                    .expect("a Bag value cursor has a multiplicity");
+                cursor.set_val(
+                    current
+                        .checked_mul(factor)?
+                        .expect("a positive factor preserves a positive multiplicity"),
+                );
+            }
+        }
+        let exact_cardinality = self
+            .exact_cardinality
+            .checked_mul(u128::from(factor))
+            .expect("scaled resident endpoint multiplicities fit exact u128 cardinality");
+        Ok(Self::from_pathmap_with_metrics(entries, self.distinct_len, exact_cardinality))
     }
 
     pub fn join(&self, other: &Self) -> Self {

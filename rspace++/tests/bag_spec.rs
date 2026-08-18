@@ -77,6 +77,35 @@ fn cardinality_uses_the_multiplicity_domain_without_breaking_bag_closure() {
 }
 
 #[test]
+fn zipper_scaling_is_exact_and_rejects_endpoint_overflow_atomically() {
+    // Include the empty path so the test covers a value at the zipper root as
+    // well as prefix-sharing descendants and a disjoint branch.
+    let source = bag(&[(b"", 11), (b"alpha", 2), (b"alpine", 3), (b"beta", 5)]);
+    assert!(source.scale(0).unwrap().is_empty());
+    assert_eq!(source.scale(1).unwrap(), source);
+
+    let scaled = source.scale(7).unwrap();
+    assert_eq!(scaled.count(b""), 77);
+    assert_eq!(scaled.count(b"alpha"), 14);
+    assert_eq!(scaled.count(b"alpine"), 21);
+    assert_eq!(scaled.count(b"beta"), 35);
+    assert_eq!(scaled.distinct_len(), source.distinct_len());
+    assert_eq!(scaled.cardinality(), 147);
+    assert_eq!(source.cardinality(), 21);
+
+    let maximum = bag(&[(b"maximum", u64::MAX)]);
+    assert_eq!(
+        maximum.scale(2),
+        Err(BagError::MultiplicityProductOverflow {
+            current: u64::MAX,
+            factor: 2,
+        })
+    );
+    assert_eq!(maximum.count(b"maximum"), u64::MAX);
+    assert!(!maximum.cardinality_is_saturated());
+}
+
+#[test]
 fn multiplicity_bincode_rejects_zero() {
     let encoded_zero = bincode::serialize(&0u64).unwrap();
     assert!(bincode::deserialize::<Multiplicity>(&encoded_zero).is_err());

@@ -4,6 +4,9 @@ use models::rhoapi::{
     EAnd, EEq, EGt, EGte, ELt, ELte, EMatches, EMinus, EMult, ENeg, ENeq, ENot, EOr, EPlus, Expr,
     Par, Var,
 };
+#[cfg(test)]
+use models::rust::par_bag::ParBagVisitError;
+use models::rust::par_bag::ParComponentItem;
 use models::rust::rholang::drive::{drive, Outcome, Step, Traversal};
 
 use crate::env::Env;
@@ -61,55 +64,24 @@ pub(crate) fn eval_with_recursive(
     env: &Env<Par>,
     matcher: &dyn SpatialMatch,
 ) -> Result<Par, EvalError> {
-    let mut acc = Par {
-        sends: par.sends.clone(),
-        receives: par.receives.clone(),
-        news: par.news.clone(),
-        matches: par.matches.clone(),
-        unforgeables: par.unforgeables.clone(),
-        bundles: par.bundles.clone(),
-        connectives: par.connectives.clone(),
-        conditionals: par.conditionals.clone(),
-        exprs: Vec::new(),
-        locally_free: par.locally_free.clone(),
-        connective_used: par.connective_used,
-    };
-
-    for expr in &par.exprs {
+    let mut acc = par.with_exprs(Vec::new());
+    let visited = par.try_visit_occurrences::<Expr, EvalError>(|expr| {
         let evaled = eval_expr_to_par_recursive(expr, env, matcher)?;
-        acc = concatenate(acc, evaled);
+        acc = concatenate(std::mem::take(&mut acc), evaled)?;
+        Ok(())
+    });
+    match visited {
+        Ok(()) => {}
+        Err(ParBagVisitError::Visitor(error)) => return Err(error),
+        Err(ParBagVisitError::Codec(error)) => {
+            panic!("Par invariant: expression endpoints are canonical: {error}")
+        }
     }
 
     Ok(acc)
 }
 
-fn concatenate(mut a: Par, mut b: Par) -> Par {
-    a.sends.append(&mut b.sends);
-    a.receives.append(&mut b.receives);
-    a.news.append(&mut b.news);
-    a.exprs.append(&mut b.exprs);
-    a.matches.append(&mut b.matches);
-    a.unforgeables.append(&mut b.unforgeables);
-    a.bundles.append(&mut b.bundles);
-    a.connectives.append(&mut b.connectives);
-    a.conditionals.append(&mut b.conditionals);
-    a.locally_free = union_bytes(
-        std::mem::take(&mut a.locally_free),
-        std::mem::take(&mut b.locally_free),
-    );
-    a.connective_used |= b.connective_used;
-    a
-}
-
-fn union_bytes(mut a: Vec<u8>, b: Vec<u8>) -> Vec<u8> {
-    if b.len() > a.len() {
-        a.resize(b.len(), 0);
-    }
-    for (i, byte) in b.iter().enumerate() {
-        a[i] |= byte;
-    }
-    a
-}
+fn concatenate(a: Par, b: Par) -> Result<Par, EvalError> { a.parallel(b).map_err(EvalError::from) }
 
 #[cfg(test)]
 fn eval_expr_to_par_recursive(
@@ -337,23 +309,16 @@ fn par_with_int(i: i64) -> Par {
 /// one Expr and no other content. Mirrors the precondition that the
 /// reducer's `eval_single_expr` upholds.
 fn single_expr_instance(par: &Par) -> Result<ExprInstance, EvalError> {
-    if !par.sends.is_empty()
-        || !par.receives.is_empty()
-        || !par.news.is_empty()
-        || !par.matches.is_empty()
-        || !par.bundles.is_empty()
-        || !par.unforgeables.is_empty()
-        || !par.connectives.is_empty()
-        || !par.conditionals.is_empty()
-        || par.exprs.len() != 1
-    {
+    if par.cardinality() != 1 || par.family_cardinality::<Expr>() != 1 {
         return Err(EvalError::NotASingleValue {
             actual: Box::new(par.clone()),
         });
     }
-    par.exprs[0]
+    par.first::<Expr>()
+        .expect("Par invariant: expression endpoints are canonical")
+        .expect("the cardinality check proved one Expr")
+        .0
         .expr_instance
-        .clone()
         .ok_or(EvalError::MissingExprInstance)
 }
 
@@ -399,17 +364,94 @@ fn eq_binop_recursive(
 
 fn par_contains_nan_double(par: &Par) -> bool {
     use models::rhoapi::expr::ExprInstance::{EListBody, EMapBody, ESetBody, ETupleBody, GDouble};
-    par.exprs.iter().any(|e| match &e.expr_instance {
-        Some(GDouble(bits)) => f64::from_bits(*bits).is_nan(),
-        Some(EListBody(list)) => list.ps.iter().any(par_contains_nan_double),
-        Some(ETupleBody(tuple)) => tuple.ps.iter().any(par_contains_nan_double),
-        Some(ESetBody(set)) => set.ps.iter().any(par_contains_nan_double),
-        Some(EMapBody(map)) => map.kvs.iter().any(|kv| {
-            kv.key.as_ref().is_some_and(par_contains_nan_double)
-                || kv.value.as_ref().is_some_and(par_contains_nan_double)
-        }),
-        _ => false,
-    })
+
+    // Keep borrowed and owned work in homogeneous stacks. A single mixed enum
+    // would be as wide as `Expr` (currently 504 bytes) even for borrowed
+    // entries; boxing each PathMap-decoded endpoint would instead add an
+    // allocation per distinct expression. Four contiguous stacks avoid both
+    // costs, and visitation order is unobservable for this pure predicate.
+    let mut borrowed_pars = vec![par];
+    let mut owned_pars = Vec::<Par>::new();
+    let mut borrowed_exprs = Vec::<&Expr>::new();
+    let mut owned_exprs = Vec::<Expr>::new();
+
+    loop {
+        if let Some(expr) = borrowed_exprs.pop() {
+            match expr.expr_instance.as_ref() {
+                Some(GDouble(bits)) if f64::from_bits(*bits).is_nan() => return true,
+                Some(EListBody(list)) => {
+                    borrowed_pars.extend(list.ps.iter());
+                }
+                Some(ETupleBody(tuple)) => {
+                    borrowed_pars.extend(tuple.ps.iter());
+                }
+                Some(ESetBody(set)) => {
+                    borrowed_pars.extend(set.ps.iter());
+                }
+                Some(EMapBody(map)) => {
+                    for pair in &map.kvs {
+                        if let Some(key) = pair.key.as_ref() {
+                            borrowed_pars.push(key);
+                        }
+                        if let Some(value) = pair.value.as_ref() {
+                            borrowed_pars.push(value);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+
+        if let Some(par) = borrowed_pars.pop() {
+            par.try_visit_components::<Expr, std::convert::Infallible>(|expr, _multiplicity| {
+                match expr {
+                    ParComponentItem::Borrowed(expr) => borrowed_exprs.push(expr),
+                    ParComponentItem::Owned(expr) => owned_exprs.push(expr),
+                }
+                Ok(())
+            })
+            .expect("Par invariant: expression endpoints are canonical");
+            continue;
+        }
+
+        if let Some(expr) = owned_exprs.pop() {
+            match expr.expr_instance {
+                Some(GDouble(bits)) if f64::from_bits(bits).is_nan() => return true,
+                Some(EListBody(list)) => {
+                    owned_pars.extend(list.ps);
+                }
+                Some(ETupleBody(tuple)) => {
+                    owned_pars.extend(tuple.ps);
+                }
+                Some(ESetBody(set)) => {
+                    owned_pars.extend(set.ps);
+                }
+                Some(EMapBody(map)) => {
+                    for pair in map.kvs {
+                        if let Some(key) = pair.key {
+                            owned_pars.push(key);
+                        }
+                        if let Some(value) = pair.value {
+                            owned_pars.push(value);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+
+        let Some(par) = owned_pars.pop() else {
+            break;
+        };
+        par.try_into_components::<Expr, std::convert::Infallible>(|expr, _multiplicity| {
+            owned_exprs.push(expr);
+            Ok(())
+        })
+        .expect("Par invariant: expression endpoints are canonical");
+    }
+    false
 }
 
 #[cfg(test)]
@@ -613,27 +655,37 @@ impl EvVal {
     }
 }
 
-/// An input node. Every reference borrows the input term (`'t`).
+/// An input node. Generated-Protobuf components borrow the input term; the
+/// repository-owned PathMap representation yields one owned decode per
+/// distinct endpoint and carries its multiplicity separately.
 ///
-/// `Copy`, as [`Traversal::Node`] requires: pushing a child is a reference move,
-/// never a `<Par as Clone>::clone`.
-#[derive(Clone, Copy)]
+/// Borrowed children remain reference moves. Owned endpoint values are boxed
+/// once so their address stays stable while their descendants are scheduled;
+/// [`EvKont::KeepOwnedExpr`] owns that box until the subtree finishes.
 enum EvNode<'t> {
     /// `eval_with(par)`, optionally followed immediately by
     /// `single_expr_instance` — the per-operand check the helpers interleave.
-    Eval { par: &'t Par, extract: bool },
+    Eval {
+        par: &'t Par,
+        extract: bool,
+    },
     /// `eval_expr_to_par(expr)`.
     Expr(&'t Expr),
+    OwnedExpr(Box<Expr>),
 }
 
 /// Post-order continuation. Carries the borrowed shell and the operator, never
 /// a child value.
 enum EvKont<'t> {
-    /// Fold `concatenate` over `n` evaluated exprs onto the shell of `par`.
+    /// Fold `concatenate` over `n` evaluated distinct Expr endpoints onto the
+    /// shell of `par`. [`Self::Scale`] applies each endpoint's multiplicity
+    /// before it reaches this continuation.
     ParK {
         par: &'t Par,
         n: usize,
     },
+    Scale(u64),
+    KeepOwnedExpr(Box<Expr>),
     Not,
     Neg,
     BoolK {
@@ -721,19 +773,45 @@ impl<'e> Traversal for EvalTraversal<'e> {
             // exactly `arity` children": `[Extract, ParK{n}, child × n]` NESTS
             // two continuations, and the narrower rule rejected it.
             EvNode::Eval { par, extract } => {
+                let mut expressions = Vec::with_capacity(par.family_distinct_len::<Expr>());
+                par.try_visit_components::<Expr, std::convert::Infallible>(|expr, multiplicity| {
+                    expressions.push((
+                        match expr {
+                            ParComponentItem::Borrowed(expr) => EvNode::Expr(expr),
+                            ParComponentItem::Owned(expr) => EvNode::OwnedExpr(Box::new(expr)),
+                        },
+                        multiplicity.get(),
+                    ));
+                    Ok(())
+                })
+                .expect("Par invariant: expression endpoints are canonical");
                 if extract {
                     work.push(Step::Combine(EvKont::Extract));
                 }
                 work.push(Step::Combine(EvKont::ParK {
                     par,
-                    n: par.exprs.len(),
+                    n: expressions.len(),
                 }));
-                for expr in par.exprs.iter().rev() {
-                    work.push(Step::Descend(EvNode::Expr(expr)));
+                for (expr, multiplicity) in expressions.into_iter().rev() {
+                    if multiplicity != 1 {
+                        work.push(Step::Combine(EvKont::Scale(multiplicity)));
+                    }
+                    work.push(Step::Descend(expr));
                 }
                 Ok(())
             }
             EvNode::Expr(expr) => descend_ev_expr(expr, self.env, self.matcher, work, vals),
+            EvNode::OwnedExpr(expr) => {
+                let stable = expr.as_ref() as *const Expr;
+                work.push(Step::Combine(EvKont::KeepOwnedExpr(expr)));
+                // SAFETY: the KeepOwnedExpr continuation now owns the Box and
+                // sits below every obligation descend_ev_expr can push. Box
+                // movement does not move its allocation, so stable remains
+                // valid until those obligations finish and the continuation
+                // consumes their one result.
+                let stable: &'t Expr = unsafe { &*stable };
+                descend_ev_expr(stable, self.env, self.matcher, work, vals)
+            }
         }
     }
 
@@ -759,6 +837,7 @@ impl<'e> Traversal for EvalTraversal<'e> {
     fn arity(kont: &EvKont<'_>) -> usize {
         match kont {
             EvKont::ParK { n, .. } => *n,
+            EvKont::Scale(_) | EvKont::KeepOwnedExpr(_) => 1,
             EvKont::Not | EvKont::Neg => 1,
             EvKont::BoolK { .. } => 2,
             EvKont::EqK { .. } => 2,
@@ -1147,24 +1226,20 @@ fn run_ev_combine(
                 evaled.push(pop(vals).into_par());
             }
             evaled.reverse();
-            let mut acc = Par {
-                sends: par.sends.clone(),
-                receives: par.receives.clone(),
-                news: par.news.clone(),
-                matches: par.matches.clone(),
-                unforgeables: par.unforgeables.clone(),
-                bundles: par.bundles.clone(),
-                connectives: par.connectives.clone(),
-                conditionals: par.conditionals.clone(),
-                exprs: Vec::new(),
-                locally_free: par.locally_free.clone(),
-                connective_used: par.connective_used,
-            };
+            let mut acc = par.with_exprs(Vec::new());
             for e in evaled {
-                acc = concatenate(acc, e);
+                acc = concatenate(acc, e)?;
             }
             Ok(EvVal::Par(acc))
         }
+        EvKont::Scale(factor) => {
+            let value = pop(vals).into_par();
+            value
+                .scale_occurrences(factor)
+                .map(EvVal::Par)
+                .map_err(EvalError::from)
+        }
+        EvKont::KeepOwnedExpr(_owner) => Ok(pop(vals)),
         EvKont::Not => combine_not(pop(vals).into_inst()).map(EvVal::Par),
         EvKont::Neg => combine_neg(pop(vals).into_inst()).map(EvVal::Par),
         EvKont::BoolK { op, f } => {
@@ -1639,6 +1714,23 @@ mod differential_eval_with {
         for (i, term) in corpus().iter().enumerate() {
             agree_on(i, term, &StructuralMatch, "StructuralMatch");
         }
+    }
+
+    /// The generated transitional representation reports every occurrence
+    /// separately, so ordinary differential inputs never build `Scale`.
+    /// Exercise it directly to keep the PathMap endpoint-multiplicity path
+    /// non-vacuous before the extern-PathMap cutover makes it routine.
+    #[test]
+    fn the_multiplicity_continuation_scales_one_value_and_consumes_one_slot() {
+        let mut vals = vec![EvVal::Par(gint(7))];
+        let output = run_ev_combine(EvKont::Scale(3), &NoSpatialMatch, &mut vals)
+            .expect("multiplicity scaling")
+            .into_par();
+
+        assert!(vals.is_empty(), "Scale must consume exactly one value");
+        assert_eq!(EvalTraversal::arity(&EvKont::Scale(3)), 1);
+        assert_eq!(output.cardinality(), 3);
+        assert_eq!(output.family_cardinality::<Expr>(), 3);
     }
 
     /// ★ ANTI-VACUITY FOR THE TEST ABOVE.

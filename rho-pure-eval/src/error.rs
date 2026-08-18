@@ -1,4 +1,5 @@
 use models::rhoapi::Par;
+use models::rust::par_bag::BagError;
 
 /// Errors raised during pure evaluation. These never arise from side
 /// effects (the evaluator has none); they signal a structural or type
@@ -25,6 +26,10 @@ pub enum EvalError {
     /// `i64::MIN / -1`). Mirrors the reducer's "Arithmetic overflow in
     /// {op}" errors so guards behave the same in both evaluators.
     ArithmeticOverflow { op: &'static str },
+
+    /// Parallel composition or scalar replication exceeded the per-endpoint
+    /// u64 multiplicity domain of the PathMap-backed Par bag.
+    ComponentMultiplicity(BagError),
 
     /// A method call or other unsupported Expr variant was reached.
     /// These are not yet supported in this crate; callers that need
@@ -57,6 +62,7 @@ impl std::fmt::Display for EvalError {
             EvalError::ArithmeticOverflow { op } => {
                 write!(f, "arithmetic overflow in `{op}`")
             }
+            EvalError::ComponentMultiplicity(error) => error.fmt(f),
             EvalError::UnsupportedExpression { kind } => {
                 write!(
                     f,
@@ -72,3 +78,7 @@ impl std::fmt::Display for EvalError {
 }
 
 impl std::error::Error for EvalError {}
+
+impl From<BagError> for EvalError {
+    fn from(error: BagError) -> Self { Self::ComponentMultiplicity(error) }
+}
