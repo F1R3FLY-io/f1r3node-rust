@@ -166,10 +166,26 @@ pub fn compute_forward_horizon_roots(
 ///      joiner needs its DAG metadata even if it's older than
 ///      `deploy_lifespan` from LFB.
 ///
-/// Take the lower of the two bounds (= older floor) so LFS coverage spans
-/// both windows. The `i32::MAX` sentinel for `max_parent_depth` disables
-/// the parent-depth check — in that mode the forward-horizon is unbounded
-/// and `deploy_lifespan` alone determines the floor.
+/// The two COMPOSE — they are not alternatives, and taking the lower of them
+/// (as this did) stops short. The forward-horizon bounds how far below LFB a
+/// block's PARENTS may sit and still be legal; the deploy-lifespan window is
+/// measured from a block's own parents, not from LFB, because that is where
+/// `Validate::block_summary`'s expiry scan starts:
+///
+/// ```text
+/// earliest_block_number = max_block_number(parents) + 1 - deploy_lifespan
+/// ```
+///
+/// So judging the deepest block this node may legally be asked to judge reads
+/// `max_parent_depth + depth_buffer + deploy_lifespan` below LFB. A joiner
+/// restored at 99 with the test-shard geometry held from 49 and had to scan to
+/// 47 to judge a block at 98 — a legal sibling of its own anchor, not stale
+/// history — and the walk running off the end became an `InvalidTransaction`
+/// record against that block's proposer.
+///
+/// The `i32::MAX` sentinel disables the parent-depth check, so parents may sit
+/// at any depth and the scan below them is unbounded too. No finite window
+/// covers that; the honest bound is genesis.
 ///
 /// Negative results clamp to 0 (genesis) so the bound is always a valid
 /// block number.
@@ -179,18 +195,11 @@ pub fn lfs_min_block_number(
     max_parent_depth: i32,
     depth_buffer: i32,
 ) -> i64 {
-    let lifespan_bound = std::cmp::max(0, start_block_number - deploy_lifespan);
-    let horizon_bound = if max_parent_depth as i64 >= i32::MAX as i64 {
-        // Sentinel: depth check disabled. Forward-horizon is unbounded,
-        // so the lifespan bound alone determines the floor.
-        lifespan_bound
-    } else {
-        std::cmp::max(
-            0,
-            start_block_number - (max_parent_depth as i64) - (depth_buffer as i64),
-        )
-    };
-    std::cmp::min(lifespan_bound, horizon_bound)
+    if max_parent_depth as i64 >= i32::MAX as i64 {
+        return 0;
+    }
+    let parent_reach = (max_parent_depth as i64) + (depth_buffer as i64);
+    std::cmp::max(0, start_block_number - parent_reach - deploy_lifespan)
 }
 
 /// Lower the LFS download floor so the responder's floor seed is usable.
@@ -220,8 +229,6 @@ mod tests {
     /// at the frontier leaves the oracle one lookup short.
     #[test]
     fn a_seed_widens_the_window_to_one_below_the_blocks_it_names() {
-        // Anchor 87 with the test-shard geometry: unseeded bound 37.
-        assert_eq!(lfs_min_block_number(87, 50, 15, 10), 37);
         // A floor/frontier at 30 must pull the window down to 29, not 30.
         assert_eq!(lfs_seeded_min_block_number(37, 30, 33), 29);
         // The LOWER of the two names the bound.
@@ -243,51 +250,40 @@ mod tests {
         assert_eq!(lfs_seeded_min_block_number(37, 0, 0), 0);
     }
 
+    /// The two windows COMPOSE; they are not alternatives.
+    ///
+    /// The forward horizon says how far below the anchor a block's PARENTS may
+    /// sit and still be legal. The deploy-lifespan window says how far below a
+    /// block's own parents its expiry scan reads. So judging the deepest block
+    /// this node may legally be asked to judge reaches the SUM of the two below
+    /// the anchor. Taking their minimum stops short, and stops short silently:
+    /// the walk runs off the end of the held history and the block's proposer
+    /// collects the blame for it.
     #[test]
-    fn min_block_number_takes_lifespan_when_horizon_wider() {
-        // start=200, lifespan=50 -> lifespan_bound=150
-        // max_parent_depth=10, buffer=0 -> horizon_bound=190
-        // min(150, 190) = 150 (lifespan tighter)
-        assert_eq!(lfs_min_block_number(200, 50, 10, 0), 150);
-    }
-
-    #[test]
-    fn min_block_number_takes_horizon_when_lifespan_wider() {
-        // start=200, lifespan=50 -> lifespan_bound=150
-        // max_parent_depth=100, buffer=10 -> horizon_bound=90
-        // min(150, 90) = 90 (horizon tighter — this is the §2.14 case:
-        // forward-horizon goes deeper than deploy_lifespan)
-        assert_eq!(lfs_min_block_number(200, 50, 100, 10), 90);
+    fn the_window_covers_a_deep_block_s_own_expiry_scan() {
+        // The geometry that failed live (anchor 99, test shard): the old rule
+        // gave 49, and block #98's expiry scan read down to #47.
+        assert_eq!(lfs_min_block_number(99, 50, 15, 10), 24);
+        // Node defaults: 100 + 10 of parent reach, then 50 of expiry below it.
+        assert_eq!(lfs_min_block_number(200, 50, 100, 10), 40);
+        // No buffer -> pure max_parent_depth plus the lifespan.
+        assert_eq!(lfs_min_block_number(300, 50, 200, 0), 50);
     }
 
     #[test]
     fn min_block_number_clamps_to_zero_at_genesis() {
-        // start=10, lifespan=50 -> max(0, 10-50) = 0
         assert_eq!(lfs_min_block_number(10, 50, 100, 10), 0);
-    }
-
-    #[test]
-    fn min_block_number_clamps_horizon_to_zero() {
-        // start=10, lifespan=5 -> lifespan_bound=5
-        // max_parent_depth=100, buffer=10 -> horizon raw=10-110=-100 -> clamped 0
-        // min(5, 0) = 0
         assert_eq!(lfs_min_block_number(10, 5, 100, 10), 0);
     }
 
+    /// The sentinel disables the parent-depth check, so a legal block's parents
+    /// can sit at ANY depth and its expiry scan can read below them. No finite
+    /// window covers that, and quietly picking one would recreate the bug this
+    /// rule exists to close, so the honest bound is genesis.
     #[test]
-    fn min_block_number_disabled_depth_falls_back_to_lifespan() {
-        // max_parent_depth=i32::MAX (sentinel) → horizon_bound=lifespan_bound
-        // The function returns lifespan_bound directly (no horizon clamping).
-        assert_eq!(lfs_min_block_number(200, 50, i32::MAX, 10), 150);
-        assert_eq!(lfs_min_block_number(200, 50, i32::MAX, 0), 150);
-    }
-
-    #[test]
-    fn min_block_number_zero_buffer() {
-        // No buffer → pure max_parent_depth.
-        // start=300, lifespan=50, max_parent_depth=200 -> horizon=100
-        // min(250, 100) = 100
-        assert_eq!(lfs_min_block_number(300, 50, 200, 0), 100);
+    fn min_block_number_with_the_depth_check_disabled_reaches_genesis() {
+        assert_eq!(lfs_min_block_number(200, 50, i32::MAX, 10), 0);
+        assert_eq!(lfs_min_block_number(200, 50, i32::MAX, 0), 0);
     }
 }
 
