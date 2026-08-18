@@ -12,8 +12,11 @@ pattern matching, and AI-style computations.
 
 ## Prerequisites
 
-See the prerequisites section in the DEVELOPER.md file located in the project's
-folder.
+PeTTa (the MeTTa interpreter) and `swipl` must be available on your system for
+`rho:petta:execute` to work when running the node locally. See the "MeTTa /
+PeTTa" prerequisites section in the top-level
+[README.md](../../../../README.md#source-development) for installation instructions.
+When running the node in Docker, PeTTa is already included in the image.
 
 ## MeTTa Execution Model
 

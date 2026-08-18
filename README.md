@@ -95,6 +95,55 @@ cargo install just
 
 The workspace is pinned to `nightly-2026-02-09` in `rust-toolchain.toml`.
 
+
+### (Optional) MeTTa / PeTTa (for the `rho:petta:execute` system service)
+
+The `rho:petta:execute` system service runs MeTTa code through
+[PeTTa](https://github.com/trueagi-io/PeTTa) (a MeTTa interpreter written in
+SWI-Prolog). When running the node locally (outside Docker) you must make it
+available on your system yourself.
+
+1. Install SWI-Prolog (`swipl`), version `9.3.x` or newer, **with the janus
+   Python bridge**. PeTTa uses this functionality which only exists in recent
+   SWI-Prolog builds. Older interpreters may fail at load time with:
+
+   ``` source_sink `library(janus)' does not exist ```
+
+   > ⚠️ The `swi-prolog` package on Debian bookworm (and matching Ubuntu releases)
+   > is **9.0.4**, which predates janus and will not work. Use a newer build from
+   > one of the sources below.
+
+   Ubuntu (SWI-Prolog stable PPA — ships a recent janus-capable build):
+   ```bash
+   sudo apt-add-repository ppa:swi-prolog/stable
+   sudo apt update
+   sudo apt install swi-prolog
+   ```
+
+   macOS (Homebrew — recent versions include janus):
+   ```bash
+   brew install swi-prolog
+   ```
+
+   Verify janus is available:
+   ```bash
+   swipl -g "use_module(library(janus)), halt" -t "halt(1)"
+   ```
+   The command should exit silently (status 0); an error means janus is missing.
+
+2. Clone PeTTa somewhere on your machine and point `PETTA_PATH` at it. If this
+   is not done, the node will assume it is located in `./PeTTa`.
+
+   For example:
+   
+   ```bash
+   git clone https://github.com/trueagi-io/PeTTa.git ~/PeTTa
+   export PETTA_PATH=~/PeTTa
+   ```
+
+   Add the `export PETTA_PATH=...` line to your shell profile (`~/.bashrc`,
+   `~/.zshrc`, ...) so it persists across sessions.
+
 ### Git Hooks (Required)
 
 The pre-commit and pre-push hooks gate every commit and every push. **Install them before your first commit:**

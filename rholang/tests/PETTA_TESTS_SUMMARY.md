@@ -9,8 +9,8 @@ For the PeTTa tests to run, the following requirements must be met:
 
 1. **The PeTTa installation must be available**.
 
-   See [DEVELOPER.md](../../DEVELOPER.md) for details on how to initialize this git
-   submodule.
+   See the "MeTTa / PeTTa" prerequisites section in the top-level
+   [README.md](../../README.md#source-development) for details.
 
    The installation location must be specified in the `PETTA_PATH` environment
    variable. If this variable is not set, the relative path `./PeTTa` will be used,
@@ -19,8 +19,8 @@ For the PeTTa tests to run, the following requirements must be met:
 
 2. **`swipl` must be available in the `PATH`**.
 
-   See [DEVELOPER.md](../../DEVELOPER.md) for details on how to install this
-   program.
+   See the "MeTTa / PeTTa" prerequisites section in the top-level
+   [README.md](../../README.md#source-development) for how to install this program.
 
 If these are not available, the tests will be skipped by default. If this behaviour
 is not desirable (e.g: all tests must be run as part of CI), then the environment
@@ -102,3 +102,25 @@ cargo test --package rholang --test swipl_petta_replay_spec
 # Run unit tests
 cargo test --package rholang --lib swi_prolog_service::tests
 ```
+
+### With Docker (no local SWI-Prolog / PeTTa needed)
+
+The `petta-test` stage in [node/Dockerfile](../../node/Dockerfile) runs the whole
+suite inside a container that already provides the janus-capable SWI-Prolog and
+the pinned PeTTa. From the repository root:
+
+```bash
+# Build the test image once (reuses the node build cache)
+docker build --target petta-test -t f1r3fly-petta-test -f node/Dockerfile .
+
+# Run the full PeTTa test suite. The named volumes cache compiled crates and
+# artifacts, so repeated runs only re-run the tests, not a full rebuild.
+docker run --rm \
+  -v petta-cargo:/usr/local/cargo/registry \
+  -v petta-target:/build/target \
+  f1r3fly-petta-test
+```
+
+The container sets `PETTA_PATH` and `RUSTFLAGS` and invokes
+`rholang/tests/RUN_PETTA_TESTS.sh` for you; the run exits non-zero if any test
+fails.
