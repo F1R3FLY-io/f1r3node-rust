@@ -145,7 +145,66 @@ pub fn build_block(
     )
 }
 
+pub fn build_block_at_height(
+    block_number: i64,
+    parents_hash_list: Vec<BlockHash>,
+    creator: Option<Validator>,
+    now: i64,
+    bonds: Option<Vec<Bond>>,
+    justifications: Option<Vec<Justification>>,
+    deploys: Option<Vec<ProcessedDeploy>>,
+    post_state_hash: Option<StateHash>,
+    shard_id: Option<String>,
+    pre_state_hash: Option<StateHash>,
+    seq_num: Option<i32>,
+) -> BlockMessage {
+    build_block_with_system_deploys_at_height(
+        Some(block_number),
+        parents_hash_list,
+        creator,
+        now,
+        bonds,
+        justifications,
+        deploys,
+        post_state_hash,
+        shard_id,
+        pre_state_hash,
+        seq_num,
+        None,
+    )
+}
+
 pub fn build_block_with_system_deploys(
+    parents_hash_list: Vec<BlockHash>,
+    creator: Option<Validator>,
+    now: i64,
+    bonds: Option<Vec<Bond>>,
+    justifications: Option<Vec<Justification>>,
+    deploys: Option<Vec<ProcessedDeploy>>,
+    post_state_hash: Option<StateHash>,
+    shard_id: Option<String>,
+    pre_state_hash: Option<StateHash>,
+    seq_num: Option<i32>,
+    system_deploys: Option<Vec<ProcessedSystemDeploy>>,
+) -> BlockMessage {
+    build_block_with_system_deploys_at_height(
+        None,
+        parents_hash_list,
+        creator,
+        now,
+        bonds,
+        justifications,
+        deploys,
+        post_state_hash,
+        shard_id,
+        pre_state_hash,
+        seq_num,
+        system_deploys,
+    )
+}
+
+fn build_block_with_system_deploys_at_height(
+    block_number: Option<i64>,
     parents_hash_list: Vec<BlockHash>,
     creator: Option<Validator>,
     now: i64,
@@ -169,7 +228,7 @@ pub fn build_block_with_system_deploys(
     let system_deploys = system_deploys.unwrap_or_default();
 
     block_implicits::get_random_block(
-        None,
+        block_number,
         Some(seq_num),
         Some(pre_state_hash),
         Some(post_state_hash),

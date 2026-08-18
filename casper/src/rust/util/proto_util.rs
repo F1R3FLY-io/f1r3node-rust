@@ -634,6 +634,7 @@ mod fork_choice_b1_repro_tests {
     use std::sync::Arc;
 
     use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+    use models::rust::casper::protocol::casper_message::{F1r3flyState, StateEffectId};
     use parking_lot::RwLock as PlRwLock;
     use proptest::prelude::*;
     use prost::bytes::Bytes;
@@ -643,6 +644,48 @@ mod fork_choice_b1_repro_tests {
     use super::*;
 
     fn h(n: u8) -> Bytes { Bytes::from(vec![n; 32]) }
+
+    #[test]
+    fn rejected_state_effect_identity_and_order_are_committed_by_block_hash() {
+        let body = Body {
+            state: F1r3flyState {
+                pre_state_hash: h(1),
+                post_state_hash: h(2),
+                bonds: Vec::new(),
+                block_number: 1,
+            },
+            deploys: Vec::new(),
+            rejected_deploys: Vec::new(),
+            rejected_state_effects: Vec::new(),
+            system_deploys: Vec::new(),
+            extra_bytes: Bytes::new(),
+        };
+        let block = unsigned_block_proto(
+            body,
+            block_header(vec![h(0).to_vec()], 2, 1),
+            Vec::new(),
+            "root".to_string(),
+            None,
+        );
+        let original_hash = hash_block(&block);
+
+        let mut with_effects = block.clone();
+        with_effects.body.rejected_state_effects = vec![
+            StateEffectId {
+                source_block_hash: h(3),
+                execution_index: 1,
+            },
+            StateEffectId {
+                source_block_hash: h(4),
+                execution_index: 2,
+            },
+        ];
+        let effect_hash = hash_block(&with_effects);
+        assert_ne!(original_hash, effect_hash);
+
+        with_effects.body.rejected_state_effects.swap(0, 1);
+        assert_ne!(effect_hash, hash_block(&with_effects));
+    }
 
     fn md(hash: Bytes, parents: Vec<Bytes>, num: i64, v: &Bytes) -> BlockMetadata {
         let mut wm = BTreeMap::new();
@@ -659,6 +702,9 @@ mod fork_choice_b1_repro_tests {
             directly_finalized: false,
             finalized: false,
             fault_tolerance_value: 0.0,
+            successful_state_effect_indices: Default::default(),
+            rejected_state_effects: Default::default(),
+            protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
         }
     }
 

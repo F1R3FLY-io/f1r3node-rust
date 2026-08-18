@@ -308,6 +308,23 @@ fn deploy_scope_cache_key_matches(
         && cached_parents == current_parents
 }
 
+fn fallback_to_finalized_parent(
+    block_store: &KeyValueBlockStore,
+    parents: Vec<BlockMessage>,
+    last_finalized_block: &BlockHash,
+) -> Result<Vec<BlockMessage>, CasperError> {
+    if !parents.is_empty() {
+        return Ok(parents);
+    }
+    let finalized = block_store.get(last_finalized_block)?.ok_or_else(|| {
+        shared::rust::store::key_value_store::KvStoreError::KeyNotFound(format!(
+            "last finalized block missing from block store: {}",
+            hex::encode(last_finalized_block)
+        ))
+    })?;
+    Ok(vec![finalized])
+}
+
 pub(crate) fn record_dag_cardinality_metrics(dag: &KeyValueDagRepresentation) {
     metrics::gauge!(DAG_BLOCKS_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
         .set(dag.dag_set.len() as f64);
@@ -353,6 +370,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         }
         valid_latest_msgs.insert(validator.clone(), hash.clone());
     }
+    let snapshot_lfb_hash = dag.last_finalized_block();
     // Storage errors during snapshot construction must propagate: a
     // silent empty `valid_latest_metas` would feed wrong fork-choice on
     // the consensus hot path. Bug #17 / T-9.20 hardened this contract
@@ -416,7 +434,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         &dag,
         &this.block_store,
         sorted_parents_list,
-        &dag.last_finalized_block(),
+        &snapshot_lfb_hash,
     )?;
 
     let recovery_backlog = if sorted_parents_list.is_empty() {
@@ -450,7 +468,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         local_rejected_buffer_has_recoverable_deploys(
             &this.block_store,
             &this.rejected_deploy_buffer,
-            &dag.last_finalized_block(),
+            &snapshot_lfb_hash,
             &sorted_parent_hashes,
             candidate_block_number,
             now_millis,
@@ -459,9 +477,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         )?
     };
 
-    let unfiltered_parents = if sorted_parents_list.is_empty() {
-        vec![this.approved_block.clone()]
-    } else if recovery_backlog && sorted_parents_list.len() > 1 {
+    let unfiltered_parents = if recovery_backlog && sorted_parents_list.len() > 1 {
         tracing::info!(
             target: "f1r3fly.casper.recovery",
             "Parent selection narrowed for selectable deploy recovery: original_parents={}, selected_main={}",
@@ -470,7 +486,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         );
         vec![sorted_parents_list[0].clone()]
     } else {
-        sorted_parents_list
+        fallback_to_finalized_parent(&this.block_store, sorted_parents_list, &snapshot_lfb_hash)?
     };
 
     let unfiltered_parents_count = unfiltered_parents.len();
@@ -597,8 +613,6 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
 
     let (deploys_in_scope, rejected_in_scope) = {
         let current_dag_generation = this.block_dag_storage.current_generation();
-        let snapshot_lfb_hash = dag.last_finalized_block();
-
         let cached: Option<(Arc<dashmap::DashSet<Bytes>>, Arc<dashmap::DashSet<Bytes>>)> = {
             // C16: `deploys_in_scope_cache` is a `parking_lot::Mutex` —
             // no poison propagation, `.lock()` returns the guard
@@ -689,7 +703,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             let mut cache_guard = this.deploys_in_scope_cache.lock();
             *cache_guard = Some((
                 current_dag_generation,
-                snapshot_lfb_hash,
+                snapshot_lfb_hash.clone(),
                 parent_hashes.clone(),
                 all_deploys.clone(),
                 all_rejected.clone(),
@@ -709,7 +723,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     .set(deploys_in_scope_sig_bytes_estimate);
 
     let invalid_blocks = dag.invalid_blocks_map()?;
-    let last_finalized_block = dag.last_finalized_block();
+    let last_finalized_block = snapshot_lfb_hash;
     record_dag_cardinality_metrics(&dag);
 
     Ok(CasperSnapshot {
@@ -825,8 +839,9 @@ mod tests {
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::{
-        deploy_scope_cache_key_matches, local_rejected_buffer_has_recoverable_deploys,
-        prefer_deploy_support_main_parent, prune_dag_covered_parents,
+        deploy_scope_cache_key_matches, fallback_to_finalized_parent,
+        local_rejected_buffer_has_recoverable_deploys, prefer_deploy_support_main_parent,
+        prune_dag_covered_parents,
     };
 
     #[test]
@@ -859,6 +874,51 @@ mod tests {
             &lfb,
             &[parent_b, parent_a]
         ));
+    }
+
+    #[tokio::test]
+    async fn empty_valid_parent_set_falls_back_to_last_finalized_block() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let finalized = block_implicits::get_random_block(
+            Some(7),
+            Some(3),
+            None,
+            None,
+            None,
+            Some(crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION),
+            Some(7),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        block_store
+            .put_block_message(&finalized)
+            .expect("store finalized block");
+
+        let selected =
+            fallback_to_finalized_parent(&block_store, Vec::new(), &finalized.block_hash)
+                .expect("finalized fallback");
+        assert_eq!(selected, vec![finalized.clone()]);
+
+        let declared = vec![finalized.clone()];
+        assert_eq!(
+            fallback_to_finalized_parent(&block_store, declared.clone(), &finalized.block_hash)
+                .expect("declared parents"),
+            declared
+        );
+        assert!(fallback_to_finalized_parent(
+            &block_store,
+            Vec::new(),
+            &prost::bytes::Bytes::from_static(b"missing"),
+        )
+        .is_err());
     }
 
     #[tokio::test]

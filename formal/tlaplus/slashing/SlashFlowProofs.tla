@@ -67,11 +67,14 @@ LEMMA NextIndInv == IndInv /\ [Next]_vars => IndInv'
           BY <1>3 DEF SignEquivocating, TypeOK
     <2>c. equivocationRecords' \in SUBSET (Validators \X (0..MaxSeqNum))
           BY <1>3, <2>a DEF SignEquivocating, TypeOK
-    <2>d. /\ invalidBlocks' \in SUBSET BlockId
-          /\ pendingSlashDeploys' \in SUBSET BlockId
-          BY <1>3 DEF SignEquivocating, TypeOK, BlockId
+    <2>d0. <<v, s, 2>> \in BlockId
+           BY <1>3 DEF BlockId
+    <2>d1. invalidBlocks' \in SUBSET BlockId
+           BY <1>3, <2>d0 DEF SignEquivocating, TypeOK
+    <2>d2. pendingSlashDeploys' \in SUBSET BlockId
+           BY <1>3, <2>d0 DEF SignEquivocating, TypeOK
     <2>1. TypeOK'
-          BY <1>3, <2>b, <2>c, <2>d DEF SignEquivocating, TypeOK
+          BY <1>3, <2>b, <2>c, <2>d1, <2>d2 DEF SignEquivocating, TypeOK
     <2>2. Inv_ActiveImpliesBonded' /\ Inv_RedeemedValidatorUnhalted'
           BY <1>3 DEF SignEquivocating
     <2> QED BY <2>1, <2>2 DEF IndInv
@@ -82,13 +85,15 @@ LEMMA NextIndInv == IndInv /\ [Next]_vars => IndInv'
     \* credit supply[v] + MintAmount \in Nat (decomposed off the 17-conjunct).
     <2>1. supply' \in [Validators -> Nat]
           BY <1>6, MintAmountType DEF EpochMint, TypeOK
-    <2>2. mintedEpochs' \in SUBSET (Validators \X {EpochIndex})
+    <2>2. protocolMinted' \in [Validators -> Nat]
+          BY <1>6, MintAmountType DEF EpochMint, TypeOK
+    <2>3. mintedEpochs' \in SUBSET (Validators \X {EpochIndex})
           BY <1>6 DEF EpochMint, TypeOK
-    <2>3. TypeOK'
-          BY <1>6, <2>1, <2>2 DEF EpochMint, TypeOK
-    <2>4. Inv_ActiveImpliesBonded' /\ Inv_RedeemedValidatorUnhalted'
+    <2>4. TypeOK'
+          BY <1>6, <2>1, <2>2, <2>3 DEF EpochMint, TypeOK
+    <2>5. Inv_ActiveImpliesBonded' /\ Inv_RedeemedValidatorUnhalted'
           BY <1>6 DEF EpochMint
-    <2> QED BY <2>3, <2>4 DEF IndInv
+    <2> QED BY <2>4, <2>5 DEF IndInv
   \* ExecuteSlash(h): o == h[1] \in Validators with a positive bond.
   <1>7. ASSUME NEW h \in BlockId, ExecuteSlash(h)
         PROVE  IndInv'
@@ -99,6 +104,7 @@ LEMMA NextIndInv == IndInv /\ [Next]_vars => IndInv'
       <3>e1. /\ bonds' = [bonds EXCEPT ![o] = 0]
               /\ activeValidators' = activeValidators \ {o}
               /\ coopVaultBalance' = coopVaultBalance
+              /\ coopFuelBalance' = coopFuelBalance
               /\ quarantinedStake' = [quarantinedStake EXCEPT ![o] = bonds[o]]
               /\ burnedStake' = burnedStake
               /\ slashedSet' = slashedSet \cup {o}
@@ -107,6 +113,9 @@ LEMMA NextIndInv == IndInv /\ [Next]_vars => IndInv'
               /\ forkChoiceLatest' = [forkChoiceLatest EXCEPT ![o] = 0]
               /\ mintingHalted' = mintingHalted \cup {o}
               /\ supply' = [supply EXCEPT ![o] = 0]
+              /\ quarantinedFuel' = [quarantinedFuel EXCEPT ![o] = supply[o]]
+              /\ burnedFuel' = burnedFuel
+              /\ protocolMinted' = protocolMinted
               /\ mintedEpochs' = mintedEpochs
               /\ UNCHANGED <<blocks, invalidBlocks, equivocationRecords>>
               BY <1>7 DEF ExecuteSlash
@@ -126,26 +135,30 @@ LEMMA NextIndInv == IndInv /\ [Next]_vars => IndInv'
       \* halted'=halted\{o}; valBond=quarantinedStake[o]>0.
       <3>1. TypeOK'
             \* Expose the Vindicated arm's primed equalities (CASE/LET-folded),
-            \* then close TypeOK' — the set-builder updates (ClearStaleEpochs /
-            \* DropSlashArtifacts) keep their carriers in their respective types.
+            \* then close TypeOK' — the vault restoration is additive in Nat and
+            \* DropSlashArtifacts keeps its carrier in BlockId.
             <4>e1. /\ bonds' = [bonds EXCEPT ![o] = quarantinedStake[o]]
                    /\ activeValidators' = activeValidators \cup {o}
                    /\ coopVaultBalance' = coopVaultBalance
+                   /\ coopFuelBalance' = coopFuelBalance
                    /\ mintingHalted' = mintingHalted \ {o}
                    /\ quarantinedStake' = [quarantinedStake EXCEPT ![o] = 0]
                    /\ burnedStake' = burnedStake
                    BY <1>8, <2>1 DEF Redeem
             <4>e2. /\ slashedSet' = slashedSet \ {o}
-                   /\ mintedEpochs' = ClearStaleEpochs(o)
+                   /\ mintedEpochs' = mintedEpochs
                    /\ pendingSlashDeploys' = DropSlashArtifacts(pendingSlashDeploys, o)
-                   /\ supply' = supply
+                   /\ supply' = [supply EXCEPT ![o] = supply[o] + quarantinedFuel[o]]
+                   /\ quarantinedFuel' = [quarantinedFuel EXCEPT ![o] = 0]
+                   /\ burnedFuel' = burnedFuel
+                   /\ protocolMinted' = protocolMinted
                    /\ UNCHANGED <<blocks, invalidBlocks, equivocationRecords, forkChoiceLatest>>
                    BY <1>8, <2>1 DEF Redeem
-            <4>m. mintedEpochs' \in SUBSET (Validators \X {EpochIndex})
-                  BY <4>e2 DEF TypeOK, ClearStaleEpochs
+            <4>s. supply' \in [Validators -> Nat]
+                  BY <4>e2 DEF TypeOK
             <4>p. pendingSlashDeploys' \in SUBSET BlockId
                   BY <4>e2 DEF TypeOK, DropSlashArtifacts
-            <4> QED BY <2>v, <4>e1, <4>e2, <4>m, <4>p DEF TypeOK, BlockId
+            <4> QED BY <2>v, <4>e1, <4>e2, <4>s, <4>p DEF TypeOK, BlockId
       <3>2. Inv_ActiveImpliesBonded'
             \* v=o ⇒ bonds'[o]=valBond>0; v # o in active ⇒
             \* bonds'[v]=bonds[v]>0 (IH).
@@ -164,6 +177,19 @@ LEMMA NextIndInv == IndInv /\ [Next]_vars => IndInv'
       <3>n. /\ quarantinedStake[o] \div 2 \in Nat
             /\ quarantinedStake[o] - (quarantinedStake[o] \div 2) \in Nat
             BY <2>v
+      <3>t. /\ quarantinedFuel[o] \in Nat
+            /\ supply[o] \in Nat
+            /\ coopFuelBalance \in Nat
+            BY <1>8 DEF IndInv, TypeOK
+      <3>p. LET fuelPenalty == MinNat(quarantinedStake[o] \div 2, quarantinedFuel[o])
+            IN /\ fuelPenalty \in Nat
+               /\ fuelPenalty <= quarantinedFuel[o]
+            BY <3>n, <3>t DEF MinNat
+      <3>f. LET fuelPenalty == MinNat(quarantinedStake[o] \div 2, quarantinedFuel[o])
+            IN /\ fuelPenalty \in Nat
+               /\ coopFuelBalance + fuelPenalty \in Nat
+               /\ supply[o] + quarantinedFuel[o] - fuelPenalty \in Nat
+            BY <3>t, <3>p
       <3>1. TypeOK'
             \* Expose the Guilty arm's primed equalities (CASE + nested
             \* penalty/remainder LET-folded), then close TypeOK'. The split
@@ -171,26 +197,31 @@ LEMMA NextIndInv == IndInv /\ [Next]_vars => IndInv'
             \* Nat by <3>n; the set-builder updates keep their carriers typed.
             <4>e1. /\ bonds' = [bonds EXCEPT ![o] = quarantinedStake[o] - (quarantinedStake[o] \div 2)]
                    /\ coopVaultBalance' = coopVaultBalance + (quarantinedStake[o] \div 2)
+                   /\ coopFuelBalance' = coopFuelBalance + MinNat(quarantinedStake[o] \div 2, quarantinedFuel[o])
                    /\ activeValidators' = activeValidators \cup {o}
                    /\ mintingHalted' = mintingHalted \ {o}
                    /\ quarantinedStake' = [quarantinedStake EXCEPT ![o] = 0]
                    /\ burnedStake' = burnedStake
                    BY <1>8, <2>2 DEF Redeem
             <4>e2. /\ slashedSet' = slashedSet \ {o}
-                   /\ mintedEpochs' = ClearStaleEpochs(o)
+                   /\ mintedEpochs' = mintedEpochs
                    /\ pendingSlashDeploys' = DropSlashArtifacts(pendingSlashDeploys, o)
-                   /\ supply' = supply
+                   /\ supply' = [supply EXCEPT ![o] = supply[o] + quarantinedFuel[o] - MinNat(quarantinedStake[o] \div 2, quarantinedFuel[o])]
+                   /\ quarantinedFuel' = [quarantinedFuel EXCEPT ![o] = 0]
+                   /\ burnedFuel' = burnedFuel
+                   /\ protocolMinted' = protocolMinted
                    /\ UNCHANGED <<blocks, invalidBlocks, equivocationRecords, forkChoiceLatest>>
                    BY <1>8, <2>2 DEF Redeem
             <4>b. bonds' \in [Validators -> Nat]
                   BY <4>e1, <3>n DEF TypeOK
             <4>c. coopVaultBalance' \in Nat
                   BY <4>e1, <3>n DEF TypeOK
-            <4>m. mintedEpochs' \in SUBSET (Validators \X {EpochIndex})
-                  BY <4>e2 DEF TypeOK, ClearStaleEpochs
+            <4>f. /\ coopFuelBalance' \in Nat
+                  /\ supply' \in [Validators -> Nat]
+                  BY <4>e1, <4>e2, <3>f DEF TypeOK
             <4>p. pendingSlashDeploys' \in SUBSET BlockId
                   BY <4>e2 DEF TypeOK, DropSlashArtifacts
-            <4> QED BY <4>e1, <4>e2, <4>b, <4>c, <4>m, <4>p DEF TypeOK, BlockId
+            <4> QED BY <4>e1, <4>e2, <4>b, <4>c, <4>f, <4>p DEF TypeOK, BlockId
       <3>2. Inv_ActiveImpliesBonded'
             \* v=o ⇒ bonds'[o]=remainder>0 (<3>r); v # o in active ⇒
             \* bonds'[v]=bonds[v]>0 (IH).

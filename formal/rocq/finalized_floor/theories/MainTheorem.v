@@ -18,7 +18,7 @@
      T-DETMERGE  merge order-independent        -- no fork from parent fold order (¬S6)
      T-K1        no mergeable write lost         -- the ~400-block write-loss (¬S5)
      T-NDA       recovery not double-applied     -- effects applied at most once
-     T-LINEAGE   LFB promotion preserves every committed state-base ancestor
+     T-LINEAGE   LFB promotion preserves every committed active state effect
 
    The H1 deterministic backstop (over-Δ merges refuse rather than substitute a
    lossy state) and its liveness are verified in TLA+ (SpecFixed:
@@ -38,6 +38,7 @@ From FinalizedFloor Require Import CliqueOracle.
 From FinalizedFloor Require Import Floor.
 From FinalizedFloor Require Import Merge.
 From FinalizedFloor Require Import OccurrenceDisposition.
+From FinalizedFloor Require Import FinalizedOccurrenceStatus.
 From FinalizedFloor Require Import Recovery.
 From FinalizedFloor Require Import MergeRecoveryCoherence.
 From FinalizedFloor Require Import RejectionReasonConfluence.
@@ -52,7 +53,10 @@ From FinalizedFloor Require Import BootstrapReplayContext.
 From FinalizedFloor Require Import LocalFaultDeferral.
 From FinalizedFloor Require Import FundingAdmissionLifecycle.
 From FinalizedFloor Require Import EffectCausalClosure.
+From FinalizedFloor Require Import StateEffectProvenance.
 From FinalizedFloor Require Import StateLineageFinality.
+From FinalizedFloor Require Import CertifiedFloorPromotion.
+From FinalizedFloor Require Import SnapshotFloorMaterialization.
 
 Theorem finalized_floor_merge_correct :
   (* T-TERM: the main-parent spine walk always reaches genesis. *)
@@ -111,6 +115,25 @@ Proof.
   exact (conj rejection_is_source_exact
           (conj distinct_source_survives_rejection
             (conj rejection_order_independent one_winner_preserved))).
+Qed.
+
+Theorem finalized_floor_occurrence_status_scope_correct :
+  (forall records record,
+     In record records ->
+     recording_in_finalized_closure record = true ->
+     tombstoned
+       (finalized_rejection_targets records)
+       (rejection_target record))
+  /\
+  (tombstoned
+     (finalized_rejection_targets [secondary_example_record])
+     secondary_example_occurrence /\
+   ~ tombstoned
+       (main_chain_rejection_targets [secondary_example_record])
+       secondary_example_occurrence).
+Proof.
+  exact (conj finalized_closure_rejection_is_authoritative
+          main_chain_only_projection_is_incomplete).
 Qed.
 
 Theorem finalized_floor_recovery_admission_correct :
@@ -674,6 +697,22 @@ Qed.
 
 Print Assumptions finalized_floor_state_lineage_correct.
 
+Theorem finalized_floor_state_effect_provenance_correct :
+  state_effect_provenance_contract.
+Proof.
+  exact state_effect_provenance_end_to_end.
+Qed.
+
+Print Assumptions finalized_floor_state_effect_provenance_correct.
+
+Theorem finalized_floor_rebased_parent_selection_correct :
+  floor_rebased_parent_selection_contract.
+Proof.
+  exact floor_rebased_parent_selection_end_to_end.
+Qed.
+
+Print Assumptions finalized_floor_rebased_parent_selection_correct.
+
 Theorem finalized_floor_state_support_refines_causal_certificate :
   forall
     (d : DAG)
@@ -688,3 +727,94 @@ Proof.
 Qed.
 
 Print Assumptions finalized_floor_state_support_refines_causal_certificate.
+
+Theorem finalized_floor_certified_promotion_correct :
+  certified_floor_promotion_contract.
+Proof.
+  exact certified_floor_promotion_end_to_end.
+Qed.
+
+Print Assumptions finalized_floor_certified_promotion_correct.
+
+Theorem finalized_floor_latest_message_coverage_correct :
+  forall
+    (Block Validator : Type)
+    (parent_edge : Block -> Block -> Prop)
+    (latest : Validator -> Block)
+    (candidate : Block)
+    (decide : (Validator -> Prop) -> Prop),
+    (forall left right,
+      (forall validator, left validator <-> right validator) ->
+      (decide left <-> decide right)) ->
+    decide
+      (fun validator =>
+        propagated_coverage parent_edge latest candidate validator) <->
+    decide
+      (fun validator =>
+        pairwise_support parent_edge latest candidate validator).
+Proof.
+  intros Block Validator parent_edge latest candidate decide Hextensional.
+  apply coverage_decision_transparent.
+  exact Hextensional.
+Qed.
+
+Print Assumptions finalized_floor_latest_message_coverage_correct.
+
+Theorem finalized_floor_linear_snapshot_reuse_correct :
+  forall
+    (Block Validator : Type)
+    (parent_edge : Block -> Block -> Prop)
+    (latest : Validator -> Block)
+    (predecessor parent candidate : Block)
+    (eligible : Block -> Prop),
+    (forall immediate,
+      parent_edge immediate parent -> immediate = predecessor) ->
+    (eligible parent ->
+      exists validator,
+        pairwise_support parent_edge latest parent validator) ->
+    (forall validator,
+      ~ pairwise_support parent_edge latest parent validator) ->
+    eligible candidate ->
+    dag_reaches parent_edge candidate parent ->
+    dag_reaches parent_edge candidate predecessor.
+Proof.
+  intros Block Validator parent_edge latest predecessor parent candidate
+    eligible Hunique Heligible_support Hparent_unsupported Hcandidate Hreaches.
+  apply (@unchanged_linear_snapshot_reuse_sound
+    Block Validator parent_edge latest
+    predecessor parent candidate eligible); assumption.
+Qed.
+
+Print Assumptions finalized_floor_linear_snapshot_reuse_correct.
+
+Theorem finalized_floor_snapshot_materialization_correct :
+  forall
+    (Block : Type)
+    (block_eq_dec : forall left right : Block, {left = right} + {left <> right})
+    (parents latest_messages finalizer_blocks cache : list Block),
+    snapshot_ready
+      parents latest_messages
+      (materialize_all
+        block_eq_dec
+        (snapshot_required parents latest_messages)
+        (materialize_all block_eq_dec finalizer_blocks cache))
+    /\
+    cache_equiv
+      (materialize_all
+        block_eq_dec
+        (snapshot_required parents latest_messages)
+        (materialize_all block_eq_dec finalizer_blocks cache))
+      (materialize_all block_eq_dec finalizer_blocks
+        (materialize_all
+          block_eq_dec
+          (snapshot_required parents latest_messages)
+          cache)).
+Proof.
+  intros Block block_eq_dec parents latest_messages finalizer_blocks cache.
+  destruct (SnapshotFloorMaterialization.finalized_floor_snapshot_materialization_correct
+    block_eq_dec parents latest_messages finalizer_blocks cache)
+    as [Hready [Hcommutes _]].
+  exact (conj Hready Hcommutes).
+Qed.
+
+Print Assumptions finalized_floor_snapshot_materialization_correct.

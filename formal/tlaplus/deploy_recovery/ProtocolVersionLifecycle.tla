@@ -26,8 +26,8 @@ CONSTANTS
     RejectUnsupportedApprovedVersion
 
 LegacyProtocol == 1
-CurrentProtocol == 2
-UnsupportedProtocol == 3
+CurrentProtocol == 3
+UnsupportedProtocol == 4
 NoVersion == 0
 Versions == {LegacyProtocol, CurrentProtocol, UnsupportedProtocol}
 SupportedVersions == {CurrentProtocol}

@@ -75,6 +75,21 @@ dependency relation and remain governed by their typed algebra.
 | `MC_EffectCausalClosure_block_lineage_unsafe.cfg` | violate `Inv_IndependentEffectsSurvive` | blanket source-block descendant expansion deletes exact effects unrelated to the rejected state transition |
 | `MC_EffectCausalClosure_direct_only_unsafe.cfg` | violate `Inv_NoAcceptedDependsOnRejected` | a one-hop scan accepts a transitive dependent after its direct source is rejected |
 
+`FinalizedOccurrenceStatus.tla` closes the observability boundary after state
+merge. Occurrences and exact tombstones are delivered in every order from the
+complete LFB causal closure. The safe projection removes a source named by a
+secondary-parent tombstone and reports the distinct surviving occurrence,
+matching committed state. The unsafe projection deliberately consults only the
+main-parent spine and therefore reports two active sources after state has kept
+one.
+
+| Configuration | Expected result | Defect isolated |
+| --- | --- | --- |
+| `MC_FinalizedOccurrenceStatus.cfg` | pass | all-parent exact status equals committed active occurrence state under every evidence order |
+| `MC_FinalizedOccurrenceStatus_main_chain_unsafe.cfg` | violate `Inv_StatusMatchesCommittedState` | main-chain-only status ignores a secondary-parent exact tombstone |
+| `MC_FinalizedOccurrenceStatusApalache.cfg` | pass | typed bounded verification of the same all-parent projection |
+| `MC_FinalizedOccurrenceStatus_main_chain_unsafe_Apalache.cfg` | violate `Inv_StatusMatchesCommittedState` | symbolic counterexample to main-chain-only exact status |
+
 `RejectionReasonConfluence.tla` covers the diagnostic refinement carried by an
 exact tombstone. Concurrent descendants can reject the same source occurrence
 for different valid reasons because each descendant observes a different merge
@@ -102,8 +117,9 @@ Consequently, the merge algebra remains coherent if it is presented with a
 current-protocol scope and a historically encoded floor: a sibling tombstone or
 duplicate occurrence cannot mask an effect already materialized in the floor
 state. This is a defensive state-composition invariant, not an in-place upgrade
-path. The D3 wire migration is fresh-genesis: this binary admits only protocol 2
-as an approved running protocol and rejects protocol 1 before Casper starts.
+path. The D3 wire migration is fresh-genesis: this binary admits only protocol 3
+as an approved running protocol and rejects protocols 1 and 2 before Casper
+starts. Protocol 2 remains the historical exact rejected-deploy threshold.
 
 | Configuration | Expected result | Defect isolated |
 | --- | --- | --- |
@@ -115,29 +131,29 @@ as an approved running protocol and rejects protocol 1 before Casper starts.
 `ProtocolVersionLifecycle.tla` closes the lifecycle that the activation model
 intentionally abstracts away. It follows the version from genesis candidate
 construction through validator approval, approved-block admission, node-wide
-adoption, proposal, and peer reception. The configured current version is 2;
-the supported active set is exactly `{2}`. A current ceremony therefore reaches
+adoption, proposal, and peer reception. The configured current version is 3;
+the supported active set is exactly `{3}`. A current ceremony therefore reaches
 running consensus with every node using one adopted version, while recovery from
-a protocol-1 or otherwise unsupported approved block fails closed before any
+a protocol-1, protocol-2, or otherwise unsupported approved block fails closed before any
 proposal can be made. There is no accounting enable/disable flag and no
 block-height transition between two charging engines.
 
 The original disagreement is retained as an executable negative control. A
-protocol-1 approved genesis combined with a locally configured protocol-2
-proposer produces version-2 blocks while receivers compare against version 1;
+protocol-1 approved genesis combined with a locally configured current-protocol
+proposer produces current-version blocks while receivers compare against version 1;
 `Inv_AllReceiversAccept` then fails. Separate controls demonstrate that the same
 single-authority property is necessary at ceremony, adoption, proposal, and
 unsupported-version admission.
 
 | Configuration | Expected result | Defect isolated |
 | --- | --- | --- |
-| `MC_ProtocolVersionLifecycle.cfg` | pass | current ceremony, approval, adoption, proposal, and reception use protocol 2 end to end |
+| `MC_ProtocolVersionLifecycle.cfg` | pass | current ceremony, approval, adoption, proposal, and reception use protocol 3 end to end |
 | `MC_ProtocolVersionLifecycle_legacy_rejected.cfg` | pass | a protocol-1 approved block fails closed before running |
 | `MC_ProtocolVersionLifecycle_unsupported_rejected.cfg` | pass | an unknown approved version fails closed before running |
 | `MC_ProtocolVersionLifecycle_ceremony_unsafe.cfg` | violate `Inv_CeremonyCandidateCurrent` | genesis construction emits a stale protocol version |
 | `MC_ProtocolVersionLifecycle_adoption_unsafe.cfg` | violate `Inv_RunningNodesAdoptApproved` | nodes retain local configuration instead of adopting the approved version |
 | `MC_ProtocolVersionLifecycle_proposer_unsafe.cfg` | violate `Inv_ProposalUsesApprovedVersion` | proposal construction bypasses the adopted running version |
-| `MC_ProtocolVersionLifecycle_receiver_unsafe.cfg` | violate `Inv_AllReceiversAccept` | the exact configured-v2 proposer versus approved-v1 receiver disagreement |
+| `MC_ProtocolVersionLifecycle_receiver_unsafe.cfg` | violate `Inv_AllReceiversAccept` | the exact configured-current proposer versus approved-legacy receiver disagreement |
 | `MC_ProtocolVersionLifecycle_unsupported_unsafe.cfg` | violate `Inv_ApprovedVersionSupported` | an unsupported approved block starts Casper |
 
 `ApprovedStateReplay.tla` closes the approved-state bootstrap boundary. A

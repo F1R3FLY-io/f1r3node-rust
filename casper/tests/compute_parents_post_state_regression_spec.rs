@@ -13,7 +13,8 @@ use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use casper::rust::genesis::contracts::validator::Validator as GenesisValidator;
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::util::rholang::interpreter_util::{
-    compute_deploys_checkpoint, compute_parents_post_state,
+    compute_deploys_checkpoint_with_effects, compute_parents_post_state,
+    compute_parents_post_state_with_effects,
 };
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
@@ -126,9 +127,10 @@ async fn step_block(
         post_state_hash,
         processed_deploys,
         rejected_deploys,
+        rejected_state_effects,
         processed_system_deploys,
         bonds,
-    ) = compute_deploys_checkpoint(
+    ) = compute_deploys_checkpoint_with_effects(
         block_store,
         parents,
         deploys,
@@ -146,6 +148,7 @@ async fn step_block(
     updated.body.state.post_state_hash = post_state_hash;
     updated.body.deploys = processed_deploys;
     updated.body.rejected_deploys = rejected_deploys;
+    updated.body.rejected_state_effects = rejected_state_effects;
     updated.body.system_deploys = processed_system_deploys;
     updated.body.state.bonds = bonds;
 
@@ -676,6 +679,11 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
 
     assert_eq!(cover.body.rejected_deploys.len(), 1);
     let rejected_source = cover.body.rejected_deploys[0].source_block_hash.clone();
+    assert!(cover
+        .body
+        .rejected_state_effects
+        .iter()
+        .any(|effect| effect.source_block_hash == rejected_source));
     let (finalized_branch, other_branch) = if rejected_source == main.block_hash {
         (main.clone(), side.clone())
     } else {
@@ -711,6 +719,11 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         .rejected_deploys
         .iter()
         .any(|rejected| rejected.source_block_hash == finalized_branch.block_hash));
+    assert!(stale
+        .body
+        .rejected_state_effects
+        .iter()
+        .any(|effect| effect.source_block_hash == finalized_branch.block_hash));
 
     let mut snapshot = mk_snapshot(
         dag_storage
@@ -775,21 +788,25 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
     runtime_manager.parents_post_state_cache.clear();
     runtime_manager.clear_block_index_cache();
 
-    let (rebased_state, rebased_rejected) = compute_parents_post_state(
-        &block_store,
-        vec![stale.clone()],
-        &snapshot,
-        &runtime_manager,
-        &latest_messages,
-        None,
-        None,
-    )
-    .await
-    .expect("Failed to rebase the stale merge on its finalized state floor");
+    let (rebased_state, rebased_rejected, rebased_rejected_state_effects) =
+        compute_parents_post_state_with_effects(
+            &block_store,
+            vec![stale.clone()],
+            &snapshot,
+            &runtime_manager,
+            &latest_messages,
+            None,
+            None,
+        )
+        .await
+        .expect("Failed to rebase the stale merge on its finalized state floor");
 
     assert!(rebased_rejected
         .iter()
         .all(|rejected| rejected.source_block_hash != finalized_branch.block_hash));
+    assert!(rebased_rejected_state_effects
+        .iter()
+        .all(|effect| effect.source_block_hash != finalized_branch.block_hash));
     assert_ne!(rebased_state, proto_util::post_state_hash(&stale));
     assert!(!runtime_manager.parents_post_state_cache.is_empty());
     let channel = new_gstring_par("secondary-parent-fast-path".to_string(), Vec::new(), false);

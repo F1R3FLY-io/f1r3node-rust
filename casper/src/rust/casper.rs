@@ -32,7 +32,8 @@ use crate::rust::estimator::Estimator;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 pub const LEGACY_CASPER_PROTOCOL_VERSION: i64 = 1;
-pub const CURRENT_CASPER_PROTOCOL_VERSION: i64 = 2;
+pub const STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION: i64 = 3;
+pub const CURRENT_CASPER_PROTOCOL_VERSION: i64 = STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION;
 use crate::rust::validator_identity::ValidatorIdentity;
 
 pub fn is_supported_casper_protocol_version(version: i64) -> bool {
@@ -744,6 +745,7 @@ mod protocol_version_tests {
     fn noncurrent_approved_protocol_versions_fail_without_mutation() {
         for version in [
             LEGACY_CASPER_PROTOCOL_VERSION,
+            STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION - 1,
             CURRENT_CASPER_PROTOCOL_VERSION + 1,
         ] {
             let mut block = get_random_block_default();

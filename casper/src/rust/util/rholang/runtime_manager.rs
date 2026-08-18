@@ -16,7 +16,7 @@ use models::rust::block::state_hash::{StateHash, StateHashSerde};
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy,
-    SystemDeployData,
+    StateEffectId, SystemDeployData,
 };
 use models::rust::validator::Validator;
 use prost::Message;
@@ -175,7 +175,7 @@ pub struct ParentsPostStateCacheKey {
     pub disable_late_block_filtering: bool,
 }
 
-pub type ParentsPostStateCacheVal = (StateHash, Vec<RejectedDeploy>);
+pub type ParentsPostStateCacheVal = (StateHash, Vec<RejectedDeploy>, Vec<StateEffectId>);
 
 impl RuntimeManager {
     const MAX_BLOCK_INDEX_CACHE_ENTRIES: usize = 128;
@@ -2103,6 +2103,7 @@ mod tests {
                 },
                 deploys: vec![deploy],
                 rejected_deploys: Vec::new(),
+                rejected_state_effects: Vec::new(),
                 system_deploys: Vec::new(),
                 extra_bytes: Vec::<u8>::new().into(),
             },

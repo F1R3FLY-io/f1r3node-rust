@@ -1133,6 +1133,7 @@ async fn build_block_with_invalid_justification(
         state: post_state,
         deploys: deploys.to_vec(),
         rejected_deploys: vec![],
+        rejected_state_effects: vec![],
         system_deploys: vec![],
         extra_bytes: Bytes::new(),
     };

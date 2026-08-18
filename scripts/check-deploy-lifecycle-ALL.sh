@@ -32,6 +32,12 @@ OCCURRENCE_TLA_DIR="$REPO_ROOT/formal/tlaplus/deploy_occurrence"
 RECOVERY_TLA_DIR="$REPO_ROOT/formal/tlaplus/deploy_recovery"
 LOG_DIR="$REPO_ROOT/target/verification/deploy-lifecycle"
 mkdir -p "$LOG_DIR"
+VERIFY_TMP="$LOG_DIR/tmp"
+mkdir -p "$VERIFY_TMP"
+export TMPDIR="$VERIFY_TMP"
+export TLC_METADIR_ROOT="$VERIFY_TMP/tlc-metadir"
+mkdir -p "$TLC_METADIR_ROOT"
+trap 'rm -rf "$VERIFY_TMP"' EXIT
 
 rc=0
 pass() { printf '  \033[32mPASS\033[0m %s\n' "$1"; }
@@ -296,7 +302,7 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   protocol_version_negative_control \
     MC_ProtocolVersionLifecycle_receiver_unsafe \
     "Inv_AllReceiversAccept is violated" \
-    "configured-v2 proposer versus approved-v1 receiver disagreement"
+    "configured-v3 proposer versus approved-v1 receiver disagreement"
   protocol_version_negative_control \
     MC_ProtocolVersionLifecycle_unsupported_unsafe \
     "Inv_ApprovedVersionSupported is violated" \
@@ -380,6 +386,7 @@ if command -v cargo >/dev/null 2>&1; then
        && cargo test -p casper descendant_remains_blocked_after_locally_faulted_parent_leaves_ready_queue >>"$LOG_DIR/dl_rust_admission.log" 2>&1 \
        && cargo test -p casper --test mod physical_rejection_rolls_back_before_later_state_bound_execution >>"$LOG_DIR/dl_rust_admission.log" 2>&1 \
        && cargo test -p casper --test mod repeat_deploy_validation_rejects_duplicate_signatures_within_one_block >>"$LOG_DIR/dl_rust_admission.log" 2>&1 \
+       && cargo test -p casper --test mod source_aware_rejection_in_secondary_parent_is_authoritative >>"$LOG_DIR/dl_rust_admission.log" 2>&1 \
        && cargo test -p models funding_admission_rejection_roundtrips_as_terminal_non_execution >>"$LOG_DIR/dl_rust_admission.log" 2>&1 \
        && grep -qE "test result: ok\. [1-9][0-9]* passed" "$LOG_DIR/dl_rust_admission.log"; then
     pass "Rust admission and source-aware occurrence reducer units"

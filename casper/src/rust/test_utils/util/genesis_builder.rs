@@ -117,6 +117,7 @@ impl GenesisBuilder {
             state,
             deploys: vec![],
             rejected_deploys: vec![],
+            rejected_state_effects: vec![],
             system_deploys: vec![],
             extra_bytes: bytes::Bytes::new(),
         };

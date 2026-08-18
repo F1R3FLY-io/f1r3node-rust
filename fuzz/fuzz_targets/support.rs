@@ -132,10 +132,10 @@ pub fn block_with_system_deploys(
                 post_state_hash: repeated(hash_seed.wrapping_add(2), 32),
                 bonds: vec![],
                 block_number,
-                genesis_supply: Vec::new(),
             },
             deploys: vec![],
             rejected_deploys: vec![],
+            rejected_state_effects: vec![],
             system_deploys,
             extra_bytes: Bytes::new(),
         },
@@ -192,6 +192,9 @@ fn metadata(evidence: &Evidence) -> BlockMetadata {
         directly_finalized: false,
         finalized: false,
         fault_tolerance_value: 0.0,
+        successful_state_effect_indices: Default::default(),
+        rejected_state_effects: Default::default(),
+        protocol_version: casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
     }
 }
 

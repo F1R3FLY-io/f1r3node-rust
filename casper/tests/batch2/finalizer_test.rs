@@ -11,13 +11,28 @@ use casper::rust::casper_conf::FinalizerConf;
 use casper::rust::finality::finalizer::Finalizer;
 use casper::rust::safety::clique_oracle::{CliqueOracle, FtThreshold};
 use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
+use models::rust::casper::protocol::casper_message::{BlockMessage, Bond, StateEffectId};
 use models::rust::validator::Validator;
 use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
 use crate::helper::block_generator::{create_block, create_genesis_block};
 use crate::helper::block_util::generate_validator;
+
+fn set_state_effect_provenance(
+    dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
+    block_hash: &BlockHash,
+    successful_indices: &[u32],
+    rejected_effects: &[StateEffectId],
+) {
+    let mut metadata = dag.lookup_unsafe(block_hash).expect("block metadata");
+    metadata.successful_state_effect_indices = successful_indices.iter().copied().collect();
+    metadata.rejected_state_effects = rejected_effects.iter().cloned().collect();
+    dag.block_metadata_index
+        .write()
+        .add(metadata)
+        .expect("replace block state-effect provenance");
+}
 
 fn create_block_creator<'a>(
     bonds: &'a [Bond],
@@ -653,6 +668,7 @@ async fn finalizer_advances_to_state_descendant_when_lfb_is_a_secondary_parent()
             dag.put_cached_floor(support.block_hash.clone(), merge.block_hash.clone())
                 .expect("support floor");
         }
+        set_state_effect_provenance(&dag, &current_lfb.block_hash, &[0], &[]);
 
         assert!(dag
             .is_dag_ancestor(&current_lfb.block_hash, &merge.block_hash)
@@ -660,14 +676,12 @@ async fn finalizer_advances_to_state_descendant_when_lfb_is_a_secondary_parent()
         assert!(!dag
             .is_in_main_chain(&current_lfb.block_hash, &merge.block_hash)
             .expect("main-chain ancestry"));
-        assert!(
-            casper::rust::finality::floor::is_state_ancestor_from_cached_floors(
-                &dag,
-                &current_lfb.block_hash,
-                &merge.block_hash,
-            )
-            .expect("state ancestry")
-        );
+        assert!(casper::rust::finality::floor::is_state_preserved(
+            &dag,
+            &current_lfb.block_hash,
+            &merge.block_hash,
+        )
+        .expect("state ancestry"));
 
         let result = Finalizer::run(
             &dag,
@@ -681,14 +695,12 @@ async fn finalizer_advances_to_state_descendant_when_lfb_is_a_secondary_parent()
         .expect("finalizer run");
 
         let (selected, _) = result.expect("state-preserving off-main merge must advance");
-        assert!(
-            casper::rust::finality::floor::is_state_ancestor_from_cached_floors(
-                &dag,
-                &current_lfb.block_hash,
-                &selected,
-            )
-            .expect("selected state ancestry")
-        );
+        assert!(casper::rust::finality::floor::is_state_preserved(
+            &dag,
+            &current_lfb.block_hash,
+            &selected,
+        )
+        .expect("selected state ancestry"));
         assert!(!dag
             .is_in_main_chain(&current_lfb.block_hash, &selected)
             .expect("selected main-chain ancestry"));
@@ -786,6 +798,17 @@ async fn finalizer_rejects_dag_descendant_without_state_lineage() {
             .latest_message_hashes()
             .into_iter()
             .collect::<std::collections::BTreeMap<_, _>>();
+        let current_lfb_effect = StateEffectId {
+            source_block_hash: current_lfb.block_hash.clone(),
+            execution_index: 0,
+        };
+        set_state_effect_provenance(&dag, &current_lfb.block_hash, &[0], &[]);
+        set_state_effect_provenance(
+            &dag,
+            &merge.block_hash,
+            &[],
+            std::slice::from_ref(&current_lfb_effect),
+        );
         for latest in latest_messages.values() {
             casper::rust::finality::floor::floor_of_block(
                 &dag,
@@ -928,6 +951,17 @@ async fn finalizer_rejects_causal_certificate_without_state_support() {
             dag.put_cached_floor(block.block_hash.clone(), floor.block_hash.clone())
                 .expect("state floor");
         }
+        let rejected_effect = StateEffectId {
+            source_block_hash: rejected_parent.block_hash.clone(),
+            execution_index: 0,
+        };
+        set_state_effect_provenance(&dag, &rejected_parent.block_hash, &[0], &[]);
+        set_state_effect_provenance(
+            &dag,
+            &merge.block_hash,
+            &[],
+            std::slice::from_ref(&rejected_effect),
+        );
 
         let latest_messages = dag
             .latest_message_hashes()

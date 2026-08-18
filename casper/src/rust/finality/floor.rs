@@ -7,13 +7,14 @@
 //! same floor for the same block. This is the linear-finality analog of
 //! RChain's per-message fringe: the cut the block's merge builds on.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
+use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::Bond;
+use models::rust::casper::protocol::casper_message::{Bond, StateEffectId};
 use models::rust::validator::Validator;
 
 use crate::rust::errors::CasperError;
@@ -29,125 +30,229 @@ pub struct Floor {
 }
 
 #[derive(Default)]
-struct StateLineageCache {
-    bases: HashMap<BlockHash, BlockHash>,
+struct StateProvenanceCache {
+    active: HashMap<(BlockHash, StateEffectId), bool>,
+    preservation: HashMap<(BlockHash, BlockHash), bool>,
     ancestry: HashMap<(BlockHash, BlockHash), bool>,
+    metadata: HashMap<BlockHash, Arc<models::rust::block_metadata::BlockMetadata>>,
 }
 
-fn covering_parent(
+fn metadata_with_cache(
     dag: &KeyValueDagRepresentation,
+    block_hash: &BlockHash,
+    cache: &mut StateProvenanceCache,
+) -> Result<Arc<models::rust::block_metadata::BlockMetadata>, CasperError> {
+    if let Some(metadata) = cache.metadata.get(block_hash) {
+        return Ok(metadata.clone());
+    }
+    let metadata = Arc::new(dag.lookup_unsafe(block_hash)?);
+    cache.metadata.insert(block_hash.clone(), metadata.clone());
+    Ok(metadata)
+}
+
+fn is_dag_ancestor_with_cache(
+    dag: &KeyValueDagRepresentation,
+    ancestor: &BlockHash,
+    descendant: &BlockHash,
+    cache: &mut StateProvenanceCache,
+) -> Result<bool, CasperError> {
+    let key = (ancestor.clone(), descendant.clone());
+    if let Some(result) = cache.ancestry.get(&key) {
+        return Ok(*result);
+    }
+    if ancestor == descendant {
+        cache.ancestry.insert(key, true);
+        return Ok(true);
+    }
+
+    let stop_height = dag.block_number_unsafe(ancestor)?;
+    let mut visited = HashSet::new();
+    let mut stack = vec![descendant.clone()];
+    let mut result = false;
+    while let Some(current) = stack.pop() {
+        if current == *ancestor {
+            result = true;
+            break;
+        }
+        if !visited.insert(current.clone()) || dag.block_number_unsafe(&current)? <= stop_height {
+            continue;
+        }
+        let metadata = metadata_with_cache(dag, &current, cache)?;
+        stack.extend(metadata.parents.iter().rev().cloned());
+    }
+    cache.ancestry.insert(key, result);
+    Ok(result)
+}
+
+fn require_effect_provenance(
+    block_hash: &BlockHash,
+    metadata: &models::rust::block_metadata::BlockMetadata,
+) -> Result<(), CasperError> {
+    if metadata.protocol_version < crate::rust::casper::STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION {
+        return Err(CasperError::Other(format!(
+            "state-effect provenance is unavailable for block {} at protocol version {}",
+            PrettyPrinter::build_string_bytes(block_hash),
+            metadata.protocol_version
+        )));
+    }
+    Ok(())
+}
+
+fn state_input_blocks(
+    dag: &KeyValueDagRepresentation,
+    block_hash: &BlockHash,
     parents: &[BlockHash],
-) -> Result<Option<BlockHash>, CasperError> {
+    cache: &mut StateProvenanceCache,
+) -> Result<Vec<BlockHash>, CasperError> {
+    if parents.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut inputs = Vec::with_capacity(parents.len() + 1);
     for candidate in parents {
-        let mut covers_all = true;
+        let mut covered = false;
         for parent in parents {
-            if parent != candidate && !dag.is_dag_ancestor(parent, candidate)? {
-                covers_all = false;
+            if parent != candidate && is_dag_ancestor_with_cache(dag, candidate, parent, cache)? {
+                covered = true;
                 break;
             }
         }
-        if covers_all {
-            return Ok(Some(candidate.clone()));
+        if !covered {
+            inputs.push(candidate.clone());
         }
-    }
-    Ok(None)
-}
-
-pub fn state_base_from_cached_floor(
-    dag: &KeyValueDagRepresentation,
-    block_hash: &BlockHash,
-) -> Result<BlockHash, CasperError> {
-    state_base_with_cache(dag, block_hash, &mut StateLineageCache::default())
-}
-
-fn state_base_with_cache(
-    dag: &KeyValueDagRepresentation,
-    block_hash: &BlockHash,
-    cache: &mut StateLineageCache,
-) -> Result<BlockHash, CasperError> {
-    if let Some(base) = cache.bases.get(block_hash) {
-        return Ok(base.clone());
-    }
-    let metadata = dag.lookup_unsafe(block_hash)?;
-    if metadata.parents.is_empty() {
-        cache.bases.insert(block_hash.clone(), block_hash.clone());
-        return Ok(block_hash.clone());
     }
     let floor = dag.get_cached_floor(block_hash)?.ok_or_else(|| {
         CasperError::Other(format!(
-            "state-base floor is not materialized for block {} at height {}",
-            hex::encode(block_hash),
-            metadata.block_number
+            "finalized floor is not materialized for state provenance of block {}",
+            PrettyPrinter::build_string_bytes(block_hash)
         ))
     })?;
-    let base = match covering_parent(dag, &metadata.parents)? {
-        Some(parent)
-            if floor == parent || is_state_ancestor_with_cache(dag, &floor, &parent, cache)? =>
-        {
-            parent
-        }
-        _ => floor,
-    };
-    cache.bases.insert(block_hash.clone(), base.clone());
-    Ok(base)
-}
-
-pub fn is_state_ancestor_from_cached_floors(
-    dag: &KeyValueDagRepresentation,
-    ancestor: &BlockHash,
-    descendant: &BlockHash,
-) -> Result<bool, CasperError> {
-    is_state_ancestor_with_cache(dag, ancestor, descendant, &mut StateLineageCache::default())
-}
-
-fn is_state_ancestor_with_cache(
-    dag: &KeyValueDagRepresentation,
-    ancestor: &BlockHash,
-    descendant: &BlockHash,
-    cache: &mut StateLineageCache,
-) -> Result<bool, CasperError> {
-    if let Some(result) = cache.ancestry.get(&(ancestor.clone(), descendant.clone())) {
-        return Ok(*result);
+    if floor != *block_hash && !inputs.contains(&floor) {
+        inputs.push(floor);
     }
-    let ancestor_number = dag.block_number_unsafe(ancestor)?;
-    let mut current = descendant.clone();
-    let mut traversed = Vec::new();
-    loop {
-        if current == *ancestor {
-            for block in traversed {
-                cache.ancestry.insert((ancestor.clone(), block), true);
+    Ok(inputs)
+}
+
+fn effect_active_with_cache(
+    dag: &KeyValueDagRepresentation,
+    block_hash: &BlockHash,
+    effect: &StateEffectId,
+    cache: &mut StateProvenanceCache,
+) -> Result<bool, CasperError> {
+    let key = (block_hash.clone(), effect.clone());
+    if let Some(active) = cache.active.get(&key) {
+        return Ok(*active);
+    }
+
+    let mut stack = vec![(block_hash.clone(), false)];
+    while let Some((current, expanded)) = stack.pop() {
+        let current_key = (current.clone(), effect.clone());
+        if cache.active.contains_key(&current_key) {
+            continue;
+        }
+        let metadata = metadata_with_cache(dag, &current, cache)?;
+        require_effect_provenance(&current, &metadata)?;
+        let inputs = state_input_blocks(dag, &current, &metadata.parents, cache)?;
+        if expanded {
+            let own = current == effect.source_block_hash
+                && metadata
+                    .successful_state_effect_indices
+                    .contains(&effect.execution_index);
+            let inherited = inputs.iter().any(|input| {
+                cache
+                    .active
+                    .get(&(input.clone(), effect.clone()))
+                    .copied()
+                    .unwrap_or(false)
+            });
+            let active = !metadata.rejected_state_effects.contains(effect) && (own || inherited);
+            cache.active.insert(current_key, active);
+        } else {
+            stack.push((current.clone(), true));
+            for input in inputs.iter().rev() {
+                if !cache.active.contains_key(&(input.clone(), effect.clone())) {
+                    stack.push((input.clone(), false));
+                }
             }
-            return Ok(true);
+        }
+    }
+    Ok(cache.active.get(&key).copied().unwrap_or(false))
+}
+
+fn potentially_removed_effects(
+    dag: &KeyValueDagRepresentation,
+    ancestor: &BlockHash,
+    descendant: &BlockHash,
+    cache: &mut StateProvenanceCache,
+) -> Result<BTreeSet<StateEffectId>, CasperError> {
+    let ancestor_number = dag.block_number_unsafe(ancestor)?;
+    let mut effects = BTreeSet::new();
+    let mut visited = HashSet::new();
+    let mut stack = vec![descendant.clone()];
+    while let Some(current) = stack.pop() {
+        if current == *ancestor || !visited.insert(current.clone()) {
+            continue;
         }
         if dag.block_number_unsafe(&current)? <= ancestor_number {
-            for block in traversed {
-                cache.ancestry.insert((ancestor.clone(), block), false);
-            }
-            cache
-                .ancestry
-                .insert((ancestor.clone(), descendant.clone()), false);
-            return Ok(false);
+            continue;
         }
-        if let Some(result) = cache.ancestry.get(&(ancestor.clone(), current.clone())) {
-            let result = *result;
-            for block in traversed {
-                cache.ancestry.insert((ancestor.clone(), block), result);
+        let metadata = metadata_with_cache(dag, &current, cache)?;
+        require_effect_provenance(&current, &metadata)?;
+        effects.extend(metadata.rejected_state_effects.iter().cloned());
+        for parent in metadata.parents.iter().rev() {
+            if parent == ancestor || dag.block_number_unsafe(parent)? > ancestor_number {
+                stack.push(parent.clone());
             }
-            return Ok(result);
         }
-        traversed.push(current.clone());
-        let next = state_base_with_cache(dag, &current, cache)?;
-        if next == current {
-            for block in traversed {
-                cache.ancestry.insert((ancestor.clone(), block), false);
-            }
-            return Ok(false);
-        }
-        current = next;
     }
+    Ok(effects)
 }
 
-pub async fn materialize_state_lineage(
+pub fn is_state_preserved(
+    dag: &KeyValueDagRepresentation,
+    ancestor: &BlockHash,
+    descendant: &BlockHash,
+) -> Result<bool, CasperError> {
+    is_state_preserved_with_cache(
+        dag,
+        ancestor,
+        descendant,
+        &mut StateProvenanceCache::default(),
+    )
+}
+
+fn is_state_preserved_with_cache(
+    dag: &KeyValueDagRepresentation,
+    ancestor: &BlockHash,
+    descendant: &BlockHash,
+    cache: &mut StateProvenanceCache,
+) -> Result<bool, CasperError> {
+    let key = (ancestor.clone(), descendant.clone());
+    if let Some(preserved) = cache.preservation.get(&key) {
+        return Ok(*preserved);
+    }
+    if ancestor == descendant {
+        cache.preservation.insert(key, true);
+        return Ok(true);
+    }
+    if !is_dag_ancestor_with_cache(dag, ancestor, descendant, cache)? {
+        cache.preservation.insert(key, false);
+        return Ok(false);
+    }
+
+    let mut preserved = true;
+    for effect in potentially_removed_effects(dag, ancestor, descendant, cache)? {
+        if effect_active_with_cache(dag, ancestor, &effect, cache)?
+            && !effect_active_with_cache(dag, descendant, &effect, cache)?
+        {
+            preserved = false;
+            break;
+        }
+    }
+    cache.preservation.insert(key, preserved);
+    Ok(preserved)
+}
+
+pub async fn materialize_finalized_floor(
     dag: &KeyValueDagRepresentation,
     block_hash: &BlockHash,
     ftt: FtThreshold,
@@ -156,23 +261,52 @@ pub async fn materialize_state_lineage(
     Ok(())
 }
 
+pub(crate) async fn materialize_snapshot_floor_closure(
+    dag: &KeyValueDagRepresentation,
+    block_hashes: impl IntoIterator<Item = BlockHash>,
+    ftt: FtThreshold,
+) -> Result<(), CasperError> {
+    let required = block_hashes.into_iter().collect::<BTreeSet<_>>();
+    for block_hash in required {
+        materialize_finalized_floor(dag, &block_hash, ftt).await?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn state_supporting_weight_map(
     dag: &KeyValueDagRepresentation,
     target: &BlockHash,
     latest_messages: &BTreeMap<Validator, BlockHash>,
     weight_map: &HashMap<Validator, i64>,
 ) -> Result<HashMap<Validator, i64>, CasperError> {
+    let mut provenance_cache = StateProvenanceCache::default();
+    state_supporting_weight_map_with_cache(
+        dag,
+        target,
+        latest_messages,
+        weight_map,
+        &mut provenance_cache,
+    )
+}
+
+fn state_supporting_weight_map_with_cache(
+    dag: &KeyValueDagRepresentation,
+    target: &BlockHash,
+    latest_messages: &BTreeMap<Validator, BlockHash>,
+    weight_map: &HashMap<Validator, i64>,
+    provenance_cache: &mut StateProvenanceCache,
+) -> Result<HashMap<Validator, i64>, CasperError> {
     let mut supporting = HashMap::new();
-    let mut lineage_cache = StateLineageCache::default();
     for (validator, weight) in weight_map {
         let Some(latest) = latest_messages.get(validator) else {
             continue;
         };
-        if dag.is_dag_ancestor(target, latest)?
-            && is_state_ancestor_with_cache(dag, target, latest, &mut lineage_cache).map_err(
+        if is_dag_ancestor_with_cache(dag, target, latest, provenance_cache)?
+            && is_state_preserved_with_cache(dag, target, latest, provenance_cache).map_err(
                 |error| {
                     CasperError::Other(format!(
-                        "state-support ancestry failed for target {} and latest {}: {error}",
+                        "state-support provenance failed for target {} and latest {}: {error}",
                         PrettyPrinter::build_string_bytes(target),
                         PrettyPrinter::build_string_bytes(latest)
                     ))
@@ -192,6 +326,25 @@ pub async fn state_witnessed_exact(
     ftt: FtThreshold,
     strict: bool,
 ) -> Result<bool, CasperError> {
+    state_witnessed_exact_with_cache(
+        dag,
+        target,
+        latest_messages,
+        ftt,
+        strict,
+        &mut StateProvenanceCache::default(),
+    )
+    .await
+}
+
+async fn state_witnessed_exact_with_cache(
+    dag: &KeyValueDagRepresentation,
+    target: &BlockHash,
+    latest_messages: &BTreeMap<Validator, BlockHash>,
+    ftt: FtThreshold,
+    strict: bool,
+    provenance_cache: &mut StateProvenanceCache,
+) -> Result<bool, CasperError> {
     if !dag.contains(target) {
         return Ok(false);
     }
@@ -203,7 +356,13 @@ pub async fn state_witnessed_exact(
     if total_stake <= 0 {
         return Ok(false);
     }
-    let supporting = state_supporting_weight_map(dag, target, latest_messages, &weight_map)?;
+    let supporting = state_supporting_weight_map_with_cache(
+        dag,
+        target,
+        latest_messages,
+        &weight_map,
+        provenance_cache,
+    )?;
     let supporting_stake = supporting
         .values()
         .try_fold(0_i64, |sum, weight| sum.checked_add(*weight))
@@ -211,6 +370,14 @@ pub async fn state_witnessed_exact(
             CasperError::Other("state-support agreeing stake sum overflow".to_string())
         })?;
     if (supporting_stake as i128) * 2 <= total_stake as i128 {
+        tracing::debug!(
+            target: "f1r3.trace.state_oracle",
+            candidate = %PrettyPrinter::build_string_bytes(target),
+            supporting_stake,
+            total_stake,
+            decision = false,
+            "state-preserving finality verdict"
+        );
         return Ok(false);
     }
     let mut run_cache = CliqueOracle::new_run_cache();
@@ -249,7 +416,7 @@ fn state_safe_frontier(
 
     let mut best_hash = chain[0].clone();
     for candidate in chain.into_iter().skip(1) {
-        if is_state_ancestor_from_cached_floors(dag, &best_hash, &candidate)? {
+        if is_state_preserved(dag, &best_hash, &candidate)? {
             best_hash = candidate;
         }
     }
@@ -276,15 +443,287 @@ async fn state_certified_frontier(
                 hash: current,
             });
         }
-        let base = state_base_from_cached_floor(dag, &current)?;
-        if base == current {
+        let Some(base) = dag.main_parent(&current) else {
             return Err(CasperError::Other(format!(
-                "state-support frontier cannot descend from non-genesis block {}",
+                "state-support frontier cannot descend from non-genesis block {} without a main parent",
                 PrettyPrinter::build_string_bytes(&current)
             )));
-        }
+        };
         current = base;
     }
+}
+
+fn candidate_preserves_inherited_floors_with_cache(
+    dag: &KeyValueDagRepresentation,
+    candidate: &Floor,
+    inherited: &[Floor],
+    provenance_cache: &mut StateProvenanceCache,
+) -> Result<bool, CasperError> {
+    for inherited_floor in inherited {
+        if candidate.block_number >= inherited_floor.block_number
+            && !is_state_preserved_with_cache(
+                dag,
+                &inherited_floor.hash,
+                &candidate.hash,
+                provenance_cache,
+            )?
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn latest_message_coverage(
+    dag: &KeyValueDagRepresentation,
+    latest_messages: &BTreeMap<Validator, BlockHash>,
+    provenance_cache: &mut StateProvenanceCache,
+) -> Result<HashMap<BlockHash, BTreeSet<Validator>>, CasperError> {
+    let mut queue = BinaryHeap::new();
+    let mut queued = HashSet::new();
+    let mut processed = HashSet::new();
+    let mut coverage: HashMap<BlockHash, BTreeSet<Validator>> = HashMap::new();
+    for (validator, latest) in latest_messages {
+        let metadata = metadata_with_cache(dag, latest, provenance_cache)?;
+        coverage
+            .entry(latest.clone())
+            .or_default()
+            .insert(validator.clone());
+        if queued.insert(latest.clone()) {
+            queue.push((metadata.block_number, latest.clone()));
+        }
+    }
+
+    while let Some((_, hash)) = queue.pop() {
+        if !queued.remove(&hash) || !processed.insert(hash.clone()) {
+            continue;
+        }
+        let metadata = metadata_with_cache(dag, &hash, provenance_cache)?;
+        let current_coverage = coverage.get(&hash).cloned().unwrap_or_default();
+        for parent in &metadata.parents {
+            let parent_metadata = metadata_with_cache(dag, parent, provenance_cache)?;
+            if parent_metadata.block_number >= metadata.block_number {
+                return Err(CasperError::Other(format!(
+                    "non-descending causal edge in latest-message coverage: {}#{} -> {}#{}",
+                    PrettyPrinter::build_string_bytes(&hash),
+                    metadata.block_number,
+                    PrettyPrinter::build_string_bytes(parent),
+                    parent_metadata.block_number,
+                )));
+            }
+            if processed.contains(parent) {
+                return Err(CasperError::Other(format!(
+                    "late latest-message coverage reached already processed block {}",
+                    PrettyPrinter::build_string_bytes(parent),
+                )));
+            }
+            coverage
+                .entry(parent.clone())
+                .or_default()
+                .extend(current_coverage.iter().cloned());
+            if queued.insert(parent.clone()) {
+                queue.push((parent_metadata.block_number, parent.clone()));
+            }
+        }
+    }
+    Ok(coverage)
+}
+
+fn corresponding_weight_map_with_cache(
+    dag: &KeyValueDagRepresentation,
+    target: &BlockHash,
+    provenance_cache: &mut StateProvenanceCache,
+) -> Result<HashMap<Validator, i64>, CasperError> {
+    let target_metadata = metadata_with_cache(dag, target, provenance_cache)?;
+    let metadata = if let Some(main_parent) = target_metadata.parents.first() {
+        metadata_with_cache(dag, main_parent, provenance_cache)?
+    } else {
+        target_metadata
+    };
+    Ok(metadata
+        .weight_map
+        .iter()
+        .map(|(validator, weight)| (validator.clone(), *weight))
+        .collect())
+}
+
+fn causal_supporting_weight_map(
+    target: &BlockHash,
+    coverage: &HashMap<BlockHash, BTreeSet<Validator>>,
+    weight_map: &HashMap<Validator, i64>,
+) -> HashMap<Validator, i64> {
+    let supporters = coverage.get(target);
+    weight_map
+        .iter()
+        .filter_map(|(validator, weight)| {
+            supporters
+                .is_some_and(|validators| validators.contains(validator))
+                .then_some((validator.clone(), *weight))
+        })
+        .collect()
+}
+
+async fn dual_certified_universal_frontier(
+    dag: &KeyValueDagRepresentation,
+    parents: &[BlockHash],
+    latest_messages: &BTreeMap<Validator, BlockHash>,
+    ftt: FtThreshold,
+    inherited: &[Floor],
+    provenance_cache: &mut StateProvenanceCache,
+) -> Result<Option<Floor>, CasperError> {
+    let mut queue = BinaryHeap::new();
+    let mut queued = HashSet::new();
+    let mut processed = HashSet::new();
+    let mut coverage: HashMap<BlockHash, BTreeSet<usize>> = HashMap::new();
+    let latest_coverage = latest_message_coverage(dag, latest_messages, provenance_cache)?;
+    let mut clique_cache = CliqueOracle::new_run_cache();
+    for (index, parent) in parents.iter().enumerate() {
+        let metadata = metadata_with_cache(dag, parent, provenance_cache)?;
+        coverage.entry(parent.clone()).or_default().insert(index);
+        if queued.insert(parent.clone()) {
+            queue.push((metadata.block_number, parent.clone()));
+        }
+    }
+
+    let mut visited = 0usize;
+    while let Some((_, hash)) = queue.pop() {
+        if !queued.remove(&hash) || !processed.insert(hash.clone()) {
+            continue;
+        }
+        visited += 1;
+        let candidate_metadata = metadata_with_cache(dag, &hash, provenance_cache)?;
+        let candidate = Floor {
+            hash: candidate_metadata.block_hash.clone(),
+            block_number: candidate_metadata.block_number,
+        };
+        let candidate_is_universal = coverage.get(&hash).map(BTreeSet::len) == Some(parents.len());
+        let preserves_inherited = candidate_is_universal
+            && candidate_preserves_inherited_floors_with_cache(
+                dag,
+                &candidate,
+                inherited,
+                provenance_cache,
+            )?;
+        let causally_certified = if preserves_inherited {
+            let weight_map =
+                corresponding_weight_map_with_cache(dag, &candidate.hash, provenance_cache)?;
+            let total_stake = weight_map
+                .values()
+                .try_fold(0_i64, |sum, weight| sum.checked_add(*weight))
+                .ok_or_else(|| {
+                    CasperError::Other("causal-support stake sum overflow".to_string())
+                })?;
+            if total_stake <= 0 {
+                false
+            } else {
+                let supporting =
+                    causal_supporting_weight_map(&candidate.hash, &latest_coverage, &weight_map);
+                CliqueOracle::compute_decision_with_cache(
+                    &candidate.hash,
+                    &weight_map,
+                    &supporting,
+                    dag,
+                    &mut clique_cache,
+                    latest_messages,
+                    ftt.num,
+                    ftt.den,
+                    false,
+                )
+                .await?
+                .0
+            }
+        } else {
+            false
+        };
+        if causally_certified
+            && state_witnessed_exact_with_cache(
+                dag,
+                &candidate.hash,
+                latest_messages,
+                ftt,
+                false,
+                provenance_cache,
+            )
+            .await?
+        {
+            tracing::debug!(
+                target: "f1r3.trace.floor_walk",
+                candidate = %PrettyPrinter::build_string_bytes(&candidate.hash),
+                candidate_number = candidate.block_number,
+                visited,
+                "dual-certified universal frontier"
+            );
+            return Ok(Some(candidate));
+        }
+
+        let current_coverage = coverage.get(&hash).cloned().unwrap_or_default();
+        for parent in &candidate_metadata.parents {
+            let parent_metadata = metadata_with_cache(dag, parent, provenance_cache)?;
+            if parent_metadata.block_number >= candidate_metadata.block_number {
+                return Err(CasperError::Other(format!(
+                    "non-descending causal edge in universal-floor traversal: {}#{} -> {}#{}",
+                    PrettyPrinter::build_string_bytes(&candidate.hash),
+                    candidate.block_number,
+                    PrettyPrinter::build_string_bytes(parent),
+                    parent_metadata.block_number,
+                )));
+            }
+            if processed.contains(parent) {
+                return Err(CasperError::Other(format!(
+                    "late causal coverage reached already processed universal-floor candidate {}",
+                    PrettyPrinter::build_string_bytes(parent),
+                )));
+            }
+            coverage
+                .entry(parent.clone())
+                .or_default()
+                .extend(current_coverage.iter().copied());
+            if queued.insert(parent.clone()) {
+                queue.push((parent_metadata.block_number, parent.clone()));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn can_reuse_linear_parent_universal_frontier(
+    dag: &KeyValueDagRepresentation,
+    parents: &[BlockHash],
+    latest_messages: &BTreeMap<Validator, BlockHash>,
+    inherited: &[Floor],
+    provenance_cache: &mut StateProvenanceCache,
+) -> Result<bool, CasperError> {
+    let ([parent], [inherited_floor]) = (parents, inherited) else {
+        return Ok(false);
+    };
+    if dag.get_cached_floor(parent)?.as_ref() != Some(&inherited_floor.hash) {
+        return Ok(false);
+    }
+    let parent_metadata = metadata_with_cache(dag, parent, provenance_cache)?;
+    if parent_metadata.parents.len() != 1 {
+        return Ok(false);
+    }
+    let parent_latest_messages = parent_metadata
+        .justifications
+        .iter()
+        .map(|justification| {
+            (
+                justification.validator.clone(),
+                justification.latest_block_hash.clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    if parent_latest_messages != *latest_messages {
+        return Ok(false);
+    }
+    for latest in latest_messages.values() {
+        if metadata_with_cache(dag, latest, provenance_cache)?.block_number
+            >= parent_metadata.block_number
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// The active committee derived from a finalized-floor block's post-state: the
@@ -333,9 +772,9 @@ const DEEP_WALK_WARN_THRESHOLD: usize = 256;
 ///    moves up); deriving the floor fresh from the oracle per block — without
 ///    inheritance — allowed exactly that re-litigation.
 /// 2. **Advancement** — per parent, derive the highest causally certified
-///    main-chain ancestor over the justification snapshot, preserve state
-///    lineage, and lower it along its direct state bases until it also has a
-///    state-preserving certificate. A block with no main parent is genesis,
+///    main-chain ancestor over the justification snapshot, preserve accepted
+///    state effects, and lower it along that main-parent spine until it also has
+///    a state-preserving certificate. A block with no main parent is genesis,
 ///    finalized by definition.
 ///
 /// The floor is the maximum candidate. Both sources are pure functions of the
@@ -349,9 +788,24 @@ pub async fn finalized_floor(
     latest_messages: &BTreeMap<Validator, BlockHash>,
     ftt: FtThreshold,
 ) -> Result<Floor, CasperError> {
+    materialize_snapshot_floor_closure(
+        dag,
+        parents.iter().chain(latest_messages.values()).cloned(),
+        ftt,
+    )
+    .await?;
     let mut inherited: Vec<Floor> = Vec::with_capacity(parents.len());
     for parent in parents {
-        inherited.push(floor_of_block(dag, parent, ftt).await?);
+        let hash = dag.get_cached_floor(parent)?.ok_or_else(|| {
+            CasperError::Other(format!(
+                "snapshot floor closure did not materialize parent {}",
+                PrettyPrinter::build_string_bytes(parent)
+            ))
+        })?;
+        inherited.push(Floor {
+            block_number: dag.block_number_unsafe(&hash)?,
+            hash,
+        });
     }
     let (floor, _main_parent_frontier) =
         derive_floor(dag, parents, latest_messages, ftt, inherited).await?;
@@ -375,6 +829,25 @@ async fn derive_floor(
     ftt: FtThreshold,
     inherited: Vec<Floor>,
 ) -> Result<(Floor, Floor), CasperError> {
+    derive_floor_with_cache(
+        dag,
+        parents,
+        latest_messages,
+        ftt,
+        inherited,
+        &mut StateProvenanceCache::default(),
+    )
+    .await
+}
+
+async fn derive_floor_with_cache(
+    dag: &KeyValueDagRepresentation,
+    parents: &[BlockHash],
+    latest_messages: &BTreeMap<Validator, BlockHash>,
+    ftt: FtThreshold,
+    inherited: Vec<Floor>,
+    provenance_cache: &mut StateProvenanceCache,
+) -> Result<(Floor, Floor), CasperError> {
     if parents.is_empty() {
         return Err(CasperError::Other(
             "finalized_floor requires a non-empty parent set; genesis pre-state comes from config"
@@ -392,6 +865,32 @@ async fn derive_floor(
     // parents[0] is the main parent; its frontier over this snapshot is F(B).
     let main_parent_frontier = frontiers[0].clone();
     candidates.extend(frontiers);
+    if !can_reuse_linear_parent_universal_frontier(
+        dag,
+        parents,
+        latest_messages,
+        &inherited_floors,
+        provenance_cache,
+    )? {
+        if let Some(universal_frontier) = dual_certified_universal_frontier(
+            dag,
+            parents,
+            latest_messages,
+            ftt,
+            &inherited_floors,
+            provenance_cache,
+        )
+        .await?
+        {
+            candidates.push(universal_frontier);
+        }
+    }
+    candidates.sort_by(|left, right| {
+        left.block_number
+            .cmp(&right.block_number)
+            .then_with(|| left.hash.cmp(&right.hash))
+    });
+    candidates.dedup_by(|left, right| left.hash == right.hash);
 
     // The floor is the merge base the block being created re-bases every parent onto.
     // Pick the HIGHEST candidate that is a SOUND base, considering candidates from the
@@ -422,16 +921,12 @@ async fn derive_floor(
 
     let mut chosen: Option<Floor> = None;
     for cand in ordered {
-        let mut preserves_inherited_state = true;
-        for inherited_floor in &inherited_floors {
-            if cand.block_number >= inherited_floor.block_number
-                && !is_state_ancestor_from_cached_floors(dag, &inherited_floor.hash, &cand.hash)?
-            {
-                preserves_inherited_state = false;
-                break;
-            }
-        }
-        if !preserves_inherited_state {
+        if !candidate_preserves_inherited_floors_with_cache(
+            dag,
+            cand,
+            &inherited_floors,
+            provenance_cache,
+        )? {
             continue;
         }
         // Case A: general-ancestor of every parent.
@@ -533,6 +1028,7 @@ pub async fn floor_of_block(
 ) -> Result<Floor, CasperError> {
     let mut stack: Vec<BlockHash> = vec![block_hash.clone()];
     let mut visiting = HashSet::from([block_hash.clone()]);
+    let mut provenance_cache = StateProvenanceCache::default();
     while let Some(current) = stack.last().cloned() {
         if dag.get_cached_floor(&current)?.is_some() {
             stack.pop();
@@ -540,7 +1036,7 @@ pub async fn floor_of_block(
             continue;
         }
 
-        let metadata = dag.lookup_unsafe(&current)?;
+        let metadata = metadata_with_cache(dag, &current, &mut provenance_cache)?;
         if metadata.parents.is_empty() {
             dag.put_cached_floor(current.clone(), current.clone())?;
             stack.pop();
@@ -562,7 +1058,7 @@ pub async fn floor_of_block(
             if dag.get_cached_floor(&dependency)?.is_none() {
                 if !visiting.insert(dependency.clone()) {
                     return Err(CasperError::Other(format!(
-                        "cyclic state-lineage dependency from block {} to {}",
+                        "cyclic finalized-floor dependency from block {} to {}",
                         hex::encode(&current),
                         hex::encode(&dependency)
                     )));
@@ -591,8 +1087,15 @@ pub async fn floor_of_block(
             .iter()
             .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
             .collect();
-        let (floor, frontier) =
-            derive_floor(dag, &metadata.parents, &latest_messages, ftt, inherited).await?;
+        let (floor, frontier) = derive_floor_with_cache(
+            dag,
+            &metadata.parents,
+            &latest_messages,
+            ftt,
+            inherited,
+            &mut provenance_cache,
+        )
+        .await?;
 
         dag.put_cached_floor(current.clone(), floor.hash.clone())?;
         // Persist F(current) = the block's own frontier over its own snapshot,
@@ -911,6 +1414,7 @@ mod frontier_determinism_tests {
 
     use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
     use models::rust::block_metadata::BlockMetadata;
+    use models::rust::casper::protocol::casper_message::Justification;
     use parking_lot::RwLock as PlRwLock;
     use prost::bytes::Bytes;
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
@@ -920,6 +1424,25 @@ mod frontier_determinism_tests {
 
     fn h(n: u8) -> Bytes { Bytes::from(vec![n; 32]) }
     fn val() -> Bytes { Bytes::from(vec![9; 65]) }
+
+    fn effect(source_block_hash: Bytes, execution_index: u32) -> StateEffectId {
+        StateEffectId {
+            source_block_hash,
+            execution_index,
+        }
+    }
+
+    fn with_successful_effect(mut metadata: BlockMetadata, execution_index: u32) -> BlockMetadata {
+        metadata
+            .successful_state_effect_indices
+            .insert(execution_index);
+        metadata
+    }
+
+    fn with_rejected_effect(mut metadata: BlockMetadata, rejected: StateEffectId) -> BlockMetadata {
+        metadata.rejected_state_effects.insert(rejected);
+        metadata
+    }
 
     fn md(hash: Bytes, parents: Vec<Bytes>, num: i64, v: &Bytes) -> BlockMetadata {
         let mut wm = BTreeMap::new();
@@ -936,6 +1459,9 @@ mod frontier_determinism_tests {
             directly_finalized: false,
             finalized: false,
             fault_tolerance_value: 0.0,
+            successful_state_effect_indices: Default::default(),
+            rejected_state_effects: Default::default(),
+            protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
         }
     }
 
@@ -1045,22 +1571,81 @@ mod frontier_determinism_tests {
     }
 
     #[tokio::test]
+    async fn finalized_floor_materializes_off_parent_latest_message_provenance() {
+        let validator = h(50);
+        let (genesis, source, sibling, latest) = (h(0), h(1), h(2), h(3));
+        let weights = vec![(validator.clone(), 1)];
+        let dag = build_dag(vec![
+            md_wm(genesis.clone(), Vec::new(), 0, &validator, weights.clone()),
+            with_successful_effect(
+                md_wm(
+                    source.clone(),
+                    vec![genesis.clone()],
+                    1,
+                    &validator,
+                    weights.clone(),
+                ),
+                0,
+            ),
+            md_wm(
+                sibling.clone(),
+                vec![genesis.clone()],
+                1,
+                &validator,
+                weights.clone(),
+            ),
+            with_rejected_effect(
+                md_wm(
+                    latest.clone(),
+                    vec![source.clone(), sibling],
+                    2,
+                    &validator,
+                    weights,
+                ),
+                effect(source.clone(), 0),
+            ),
+        ]);
+        let latest_messages = BTreeMap::from([(validator, latest.clone())]);
+
+        let floor = finalized_floor(
+            &dag,
+            std::slice::from_ref(&source),
+            &latest_messages,
+            FtThreshold::from_f32_lossy(0.1),
+        )
+        .await
+        .expect("off-parent latest-message provenance must be materialized before selection");
+
+        assert_eq!(floor.hash, genesis);
+        assert!(dag.get_cached_floor(&latest).unwrap().is_some());
+    }
+
+    #[tokio::test]
     async fn stale_dag_descendant_cannot_advance_inherited_state_floor() {
         let v = h(50);
         let (g, funding, sibling, stale) = (h(0), h(1), h(2), h(3));
         let wm = || vec![(v.clone(), 1)];
         let dag = build_dag(vec![
             md_wm(g.clone(), vec![], 0, &v, wm()),
-            md_wm(funding.clone(), vec![g.clone()], 1, &v, wm()),
+            with_successful_effect(md_wm(funding.clone(), vec![g.clone()], 1, &v, wm()), 0),
             md_wm(sibling.clone(), vec![g.clone()], 1, &v, wm()),
-            md_wm(stale.clone(), vec![funding.clone(), sibling], 2, &v, wm()),
+            with_rejected_effect(
+                md_wm(
+                    stale.clone(),
+                    vec![funding.clone(), sibling.clone()],
+                    2,
+                    &v,
+                    wm(),
+                ),
+                effect(funding.clone(), 0),
+            ),
         ]);
         let threshold = FtThreshold::from_f32_lossy(-1.0);
-        materialize_state_lineage(&dag, &stale, threshold)
+        materialize_finalized_floor(&dag, &stale, threshold)
             .await
             .unwrap();
         assert!(dag.is_dag_ancestor(&funding, &stale).unwrap());
-        assert!(!is_state_ancestor_from_cached_floors(&dag, &funding, &stale).unwrap());
+        assert!(!is_state_preserved(&dag, &funding, &stale).unwrap());
 
         let latest_messages = BTreeMap::from([(v, stale.clone())]);
         let inherited = vec![Floor {
@@ -1086,13 +1671,23 @@ mod frontier_determinism_tests {
         let wm = || vec![(v.clone(), 1)];
         let dag = build_dag(vec![
             md_wm(g.clone(), vec![], 0, &v, wm()),
-            md_wm(funding.clone(), vec![g.clone()], 1, &v, wm()),
+            with_successful_effect(md_wm(funding.clone(), vec![g.clone()], 1, &v, wm()), 0),
             md_wm(sibling.clone(), vec![g.clone()], 1, &v, wm()),
-            md_wm(stale.clone(), vec![funding.clone(), sibling], 2, &v, wm()),
+            with_rejected_effect(
+                md_wm(
+                    stale.clone(),
+                    vec![funding.clone(), sibling.clone()],
+                    2,
+                    &v,
+                    wm(),
+                ),
+                effect(funding.clone(), 0),
+            ),
             md_wm(rebased.clone(), vec![stale.clone()], 3, &v, wm()),
         ]);
         dag.put_cached_floor(g.clone(), g.clone()).unwrap();
         dag.put_cached_floor(funding.clone(), g.clone()).unwrap();
+        dag.put_cached_floor(sibling, g.clone()).unwrap();
         dag.put_cached_floor(stale.clone(), g).unwrap();
         dag.put_cached_floor(rebased.clone(), funding.clone())
             .unwrap();
@@ -1135,20 +1730,26 @@ mod frontier_determinism_tests {
         ];
         let dag = build_dag(vec![
             md_wm(genesis.clone(), vec![], 0, &heavy, weights.clone()),
-            md_wm(
-                rejected_parent.clone(),
-                vec![genesis.clone()],
-                1,
-                &source,
-                weights.clone(),
+            with_successful_effect(
+                md_wm(
+                    rejected_parent.clone(),
+                    vec![genesis.clone()],
+                    1,
+                    &source,
+                    weights.clone(),
+                ),
+                0,
             ),
             md_wm(sibling.clone(), vec![genesis.clone()], 1, &other_a, weights),
-            md_wm(
-                merge.clone(),
-                vec![rejected_parent.clone(), sibling.clone()],
-                2,
-                &heavy,
-                vec![],
+            with_rejected_effect(
+                md_wm(
+                    merge.clone(),
+                    vec![rejected_parent.clone(), sibling.clone()],
+                    2,
+                    &heavy,
+                    vec![],
+                ),
+                effect(rejected_parent.clone(), 0),
             ),
         ]);
         seed_state_floors(&dag, [
@@ -1160,10 +1761,7 @@ mod frontier_determinism_tests {
         assert!(dag
             .is_dag_ancestor(&rejected_parent, &merge)
             .expect("causal ancestry"));
-        assert!(
-            !is_state_ancestor_from_cached_floors(&dag, &rejected_parent, &merge)
-                .expect("state ancestry")
-        );
+        assert!(!is_state_preserved(&dag, &rejected_parent, &merge).expect("state ancestry"));
 
         let latest_messages = BTreeMap::from([
             (heavy, merge),
@@ -1180,6 +1778,254 @@ mod frontier_determinism_tests {
         )
         .await
         .expect("state-preserving certificate"));
+    }
+
+    #[tokio::test]
+    async fn accepted_three_way_merges_retain_state_support_across_repeated_rounds() {
+        let validators = [h(50), h(51), h(52)];
+        let weights = validators
+            .iter()
+            .cloned()
+            .map(|validator| (validator, 1))
+            .collect::<Vec<_>>();
+        let (genesis, source, sibling_a, sibling_b) = (h(0), h(1), h(2), h(3));
+        let first_round = [h(4), h(5), h(6)];
+        let second_round = [h(7), h(8), h(9)];
+        let mut blocks = vec![
+            md_wm(
+                genesis.clone(),
+                Vec::new(),
+                0,
+                &validators[0],
+                weights.clone(),
+            ),
+            with_successful_effect(
+                md_wm(
+                    source.clone(),
+                    vec![genesis.clone()],
+                    1,
+                    &validators[0],
+                    weights.clone(),
+                ),
+                0,
+            ),
+            md_wm(
+                sibling_a.clone(),
+                vec![genesis.clone()],
+                1,
+                &validators[1],
+                weights.clone(),
+            ),
+            md_wm(
+                sibling_b.clone(),
+                vec![genesis.clone()],
+                1,
+                &validators[2],
+                weights.clone(),
+            ),
+        ];
+        for (validator, block) in validators.iter().zip(first_round.iter()) {
+            blocks.push(md_wm(
+                block.clone(),
+                vec![source.clone(), sibling_a.clone(), sibling_b.clone()],
+                2,
+                validator,
+                weights.clone(),
+            ));
+        }
+        for (validator, block) in validators.iter().zip(second_round.iter()) {
+            let mut metadata = md_wm(
+                block.clone(),
+                first_round.to_vec(),
+                3,
+                validator,
+                weights.clone(),
+            );
+            metadata.justifications = validators
+                .iter()
+                .zip(first_round.iter())
+                .map(|(validator, latest_block_hash)| Justification {
+                    validator: validator.clone(),
+                    latest_block_hash: latest_block_hash.clone(),
+                })
+                .collect();
+            blocks.push(metadata);
+        }
+        let dag = build_dag(blocks);
+        seed_state_floors(
+            &dag,
+            std::iter::once((genesis.clone(), genesis.clone())).chain(
+                [source.clone(), sibling_a, sibling_b]
+                    .into_iter()
+                    .chain(first_round.iter().cloned())
+                    .chain(second_round.iter().cloned())
+                    .map(|block| (block, genesis.clone())),
+            ),
+        );
+
+        for latest in &second_round {
+            assert!(dag.is_dag_ancestor(&source, latest).unwrap());
+            assert!(is_state_preserved(&dag, &source, latest).unwrap());
+        }
+        let latest_messages = validators
+            .into_iter()
+            .zip(second_round)
+            .collect::<BTreeMap<_, _>>();
+        assert!(state_witnessed_exact(
+            &dag,
+            &source,
+            &latest_messages,
+            FtThreshold::from_f32_lossy(0.1),
+            true,
+        )
+        .await
+        .unwrap());
+    }
+
+    #[test]
+    fn state_provenance_is_invariant_under_every_three_parent_order() {
+        let validator = h(50);
+        let weights = vec![(validator.clone(), 1)];
+        let (genesis, source, sibling_a, sibling_b) = (h(0), h(1), h(2), h(3));
+        let parent_orders = [
+            [source.clone(), sibling_a.clone(), sibling_b.clone()],
+            [source.clone(), sibling_b.clone(), sibling_a.clone()],
+            [sibling_a.clone(), source.clone(), sibling_b.clone()],
+            [sibling_a.clone(), sibling_b.clone(), source.clone()],
+            [sibling_b.clone(), source.clone(), sibling_a.clone()],
+            [sibling_b.clone(), sibling_a.clone(), source.clone()],
+        ];
+        let mut blocks = vec![
+            md_wm(genesis.clone(), Vec::new(), 0, &validator, weights.clone()),
+            with_successful_effect(
+                md_wm(
+                    source.clone(),
+                    vec![genesis.clone()],
+                    1,
+                    &validator,
+                    weights.clone(),
+                ),
+                0,
+            ),
+            md_wm(
+                sibling_a.clone(),
+                vec![genesis.clone()],
+                1,
+                &validator,
+                weights.clone(),
+            ),
+            md_wm(
+                sibling_b.clone(),
+                vec![genesis.clone()],
+                1,
+                &validator,
+                weights.clone(),
+            ),
+        ];
+        let mut cases = Vec::new();
+        for (index, parents) in parent_orders.into_iter().enumerate() {
+            let accepted = h(10 + index as u8);
+            let rejected = h(20 + index as u8);
+            blocks.push(md_wm(
+                accepted.clone(),
+                parents.to_vec(),
+                2,
+                &validator,
+                weights.clone(),
+            ));
+            blocks.push(with_rejected_effect(
+                md_wm(
+                    rejected.clone(),
+                    parents.to_vec(),
+                    2,
+                    &validator,
+                    weights.clone(),
+                ),
+                effect(source.clone(), 0),
+            ));
+            cases.push((accepted, rejected));
+        }
+        let dag = build_dag(blocks);
+        seed_state_floors(
+            &dag,
+            std::iter::once((genesis.clone(), genesis.clone())).chain(
+                [source.clone(), sibling_a, sibling_b]
+                    .into_iter()
+                    .chain(
+                        cases
+                            .iter()
+                            .flat_map(|(accepted, rejected)| [accepted.clone(), rejected.clone()]),
+                    )
+                    .map(|block| (block, genesis.clone())),
+            ),
+        );
+
+        for (accepted, rejected) in cases {
+            assert!(is_state_preserved(&dag, &source, &accepted).unwrap());
+            assert!(!is_state_preserved(&dag, &source, &rejected).unwrap());
+        }
+    }
+
+    #[test]
+    fn unrelated_rejections_in_the_causal_scan_do_not_change_preservation() {
+        let validator = h(50);
+        let weights = vec![(validator.clone(), 1)];
+        let (genesis, source, unrelated, rejected_unrelated, descendant) =
+            (h(0), h(1), h(2), h(3), h(4));
+        let dag = build_dag(vec![
+            md_wm(genesis.clone(), Vec::new(), 0, &validator, weights.clone()),
+            with_successful_effect(
+                md_wm(
+                    source.clone(),
+                    vec![genesis.clone()],
+                    1,
+                    &validator,
+                    weights.clone(),
+                ),
+                0,
+            ),
+            with_successful_effect(
+                md_wm(
+                    unrelated.clone(),
+                    vec![genesis.clone()],
+                    1,
+                    &validator,
+                    weights.clone(),
+                ),
+                0,
+            ),
+            with_rejected_effect(
+                md_wm(
+                    rejected_unrelated.clone(),
+                    vec![unrelated.clone()],
+                    2,
+                    &validator,
+                    weights.clone(),
+                ),
+                effect(unrelated.clone(), 0),
+            ),
+            md_wm(
+                descendant.clone(),
+                vec![source.clone(), rejected_unrelated.clone()],
+                3,
+                &validator,
+                weights,
+            ),
+        ]);
+        seed_state_floors(
+            &dag,
+            [
+                genesis.clone(),
+                source.clone(),
+                unrelated,
+                rejected_unrelated,
+                descendant.clone(),
+            ]
+            .into_iter()
+            .map(|block| (block, genesis.clone())),
+        );
+
+        assert!(is_state_preserved(&dag, &source, &descendant).unwrap());
     }
 
     // ---- Phase-7 W7.2: guard-trip, Case-B soundness, incompatible-fork Err ----
@@ -1207,6 +2053,9 @@ mod frontier_determinism_tests {
             directly_finalized: false,
             finalized: false,
             fault_tolerance_value: 0.0,
+            successful_state_effect_indices: Default::default(),
+            rejected_state_effects: Default::default(),
+            protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
         }
     }
 
@@ -1218,11 +2067,22 @@ mod frontier_determinism_tests {
         let mut dag_set = imbl::HashSet::new();
         let mut bnum = imbl::HashMap::new();
         let mut mp = imbl::HashMap::new();
+        let mut self_justifications = imbl::HashMap::new();
         for b in &blocks {
             dag_set.insert(b.block_hash.clone());
             bnum.insert(b.block_hash.clone(), b.block_number);
             if let Some(main) = b.parents.first() {
                 mp.insert(b.block_hash.clone(), main.clone());
+            }
+            if let Some(justification) = b
+                .justifications
+                .iter()
+                .find(|justification| justification.validator == b.sender)
+            {
+                self_justifications.insert(
+                    b.block_hash.clone(),
+                    justification.latest_block_hash.clone(),
+                );
             }
         }
         for b in blocks {
@@ -1235,7 +2095,7 @@ mod frontier_determinism_tests {
             height_map: imbl::OrdMap::new(),
             block_number_map: bnum,
             main_parent_map: mp,
-            self_justification_map: imbl::HashMap::new(),
+            self_justification_map: self_justifications,
             invalid_blocks_set: imbl::HashSet::new(),
             last_finalized_block_hash: Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),
@@ -1258,6 +2118,105 @@ mod frontier_determinism_tests {
         for (block, floor) in floors {
             dag.put_cached_floor(block, floor).unwrap();
         }
+    }
+
+    #[test]
+    fn latest_message_coverage_rejects_non_descending_edges() {
+        let validator = h(50);
+        let parent = h(0);
+        let child = h(1);
+        let dag = build_dag(vec![
+            md_wm(parent.clone(), Vec::new(), 1, &validator, vec![(
+                validator.clone(),
+                1,
+            )]),
+            md_wm(child.clone(), vec![parent], 1, &validator, vec![(
+                validator.clone(),
+                1,
+            )]),
+        ]);
+        let latest_messages = BTreeMap::from([(validator, child)]);
+        let result =
+            latest_message_coverage(&dag, &latest_messages, &mut StateProvenanceCache::default());
+        assert!(matches!(
+            result,
+            Err(CasperError::Other(message))
+                if message.contains("non-descending causal edge")
+        ));
+    }
+
+    #[test]
+    fn universal_frontier_reuse_requires_a_linear_parent_and_unchanged_prior_snapshot() {
+        let validator = h(50);
+        let genesis = h(0);
+        let side = h(1);
+        let linear = h(2);
+        let merge = h(3);
+        let prior = vec![Justification {
+            validator: validator.clone(),
+            latest_block_hash: genesis.clone(),
+        }];
+        let mut linear_metadata =
+            md_wm(linear.clone(), vec![genesis.clone()], 1, &validator, vec![
+                (validator.clone(), 1),
+            ]);
+        linear_metadata.justifications = prior.clone();
+        let mut merge_metadata = md_wm(
+            merge.clone(),
+            vec![linear.clone(), side.clone()],
+            2,
+            &validator,
+            vec![(validator.clone(), 1)],
+        );
+        merge_metadata.justifications = prior;
+        let dag = build_dag(vec![
+            md_wm(genesis.clone(), Vec::new(), 0, &validator, vec![(
+                validator.clone(),
+                1,
+            )]),
+            md_wm(side.clone(), vec![genesis.clone()], 1, &validator, vec![(
+                validator.clone(),
+                1,
+            )]),
+            linear_metadata,
+            merge_metadata,
+        ]);
+        seed_state_floors(&dag, [
+            (genesis.clone(), genesis.clone()),
+            (side, genesis.clone()),
+            (linear.clone(), genesis.clone()),
+            (merge.clone(), genesis.clone()),
+        ]);
+        let unchanged = BTreeMap::from([(validator.clone(), genesis.clone())]);
+        let inherited = [Floor {
+            hash: genesis.clone(),
+            block_number: 0,
+        }];
+        assert!(can_reuse_linear_parent_universal_frontier(
+            &dag,
+            std::slice::from_ref(&linear),
+            &unchanged,
+            &inherited,
+            &mut StateProvenanceCache::default(),
+        )
+        .unwrap());
+        assert!(!can_reuse_linear_parent_universal_frontier(
+            &dag,
+            std::slice::from_ref(&merge),
+            &unchanged,
+            &inherited,
+            &mut StateProvenanceCache::default(),
+        )
+        .unwrap());
+        let advanced = BTreeMap::from([(validator, linear.clone())]);
+        assert!(!can_reuse_linear_parent_universal_frontier(
+            &dag,
+            std::slice::from_ref(&linear),
+            &advanced,
+            &inherited,
+            &mut StateProvenanceCache::default(),
+        )
+        .unwrap());
     }
 
     /// Guard-trip: a committee CHANGE inside the band (a bonding / re-stake between
@@ -1525,6 +2484,213 @@ mod frontier_determinism_tests {
         }
     }
 
+    #[tokio::test]
+    async fn derive_floor_promotes_dual_certified_universal_secondary_ancestor() {
+        let validators = [h(50), h(51), h(52)];
+        let weights = validators
+            .iter()
+            .cloned()
+            .map(|validator| (validator, 10))
+            .collect::<Vec<_>>();
+        let genesis = h(0);
+        let finalized = h(1);
+        let side = [h(2), h(3), h(4)];
+        let merged = [h(5), h(6), h(7)];
+        let tips = [h(8), h(9), h(10)];
+
+        let genesis_justifications = validators
+            .iter()
+            .map(|validator| Justification {
+                validator: validator.clone(),
+                latest_block_hash: genesis.clone(),
+            })
+            .collect::<Vec<_>>();
+        let merged_justifications = validators
+            .iter()
+            .enumerate()
+            .map(|(index, validator)| Justification {
+                validator: validator.clone(),
+                latest_block_hash: merged[index].clone(),
+            })
+            .collect::<Vec<_>>();
+
+        let mut blocks = vec![md_wm(
+            genesis.clone(),
+            Vec::new(),
+            0,
+            &validators[0],
+            weights.clone(),
+        )];
+        let mut finalized_metadata = with_successful_effect(
+            md_wm(
+                finalized.clone(),
+                vec![genesis.clone()],
+                1,
+                &validators[0],
+                weights.clone(),
+            ),
+            0,
+        );
+        finalized_metadata.justifications = genesis_justifications.clone();
+        blocks.push(finalized_metadata);
+        for index in 0..validators.len() {
+            let mut side_metadata = md_wm(
+                side[index].clone(),
+                vec![genesis.clone()],
+                1,
+                &validators[index],
+                weights.clone(),
+            );
+            side_metadata.justifications = genesis_justifications.clone();
+            blocks.push(side_metadata);
+
+            let mut merged_metadata = md_wm(
+                merged[index].clone(),
+                vec![side[index].clone(), finalized.clone()],
+                2,
+                &validators[index],
+                weights.clone(),
+            );
+            merged_metadata.justifications = genesis_justifications.clone();
+            blocks.push(merged_metadata);
+        }
+        for index in 0..validators.len() {
+            let mut tip_metadata = md_wm(
+                tips[index].clone(),
+                vec![merged[index].clone()],
+                3,
+                &validators[index],
+                weights.clone(),
+            );
+            tip_metadata.justifications = merged_justifications.clone();
+            blocks.push(tip_metadata);
+        }
+
+        let mut rejected_blocks = blocks.clone();
+        let finalized_effect = effect(finalized.clone(), 0);
+        for rejected_tip in tips.iter().skip(1) {
+            let metadata = rejected_blocks
+                .iter_mut()
+                .find(|metadata| metadata.block_hash == *rejected_tip)
+                .expect("rejected tip metadata");
+            metadata
+                .rejected_state_effects
+                .insert(finalized_effect.clone());
+        }
+
+        let dag = build_dag(blocks);
+        seed_state_floors(
+            &dag,
+            std::iter::once((genesis.clone(), genesis.clone())).chain(
+                std::iter::once((finalized.clone(), genesis.clone())).chain(
+                    side.iter()
+                        .chain(merged.iter())
+                        .chain(tips.iter())
+                        .cloned()
+                        .map(|block| (block, genesis.clone())),
+                ),
+            ),
+        );
+        for tip in &tips {
+            assert!(dag.is_dag_ancestor(&finalized, tip).expect("DAG ancestry"));
+            assert!(!dag
+                .is_in_main_chain(&finalized, tip)
+                .expect("main ancestry"));
+        }
+
+        let latest_messages = validators
+            .iter()
+            .cloned()
+            .zip(tips.iter().cloned())
+            .collect::<BTreeMap<_, _>>();
+        let threshold = FtThreshold::from_ppm(100_000);
+        assert!(CliqueOracle::ft_witnessed_exact(
+            &finalized,
+            &dag,
+            &latest_messages,
+            threshold,
+            false,
+        )
+        .await
+        .expect("causal certificate"));
+        assert!(
+            state_witnessed_exact(&dag, &finalized, &latest_messages, threshold, false,)
+                .await
+                .expect("state certificate")
+        );
+
+        for order in [
+            [0usize, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            let ordered_parents = order.map(|index| tips[index].clone());
+            let inherited = ordered_parents
+                .iter()
+                .map(|_| Floor {
+                    hash: genesis.clone(),
+                    block_number: 0,
+                })
+                .collect();
+            let (floor, _) = derive_floor(
+                &dag,
+                &ordered_parents,
+                &latest_messages,
+                threshold,
+                inherited,
+            )
+            .await
+            .expect("derive floor");
+            assert_eq!(floor.hash, finalized);
+        }
+
+        let rejected_dag = build_dag(rejected_blocks);
+        seed_state_floors(
+            &rejected_dag,
+            std::iter::once((genesis.clone(), genesis.clone())).chain(
+                std::iter::once((finalized.clone(), genesis.clone())).chain(
+                    side.iter()
+                        .chain(merged.iter())
+                        .chain(tips.iter())
+                        .cloned()
+                        .map(|block| (block, genesis.clone())),
+                ),
+            ),
+        );
+        assert!(CliqueOracle::ft_witnessed_exact(
+            &finalized,
+            &rejected_dag,
+            &latest_messages,
+            threshold,
+            false,
+        )
+        .await
+        .expect("causal certificate"));
+        assert!(!state_witnessed_exact(
+            &rejected_dag,
+            &finalized,
+            &latest_messages,
+            threshold,
+            false,
+        )
+        .await
+        .expect("state certificate"));
+        let inherited = tips
+            .iter()
+            .map(|_| Floor {
+                hash: genesis.clone(),
+                block_number: 0,
+            })
+            .collect();
+        let (floor, _) = derive_floor(&rejected_dag, &tips, &latest_messages, threshold, inherited)
+            .await
+            .expect("derive floor");
+        assert_eq!(floor.hash, genesis);
+    }
+
     /// T-FIN (`Selection.select_finalized` / `GuardBridge.upgo_finalized`): the floor
     /// `derive_floor` returns is itself `Finalized` over the justification snapshot — it
     /// clears the exact FT threshold (floor path, `≥`) per the same clique oracle the
@@ -1585,6 +2751,25 @@ mod frontier_determinism_tests {
             -> (usize, usize) {
             (stale_len, safe_len)
         }
+    }
+
+    fn state_effect_recurrence_scenario() -> impl Strategy<Value = Vec<(bool, bool)>> {
+        prop::collection::vec((any::<bool>(), any::<bool>()), 1..=12)
+    }
+
+    fn universal_floor_scenario() -> impl Strategy<Value = (Vec<usize>, Vec<usize>, [usize; 3])> {
+        (
+            prop::collection::vec(1usize..=4, 3),
+            prop::collection::vec(0usize..=4, 3),
+            prop::sample::select(vec![
+                [0usize, 1, 2],
+                [0, 2, 1],
+                [1, 0, 2],
+                [1, 2, 0],
+                [2, 0, 1],
+                [2, 1, 0],
+            ]),
+        )
     }
 
     proptest! {
@@ -1653,6 +2838,256 @@ mod frontier_determinism_tests {
         }
 
         #[test]
+        fn dual_certified_universal_floor_is_independent_of_branch_shape_and_parent_order(
+            (side_depths, tail_depths, order) in universal_floor_scenario()
+        ) {
+            FLOOR_RUNTIME.block_on(async move {
+                let validators = [h(240), h(241), h(242)];
+                let weights = validators
+                    .iter()
+                    .cloned()
+                    .map(|validator| (validator, 10))
+                    .collect::<Vec<_>>();
+                let genesis = h(0);
+                let finalized = h(1);
+                let genesis_justifications = validators
+                    .iter()
+                    .map(|validator| Justification {
+                        validator: validator.clone(),
+                        latest_block_hash: genesis.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                let mut blocks = vec![md_wm(
+                    genesis.clone(),
+                    Vec::new(),
+                    0,
+                    &validators[0],
+                    weights.clone(),
+                )];
+                let mut finalized_metadata = with_successful_effect(
+                    md_wm(
+                        finalized.clone(),
+                        vec![genesis.clone()],
+                        1,
+                        &validators[0],
+                        weights.clone(),
+                    ),
+                    0,
+                );
+                finalized_metadata.justifications = genesis_justifications.clone();
+                blocks.push(finalized_metadata);
+
+                let bases = [10u8, 80, 150];
+                let mut anchors = Vec::with_capacity(3);
+                let mut tips = Vec::with_capacity(3);
+                for index in 0..3 {
+                    let mut previous = genesis.clone();
+                    for offset in 0..side_depths[index] {
+                        let block = h(bases[index] + offset as u8);
+                        let mut metadata = md_wm(
+                            block.clone(),
+                            vec![previous],
+                            (offset + 1) as i64,
+                            &validators[index],
+                            weights.clone(),
+                        );
+                        metadata.justifications = genesis_justifications.clone();
+                        blocks.push(metadata);
+                        previous = block;
+                    }
+                    let merged = h(bases[index] + 8);
+                    let mut metadata = md_wm(
+                        merged.clone(),
+                        vec![previous, finalized.clone()],
+                        (side_depths[index] + 1) as i64,
+                        &validators[index],
+                        weights.clone(),
+                    );
+                    metadata.justifications = genesis_justifications.clone();
+                    blocks.push(metadata);
+                    previous = merged;
+
+                    for offset in 0..tail_depths[index] {
+                        let block = h(bases[index] + 9 + offset as u8);
+                        let mut metadata = md_wm(
+                            block.clone(),
+                            vec![previous],
+                            (side_depths[index] + offset + 2) as i64,
+                            &validators[index],
+                            weights.clone(),
+                        );
+                        metadata.justifications = genesis_justifications.clone();
+                        blocks.push(metadata);
+                        previous = block;
+                    }
+                    anchors.push(previous.clone());
+
+                    let tip = h(bases[index] + 13);
+                    let mut metadata = md_wm(
+                        tip.clone(),
+                        vec![previous],
+                        (side_depths[index] + tail_depths[index] + 2) as i64,
+                        &validators[index],
+                        weights.clone(),
+                    );
+                    metadata.justifications = genesis_justifications.clone();
+                    blocks.push(metadata);
+                    tips.push(tip);
+                }
+
+                let frozen_justifications = validators
+                    .iter()
+                    .enumerate()
+                    .map(|(index, validator)| Justification {
+                        validator: validator.clone(),
+                        latest_block_hash: anchors[index].clone(),
+                    })
+                    .collect::<Vec<_>>();
+                for tip in &tips {
+                    blocks
+                        .iter_mut()
+                        .find(|metadata| metadata.block_hash == *tip)
+                        .expect("tip metadata")
+                        .justifications = frozen_justifications.clone();
+                }
+
+                let block_hashes = blocks
+                    .iter()
+                    .map(|metadata| metadata.block_hash.clone())
+                    .collect::<Vec<_>>();
+                let dag = build_dag(blocks);
+                seed_state_floors(
+                    &dag,
+                    block_hashes
+                        .iter()
+                        .cloned()
+                        .map(|block| (block, genesis.clone())),
+                );
+                let latest_messages = validators
+                    .iter()
+                    .cloned()
+                    .zip(tips.iter().cloned())
+                    .collect::<BTreeMap<_, _>>();
+                let threshold = FtThreshold::from_ppm(100_000);
+
+                let mut provenance_cache = StateProvenanceCache::default();
+                let coverage = latest_message_coverage(
+                    &dag,
+                    &latest_messages,
+                    &mut provenance_cache,
+                )
+                .expect("latest-message coverage");
+                for target in &block_hashes {
+                    let pairwise_supporters = latest_messages
+                        .iter()
+                        .filter_map(|(validator, latest)| {
+                            dag.is_dag_ancestor(target, latest)
+                                .expect("pairwise DAG ancestry")
+                                .then_some(validator.clone())
+                        })
+                        .collect::<BTreeSet<_>>();
+                    prop_assert_eq!(
+                        coverage.get(target).cloned().unwrap_or_default(),
+                        pairwise_supporters.clone(),
+                    );
+
+                    let weight_map = corresponding_weight_map_with_cache(
+                        &dag,
+                        target,
+                        &mut provenance_cache,
+                    )
+                    .expect("cached corresponding weight map");
+                    let oracle_weight_map = CliqueOracle::get_corresponding_weight_map(target, &dag)
+                        .await
+                        .expect("oracle corresponding weight map");
+                    prop_assert_eq!(&weight_map, &oracle_weight_map);
+                    let optimized_support =
+                        causal_supporting_weight_map(target, &coverage, &weight_map);
+                    let pairwise_support = weight_map
+                        .iter()
+                        .filter_map(|(validator, weight)| {
+                            pairwise_supporters
+                                .contains(validator)
+                                .then_some((validator.clone(), *weight))
+                        })
+                        .collect::<HashMap<_, _>>();
+                    prop_assert_eq!(&optimized_support, &pairwise_support);
+
+                    let mut clique_cache = CliqueOracle::new_run_cache();
+                    let optimized_decision = CliqueOracle::compute_decision_with_cache(
+                        target,
+                        &weight_map,
+                        &optimized_support,
+                        &dag,
+                        &mut clique_cache,
+                        &latest_messages,
+                        threshold.num,
+                        threshold.den,
+                        false,
+                    )
+                    .await
+                    .expect("optimized causal decision")
+                    .0;
+                    let pairwise_decision = CliqueOracle::ft_witnessed_exact(
+                        target,
+                        &dag,
+                        &latest_messages,
+                        threshold,
+                        false,
+                    )
+                    .await
+                    .expect("pairwise causal decision");
+                    prop_assert_eq!(optimized_decision, pairwise_decision);
+                }
+
+                prop_assert!(CliqueOracle::ft_witnessed_exact(
+                    &finalized,
+                    &dag,
+                    &latest_messages,
+                    threshold,
+                    false,
+                )
+                .await
+                .expect("causal certificate"));
+                prop_assert!(state_witnessed_exact(
+                    &dag,
+                    &finalized,
+                    &latest_messages,
+                    threshold,
+                    false,
+                )
+                .await
+                .expect("state certificate"));
+                for tip in &tips {
+                    prop_assert!(dag.is_dag_ancestor(&finalized, tip).expect("DAG ancestry"));
+                    prop_assert!(!dag
+                        .is_in_main_chain(&finalized, tip)
+                        .expect("main ancestry"));
+                }
+
+                let ordered_parents = order.map(|index| tips[index].clone());
+                let inherited = ordered_parents
+                    .iter()
+                    .map(|_| Floor {
+                        hash: genesis.clone(),
+                        block_number: 0,
+                    })
+                    .collect();
+                let (floor, _) = derive_floor(
+                    &dag,
+                    &ordered_parents,
+                    &latest_messages,
+                    threshold,
+                    inherited,
+                )
+                .await
+                .expect("derive floor");
+                prop_assert_eq!(floor.hash, finalized);
+                Ok::<(), TestCaseError>(())
+            })?;
+        }
+
+        #[test]
         fn state_safe_frontier_is_monotone_across_stale_merges_and_rebases(
             (stale_len, safe_len) in state_lineage_scenario()
         ) {
@@ -1661,16 +3096,20 @@ mod frontier_determinism_tests {
             let funding = h(1);
             let mut blocks = vec![
                 md_wm(genesis.clone(), Vec::new(), 0, &validator, vec![(validator.clone(), 1)]),
-                md_wm(
-                    funding.clone(),
-                    vec![genesis.clone()],
-                    1,
-                    &validator,
-                    vec![(validator.clone(), 1)],
+                with_successful_effect(
+                    md_wm(
+                        funding.clone(),
+                        vec![genesis.clone()],
+                        1,
+                        &validator,
+                        vec![(validator.clone(), 1)],
+                    ),
+                    0,
                 ),
             ];
             let mut previous = funding.clone();
             let mut stale_hashes = Vec::with_capacity(stale_len);
+            let mut side_hashes = Vec::with_capacity(stale_len);
             for offset in 0..stale_len {
                 let side = h((100 + offset) as u8);
                 let stale = h((2 + offset) as u8);
@@ -1681,15 +3120,19 @@ mod frontier_determinism_tests {
                     &validator,
                     vec![(validator.clone(), 1)],
                 ));
-                blocks.push(md_wm(
-                    stale.clone(),
-                    vec![previous, side],
-                    (2 + offset) as i64,
-                    &validator,
-                    vec![(validator.clone(), 1)],
+                blocks.push(with_rejected_effect(
+                    md_wm(
+                        stale.clone(),
+                        vec![previous, side.clone()],
+                        (2 + offset) as i64,
+                        &validator,
+                        vec![(validator.clone(), 1)],
+                    ),
+                    effect(funding.clone(), 0),
                 ));
                 previous = stale.clone();
                 stale_hashes.push(stale);
+                side_hashes.push(side);
             }
             let rebased = h((2 + stale_len) as u8);
             blocks.push(md_wm(
@@ -1717,6 +3160,9 @@ mod frontier_determinism_tests {
             let dag = build_dag(blocks);
             dag.put_cached_floor(genesis.clone(), genesis.clone()).unwrap();
             dag.put_cached_floor(funding.clone(), genesis.clone()).unwrap();
+            for side in &side_hashes {
+                dag.put_cached_floor(side.clone(), genesis.clone()).unwrap();
+            }
             for stale in &stale_hashes {
                 dag.put_cached_floor(stale.clone(), genesis.clone()).unwrap();
             }
@@ -1755,12 +3201,75 @@ mod frontier_determinism_tests {
                 )
                 .unwrap();
                 prop_assert_eq!(frontier.hash, safe.clone());
-                prop_assert!(is_state_ancestor_from_cached_floors(&dag, &funding, safe).unwrap());
+                prop_assert!(is_state_preserved(&dag, &funding, safe).unwrap());
                 let latest = BTreeMap::from([(validator.clone(), safe.clone())]);
                 let weights = HashMap::from([(validator.clone(), 1)]);
                 let supporting =
                     state_supporting_weight_map(&dag, &funding, &latest, &weights).unwrap();
                 prop_assert_eq!(supporting.get(&validator), Some(&1));
+            }
+        }
+
+        #[test]
+        fn active_effect_recurrence_matches_arbitrary_reject_and_restore_sequences(
+            steps in state_effect_recurrence_scenario()
+        ) {
+            let validator = h(50);
+            let weights = vec![(validator.clone(), 1)];
+            let genesis = h(0);
+            let source = h(1);
+            let source_effect = effect(source.clone(), 0);
+            let mut blocks = vec![
+                md_wm(genesis.clone(), Vec::new(), 0, &validator, weights.clone()),
+                with_successful_effect(
+                    md_wm(
+                        source.clone(),
+                        vec![genesis.clone()],
+                        1,
+                        &validator,
+                        weights.clone(),
+                    ),
+                    0,
+                ),
+            ];
+            let mut floors = vec![
+                (genesis.clone(), genesis.clone()),
+                (source.clone(), genesis.clone()),
+            ];
+            let mut previous = source.clone();
+            let mut expected_active = true;
+            let mut expected = Vec::with_capacity(steps.len());
+            for (index, (reject, restore)) in steps.into_iter().enumerate() {
+                let block = h((index + 2) as u8);
+                let metadata = md_wm(
+                    block.clone(),
+                    vec![previous],
+                    (index + 2) as i64,
+                    &validator,
+                    weights.clone(),
+                );
+                blocks.push(if reject {
+                    with_rejected_effect(metadata, source_effect.clone())
+                } else {
+                    metadata
+                });
+                floors.push((
+                    block.clone(),
+                    if restore {
+                        source.clone()
+                    } else {
+                        genesis.clone()
+                    },
+                ));
+                expected_active = !reject && (expected_active || restore);
+                expected.push((block.clone(), expected_active));
+                previous = block;
+            }
+
+            let dag = build_dag(blocks);
+            seed_state_floors(&dag, floors);
+            for (block, active) in expected {
+                prop_assert_eq!(is_state_preserved(&dag, &source, &block).unwrap(), active);
             }
         }
     }

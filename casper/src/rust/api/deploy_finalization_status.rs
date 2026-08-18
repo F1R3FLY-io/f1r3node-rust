@@ -459,9 +459,9 @@ fn reduce_source_aware_occurrences(
     active_occurrences
 }
 
-/// Apply the per-sig post-loop rules: canonical-descendant invalidation
-/// of clean inclusions, latest_block_hash fallback to the first-seen
-/// block, expiry rule, and final state determination.
+/// Apply the per-sig post-loop rules: exact disposition reduction over the
+/// finalized causal closure, legacy canonical-descendant invalidation,
+/// latest_block_hash fallback, expiry, and final state determination.
 ///
 /// Returns `ApiErr` rather than swallowing failures from `is_in_main_chain`.
 /// The resolver is an API/observability surface (deploy status reporting and
@@ -475,7 +475,7 @@ fn finalize_sig_state(
     deploy_lifespan: i64,
     state: ResolverState,
 ) -> ApiErr<DeployFinalizationStatus> {
-    // A rejection invalidates a clean inclusion only when the
+    // A legacy rejection invalidates a clean inclusion only when the
     // rejection block is a CANONICAL-CHAIN DESCENDANT of the clean
     // block. Two reasons height alone is wrong:
     //
@@ -527,21 +527,19 @@ fn finalize_sig_state(
 
     if !state.source_aware_rejections.is_empty() {
         let mut rejected_sources = HashSet::new();
-        let mut canonical_rejection_blocks = HashSet::new();
+        let mut exact_rejection_blocks = HashSet::new();
         let mut latest_rejection: Option<(i64, BlockHash)> = None;
         for (height, recording_block, source_block) in &state.source_aware_rejections {
-            if canonical_block(recording_block)? {
-                rejected_sources.insert(source_block.clone());
-                canonical_rejection_blocks.insert(recording_block.clone());
-                if latest_rejection
-                    .as_ref()
-                    .is_none_or(|(current_height, current_hash)| {
-                        height > current_height
-                            || (height == current_height && recording_block < current_hash)
-                    })
-                {
-                    latest_rejection = Some((*height, recording_block.clone()));
-                }
+            rejected_sources.insert(source_block.clone());
+            exact_rejection_blocks.insert(recording_block.clone());
+            if latest_rejection
+                .as_ref()
+                .is_none_or(|(current_height, current_hash)| {
+                    height > current_height
+                        || (height == current_height && recording_block < current_hash)
+                })
+            {
+                latest_rejection = Some((*height, recording_block.clone()));
             }
         }
 
@@ -552,7 +550,7 @@ fn finalize_sig_state(
                     latest_legacy_rejection_height
                         .map_or(*height, |current: i64| current.max(*height)),
                 );
-                canonical_rejection_blocks.insert(recording_block.clone());
+                exact_rejection_blocks.insert(recording_block.clone());
                 if latest_rejection
                     .as_ref()
                     .is_none_or(|(current_height, current_hash)| {
@@ -599,7 +597,7 @@ fn finalize_sig_state(
             .map(|(_, hash, _)| hash.clone())
             .or_else(|| latest_rejection.map(|(_, hash)| hash))
             .or_else(|| Some(state.first_seen_block_hash));
-        let rejection_count = canonical_rejection_blocks.len().min(u32::MAX as usize) as u32;
+        let rejection_count = exact_rejection_blocks.len().min(u32::MAX as usize) as u32;
 
         return Ok(DeployFinalizationStatus {
             state: final_state,
@@ -742,17 +740,17 @@ fn finalize_sig_state(
 /// (unknown sig, first-seen body missing from the store) returns
 /// `pending_unknown` directly.
 ///
-/// The state machine is a canonical-chain scan:
+/// The state machine is a finalized causal-closure scan:
 ///
 /// 1. Look up the sig in the deploy index. Unknown sig → `Pending`.
 /// 2. Fetch the first-seen block to read `valid_after_block_number`.
-/// 3. Walk the finalized chain from LFB backward for `deploy_lifespan`
+/// 3. Walk every finalized ancestor of the LFB for `deploy_lifespan`
 ///    blocks, tallying clean inclusions, failed inclusions, rejections,
 ///    and `latest_block_hash`.
-/// 4. Apply the state rules: failed finalized → `Failed`; clean finalized
-///    without a later canonical-descendant rejection → `Finalized`;
-///    beyond lifespan without a clean inclusion → `Expired`; otherwise
-///    → `Pending`.
+/// 4. Apply exact source-aware records across that closure. Legacy records
+///    retain their canonical-descendant compatibility semantics.
+/// 5. Return `Failed`, `Finalized`, `Expired`, or `Pending` from the surviving
+///    occurrence and lifespan boundary.
 pub fn resolve(
     dag: &KeyValueDagRepresentation,
     block_store: &KeyValueBlockStore,

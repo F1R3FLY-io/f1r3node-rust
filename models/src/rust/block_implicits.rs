@@ -213,6 +213,7 @@ pub fn block_element_gen(
                         deploys,
                         system_deploys: set_sys_deploys.clone().unwrap_or_default(),
                         rejected_deploys: Vec::new(),
+                        rejected_state_effects: Vec::new(),
                         extra_bytes: prost::bytes::Bytes::new(),
                     },
                     justifications,

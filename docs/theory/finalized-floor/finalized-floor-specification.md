@@ -27,9 +27,12 @@ progress in `casper/src/rust/finality/finalizer.rs` and
 exact occurrence and effect projection in
 `casper/src/rust/util/rholang/interpreter_util.rs`,
 `casper/src/rust/merging/dag_merger.rs`, and
-`casper/src/rust/merging/deploy_chain_index.rs`.
+`casper/src/rust/merging/deploy_chain_index.rs`, with the consensus encoding and
+persisted projection in `models/src/main/protobuf/CasperMessage.proto`,
+`models/src/rust/casper/protocol/casper_message.rs`, and
+`models/src/rust/block_metadata.rs`.
 
-The state-lineage rule is a node-consensus refinement, not a statement quoted
+The state-effect-preservation rule is a node-consensus refinement, not a statement quoted
 from either cost-accounting paper. The source-checkout papers
 `../publications/cost-accounting/cost-accounted-rho.tex` and
 `../publications/cost-accounting-as-monad/continued-gslt-cost-v2.tex` provide
@@ -37,7 +40,7 @@ the atomic resource-commitment and conservation obligations. The existing
 Casper contract supplies the separate premise that finalized effects are
 permanent. R-LFB-STATE is the implementation rule that composes those two
 obligations: causal certification remains unchanged, while a separate
-state-preserving certificate and current-LFB ancestry prevent installation of a
+state-preserving certificate and current-LFB effect preservation prevent installation of a
 state that omits an already committed resource transition.
 
 ## 2. The floor rule (normative)
@@ -46,11 +49,15 @@ For a block `B` with non-empty parent set `P₁…Pₖ` and frozen justification
 `just(B)`:
 
 - **R-FLOOR.** `floor(B)` MUST be the **maximum state-preserving sound candidate**
-  (by block number, tie-broken by hash) over the union of two sources, each a
+  (by block number, tie-broken by hash) over the union of three sources, each a
   **pure function of `B`**:
   1. **Inheritance** — every parent's own floor.
   2. **Advancement** — per parent, the highest main-chain ancestor `A` with
      `ft_witnessed(A, just(B)) ≥ θ` (genesis is finalized by definition).
+  3. **Universal certified advancement** — the highest all-parent DAG ancestor
+     `U` for which both the causal and state-preserving clique certificates hold
+     over `just(B)` and which preserves every inherited parent floor. `U` may be
+     a secondary ancestor of every parent even when it is on no parent main spine.
 - **R-SOUND.** The chosen `floor(B)` MUST be a **sound merge base**: either
   (**Case-A**) a general DAG-ancestor of every parent, or (**Case-B**) a candidate
   with which every other candidate is compatible (lies in its DAG past, or is
@@ -79,7 +86,7 @@ For a block `B` with non-empty parent set `P₁…Pₖ` and frozen justification
   causal clique decision without modifying its voters, weights, threshold, or
   strictness. It MUST then run the same exact decision over state-preserving
   support as required by R-STATE-CERT. The first candidate that holds both
-  certificates and preserves the current LFB's state lineage is the next LFB.
+  certificates and preserves every active effect of the current LFB is the next LFB.
   The current LFB need not lie on the candidate's main-parent spine: a
   multi-parent rebase may preserve it through a secondary parent.
 - **R-FINALIZER-ERROR.** Missing or unreadable consensus metadata and failed clique
@@ -97,51 +104,162 @@ whether sufficient mutually agreeing stake has retained that block's state in
 its frozen latest messages. **LFB admissibility** additionally answers whether
 installing the candidate would retain the state already committed by the current
 LFB. These are separate predicates. The state-support calculation MUST NOT alter
-the causal certificate, and the current-LFB lineage check MUST NOT alter either
-certificate.
+the causal certificate, and the current-LFB preservation check MUST NOT alter
+either certificate.
 
-- **R-STATE-BASE.** Genesis derives from itself. For every non-genesis block `B`,
-  its direct state base MUST be the covering parent only when one parent covers
-  every parent and `floor(B)` is in that parent's state lineage. Otherwise its
-  direct state base MUST be `floor(B)`, because the block is computed by replaying
-  the floor-bounded merge.
-- **R-STATE-ANCESTRY.** State ancestry MUST be the reflexive, transitive closure
-  of the direct state-base relation. It is derivation provenance, not tuple-set
-  inclusion: an authorized later reduction may consume data while still deriving
-  from its predecessor.
+- **R-EFFECT-ID.** Every successful user or system execution MUST have the
+  consensus identity $`E = (source\_block\_hash, execution\_index)`$. Execution
+  indices MUST use the block's sequential user-then-system execution order.
+  Failed executions MUST NOT originate active effects.
+- **R-EFFECT-WIRE.** A current-protocol block MUST serialize the exact,
+  lexicographically ordered, duplicate-free set of state-effect identities
+  rejected by its parent merge. Validation MUST recompute that set and reject a
+  mismatch or non-canonical encoding before replay acceptance. DAG metadata MUST
+  persist the block protocol version, successful local indices, and rejected
+  identities. Nodes MUST fail closed when those fields are unavailable.
+- **R-EFFECT-ACTIVE.** Let `inputs(B)` contain every maximal direct parent of
+  `B`, plus `floor(B)` when it is not already present. The active-effect set MUST
+  satisfy this recurrence:
+
+  ```math
+  Active(B) = \left(Own(B) \cup
+    \bigcup_{I \in inputs(B)} Active(I)\right) \setminus Rejected(B).
+  ```
+
+  `Own(B)` contains exactly the identities required by R-EFFECT-ID, and
+  `Rejected(B)` is the canonical wire set required by R-EFFECT-WIRE. Parent
+  ordering MUST NOT affect this set. Removing a parent already covered by
+  another state input MUST NOT change the result.
+- **R-STATE-PRESERVATION.** `preserves(A,D)` MUST hold exactly when `A = D`, or
+  when `A` is a DAG ancestor of `D` and $`Active(A) \subseteq Active(D)`$. This
+  is transition provenance rather than tuple-set inclusion: an authorized later
+  reduction may consume data while still preserving the earlier transition.
+- **R-EFFECT-SCAN.** An implementation MAY collect a height-bounded superset of
+  rejected identities from `D`'s causal past when deciding `preserves(A,D)`.
+  It MUST test only candidates active at `A`, and MUST return false exactly when
+  one such candidate is inactive at `D`. Rejections unrelated to `A` MUST NOT
+  change the verdict.
 - **R-STATE-CERT.** For candidate `C` and frozen snapshot `just(B)`, state support
   MUST contain exactly the validators whose latest messages both causally include
-  `C` and state-descend from `C`. The node MUST run the same hard-majority,
+  `C` and preserve every effect active at `C`. The node MUST run the same hard-majority,
   maximum-clique, exact-threshold decision used for causal certification over
   that restricted support. Causal support through a merge-parent edge MUST NOT
   count as state support when the merge state rejected `C`'s effects.
-- **R-STATE-DEPENDENCIES.** State-lineage materialization MUST close over both DAG
-  parents and the frozen latest-message justifications consulted by R-STATE-CERT.
-  A missing dependency or cyclic lineage MUST fail the derivation; it MUST NOT be
+- **R-STATE-DEPENDENCIES.** Finalized-floor materialization MUST close over both
+  DAG parents and the frozen latest-message justifications consulted by
+  R-STATE-CERT. Active-effect evaluation MUST close over every recurrence input.
+  A missing dependency or cyclic dependency MUST fail the derivation; it MUST NOT be
   interpreted as absent state support.
+- **R-SNAPSHOT-PROVENANCE-CLOSURE.** Before parent eligibility, causal support,
+  or state-preserving support is evaluated, snapshot construction MUST
+  materialize finalized-floor provenance for the union of the captured LFB,
+  every frozen latest message, and every declared parent that the evaluation
+  may inspect. Each materialization MUST recursively close over its immutable
+  block dependencies. Cache writes MAY interleave with finalizer materialization,
+  but they MUST be monotone, idempotent, and order-independent. Selection MUST
+  observe the complete required closure or fail; it MUST NOT observe a
+  parent-only prefix, classify a latest message from missing cache state, or
+  re-enqueue the same dependency-free block indefinitely.
 - **R-STATE-FRONTIER.** A raw causally certified main-parent frontier MUST first
   be reduced to the highest candidate on that spine that preserves the accepted
-  state lineage, then lowered along its direct state-base lineage until it reaches
+  active-effect set, then lowered along that same main-parent spine until it reaches
   a state-certified candidate. A causally certified stale-state descendant or
   rejected parent remains a valid speculative block but MUST NOT become a floor
   advancement.
+- **R-UNIVERSAL-FRONTIER.** Universal certified advancement MUST traverse the
+  complete all-parent causal closure in deterministic descending
+  `(block_number, block_hash)` order. Each declared parent supplies a distinct
+  coverage identity. Coverage MUST propagate through every parent edge; a
+  candidate is universal exactly when it has received every declared-parent
+  identity. The first universal candidate that holds both unchanged exact clique
+  certificates and preserves every inherited floor is the highest eligible
+  universal frontier. Every traversed edge MUST descend strictly in block number.
+  Missing metadata, a non-descending edge, a cycle, or coverage that arrives after
+  a candidate was processed MUST fail derivation rather than select a partial or
+  node-local result. This traversal adds a block-structural floor candidate; it
+  MUST NOT change R-FINALIZER-CLOSURE, agreement propagation, voters, weights,
+  threshold arithmetic, or clique selection.
+- **R-COVERAGE-EQUIVALENCE.** For frozen latest-message map `J`, candidate `C`,
+  and validator `v`, the propagated latest-message coverage predicate MUST be
+  extensionally equal to the original pairwise ancestry predicate:
+
+  ```math
+  v \in Coverage_J(C) \iff C \preceq_{DAG} J(v).
+  ```
+
+  An implementation MAY seed one validator identity at each `J(v)` and propagate
+  those identities through the causal closure once. It MUST process blocks in
+  descending `(block_number, block_hash)` order, reject every non-descending
+  edge, and fail if coverage reaches an already processed block. The weight map
+  supplied to the clique oracle MUST remain the candidate main parent's weight
+  map, or the candidate's own map for genesis. Filtering that map by
+  $`Coverage_J(C)`$ MUST produce exactly the same supporter map and exact clique
+  verdict as pairwise `is_dag_ancestor(C,J(v))` evaluation.
+- **R-LINEAR-SNAPSHOT-REUSE.** Universal-frontier evaluation MAY reuse a parent's
+  already derived result only when the child has exactly that one parent, that
+  parent itself has exactly one predecessor, the inherited floor equals the
+  parent's cached floor, the frozen latest-message maps are identical, and every
+  latest message is strictly older than the parent. Under those premises the
+  parent cannot certify itself and every other eligible ancestor was already an
+  ancestor of its sole predecessor. A child of a multi-parent merge MUST rescan:
+  the merge can make a formerly branch-local certified candidate universal even
+  without new latest-message evidence.
 - **R-FLOOR-STATE.** A candidate floor at or above an inherited parent floor MUST
-  state-descend that inherited floor. A candidate that bypasses an inherited
+  preserve every effect active at that inherited floor. A candidate that bypasses an inherited
   committed state MUST be skipped; an older common sound base MAY be selected.
 - **R-LFB-STATE.** A candidate MAY become the next LFB only if its causal
-  certificate, state-preserving certificate, and current-LFB state ancestry all
+  certificate, state-preserving certificate, and current-LFB effect preservation all
   hold over the same frozen snapshot. Main-parent ancestry MUST NOT be an
   additional admission condition: it describes vote propagation, not
   multi-parent state derivation.
+- **R-PARENT-CAUSALITY.** Let `L` be the proposer-local LFB captured with a DAG
+  snapshot and let `J(v)` be bonded validator `v`'s valid latest message in that
+  snapshot. The map supplied to fork-choice estimation MUST retain every valid
+  latest message. The direct parent set MAY remove only a tip causally covered
+  by another selected tip:
+
+  ```math
+  Tips(J) = \{J(v) \mid v \in \operatorname{dom}(J)\},
+
+  DirectParents(J,L) =
+  \begin{cases}
+    \max_{\preceq_{DAG}} Tips(J), &
+      \operatorname{dom}(J) \ne \varnothing,\\
+    \{L\}, & \operatorname{dom}(J) = \varnothing.
+  \end{cases}
+
+  \forall T \in Tips(J),\ \exists P \in DirectParents(J,L) :
+    T \preceq_{DAG} P.
+  ```
+
+  Distinct hashes avoid duplicates, and reachability-maximal compaction avoids
+  redundant direct parents without discarding any validator's causal evidence.
+  Stale and effect-dropping tips remain causal inputs; their above-floor deltas are
+  replayed against the certified floor and may be rejected by the deterministic
+  merge. Only an empty valid-tip set falls back to `L`; it MUST NOT fall back to
+  genesis.
+- **R-PARENT-EVIDENCE.** The complete latest-message evidence required by
+  justification-following and validator sequence accounting MUST remain intact.
+  A receiver validates and replays the declared parents from block-structural
+  evidence and MUST NOT recompute them from its own possibly lagging LFB.
+- **R-PARENT-STATE.** Parent selection preserves causality; floor-rebased replay
+  preserves state. The produced pre-state MUST include every effect active at the
+  selected certified floor. Rejections MAY remove only exact above-floor effect
+  identities considered by that merge and MUST NOT remove an effect already
+  represented by the floor state.
 - **R-REBASE.** If a causally certified speculative block fails R-STATE-CERT or
   R-LFB-STATE, a later child MUST recompute from the certified floor rather than
-  reuse the stale covering-parent post-state. The rebase restores state lineage
-  and eventual LFB progress even when parent selection places the old LFB in a
-  secondary-parent branch.
+  reuse the stale covering-parent post-state. The rebase restores the floor's
+  accepted effects and eventual LFB progress even when parent selection places
+  the old LFB in a secondary-parent branch.
 - **R-VALIDITY-STABILITY.** Learning that another block finalized MUST NOT
   retroactively make an otherwise valid speculative block invalid. Consensus
   validity is block-structural; LFB eligibility is evaluated separately when the
   finalizer considers promotion.
+- **R-PROVENANCE-ACTIVATION.** Exact state-effect provenance is a protocol-3
+  consensus encoding. A node that supports only protocol 3 MUST start from a
+  protocol-3 genesis or resynchronize protocol-3 metadata; it MUST NOT infer
+  missing provenance for legacy persisted blocks.
 
 ## 3. Determinism (normative)
 
@@ -153,7 +271,9 @@ certificate.
   When a determinism premise fails (committee change in band, or the pivot no longer
   finalizes over the larger snapshot), the warm path MUST fall back to the cold walk.
 - **R-COMM.** The committee used to validate `B`'s bonds MUST be `bonds_of(floor(B))`
-  — a pure function of the floor.
+  — a pure function of the floor. A bond transition in `B`'s post-state MUST NOT
+  authorize `B` itself. The new committee becomes authoritative only for a later
+  block whose derived floor includes that transition.
 
 ## 4. Merge base, scope, and the Δ-backstop (normative)
 
@@ -192,11 +312,13 @@ merge base. An **exact disposition record** identifies one source occurrence,
 its winning or rejected reason, and the causal provenance that authorizes the
 record.
 
-For this D3 wire format, protocol 2 is the only supported active protocol.
-Protocol-1 structures remain meaningful as historical encoding metadata in the
-merge algebra, but a protocol-1 approved genesis is not a runnable shard for this
-binary. Cross-version floor composition below is therefore a defensive
-state-validation property, not authorization for an in-place protocol upgrade.
+Exact rejected-deploy dispositions begin at protocol 2; exact per-execution
+state-effect provenance begins at protocol 3. Protocol 3 is the only supported
+active protocol in this binary. Protocol-1 and protocol-2 structures remain
+meaningful as historical encoding metadata in the merge algebra, but neither
+historical approved genesis is a runnable shard for this binary. Cross-version
+floor composition below is therefore a defensive state-validation property, not
+authorization for an in-place protocol upgrade.
 
 - **R-ACTIVE-BASE.** At and after exact-occurrence activation, finalized-base
   receipt precedence MUST be selected by the active protocol version. It MUST
@@ -207,6 +329,10 @@ state-validation property, not authorization for an in-place protocol upgrade.
   provenance and a non-`Unspecified` reason. A legacy record MUST carry neither
   provenance nor a specified reason. Validation MUST use the containing block's
   header version, never inference from record contents.
+- **R-STATE-EFFECT-ENCODING.** Before protocol 3, the rejected-state-effect field
+  MUST be empty. At protocol 3, it MUST equal the validator's recomputed list and
+  be strictly increasing under the canonical `(source_block_hash,
+  execution_index)` order, which excludes duplicates.
 - **R-REASON-CONFLUENCE.** Multiple causal descendants MAY record different
   valid rejection causes for one exact source occurrence. Reducers MUST combine
   those causes with the canonical precedence join
@@ -253,7 +379,7 @@ state-validation property, not authorization for an in-place protocol upgrade.
   signing.
 - **R-APPROVED-SUPPORT.** Approved-block validation MUST reject every version
   outside the binary's explicit supported set before Casper starts. This release's
-  supported set is exactly protocol 2; protocol 1 and unknown future versions
+  supported set is exactly protocol 3; protocols 1 and 2 and unknown future versions
   MUST fail closed without mutating the running shard configuration.
 - **R-VERSION-ADOPTION.** After approved-block validation, every node MUST adopt
   that approved version into the authoritative running shard configuration.
@@ -265,8 +391,8 @@ state-validation property, not authorization for an in-place protocol upgrade.
 - **R-VERSION-RECEPTION.** Peer-interest filtering and block validation MUST
   compare incoming blocks with the authoritative running version. They MUST NOT
   consult a second version source whose value can drift from proposal.
-- **R-FRESH-GENESIS.** Cost-accounted protocol 2 MUST activate through a fresh
-  protocol-2 genesis approved by every validator. There MUST NOT be a node-local
+- **R-FRESH-GENESIS.** Cost-accounted protocol 3 MUST activate through a fresh
+  protocol-3 genesis approved by every validator. There MUST NOT be a node-local
   accounting switch, an A/B mode, or a block-height window in which this binary
   accepts both externalized and internalized charging semantics.
 
@@ -334,9 +460,14 @@ state-validation property, not authorization for an in-place protocol upgrade.
 | **S22** | An attempted underfunded deploy remains pending, produces user effects, or is later resurrected without a new deploy occurrence (violates R-FUNDING-TERMINAL/R-FUNDING-NO-EFFECT). |
 | **S23** | A proposer forges either side of the state-bound admitted/rejected partition (violates R-FUNDING-AUTHENTICITY). |
 | **S24** | A causally certified block advances the floor or LFB without a state-preserving certificate, or while bypassing a state already committed by the current LFB (violates R-STATE-CERT/R-STATE-FRONTIER/R-LFB-STATE). |
-| **S25** | A covering-parent fast path reuses a stale post-state after the block's floor advanced past that parent's state lineage (violates R-STATE-BASE/R-REBASE). |
+| **S25** | A covering-parent fast path reuses a stale post-state after the block's floor contains an active effect that parent rejected (violates R-STATE-PRESERVATION/R-REBASE). |
 | **S26** | Rejecting one exact effect removes an independent effect solely because its source block descends from the rejected effect's block (violates R-EXACT-SURVIVAL). |
 | **S27** | Rejection stops after one dependency hop and retains an effect that transitively consumes rejected state (violates R-CHAIN-ATOMIC/R-REJECTION-FIXPOINT). |
+| **S28** | A merge, floor, or LFB drops an accepted effect because state provenance collapses to one parent, depends on parent order, aliases two source identities, accepts non-canonical rejection evidence, or omits a rejection-candidate check (violates R-EFFECT-ID/R-EFFECT-WIRE/R-EFFECT-ACTIVE/R-STATE-PRESERVATION/R-EFFECT-SCAN). |
+| **S29** | An honest proposer drops a valid causal latest message, falls back to genesis when the valid-tip set is empty, or replays parent deltas without preserving its certified floor state (violates R-PARENT-CAUSALITY/R-PARENT-STATE/R-PARENT-EVIDENCE). |
+| **S30** | A dual-certified state remains absent from every block replay floor solely because it is secondary to every parent and main-spine discovery cannot see it (violates R-UNIVERSAL-FRONTIER). |
+| **S31** | Optimized latest-message coverage changes a validator support set, weight map, clique verdict, or permits a multi-parent unchanged-snapshot scan reuse (violates R-COVERAGE-EQUIVALENCE/R-LINEAR-SNAPSHOT-REUSE). |
+| **S32** | Snapshot selection inspects an off-parent latest message before its recursive floor provenance is materialized, or concurrent cache writes lose a required entry, causing node-local classification, repeated processing, or proposal failure (violates R-STATE-DEPENDENCIES/R-SNAPSHOT-PROVENANCE-CLOSURE). |
 
 ## 7. Liveness invariants — MUST eventually happen
 
@@ -351,6 +482,8 @@ state-validation property, not authorization for an in-place protocol upgrade.
 | **L7** | Under eventual peer availability and a transient local fault, deferred recovery reopens the parent, validates it, and then releases and validates its descendants. |
 | **L8** | Every recorded funding decision eventually finalizes as either executed or rejected. |
 | **L9** | After a stale-state certified candidate is skipped, eventual delivery and proposal produce a floor-rebased descendant that all honest validators can promote. |
+| **L10** | Complete frozen evidence eventually promotes the highest dual-certified universal floor, and the finite descending coverage traversal completes without a node-local timeout or candidate cap. |
+| **L11** | Every finite frozen snapshot completes its required provenance closure and reaches parent selection despite arbitrary interleaving with idempotent finalizer cache writes. |
 
 ## 8. Conformance
 

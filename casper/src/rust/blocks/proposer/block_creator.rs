@@ -19,7 +19,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, Justification, ProcessedDeploy,
-    ProcessedSystemDeploy, RejectedDeploy,
+    ProcessedSystemDeploy, RejectedDeploy, StateEffectId,
 };
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -2972,7 +2972,7 @@ pub async fn create(
         let attempted_user_deploys = user_deploy_limit;
         let attempted_total_deploys = cosigned_deploys.len();
 
-        match interpreter_util::compute_deploys_checkpoint_cosigned_admitted(
+        match interpreter_util::compute_deploys_checkpoint_cosigned_admitted_with_effects(
             block_store,
             parents.clone(),
             cosigned_deploys,
@@ -3068,6 +3068,7 @@ pub async fn create(
         post_state_hash,
         mut processed_deploys,
         rejected_deploys,
+        rejected_state_effects,
         processed_system_deploys,
         new_bonds,
     ) = checkpoint_data;
@@ -3142,6 +3143,7 @@ pub async fn create(
         post_state_hash,
         processed_deploys,
         rejected_deploys,
+        rejected_state_effects,
         processed_system_deploys,
         block_bonds,
         shard_id,
@@ -3220,6 +3222,7 @@ fn package_block(
     post_state_hash: Bytes,
     deploys: Vec<ProcessedDeploy>,
     rejected_deploys: Vec<RejectedDeploy>,
+    rejected_state_effects: Vec<StateEffectId>,
     system_deploys: Vec<ProcessedSystemDeploy>,
     bonds_map: Vec<Bond>,
     shard_id: String,
@@ -3236,6 +3239,7 @@ fn package_block(
         state,
         deploys,
         rejected_deploys,
+        rejected_state_effects,
         system_deploys,
         extra_bytes: Bytes::new(),
     };
@@ -3301,6 +3305,9 @@ mod tests {
                 directly_finalized: true,
                 finalized: true,
                 fault_tolerance_value: 1.0,
+                successful_state_effect_indices: Default::default(),
+                rejected_state_effects: Default::default(),
+                protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
             })
             .expect("insert finalized metadata");
         snapshot.last_finalized_block = hash;
@@ -3342,6 +3349,7 @@ mod tests {
             Bytes::new(),
             Bytes::new(),
             deploys,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),

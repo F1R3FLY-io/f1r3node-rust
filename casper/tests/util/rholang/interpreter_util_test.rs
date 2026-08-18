@@ -474,7 +474,8 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
             let genesis = ctx.genesis_context.genesis_block.clone();
             let creator = ctx.genesis_context.validator_pks()[0].bytes.clone();
 
-            let b1 = block_generator::build_block(
+            let b1 = block_generator::build_block_at_height(
+                1,
                 vec![genesis.block_hash.clone()],
                 Some(creator.clone()),
                 100,
@@ -487,7 +488,8 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
                 None,
             );
 
-            let b2 = block_generator::build_block(
+            let b2 = block_generator::build_block_at_height(
+                1,
                 vec![genesis.block_hash.clone()],
                 Some(creator.clone()),
                 200,
@@ -500,7 +502,8 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
                 None,
             );
 
-            let b3 = block_generator::build_block(
+            let b3 = block_generator::build_block_at_height(
+                2,
                 vec![b1.block_hash.clone(), b2.block_hash.clone()],
                 Some(creator),
                 300,
@@ -608,7 +611,8 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
             let genesis = ctx.genesis_context.genesis_block.clone();
             let creator = ctx.genesis_context.validator_pks()[0].bytes.clone();
 
-            let b1 = block_generator::build_block(
+            let b1 = block_generator::build_block_at_height(
+                1,
                 vec![genesis.block_hash.clone()],
                 Some(creator.clone()),
                 100,
@@ -621,7 +625,8 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
                 None,
             );
 
-            let b2 = block_generator::build_block(
+            let b2 = block_generator::build_block_at_height(
+                2,
                 vec![b1.block_hash.clone()],
                 Some(creator.clone()),
                 200,
@@ -634,7 +639,8 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
                 None,
             );
 
-            let b3 = block_generator::build_block(
+            let b3 = block_generator::build_block_at_height(
+                2,
                 vec![b1.block_hash.clone()],
                 Some(creator.clone()),
                 200,
@@ -647,7 +653,8 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
                 None,
             );
 
-            let b4 = block_generator::build_block(
+            let b4 = block_generator::build_block_at_height(
+                3,
                 vec![b3.block_hash.clone()],
                 Some(creator.clone()),
                 300,
@@ -660,7 +667,8 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
                 None,
             );
 
-            let b5 = block_generator::build_block(
+            let b5 = block_generator::build_block_at_height(
+                4,
                 vec![b2.block_hash.clone(), b4.block_hash.clone()],
                 Some(creator),
                 500,

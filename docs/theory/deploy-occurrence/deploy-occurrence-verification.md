@@ -19,6 +19,8 @@
 | Recovery expiry uses proposal height, not finalized height | TLA⁺ `Inv_RecoveryHeightUsesCommittedDagView`, `Inv_NoExpiredRetry` | exact proposal-height expiry tests |
 | An offline recovery leader cannot halt finality | TLA⁺ `Live_RecoveryOrExpiry` | heartbeat and consensus-safety system integration scenarios |
 | Multiple exact tombstones in one block are one rejection event | occurrence-aware status reducer | `multiple_exact_rejections_in_one_block_count_as_one_rejection_event` |
+| An exact tombstone in a secondary-parent ancestor affects status exactly as it affects committed state | Rocq `finalized_closure_rejection_is_authoritative`, TLA⁺ `Inv_StatusMatchesCommittedState` | `source_aware_rejection_in_secondary_parent_is_authoritative` |
+| Restricting exact tombstones to the main-parent spine is unsound | Rocq `main_chain_only_projection_is_incomplete`; TLC and Apalache `MC_FinalizedOccurrenceStatus_main_chain_unsafe*` | the secondary-parent regression fails under the old filter |
 
 The Rocq capstone is checked with `Print Assumptions` and `coqchk`. The TLA⁺
 post-fix models must exhaust their bounded state spaces without violation. Each
@@ -95,6 +97,8 @@ published constraints.
 - exact-LFB sibling exclusion;
 - invalid block exclusion from occurrence lookup;
 - finalization API returns the surviving source block.
+- finalization API applies an exact rejection recorded in a secondary-parent
+  ancestor and returns the distinct surviving source block.
 
 ### Property-based tests
 
@@ -133,6 +137,7 @@ cargo test -p models rejected_deploy
 cargo test -p block-storage --features test-internals --test block_dag_storage_test deploy_index
 cargo test -p casper --lib deploy_finalization_status::tests
 cargo test -p casper --test mod multiple_exact_rejections_in_one_block_count_as_one_rejection_event
+cargo test -p casper --test mod source_aware_rejection_in_secondary_parent_is_authoritative
 cargo test -p casper --test mod -- finalizer
 ```
 

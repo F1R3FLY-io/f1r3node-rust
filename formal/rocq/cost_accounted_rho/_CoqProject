@@ -443,6 +443,7 @@ theories/AuthorityPresentation.v
 theories/ForcedRedexAccounting.v
 theories/StructuralAuthorityBound.v
 theories/CausalStackOrder.v
+theories/ParallelStackMaterialization.v
 theories/TransactionalAdmission.v
 theories/RuntimeBoundAuthority.v
 theories/PayloadSortPersistence.v

@@ -131,6 +131,29 @@ conformance oracle, not as a replacement for the node's existing state and conse
 | Generic GSLT/OSLF funding and formula boundary | `accounting/resource_logic.rs` `GsltPresentation`, `ResourceSignature`, `OslfResourceLogic<G>::resource_observation/check_formula`; `accounting/oslf.rs` finite located formula evaluator; native specialization `RhoGslt` excludes candidate-created supply |
 | Two monoids (spatial vs temporal) | spatial `Par` (unordered) vs temporal `SourcePath` (ordered) |
 
+### Same-configuration resource availability
+
+The concrete rules R1–R3 reduce a signed interaction against a located stack
+that is already a component of the current parallel configuration. Native
+evaluation therefore cannot expose the host scheduler's choice between a
+`CostStack` declaration and an ordinary sibling reduction as semantic time.
+For each normalized `Par`, stack declarations are materialized first in
+canonical order; all remaining terms retain normal concurrent evaluation.
+
+This phase boundary is local. A declaration in a continuation is not present
+until its parent COMM releases that continuation, so it cannot satisfy the
+parent's demand. In symbols, for current declaration $`d`$, parent interaction
+$`r`$, and continuation declaration $`n`$:
+
+```math
+d \prec r \prec n.
+```
+
+This is a refinement of the papers' co-present located-resource premise, not a
+new linear-logic connective or a settlement reorder. The RSpace event log now
+records that semantic causality directly, and play and replay consume the same
+trace. See DR-42 and `ParallelStackMaterialization.{tla,v}`.
+
 MeTTaIL is not a Rust runtime dependency in this design. When `mettail-rust` is
 ready, integration is an adapter that implements the generic
 `GsltPresentation`/`ResourceSignature`/`OslfResourceLogic<G>` surface. It must

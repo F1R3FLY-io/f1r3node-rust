@@ -84,10 +84,11 @@ Genesis creates the first block containing:
 
 ### Protocol-Version Authority
 
-The cost-accounted D3 wire format uses Casper protocol version 2. This binary's
-supported running set is exactly `{2}`. Version 1 remains recognizable as
-historical encoding metadata, but a version-1 approved genesis is rejected before
-Casper starts; an unknown future version is rejected identically.
+The cost-accounted D3 rejected-deploy format begins at Casper protocol version 2.
+Exact per-execution state-effect provenance begins at version 3. This binary's
+supported running set is exactly `{3}`. Versions 1 and 2 remain recognizable as
+historical encoding metadata, but either historical approved genesis is rejected
+before Casper starts; an unknown future version is rejected identically.
 
 The genesis master writes the configured protocol version into the candidate.
 Every genesis validator checks that version before signing. Approved-block
@@ -102,7 +103,7 @@ version 2, and receivers compared proposals with the version-1 approved header.
 Honest protocol-2 proposals were discarded before validation. The repaired
 lifecycle has no independent receiver-side version source.
 
-Protocol 2 activates through a fresh protocol-2 genesis. There is no
+Protocol 3 activates through a fresh protocol-3 genesis. There is no
 block-height activation, node-local accounting switch, A/B mode, or mixed-version
 running interval. The TLA+ and Rocq models are cataloged in
 [`docs/formal-verification.md`](../formal-verification.md); the normative rules

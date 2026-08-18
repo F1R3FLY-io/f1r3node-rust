@@ -22,6 +22,7 @@ use models::rust::block_implicits::get_random_block;
 use models::rust::casper::protocol::casper_message;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, DeployData, ProcessedDeploy, RejectedDeploy, RejectedDeployReason,
+    StateEffectId,
 };
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
@@ -3219,6 +3220,88 @@ async fn validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_depl
             rejected_rej,
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidRejectedDeploy)),
             "a block claiming a rejected-deploy the validator's recompute does not produce must be InvalidRejectedDeploy (:269)"
+        );
+
+        let mut tampered_effect = genesis.clone();
+        tampered_effect
+            .body
+            .rejected_state_effects
+            .push(StateEffectId {
+                source_block_hash: Bytes::from_static(b"bogus-source"),
+                execution_index: 0,
+            });
+        let mut snap_effect = mk_casper_snapshot(
+            block_dag_storage
+                .get_representation()
+                .expect("dag representation"),
+        );
+        let rejected_effect = interpreter_util::validate_block_checkpoint(
+            &tampered_effect,
+            &block_store,
+            &mut snap_effect,
+            &runtime_manager,
+            None,
+        )
+        .await
+        .expect("checkpoint (state-effect tamper)");
+        assert_eq!(
+            rejected_effect,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRejectedDeploy)),
+        );
+
+        let mut noncanonical_effects = genesis.clone();
+        noncanonical_effects.body.rejected_state_effects = vec![
+            StateEffectId {
+                source_block_hash: Bytes::from_static(b"z-source"),
+                execution_index: 0,
+            },
+            StateEffectId {
+                source_block_hash: Bytes::from_static(b"a-source"),
+                execution_index: 0,
+            },
+        ];
+        let mut snap_noncanonical = mk_casper_snapshot(
+            block_dag_storage
+                .get_representation()
+                .expect("dag representation"),
+        );
+        let rejected_noncanonical = interpreter_util::validate_block_checkpoint(
+            &noncanonical_effects,
+            &block_store,
+            &mut snap_noncanonical,
+            &runtime_manager,
+            None,
+        )
+        .await
+        .expect("checkpoint (noncanonical state effects)");
+        assert_eq!(
+            rejected_noncanonical,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRejectedDeploy)),
+        );
+
+        let duplicate = StateEffectId {
+            source_block_hash: Bytes::from_static(b"duplicate-source"),
+            execution_index: 1,
+        };
+        let mut duplicate_effects = genesis.clone();
+        duplicate_effects.body.rejected_state_effects = vec![duplicate.clone(), duplicate];
+        let mut snap_duplicate = mk_casper_snapshot(
+            block_dag_storage
+                .get_representation()
+                .expect("dag representation"),
+        );
+        let rejected_duplicate = interpreter_util::validate_block_checkpoint(
+            &duplicate_effects,
+            &block_store,
+            &mut snap_duplicate,
+            &runtime_manager,
+            None,
+        )
+        .await
+        .expect("checkpoint (duplicate state effects)");
+        assert_eq!(
+            rejected_duplicate,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRejectedDeploy)),
         );
     })
     .await

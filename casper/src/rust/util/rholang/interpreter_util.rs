@@ -11,7 +11,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy,
-    RejectedDeployReason, SystemDeployData,
+    RejectedDeployReason, StateEffectId, SystemDeployData,
 };
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -34,8 +34,19 @@ use crate::rust::metrics_constants::{BLOCK_PROCESSING_REPLAY_TIME_METRIC, CASPER
 use crate::rust::util::proto_util;
 use crate::rust::BlockProcessing;
 
-pub const EXACT_REJECTION_PROTOCOL_VERSION: i64 =
-    crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION;
+pub const EXACT_REJECTION_PROTOCOL_VERSION: i64 = 2;
+
+fn state_effect_encoding_matches_protocol(
+    protocol_version: i64,
+    encoded: &[StateEffectId],
+    computed: &[StateEffectId],
+) -> bool {
+    if protocol_version < crate::rust::casper::STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION {
+        encoded.is_empty()
+    } else {
+        encoded.windows(2).all(|pair| pair[0] < pair[1]) && encoded == computed
+    }
+}
 
 pub fn mk_term(rho: &str, normalizer_env: HashMap<String, Par>) -> Result<Par, InterpreterError> {
     Compiler::source_to_adt_with_normalizer_env(rho, normalizer_env)
@@ -635,7 +646,7 @@ pub async fn validate_block_pre_state(
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let computed_parents_info = compute_parents_post_state(
+    let computed_parents_info = compute_parents_post_state_with_effects(
         block_store,
         parents.clone(),
         s,
@@ -657,7 +668,7 @@ pub async fn validate_block_pre_state(
     );
 
     match computed_parents_info {
-        Ok((computed_pre_state_hash, rejected_deploys)) => {
+        Ok((computed_pre_state_hash, rejected_deploys, rejected_state_effects)) => {
             let computed_rejections: std::collections::BTreeSet<_> =
                 rejected_deploys.iter().cloned().collect();
             let block_rejections: std::collections::BTreeSet<_> =
@@ -693,6 +704,11 @@ pub async fn validate_block_pre_state(
                 } else {
                     computed_rejections == block_rejections
                 };
+            let state_effects_match = state_effect_encoding_matches_protocol(
+                block.header.version,
+                &block.body.rejected_state_effects,
+                &rejected_state_effects,
+            );
 
             if incoming_pre_state_hash != computed_pre_state_hash {
                 tracing::debug!(target: "f1r3fly.casper.block_validation", block = %hex::encode(&block.block_hash[..8.min(block.block_hash.len())]), computed = %hex::encode(&computed_pre_state_hash[..8.min(computed_pre_state_hash.len())]), incoming = %hex::encode(&incoming_pre_state_hash[..8.min(incoming_pre_state_hash.len())]), "validate.block_checkpoint: PRE-STATE MISMATCH (recomputed merge != block's recorded pre-state) -> reject, NO replay");
@@ -703,7 +719,7 @@ pub async fn validate_block_pre_state(
                 );
 
                 Ok(Either::Right(None))
-            } else if !rejections_match {
+            } else if !rejections_match || !state_effects_match {
                 // Detailed logging for InvalidRejectedDeploy mismatch
                 let extra_in_computed: Vec<_> = computed_rejections
                     .difference(&block_rejections)
@@ -733,7 +749,10 @@ pub async fn validate_block_pre_state(
                     extra_count = extra_in_computed.len(),
                     missing_count = missing_in_computed.len(),
                     duplicate_count,
-                    "rejected deploy mismatch: validator and block creator disagree on rejected deploys"
+                    computed_rejected_state_effects = rejected_state_effects.len(),
+                    block_rejected_state_effects = block.body.rejected_state_effects.len(),
+                    state_effects_match,
+                    "merge-disposition mismatch: validator and block creator disagree on rejected deploys or state effects"
                 );
 
                 Ok(Either::Left(BlockStatus::invalid_rejected_deploy()))
@@ -1047,7 +1066,15 @@ pub async fn compute_deploys_checkpoint_cosigned(
     ),
     CasperError,
 > {
-    compute_deploys_checkpoint_cosigned_internal(
+    let (
+        pre_state,
+        post_state,
+        processed_deploys,
+        rejected_deploys,
+        _,
+        processed_system_deploys,
+        bonds,
+    ) = compute_deploys_checkpoint_cosigned_internal(
         block_store,
         parents,
         deploys,
@@ -1059,7 +1086,15 @@ pub async fn compute_deploys_checkpoint_cosigned(
         rejected_deploy_buffer,
         None,
     )
-    .await
+    .await?;
+    Ok((
+        pre_state,
+        post_state,
+        processed_deploys,
+        rejected_deploys,
+        processed_system_deploys,
+        bonds,
+    ))
 }
 
 pub async fn compute_deploys_checkpoint_cosigned_admitted(
@@ -1079,6 +1114,60 @@ pub async fn compute_deploys_checkpoint_cosigned_admitted(
         StateHash,
         Vec<ProcessedDeploy>,
         Vec<RejectedDeploy>,
+        Vec<ProcessedSystemDeploy>,
+        Vec<Bond>,
+    ),
+    CasperError,
+> {
+    let (
+        pre_state,
+        post_state,
+        processed_deploys,
+        rejected_deploys,
+        _,
+        processed_system_deploys,
+        bonds,
+    ) = compute_deploys_checkpoint_cosigned_internal(
+        block_store,
+        parents,
+        deploys,
+        system_deploys,
+        s,
+        runtime_manager,
+        block_data,
+        invalid_blocks,
+        rejected_deploy_buffer,
+        Some(admission),
+    )
+    .await?;
+    Ok((
+        pre_state,
+        post_state,
+        processed_deploys,
+        rejected_deploys,
+        processed_system_deploys,
+        bonds,
+    ))
+}
+
+pub async fn compute_deploys_checkpoint_cosigned_admitted_with_effects(
+    block_store: &mut KeyValueBlockStore,
+    parents: Vec<BlockMessage>,
+    deploys: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
+    system_deploys: Vec<super::system_deploy_enum::SystemDeployEnum>,
+    s: &CasperSnapshot,
+    runtime_manager: &RuntimeManager,
+    block_data: BlockData,
+    invalid_blocks: HashMap<BlockHash, Validator>,
+    rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
+    admission: crate::rust::util::rholang::runtime_manager::StateBoundAdmission,
+) -> Result<
+    (
+        StateHash,
+        StateHash,
+        Vec<ProcessedDeploy>,
+        Vec<RejectedDeploy>,
+        Vec<StateEffectId>,
         Vec<ProcessedSystemDeploy>,
         Vec<Bond>,
     ),
@@ -1116,6 +1205,7 @@ async fn compute_deploys_checkpoint_cosigned_internal(
         StateHash,
         Vec<ProcessedDeploy>,
         Vec<RejectedDeploy>,
+        Vec<StateEffectId>,
         Vec<ProcessedSystemDeploy>,
         Vec<Bond>,
     ),
@@ -1136,7 +1226,7 @@ async fn compute_deploys_checkpoint_cosigned_internal(
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let computed_parents_info = compute_parents_post_state(
+    let computed_parents_info = compute_parents_post_state_with_effects(
         block_store,
         parents,
         s,
@@ -1146,7 +1236,7 @@ async fn compute_deploys_checkpoint_cosigned_internal(
         rejected_deploy_buffer,
     )
     .await?;
-    let (pre_state_hash, rejected_deploys) = computed_parents_info;
+    let (pre_state_hash, rejected_deploys, rejected_state_effects) = computed_parents_info;
 
     let result = if let Some(admission) = admission {
         if admission.pre_state() != &pre_state_hash
@@ -1177,6 +1267,7 @@ async fn compute_deploys_checkpoint_cosigned_internal(
         post_state_hash,
         processed_deploys,
         rejected_deploys,
+        rejected_state_effects,
         processed_system_deploys,
         bonds,
     ))
@@ -1203,6 +1294,58 @@ pub async fn compute_deploys_checkpoint(
     ),
     CasperError,
 > {
+    let (
+        pre_state,
+        post_state,
+        processed_deploys,
+        rejected_deploys,
+        _,
+        processed_system_deploys,
+        bonds,
+    ) = compute_deploys_checkpoint_with_effects(
+        block_store,
+        parents,
+        deploys,
+        system_deploys,
+        s,
+        runtime_manager,
+        block_data,
+        invalid_blocks,
+        rejected_deploy_buffer,
+    )
+    .await?;
+    Ok((
+        pre_state,
+        post_state,
+        processed_deploys,
+        rejected_deploys,
+        processed_system_deploys,
+        bonds,
+    ))
+}
+
+pub async fn compute_deploys_checkpoint_with_effects(
+    block_store: &mut KeyValueBlockStore,
+    parents: Vec<BlockMessage>,
+    deploys: Vec<Signed<DeployData>>,
+    system_deploys: Vec<super::system_deploy_enum::SystemDeployEnum>,
+    s: &CasperSnapshot,
+    runtime_manager: &RuntimeManager,
+    block_data: BlockData,
+    invalid_blocks: HashMap<BlockHash, Validator>,
+    rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
+) -> Result<
+    (
+        StateHash,
+        StateHash,
+        Vec<ProcessedDeploy>,
+        Vec<RejectedDeploy>,
+        Vec<StateEffectId>,
+        Vec<ProcessedSystemDeploy>,
+        Vec<Bond>,
+    ),
+    CasperError,
+> {
     let checkpoint_started = std::time::Instant::now();
     // Using tracing events for async - Span[F] equivalent from Scala
     tracing::debug!(target: "f1r3fly.casper.compute_deploys_checkpoint", "compute-deploys-checkpoint-started");
@@ -1224,7 +1367,7 @@ pub async fn compute_deploys_checkpoint(
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let computed_parents_info = compute_parents_post_state(
+    let computed_parents_info = compute_parents_post_state_with_effects(
         block_store,
         parents,
         s,
@@ -1235,7 +1378,7 @@ pub async fn compute_deploys_checkpoint(
     )
     .await?;
     let parents_ms = parents_started.elapsed().as_millis();
-    let (pre_state_hash, rejected_deploys) = computed_parents_info;
+    let (pre_state_hash, rejected_deploys, rejected_state_effects) = computed_parents_info;
 
     // Compute state and bonds using one spawned runtime
     let compute_state_started = std::time::Instant::now();
@@ -1272,6 +1415,7 @@ pub async fn compute_deploys_checkpoint(
         post_state_hash,
         processed_deploys,
         rejected_deploys,
+        rejected_state_effects,
         processed_system_deploys,
         bonds,
     ))
@@ -1362,12 +1506,34 @@ pub(crate) fn merge_scope_backstop_exceeded(floor_distance: i64) -> bool {
     floor_distance > MAX_FLOOR_DISTANCE_BLOCKS
 }
 
-/// Compute the merged post-state from multiple parent blocks.
+pub async fn compute_parents_post_state(
+    block_store: &KeyValueBlockStore,
+    parents: Vec<BlockMessage>,
+    s: &CasperSnapshot,
+    runtime_manager: &RuntimeManager,
+    latest_messages: &BTreeMap<Validator, BlockHash>,
+    disable_late_block_filtering_override: Option<bool>,
+    rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
+) -> Result<(StateHash, Vec<RejectedDeploy>), CasperError> {
+    let (state, rejected_deploys, _) = compute_parents_post_state_with_effects(
+        block_store,
+        parents,
+        s,
+        runtime_manager,
+        latest_messages,
+        disable_late_block_filtering_override,
+        rejected_deploy_buffer,
+    )
+    .await?;
+    Ok((state, rejected_deploys))
+}
+
+/// Compute the merged post-state and its exact rejected-effect provenance from multiple parent blocks.
 ///
 /// For exploratory deploy, pass `disable_late_block_filtering_override = Some(true)` to
 /// always disable late block filtering (see full merged state).
 /// For normal block creation, pass `None` to use the shard config value.
-pub async fn compute_parents_post_state(
+pub async fn compute_parents_post_state_with_effects(
     block_store: &KeyValueBlockStore,
     parents: Vec<BlockMessage>,
     s: &CasperSnapshot,
@@ -1378,7 +1544,7 @@ pub async fn compute_parents_post_state(
     latest_messages: &BTreeMap<Validator, BlockHash>,
     disable_late_block_filtering_override: Option<bool>,
     rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
-) -> Result<(StateHash, Vec<RejectedDeploy>), CasperError> {
+) -> Result<(StateHash, Vec<RejectedDeploy>, Vec<StateEffectId>), CasperError> {
     let total_started = std::time::Instant::now();
 
     // No entered span guard here: the function is async (it awaits floor
@@ -1407,7 +1573,7 @@ pub async fn compute_parents_post_state(
                 post_state = %hex::encode(&state[..8.min(state.len())]),
                 "merge.step: exit compute_parents_post_state"
             );
-            Ok((state, Vec::new()))
+            Ok((state, Vec::new(), Vec::new()))
         }
 
         _ => {
@@ -1427,7 +1593,7 @@ pub async fn compute_parents_post_state(
                     .collect(),
                 disable_late_block_filtering,
             };
-            if let Some((cached_state, cached_rejected)) =
+            if let Some((cached_state, cached_rejected, cached_rejected_state_effects)) =
                 runtime_manager.get_cached_parents_post_state(&cache_key)
             {
                 tracing::debug!(
@@ -1451,7 +1617,7 @@ pub async fn compute_parents_post_state(
                     n_rejected = cached_rejected.len(),
                     "merge.step: cache hit, merge skipped"
                 );
-                return Ok((cached_state, cached_rejected));
+                return Ok((cached_state, cached_rejected, cached_rejected_state_effects));
             }
             let cache_lookup_ms = cache_lookup_started.elapsed().as_millis();
 
@@ -1533,7 +1699,7 @@ pub async fn compute_parents_post_state(
                             .unwrap_or(false)
                     });
                 if covers_all
-                    && crate::rust::finality::floor::is_state_ancestor_from_cached_floors(
+                    && crate::rust::finality::floor::is_state_preserved(
                         &s.dag,
                         &floor_hash,
                         &candidate.block_hash,
@@ -1555,7 +1721,7 @@ pub async fn compute_parents_post_state(
                         post_state = %hex::encode(&state[..8.min(state.len())]),
                         "merge.step: exit compute_parents_post_state"
                     );
-                    return Ok((state, Vec::new()));
+                    return Ok((state, Vec::new(), Vec::new()));
                 }
             }
 
@@ -1762,7 +1928,9 @@ pub async fn compute_parents_post_state(
             )?;
             let merge_ms = merge_started.elapsed().as_millis();
 
-            let (state, mut rejected_user_pairs) = merger_result;
+            let state = merger_result.post_state;
+            let mut rejected_user_pairs = merger_result.rejected_deploys;
+            let rejected_state_effects = merger_result.rejected_state_effects;
             let suppressed = suppress_rejected_pairs_with_later_visible_rejection(
                 block_store,
                 &visible_blocks,
@@ -1903,7 +2071,11 @@ pub async fn compute_parents_post_state(
             );
             runtime_manager.put_cached_parents_post_state(
                 cache_key,
-                (computed_state.clone(), rejected.clone()),
+                (
+                    computed_state.clone(),
+                    rejected.clone(),
+                    rejected_state_effects.clone(),
+                ),
             );
             tracing::debug!(
                 target: "f1r3fly.casper.compute_parents_post_state.timing",
@@ -1926,7 +2098,7 @@ pub async fn compute_parents_post_state(
                 n_rejected = rejected.len(),
                 "merge.step: exit compute_parents_post_state"
             );
-            Ok((computed_state, rejected))
+            Ok((computed_state, rejected, rejected_state_effects))
         }
     }
 }
@@ -1944,7 +2116,7 @@ mod backstop_tests {
     use models::rust::block_hash::BlockHash;
     use models::rust::block_implicits;
     use models::rust::casper::protocol::casper_message::{
-        BlockMessage, ProcessedDeploy, RejectedDeploy, RejectedDeployReason,
+        BlockMessage, ProcessedDeploy, RejectedDeploy, RejectedDeployReason, StateEffectId,
     };
     use proptest::prelude::*;
     use prost::bytes::Bytes;
@@ -1955,12 +2127,56 @@ mod backstop_tests {
         block_in_floor_merge_scope, canonical_rejected_sigs, canonical_won_sigs, handle_errors,
         merge_scope_backstop_exceeded, reduce_scope_events,
         rejected_sig_has_visible_non_source_win, retain_pending_rejected_deploys_for_buffer,
+        state_effect_encoding_matches_protocol,
         suppress_rejected_pairs_with_later_visible_rejection, visible_rejected_deploy_sigs,
-        SigEvents, MAX_FLOOR_DISTANCE_BLOCKS,
+        SigEvents, EXACT_REJECTION_PROTOCOL_VERSION, MAX_FLOOR_DISTANCE_BLOCKS,
     };
     use crate::rust::block_status::BlockError;
     use crate::rust::util::construct_deploy;
     use crate::rust::util::rholang::replay_failure::ReplayFailure;
+
+    #[test]
+    fn state_effect_encoding_activates_only_at_protocol_three() {
+        let first = StateEffectId {
+            source_block_hash: Bytes::from_static(b"a"),
+            execution_index: 0,
+        };
+        let second = StateEffectId {
+            source_block_hash: Bytes::from_static(b"b"),
+            execution_index: 0,
+        };
+        let canonical = vec![first.clone(), second.clone()];
+
+        assert!(state_effect_encoding_matches_protocol(
+            EXACT_REJECTION_PROTOCOL_VERSION,
+            &[],
+            &canonical,
+        ));
+        assert!(!state_effect_encoding_matches_protocol(
+            EXACT_REJECTION_PROTOCOL_VERSION,
+            std::slice::from_ref(&first),
+            &canonical,
+        ));
+        let current = crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION;
+        assert!(state_effect_encoding_matches_protocol(
+            current, &canonical, &canonical,
+        ));
+        assert!(!state_effect_encoding_matches_protocol(
+            current,
+            &[second.clone(), first.clone()],
+            &canonical,
+        ));
+        assert!(!state_effect_encoding_matches_protocol(
+            current,
+            &[first.clone(), first],
+            &canonical,
+        ));
+        assert!(!state_effect_encoding_matches_protocol(
+            current,
+            std::slice::from_ref(&second),
+            &canonical,
+        ));
+    }
 
     #[test]
     fn replay_admission_mismatch_is_objective_invalidity() {

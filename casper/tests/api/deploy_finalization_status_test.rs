@@ -1675,6 +1675,145 @@ async fn source_aware_rejection_returns_the_surviving_occurrence() {
 }
 
 #[tokio::test]
+async fn source_aware_rejection_in_secondary_parent_is_authoritative() {
+    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+    use casper::rust::util::construct_deploy;
+    use models::rust::block_implicits;
+    use models::rust::casper::protocol::casper_message::{
+        ProcessedDeploy, RejectedDeploy, RejectedDeployReason,
+    };
+
+    use crate::util::rholang::resources::{
+        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
+    };
+
+    let ctx = TestContext::new().await;
+    let genesis = ctx.genesis.genesis_block.clone();
+    let mut kvm = mk_test_rnode_store_manager_from_genesis(&ctx.genesis);
+    let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
+        .await
+        .expect("block store");
+    let dag_storage = block_dag_storage_from_dyn(&mut *kvm)
+        .await
+        .expect("dag storage");
+    block_store
+        .put_block_message(&genesis)
+        .expect("store genesis");
+    dag_storage
+        .insert(&genesis, InsertMode::Approved)
+        .expect("insert genesis");
+
+    let deploy =
+        construct_deploy::source_deploy_now_full("Nil".to_string(), None, None, None, None, None)
+            .expect("deploy");
+    let sig = deploy.sig.clone();
+    let source_a = block_implicits::get_random_block(
+        Some(1),
+        Some(1),
+        None,
+        None,
+        None,
+        None,
+        Some(0),
+        Some(vec![genesis.block_hash.clone()]),
+        Some(Vec::new()),
+        Some(vec![ProcessedDeploy::empty(deploy.clone())]),
+        Some(Vec::new()),
+        Some(genesis.body.state.bonds.clone()),
+        Some(genesis.shard_id.clone()),
+        None,
+    );
+    let source_b = block_implicits::get_random_block(
+        Some(1),
+        Some(2),
+        None,
+        None,
+        None,
+        None,
+        Some(0),
+        Some(vec![genesis.block_hash.clone()]),
+        Some(Vec::new()),
+        Some(vec![ProcessedDeploy::empty(deploy)]),
+        Some(Vec::new()),
+        Some(genesis.body.state.bonds.clone()),
+        Some(genesis.shard_id.clone()),
+        None,
+    );
+    let main_parent = block_implicits::get_random_block(
+        Some(2),
+        Some(3),
+        None,
+        None,
+        None,
+        None,
+        Some(0),
+        Some(vec![source_a.block_hash.clone()]),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(genesis.body.state.bonds.clone()),
+        Some(genesis.shard_id.clone()),
+        None,
+    );
+    let mut secondary_parent = block_implicits::get_random_block(
+        Some(2),
+        Some(4),
+        None,
+        None,
+        None,
+        None,
+        Some(0),
+        Some(vec![source_b.block_hash.clone()]),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(genesis.body.state.bonds.clone()),
+        Some(genesis.shard_id.clone()),
+        None,
+    );
+    secondary_parent.body.rejected_deploys = vec![RejectedDeploy::occurrence(
+        sig.clone(),
+        source_b.block_hash.clone(),
+        RejectedDeployReason::DuplicateOccurrence,
+    )];
+    let lfb = block_implicits::get_random_block(
+        Some(3),
+        Some(5),
+        None,
+        None,
+        None,
+        None,
+        Some(0),
+        Some(vec![
+            main_parent.block_hash.clone(),
+            secondary_parent.block_hash.clone(),
+        ]),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(genesis.body.state.bonds.clone()),
+        Some(genesis.shard_id.clone()),
+        None,
+    );
+
+    for block in [&source_a, &source_b, &main_parent, &secondary_parent, &lfb] {
+        block_store.put_block_message(block).expect("store block");
+        dag_storage
+            .insert(block, InsertMode::Normal)
+            .expect("insert block");
+    }
+    let mut dag = dag_storage.get_representation().expect("dag");
+    dag.last_finalized_block_hash = lfb.block_hash;
+
+    let status = deploy_finalization_status::resolve(&dag, &block_store, 50, &sig)
+        .expect("source-aware resolve");
+
+    assert_eq!(status.state, DeployFinalizationState::Finalized);
+    assert_eq!(status.rejection_count, 1);
+    assert_eq!(status.latest_block_hash, Some(source_a.block_hash));
+}
+
+#[tokio::test]
 async fn multiple_exact_rejections_in_one_block_count_as_one_rejection_event() {
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::util::construct_deploy;

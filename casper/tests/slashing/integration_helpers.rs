@@ -20,6 +20,7 @@ use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy,
+    StateEffectId,
 };
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -34,6 +35,7 @@ type CostAccountedCheckpoint = (
     StateHash,
     Vec<ProcessedDeploy>,
     Vec<RejectedDeploy>,
+    Vec<StateEffectId>,
     Vec<ProcessedSystemDeploy>,
     Vec<Bond>,
 );
@@ -89,7 +91,7 @@ async fn compute_cost_accounted_checkpoint(
         ),
     ))];
 
-    interpreter_util::compute_deploys_checkpoint_cosigned_admitted(
+    interpreter_util::compute_deploys_checkpoint_cosigned_admitted_with_effects(
         &mut producing_node.block_store,
         parents,
         outcome.admitted.clone(),
@@ -265,6 +267,7 @@ pub async fn equivocate_block(
         post_state_hash,
         processed_deploys,
         rejected_deploys,
+        rejected_state_effects,
         processed_system_deploys,
         new_bonds,
     ) = checkpoint;
@@ -287,6 +290,7 @@ pub async fn equivocate_block(
         state,
         deploys: processed_deploys,
         rejected_deploys,
+        rejected_state_effects,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
     };
@@ -394,6 +398,7 @@ pub async fn propose_with_explicit_justifications(
         post_state_hash,
         processed_deploys,
         rejected_deploys,
+        rejected_state_effects,
         processed_system_deploys,
         new_bonds,
     ) = checkpoint;
@@ -412,6 +417,7 @@ pub async fn propose_with_explicit_justifications(
         state,
         deploys: processed_deploys,
         rejected_deploys,
+        rejected_state_effects,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
     };
@@ -557,6 +563,7 @@ pub async fn propose_with_block_mutation(
         post_state_hash,
         processed_deploys,
         rejected_deploys,
+        rejected_state_effects,
         processed_system_deploys,
         new_bonds,
     ) = checkpoint;
@@ -575,6 +582,7 @@ pub async fn propose_with_block_mutation(
         state,
         deploys: processed_deploys,
         rejected_deploys,
+        rejected_state_effects,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
     };
@@ -695,6 +703,7 @@ pub async fn propose_neglecting_block(
         post_state_hash,
         processed_deploys,
         rejected_deploys,
+        rejected_state_effects,
         processed_system_deploys,
         new_bonds,
     ) = checkpoint;
@@ -713,6 +722,7 @@ pub async fn propose_neglecting_block(
         state,
         deploys: processed_deploys,
         rejected_deploys,
+        rejected_state_effects,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
     };

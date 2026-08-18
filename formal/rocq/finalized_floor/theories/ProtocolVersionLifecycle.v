@@ -4,7 +4,7 @@ From Stdlib Require Import Lists.List.
 Import ListNotations.
 
 Definition legacy_protocol : nat := 1.
-Definition current_protocol : nat := 2.
+Definition current_protocol : nat := 3.
 
 Definition supported_protocol (version : nat) : Prop :=
   version = current_protocol.

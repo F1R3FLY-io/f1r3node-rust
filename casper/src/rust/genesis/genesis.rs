@@ -344,6 +344,7 @@ impl Genesis {
             state,
             deploys: sorted_deploys,
             rejected_deploys: Vec::new(),
+            rejected_state_effects: Vec::new(),
             system_deploys: Vec::new(),
             extra_bytes: Bytes::new(),
         };

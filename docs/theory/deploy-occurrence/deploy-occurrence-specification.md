@@ -50,8 +50,10 @@ t = (d, b, r),
 where $`r`$ is a reason: merge conflict, duplicate occurrence, or collateral
 chain drop. A tombstone removes only the exact occurrence $`(d,b)`$.
 
-A **canonical projection** is the deterministic reduction of the occurrences
-visible from a finalized DAG view into active and rejected occurrences.
+A **canonical projection** is the deterministic reduction of every occurrence
+and validated exact tombstone in the LFB's complete causal closure into active
+and rejected occurrences. “Canonical” describes the deterministic result; it
+does not restrict evidence to the LFB's main-parent spine.
 
 ## Required invariants
 
@@ -63,13 +65,18 @@ They MUST NOT be interpreted as proof that every source occurrence was rejected.
 
 ### O2 — exact rejection
 
-For observations $`O`$ and exact tombstones $`T`$, active occurrences are
+For observations $`O`$ and exact tombstones $`T`$ from the complete finalized
+causal closure, active occurrences are
 
 ```math
 A(O,T) = O \setminus \{(d,b) \mid (d,b,r) \in T\}.
 ```
 
 A tombstone for $`(d,b_1)`$ cannot remove $`(d,b_2)`$ when $`b_1 \ne b_2`$.
+An exact tombstone recorded by a secondary-parent ancestor has the same
+authority as one recorded on the main-parent spine: both records are validated
+consensus inputs to the LFB state. Main-spine placement is relevant only to the
+legacy signature-wide compatibility reducer.
 
 ### O3 — deterministic keep-one
 
@@ -113,7 +120,9 @@ local node preference.
 
 ### O6 — one semantic reducer
 
-Finalization status and `/api/deploy` MUST use the same canonical disposition.
+Finalization status and `/api/deploy` MUST use the same all-parent canonical
+disposition as state merge. An exact tombstone MUST NOT be ignored because its
+recording block is outside the LFB's main-parent spine.
 A secondary deploy index may accelerate lookup, but it cannot define consensus.
 The occurrence index stores every valid source block; its compatibility
 representative is deterministic by block height and hash.
@@ -243,7 +252,7 @@ function recovery_decision(snapshot, deploy, validator):
 
 The protobuf additions use new field numbers, so old records decode with an
 empty source hash and an unspecified reason. Validation retains a legacy path
-for blocks that contain only legacy records. New blocks always emit provenance.
+for historical protocol records. Protocol-3 blocks always emit provenance.
 An upgraded database can keep its old singular deploy index; new valid blocks
 populate the occurrence index, and legacy lookup remains the fallback.
 

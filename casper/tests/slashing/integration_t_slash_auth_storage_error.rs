@@ -53,6 +53,7 @@ fn fixture_block() -> BlockMessage {
             },
             deploys: vec![],
             rejected_deploys: vec![],
+            rejected_state_effects: vec![],
             system_deploys: vec![],
             extra_bytes: Bytes::new(),
         },

@@ -65,6 +65,13 @@ run_check search-frontier \
 run_check replay-root \
   "two-validator, two-deploy root materialization and replay agreement through length 8" \
   --config=ReplayRootMaterializationApalache.cfg --length=8 ReplayRootMaterialization.tla || overall=1
+run_check parallel-stack-materialization \
+  "same-configuration declaration barrier, nested causality, conservation, and replay agreement" \
+  --config=ParallelStackMaterialization.cfg --length=8 ParallelStackMaterialization.tla || overall=1
+run_expected_violation parallel-stack-materialization-unsafe \
+  "scheduler-dependent sibling reduction before purse materialization is independently refuted" \
+  CausallyFundedProgramIsAccepted \
+  --config=ParallelStackMaterializationUnsafe.cfg --length=1 ParallelStackMaterialization.tla || overall=1
 run_check oslf-located \
   "finite located spatial/modal checking through both independent spends" \
   --config=OslfLocatedTyping.cfg --length=3 OslfLocatedTyping.tla || overall=1

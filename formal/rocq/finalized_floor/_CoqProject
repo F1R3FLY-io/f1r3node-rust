@@ -25,7 +25,9 @@
 #   OccurrenceDisposition         (exact-source rejection + order independence)
 #   Recovery                     (record-driven recovery: no-double-apply, T-NDA)
 #   EffectCausalClosure           (least exact-effect rejection closure)
-#   StateLineageFinality          (certificate separation + committed-lineage preservation)
+#   StateEffectProvenance         (exact accepted/rejected merge-effect recurrence)
+#   StateLineageFinality          (abstract certificate/admission separation)
+#   CertifiedFloorPromotion       (dual-certified all-parent floor discovery)
 #   MainTheorem -> all           (end-to-end capstone, axiom-free)
 
 -Q theories FinalizedFloor
@@ -36,6 +38,7 @@ theories/Floor.v
 theories/GuardBridge.v
 theories/Merge.v
 theories/OccurrenceDisposition.v
+theories/FinalizedOccurrenceStatus.v
 theories/Recovery.v
 theories/MergeRecoveryCoherence.v
 theories/RejectionReasonConfluence.v
@@ -50,5 +53,8 @@ theories/BootstrapReplayContext.v
 theories/LocalFaultDeferral.v
 theories/FundingAdmissionLifecycle.v
 theories/EffectCausalClosure.v
+theories/StateEffectProvenance.v
 theories/StateLineageFinality.v
+theories/CertifiedFloorPromotion.v
+theories/SnapshotFloorMaterialization.v
 theories/MainTheorem.v

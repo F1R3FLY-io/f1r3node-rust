@@ -1562,6 +1562,7 @@ mod merge_recovery_validation_tests {
     fn approved_block_rejects_noncurrent_protocol_versions() {
         for version in [
             crate::rust::casper::LEGACY_CASPER_PROTOCOL_VERSION,
+            crate::rust::casper::STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION - 1,
             crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION + 1,
         ] {
             let mut block = models::rust::block_implicits::get_random_block_default();
@@ -1602,6 +1603,9 @@ mod merge_recovery_validation_tests {
                 directly_finalized: false,
                 finalized: false,
                 fault_tolerance_value: 0.0,
+                successful_state_effect_indices: Default::default(),
+                rejected_state_effects: Default::default(),
+                protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
             })
             .expect("metadata inserted");
     }
@@ -1639,6 +1643,7 @@ mod merge_recovery_validation_tests {
                 },
                 deploys: Vec::new(),
                 rejected_deploys: Vec::new(),
+                rejected_state_effects: Vec::new(),
                 system_deploys,
                 extra_bytes: Bytes::new(),
             },

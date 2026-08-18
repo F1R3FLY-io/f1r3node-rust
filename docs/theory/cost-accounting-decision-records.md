@@ -1659,7 +1659,7 @@ DR-11, DR-28, DR-31, DR-32; TM-CA-171; O1–O14 in
 `deploy-occurrence-specification.md`; and
 `formal/tlaplus/deploy_recovery/README.md`.
 
-## DR-34 — Protocol 2 has one fresh-genesis version authority
+## DR-34 — The active protocol has one fresh-genesis version authority
 
 **Context.** DR-6 selected fresh-genesis deployment, and D3 removed and reserved
 the legacy deploy-cost wire fields. The implementation nevertheless left a
@@ -1669,14 +1669,16 @@ but peer-interest filtering compared them with the version-1 approved genesis.
 Honest validators discarded one another's blocks before validation and stopped
 converging.
 
-**Decision.** Protocol 2 is the only active protocol supported by this binary.
+**Decision.** Protocol 3 is the only active protocol supported by this binary.
 The configured version flows through genesis candidate construction and
 approver checks. Approved-block validation rejects every noncurrent version
 before startup, then the approved version is adopted into the authoritative
 running shard configuration. Proposal, recovery, and peer reception all read
-that same running value. Protocol 1 remains a historical encoding identifier for
-defensive record validation and formal composition, not a runnable accounting-off
-mode. Migration is a fresh protocol-2 genesis; no block-height trigger, dual
+that same running value. Protocol 1 and protocol 2 remain historical encoding
+identifiers for defensive record validation and formal composition, not runnable
+accounting modes. Exact rejected-deploy dispositions begin at protocol 2; exact
+per-execution state-effect provenance begins at protocol 3. Migration is a fresh
+protocol-3 genesis; no block-height trigger, dual
 charging engine, feature flag, or mixed-version interval exists.
 
 **Rejected alternatives.** Accepting both versions would require retaining two
@@ -1692,7 +1694,7 @@ legacy engine that was intentionally removed.
 approval, fail-closed admission, adoption, proposal, and reception. Its current
 configuration passes end to end; legacy and unknown approved-block configurations
 pass by reaching the rejected state. Five unsafe controls reproduce stale
-ceremony, non-adoption, proposer bypass, the configured-v2/approved-v1 receiver
+ceremony, non-adoption, proposer bypass, the configured-current/approved-legacy receiver
 split, and unsupported startup. `ProtocolVersionLifecycle.v` proves support-set
 exactness, mutation-free rejection, uniform adoption, receiver agreement, and
 current ceremony/recovery composition without added axioms. The capstone is
@@ -1702,7 +1704,7 @@ current ceremony/recovery composition without added axioms. The capstone is
 mutation-free rejection of legacy and unknown versions, approver rejection of a
 mismatched candidate, approved-block validation, and receiver use of the running
 version. An arbitrary-`i64` property test proves that the support predicate is
-true exactly for version 2. The multi-node deploy-summary regression verifies
+true exactly for version 3. The multi-node deploy-summary regression verifies
 that every node admits the same proposal version and converges on one deploy
 block.
 
@@ -2164,3 +2166,316 @@ E2E-026, `cost-accounting-as-monad-correspondence.md`, and
 [Executable Conformance Matrix](cost-accounting-executable-conformance-matrix.md),
 `formal/rocq/cost_accounted_rho/PROOF_ARTIFACTS.md`, and
 `formal/tlaplus/cost_accounted_rho/README.md`.
+
+## DR-42 — Located-stack declarations precede sibling reduction in one parallel configuration
+
+**Context.** A first-class `CostStack` is a located linear resource in the
+current Rholang configuration. The governing rules R1–R3 consume the head of a
+co-present stack when a signed interaction is forced. The native evaluator
+previously launched every normalized `Par` term as an independent Tokio task,
+including both stack declarations and ordinary reductions. Under scheduler
+pressure, a sibling COMM could therefore commit before RSpace recorded the
+stack declaration that was already present in the same source configuration.
+Physical settlement then correctly rejected the recorded order as unfunded.
+This was an evaluator/refinement defect, not permission to reorder settlement
+evidence or treat a stack as partially born.
+
+**Decision.** Evaluation of each normalized `Par` has one semantic declaration
+barrier:
+
+1. Partition its already-canonical term sequence into `CostStack` declarations
+   and ordinary reduction terms.
+2. Materialize every declaration in canonical order, preserving its original
+   term index, metering child, source path, and random split.
+3. If a declaration fails, return the stable aggregate error without launching
+   any sibling reduction.
+4. After all declarations succeed, run the ordinary terms concurrently.
+
+The barrier is local to one `Par`. A stack inside a receive continuation is not
+in the current configuration and cannot be materialized until the parent COMM
+releases that continuation. Thus the rule supplies present sibling authority
+without crediting candidate-created or future authority.
+
+For declaration event $`d`$, sibling reduction $`r`$, and continuation-local
+declaration $`n`$, the required causal order is:
+
+```math
+d \prec r \prec n.
+```
+
+The stack transfer remains atomic: all cells become available at $`d`$, or no
+cell does. Physical allocation continues to consume the recorded causal trace
+without hash sorting, post-hoc event movement, ambient-payer fallback, or
+per-cell birth times.
+
+**Formal verification.** `ParallelStackMaterialization.tla` checks the
+declaration barrier, nested causality, supply conservation, replay equality,
+and eventual completion. Its unsafe configuration permits $`r \prec d`$ and
+must refute `CausallyFundedProgramIsAccepted`; TLC and Apalache both exercise
+that counterexample. `ParallelStackMaterialization.v` proves conservation for
+each phase, rejection of premature parent and nested steps, exact terminal
+state, scheduler-preference independence, and byte-identical replay without
+axioms.
+
+**Implementation verification.** The reducer tests inspect the actual RSpace
+event log. `parallel_cost_stack_is_materialized_before_sibling_reduction`
+asserts $`d \prec r`$ under a multi-threaded runtime;
+`continuation_cost_stack_is_materialized_after_parent_reduction` asserts
+$`r \prec n`$. The Casper same-deploy transfer regression is additionally run
+on one CPU, the schedule that reliably reproduced the original rejection.
+
+**Cross-refs.** DR-31, DR-32, DR-36, DR-38, DR-41, TM-CA-177, E2E-004,
+E2E-021, E2E-048 through E2E-050, `StackTransferConservation.v`, and
+`CausalStackOrder.v`.
+
+## DR-43 — Exact accepted-effect provenance governs state-preserving finality
+
+**Context.** The causal block DAG is not the replay-state graph. A merge can
+name a block as a parent while rejecting one of that block's execution effects.
+The first state-preservation repair represented each block by one functional
+state base chosen from a covering parent or finalized floor. That representation
+was adequate for a stale two-parent counterexample but not for accepted
+multi-parent state: a non-covering parent's accepted effect had no single base
+edge and disappeared across the next merge round. The abstract Rocq relation and
+the first TLA+ model assumed preservation without deriving it from the merge's
+accepted/rejected effect decision, so they could not expose that refinement gap.
+
+**Decision.** State preservation is defined over exact execution-effect
+identities, not a selected parent:
+
+1. A successful execution originates
+   $`(source\_block\_hash, execution\_index)`$; failed executions originate no
+   active effect.
+2. A block serializes the exact ordered, duplicate-free identities rejected by
+   its parent merge. Validation recomputes those bytes before replay acceptance.
+3. Persisted metadata derives `Active(B)` as the union of `Own(B)`, every
+   maximal parent's active effects, and the finalized-floor input, minus the
+   block's direct rejected identities.
+4. `preserves(A,D)` requires DAG ancestry and
+   $`Active(A) \subseteq Active(D)`$.
+5. Causal certification is unchanged. The state-preserving certificate runs
+   the same exact hard-majority, clique, and threshold calculation after
+   restricting support by `preserves`; LFB admission separately requires
+   preservation from the current LFB.
+6. Protocol 2 requires this encoding from fresh genesis. Missing historical
+   provenance fails closed instead of being inferred from node-local state.
+
+The implementation decides preservation by scanning the descendant's
+height-bounded causal past for a complete superset of potentially removed
+identities. It evaluates activity only for those identities. Unrelated
+rejections cannot change the verdict, and completeness makes the scan equivalent
+to direct subset inclusion without storing an ever-growing active set per block.
+AMD uProf identified repeated per-edge ancestry queries in the first scan as an
+accidental quadratic multiplier; one causal-past traversal removes that
+multiplier without changing the candidate set or decision.
+
+**Rejected alternatives.** Parent order, main-parent preference, or a
+deterministic single-base tiebreak still drops accepted effects. Treating every
+causal descendant as state-preserving admits rejected-parent promotion.
+Comparing tuple snapshots confuses authorized consumption with loss of the
+transition that produced the consumed resource. Changing the causal majority
+vote would conflate block agreement with replay-state admissibility.
+
+**Formal verification.** `StateEffectProvenance.v` proves the exact recurrence,
+input preservation, direct-rejection precision, parent permutation, redundant
+covered-parent elimination, finalized-floor restoration, repeated three-way
+preservation, majority support, and complete-candidate-scan equivalence without
+axioms. TLC exhausts the exact three-validator/two-node model; Apalache checks
+the solver-oriented arrival-order refinement through bound 8. Both single-base
+controls reproduce accepted-source loss.
+
+**Implementation verification.** Wire and metadata round trips distinguish
+source identity and successful execution indices. Validation rejects tampered,
+out-of-order, and duplicate rejection lists. Rust covers all six three-parent
+orders, repeated majority rounds, unrelated rejection candidates, arbitrary
+reject/restore sequences, causal-versus-state certificates, covering-parent
+fast paths, and execution-backed stale/rebase transitions.
+
+**Cross-refs.** DR-36, DR-38, DR-42, TM-CA-178, E2E-046, E2E-049,
+`finalized-floor-specification.md` R-EFFECT-ID through R-EFFECT-SCAN and S28,
+and `finalized-floor-verification.md` H11.
+
+## DR-44 — Honest parent selection preserves the committed LFB state
+
+**Context.** DR-43 made floor and LFB promotion state-preserving, but it did not
+constrain proposer fork choice after promotion. The bridge integration trace
+exposed the missing transition. All nodes first reached a block whose post-state
+contained the funded registry effect and accepted it as LFB. Validator latest
+messages then advanced along several speculative descendants; some retained the
+effect and others causally included its source while rejecting the effect. The
+finalizer correctly refused to promote those dropping states, yet the proposer
+fed the same tips back into its estimator. Its next block therefore replayed from
+a state root that did not contain the finalized registry datum. The query had no
+COMM, reported zero cost, remained pending, and the network later accumulated
+`UnknownRootError` and `UnauthorizedSlashDeploy` cascades.
+
+The earlier verification missed this because `StateEffectProvenance.tla` fixed
+every delivered validator tip to a state that preserved the candidate source.
+It modeled exact promotion support but not the asynchronous transition in which
+certificate delivery advances the local LFB while stale or effect-dropping latest
+messages remain selectable. That assumption was stronger than the implementation
+and made the parent-selection obligation vacuous.
+
+**Decision.** For one immutable DAG snapshot, let `L` be the current LFB and
+`J(v)` validator `v`'s valid latest message. Every value in `J` remains an input
+to the estimator and causal evidence for the proposal. Direct parent compaction
+may remove a latest tip only when another direct parent reaches it in the DAG;
+therefore every valid latest tip is either a direct parent or lies in a direct
+parent's causal closure. When `J` is empty, `{L}` is the complete parent set. The
+fallback is never genesis.
+
+Parent choice establishes causality, not the state base. The proposal pre-state
+is reconstructed from the certified floor state plus the deterministic accepted
+effects in the above-floor causal closure. Exact rejections may remove an
+above-floor effect but may not erase an effect already represented by the floor.
+The complete latest-message map still forms justifications, valid latest metadata
+still determines sequence-number accounting, and a receiver replays the block's
+declared parents without recomputing fork choice from its own possibly lagging
+view.
+
+**Rejected alternatives.** Invalidating a speculative descendant would make block
+validity depend on when a receiver learned finality. Filtering effect-dropping or
+stale latest messages would discard legitimate causal evidence and could impair
+liveness without repairing replay. Filtering only the main parent would still
+allow a secondary branch to affect merge state. Falling back to genesis or the
+approved block would recreate state loss. Changing majority, clique, validator
+weight, or `FTT` calculations would conflate causal certification with state
+reconstruction.
+
+**Formal verification.** Rocq proves non-empty causal inputs, retention of every
+valid latest input, exact LFB fallback, and preservation of all non-rejected floor
+effects through the rebased merge. TLC exhausts 1,860,017 generated / 163,216
+distinct asynchronous states to depth 17. It checks direct-parent causal coverage,
+exact causal-input retention, floor rebasing, and finalized-effect preservation.
+The floor-unprotected control violates
+`Inv_ProposalPreservesSnapshotFloor`; Apalache checks the same safe and unsafe
+boundaries through a node-local symmetry projection while TLC retains the complete
+two-node interleaving space.
+
+**Implementation verification.** The Rust snapshot regressions prove that
+reachability-covered tips are compacted without dropping independent siblings,
+that a non-empty selected parent set is retained, and that only an empty valid set
+falls back to the captured LFB. Merge-rebase regressions prove that parent fast
+paths are used only when the selected cover preserves the floor. The focused
+bridge scenario remains the end-to-end gate.
+
+**Cross-refs.** DR-43, TM-CA-178, E2E-046, E2E-049, E2E-051,
+`finalized-floor-specification.md` R-PARENT-STATE/R-PARENT-EVIDENCE and S29,
+and `finalized-floor-verification.md` T-STATE-PARENT.
+
+## DR-45 — Dual-certified universal state advances the per-block replay floor
+
+**Context.** DR-43 and DR-44 made LFB admission and future parent selection
+state-preserving, but per-block floor derivation still discovered advancement
+only on each declared parent's main-parent spine. The global finalizer consumes
+complete causal evidence. A block can therefore receive both exact certificates,
+become the local LFB, and remain a secondary ancestor of every later parent while
+appearing on none of their main spines. Replay floors then remain below already
+committed resource transitions.
+
+**Decision.** Every block derives one additional candidate, the universal
+certified frontier `U(B)`. For candidate `C` and declared parents `P(B)`:
+
+```math
+Universal_B(C) \iff
+  \bigwedge_{P \in P(B)} C \preceq_{DAG} P.
+```
+
+`C` is eligible only when `Universal_B(C)`, the unchanged causal clique
+certificate, the unchanged state-preserving clique certificate, and preservation
+of every inherited parent floor all hold over the block's frozen justification
+snapshot. A deterministic multi-source traversal propagates one parent identity
+through every causal edge in descending `(block_number, block_hash)` order and
+returns the highest eligible candidate. Strict block-number descent makes coverage
+complete before selection. Missing metadata, malformed ancestry, cycles, or late
+coverage fail closed.
+
+The candidate joins inherited and main-spine candidates before the existing
+sound-base selection. The decision does not alter the finalizer's main-parent
+agreement propagation, hard-majority gate, maximum-clique computation, validator
+weights, exact `FTT` arithmetic, or strictness. Main-parent ancestry remains a vote
+scheduling relation; all-parent DAG ancestry is the state-provenance discovery
+relation.
+
+**Rejected alternatives.** Lowering the threshold, treating a causal edge as
+state support, choosing the majority-observed deploy block at query time, or
+requiring the LFB to reappear as main parent would respectively weaken consensus,
+admit rejected state, hide divergent progress, or recreate the liveness defect.
+Node-local LFB injection would make validation depend on arrival order rather than
+the proposed block's bytes.
+
+**Formal verification.** The safe `CertifiedFloorPromotion.tla` model exhausts
+1,051 generated / 225 distinct states to depth 9 and proves asynchronous
+arrival-order convergence and promotion safety. The main-spine-only control fails
+complete-evidence promotion. Apalache independently checks the safe model through
+bound 8 and finds the unsafe trace at step 3. `CertifiedFloorPromotion.v` proves
+universal eligibility, causal discoverability, and selected-floor preservation
+without axioms; `MainTheorem.finalized_floor_certified_promotion_correct` is the
+capstone.
+
+**Implementation verification.** Rust exercises a three-validator exact
+`FTT=0.1` certificate where the candidate is secondary to every parent, all six
+parent permutations, and a control in which state rejection preserves the causal
+certificate but blocks promotion. A generated-DAG property varies independent
+side-branch and post-merge depths plus parent order. The five-node bridge and
+aggregate integration suites remain the release gates.
+
+**Cross-refs.** DR-43, DR-44, TM-CA-179, E2E-056,
+`finalized-floor-specification.md` R-FLOOR/R-UNIVERSAL-FRONTIER and S30, and
+`finalized-floor-verification.md` H12/T-CERTIFIED-FLOOR-PROMOTION.
+
+## DR-46 — Compute certificate support once without changing the clique decision
+
+**Context.** DR-45 requires complete causal discovery. The direct realization
+asked storage-backed DAG ancestry once for every candidate-validator pair. AMD
+uProf attributed approximately 18.13 seconds to raw ancestry queries, 15.38
+seconds to the universal-frontier traversal, and 16 seconds to clique evaluation
+in the 132-block complete-scan regression. Reducing its depth would restore the
+old correctness hole; weakening a threshold or certificate was never admissible.
+
+**Decision.** Transpose the same reachability relation. Seed each validator
+identity at its frozen latest message, process blocks in strict descending
+`(block_number, block_hash)` order, and propagate that identity to every causal
+parent. For every candidate `C`, the resulting set must be exactly:
+
+```math
+Coverage_J(C) = \{v \mid C \preceq_{DAG} J(v)\}.
+```
+
+The implementation constructs the same supporter map and corresponding-weight
+map and invokes the unchanged hard-majority, maximum-clique, exact-threshold
+decision. Missing metadata, non-descending edges, cycles, or support arriving
+after a block was processed fail closed.
+
+A child may reuse its parent's universal-frontier result only when the child has
+one parent, that parent has one predecessor, the inherited floor equals the
+cached parent floor, the two frozen justification snapshots are byte-equal, and
+every latest message is older than the parent. Multi-parent parents always
+rescan: a merge can make a branch-local candidate universal without adding a new
+latest message.
+
+**Rejected alternatives.** A fixed candidate cap, a shallower regression, or a
+test timeout would hide incomplete evidence. Memoizing pairwise storage walks
+would retain their asymptotic duplication. Reusing every byte-equal snapshot is
+unsound across a multi-parent merge. Importing Rholang, RSpace, or MeTTaIL
+optimizations would target a subsystem the regression does not execute.
+
+**Formal verification.** Rocq proves propagated coverage extensionally equal to
+pairwise reachability, proves decision transparency, and proves the linear reuse
+theorem from its explicit premises. `MainTheorem.v` exports both capstones with
+no assumptions. TLC exhausts the `LatestMessageCoverage` worklist and its
+descending scheduler; the unordered control violates no-late-coverage. Apalache
+independently checks the safe model through bound 8 and finds the unsafe trace
+through bound 4.
+
+**Implementation verification.** Generated Rust DAGs compare coverage,
+supporters, corresponding weights, and final clique verdicts with the original
+pairwise oracle for every generated target. Examples reject non-descending edges
+and distinguish the valid linear reuse case from multi-parent, changed-snapshot,
+and non-older-evidence cases. The unchanged 132-block regression passes in 22.92
+seconds, down from 63.21 seconds, without altering its candidate set.
+
+**Cross-refs.** DR-45, TM-CA-180, E2E-057,
+`finalized-floor-specification.md` R-COVERAGE-EQUIVALENCE/
+R-LINEAR-SNAPSHOT-REUSE and S31, and
+`finalized-floor-verification.md` C13/T-COVERAGE-TRANSPARENCY.

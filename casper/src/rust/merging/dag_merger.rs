@@ -1,12 +1,14 @@
 // See casper/src/main/scala/coop/rchain/casper/merging/DagMerger.scala
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use models::rhoapi::ListParWithRandom;
 use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::{RejectedDeploy, RejectedDeployReason};
+use models::rust::casper::protocol::casper_message::{
+    RejectedDeploy, RejectedDeployReason, StateEffectId,
+};
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
@@ -28,6 +30,13 @@ pub struct MergeOccurrenceContext {
     pub base_committed_sigs: HashSet<Bytes>,
     pub scope_tombstones: BTreeMap<(Bytes, BlockHash), RejectedDeployReason>,
     pub require_exact_effects: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MergeResult {
+    pub post_state: Blake2b256Hash,
+    pub rejected_deploys: Vec<RejectedDeploy>,
+    pub rejected_state_effects: Vec<StateEffectId>,
 }
 
 fn insert_rejection_reason(
@@ -776,7 +785,7 @@ pub fn merge(
     scope: Option<HashSet<BlockHash>>,
     disable_late_block_filtering: bool,
     occurrence_context: MergeOccurrenceContext,
-) -> Result<(Blake2b256Hash, Vec<RejectedDeploy>), CasperError> {
+) -> Result<MergeResult, CasperError> {
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
         tracing::debug!(target: "f1r3fly.merge.step", step = "merge.ENTER",
             lfb = %hex::encode(&lfb[..]),
@@ -1768,6 +1777,22 @@ pub fn merge(
     )
     .map_err(|e| CasperError::HistoryError(e))?;
 
+    let rejected_state_effects: Vec<StateEffectId> = resolved
+        .rejected
+        .0
+        .iter()
+        .flat_map(|chain| {
+            chain
+                .effect_indices
+                .iter()
+                .map(|execution_index| StateEffectId {
+                    source_block_hash: chain.source_block_hash.clone(),
+                    execution_index: *execution_index,
+                })
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let rejected = resolved.rejected;
 
     // Extract (rejected deploy ID, source block hash) pairs, split by kind.
@@ -1862,10 +1887,15 @@ pub fn merge(
         tracing::debug!(target: "f1r3fly.merge.step", step = "merge.EXIT",
             new_state = %hex::encode(new_state.clone().bytes()),
             n_rejected_user = rejected_user_deploys.len(),
-            n_rejected_slash = rejected_slashes.len());
+            n_rejected_slash = rejected_slashes.len(),
+            n_rejected_state_effects = rejected_state_effects.len());
     }
 
-    Ok((new_state, rejected_user_deploys))
+    Ok(MergeResult {
+        post_state: new_state,
+        rejected_deploys: rejected_user_deploys,
+        rejected_state_effects,
+    })
 }
 
 #[cfg(test)]

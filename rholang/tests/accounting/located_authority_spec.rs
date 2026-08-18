@@ -13,6 +13,7 @@ use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::test_utils::resources::create_runtimes;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+use rspace_plus_plus::rspace::trace::event::{Event as RSpaceEvent, IOEvent};
 
 async fn runtime() -> RhoRuntimeImpl {
     let mut manager = InMemoryStoreManager::new();
@@ -119,6 +120,75 @@ async fn explicit_region_authority_overrides_the_deploy_default() {
         runtime.cost.authority_events()[0].debit,
         rholang::rust::interpreter::accounting::authority::ResourceMultiset::singleton(explicit, 1)
     );
+}
+
+fn stack_birth_and_first_comm_positions(
+    trace: &[RSpaceEvent],
+    produce_hash: &[u8; 32],
+) -> (usize, usize) {
+    let birth = trace
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                RSpaceEvent::IoEvent(IOEvent::Produce(produce))
+                    if produce.hash.bytes().as_slice() == produce_hash.as_slice()
+            )
+        })
+        .unwrap();
+    let comm = trace
+        .iter()
+        .position(|event| matches!(event, RSpaceEvent::Comm(_)))
+        .unwrap();
+    (birth, comm)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parallel_cost_stack_is_materialized_before_sibling_reduction() {
+    let mut runtime = runtime().await;
+    runtime.cost.set_deploy_signature_funded(
+        b"parallel stack declaration deploy",
+        Sig::Ground(b"parallel stack declaration payer".to_vec()),
+    );
+    let result = runtime
+        .evaluate_with_phlo(
+            r#"t :: t :: () | {% for(_ <- @"x"){ Nil } %}[ t ] | @"x"!(0)"#,
+            Cost::create(1_000_000, "parallel stack declaration"),
+        )
+        .await
+        .unwrap();
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    assert_eq!(result.authority_stack_births.len(), 1);
+    let trace = runtime.take_event_log().await;
+    let (birth, comm) = stack_birth_and_first_comm_positions(
+        &trace,
+        &result.authority_stack_births[0].produce_hash,
+    );
+    assert!(birth < comm, "birth={birth}, comm={comm}, trace={trace:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn continuation_cost_stack_is_materialized_after_parent_reduction() {
+    let mut runtime = runtime().await;
+    runtime.cost.set_deploy_signature_funded(
+        b"continuation stack declaration deploy",
+        Sig::Ground(b"continuation stack declaration payer".to_vec()),
+    );
+    let result = runtime
+        .evaluate_with_phlo(
+            r#"for(_ <- @"x"){ t :: () } | @"x"!(0)"#,
+            Cost::create(1_000_000, "continuation stack declaration"),
+        )
+        .await
+        .unwrap();
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    assert_eq!(result.authority_stack_births.len(), 1);
+    let trace = runtime.take_event_log().await;
+    let (birth, comm) = stack_birth_and_first_comm_positions(
+        &trace,
+        &result.authority_stack_births[0].produce_hash,
+    );
+    assert!(comm < birth, "comm={comm}, birth={birth}, trace={trace:?}");
 }
 
 #[tokio::test]

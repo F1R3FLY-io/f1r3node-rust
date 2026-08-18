@@ -1168,6 +1168,9 @@ mod tests {
                 directly_finalized: finalized,
                 finalized,
                 fault_tolerance_value: 1.0,
+                successful_state_effect_indices: Default::default(),
+                rejected_state_effects: Default::default(),
+                protocol_version: casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
             };
 
             snapshot.dag.dag_set.insert(hash.clone());

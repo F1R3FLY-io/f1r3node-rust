@@ -202,6 +202,26 @@ impl DebruijnInterpreter {
                 i16::MAX
             )))
         } else {
+            let term_count = terms.len();
+            let (stack_terms, reduction_terms): (Vec<_>, Vec<_>) = terms
+                .iter()
+                .enumerate()
+                .partition(|(_, term)| matches!(term, GeneratedMessage::CostStack(_)));
+
+            let mut declaration_errors = Vec::new();
+            for (index, term) in stack_terms {
+                let reducer = self.with_metering_child(index);
+                let rand_split = evaluation_random(&rand, index, term_count)
+                    .expect("term count and index were validated");
+                if let Err(error) = reducer
+                    .generated_message_eval(term, env, rand_split, &authority)
+                    .await
+                {
+                    declaration_errors.push(error);
+                }
+            }
+            self.aggregate_evaluator_errors(declaration_errors)?;
+
             // Collect errors from all parallel execution paths (pars)
             // parTraverseSafe
             let futures: Vec<
@@ -212,15 +232,14 @@ impl DebruijnInterpreter {
                             + 'static,
                     >,
                 >,
-            > = terms
-                .iter()
-                .enumerate()
+            > = reduction_terms
+                .into_iter()
                 .map(|(index, term)| {
                     let self_clone = self.with_metering_child(index);
                     let term_clone = term.clone();
                     let env_clone = env.clone();
                     let authority_clone = authority.clone();
-                    let rand_split = evaluation_random(&rand, index, terms.len())
+                    let rand_split = evaluation_random(&rand, index, term_count)
                         .expect("term count and index were validated");
                     Box::pin(async move {
                         self_clone
@@ -244,7 +263,7 @@ impl DebruijnInterpreter {
 
             metrics::counter!("reducer.eval_par.calls", "source" => "rholang").increment(1);
             metrics::counter!("reducer.eval_par.term_count", "source" => "rholang")
-                .increment(futures.len() as u64);
+                .increment(term_count as u64);
 
             let join_start = std::time::Instant::now();
             let mut unordered = FuturesUnordered::new();

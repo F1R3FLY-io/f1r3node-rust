@@ -2492,6 +2492,7 @@ async fn physical_rejection_rolls_back_before_later_state_bound_execution() {
                     },
                     deploys: processed,
                     rejected_deploys: Vec::new(),
+                    rejected_state_effects: Vec::new(),
                     system_deploys: processed_system,
                     extra_bytes: Vec::<u8>::new().into(),
                 },
@@ -5291,6 +5292,11 @@ in {{
             !pdn.is_failed,
             "{}: deploy failed: {:?}",
             name, pdn.system_deploy_error
+        );
+        assert!(
+            pdn.cost.cost > 0,
+            "{}: successful contract interaction recorded zero consensus cost",
+            name
         );
         let deploy_data = rm
             .get_data(

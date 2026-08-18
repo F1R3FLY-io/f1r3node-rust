@@ -533,11 +533,45 @@ impl RejectedDeploy {
     }
 }
 
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub struct StateEffectId {
+    #[serde(with = "shared::rust::serde_bytes")]
+    pub source_block_hash: ByteString,
+    pub execution_index: u32,
+}
+
+impl StateEffectId {
+    pub fn from_proto(proto: StateEffectIdProto) -> Self {
+        Self {
+            source_block_hash: proto.source_block_hash,
+            execution_index: proto.execution_index,
+        }
+    }
+
+    pub fn to_proto(&self) -> StateEffectIdProto {
+        StateEffectIdProto {
+            source_block_hash: self.source_block_hash.clone(),
+            execution_index: self.execution_index,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Body {
     pub state: F1r3flyState,
     pub deploys: Vec<ProcessedDeploy>,
     pub rejected_deploys: Vec<RejectedDeploy>,
+    pub rejected_state_effects: Vec<StateEffectId>,
     pub system_deploys: Vec<ProcessedSystemDeploy>,
     pub extra_bytes: ByteString,
 }
@@ -559,6 +593,11 @@ impl Body {
                 .rejected_deploys
                 .into_iter()
                 .map(|r| RejectedDeploy::from_proto(r))
+                .collect(),
+            rejected_state_effects: proto
+                .rejected_state_effects
+                .into_iter()
+                .map(StateEffectId::from_proto)
                 .collect(),
             system_deploys: proto
                 .system_deploys
@@ -583,6 +622,11 @@ impl Body {
                 .clone()
                 .into_iter()
                 .map(|r| r.to_proto())
+                .collect(),
+            rejected_state_effects: self
+                .rejected_state_effects
+                .iter()
+                .map(StateEffectId::to_proto)
                 .collect(),
             system_deploys: self
                 .system_deploys
@@ -2181,6 +2225,37 @@ mod tests {
             RejectedDeploy::from_proto(rejected.clone().to_proto()),
             rejected
         );
+    }
+
+    #[test]
+    fn rejected_state_effects_round_trip_through_body_proto_without_reordering() {
+        let effects = vec![
+            StateEffectId {
+                source_block_hash: Bytes::from_static(b"source-a"),
+                execution_index: 2,
+            },
+            StateEffectId {
+                source_block_hash: Bytes::from_static(b"source-b"),
+                execution_index: 1,
+            },
+        ];
+        let body = Body {
+            state: F1r3flyState {
+                pre_state_hash: Bytes::from_static(b"pre"),
+                post_state_hash: Bytes::from_static(b"post"),
+                bonds: Vec::new(),
+                block_number: 7,
+            },
+            deploys: Vec::new(),
+            rejected_deploys: Vec::new(),
+            rejected_state_effects: effects.clone(),
+            system_deploys: Vec::new(),
+            extra_bytes: Bytes::new(),
+        };
+
+        let decoded = Body::from_proto(body.to_proto()).unwrap();
+        assert_eq!(decoded, body);
+        assert_eq!(decoded.rejected_state_effects, effects);
     }
 
     #[test]

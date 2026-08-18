@@ -8,7 +8,8 @@ CONSTANTS
 
 LegacyProtocol == 1
 ExactProtocol == 2
-ActiveProtocol == ExactProtocol
+StateEffectProtocol == 3
+ActiveProtocol == StateEffectProtocol
 FloorProtocol == LegacyProtocol
 
 BaseSource == "base-source"
@@ -22,7 +23,7 @@ Sources == {BaseSource} \union Blocks
 Signatures == {"A", "B", "C", "D"}
 
 BlockProtocol(block) ==
-    IF block = LegacyBlock THEN LegacyProtocol ELSE ExactProtocol
+    IF block = LegacyBlock THEN LegacyProtocol ELSE ActiveProtocol
 
 HasProvenance(block) == block \in {DuplicateBlock, FreshBlock}
 HasSpecifiedReason(block) == block \in {DuplicateBlock, FreshBlock}

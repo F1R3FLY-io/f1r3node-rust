@@ -11,7 +11,7 @@ use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::rust::errors::CasperError;
 use crate::rust::finality::floor::{
-    is_state_ancestor_from_cached_floors, materialize_state_lineage, state_witnessed_exact,
+    is_state_preserved, materialize_finalized_floor, state_witnessed_exact,
 };
 use crate::rust::safety::clique_oracle::{ft_decides_exact, CliqueOracle, FtThreshold};
 
@@ -171,10 +171,10 @@ impl Finalizer {
             .collect::<std::collections::BTreeMap<_, _>>();
         for latest in latest_messages_snapshot.values() {
             let materialize_started = std::time::Instant::now();
-            materialize_state_lineage(dag, latest, ftt).await?;
+            materialize_finalized_floor(dag, latest, ftt).await?;
             if dag.get_cached_floor(latest)?.is_none() {
                 return Err(CasperError::Other(format!(
-                    "state lineage was not materialized for latest message {}",
+                    "finalized-floor provenance was not materialized for latest message {}",
                     hex::encode(latest)
                 )));
             }
@@ -182,7 +182,7 @@ impl Finalizer {
                 target: "f1r3fly.finalizer.timing",
                 latest = %hex::encode(latest),
                 elapsed_ms = materialize_started.elapsed().as_millis(),
-                "Finalizer materialized latest-message state lineage"
+                "Finalizer materialized latest-message finalized-floor provenance"
             );
         }
 
@@ -411,13 +411,13 @@ impl Finalizer {
             .await?;
 
             if finalized {
-                materialize_state_lineage(dag, &message.block_hash, ftt).await?;
-                if !is_state_ancestor_from_cached_floors(dag, curr_lfb_hash, &message.block_hash)? {
+                materialize_finalized_floor(dag, &message.block_hash, ftt).await?;
+                if !is_state_preserved(dag, curr_lfb_hash, &message.block_hash)? {
                     tracing::debug!(
                         target: "f1r3fly.finalizer",
                         candidate = %hex::encode(&message.block_hash[..]),
                         current_lfb = %hex::encode(&curr_lfb_hash[..]),
-                        "Finalizer candidate does not preserve the current LFB state lineage"
+                        "Finalizer candidate does not preserve the current LFB state effects"
                     );
                     continue;
                 }
