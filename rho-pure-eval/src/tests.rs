@@ -1337,46 +1337,16 @@ fn the_gate_does_not_walk_process_level_fields() {
 fn the_gate_is_stack_safe_on_a_deeply_nested_guard() {
     // The walk is an explicit worklist, never the native stack, so a guard
     // nested far past any recursive walker's ceiling is classified without
-    // overflowing.
-    //
-    // ⚠ MEASURED CEILING, and it is NOT this walk's. At 32 000 the test
-    // aborts in `<Par as Drop>::drop` — prost's derived `Drop` is recursive,
-    // a pre-existing Θ(depth) SCC that has nothing to do with the gate. The
-    // depth below is the largest that can be BUILT AND DROPPED in a debug
-    // test thread; [`the_gate_walks_deeper_than_the_par_can_be_dropped`]
-    // takes the walk past that ceiling by never dropping the guard, which
-    // is what isolates the two.
-    const DEPTH: usize = 16_000;
+    // overflowing. Generated `Par::drop` is now itself an explicit PDA, so the
+    // ordinary scoped value is reclaimed at the same 128,000-level rung; no
+    // fixture leak or enlarged native stack masks either half of the claim.
+    const DEPTH: usize = 128_000;
     let mut guard = method("nth", evar(0));
     for _ in 0..DEPTH {
         guard = par_of(ExprInstance::ENotBody(ENot { p: Some(guard) }));
     }
     assert_eq!(
         undecidable_nodes(&guard, SpatialSupport::Available)
-            .iter()
-            .map(|n| n.kind)
-            .collect::<Vec<_>>(),
-        vec!["EMethodBody"]
-    );
-}
-
-#[test]
-fn the_gate_walks_deeper_than_the_par_can_be_dropped() {
-    // ★ The isolation. `Box::leak` removes `<Par as Drop>::drop` — the ONLY
-    // recursive step in the previous test — and the same walk then completes
-    // at 4× the depth that aborted with the drop in place. So the abort was
-    // the destructor's and the walk's own space is not depth-bounded.
-    //
-    // Deliberately leaks: reclaiming the memory is exactly the recursive
-    // teardown being excluded, and the process is about to exit.
-    const DEPTH: usize = 128_000;
-    let mut guard = method("nth", evar(0));
-    for _ in 0..DEPTH {
-        guard = par_of(ExprInstance::ENotBody(ENot { p: Some(guard) }));
-    }
-    let guard: &'static Par = Box::leak(Box::new(guard));
-    assert_eq!(
-        undecidable_nodes(guard, SpatialSupport::Available)
             .iter()
             .map(|n| n.kind)
             .collect::<Vec<_>>(),

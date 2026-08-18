@@ -47,7 +47,7 @@
 //!
 //! | position | evaluated by `eval_drive`? | walked here? |
 //! | --- | --- | --- |
-//! | `par.exprs[i]` | yes (`EvKont::ParK`) | yes |
+//! | each endpoint in the `Par` Expr family | yes (`EvKont::ParK`) | yes |
 //! | `par.{sends,receives,news,matches,bundles,unforgeables,connectives,conditionals}` | no — carried through inert | no |
 //! | `ENot.p`, `ENeg.p`, and every binary operator's `p1`/`p2` | yes | yes |
 //! | `EMatches.target` | yes | yes |
@@ -63,7 +63,7 @@
 //! static walk can classify it. It is not a hole in practice: a guard's
 //! environment is built from data that the reducer already evaluated before
 //! storing (`Reduce::eval_send` calls `eval_expr` on every datum), so a datum
-//! carrying an unevaluated `EMethodBody` in its top-level `exprs` cannot be
+//! carrying an unevaluated `EMethodBody` in its top-level Expr family cannot be
 //! produced by a reduction. Callers that want the residue closed anyway have
 //! the run-time disposition for it — the gate is the first line, not the only
 //! one.
@@ -73,6 +73,7 @@ use models::rhoapi::{
     EAnd, EEq, EGt, EGte, ELt, ELte, EMatches, EMinus, EMult, ENeg, ENeq, ENot, EOr, EPlus, Expr,
     Par,
 };
+use models::rust::par_bag::ParComponentItem;
 
 /// Whether the caller can supply a [`SpatialMatch`][crate::SpatialMatch]
 /// oracle, which is what decides `EMatchesBody`.
@@ -208,45 +209,151 @@ fn detail_of(instance: &ExprInstance) -> Option<String> {
     }
 }
 
-/// Every node of `guard` that [`crate::eval_with`] would refuse to decide, in
-/// the order the evaluator would have reached them.
+/// Every structurally distinct node of `guard` that [`crate::eval_with`] would
+/// refuse to decide, in the canonical order the evaluator reaches them.
 ///
 /// Empty ⟺ the guard is decidable: whatever verdict the evaluator reaches, it
 /// reached it by evaluating, not by giving up. See the [module docs](self) for
 /// the two properties this function is required to satisfy and for the exact
 /// set of positions it walks.
 ///
+/// PathMap multiplicity does not repeat classification work: evaluating one
+/// occurrence of an identical pure expression establishes whether all of its
+/// occurrences are decidable. Distinct obstruction positions *inside* that
+/// expression remain distinct report entries. This is the quotient needed by
+/// the production caller, which decides only whether the returned vector is
+/// empty and renders its entries as diagnostics. Until the extern-PathMap
+/// cutover removes Prost's transitional repeated-field adapter, legacy duplicate
+/// entries still arrive separately and can repeat an otherwise identical
+/// diagnostic; that does not change the empty/non-empty decision.
+///
 /// ## Complexity
 ///
-/// Θ(n) time in the number of walked nodes and Θ(d) auxiliary space in the
-/// walk's maximum frontier — an explicit worklist, never the native stack, so
-/// a deeply nested guard cannot overflow it. The frontier is preallocated at
-/// the guard's own top-level `exprs` count, which is its exact size for the
-/// overwhelmingly common flat guard.
+/// Θ(n) time in the number of distinct walked nodes and Θ(f) auxiliary space
+/// in the walk's maximum frontier — explicit worklists, never the native stack,
+/// so a deeply nested guard cannot overflow it. The frontier is preallocated at
+/// the guard's top-level distinct Expr endpoint count, which is exact for the
+/// overwhelmingly common flat guard. Owned PathMap decodes occupy reusable
+/// contiguous slots only while they remain on that frontier; there is no
+/// per-endpoint box and no depth-sized retained arena.
 pub fn undecidable_nodes(guard: &Par, spatial: SpatialSupport) -> Vec<UndecidableNode> {
-    let mut found: Vec<UndecidableNode> = Vec::new();
-    let mut work: Vec<&Par> = Vec::with_capacity(guard.exprs.len().max(1));
-    work.push(guard);
+    let mut work = Vec::with_capacity(guard.family_distinct_len::<Expr>().max(1));
+    let mut owned_pars = OwnedSlots::<Par>::default();
+    let mut owned_exprs = OwnedSlots::<Expr>::default();
+    work.push(GuardWork::BorrowedPar(guard));
+    drive_guard_work(spatial, &mut work, &mut owned_pars, &mut owned_exprs)
+}
 
-    while let Some(par) = work.pop() {
-        // Reverse push: the worklist is LIFO, so pushing in reverse makes the
-        // exprs pop in source order and `found` come out in the order the
-        // evaluator would have reached them.
-        for expr in par.exprs.iter().rev() {
-            push_expr(expr, spatial, &mut work, &mut found);
+fn drive_guard_work<'g>(
+    spatial: SpatialSupport,
+    work: &mut Vec<GuardWork<'g>>,
+    owned_pars: &mut OwnedSlots<Par>,
+    owned_exprs: &mut OwnedSlots<Expr>,
+) -> Vec<UndecidableNode> {
+    let mut found = Vec::new();
+    while let Some(node) = work.pop() {
+        match node {
+            GuardWork::BorrowedPar(par) => {
+                let mut family = Vec::with_capacity(par.family_distinct_len::<Expr>());
+                par.try_visit_components::<Expr, std::convert::Infallible>(
+                    |expr, _multiplicity| {
+                        family.push(match expr {
+                            ParComponentItem::Borrowed(expr) => GuardWork::BorrowedExpr(expr),
+                            ParComponentItem::Owned(expr) => {
+                                GuardWork::OwnedExpr(owned_exprs.insert(expr))
+                            }
+                        });
+                        Ok(())
+                    },
+                )
+                .expect("Par invariant: expression endpoints are canonical");
+                // The worklist is LIFO. Reverse the canonical family stream so
+                // its first endpoint is classified first.
+                work.extend(family.into_iter().rev());
+            }
+            GuardWork::OwnedPar(index) => {
+                let par = owned_pars.take(index);
+                let mut family = Vec::with_capacity(par.family_distinct_len::<Expr>());
+                par.try_into_components::<Expr, std::convert::Infallible>(|expr, _multiplicity| {
+                    family.push(GuardWork::OwnedExpr(owned_exprs.insert(expr)));
+                    Ok(())
+                })
+                .expect("Par invariant: expression endpoints are canonical");
+                work.extend(family.into_iter().rev());
+            }
+            GuardWork::BorrowedExpr(expr) => {
+                push_borrowed_expr(expr, spatial, work, &mut found);
+            }
+            GuardWork::OwnedExpr(index) => {
+                push_owned_expr(
+                    owned_exprs.take(index),
+                    spatial,
+                    owned_pars,
+                    work,
+                    &mut found,
+                );
+            }
         }
     }
 
     found
 }
 
+#[derive(Clone, Copy)]
+enum GuardWork<'g> {
+    BorrowedPar(&'g Par),
+    OwnedPar(usize),
+    BorrowedExpr(&'g Expr),
+    OwnedExpr(usize),
+}
+
+/// Reusable storage behind the compact owned-work tokens above.
+///
+/// A slot is returned to the free list as soon as its token is popped, so the
+/// allocation follows maximum frontier width rather than traversal depth.
+struct OwnedSlots<T> {
+    values: Vec<Option<T>>,
+    free: Vec<usize>,
+}
+
+impl<T> Default for OwnedSlots<T> {
+    fn default() -> Self {
+        Self {
+            values: Vec::new(),
+            free: Vec::new(),
+        }
+    }
+}
+
+impl<T> OwnedSlots<T> {
+    fn insert(&mut self, value: T) -> usize {
+        if let Some(index) = self.free.pop() {
+            debug_assert!(self.values[index].is_none());
+            self.values[index] = Some(value);
+            index
+        } else {
+            let index = self.values.len();
+            self.values.push(Some(value));
+            index
+        }
+    }
+
+    fn take(&mut self, index: usize) -> T {
+        let value = self.values[index]
+            .take()
+            .expect("decidability work token names a live owned value");
+        self.free.push(index);
+        value
+    }
+}
+
 /// Classify one `Expr` and push the sub-Pars the evaluator would descend into.
 ///
 /// Operands are pushed in reverse for the same LIFO reason as the caller.
-fn push_expr<'g>(
+fn push_borrowed_expr<'g>(
     expr: &'g Expr,
     spatial: SpatialSupport,
-    work: &mut Vec<&'g Par>,
+    work: &mut Vec<GuardWork<'g>>,
     found: &mut Vec<UndecidableNode>,
 ) {
     // A `None` instance is `EvalError::MissingExprInstance` — a malformed Par,
@@ -269,35 +376,53 @@ fn push_expr<'g>(
 
     match instance {
         ExprInstance::ENotBody(ENot { p }) | ExprInstance::ENegBody(ENeg { p }) => {
-            push_operand(p.as_ref(), work);
+            push_borrowed_operand(p.as_ref(), work);
         }
 
         ExprInstance::EAndBody(EAnd { p1, p2 }) | ExprInstance::EOrBody(EOr { p1, p2 }) => {
-            push_operands(p1.as_ref(), p2.as_ref(), work)
+            push_borrowed_operands(p1.as_ref(), p2.as_ref(), work)
         }
-        ExprInstance::EEqBody(EEq { p1, p2 }) => push_operands(p1.as_ref(), p2.as_ref(), work),
-        ExprInstance::ENeqBody(ENeq { p1, p2 }) => push_operands(p1.as_ref(), p2.as_ref(), work),
-        ExprInstance::ELtBody(ELt { p1, p2 }) => push_operands(p1.as_ref(), p2.as_ref(), work),
-        ExprInstance::ELteBody(ELte { p1, p2 }) => push_operands(p1.as_ref(), p2.as_ref(), work),
-        ExprInstance::EGtBody(EGt { p1, p2 }) => push_operands(p1.as_ref(), p2.as_ref(), work),
-        ExprInstance::EGteBody(EGte { p1, p2 }) => push_operands(p1.as_ref(), p2.as_ref(), work),
-        ExprInstance::EPlusBody(EPlus { p1, p2 }) => push_operands(p1.as_ref(), p2.as_ref(), work),
+        ExprInstance::EEqBody(EEq { p1, p2 }) => {
+            push_borrowed_operands(p1.as_ref(), p2.as_ref(), work)
+        }
+        ExprInstance::ENeqBody(ENeq { p1, p2 }) => {
+            push_borrowed_operands(p1.as_ref(), p2.as_ref(), work)
+        }
+        ExprInstance::ELtBody(ELt { p1, p2 }) => {
+            push_borrowed_operands(p1.as_ref(), p2.as_ref(), work)
+        }
+        ExprInstance::ELteBody(ELte { p1, p2 }) => {
+            push_borrowed_operands(p1.as_ref(), p2.as_ref(), work)
+        }
+        ExprInstance::EGtBody(EGt { p1, p2 }) => {
+            push_borrowed_operands(p1.as_ref(), p2.as_ref(), work)
+        }
+        ExprInstance::EGteBody(EGte { p1, p2 }) => {
+            push_borrowed_operands(p1.as_ref(), p2.as_ref(), work)
+        }
+        ExprInstance::EPlusBody(EPlus { p1, p2 }) => {
+            push_borrowed_operands(p1.as_ref(), p2.as_ref(), work)
+        }
         ExprInstance::EMinusBody(EMinus { p1, p2 }) => {
-            push_operands(p1.as_ref(), p2.as_ref(), work)
+            push_borrowed_operands(p1.as_ref(), p2.as_ref(), work)
         }
-        ExprInstance::EMultBody(EMult { p1, p2 }) => push_operands(p1.as_ref(), p2.as_ref(), work),
+        ExprInstance::EMultBody(EMult { p1, p2 }) => {
+            push_borrowed_operands(p1.as_ref(), p2.as_ref(), work)
+        }
         ExprInstance::EDivBody(models::rhoapi::EDiv { p1, p2 }) => {
-            push_operands(p1.as_ref(), p2.as_ref(), work)
+            push_borrowed_operands(p1.as_ref(), p2.as_ref(), work)
         }
         ExprInstance::EModBody(models::rhoapi::EMod { p1, p2 }) => {
-            push_operands(p1.as_ref(), p2.as_ref(), work)
+            push_borrowed_operands(p1.as_ref(), p2.as_ref(), work)
         }
 
         // ⚠ TARGET ONLY. The pattern's free variables are binders; the
         // evaluator never evaluates it, so a method call inside a pattern is
         // inert and must not be gated. Reached only under
         // `SpatialSupport::Available` — the `Absent` case was recorded above.
-        ExprInstance::EMatchesBody(EMatches { target, .. }) => push_operand(target.as_ref(), work),
+        ExprInstance::EMatchesBody(EMatches { target, .. }) => {
+            push_borrowed_operand(target.as_ref(), work)
+        }
 
         // Not descended, exactly as `eval_drive` does not descend them:
         // grounds and `EVar` have nothing to descend into, and collection
@@ -328,15 +453,169 @@ fn push_expr<'g>(
     }
 }
 
-fn push_operand<'g>(p: Option<&'g Par>, work: &mut Vec<&'g Par>) {
-    // A missing operand is `MissingExprInstance` at evaluation time — again a
-    // malformed Par rather than an undecidable one.
-    if let Some(par) = p {
-        work.push(par);
+fn push_owned_expr<'g>(
+    expr: Expr,
+    spatial: SpatialSupport,
+    owned_pars: &mut OwnedSlots<Par>,
+    work: &mut Vec<GuardWork<'g>>,
+    found: &mut Vec<UndecidableNode>,
+) {
+    let Some(instance) = expr.expr_instance else {
+        return;
+    };
+
+    if let Some(kind) = unsupported_kind(&instance, spatial) {
+        found.push(UndecidableNode {
+            kind,
+            detail: detail_of(&instance),
+        });
+        return;
+    }
+
+    match instance {
+        ExprInstance::ENotBody(ENot { p }) | ExprInstance::ENegBody(ENeg { p }) => {
+            push_owned_operand(p, owned_pars, work);
+        }
+
+        ExprInstance::EAndBody(EAnd { p1, p2 }) | ExprInstance::EOrBody(EOr { p1, p2 }) => {
+            push_owned_operands(p1, p2, owned_pars, work)
+        }
+        ExprInstance::EEqBody(EEq { p1, p2 }) => push_owned_operands(p1, p2, owned_pars, work),
+        ExprInstance::ENeqBody(ENeq { p1, p2 }) => push_owned_operands(p1, p2, owned_pars, work),
+        ExprInstance::ELtBody(ELt { p1, p2 }) => push_owned_operands(p1, p2, owned_pars, work),
+        ExprInstance::ELteBody(ELte { p1, p2 }) => push_owned_operands(p1, p2, owned_pars, work),
+        ExprInstance::EGtBody(EGt { p1, p2 }) => push_owned_operands(p1, p2, owned_pars, work),
+        ExprInstance::EGteBody(EGte { p1, p2 }) => push_owned_operands(p1, p2, owned_pars, work),
+        ExprInstance::EPlusBody(EPlus { p1, p2 }) => push_owned_operands(p1, p2, owned_pars, work),
+        ExprInstance::EMinusBody(EMinus { p1, p2 }) => {
+            push_owned_operands(p1, p2, owned_pars, work)
+        }
+        ExprInstance::EMultBody(EMult { p1, p2 }) => push_owned_operands(p1, p2, owned_pars, work),
+        ExprInstance::EDivBody(models::rhoapi::EDiv { p1, p2 }) => {
+            push_owned_operands(p1, p2, owned_pars, work)
+        }
+        ExprInstance::EModBody(models::rhoapi::EMod { p1, p2 }) => {
+            push_owned_operands(p1, p2, owned_pars, work)
+        }
+
+        ExprInstance::EMatchesBody(EMatches { target, .. }) => {
+            push_owned_operand(target, owned_pars, work)
+        }
+
+        ExprInstance::GBool(_)
+        | ExprInstance::GInt(_)
+        | ExprInstance::GString(_)
+        | ExprInstance::GUri(_)
+        | ExprInstance::GByteArray(_)
+        | ExprInstance::GDouble(_)
+        | ExprInstance::GBigInt(_)
+        | ExprInstance::GBigRat(_)
+        | ExprInstance::GFixedPoint(_)
+        | ExprInstance::EListBody(_)
+        | ExprInstance::ETupleBody(_)
+        | ExprInstance::ESetBody(_)
+        | ExprInstance::EMapBody(_)
+        | ExprInstance::EVarBody(_) => {}
+
+        ExprInstance::EMethodBody(_)
+        | ExprInstance::EPercentPercentBody(_)
+        | ExprInstance::EPlusPlusBody(_)
+        | ExprInstance::EMinusMinusBody(_)
+        | ExprInstance::EPathmapBody(_)
+        | ExprInstance::EZipperBody(_) => {}
     }
 }
 
-fn push_operands<'g>(p1: Option<&'g Par>, p2: Option<&'g Par>, work: &mut Vec<&'g Par>) {
-    push_operand(p2, work);
-    push_operand(p1, work);
+fn push_borrowed_operand<'g>(p: Option<&'g Par>, work: &mut Vec<GuardWork<'g>>) {
+    // A missing operand is `MissingExprInstance` at evaluation time — again a
+    // malformed Par rather than an undecidable one.
+    if let Some(par) = p {
+        work.push(GuardWork::BorrowedPar(par));
+    }
+}
+
+fn push_borrowed_operands<'g>(
+    p1: Option<&'g Par>,
+    p2: Option<&'g Par>,
+    work: &mut Vec<GuardWork<'g>>,
+) {
+    push_borrowed_operand(p2, work);
+    push_borrowed_operand(p1, work);
+}
+
+fn push_owned_operand<'g>(
+    p: Option<Par>,
+    owned_pars: &mut OwnedSlots<Par>,
+    work: &mut Vec<GuardWork<'g>>,
+) {
+    if let Some(par) = p {
+        work.push(GuardWork::OwnedPar(owned_pars.insert(par)));
+    }
+}
+
+fn push_owned_operands<'g>(
+    p1: Option<Par>,
+    p2: Option<Par>,
+    owned_pars: &mut OwnedSlots<Par>,
+    work: &mut Vec<GuardWork<'g>>,
+) {
+    push_owned_operand(p2, owned_pars, work);
+    push_owned_operand(p1, owned_pars, work);
+}
+
+#[cfg(test)]
+mod owned_endpoint_tests {
+    use models::rhoapi::{EEq, EMethod};
+
+    use super::*;
+
+    fn method(name: &str) -> Par {
+        models::par_from_default! {
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::EMethodBody(EMethod {
+                    method_name: name.to_string(),
+                    target: Some(Par::default()),
+                    arguments: Vec::new(),
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                })),
+            }],
+            ..Par::default()
+        }
+    }
+
+    #[test]
+    fn owned_decoded_endpoint_preserves_order_and_reclaims_every_slot() {
+        let root = Expr {
+            expr_instance: Some(ExprInstance::EEqBody(EEq {
+                p1: Some(method("left")),
+                p2: Some(method("right")),
+            })),
+        };
+        let mut owned_pars = OwnedSlots::default();
+        let mut owned_exprs = OwnedSlots::default();
+        let root_index = owned_exprs.insert(root);
+        let mut work = vec![GuardWork::OwnedExpr(root_index)];
+
+        let found = drive_guard_work(
+            SpatialSupport::Available,
+            &mut work,
+            &mut owned_pars,
+            &mut owned_exprs,
+        );
+
+        assert_eq!(found, vec![
+            UndecidableNode {
+                kind: "EMethodBody",
+                detail: Some("`left`".to_string()),
+            },
+            UndecidableNode {
+                kind: "EMethodBody",
+                detail: Some("`right`".to_string()),
+            },
+        ]);
+        assert!(work.is_empty());
+        assert_eq!(owned_pars.free.len(), owned_pars.values.len());
+        assert_eq!(owned_exprs.free.len(), owned_exprs.values.len());
+    }
 }

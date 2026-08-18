@@ -575,8 +575,9 @@ fn type_name(instance: &ExprInstance) -> &'static str {
 // alphabet (`EvNode`, `EvKont`, `EvVal`), the per-arm descend and combine
 // halves, and every semantic note below.
 //
-// `eval_with` itself was already a loop over `par.exprs`; the Θ(depth)
-// recursion lived in `eval_expr_to_par`, which re-entered `eval_with` at
+// Before the typed-cursor migration, `eval_with` itself was already a loop over
+// the generated Expr repeated field; the Θ(depth) recursion lived in
+// `eval_expr_to_par`, which re-entered `eval_with` at
 // ELEVEN sites — the `EVar` resolution, the two unary arms, the `EMatches`
 // target, and two operands in each of the five binop helpers. Measured on a
 // nested-`ENot` chain: **21,584 bytes of native stack per level** in debug,
@@ -1518,9 +1519,9 @@ mod differential_eval_with {
 
     /// Sibling count for the wide differential shapes.
     ///
-    /// The width axis is a `for` loop in BOTH arms (`par.exprs` in the oracle,
-    /// the `ParK { n }` fold in the machine), so it is not stack-bounded on
-    /// either side and can be large.
+    /// The width axis is typed Expr-family iteration in BOTH arms (the
+    /// occurrence visitor in the oracle, the `ParK { n }` fold in the
+    /// machine), so it is not stack-bounded on either side and can be large.
     const DIFFERENTIAL_WIDTH: usize = 256;
 
     fn eplus(a: Par, b: Par) -> Par {

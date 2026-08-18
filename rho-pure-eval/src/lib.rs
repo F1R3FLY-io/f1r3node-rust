@@ -1,10 +1,11 @@
 //! Pure expression evaluator for Rholang Par values.
 //!
-//! Walks `par.exprs` and evaluates each `Expr` against an `Env<Par>` lookup
+//! Walks the canonical Expr family of each `Par` through its typed component
+//! cursor and evaluates every distinct endpoint against an `Env<Par>` lookup
 //! environment. Sends, receives, news, bundles, and other process-level
-//! constructs sitting alongside the exprs in the input Par are carried
-//! through as inert data — no side effects fire. The result is a Par
-//! whose exprs slot has been replaced with the evaluated values.
+//! families alongside it are carried through as inert data — no side effects
+//! fire. The result is a `Par` whose Expr family contains the evaluated values
+//! with their original multiplicities.
 //!
 //! Determinism guarantee: same input Par + same Env produce the same
 //! output Par byte-for-byte on every node. This is what makes it safe
