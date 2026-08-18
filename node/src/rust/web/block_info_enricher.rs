@@ -9,17 +9,21 @@ use super::transaction::helpers;
 
 /// Extract user transfers from a report, keyed by deploy signature.
 ///
-/// Each cost-accounted deploy's execution report is produced by
-/// running the three phases precharge → user → refund in that fixed order,
-/// ending each with a soft checkpoint. Genesis replays run without cost
-/// accounting and produce no precharge batch at all. Genesis standard deploys
-/// are built ` with `phlo_price: 0`, so their charge is `0`.
+/// Each cost-accounted deploy's execution report is produced by running the
+/// three phases precharge → user → refund in that fixed order, ending each
+/// with a soft checkpoint. Genesis replays run without cost accounting and
+/// produce no precharge batch at all. Genesis standard deploys are built with
+/// `phlo_price: 0`, so their charge is `0`.
 ///
-/// A precharge batch that fails to
-/// parse no longer suppresses the deploy's genuine user transfers. The
-/// precharge is excluded by position (`report[0]`) after a shape check.
-//  The refund is excluded automatically because its sender is the PoS
-/// vault, not the deployer.
+/// The precharge is excluded by position (`report[0]`) after a shape check:
+/// exactly one deployer-funded transfer of `phlo_limit * phlo_price`. The
+/// `to_addr` is NOT checked because the precharge pays to `posVaultAddr`, an
+/// unforgeable-derived address that is not knowable in the web layer (it is
+/// only exposed via `PoS(@"getInitialPosVault")` at runtime). The batch
+/// order invariant is pinned by
+/// `casper/tests/batch1/precharge_report_shape_spec.rs`. The refund is
+/// excluded automatically because its sender is the PoS vault, not the
+/// deployer, so the deployer-sender filter drops it.
 ///
 /// If `report[0]` does not match the expected precharge shape (no transfer,
 /// wrong sender, wrong amount, or more than one transfer), the invariant is
@@ -28,9 +32,15 @@ use super::transaction::helpers;
 /// deliberately over-reports rather than silently dropping a genuine user
 /// transfer, and the warning keeps the case diagnosable.
 ///
+/// If the deployer address cannot be derived from `DeployInfo.deployer` (bad
+/// hex, invalid public key, or missing info), a warning is emitted and the
+/// deploy's transfers are dropped — silently losing user data here would repeat
+/// the same shape of bug that the position-based precharge filter guards
+/// against.
+///
 /// Map-entry contract: a deploy with a non-empty `report` always receives a
 /// map entry (possibly with an empty vector); a deploy with an empty `report`
-/// receives no entry. 
+/// receives no entry.
 pub fn extract_transfers_from_report(
     report: &BlockEventInfo,
     transfer_unforgeable: &Par,
@@ -51,45 +61,32 @@ pub fn extract_transfers_from_report(
             VaultAddress::from_public_key(&pk).map(|v| v.to_base58())
         });
 
-        // total charge = `phlo_limit * phlo_price`
+        if deployer_addr.is_none() {
+            tracing::warn!(
+                target: "f1r3fly.node.web.enricher",
+                deploy_sig = %deploy_sig,
+                "deployer vault address could not be derived from deploy info; \
+                 user transfers for this deploy will be dropped"
+            );
+        }
+
         let precharge_amount = deploy_info
             .map(|info| info.phlo_limit.wrapping_mul(info.phlo_price))
             .unwrap_or(0);
 
-        let user_transfers = if precharge_amount == 0 {
-            // Genesis (no cost accounting) or zero phlo price: there is no
-            // precharge batch. Scan every batch; exclude only non-deployer
-            // sends (the refund, if any, is dropped here too).
-            collect_user_transfers(
-                &deploy.report,
-                transfer_unforgeable,
-                deployer_addr.as_deref(),
-            )
+        let batches: &[models::casper::SingleReport] = if precharge_amount == 0 {
+            &deploy.report
         } else {
-            // Cost-accounted deploy: report[0] is expected to be the precharge
-            // batch. Verify the shape before skipping it.
             let first = &deploy.report[0];
-            let found = find_transfers_in_report(first, transfer_unforgeable);
+            let found =
+                find_transfers_in_report(first, transfer_unforgeable, deployer_addr.as_deref());
             let precharge_consistent = found.len() == 1
                 && deployer_addr.as_deref() == Some(found[0].from_addr.as_str())
                 && found[0].amount == precharge_amount;
 
             if precharge_consistent {
-                // Skip report[0] silently; scan the remaining batches.
-                collect_user_transfers(
-                    &deploy.report[1..],
-                    transfer_unforgeable,
-                    deployer_addr.as_deref(),
-                )
+                &deploy.report[1..]
             } else {
-                // The invariant is violated. Do NOT skip report[0]: the
-                // precharge, if present with an unexpected shape, may be the
-                // only record of a genuine deployer-funded transfer.
-                // Over-reporting one spurious transfer is preferable to
-                // silently deleting user data; the warning makes the case
-                // diagnosable. Scan every batch, report[0] included, applying
-                // the same deployer-sender filter so non-deployer sends (e.g.
-                // a refund) are still dropped.
                 if found.len() == 1 {
                     tracing::warn!(
                         target: "f1r3fly.node.web.enricher",
@@ -111,13 +108,18 @@ pub fn extract_transfers_from_report(
                          not skipping it — the precharge may appear as a user transfer"
                     );
                 }
-                collect_user_transfers(
-                    &deploy.report,
-                    transfer_unforgeable,
-                    deployer_addr.as_deref(),
-                )
+                &deploy.report
             }
         };
+
+        let mut user_transfers = Vec::new();
+        for single_report in batches {
+            user_transfers.extend(find_transfers_in_report(
+                single_report,
+                transfer_unforgeable,
+                deployer_addr.as_deref(),
+            ));
+        }
 
         transfers_by_deploy.insert(deploy_sig, user_transfers);
     }
@@ -125,33 +127,20 @@ pub fn extract_transfers_from_report(
     transfers_by_deploy
 }
 
-/// Scan a slice of report batches and return the transfers whose sender is the
-/// deployer. Non-deployer sends (refund, system side effects) are dropped.
-fn collect_user_transfers(
-    batches: &[models::casper::SingleReport],
-    transfer_unforgeable: &Par,
-    deployer_addr: Option<&str>,
-) -> Vec<TransferInfo> {
-    let mut out = Vec::new();
-    for batch in batches {
-        for transfer in find_transfers_in_report(batch, transfer_unforgeable) {
-            let from_deployer = deployer_addr.is_some_and(|addr| transfer.from_addr == addr);
-            if from_deployer {
-                out.push(transfer);
-            }
-        }
-    }
-    out
-}
-
-/// Scan a single report for transfer events on the transfer_unforgeable channel.
+/// Scan a single report for user transfer events on the transfer_unforgeable
+/// channel. Only transfers whose sender is the deployer are returned; the
+/// refund (PoS vault → deployer) and other non-deployer sends are dropped in
+/// the first pass.
 fn find_transfers_in_report(
     report: &models::casper::SingleReport,
     transfer_unforgeable: &Par,
+    deployer_addr: Option<&str>,
 ) -> Vec<TransferInfo> {
-    let mut transfers = Vec::new();
+    let deployer_addr = match deployer_addr {
+        Some(addr) => addr,
+        None => return Vec::new(),
+    };
 
-    // Collect raw transactions from Comm events
     let mut raw_transactions: Vec<RawTransfer> = Vec::new();
     for event in &report.events {
         if let Some(models::casper::report_proto::Report::Comm(comm)) = &event.report {
@@ -159,12 +148,14 @@ fn find_transfers_in_report(
                 if *channel == *transfer_unforgeable {
                     if let Some(produce) = comm.produces.first() {
                         if let Some(tx) = helpers::parse_transaction_from_produce(produce) {
-                            raw_transactions.push(RawTransfer {
-                                from_addr: tx.from_addr,
-                                to_addr: tx.to_addr,
-                                amount: tx.amount,
-                                ret_unforgeable: tx.ret_unforgeable,
-                            });
+                            if tx.from_addr == deployer_addr {
+                                raw_transactions.push(RawTransfer {
+                                    from_addr: tx.from_addr,
+                                    to_addr: tx.to_addr,
+                                    amount: tx.amount,
+                                    ret_unforgeable: tx.ret_unforgeable,
+                                });
+                            }
                         }
                     }
                 }
@@ -172,28 +163,29 @@ fn find_transfers_in_report(
         }
     }
 
-    // Collect failure info from Produce events
-    let ret_unforgeables: std::collections::HashSet<Par> = raw_transactions
-        .iter()
-        .map(|t| t.ret_unforgeable.clone())
-        .collect();
+    if raw_transactions.is_empty() {
+        return Vec::new();
+    }
 
-    let mut failed_map: HashMap<Par, Option<String>> = HashMap::new();
+    let mut failed: Vec<Option<String>> = vec![None; raw_transactions.len()];
     for event in &report.events {
         if let Some(models::casper::report_proto::Report::Produce(produce)) = &event.report {
             if let Some(channel) = &produce.channel {
-                if ret_unforgeables.contains(channel) {
-                    if let Some(fail_reason) = helpers::parse_failure_from_produce(&produce.data) {
-                        failed_map.insert(channel.clone(), fail_reason);
+                for (i, tx) in raw_transactions.iter().enumerate() {
+                    if *channel == tx.ret_unforgeable {
+                        if let Some(fail_reason) =
+                            helpers::parse_failure_from_produce(&produce.data)
+                        {
+                            failed[i] = fail_reason;
+                        }
                     }
                 }
             }
         }
     }
 
-    // Build TransferInfo with success/failure
-    for tx in raw_transactions {
-        let fail_reason = failed_map.get(&tx.ret_unforgeable).cloned().flatten();
+    let mut transfers = Vec::with_capacity(raw_transactions.len());
+    for (tx, fail_reason) in raw_transactions.into_iter().zip(failed.into_iter()) {
         transfers.push(TransferInfo {
             from_addr: tx.from_addr,
             to_addr: tx.to_addr,
@@ -316,8 +308,10 @@ mod tests {
 
     /// Build a `DeployInfo` whose `phlo_limit * phlo_price` matches the
     /// precharge amount used by the test precharge transfers (100). Tests that
-    /// include a precharge transfer must send it to `system_vault_addr()` for
-    /// exactly this amount so the structural filter recognises it.
+    /// include a precharge transfer must send it for exactly this amount so
+    /// the position-based shape check on `report[0]` recognises it. The
+    /// recipient is `"pos_vault_addr"` — a placeholder for the real
+    /// `posVaultAddr`.
     fn make_deploy_info(deploy_sig: &str, deployer_hex: &str) -> DeployInfo {
         DeployInfo {
             sig: deploy_sig.to_string(),
@@ -345,12 +339,8 @@ mod tests {
         to: &str,
         amount: i64,
     ) -> BlockEventInfo {
-        let precharge_report = make_transfer_report(
-            transfer_unforgeable,
-            deployer_addr,
-            system_vault_addr(),
-            100,
-        );
+        let precharge_report =
+            make_transfer_report(transfer_unforgeable, deployer_addr, "pos_vault_addr", 100);
         let user_report = make_transfer_report(transfer_unforgeable, deployer_addr, to, amount);
         make_block_event(DeployInfoWithEventData {
             deploy_info: Some(make_deploy_info(deploy_sig, deployer_hex)).into(),
@@ -440,20 +430,12 @@ mod tests {
         let transfer_unforgeable = make_transfer_unforgeable();
         let (deployer_hex, deployer_addr) = make_deployer();
 
-        let precharge_report = make_transfer_report(
-            &transfer_unforgeable,
-            &deployer_addr,
-            system_vault_addr(),
-            100,
-        );
+        let precharge_report =
+            make_transfer_report(&transfer_unforgeable, &deployer_addr, "pos_vault_addr", 100);
         let user_report =
             make_transfer_report(&transfer_unforgeable, &deployer_addr, "receiver_addr", 700);
-        let refund_report = make_transfer_report(
-            &transfer_unforgeable,
-            system_vault_addr(),
-            &deployer_addr,
-            50,
-        );
+        let refund_report =
+            make_transfer_report(&transfer_unforgeable, "pos_vault_addr", &deployer_addr, 50);
         let report = make_block_event(DeployInfoWithEventData {
             deploy_info: Some(make_deploy_info("deploy_with_refund", &deployer_hex)).into(),
             report: vec![precharge_report, user_report, refund_report],
@@ -505,44 +487,6 @@ mod tests {
             !result.contains_key("deploy_empty_report"),
             "deploy with empty report should not receive a map entry"
         );
-    }
-
-    /// Regression guard for the order-dependence bug: the precharge is
-    /// identified by recipient + amount, not by batch position, so a
-    /// precharge landing in a non-first batch must still be excluded and the
-    /// genuine first-batch user transfer must survive. Under the old
-    /// `.skip(1)` logic this case silently swapped the precharge for the user
-    /// transfer in the API response.
-    #[test]
-    fn extract_transfers_precharge_in_non_first_batch_is_excluded() {
-        let transfer_unforgeable = make_transfer_unforgeable();
-        let (deployer_hex, deployer_addr) = make_deployer();
-
-        let user_report =
-            make_transfer_report(&transfer_unforgeable, &deployer_addr, "receiver_addr", 700);
-        let precharge_report = make_transfer_report(
-            &transfer_unforgeable,
-            &deployer_addr,
-            system_vault_addr(),
-            100,
-        );
-        let report = make_block_event(DeployInfoWithEventData {
-            deploy_info: Some(make_deploy_info("deploy_precharge_second", &deployer_hex)).into(),
-            report: vec![user_report, precharge_report],
-        });
-
-        let result = extract_transfers_from_report(&report, &transfer_unforgeable);
-
-        let transfers = result
-            .get("deploy_precharge_second")
-            .expect("should have deploy entry");
-        assert_eq!(
-            transfers.len(),
-            1,
-            "precharge in a non-first batch must still be excluded"
-        );
-        assert_eq!(transfers[0].to_addr, "receiver_addr");
-        assert_eq!(transfers[0].amount, 700);
     }
 
     /// Regression guard for the genesis-block bug: genesis deploys replay
