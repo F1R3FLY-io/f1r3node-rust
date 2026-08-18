@@ -1,7 +1,5 @@
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
-use casper::rust::genesis::contracts::standard_deploys::SYSTEM_VAULT_PUB_KEY;
 use crypto::rust::public_key::PublicKey;
 use models::casper::{BlockEventInfo, TransferInfo};
 use models::rhoapi::Par;
@@ -9,39 +7,35 @@ use rholang::rust::interpreter::util::vault_address::VaultAddress;
 
 use super::transaction::helpers;
 
-/// Base58 vault address of the PoS system vault. The precharge transfer pays
-/// the deployer's phlo budget here and the refund returns the unused remainder
-/// from here, so this address is the order-free marker that distinguishes those
-/// system transfers from genuine user transfers.
-fn system_vault_addr() -> &'static str {
-    static ADDR: OnceLock<String> = OnceLock::new();
-    ADDR.get_or_init(|| {
-        VaultAddress::from_public_key(&SYSTEM_VAULT_PUB_KEY)
-            .expect("SYSTEM_VAULT_PUB_KEY must be a valid curve point")
-            .to_base58()
-    })
-}
-
-/// Extract transfers from a `BlockEventInfo` for each deploy, keyed by deploy signature.
+/// Extract user transfers from a report, keyed by deploy signature.
 ///
-/// Scans each deploy's execution report for COMM events on the `transfer_unforgeable`
-/// channel, then extracts from/to/amount/success from the produce data.
+/// Each cost-accounted deploy's execution report is produced by
+/// running the three phases precharge → user → refund in that fixed order,
+/// ending each with a soft checkpoint. Genesis replays run without cost
+/// accounting and produce no precharge batch at all. Genesis standard deploys
+/// are built ` with `phlo_price: 0`, so their charge is `0`.
 ///
-/// Only extracts user deploy transfers (not PreCharge/Refund/System deploys).
-/// The deployer address is derived from `DeployInfo.deployer` so that transfer
-/// attribution does not depend on the precharge batch being parseable.
+/// A precharge batch that fails to
+/// parse no longer suppresses the deploy's genuine user transfers. The
+/// precharge is excluded by position (`report[0]`) after a shape check.
+//  The refund is excluded automatically because its sender is the PoS
+/// vault, not the deployer.
 ///
-/// The precharge is identified structurally — its recipient is the PoS system
-/// vault and its amount equals `phlo_limit * phlo_price` — rather than by
-/// batch position, so the result is independent of which report batch the
-/// precharge lands in. Genesis replays run without cost accounting, so no
-/// precharge transfer is produced there and nothing is excluded.
+/// If `report[0]` does not match the expected precharge shape (no transfer,
+/// wrong sender, wrong amount, or more than one transfer), the invariant is
+/// treated as violated: `report[0]` is *not* skipped, one warning per affected
+/// deploy is emitted, and all deployer-funded transfers are returned. This
+/// deliberately over-reports rather than silently dropping a genuine user
+/// transfer, and the warning keeps the case diagnosable.
+///
+/// Map-entry contract: a deploy with a non-empty `report` always receives a
+/// map entry (possibly with an empty vector); a deploy with an empty `report`
+/// receives no entry. 
 pub fn extract_transfers_from_report(
     report: &BlockEventInfo,
     transfer_unforgeable: &Par,
 ) -> HashMap<String, Vec<TransferInfo>> {
     let mut transfers_by_deploy: HashMap<String, Vec<TransferInfo>> = HashMap::new();
-    let system_vault = system_vault_addr();
 
     for deploy in &report.deploys {
         let deploy_info = deploy.deploy_info.as_ref();
@@ -54,39 +48,100 @@ pub fn extract_transfers_from_report(
         let deployer_addr = deploy_info.and_then(|info| {
             let pk_bytes = hex::decode(&info.deployer).ok()?;
             let pk = PublicKey::from_bytes(&pk_bytes);
-            let vault = VaultAddress::from_public_key(&pk)?;
-            Some(vault.to_base58())
+            VaultAddress::from_public_key(&pk).map(|v| v.to_base58())
         });
 
-        // Amount the precharge moves from the deployer's vault to the system
-        // vault. Matches `DeployData::total_phlo_charge` used to build the
-        // PreChargeDeploy. `wrapping_mul` mirrors release-mode `*` so the
-        // comparison stays consistent with the value the runtime produced.
+        // total charge = `phlo_limit * phlo_price`
         let precharge_amount = deploy_info
             .map(|info| info.phlo_limit.wrapping_mul(info.phlo_price))
             .unwrap_or(0);
 
-        let mut user_transfers = Vec::new();
-        for single_report in &deploy.report {
-            for transfer in find_transfers_in_report(single_report, transfer_unforgeable) {
-                let from_deployer = deployer_addr
-                    .as_deref()
-                    .is_some_and(|addr| transfer.from_addr == addr);
-                // The precharge is the deployer-funded transfer to the PoS
-                // system vault for exactly the authorised phlo charge.
-                let is_precharge = precharge_amount > 0
-                    && transfer.to_addr == *system_vault
-                    && transfer.amount == precharge_amount;
-                if from_deployer && !is_precharge {
-                    user_transfers.push(transfer);
+        let user_transfers = if precharge_amount == 0 {
+            // Genesis (no cost accounting) or zero phlo price: there is no
+            // precharge batch. Scan every batch; exclude only non-deployer
+            // sends (the refund, if any, is dropped here too).
+            collect_user_transfers(
+                &deploy.report,
+                transfer_unforgeable,
+                deployer_addr.as_deref(),
+            )
+        } else {
+            // Cost-accounted deploy: report[0] is expected to be the precharge
+            // batch. Verify the shape before skipping it.
+            let first = &deploy.report[0];
+            let found = find_transfers_in_report(first, transfer_unforgeable);
+            let precharge_consistent = found.len() == 1
+                && deployer_addr.as_deref() == Some(found[0].from_addr.as_str())
+                && found[0].amount == precharge_amount;
+
+            if precharge_consistent {
+                // Skip report[0] silently; scan the remaining batches.
+                collect_user_transfers(
+                    &deploy.report[1..],
+                    transfer_unforgeable,
+                    deployer_addr.as_deref(),
+                )
+            } else {
+                // The invariant is violated. Do NOT skip report[0]: the
+                // precharge, if present with an unexpected shape, may be the
+                // only record of a genuine deployer-funded transfer.
+                // Over-reporting one spurious transfer is preferable to
+                // silently deleting user data; the warning makes the case
+                // diagnosable. Scan every batch, report[0] included, applying
+                // the same deployer-sender filter so non-deployer sends (e.g.
+                // a refund) are still dropped.
+                if found.len() == 1 {
+                    tracing::warn!(
+                        target: "f1r3fly.node.web.enricher",
+                        deploy_sig = %deploy_sig,
+                        expected_amount = precharge_amount,
+                        found_transfers = 1,
+                        found_amount = found[0].amount,
+                        found_sender = %found[0].from_addr,
+                        "report[0] does not match the expected precharge shape; \
+                         not skipping it — the precharge may appear as a user transfer"
+                    );
+                } else {
+                    tracing::warn!(
+                        target: "f1r3fly.node.web.enricher",
+                        deploy_sig = %deploy_sig,
+                        expected_amount = precharge_amount,
+                        found_transfers = found.len(),
+                        "report[0] does not match the expected precharge shape; \
+                         not skipping it — the precharge may appear as a user transfer"
+                    );
                 }
+                collect_user_transfers(
+                    &deploy.report,
+                    transfer_unforgeable,
+                    deployer_addr.as_deref(),
+                )
             }
-        }
+        };
 
         transfers_by_deploy.insert(deploy_sig, user_transfers);
     }
 
     transfers_by_deploy
+}
+
+/// Scan a slice of report batches and return the transfers whose sender is the
+/// deployer. Non-deployer sends (refund, system side effects) are dropped.
+fn collect_user_transfers(
+    batches: &[models::casper::SingleReport],
+    transfer_unforgeable: &Par,
+    deployer_addr: Option<&str>,
+) -> Vec<TransferInfo> {
+    let mut out = Vec::new();
+    for batch in batches {
+        for transfer in find_transfers_in_report(batch, transfer_unforgeable) {
+            let from_deployer = deployer_addr.is_some_and(|addr| transfer.from_addr == addr);
+            if from_deployer {
+                out.push(transfer);
+            }
+        }
+    }
+    out
 }
 
 /// Scan a single report for transfer events on the transfer_unforgeable channel.
