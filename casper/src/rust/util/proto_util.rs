@@ -258,7 +258,7 @@ pub fn get_parents_metadata(
         .iter()
         .map(|parent| {
             dag.lookup(parent)
-                .map_err(CasperError::KvStoreError)?
+                .map_err(CasperError::from)?
                 .ok_or_else(|| CasperError::BlockNotHeld(parent.clone()))
         })
         .collect()

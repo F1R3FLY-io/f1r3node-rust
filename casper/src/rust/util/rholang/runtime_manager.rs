@@ -1036,7 +1036,7 @@ impl RuntimeManager {
         })?;
         self.mergeable_store
             .put_one(key_bytes, value)
-            .map_err(CasperError::KvStoreError)
+            .map_err(CasperError::from)
     }
 
     /// True iff this node already holds the mergeable-channels entry for `block`.

@@ -277,13 +277,8 @@ impl KeyValueDagRepresentation {
     }
 
     pub fn block_number_unsafe(&self, block_hash: &BlockHash) -> Result<i64, KvStoreError> {
-        self.block_number(block_hash).ok_or_else(|| {
-            KvStoreError::InvalidArgument(format!(
-                "DAG storage is missing hash {} [block_number_unsafe]{}",
-                PrettyPrinter::build_string_bytes(block_hash),
-                missing_hash_context()
-            ))
-        })
+        self.block_number(block_hash)
+            .ok_or_else(|| missing_block(block_hash, "block_number_unsafe"))
     }
 
     pub fn main_parent(&self, block_hash: &BlockHash) -> Option<BlockHash> {
@@ -368,11 +363,7 @@ impl KeyValueDagRepresentation {
     pub fn lookup_unsafe(&self, block_hash: &BlockHash) -> Result<BlockMetadata, KvStoreError> {
         match self.lookup(block_hash) {
             Ok(Some(metadata)) => Ok(metadata),
-            _ => Err(KvStoreError::InvalidArgument(format!(
-                "DAG storage is missing hash {} [lookup_unsafe]{}",
-                PrettyPrinter::build_string_bytes(block_hash),
-                missing_hash_context()
-            ))),
+            _ => Err(missing_block(block_hash, "lookup_unsafe")),
         }
     }
 
@@ -512,11 +503,7 @@ impl KeyValueDagRepresentation {
 
         // Keep behavior for blocks that intentionally have no self-justification.
         if !self.contains(block_hash) {
-            return Err(KvStoreError::InvalidArgument(format!(
-                "DAG storage is missing hash {} [self_justification]{}",
-                PrettyPrinter::build_string_bytes(block_hash),
-                missing_hash_context()
-            )));
+            return Err(missing_block(block_hash, "self_justification"));
         }
         Ok(None)
     }
@@ -1376,22 +1363,30 @@ impl super::equivocations_access::EquivocationsAccess for BlockDagKeyValueStorag
     }
 }
 
-/// Caller context for a "DAG storage is missing hash" error.
+/// A block the DAG does not hold, named so a caller can request it.
 ///
-/// These lookups assume the block is already in the DAG, so a miss is always a
-/// caller bug — but the message names only the hash, and the same text is
-/// reachable from three methods and many call sites. In a live shard the error
-/// surfaces as "block processing failed" with no indication of WHICH lookup
-/// asked, which is not enough to tell a gated dependency from an ancestor walk
-/// that was never gated at all (ucc runs: 7-12 occurrences per run, every run,
-/// escalating into propose failures).
+/// These lookups assume the block is already in the DAG, and for a node whose
+/// history reaches genesis a miss is a caller bug. For a node restored from a
+/// sync anchor it is the normal condition — its history stops at the anchor —
+/// so the hash travels as data rather than inside a message: a walk that cannot
+/// read this node's own history must never become a verdict against whoever
+/// proposed the block it was judging.
 ///
-/// Captured only on the error path, so the cost is paid exactly when something
-/// is already going wrong. `force_capture` rather than `capture` so it does not
-/// depend on RUST_BACKTRACE being set in the shard's environment.
-fn missing_hash_context() -> String {
-    format!(
-        "\n  caller backtrace:\n{}",
-        std::backtrace::Backtrace::force_capture()
-    )
+/// `method` and the backtrace stay in `context` because the same absence is
+/// reachable from three methods and many call sites, and in a live shard the
+/// error otherwise surfaces as "block processing failed" with no indication of
+/// WHICH lookup asked — not enough to tell a gated dependency from an ancestor
+/// walk that was never gated at all (ucc runs: 7-12 occurrences per run, every
+/// run, escalating into propose failures). Captured only on the error path, and
+/// with `force_capture` so it does not depend on RUST_BACKTRACE being set in the
+/// shard's environment.
+fn missing_block(block_hash: &BlockHash, method: &str) -> KvStoreError {
+    KvStoreError::MissingBlock {
+        hash: block_hash.clone(),
+        context: format!(
+            " [{}]\n  caller backtrace:\n{}",
+            method,
+            std::backtrace::Backtrace::force_capture()
+        ),
+    }
 }

@@ -673,7 +673,7 @@ impl Validate {
             |block_metadata| {
                 block_store
                     .has_any_deploy_sig_strict(&block_metadata.block_hash, &deploy_key_set)
-                    .map_err(CasperError::KvStoreError)
+                    .map_err(CasperError::from)
             },
         ) {
             Ok(found) => found,

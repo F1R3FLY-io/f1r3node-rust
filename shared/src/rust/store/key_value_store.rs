@@ -78,6 +78,15 @@ pub enum KvStoreError {
     /// Returned when a DAG representation is requested before the
     /// approved-block / last-finalized-block bootstrap has completed.
     LastFinalizedBlockUninitialized,
+    /// A block the DAG index does not hold, carried as bytes so the caller can
+    /// request it. Distinct from [`KvStoreError::KeyNotFound`], which means a
+    /// store lost a value its index still points at: this one means the index
+    /// never had the block, the normal condition of a node restored from a sync
+    /// anchor. Callers that judge blocks must be able to tell the two apart.
+    MissingBlock {
+        hash: prost::bytes::Bytes,
+        context: String,
+    },
 }
 
 impl std::fmt::Display for KvStoreError {
@@ -92,6 +101,14 @@ impl std::fmt::Display for KvStoreError {
                 f,
                 "DagState does not contain lastFinalizedBlock (bootstrap incomplete)"
             ),
+            KvStoreError::MissingBlock { hash, context } => {
+                write!(
+                    f,
+                    "DAG storage is missing hash {}{}",
+                    hex::encode(hash),
+                    context
+                )
+            }
         }
     }
 }

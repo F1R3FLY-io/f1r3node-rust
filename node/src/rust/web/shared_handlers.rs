@@ -287,6 +287,12 @@ fn classify_casper_error(err: &CasperError) -> (StatusCode, &'static str, String
 
         SlashAuth(_) => (S::FORBIDDEN, "slash_auth_error", err.to_string()),
 
+        // The node is answering about history it does not have, not failing:
+        // a node restored from a sync anchor is still filling in below it, and
+        // the same request may succeed once it has. 503 tells the caller to
+        // retry; the 500 class would say the node is broken.
+        BlockNotHeld(_) => (S::SERVICE_UNAVAILABLE, "block_not_held", err.to_string()),
+
         SigningError(_) => internal("signing_error"),
         KvStoreError(_) => internal("kv_store_error"),
         HistoryError(_) => internal("history_error"),

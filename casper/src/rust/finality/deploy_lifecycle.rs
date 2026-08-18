@@ -180,9 +180,7 @@ impl DeployLifecycle {
     /// between an insert and its evaluation costs nothing but delay.
     pub fn rebuild_schedule(&self, dag: &KeyValueDagRepresentation) -> Result<(), CasperError> {
         let mut schedule = self.schedule.lock();
-        let open = dag
-            .open_lifecycle_sigs()
-            .map_err(CasperError::KvStoreError)?;
+        let open = dag.open_lifecycle_sigs().map_err(CasperError::from)?;
         let armed = schedule.floor_thresholds.entry(0).or_default();
         for sig in open {
             armed.insert(Bytes::from(sig));
@@ -221,7 +219,7 @@ impl DeployLifecycle {
         let adopted_hash = dag.last_finalized_block();
         let adopted_number = dag
             .lookup_unsafe(&adopted_hash)
-            .map_err(CasperError::KvStoreError)?
+            .map_err(CasperError::from)?
             .block_number;
 
         let mut schedule = self.schedule.lock();
@@ -296,7 +294,7 @@ fn evaluate(
 ) -> Result<(), CasperError> {
     let Some(row) = dag
         .deploy_lifecycle_events(sig)
-        .map_err(CasperError::KvStoreError)?
+        .map_err(CasperError::from)?
     else {
         return Ok(());
     };
@@ -426,7 +424,7 @@ fn write_terminal(
             latest_height,
             latest_block_hash,
         })
-        .map_err(CasperError::KvStoreError)?;
+        .map_err(CasperError::from)?;
     // The sig is now irreversibly settled on the floor clock, whatever
     // the verdict: the caller releases the proposer's pool copy against
     // exactly this list.

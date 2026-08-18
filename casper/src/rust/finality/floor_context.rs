@@ -225,7 +225,7 @@ impl FloorContext {
                 let settled = *record_block == self.floor.hash
                     || dag
                         .is_dag_ancestor(record_block, &self.floor.hash)
-                        .map_err(CasperError::KvStoreError)?;
+                        .map_err(CasperError::from)?;
                 if settled {
                     Ok(RetryGateBasis::Open)
                 } else {

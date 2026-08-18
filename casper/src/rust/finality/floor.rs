@@ -61,7 +61,7 @@ pub(crate) fn in_floor_closure(
         return Ok(false);
     }
     dag.is_dag_ancestor(hash, &floor.hash)
-        .map_err(CasperError::KvStoreError)
+        .map_err(CasperError::from)
 }
 
 /// Per-block introduced-sig memo shared across the containment checks of
@@ -104,7 +104,7 @@ fn held_meta(
     hash: &BlockHash,
 ) -> Result<models::rust::block_metadata::BlockMetadata, CasperError> {
     dag.lookup(hash)
-        .map_err(CasperError::KvStoreError)?
+        .map_err(CasperError::from)?
         .ok_or_else(|| CasperError::BlockNotHeld(hash.clone()))
 }
 
@@ -1072,6 +1072,117 @@ mod frontier_determinism_tests {
         (dag, v, (g, b1, b2, b3))
     }
 
+    /// The chain a restored node holds: blocks 84..88, with 84's own parent 83
+    /// below the sync window and absent. One validator, so the committee is
+    /// constant and the oracle's verdicts are decidable from what is held.
+    fn mk_truncated_dag() -> (KeyValueDagRepresentation, Bytes, Vec<Bytes>) {
+        let v = val();
+        let absent = h(83);
+        let held: Vec<Bytes> = (84u8..=88).map(h).collect();
+
+        let store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
+        let mut bms = BlockMetadataStore::new(store);
+        let mut dag_set = imbl::HashSet::new();
+        let mut bnum = imbl::HashMap::new();
+        let mut mp = imbl::HashMap::new();
+
+        for (i, hash) in held.iter().enumerate() {
+            let number = 84 + i as i64;
+            let parent = if i == 0 {
+                absent.clone()
+            } else {
+                held[i - 1].clone()
+            };
+            let mut meta = md(hash.clone(), vec![parent.clone()], number, &v);
+            // The child names the anchor as its justification, which is what the
+            // floor derivation freezes as its snapshot.
+            meta.justifications = vec![
+                models::rust::casper::protocol::casper_message::Justification {
+                    validator: v.clone(),
+                    latest_block_hash: held[i.saturating_sub(1)].clone(),
+                },
+            ];
+            bms.add(meta).unwrap();
+            dag_set.insert(hash.clone());
+            bnum.insert(hash.clone(), number);
+            // Recorded for EVERY held block, including the lowest, whose parent
+            // is not held — which is why a walk can step off the end.
+            mp.insert(hash.clone(), parent);
+        }
+
+        let dag = KeyValueDagRepresentation {
+            dag_set,
+            latest_messages_map: imbl::HashMap::new(),
+            child_map: imbl::HashMap::new(),
+            height_map: imbl::OrdMap::new(),
+            block_number_map: bnum,
+            main_parent_map: mp,
+            self_justification_map: imbl::HashMap::new(),
+            invalid_blocks_set: imbl::HashSet::new(),
+            last_finalized_block_hash: Bytes::new(),
+            finalized_blocks_set: imbl::HashSet::new(),
+            block_metadata_index: Arc::new(PlRwLock::new(bms)),
+            floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            lifecycle: Arc::new(parking_lot::RwLock::new(
+                block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(
+                ),
+            )),
+        };
+        (dag, absent, held)
+    }
+
+    /// Phase 2's whole bet, in miniature.
+    ///
+    /// A restored node cannot derive its anchor's floor: the recursion runs
+    /// through the anchor's parents, and it holds none of them. Seeding the
+    /// anchor's floor and frontier is supposed to be enough on its own, because
+    /// floors derive FORWARD — the block above the anchor inherits from the
+    /// seeded entry and caches its own, and the recursion terminates from then
+    /// on without ever reaching for history below the window.
+    ///
+    /// Without the seed the same derivation walks off the end of what is held,
+    /// which is the second half of the test: the seed is doing the work, not the
+    /// fixture.
+    #[tokio::test]
+    async fn a_seeded_anchor_derives_forward_without_reaching_below_the_window() {
+        let thr = FtThreshold::from_f32_lossy(0.1);
+        let (dag, absent, held) = mk_truncated_dag();
+        let (anchor, child) = (held[3].clone(), held[4].clone());
+        let seed = held[1].clone();
+
+        let unseeded = floor_of_block(&dag, &mk_store(), &child, thr)
+            .await
+            .expect_err("without a seed the derivation must run out of history");
+        assert!(
+            matches!(unseeded, CasperError::BlockNotHeld(ref h) if *h == absent),
+            "the unseeded derivation must fail by naming the block below the window, \
+             or this fixture is not truncated and proves nothing; got {unseeded}"
+        );
+
+        dag.put_cached_floor(anchor.clone(), seed.clone()).unwrap();
+        dag.put_cached_frontier(anchor.clone(), seed.clone())
+            .unwrap();
+
+        let floor = floor_of_block(&dag, &mk_store(), &child, thr)
+            .await
+            .expect("a seeded anchor must let the block above it derive a floor");
+        assert!(
+            floor.block_number >= seed_number(&dag, &seed),
+            "the derived floor can never sit below the seed it inherited"
+        );
+        assert_eq!(
+            dag.get_cached_floor(&child).unwrap(),
+            Some(floor.hash.clone()),
+            "the child's own floor must be cached, so the block above IT inherits \
+             from the child rather than reaching for the anchor again"
+        );
+    }
+
+    fn seed_number(dag: &KeyValueDagRepresentation, hash: &Bytes) -> i64 {
+        dag.lookup(hash).unwrap().expect("held").block_number
+    }
+
     #[tokio::test]
     async fn warm_up_walk_equals_cold_down_walk() {
         let (dag, v, (_g, b1, b2, b3)) = mk_dag();
@@ -1918,6 +2029,9 @@ mod frontier_determinism_tests {
 
     // ---- state-lineage: truncation is not a fork ----
 
+    /// A hash of the length `KeyValueDagRepresentation::contains` requires.
+    fn full_hash(tag: u8) -> Bytes { Bytes::from(vec![tag; models::rust::block_hash::LENGTH]) }
+
     fn md_base(hash: Bytes, parents: Vec<Bytes>, num: i64, base: Bytes) -> BlockMetadata {
         let sender = Bytes::from_static(b"sender");
         let mut meta = md_wm(hash, parents, num, &sender, vec![]);
@@ -1978,6 +2092,44 @@ mod frontier_determinism_tests {
         assert!(
             matches!(err, CasperError::BlockNotHeld(ref h) if *h == gone),
             "the floor recursion must name the block it does not hold; got {err}"
+        );
+    }
+
+    /// The frontier walk meets absence one level lower than the floor recursion
+    /// does: it reaches the clique oracle, whose every DAG read goes through the
+    /// `_unsafe` primitives. Those report a block the node does not hold as a
+    /// plain store error, which the caller folds into the storage-failure class
+    /// and converts to a slashable verdict. Absence has to keep its name all the
+    /// way down, or the deferral guarantee stops at `floor.rs` and a joiner that
+    /// is one block short of the history it needs accuses whoever proposed.
+    #[tokio::test]
+    async fn the_oracle_reports_the_block_it_does_not_hold() {
+        // Full-length hashes: `dag.contains` length-checks, and a short hash
+        // would short-circuit the oracle before it reads any parent.
+        let gone = full_hash(0xB0);
+        let tip = full_hash(0x37);
+
+        // The oldest block this node kept, whose own main parent is below the
+        // window: the oracle needs that parent for the corresponding weight map.
+        let dag = build_dag(vec![md_base(
+            tip.clone(),
+            vec![gone.clone()],
+            37,
+            gone.clone(),
+        )]);
+
+        let err = parent_frontier(
+            &dag,
+            &tip,
+            &BTreeMap::new(),
+            FtThreshold::from_f32_lossy(0.1),
+        )
+        .await
+        .expect_err("a frontier walk that leaves the held blocks cannot yield a frontier");
+        assert!(
+            matches!(err, CasperError::BlockNotHeld(ref h) if *h == gone),
+            "the oracle must name the block it does not hold, so the caller can request \
+             it and retry instead of recording a verdict against the proposer; got {err}"
         );
     }
 

@@ -297,7 +297,7 @@ pub(crate) async fn compute_last_finalized_block(
                 &dag,
             )
             .await
-            .map_err(CasperError::KvStoreError)?;
+            .map_err(CasperError::from)?;
         new_lfb_found_effect((new_lfb.hash.clone(), ft_value))
             .await
             .map_err(CasperError::KvStoreError)?;

@@ -1659,12 +1659,12 @@ fn quarantine_refund_failure_deploy(
     let removed_from_deploy_storage = deploy_storage
         .lock()
         .remove_by_sig(&sig)
-        .map_err(CasperError::KvStoreError)?;
+        .map_err(CasperError::from)?;
     let removed_from_rejected_buffer = rejected_deploy_buffer
         .lock()
         .map_err(|e| CasperError::LockError(e.to_string()))?
         .remove_by_sig(&sig)
-        .map_err(CasperError::KvStoreError)?;
+        .map_err(CasperError::from)?;
 
     Ok((removed_from_deploy_storage, removed_from_rejected_buffer))
 }
@@ -1681,7 +1681,7 @@ fn drain_selected_deploys_from_rejected_buffer(
     for deploy in deploys {
         if guard
             .remove_by_sig(&deploy.sig)
-            .map_err(CasperError::KvStoreError)?
+            .map_err(CasperError::from)?
         {
             removed += 1;
         }
@@ -1707,10 +1707,7 @@ fn drain_selected_recovered_deploys_from_deploy_storage(
             .map_err(|e| CasperError::LockError(e.to_string()))?;
         let mut out = Vec::new();
         for deploy in deploys {
-            if guard
-                .contains_sig(&deploy.sig)
-                .map_err(CasperError::KvStoreError)?
-            {
+            if guard.contains_sig(&deploy.sig).map_err(CasperError::from)? {
                 out.push(deploy.clone());
             }
         }
@@ -1726,7 +1723,7 @@ fn drain_selected_recovered_deploys_from_deploy_storage(
         for deploy in &selected_recovered {
             if storage
                 .remove_by_sig(&deploy.sig)
-                .map_err(CasperError::KvStoreError)?
+                .map_err(CasperError::from)?
             {
                 removed_from_storage += 1;
             }
@@ -1757,7 +1754,7 @@ fn purge_recovered_already_in_scope(
 
     deploy_storage
         .remove(recovered_done.clone())
-        .map_err(CasperError::KvStoreError)?;
+        .map_err(CasperError::from)?;
     Ok(recovered_done.len())
 }
 
@@ -2829,7 +2826,7 @@ pub async fn create(
                         let Some(metadata) = casper_snapshot
                             .dag
                             .lookup(invalid_block_hash)
-                            .map_err(CasperError::KvStoreError)?
+                            .map_err(CasperError::from)?
                         else {
                             return Ok::<bool, CasperError>(false);
                         };

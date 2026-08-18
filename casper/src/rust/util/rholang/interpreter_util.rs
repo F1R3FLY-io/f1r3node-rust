@@ -1414,7 +1414,7 @@ pub async fn compute_parents_post_state(
                 let number = s
                     .dag
                     .block_number_unsafe(&hash)
-                    .map_err(CasperError::KvStoreError)?;
+                    .map_err(CasperError::from)?;
                 if number <= floor_block_number {
                     break;
                 }

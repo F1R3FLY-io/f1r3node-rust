@@ -70,8 +70,21 @@ impl From<InterpreterError> for CasperError {
     fn from(error: InterpreterError) -> Self { CasperError::InterpreterError(error) }
 }
 
+/// A block the DAG does not hold arrives here as a store error, because the DAG
+/// primitives the clique oracle reads through are storage APIs. It is not a
+/// storage failure, and the two must not share a class: the storage class
+/// becomes `InvalidTransaction`, which is slashable. Collapsing it into
+/// `BlockNotHeld` at the boundary means every walk under `floor.rs` — the
+/// oracle's weight maps, main-chain membership, self-justification chains —
+/// gets the deferral the floor walk already had, without a match arm at each
+/// caller.
 impl From<KvStoreError> for CasperError {
-    fn from(error: KvStoreError) -> Self { CasperError::KvStoreError(error) }
+    fn from(error: KvStoreError) -> Self {
+        match error {
+            KvStoreError::MissingBlock { hash, .. } => CasperError::BlockNotHeld(hash),
+            other => CasperError::KvStoreError(other),
+        }
+    }
 }
 
 impl From<ReplayFailure> for CasperError {
