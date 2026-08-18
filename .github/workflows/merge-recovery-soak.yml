@@ -32,6 +32,11 @@ on:
         options:
           - daily-24h
           - weekend-60h
+      preflight_only:
+        description: Run only the full integration preflight
+        required: false
+        default: false
+        type: boolean
       window_end_epoch:
         description: >-
           Restart mode: epoch second the ORIGINAL window ends at. When set,
@@ -84,11 +89,18 @@ env:
   # hold the envelope + any safe floor — the orchestrator host guardian
   # killed at free 6524MB). Sizing invariant, learned twice (PR #217 review,
   # then 31390673884): ceiling + ~7GB host overhead + floor <= MemTotal,
-  # else the floor fires before this attributable ceiling can. Here:
-  # 28672 + ~7168 + 8192 = ~44GB <= 48GB. 28672 is ~1.5x the measured
-  # envelope — silent on legitimate load, catches a real leak ~9GB before
-  # the floor or the kernel OOM killer get involved.
-  SOAK_RSS_CEILING_MB: "28672"
+  # else the floor fires before this attributable ceiling can.
+  #
+  # 2026-08-11: 28672 -> 45056 with the 64GB soak VM
+  # (RUNNER_MEM_GB_OVERRIDE below). The #197 wedge fix (#228) unmasked the
+  # workload's true footprint: smoke run 31547587950 breached at 36008MB
+  # instant RSS while fully healthy (1200 deploys/300s, 0 errors, tip-LFB
+  # lag 0), matching the 31-37GB envelope measured in the local A/B that
+  # exonerated the merge. The old ceiling was 1.5x the wedge-suppressed
+  # envelope, not the real one. 45056 is ~1.25x the observed 36GB peak —
+  # silent on legitimate load, catches a real leak ~9GB before the floor —
+  # and the invariant holds on 64GB: 45056 + ~7168 + 8192 = ~59GB <= 64GB.
+  SOAK_RSS_CEILING_MB: "45056"
   # 2026-08-10 (PR #217 review): lowered 12288 -> 8192 alongside the ceiling
   # raise — on the then-32GB host, 20480 + 12288 = 32768 meant available RAM
   # crossed the floor before total RSS could reach the ceiling, so the
@@ -97,9 +109,9 @@ env:
   # of normal-operation clearance; both the pytest floor (subprocess
   # iterations) and the orchestrator host guardian (every iteration) use it.
   SOAK_HOST_FREE_FLOOR_MB: "8192"
-  # THIRD pin site. The other two — .github/oci-validation.env and
-  # _integration-pipeline.yml — are held identical by build_base's drift check;
-  # this one is outside that check and rotted unnoticed as a result. It sat at
+  # THIRD pin site. CI's pin-consistency check holds this identical to
+  # .github/oci-validation.env and _integration-pipeline.yml. Before that guard
+  # covered the soak pin, it rotted unnoticed and sat at
   # a50eeb19 while CI advanced to 06f2020c, and a50eeb19 predates
   # system-integration 81284fc, which added integration-tests/certs/validator4.
   # compose.py bind-mounts that path, so with no host file Docker created a
@@ -107,7 +119,8 @@ env:
   # certificate: IO error: Is a directory (os error 21)" — the soak failed at
   # bring-up nightly from ~2026-07-27, and since checkpoint publishes come from
   # completed segments, the dashboard never published. Bump this whenever the
-  # other two move.
+  # other two move — `just repin-system-integration <sha>` rewrites all pin
+  # sites together and runs the invariants checker.
   # 2026-07-30: bumped to the system-integration PR #68 merge (main tip) —
   # adds the test_load.py drain-snapshot convergence fix and registry pull
   # retries on top of the validator4 certs.
@@ -153,7 +166,57 @@ env:
   # for) plus the RUNNER_MEM_GB_OVERRIDE launch knob. Verified by content
   # at the SHA: state.env AMD64_MEM_GB=48, override present in
   # launch-runner.sh.
-  SYSTEM_INTEGRATION_REF: a0c6fba626e4db8310180d0a90a213314424dd92
+  #
+  # 2026-08-11: bumped to the SI PR #103 merge — the harness monitor's
+  # per-core CPU sampling (resource-percore-timeseries.csv), which the
+  # driver's per-core extractor folds into the dashboard CPU grid. Verified
+  # by ancestry (a0c6fba6 is an ancestor, so the 48GB default and
+  # RUNNER_LABELS override carry forward) and by content at the SHA
+  # (state.env AMD64_MEM_GB=48; resource_monitor.py emits the per-core CSV).
+  #
+  # 2026-08-13: re-pointed to the SI PR #109 main merge. The previous SHA
+  # (f8e43643) was a commit on the temporary test/node-stability-pr-support
+  # branch, pinned by #210 while its CI was validated and landed without an
+  # entry here — so the block above misdescribed the pin as the #103 merge.
+  # Zero tree diff old..new (compare reports files:0; main is ahead only by
+  # the #107/#108/#109 merge commits and behind by nothing), so this changes
+  # provenance, not content: the main merge SHA stays reachable after the
+  # test branch is deleted, where the branch commit could be garbage
+  # collected out from under the secret-bearing launch job's checkout.
+  #
+  # 2026-08-15: bumped to the SI PR #115 main merge. The storage tests now
+  # wait for registry state visibility after deploy finalization, which closes
+  # the finalized-block versus canonical-effect race from CI run 31856863708.
+  # Verified that c4dbcd5 is the protected main tip and matches main exactly.
+  #
+  # 2026-08-15: bumped to the SI PR #117 main merge. Bonding and convergence
+  # now use dedicated shards, bond-map assertions handle epoch-boundary
+  # activation, and finalization checks select canonical finalized blocks
+  # instead of arbitrary orphan candidates. Verified that afcce4b1 is the
+  # protected main tip, all PR checks passed, and the bonding lifecycle passed
+  # locally against the node image built from master 35674b389.
+  #
+  # 2026-08-15: bumped to the reviewed SI PR #118 head. The convergence test
+  # now accepts finalized FT at or above FTT and checks monotonicity. Boundary
+  # bond blocks accept either valid closeBlock transition map, while a later
+  # finalized block must contain the exact activated map. Retired log snapshots
+  # now retain test-owner allowances without leaking allowances across tests,
+  # with focused unit coverage. Bond-map assertions use the finalization
+  # resolver's canonical deploy block instead of an orphaned first inclusion.
+  # Verified that 735a7b95 is the immutable PR head, the local bonding suite
+  # passed, and the local repin helper and workflow security invariants pass.
+  #
+  # 2026-08-15: bumped to the SI PR #119 main merge. Observer LFS coverage now
+  # runs in a dedicated shard and requires exact finalized multi-parent block
+  # metadata before observer attachment. Verified that 28b24d9c is the local
+  # and remote main tip, and the workflow security invariants pass.
+  #
+  # 2026-08-16: bumped to the SI PR #120 main merge. The harness uses common
+  # finalized anchors and repairs active-set, epoch-boundary, port-reuse,
+  # lifecycle-tracker, and bridge-read behavior from the failed preflight.
+  # Verified that 22121713 is the immutable GitHub merge commit. The focused
+  # concurrency suite and workflow security invariants pass.
+  SYSTEM_INTEGRATION_REF: 22121713d8874ac84f94f4b3ddb30dda78fa7f88
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
@@ -180,7 +243,15 @@ jobs:
       should_run: ${{ steps.resolve.outputs.should_run }}
       duration_seconds: ${{ steps.resolve.outputs.duration_seconds }}
       target_ref: ${{ steps.resolve.outputs.target_ref }}
+      target_sha: ${{ steps.resolve.outputs.target_sha }}
       run_benchmarks: ${{ steps.resolve.outputs.run_benchmarks }}
+      # How this run was triggered (oci-resource-scheduler | cron-fallback |
+      # manual) and how late it started relative to its intended slot. Carried
+      # into the published history so a scheduler outage is visible on the
+      # dashboard instead of being silently masked by the cron fallback — the
+      # 2026-08-04..11 outage went unnoticed for a week exactly this way.
+      trigger_source: ${{ steps.resolve.outputs.trigger_source }}
+      slot_delay_seconds: ${{ steps.resolve.outputs.slot_delay_seconds }}
       # weekend | daily. Selects which published series this run appends to;
       # the two are kept in separate files so the week-over-week regression
       # gate never compares a 22h daily against a 60h weekend baseline.
@@ -190,6 +261,7 @@ jobs:
       end_epoch: ${{ steps.resolve.outputs.end_epoch }}
       retry_attempt: ${{ steps.resolve.outputs.retry_attempt }}
       canary: ${{ steps.resolve.outputs.canary }}
+      preflight_only: ${{ steps.resolve.outputs.preflight_only }}
       inject_protection_breach: ${{ steps.resolve.outputs.inject_protection_breach }}
       # Pacific 07:30/13:00 instants inside the run, as epoch seconds. Empty
       # slots are skipped; see the resolve step for why there are five.
@@ -211,11 +283,16 @@ jobs:
           INPUT_SERIES: ${{ inputs.series }}
           INPUT_RETRY_ATTEMPT: ${{ inputs.retry_attempt }}
           INPUT_CANARY: ${{ inputs.canary }}
+          INPUT_PREFLIGHT_ONLY: ${{ inputs.preflight_only }}
           INPUT_INJECT_PROTECTION_BREACH: ${{ inputs.inject_protection_breach }}
           # Read-only, for the "did anything land since the last window?" check.
           GH_TOKEN: ${{ github.token }}
         shell: bash -euo pipefail {0}
         run: |
+          case "${INPUT_PREFLIGHT_ONLY:-false}" in
+            true|false|"") ;;
+            *) echo "::error::preflight_only must be true or false"; exit 1 ;;
+          esac
           case "${INPUT_INJECT_PROTECTION_BREACH:-false}" in
             true)
               if [ "${INPUT_CANARY:-false}" != "true" ]; then
@@ -227,8 +304,8 @@ jobs:
             *) echo "::error::inject_protection_breach must be true or false"; exit 1 ;;
           esac
           if [ -n "$INPUT_SCHEDULED_SLOT" ]; then
-            if [ "${INPUT_CANARY:-false}" = "true" ] || [ "${INPUT_INJECT_PROTECTION_BREACH:-false}" = "true" ] || [ -n "$INPUT_WINDOW_END" ] || [ -n "$INPUT_SERIES" ] || [ "${INPUT_RETRY_ATTEMPT:-0}" != "0" ]; then
-              echo "::error::scheduled_slot_epoch cannot be combined with canary, injection, restart, series, or retry inputs"
+            if [ "${INPUT_CANARY:-false}" = "true" ] || [ "${INPUT_PREFLIGHT_ONLY:-false}" = "true" ] || [ "${INPUT_INJECT_PROTECTION_BREACH:-false}" = "true" ] || [ -n "$INPUT_WINDOW_END" ] || [ -n "$INPUT_SERIES" ] || [ "${INPUT_RETRY_ATTEMPT:-0}" != "0" ]; then
+              echo "::error::scheduled_slot_epoch cannot be combined with canary, preflight-only, injection, restart, series, or retry inputs"
               exit 1
             fi
             case "$INPUT_SCHEDULED_SLOT" in
@@ -248,6 +325,8 @@ jobs:
               exit 1
             fi
             echo "source=oci-resource-scheduler slot=$(date -u -d "@$slot_epoch" +%FT%TZ) pacific_hm=$pacific_hm pacific_weekday=$pacific_weekday trigger_delay=${trigger_delay}s"
+            trigger_source=oci-resource-scheduler
+            slot_delay_seconds="$trigger_delay"
             should_run=true
             idle_skip=false
             duplicate_skip=false
@@ -287,13 +366,17 @@ jobs:
               fi
             fi
           elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            if [ "$INPUT_DURATION" = "weekend-60h" ]; then
+            if [ "${INPUT_PREFLIGHT_ONLY:-false}" = "true" ]; then
+              duration_seconds=14400
+            elif [ "$INPUT_DURATION" = "weekend-60h" ]; then
               duration_seconds=216000
             else
               duration_seconds=79200
             fi
             target_ref="$INPUT_TARGET_REF"
             should_run=true
+            trigger_source=manual
+            slot_delay_seconds=0
             # A manual run has no cron slot, so it starts now. The checkpoint
             # computation below needs a start instant either way, and without
             # this the step dies on an unbound variable under `set -u` — a
@@ -305,7 +388,12 @@ jobs:
             # scheduled run would have — it can never spill into the next
             # slot. The checkpoint enumeration below then yields exactly the
             # original window's remaining Pacific instants.
-            if [ "$INPUT_CANARY" = "true" ]; then
+            if [ "${INPUT_PREFLIGHT_ONLY:-false}" = "true" ]; then
+              if [ "${INPUT_CANARY:-false}" = "true" ] || [ "${INPUT_INJECT_PROTECTION_BREACH:-false}" = "true" ] || [ -n "$INPUT_WINDOW_END" ] || [ -n "$INPUT_SERIES" ] || [ "${INPUT_RETRY_ATTEMPT:-0}" != "0" ]; then
+                echo "::error::preflight_only cannot be combined with canary, injection, restart, series, or retry inputs"
+                exit 1
+              fi
+            elif [ "$INPUT_CANARY" = "true" ]; then
               if [ -n "$INPUT_WINDOW_END" ] || [ -n "$INPUT_SERIES" ] || [ "${INPUT_RETRY_ATTEMPT:-0}" != "0" ]; then
                 echo "::error::canary cannot be combined with window_end_epoch, series, or a retry attempt"
                 exit 1
@@ -363,6 +451,8 @@ jobs:
             pacific_hm="$(TZ=America/Los_Angeles date -d "@${slot_epoch}" +%H%M)"
             pacific_weekday="$(TZ=America/Los_Angeles date -d "@${slot_epoch}" +%u)"
             echo "cron=$EVENT_SCHEDULE slot=$(date -u -d "@${slot_epoch}" +%FT%TZ) pacific_hm=$pacific_hm pacific_weekday=$pacific_weekday"
+            trigger_source=cron-fallback
+            slot_delay_seconds=$((now_epoch - slot_epoch))
             target_ref=dev
             should_run=false
             idle_skip=false
@@ -519,7 +609,7 @@ jobs:
               fi
             done
           done
-          if [ "${INPUT_CANARY:-false}" = "true" ]; then
+          if [ "${INPUT_CANARY:-false}" = "true" ] || [ "${INPUT_PREFLIGHT_ONLY:-false}" = "true" ]; then
             checkpoints=()
           fi
           cp1=""; cp2=""; cp3=""; cp4=""; cp5=""
@@ -590,15 +680,28 @@ jobs:
           if [ -n "${INPUT_WINDOW_END:-}" ] && [ "$retry_attempt" -eq 0 ]; then
             retry_attempt=1
           fi
+          target_sha=""
+          if [ "$should_run" = "true" ]; then
+            encoded_ref="$(jq -rn --arg ref "$target_ref" '$ref | @uri')"
+            target_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${encoded_ref}" --jq '.sha')"
+            if ! [[ "$target_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::could not resolve target_ref to a commit SHA"
+              exit 1
+            fi
+          fi
           {
             echo "should_run=$should_run"
             echo "duration_seconds=$duration_seconds"
             echo "target_ref=$target_ref"
+            echo "target_sha=$target_sha"
+            echo "trigger_source=${trigger_source:-manual}"
+            echo "slot_delay_seconds=${slot_delay_seconds:-0}"
             echo "run_benchmarks=$run_benchmarks"
             echo "kind=$kind"
             echo "end_epoch=$end_epoch"
             echo "retry_attempt=$retry_attempt"
             echo "canary=${INPUT_CANARY:-false}"
+            echo "preflight_only=${INPUT_PREFLIGHT_ONLY:-false}"
             echo "inject_protection_breach=${INPUT_INJECT_PROTECTION_BREACH:-false}"
             echo "checkpoint_1=$cp1"
             echo "checkpoint_2=$cp2"
@@ -606,6 +709,90 @@ jobs:
             echo "checkpoint_4=$cp4"
             echo "checkpoint_5=$cp5"
           } >> "$GITHUB_OUTPUT"
+
+  preflight_pending:
+    name: Mark Integration Preflight Pending
+    needs: schedule_gate
+    if: needs.schedule_gate.outputs.should_run == 'true' && needs.schedule_gate.outputs.canary != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      statuses: write
+    concurrency:
+      group: soak-preflight-status-${{ needs.schedule_gate.outputs.target_sha }}
+      cancel-in-progress: false
+    steps:
+      - name: Report pending status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ needs.schedule_gate.outputs.target_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+        shell: bash -euo pipefail {0}
+        run: |
+          current=""
+          read_ok=false
+          for attempt in 1 2 3 4 5 6 7; do
+            if current="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}/status" \
+              --jq '[.statuses[] | select(.context == "Soak Integration Preflight")][0] // {} | [(.state // ""), (.target_url // "")] | @tsv')"; then
+              read_ok=true
+              break
+            fi
+            [ "$attempt" -eq 7 ] || sleep "$(( attempt >= 5 ? 240 : 15 * (1 << (attempt - 1)) ))"
+          done
+          if [ "$read_ok" != "true" ]; then
+            echo "::warning::could not read the current integration preflight status; continuing without a pending status (the finalize job publishes the terminal status)"
+            exit 0
+          fi
+          IFS=$'\t' read -r current_state current_url <<<"$current"
+          prefix="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/"
+          own_tail="${RUN_URL#"$prefix"}"
+          if [ "$own_tail" = "$RUN_URL" ] || ! [[ "$own_tail" =~ ^([0-9]+)(/attempts/([0-9]+))?$ ]]; then
+            echo "::error::the current run URL is invalid"
+            exit 1
+          fi
+          own_run_id="${BASH_REMATCH[1]}"
+          own_attempt="${BASH_REMATCH[3]:-0}"
+          if [ -n "$current_url" ]; then
+            current_tail="${current_url#"$prefix"}"
+            if [ "$current_tail" = "$current_url" ] || ! [[ "$current_tail" =~ ^([0-9]+)(/attempts/([0-9]+))?$ ]]; then
+              echo "::error::the current preflight status has an invalid owner"
+              exit 1
+            fi
+            current_run_id="${BASH_REMATCH[1]}"
+            current_attempt="${BASH_REMATCH[3]:-0}"
+            current_is_newer=false
+            if [ "${#current_run_id}" -gt "${#own_run_id}" ] || \
+              { [ "${#current_run_id}" -eq "${#own_run_id}" ] && [[ "$current_run_id" > "$own_run_id" ]]; }; then
+              current_is_newer=true
+            elif [ "$current_run_id" = "$own_run_id" ] && \
+              { [ "${#current_attempt}" -gt "${#own_attempt}" ] || \
+                { [ "${#current_attempt}" -eq "${#own_attempt}" ] && [[ "$current_attempt" > "$own_attempt" ]]; }; }; then
+              current_is_newer=true
+            fi
+            if [ "$current_is_newer" = "true" ]; then
+              echo "a newer workflow run owns the integration preflight status"
+              exit 0
+            fi
+            if [ "$current_run_id" = "$own_run_id" ] && [ "$current_attempt" = "$own_attempt" ]; then
+              case "$current_state" in
+                pending|success|failure|error) exit 0 ;;
+                *) echo "::error::the current preflight status is invalid"; exit 1 ;;
+              esac
+            fi
+          fi
+          for attempt in 1 2 3 4 5 6 7; do
+            if gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${TARGET_SHA}" \
+              -f state=pending \
+              -f context="Soak Integration Preflight" \
+              -f description="Full integration preflight is running" \
+              -f target_url="$RUN_URL" >/dev/null; then
+              exit 0
+            fi
+            [ "$attempt" -eq 7 ] || sleep "$(( attempt >= 5 ? 240 : 15 * (1 << (attempt - 1)) ))"
+          done
+          echo "::warning::could not publish the pending integration preflight status; continuing without it (the finalize job publishes the terminal status)"
+          exit 0
 
   launch_runner:
     name: Launch Oracle Cloud Soak Runner
@@ -618,7 +805,7 @@ jobs:
     # abandons the poached VM and launches another, up to three times. Worst
     # case is three full 15-minute waits plus boots. The soak window absorbs
     # this; a hung launch job would not.
-    timeout-minutes: 60
+    timeout-minutes: ${{ needs.schedule_gate.outputs.preflight_only == 'true' && 30 || 60 }}
     concurrency:
       # Grouped by series (not raw duration — a restart's remainder is
       # arbitrary) so the next night's launch still cancels a lingering
@@ -627,7 +814,7 @@ jobs:
       cancel-in-progress: true
     steps:
       - name: Clone trusted runner launcher
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: F1R3FLY-io/system-integration
           ref: ${{ env.SYSTEM_INTEGRATION_REF }}
@@ -669,7 +856,7 @@ jobs:
 
       - name: Create runner-management token
         id: app-token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         with:
           app-id: ${{ vars.CI_GITHUB_APP_ID }}
           private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
@@ -696,6 +883,16 @@ jobs:
           # particular is the one whose absence actually breaks routing, and it
           # must stay in step with the soak job's runs-on below.
           RUNNER_LABELS: self-hosted,linux,x64,f1r3fly-rust-soak,oracle-cloud
+          # 64GB for the soak VM only (fleet default stays AMD64_MEM_GB=48).
+          # The #197 wedge fix unmasked the workload's true footprint: smoke
+          # run 31547587950 (2026-08-11) breached at 36008MB instant RSS
+          # while fully healthy — 1200 deploys/300s, 0 errors, tip-LFB lag 0.
+          # 48GB cannot hold that envelope plus any invariant-respecting
+          # guard (max ceiling there is ~33GB, below the observed peak), so
+          # the launch knob SI PR #99 added is used here. Keep in step with
+          # SOAK_RSS_CEILING_MB above — the sizing invariant is
+          # ceiling + ~7GB host overhead + floor <= this VM's MemTotal.
+          RUNNER_MEM_GB_OVERRIDE: "64"
         shell: bash -e {0}
         run: system-integration/ci/oci-runners/launch-runner.sh amd64
 
@@ -932,6 +1129,7 @@ jobs:
       needs.schedule_gate.outputs.should_run == 'true' &&
       needs.schedule_gate.outputs.retry_attempt == '0' &&
       needs.schedule_gate.outputs.canary != 'true' &&
+      needs.schedule_gate.outputs.preflight_only != 'true' &&
       (needs.launch_runner.result == 'failure' ||
        (needs.soak.result == 'failure' &&
         needs.soak.outputs.completed != 'true'))
@@ -979,8 +1177,8 @@ jobs:
 
   soak:
     name: Merge Recovery Soak
-    needs: [schedule_gate, launch_runner]
-    if: needs.schedule_gate.outputs.should_run == 'true'
+    needs: [schedule_gate, launch_runner, preflight_pending]
+    if: always() && needs.schedule_gate.outputs.should_run == 'true' && needs.launch_runner.result == 'success' && (needs.schedule_gate.outputs.canary == 'true' || needs.preflight_pending.result == 'success')
     # f1r3fly-rust-soak, not the shared f1r3fly-rust-ci-ephemeral: only the
     # runner launched by launch_runner above carries it, so this job cannot
     # land on a CI-launched VM. See "Bind the soak runner to a dedicated
@@ -997,6 +1195,8 @@ jobs:
       # post-mortem has to happen from a GitHub-hosted job that still has OCI
       # credentials. Set before the image build, so it survives any later death.
       instance_id: ${{ steps.selftag.outputs.instance_id }}
+      preflight: ${{ steps.integration_preflight.outputs.result }}
+      telemetry_reset: ${{ steps.reset_telemetry.outcome }}
     # actions: write is needed only so a segment can dispatch the checkpoint
     # publish workflow. Without it `gh workflow run` is rejected and — because
     # that dispatch is deliberately fail-soft — checkpoints would silently
@@ -1013,13 +1213,17 @@ jobs:
     # daily soak at 22h the ceiling is a true 24h. Keyed on kind, not the raw
     # duration: an in-window restart's remainder is arbitrary, and a
     # restarted weekend with >24h left must still get the weekend ceiling.
-    timeout-minutes: ${{ needs.schedule_gate.outputs.kind == 'weekend' && 3840 || 1440 }}
+    timeout-minutes: ${{ needs.schedule_gate.outputs.preflight_only == 'true' && 190 || (needs.schedule_gate.outputs.kind == 'weekend' && 3840 || 1440) }}
     concurrency:
       group: merge-recovery-soak-${{ needs.schedule_gate.outputs.kind }}
       cancel-in-progress: true
     steps:
+      - name: Record soak job start
+        shell: bash -euo pipefail {0}
+        run: echo "SOAK_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: Checkout CI control files
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.workflow_sha }}
           path: ci-control
@@ -1128,9 +1332,9 @@ jobs:
           echo "tagged $iid — reapable after $(date -u -d "@${deadline}" +%FT%TZ)"
 
       - name: Checkout code under test
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
-          ref: ${{ needs.schedule_gate.outputs.target_ref }}
+          ref: ${{ needs.schedule_gate.outputs.target_sha }}
           path: node-under-test
           fetch-depth: 0
           persist-credentials: false
@@ -1138,11 +1342,16 @@ jobs:
       - name: Resolve target revision
         id: target
         working-directory: node-under-test
+        env:
+          EXPECTED_SHA: ${{ needs.schedule_gate.outputs.target_sha }}
         shell: bash -euo pipefail {0}
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        run: |
+          actual_sha="$(git rev-parse HEAD)"
+          test "$actual_sha" = "$EXPECTED_SHA"
+          echo "sha=$actual_sha" >> "$GITHUB_OUTPUT"
 
       - name: Clone trusted integration harness
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: F1R3FLY-io/system-integration
           ref: ${{ env.SYSTEM_INTEGRATION_REF }}
@@ -1186,6 +1395,85 @@ jobs:
           test "$total_mb" -gt 0
           echo "SOAK_HOST_FREE_FLOOR_MB=$((total_mb + 1024))" >> "$GITHUB_ENV"
 
+      - name: Run full integration preflight
+        id: integration_preflight
+        if: needs.schedule_gate.outputs.canary != 'true'
+        env:
+          F1R3FLY_NODE_IMAGE: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          F1R3FLY_NODE_BINARY: /tmp/rnode
+          F1R3FLY_NODE_DEFAULTS_CONF: ${{ github.workspace }}/node-under-test/node/src/main/resources/defaults.conf
+          SYSTEM_INTEGRATION_DIR: ${{ github.workspace }}/system-integration
+          NODE_REPO_DIR: ${{ github.workspace }}/node-under-test
+          PREFLIGHT_PROFILE_FILE: ${{ github.workspace }}/system-integration/integration-tests/test/full-suite.txt
+          PREFLIGHT_OUTPUT_DIR: /tmp/merge-recovery-soak/preflight
+          PREFLIGHT_PROVIDER: docker
+          PREFLIGHT_TIMEOUT_SECONDS: "10800"
+          PREFLIGHT_RSS_CEILING_MB: ${{ env.SOAK_RSS_CEILING_MB }}
+          PREFLIGHT_HOST_FREE_FLOOR_MB: ${{ env.SOAK_HOST_FREE_FLOOR_MB }}
+          PREFLIGHT_ONLY: ${{ needs.schedule_gate.outputs.preflight_only }}
+          PREFLIGHT_END_EPOCH: ${{ needs.schedule_gate.outputs.end_epoch }}
+          DURATION_SECONDS: ${{ needs.schedule_gate.outputs.duration_seconds }}
+        shell: bash -euo pipefail {0}
+        run: |
+          started="$(date +%s)"
+          timeout_seconds="$PREFLIGHT_TIMEOUT_SECONDS"
+          if [ "$PREFLIGHT_ONLY" = "true" ]; then
+            window_budget="$(( PREFLIGHT_END_EPOCH - started - 600 ))"
+            job_budget="$(( 190 * 60 - (started - SOAK_JOB_STARTED_AT) - 600 ))"
+            [ "$window_budget" -lt "$timeout_seconds" ] && timeout_seconds="$window_budget"
+            [ "$job_budget" -lt "$timeout_seconds" ] && timeout_seconds="$job_budget"
+          fi
+          status=1
+          if [ "$timeout_seconds" -ge 60 ]; then
+            export PREFLIGHT_TIMEOUT_SECONDS="$timeout_seconds"
+            set +e
+            ci-control/scripts/run-integration-preflight.sh
+            status=$?
+            set -e
+          else
+            echo "::error::the preflight execution window expired before pytest started"
+          fi
+          elapsed="$(( $(date +%s) - started ))"
+          remaining="$(( DURATION_SECONDS - elapsed ))"
+          if [ "$PREFLIGHT_ONLY" != "true" ] && [ "$remaining" -lt 3600 ]; then
+            echo "::error::integration preflight left less than one hour for the soak"
+            status=1
+          fi
+          result=failed
+          [ "$status" -eq 0 ] && result=passed
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+          echo "elapsed_seconds=$elapsed" >> "$GITHUB_OUTPUT"
+          echo "remaining_seconds=$remaining" >> "$GITHUB_OUTPUT"
+          if [ -f "$PREFLIGHT_OUTPUT_DIR/summary.md" ]; then
+            cat "$PREFLIGHT_OUTPUT_DIR/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
+
+      - name: Dispatch integration preflight success status
+        if: always() && needs.schedule_gate.outputs.canary != 'true' && steps.integration_preflight.outputs.result == 'passed'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ needs.schedule_gate.outputs.target_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+          WORKFLOW_REF: ${{ github.ref_name }}
+        shell: bash -euo pipefail {0}
+        run: |
+          gh workflow run soak-preflight-status.yml \
+            --ref "$WORKFLOW_REF" \
+            -f target_sha="$TARGET_SHA" \
+            -f source_run_url="$RUN_URL"
+
+      - name: Reset integration telemetry after preflight
+        id: reset_telemetry
+        if: always() && steps.integration_preflight.outputs.result == 'passed'
+        shell: bash -euo pipefail {0}
+        run: |
+          for directory in \
+            system-integration/integration-tests/data \
+            system-integration/integration-tests/log-archive; do
+            [ ! -d "$directory" ] || find "$directory" -mindepth 1 -delete
+          done
+
       # The soak runs as consecutive segments sharing one output directory, so
       # results can be published part-way through. The script resumes from its
       # state file each time — counters, the original start time and iteration
@@ -1198,14 +1486,16 @@ jobs:
       # reach its end to publish. `steps.target` is read by every segment, so
       # they stay in this job rather than becoming a matrix.
       - name: Soak segment 1
-        if: always() && needs.schedule_gate.outputs.checkpoint_1 != ''
+        if: always() && needs.schedule_gate.outputs.preflight_only != 'true' && (needs.schedule_gate.outputs.canary == 'true' || (steps.integration_preflight.outputs.result == 'passed' && steps.reset_telemetry.outcome == 'success')) && needs.schedule_gate.outputs.checkpoint_1 != ''
         uses: ./ci-control/.github/actions/soak-segment
         with:
           label: segment-1
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_1 }}
-          duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          duration_seconds: ${{ steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
+          trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
+          slot_delay_seconds: ${{ needs.schedule_gate.outputs.slot_delay_seconds }}
           run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
           # Daily: after 8h, stop once the branch under test advances — the run
           # is pinned to one image, so past that point it is testing history.
@@ -1222,14 +1512,16 @@ jobs:
           gh_token: ${{ github.token }}
 
       - name: Soak segment 2
-        if: always() && needs.schedule_gate.outputs.checkpoint_2 != ''
+        if: always() && needs.schedule_gate.outputs.preflight_only != 'true' && (needs.schedule_gate.outputs.canary == 'true' || (steps.integration_preflight.outputs.result == 'passed' && steps.reset_telemetry.outcome == 'success')) && needs.schedule_gate.outputs.checkpoint_2 != ''
         uses: ./ci-control/.github/actions/soak-segment
         with:
           label: segment-2
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_2 }}
-          duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          duration_seconds: ${{ steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
+          trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
+          slot_delay_seconds: ${{ needs.schedule_gate.outputs.slot_delay_seconds }}
           run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
           # Daily: after 8h, stop once the branch under test advances — the run
           # is pinned to one image, so past that point it is testing history.
@@ -1246,14 +1538,16 @@ jobs:
           gh_token: ${{ github.token }}
 
       - name: Soak segment 3
-        if: always() && needs.schedule_gate.outputs.checkpoint_3 != ''
+        if: always() && needs.schedule_gate.outputs.preflight_only != 'true' && (needs.schedule_gate.outputs.canary == 'true' || (steps.integration_preflight.outputs.result == 'passed' && steps.reset_telemetry.outcome == 'success')) && needs.schedule_gate.outputs.checkpoint_3 != ''
         uses: ./ci-control/.github/actions/soak-segment
         with:
           label: segment-3
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_3 }}
-          duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          duration_seconds: ${{ steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
+          trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
+          slot_delay_seconds: ${{ needs.schedule_gate.outputs.slot_delay_seconds }}
           run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
           # Daily: after 8h, stop once the branch under test advances — the run
           # is pinned to one image, so past that point it is testing history.
@@ -1270,14 +1564,16 @@ jobs:
           gh_token: ${{ github.token }}
 
       - name: Soak segment 4
-        if: always() && needs.schedule_gate.outputs.checkpoint_4 != ''
+        if: always() && needs.schedule_gate.outputs.preflight_only != 'true' && (needs.schedule_gate.outputs.canary == 'true' || (steps.integration_preflight.outputs.result == 'passed' && steps.reset_telemetry.outcome == 'success')) && needs.schedule_gate.outputs.checkpoint_4 != ''
         uses: ./ci-control/.github/actions/soak-segment
         with:
           label: segment-4
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_4 }}
-          duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          duration_seconds: ${{ steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
+          trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
+          slot_delay_seconds: ${{ needs.schedule_gate.outputs.slot_delay_seconds }}
           run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
           # Daily: after 8h, stop once the branch under test advances — the run
           # is pinned to one image, so past that point it is testing history.
@@ -1294,14 +1590,16 @@ jobs:
           gh_token: ${{ github.token }}
 
       - name: Soak segment 5
-        if: always() && needs.schedule_gate.outputs.checkpoint_5 != ''
+        if: always() && needs.schedule_gate.outputs.preflight_only != 'true' && (needs.schedule_gate.outputs.canary == 'true' || (steps.integration_preflight.outputs.result == 'passed' && steps.reset_telemetry.outcome == 'success')) && needs.schedule_gate.outputs.checkpoint_5 != ''
         uses: ./ci-control/.github/actions/soak-segment
         with:
           label: segment-5
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_5 }}
-          duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          duration_seconds: ${{ steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
+          trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
+          slot_delay_seconds: ${{ needs.schedule_gate.outputs.slot_delay_seconds }}
           run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
           # Daily: after 8h, stop once the branch under test advances — the run
           # is pinned to one image, so past that point it is testing history.
@@ -1318,7 +1616,7 @@ jobs:
           gh_token: ${{ github.token }}
 
       - name: Soak final segment
-        if: always()
+        if: always() && needs.schedule_gate.outputs.preflight_only != 'true' && (needs.schedule_gate.outputs.canary == 'true' || (steps.integration_preflight.outputs.result == 'passed' && steps.reset_telemetry.outcome == 'success'))
         uses: ./ci-control/.github/actions/soak-segment
         with:
           label: final
@@ -1335,9 +1633,11 @@ jobs:
           # This segment publishes through perf_report, which computes a real
           # verdict and appends the run to its history series.
           deadline_epoch: ${{ needs.schedule_gate.outputs.retry_attempt != '0' && needs.schedule_gate.outputs.end_epoch || '' }}
-          duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          duration_seconds: ${{ steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
+          trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
+          slot_delay_seconds: ${{ needs.schedule_gate.outputs.slot_delay_seconds }}
           run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
           # Daily: after 8h, stop once the branch under test advances — the run
           # is pinned to one image, so past that point it is testing history.
@@ -1358,7 +1658,7 @@ jobs:
       # a daily soak produces no summary at all, so there is nothing to publish
       # and its numbers die with the 14-day artifact.
       - name: Aggregate soak report + verdict
-        if: always() && needs.schedule_gate.outputs.should_run == 'true'
+        if: always() && needs.schedule_gate.outputs.should_run == 'true' && needs.schedule_gate.outputs.preflight_only != 'true' && (needs.schedule_gate.outputs.canary == 'true' || (steps.integration_preflight.outputs.result == 'passed' && steps.reset_telemetry.outcome == 'success'))
         shell: bash -euo pipefail {0}
         env:
           SOAK_DIR: /tmp/merge-recovery-soak
@@ -1366,7 +1666,7 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           SOAK_KIND: ${{ needs.schedule_gate.outputs.kind }}
-          DURATION_SECONDS: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          DURATION_SECONDS: ${{ steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           RETRY_ATTEMPT: ${{ needs.schedule_gate.outputs.retry_attempt }}
           WINDOW_SECONDS: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '216000' || '79200' }}
           DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
@@ -1417,7 +1717,7 @@ jobs:
           cat "$OUT_DIR/perf-report.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish ONS alert email
-        if: always() && needs.schedule_gate.outputs.run_benchmarks == 'true'
+        if: always() && needs.schedule_gate.outputs.preflight_only != 'true' && needs.schedule_gate.outputs.run_benchmarks == 'true' && steps.integration_preflight.outputs.result == 'passed' && steps.reset_telemetry.outcome == 'success'
         shell: bash -e {0}
         env:
           REPORT_DIR: /tmp/merge-recovery-soak/report
@@ -1460,13 +1760,126 @@ jobs:
         # second VM reproducing it.
         run: echo "completed=true" >> "$GITHUB_OUTPUT"
 
+  preflight_finalize:
+    name: Finalize Integration Preflight Status
+    needs: [schedule_gate, preflight_pending, launch_runner, soak]
+    if: always() && needs.schedule_gate.outputs.should_run == 'true' && needs.schedule_gate.outputs.canary != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      statuses: write
+    concurrency:
+      group: soak-preflight-status-${{ needs.schedule_gate.outputs.target_sha }}
+      cancel-in-progress: false
+    steps:
+      - name: Report final status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ needs.schedule_gate.outputs.target_sha }}
+          PENDING_RESULT: ${{ needs.preflight_pending.result }}
+          LAUNCH_RESULT: ${{ needs.launch_runner.result }}
+          SOAK_RESULT: ${{ needs.soak.result }}
+          PREFLIGHT_RESULT: ${{ needs.soak.outputs.preflight }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+        shell: bash -euo pipefail {0}
+        run: |
+          current=""
+          read_ok=false
+          for attempt in 1 2 3 4 5 6 7; do
+            if current="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}/status" \
+              --jq '[.statuses[] | select(.context == "Soak Integration Preflight")][0] // {} | [(.state // ""), (.target_url // "")] | @tsv')"; then
+              read_ok=true
+              break
+            fi
+            [ "$attempt" -eq 7 ] || sleep "$(( attempt >= 5 ? 240 : 15 * (1 << (attempt - 1)) ))"
+          done
+          if [ "$read_ok" != "true" ]; then
+            echo "::error::could not read the current integration preflight status"
+            exit 1
+          fi
+          IFS=$'\t' read -r current_state current_url <<<"$current"
+          prefix="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/"
+          own_tail="${RUN_URL#"$prefix"}"
+          if [ "$own_tail" = "$RUN_URL" ] || ! [[ "$own_tail" =~ ^([0-9]+)(/attempts/([0-9]+))?$ ]]; then
+            echo "::error::the current run URL is invalid"
+            exit 1
+          fi
+          own_run_id="${BASH_REMATCH[1]}"
+          own_attempt="${BASH_REMATCH[3]:-0}"
+          if [ -z "$current_url" ]; then
+            echo "no pending status exists (degraded publish during an outage); publishing the terminal status directly"
+            current_run_id="$own_run_id"
+            current_attempt="$own_attempt"
+          else
+          current_tail="${current_url#"$prefix"}"
+          if [ "$current_tail" = "$current_url" ] || ! [[ "$current_tail" =~ ^([0-9]+)(/attempts/([0-9]+))?$ ]]; then
+            echo "::error::the current preflight status has no valid owner"
+            exit 1
+          fi
+          current_run_id="${BASH_REMATCH[1]}"
+          current_attempt="${BASH_REMATCH[3]:-0}"
+          fi
+          current_is_newer=false
+          if [ "${#current_run_id}" -gt "${#own_run_id}" ] || \
+            { [ "${#current_run_id}" -eq "${#own_run_id}" ] && [[ "$current_run_id" > "$own_run_id" ]]; }; then
+            current_is_newer=true
+          elif [ "$current_run_id" = "$own_run_id" ] && \
+            { [ "${#current_attempt}" -gt "${#own_attempt}" ] || \
+              { [ "${#current_attempt}" -eq "${#own_attempt}" ] && [[ "$current_attempt" > "$own_attempt" ]]; }; }; then
+            current_is_newer=true
+          fi
+          if [ "$current_is_newer" = "true" ]; then
+            echo "a newer workflow run owns the integration preflight status"
+            exit 0
+          fi
+          if [ "$current_run_id" != "$own_run_id" ] || [ "$current_attempt" != "$own_attempt" ]; then
+            echo "::error::the current preflight status belongs to a different workflow run"
+            exit 1
+          fi
+          case "$current_state" in
+            success)
+              exit 0
+              ;;
+            failure|error)
+              echo "the source workflow already finalized the preflight as $current_state"
+              exit 0
+              ;;
+            pending) ;;
+            *) echo "::error::the current preflight status is invalid"; exit 1 ;;
+          esac
+          state=failure
+          description="Full integration preflight did not complete"
+          if [ "$PREFLIGHT_RESULT" = "passed" ]; then
+            state=success
+            description="Full integration preflight passed"
+          elif [ "$PENDING_RESULT" != "success" ]; then
+            description="Preflight status initialization failed"
+          elif [ "$LAUNCH_RESULT" != "success" ]; then
+            description="Runner launch failed before integration preflight"
+          elif [ "$SOAK_RESULT" = "cancelled" ]; then
+            description="Integration preflight was cancelled"
+          fi
+          for attempt in 1 2 3 4 5 6 7; do
+            if gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${TARGET_SHA}" \
+              -f state="$state" \
+              -f context="Soak Integration Preflight" \
+              -f description="$description" \
+              -f target_url="$RUN_URL" >/dev/null; then
+              exit 0
+            fi
+            [ "$attempt" -eq 7 ] || sleep "$(( attempt >= 5 ? 240 : 15 * (1 << (attempt - 1)) ))"
+          done
+          echo "::error::could not finalize the integration preflight status"
+          exit 1
+
   perf_report:
     name: Publish Soak Dashboard
     needs: [schedule_gate, soak]
     # Both series publish. Gating this on run_benchmarks made it weekend-only,
     # so the dashboard's Daily tab had no producer and nightly results expired
     # with the artifact.
-    if: needs.schedule_gate.outputs.should_run == 'true' && needs.schedule_gate.outputs.canary != 'true' && !cancelled()
+    if: needs.schedule_gate.outputs.should_run == 'true' && needs.schedule_gate.outputs.canary != 'true' && needs.schedule_gate.outputs.preflight_only != 'true' && needs.soak.outputs.preflight == 'passed' && needs.soak.outputs.telemetry_reset == 'success' && !cancelled()
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -1483,7 +1896,7 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - name: Checkout CI control files
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.workflow_sha }}
           path: ci-control
@@ -1578,6 +1991,69 @@ jobs:
                 ;;
             esac
           done
+          # Chart SVGs ride the renderer's manifest instead of a hardcoded
+          # list: charts-manifest-<series>.json names exactly the SVGs the
+          # last render produced, so a chart added or suppressed in
+          # scripts/soak-charts changes what publishers preserve without any
+          # workflow edit. Normally the render step below overwrites all of
+          # this; when rendering skips or fails, these carried copies ARE the
+          # published charts. Manifest entries are remote content — only bare
+          # <name>.svg tokens are accepted, so a poisoned manifest cannot
+          # traverse paths, and every fetched body must look like an SVG (a
+          # CDN error page served with 200 must not become a chart).
+          for m in charts-manifest-weekend.json charts-manifest-daily.json; do
+            code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
+              -o "site/data/${m}" "${DASHBOARD_URL}data/${m}?cb=${cb}")" || code=000
+            case "$code" in
+              200) ;;
+              404) rm -f "site/data/${m}"; continue ;;
+              *)
+                echo "::error::could not read published ${m} (HTTP ${code}); aborting so no published series is lost"
+                exit 1
+                ;;
+            esac
+            jq -e 'type == "array" and all(.[]; type == "string")' "site/data/${m}" >/dev/null 2>&1 || {
+              echo "::warning::published ${m} is not an array of strings; dropping the chart manifest rather than blocking the publish"
+              rm -f "site/data/${m}"
+              continue
+            }
+            while IFS= read -r f; do
+              case "$f" in
+                ''|.*|*[!A-Za-z0-9._-]*)
+                  echo "::error::${m} lists a suspicious filename; refusing to republish it"
+                  exit 1
+                  ;;
+                *.svg) ;;
+                *)
+                  echo "::error::${m} lists non-SVG ${f}; refusing to republish it"
+                  exit 1
+                  ;;
+              esac
+              code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
+                -o "site/data/${f}" "${DASHBOARD_URL}data/${f}?cb=${cb}")" || code=000
+              # Charts are cosmetic: a per-SVG fetch or content failure drops
+              # that one chart with a warning instead of blocking the publish
+              # that makes soak history durable. The page hides a missing
+              # figure and the next successful render restores it; the
+              # manifest is re-filtered below so it never advertises a file
+              # this deploy does not carry. A hostile FILENAME above stays
+              # fatal — that is a poisoned manifest, not a cosmetic blip.
+              if [ "$code" = "200" ] && head -c 1024 "site/data/${f}" | grep -q '<svg'; then
+                :
+              else
+                echo "::warning::dropping chart ${f} (HTTP ${code}) rather than blocking the publish"
+                rm -f "site/data/${f}"
+              fi
+            done < <(jq -r '.[]' "site/data/${m}")
+            # The carried manifest must describe what this deploy actually
+            # ships: re-filter it to the SVGs that survived, so a consumer
+            # never fetches a name the manifest promised but the drop above
+            # removed.
+            jq -r '.[]' "site/data/${m}" | while IFS= read -r f; do
+              { [ -s "site/data/${f}" ] && printf '%s\n' "$f"; } || true
+            done | jq -R . | jq -s . > "site/data/${m}.filtered"
+            mv -f "site/data/${m}.filtered" "site/data/${m}"
+          done
           # HTTP 200 is not proof of valid content — a CDN or proxy error page
           # is served with 200 too, and republishing one would corrupt the
           # series just as thoroughly as dropping it. Every carried-forward
@@ -1662,6 +2138,40 @@ jobs:
             src="soak-results/report/${b%%:*}.json"
             [ -e "$src" ] && cp "$src" "site/data/${b##*:}${SERIES_SUFFIX}.json"
           done
+
+      - name: Render dashboard charts
+        # Chart SVGs are cosmetic the same way badges are: a render failure
+        # must never block the publish that makes soak history durable, so
+        # this step may fail while the deploy proceeds — the SVGs carried
+        # forward from the previous publish then stand. Both series are
+        # re-rendered because both histories were just fetched fresh.
+        continue-on-error: true
+        shell: bash -euo pipefail {0}
+        run: |
+          # The runner's preinstalled stable toolchain, not the workspace's
+          # pinned nightly: the standalone crate builds on stable, and pulling
+          # the nightly would add minutes to every publish. --locked holds the
+          # build to the crate's committed Cargo.lock, its supply-chain pin.
+          export RUSTUP_TOOLCHAIN=stable
+          cargo build --release --locked \
+            --manifest-path ci-control/scripts/soak-charts/Cargo.toml
+          render() {
+            [ -s "site/data/history$1.json" ] || return 0
+            # Staged render: the crate writes into a scratch dir OUTSIDE the
+            # site tree, and only a fully successful series replaces the
+            # carried SVGs and manifest — a mid-render crash therefore cannot
+            # publish a truncated chart, making "the carried SVGs stand" a
+            # guarantee rather than a hope.
+            rm -rf "chart-stage-$2"
+            mkdir -p "chart-stage-$2"
+            ci-control/scripts/soak-charts/target/release/soak-charts \
+              --history "site/data/history$1.json" \
+              --out-dir "chart-stage-$2" --series "$2"
+            cp "chart-stage-$2"/* site/data/
+            rm -rf "chart-stage-$2"
+          }
+          render "" weekend
+          render "-daily" daily
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
@@ -2019,7 +2529,7 @@ jobs:
 
   notify_failure:
     name: Email Soak Failure Alert
-    needs: [schedule_gate, launch_runner, soak, perf_report]
+    needs: [schedule_gate, launch_runner, soak, preflight_finalize, perf_report]
     # Runs on a GitHub-hosted runner with user-principal OCI auth so the
     # alert still goes out when the OCI runner itself failed to launch —
     # the in-soak ONS step (instance-principal) cannot cover that case.
@@ -2074,10 +2584,13 @@ jobs:
           ONS_TOPIC_OCID: ${{ vars.SOAK_ONS_TOPIC_OCID }}
           LAUNCH_RESULT: ${{ needs.launch_runner.result }}
           SOAK_RESULT: ${{ needs.soak.result }}
+          PREFLIGHT_RESULT: ${{ needs.soak.outputs.preflight }}
+          PREFLIGHT_STATUS_RESULT: ${{ needs.preflight_finalize.result }}
           DASHBOARD_RESULT: ${{ needs.perf_report.result }}
           TARGET_REF: ${{ needs.schedule_gate.outputs.target_ref }}
           DURATION_SECONDS: ${{ needs.schedule_gate.outputs.duration_seconds }}
           SOAK_KIND: ${{ needs.schedule_gate.outputs.kind }}
+          PREFLIGHT_ONLY: ${{ needs.schedule_gate.outputs.preflight_only }}
           RETRY_ATTEMPT: ${{ needs.schedule_gate.outputs.retry_attempt }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
@@ -2091,7 +2604,13 @@ jobs:
           # remainder, so a duration test would label a restarted weekend as a
           # daily. Say so explicitly too — "the weekend soak failed" and "the
           # restart of the weekend soak failed" call for different responses.
-          if [ "$SOAK_KIND" = "weekend" ]; then kind="weekend-60h"; else kind="daily-24h"; fi
+          if [ "$PREFLIGHT_ONLY" = "true" ]; then
+            kind="integration-preflight"
+          elif [ "$SOAK_KIND" = "weekend" ]; then
+            kind="weekend-60h"
+          else
+            kind="daily-24h"
+          fi
           if [ "${RETRY_ATTEMPT:-0}" != "0" ]; then
             kind="$kind restart ($((DURATION_SECONDS / 3600))h remaining)"
           fi
@@ -2099,9 +2618,10 @@ jobs:
           # that failed after a clean soak are different pages. perf_report
           # covers both the Pages deploy and the regression verdict gate, so
           # its failure is named for the stage rather than the deploy alone.
-          case "$LAUNCH_RESULT/$SOAK_RESULT" in
+          case "$LAUNCH_RESULT/$SOAK_RESULT/$PREFLIGHT_RESULT" in
             failure/*|cancelled/*) what="runner launch $LAUNCH_RESULT" ;;
-            */failure|*/cancelled) what="soak $SOAK_RESULT" ;;
+            */failure/failed|*/cancelled/failed) what="integration preflight failed" ;;
+            */failure/*|*/cancelled/*) what="soak $SOAK_RESULT" ;;
             *)                     what="report/verdict stage $DASHBOARD_RESULT" ;;
           esac
           title="F1R3FLY soak alert ($kind): $what — $(date -u +%F)"
@@ -2112,6 +2632,8 @@ jobs:
           Job results:
             launch runner:  $LAUNCH_RESULT
             soak:           $SOAK_RESULT
+            preflight:      ${PREFLIGHT_RESULT:-not-run}
+            status report:  $PREFLIGHT_STATUS_RESULT
             dashboard:      $DASHBOARD_RESULT
 
           Run: $RUN_URL

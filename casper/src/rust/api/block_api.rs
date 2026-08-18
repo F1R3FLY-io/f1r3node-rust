@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -100,6 +101,18 @@ fn deploy_propose_max_attempts() -> u32 { DEPLOY_PROPOSE_MAX_ATTEMPTS }
 
 fn deploy_propose_retry_delay() -> Duration { Duration::from_millis(DEPLOY_PROPOSE_RETRY_DELAY_MS) }
 
+fn deploy_is_block_expired(
+    valid_after_block_number: i64,
+    latest_block_number: i64,
+    deploy_lifespan: i64,
+) -> Result<bool, CasperError> {
+    Ok(!crate::rust::util::deploy_window::is_open(
+        valid_after_block_number,
+        latest_block_number,
+        deploy_lifespan,
+    )?)
+}
+
 fn should_retry_deploy_propose(status: &ProposeStatus) -> bool {
     match status {
         ProposeStatus::Failure(ProposeFailure::InternalDeployError)
@@ -197,13 +210,130 @@ impl std::fmt::Display for ExploratoryDeployReadOnlyError {
 impl std::error::Error for ExploratoryDeployReadOnlyError {}
 
 #[derive(Debug, thiserror::Error)]
-#[error("Observer is busy processing another exploratory query; retry later")]
-pub struct ExploratoryDeployBusyError;
+#[error("Node exploratory query capacity is exhausted; retry in {retry_after_secs} s")]
+pub struct ExploratoryDeployBusyError {
+    /// Seconds to advertise in `Retry-After`. Derived from the configured
+    /// execution budget: capacity is held until the occupying query terminates,
+    /// so that budget is the earliest a caller can expect a slot to free.
+    pub retry_after_secs: u64,
+}
+
+impl ExploratoryDeployBusyError {
+    /// Rounds up to one second because `Retry-After` is expressed in whole
+    /// seconds — a sub-second budget cannot be advertised as zero without
+    /// telling the caller to retry immediately.
+    fn with_budget(execution_budget: Duration) -> Self {
+        Self {
+            retry_after_secs: execution_budget.as_secs().max(1),
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
-#[error("Exploratory query exceeded the {timeout_ms} ms execution deadline")]
+#[error(
+    "Exploratory query cancelled after exceeding its {timeout_ms} ms execution budget; \
+     the budget bounds execution, not response time"
+)]
 pub struct ExploratoryDeployTimeoutError {
-    pub timeout_ms: u128,
+    pub timeout_ms: u64,
+}
+
+/// An exploratory-deploy rejection that every transport can express natively —
+/// HTTP via a status code, gRPC via `tonic::Status`.
+///
+/// Classification matches the error variant and carries its data forward; it
+/// never inspects the rendered message. That is what keeps the two transport
+/// surfaces from drifting apart, and it is why the payload lives here rather
+/// than being re-derived per transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExploratoryDeployRejection {
+    Busy { retry_after_secs: u64 },
+    Timeout { timeout_ms: u64 },
+}
+
+impl ExploratoryDeployRejection {
+    /// Classify one cause in an error chain, so a caller walking the chain can
+    /// keep using that cause's own message for the response body.
+    pub fn from_cause(cause: &(dyn std::error::Error + 'static)) -> Option<Self> {
+        if let Some(busy) = cause.downcast_ref::<ExploratoryDeployBusyError>() {
+            return Some(Self::Busy {
+                retry_after_secs: busy.retry_after_secs,
+            });
+        }
+        cause
+            .downcast_ref::<ExploratoryDeployTimeoutError>()
+            .map(|timeout| Self::Timeout {
+                timeout_ms: timeout.timeout_ms,
+            })
+    }
+
+    pub fn classify(err: &eyre::Error) -> Option<Self> { err.chain().find_map(Self::from_cause) }
+}
+
+#[repr(u8)]
+enum ExploratoryDeployOutcome {
+    Failed,
+    Completed,
+    TimedOut,
+}
+
+struct ExploratoryDeployMetrics {
+    started: Instant,
+    outcome: Arc<AtomicU8>,
+}
+
+impl ExploratoryDeployMetrics {
+    fn new(outcome: Arc<AtomicU8>) -> Self {
+        metrics::gauge!("exploratory_deploy.active", "source" => "casper").increment(1.0);
+        Self {
+            started: Instant::now(),
+            outcome,
+        }
+    }
+}
+
+impl Drop for ExploratoryDeployMetrics {
+    fn drop(&mut self) {
+        metrics::gauge!("exploratory_deploy.active", "source" => "casper").decrement(1.0);
+        metrics::histogram!("exploratory_deploy.duration", "source" => "casper")
+            .record(self.started.elapsed().as_secs_f64());
+        match self.outcome.load(Ordering::Relaxed) {
+            value if value == ExploratoryDeployOutcome::Completed as u8 => {
+                metrics::counter!("exploratory_deploy.completed", "source" => "casper")
+                    .increment(1);
+            }
+            value if value == ExploratoryDeployOutcome::TimedOut as u8 => {
+                metrics::counter!("exploratory_deploy.timed_out", "source" => "casper")
+                    .increment(1);
+            }
+            _ => {
+                metrics::counter!("exploratory_deploy.failed", "source" => "casper").increment(1);
+            }
+        }
+        RuntimeManager::trim_allocator();
+    }
+}
+
+enum ExploratoryDeployTaskError {
+    Join(tokio::task::JoinError),
+    Timeout,
+}
+
+async fn await_exploratory_deploy_task<T>(
+    mut task: tokio::task::JoinHandle<T>,
+    timeout: Duration,
+    outcome: Arc<AtomicU8>,
+) -> Result<T, ExploratoryDeployTaskError> {
+    match tokio::time::timeout(timeout, &mut task).await {
+        Ok(Ok(result)) => Ok(result),
+        Ok(Err(error)) => Err(ExploratoryDeployTaskError::Join(error)),
+        Err(_) => {
+            outcome.store(ExploratoryDeployOutcome::TimedOut as u8, Ordering::Relaxed);
+            task.abort();
+            let _ = task.await;
+            Err(ExploratoryDeployTaskError::Timeout)
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -359,13 +489,9 @@ impl BlockAPI {
             deploy_data: Signed<DeployData>,
             trigger_propose: &Option<Arc<ProposeFunction>>,
         ) -> ApiErr<String> {
-            let deploy_result = casper.deploy(deploy_data)?;
-            let r: ApiErr<String> = match deploy_result {
-                Either::Left(err) => Err(err.into()),
-                Either::Right(deploy_id) => Ok(format!(
-                    "Success!\nDeployId is: {}",
-                    PrettyPrinter::build_string_no_limit(deploy_id.as_ref())
-                )),
+            let deploy_id = match casper.deploy(deploy_data)? {
+                Either::Left(err) => return Err(err.into()),
+                Either::Right(deploy_id) => deploy_id,
             };
 
             // Trigger propose asynchronously for deploy path to keep do_deploy latency bounded.
@@ -445,8 +571,10 @@ impl BlockAPI {
                 });
             }
 
-            // yield r
-            r
+            Ok(format!(
+                "Success!\nDeployId is: {}",
+                PrettyPrinter::build_string_no_limit(deploy_id.as_ref())
+            ))
         }
 
         // Validation chain - mimics Scala's whenA pattern
@@ -530,6 +658,31 @@ impl BlockAPI {
         };
 
         if let Some(casper) = eng.with_casper() {
+            let dag = casper.block_dag().await?;
+            // A deploy admitted now can only ever land in a block that doesn't
+            // exist yet — the next one, at `latest_block_number + 1` — never
+            // in the current tip, which is already built. block_creator.rs's
+            // own expiry filter checks against exactly that next block's
+            // number (`earliest_block_number = block_number - deploy_lifespan`
+            // for the block being assembled). Checking admission against
+            // `latest_block_number` instead of `latest_block_number + 1` is
+            // off by one: a deploy admitted "just inside" the window at the
+            // current tip is then found expired by the very next block's
+            // filter, so it can never actually be included.
+            let next_block_number = dag.latest_block_number() + 1;
+            let deploy_lifespan = casper.casper_shard_conf().deploy_lifespan;
+            if deploy_is_block_expired(
+                d.data.valid_after_block_number,
+                next_block_number,
+                deploy_lifespan,
+            )? {
+                return Err(eyre::Report::new(DeployValidationError {
+                    message: format!(
+                        "Deploy validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
+                        d.data.valid_after_block_number, next_block_number, deploy_lifespan
+                    ),
+                }));
+            }
             casper_deploy(casper, d, trigger_propose).await
         } else {
             log_warn(&log_error_message)
@@ -1670,20 +1823,20 @@ impl BlockAPI {
             let is_read_only = casper.get_validator().is_none();
             if is_read_only || dev_mode {
                 let runtime_manager = casper.runtime_manager();
-                let _permit = runtime_manager
-                    .acquire_exploratory_deploy_permit()
-                    .await
-                    .ok_or_else(|| eyre::Report::new(ExploratoryDeployBusyError))?;
+                let execution_budget = runtime_manager.exploratory_deploy_execution_timeout_value();
+                let permit = runtime_manager
+                    .try_acquire_exploratory_deploy_permit()
+                    .ok_or_else(|| {
+                        metrics::counter!(
+                            "exploratory_deploy.rejected",
+                            "source" => "casper"
+                        )
+                        .increment(1);
+                        eyre::Report::new(ExploratoryDeployBusyError::with_budget(execution_budget))
+                    })?;
 
                 let (state_hash, target_block) = if block_hash.is_none() {
-                    let dag = casper.block_dag().await?;
-                    let lfb_hash = dag.last_finalized_block();
-                    let lfb = casper.block_store().get(&lfb_hash)?.ok_or_else(|| {
-                        eyre::eyre!(
-                            "Failure to find last finalized block with hash: {}",
-                            PrettyPrinter::build_string_no_limit(&lfb_hash)
-                        )
-                    })?;
+                    let lfb = casper.last_finalized_block().await?;
                     (proto_util::post_state_hash(&lfb), Some(lfb))
                 } else {
                     // Specific block requested: use its post-state
@@ -1716,50 +1869,42 @@ impl BlockAPI {
 
                 match target_block {
                     Some(b) => {
-                        let started = Instant::now();
-                        metrics::gauge!(
-                            "exploratory_deploy.active",
-                            "source" => "casper"
-                        )
-                        .increment(1.0);
-                        let timeout = runtime_manager.exploratory_deploy_execution_timeout_value();
-                        let result = tokio::time::timeout(
-                            timeout,
-                            runtime_manager.play_exploratory_deploy(term, &state_hash, deployer),
-                        )
-                        .await;
-                        metrics::gauge!(
-                            "exploratory_deploy.active",
-                            "source" => "casper"
-                        )
-                        .decrement(1.0);
-                        metrics::histogram!(
-                            "exploratory_deploy.duration",
-                            "source" => "casper"
-                        )
-                        .record(started.elapsed().as_secs_f64());
-                        RuntimeManager::trim_allocator();
+                        let timeout = execution_budget;
+                        let outcome =
+                            Arc::new(AtomicU8::new(ExploratoryDeployOutcome::Failed as u8));
+                        let task_outcome = outcome.clone();
+                        let task_runtime_manager = runtime_manager.clone();
+                        let task = tokio::spawn(async move {
+                            let _permit = permit;
+                            let _metrics = ExploratoryDeployMetrics::new(task_outcome.clone());
+                            let result = task_runtime_manager
+                                .play_exploratory_deploy(term, &state_hash, deployer)
+                                .await;
+                            if result.is_ok() {
+                                task_outcome.store(
+                                    ExploratoryDeployOutcome::Completed as u8,
+                                    Ordering::Relaxed,
+                                );
+                            }
+                            result
+                        });
 
-                        let (res, cost) = match result {
-                            Ok(result) => {
-                                metrics::counter!(
-                                    "exploratory_deploy.completed",
-                                    "source" => "casper"
-                                )
-                                .increment(1);
-                                result?
-                            }
-                            Err(_) => {
-                                metrics::counter!(
-                                    "exploratory_deploy.timed_out",
-                                    "source" => "casper"
-                                )
-                                .increment(1);
-                                return Err(eyre::Report::new(ExploratoryDeployTimeoutError {
-                                    timeout_ms: timeout.as_millis(),
-                                }));
-                            }
-                        };
+                        let (res, cost) =
+                            match await_exploratory_deploy_task(task, timeout, outcome).await {
+                                Ok(result) => result?,
+                                Err(ExploratoryDeployTaskError::Join(error)) => {
+                                    return Err(eyre::eyre!(
+                                        "Exploratory query task failed: {}",
+                                        error
+                                    ));
+                                }
+                                Err(ExploratoryDeployTaskError::Timeout) => {
+                                    return Err(eyre::Report::new(ExploratoryDeployTimeoutError {
+                                        timeout_ms: u64::try_from(timeout.as_millis())
+                                            .unwrap_or(u64::MAX),
+                                    }));
+                                }
+                            };
                         let light_block_info =
                             Self::get_light_block_info(casper.as_ref(), &b).await?;
                         Ok((res, light_block_info, cost))
@@ -1854,5 +1999,58 @@ impl BlockAPI {
             tracing::warn!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::pending;
+    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use tokio::sync::Semaphore;
+
+    use super::{
+        await_exploratory_deploy_task, deploy_is_block_expired, ExploratoryDeployOutcome,
+        ExploratoryDeployTaskError,
+    };
+
+    struct DropSignal(Arc<AtomicBool>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) { self.0.store(true, Ordering::Relaxed); }
+    }
+
+    #[tokio::test]
+    async fn exploratory_timeout_aborts_and_joins_before_releasing_capacity() {
+        let semaphore = Arc::new(Semaphore::new(1));
+        let permit = semaphore.clone().try_acquire_owned().unwrap();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let task_dropped = dropped.clone();
+        let task = tokio::spawn(async move {
+            let _permit = permit;
+            let _drop_signal = DropSignal(task_dropped);
+            pending::<()>().await;
+        });
+        let outcome = Arc::new(AtomicU8::new(ExploratoryDeployOutcome::Failed as u8));
+
+        let result =
+            await_exploratory_deploy_task(task, Duration::from_millis(10), outcome.clone()).await;
+
+        assert!(matches!(result, Err(ExploratoryDeployTaskError::Timeout)));
+        assert!(dropped.load(Ordering::Relaxed));
+        assert_eq!(
+            outcome.load(Ordering::Relaxed),
+            ExploratoryDeployOutcome::TimedOut as u8
+        );
+        assert!(semaphore.try_acquire_owned().is_ok());
+    }
+
+    #[test]
+    fn block_expiration_matches_proposer_window() {
+        assert!(deploy_is_block_expired(0, 50, 50).unwrap());
+        assert!(!deploy_is_block_expired(1, 50, 50).unwrap());
+        assert!(!deploy_is_block_expired(0, 49, 50).unwrap());
     }
 }

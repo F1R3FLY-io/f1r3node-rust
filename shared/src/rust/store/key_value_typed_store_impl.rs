@@ -32,6 +32,11 @@ where
         }
     }
 
+    /// Exposes the underlying untyped store so callers can batch writes
+    /// across multiple typed stores that share one LMDB environment — see
+    /// `crate::rust::store::lmdb_key_value_store::batched_put`.
+    pub fn raw_store(&self) -> &Arc<dyn KeyValueStore> { &self.store }
+
     pub fn encode_key(&self, key: &K) -> Result<BitVector, KvStoreError> {
         Ok(bincode::serialize(key)?)
     }
@@ -79,6 +84,11 @@ where
 
     pub fn put_one(&self, key: K, value: V) -> Result<(), KvStoreError> {
         self.put(vec![(key, value)])
+    }
+
+    pub fn put_one_if_absent(&self, key: K, value: V) -> Result<bool, KvStoreError> {
+        self.store
+            .put_one_if_absent(self.encode_key(&key)?, self.encode_value(&value)?)
     }
 
     pub fn put_if_absent(&self, kv_pairs: Vec<(K, V)>) -> Result<(), KvStoreError> {

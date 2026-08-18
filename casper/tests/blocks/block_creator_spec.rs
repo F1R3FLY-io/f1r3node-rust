@@ -51,6 +51,72 @@ fn create_deploy(
         .expect("Failed to create signed deploy")
 }
 
+/// Gives the snapshot a parent whose main-parent chain roots at a
+/// PARENTLESS block at `floor_height`: the cold frontier walk treats a
+/// parentless block as genesis (finalized by definition), so the derived
+/// floor lands exactly there — letting a test close or open the
+/// floor-clock validity window by choosing the height.
+async fn stage_floor_at(
+    snapshot: &mut CasperSnapshot,
+    block_store: &KeyValueBlockStore,
+    kvm: &mut InMemoryStoreManager,
+    floor_height: i64,
+    parent_height: i64,
+) {
+    use block_storage::rust::dag::block_dag_key_value_storage::{
+        BlockDagKeyValueStorage, InsertMode,
+    };
+    use models::rust::block_implicits;
+
+    let root = block_implicits::get_random_block(
+        Some(floor_height),
+        Some(0),
+        None,
+        None,
+        None,
+        None,
+        Some(0),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some("test-shard".to_string()),
+        None,
+    );
+    let parent = block_implicits::get_random_block(
+        Some(parent_height),
+        Some(1),
+        None,
+        None,
+        None,
+        None,
+        Some(1),
+        Some(vec![root.block_hash.clone()]),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some("test-shard".to_string()),
+        None,
+    );
+    let dag_storage = BlockDagKeyValueStorage::new(kvm)
+        .await
+        .expect("dag storage");
+    block_store.put_block_message(&root).expect("store root");
+    block_store
+        .put_block_message(&parent)
+        .expect("store parent");
+    dag_storage
+        .insert(&root, InsertMode::Approved)
+        .expect("insert root");
+    dag_storage
+        .insert(&parent, InsertMode::Normal)
+        .expect("insert parent");
+    snapshot.dag = dag_storage.get_representation().expect("dag");
+    snapshot.parents = vec![parent];
+}
+
 /// Creates a CasperSnapshot for testing with the given parameters.
 /// Uses an in-memory DAG representation (matching Scala's TestBlockDagRepresentation).
 fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
@@ -635,8 +701,14 @@ async fn block_expired_deploy_in_unresolved_scope_is_removed_from_storage() {
         .contains(&deploy));
 }
 
+// Inverts the former block_expired_rejected_deploy_retries_after_source_leaves_scope
+// contract. The retry carve-out could never succeed: Validate::transaction_expiration
+// has no recovery exemption, so a block-expired retry only produced a self-created
+// block that failed its own validation, and — with the deploy never purged — the
+// proposer rebuilt the same invalid block on every heartbeat (issue #197's permanent
+// finalization wedge). Expiry is terminal for rejected-buffer work.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn block_expired_rejected_deploy_retries_after_source_leaves_scope() {
+async fn block_expired_rejected_deploy_is_purged_not_retried() {
     crate::init_logger();
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
@@ -656,7 +728,11 @@ async fn block_expired_rejected_deploy_retries_after_source_leaves_scope() {
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
         .expect("block store");
-    let snapshot = create_snapshot(100, validator_id);
+    let mut snapshot = create_snapshot(100, validator_id);
+    // Floor at #60, lifespan 50: the valid_after-0 window closed at floor
+    // #50 — expiry is judged on the FLOOR clock, so the purge needs a
+    // derivable floor past the window (a tip past it is not enough).
+    stage_floor_at(&mut snapshot, &block_store, &mut kvm, 60, 100).await;
     let deploy = create_deploy(0, None, &validator_sk);
     snapshot.rejected_in_scope.insert(deploy.sig.clone());
     deploy_storage
@@ -677,8 +753,12 @@ async fn block_expired_rejected_deploy_retries_after_source_leaves_scope() {
     .await
     .expect("prepare deploys");
 
-    assert_eq!(prepared.deploys.len(), 1);
-    assert!(prepared.deploys.contains(&deploy));
+    assert!(prepared.deploys.is_empty());
+    assert!(!deploy_storage
+        .lock()
+        .read_all()
+        .expect("read deploy storage")
+        .contains(&deploy));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1048,7 +1128,10 @@ async fn should_remove_expired_deploys_from_rejected_deploy_buffer() {
         );
     }
 
-    let snapshot = create_snapshot(100, validator_id);
+    let mut snapshot = create_snapshot(100, validator_id);
+    // Floor at #60, lifespan 50: valid_after 0 is window-closed at the
+    // floor clock (removal fires); valid_after 60 stays window-open.
+    stage_floor_at(&mut snapshot, &block_store, &mut kvm, 60, 100).await;
 
     let _ = block_creator::create(
         &snapshot,
@@ -1064,10 +1147,13 @@ async fn should_remove_expired_deploys_from_rejected_deploy_buffer() {
 
     {
         let buf = rejected_deploy_buffer.lock().unwrap();
+        // Inverted from "must remain" (issue #197): a block-expired buffered deploy can
+        // never pass Validate::transaction_expiration again, so retaining it only
+        // re-offers unproposable work — the fuel of the permanent propose wedge.
         assert!(
-            buf.contains_sig(&block_expired_deploy.sig)
+            !buf.contains_sig(&block_expired_deploy.sig)
                 .expect("Failed to query buffer for block-expired sig"),
-            "Block-expired recovered sig must remain in the rejected-deploy buffer"
+            "Block-expired sig must NOT remain in the rejected-deploy buffer after create"
         );
         assert!(
             !buf.contains_sig(&time_expired_deploy.sig)

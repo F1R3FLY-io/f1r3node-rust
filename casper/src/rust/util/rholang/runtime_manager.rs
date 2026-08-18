@@ -35,7 +35,7 @@ use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreMana
 use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
-use shared::rust::{env, ByteVector};
+use shared::rust::ByteVector;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::rust::errors::CasperError;
@@ -62,41 +62,134 @@ struct MergeableKey {
     seq_num: i32,
 }
 
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-    use std::time::Duration;
+#[derive(Debug, Clone, Copy)]
+pub struct ExploratoryDeployConfig {
+    pub max_concurrent: usize,
+    pub phlo_limit: i64,
+    pub execution_timeout: Duration,
+}
 
-    use tokio::sync::Semaphore;
-
-    use super::RuntimeManager;
-
-    #[tokio::test]
-    async fn exploratory_deploy_permit_is_bounded_and_released() {
-        let semaphore = Arc::new(Semaphore::new(1));
-        let first = RuntimeManager::acquire_exploratory_deploy_permit_with(
-            semaphore.clone(),
-            Duration::from_millis(20),
-        )
-        .await;
-        assert!(first.is_some());
-
-        let second = RuntimeManager::acquire_exploratory_deploy_permit_with(
-            semaphore.clone(),
-            Duration::from_millis(20),
-        )
-        .await;
-        assert!(second.is_none());
-
-        drop(first);
-
-        let third = RuntimeManager::acquire_exploratory_deploy_permit_with(
-            semaphore,
-            Duration::from_millis(20),
-        )
-        .await;
-        assert!(third.is_some());
+impl ExploratoryDeployConfig {
+    /// Rejects a non-positive value rather than clamping it. A clamped `0`
+    /// yields a node that answers nothing on this endpoint — one phlogiston
+    /// fails every query on cost, a one-millisecond deadline times out every
+    /// query — with no diagnostic distinguishing that from a working node.
+    pub fn new(
+        max_concurrent: usize,
+        phlo_limit: i64,
+        execution_timeout: Duration,
+    ) -> Result<Self, CasperError> {
+        if max_concurrent == 0 {
+            return Err(CasperError::Other(
+                "exploratory-deploy-max-concurrent must be at least 1".to_string(),
+            ));
+        }
+        if phlo_limit <= 0 {
+            return Err(CasperError::Other(format!(
+                "exploratory-deploy-phlo-limit must be positive, got {}",
+                phlo_limit
+            )));
+        }
+        if execution_timeout.is_zero() {
+            return Err(CasperError::Other(
+                "exploratory-deploy-execution-timeout must be greater than zero".to_string(),
+            ));
+        }
+        Ok(Self {
+            max_concurrent,
+            phlo_limit,
+            execution_timeout,
+        })
     }
+
+    /// Fixture for the test-only constructors. Deliberately not a `Default`
+    /// impl: the operator-facing default lives in `defaults.conf` and reaches
+    /// the runtime through `create_with_history_config`, so a second
+    /// authoritative-looking declaration in Rust could drift from it silently.
+    /// These values are not that default — they are only what the test
+    /// constructors have always used.
+    pub fn for_tests() -> Self {
+        Self {
+            max_concurrent: 1,
+            phlo_limit: 5_000_000,
+            execution_timeout: Duration::from_secs(15),
+        }
+    }
+}
+
+pub struct ReplayLock {
+    semaphore: Arc<Semaphore>,
+    consensus_waiters: std::sync::atomic::AtomicUsize,
+    consensus_ready: tokio::sync::Notify,
+}
+
+struct ConsensusReplayWaiter<'a>(&'a ReplayLock);
+
+impl Drop for ConsensusReplayWaiter<'_> {
+    fn drop(&mut self) {
+        self.0
+            .consensus_waiters
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        self.0.consensus_ready.notify_waiters();
+    }
+}
+
+impl ReplayLock {
+    pub fn new() -> Self {
+        Self {
+            semaphore: Arc::new(Semaphore::new(1)),
+            consensus_waiters: std::sync::atomic::AtomicUsize::new(0),
+            consensus_ready: tokio::sync::Notify::new(),
+        }
+    }
+
+    pub async fn acquire_consensus(
+        &self,
+    ) -> Result<OwnedSemaphorePermit, tokio::sync::AcquireError> {
+        self.consensus_waiters
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let waiter = ConsensusReplayWaiter(self);
+        let permit = self.semaphore.clone().acquire_owned().await;
+        drop(waiter);
+        permit
+    }
+
+    pub async fn acquire_reporting(
+        &self,
+    ) -> Result<OwnedSemaphorePermit, tokio::sync::AcquireError> {
+        loop {
+            while self
+                .consensus_waiters
+                .load(std::sync::atomic::Ordering::Acquire)
+                > 0
+            {
+                let ready = self.consensus_ready.notified();
+                tokio::pin!(ready);
+                ready.as_mut().enable();
+                if self
+                    .consensus_waiters
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    > 0
+                {
+                    ready.await;
+                }
+            }
+            let permit = self.semaphore.clone().acquire_owned().await?;
+            if self
+                .consensus_waiters
+                .load(std::sync::atomic::Ordering::Acquire)
+                == 0
+            {
+                return Ok(permit);
+            }
+            drop(permit);
+            tokio::task::yield_now().await;
+        }
+    }
+}
+
+impl Default for ReplayLock {
+    fn default() -> Self { Self::new() }
 }
 
 #[derive(Clone)]
@@ -122,8 +215,8 @@ pub struct RuntimeManager {
     pub replay_cache: Option<Arc<InMemoryReplayCache>>,
     /// Optional state hash cache for skipping known replays
     pub state_hash_cache: Option<Arc<StateHashCache>>,
+    replay_lock: Arc<ReplayLock>,
     exploratory_deploy_semaphore: Arc<Semaphore>,
-    exploratory_deploy_queue_timeout: Duration,
     exploratory_deploy_phlo_limit: i64,
     exploratory_deploy_execution_timeout: Duration,
     pub external_services: ExternalServices,
@@ -143,11 +236,33 @@ pub struct ParentsPostStateCacheKey {
     pub disable_late_block_filtering: bool,
 }
 
-pub type ParentsPostStateCacheVal = (
-    StateHash,
-    Vec<prost::bytes::Bytes>,
-    Vec<crate::rust::merging::rejected_slash::RejectedSlash>,
-);
+/// The merged pre-state a block builds on, with every fact the merge
+/// derived alongside it. One struct through the derivation, the
+/// parents-post-state cache, and the checkpoint path — the facts travel
+/// together or not at all: a consumer holding the state without the
+/// applied set cannot tell which deploys' effects that state already
+/// contains, and executing one of them again double-applies it.
+#[derive(Clone, Debug)]
+pub struct MergedPreState {
+    pub state: StateHash,
+    /// Rejected user deploys as full records — each names the carrier it
+    /// adjudicated and carries the formation-time duplicate flag. These
+    /// travel to the block body as-is; the record IS the consensus content.
+    pub rejected_user: Vec<models::rust::casper::protocol::casper_message::RejectedDeploy>,
+    pub rejected_slashes: Vec<crate::rust::merging::rejected_slash::RejectedSlash>,
+    /// User sigs whose chains the merge APPLIED from scope: their effects
+    /// are in `state`, so executing any of them on top would double-apply.
+    /// Empty on the non-merging shapes (genesis, single parent, covering
+    /// parent), where effects arrive via a parent's post-state instead.
+    pub applied_from_scope: std::collections::HashSet<prost::bytes::Bytes>,
+    pub settled_user_sigs: std::collections::HashSet<prost::bytes::Bytes>,
+    /// The block whose committed state `state` derives from: the floor for
+    /// the merged path; `None` where the header already determines it
+    /// (genesis, single parent, covering parent).
+    pub merge_base: Option<BlockHash>,
+}
+
+pub type ParentsPostStateCacheVal = MergedPreState;
 
 impl RuntimeManager {
     const MAX_BLOCK_INDEX_CACHE_ENTRIES: usize = 128;
@@ -158,16 +273,6 @@ impl RuntimeManager {
     const MAX_REPLAY_CACHE_BYTES: usize = 32 * 1024 * 1024;
     const MAX_REPLAY_CACHE_EVENT_LOG_ENTRIES: usize = 1_536;
     const MAX_STATE_HASH_CACHE_ENTRIES: usize = 0;
-    const EXPLORATORY_DEPLOY_MAX_CONCURRENT_DEFAULT: usize = 1;
-    const EXPLORATORY_DEPLOY_MAX_CONCURRENT_ENV: &str = "F1R3_EXPLORATORY_DEPLOY_MAX_CONCURRENT";
-    const EXPLORATORY_DEPLOY_QUEUE_TIMEOUT_MS_DEFAULT: u64 = 2_000;
-    const EXPLORATORY_DEPLOY_QUEUE_TIMEOUT_MS_ENV: &str =
-        "F1R3_EXPLORATORY_DEPLOY_QUEUE_TIMEOUT_MS";
-    const EXPLORATORY_DEPLOY_PHLO_LIMIT_DEFAULT: i64 = 5_000_000;
-    const EXPLORATORY_DEPLOY_PHLO_LIMIT_ENV: &str = "F1R3_EXPLORATORY_DEPLOY_PHLO_LIMIT";
-    const EXPLORATORY_DEPLOY_EXECUTION_TIMEOUT_MS_DEFAULT: u64 = 15_000;
-    const EXPLORATORY_DEPLOY_EXECUTION_TIMEOUT_MS_ENV: &str =
-        "F1R3_EXPLORATORY_DEPLOY_EXECUTION_TIMEOUT_MS";
 
     fn collect_replay_logs(
         usr_processed: &[ProcessedDeploy],
@@ -293,59 +398,17 @@ impl RuntimeManager {
 
     fn max_state_hash_cache_entries() -> usize { Self::MAX_STATE_HASH_CACHE_ENTRIES }
 
-    fn exploratory_deploy_max_concurrent() -> usize {
-        env::var_or(
-            Self::EXPLORATORY_DEPLOY_MAX_CONCURRENT_ENV,
-            Self::EXPLORATORY_DEPLOY_MAX_CONCURRENT_DEFAULT,
-        )
-        .max(1)
-    }
-
-    fn exploratory_deploy_queue_timeout() -> Duration {
-        Duration::from_millis(
-            env::var_or(
-                Self::EXPLORATORY_DEPLOY_QUEUE_TIMEOUT_MS_ENV,
-                Self::EXPLORATORY_DEPLOY_QUEUE_TIMEOUT_MS_DEFAULT,
-            )
-            .max(1),
-        )
-    }
-
-    fn exploratory_deploy_phlo_limit() -> i64 {
-        env::var_or(
-            Self::EXPLORATORY_DEPLOY_PHLO_LIMIT_ENV,
-            Self::EXPLORATORY_DEPLOY_PHLO_LIMIT_DEFAULT,
-        )
-        .max(1)
-    }
-
-    fn exploratory_deploy_execution_timeout() -> Duration {
-        Duration::from_millis(
-            env::var_or(
-                Self::EXPLORATORY_DEPLOY_EXECUTION_TIMEOUT_MS_ENV,
-                Self::EXPLORATORY_DEPLOY_EXECUTION_TIMEOUT_MS_DEFAULT,
-            )
-            .max(1),
-        )
-    }
-
-    async fn acquire_exploratory_deploy_permit_with(
+    fn try_acquire_exploratory_deploy_permit_with(
         semaphore: Arc<Semaphore>,
-        timeout: Duration,
     ) -> Option<OwnedSemaphorePermit> {
-        tokio::time::timeout(timeout, semaphore.acquire_owned())
-            .await
-            .ok()?
-            .ok()
+        semaphore.try_acquire_owned().ok()
     }
 
-    pub async fn acquire_exploratory_deploy_permit(&self) -> Option<OwnedSemaphorePermit> {
-        Self::acquire_exploratory_deploy_permit_with(
-            self.exploratory_deploy_semaphore.clone(),
-            self.exploratory_deploy_queue_timeout,
-        )
-        .await
+    pub fn try_acquire_exploratory_deploy_permit(&self) -> Option<OwnedSemaphorePermit> {
+        Self::try_acquire_exploratory_deploy_permit_with(self.exploratory_deploy_semaphore.clone())
     }
+
+    pub fn replay_lock(&self) -> Arc<ReplayLock> { self.replay_lock.clone() }
 
     pub fn exploratory_deploy_execution_timeout_value(&self) -> Duration {
         self.exploratory_deploy_execution_timeout
@@ -769,6 +832,11 @@ impl RuntimeManager {
         }
 
         // Step 3: Full replay (cache miss)
+        let _replay_permit = self
+            .replay_lock
+            .acquire_consensus()
+            .await
+            .map_err(|error| CasperError::Other(format!("Replay semaphore closed: {}", error)))?;
         let invalid_blocks = invalid_blocks.unwrap_or_default();
         let replay_runtime = self.spawn_replay_runtime().await;
         let runtime_ops = RuntimeOps::new(replay_runtime);
@@ -1348,7 +1416,7 @@ impl RuntimeManager {
             .into()
     }
 
-    pub fn create_with_space(
+    pub fn create_with_space_config(
         rspace: RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
         replay_rspace: ReplayRSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
         history_repo: RhoHistoryRepository,
@@ -1360,10 +1428,10 @@ impl RuntimeManager {
             >,
         >,
         external_services: ExternalServices,
+        exploratory_deploy_config: ExploratoryDeployConfig,
     ) -> RuntimeManager {
         let replay_cache_size = Self::max_replay_cache_entries();
         let state_hash_cache_size = Self::max_state_hash_cache_entries();
-        let exploratory_deploy_max_concurrent = Self::exploratory_deploy_max_concurrent();
 
         RuntimeManager {
             space: rspace,
@@ -1387,12 +1455,12 @@ impl RuntimeManager {
             }),
             state_hash_cache: (state_hash_cache_size > 0)
                 .then(|| Arc::new(StateHashCache::new(state_hash_cache_size))),
+            replay_lock: Arc::new(ReplayLock::new()),
             exploratory_deploy_semaphore: Arc::new(Semaphore::new(
-                exploratory_deploy_max_concurrent,
+                exploratory_deploy_config.max_concurrent,
             )),
-            exploratory_deploy_queue_timeout: Self::exploratory_deploy_queue_timeout(),
-            exploratory_deploy_phlo_limit: Self::exploratory_deploy_phlo_limit(),
-            exploratory_deploy_execution_timeout: Self::exploratory_deploy_execution_timeout(),
+            exploratory_deploy_phlo_limit: exploratory_deploy_config.phlo_limit,
+            exploratory_deploy_execution_timeout: exploratory_deploy_config.execution_timeout,
             external_services,
         }
     }
@@ -1413,6 +1481,9 @@ impl RuntimeManager {
         rt_manager
     }
 
+    /// Test-only entry point: supplies `ExploratoryDeployConfig::for_tests()`.
+    /// Production construction goes through `create_with_history_config` with
+    /// the operator's configuration.
     pub fn create_with_history(
         store: RSpaceStore,
         mergeable_store: MergeableStore,
@@ -1424,19 +1495,41 @@ impl RuntimeManager {
         >,
         external_services: ExternalServices,
     ) -> (RuntimeManager, RhoHistoryRepository) {
+        Self::create_with_history_config(
+            store,
+            mergeable_store,
+            mergeable_tags,
+            external_services,
+            ExploratoryDeployConfig::for_tests(),
+        )
+    }
+
+    pub fn create_with_history_config(
+        store: RSpaceStore,
+        mergeable_store: MergeableStore,
+        mergeable_tags: std::sync::Arc<
+            std::collections::HashMap<
+                Par,
+                rspace_plus_plus::rspace::merger::merging_logic::MergeType,
+            >,
+        >,
+        external_services: ExternalServices,
+        exploratory_deploy_config: ExploratoryDeployConfig,
+    ) -> (RuntimeManager, RhoHistoryRepository) {
         let (rspace, replay_rspace) =
             RSpace::create_with_replay(store, Arc::new(Box::new(Matcher)))
                 .expect("Failed to create RSpaceWithReplay");
 
         let history_repo = rspace.get_history_repository();
 
-        let runtime_manager = RuntimeManager::create_with_space(
+        let runtime_manager = RuntimeManager::create_with_space_config(
             rspace,
             replay_rspace,
             history_repo.clone(),
             mergeable_store,
             mergeable_tags,
             external_services,
+            exploratory_deploy_config,
         );
 
         (runtime_manager, history_repo)
@@ -1454,5 +1547,97 @@ impl RuntimeManager {
         let store = kvm.store("mergeable-channel-cache".to_string()).await?;
 
         Ok(KeyValueTypedStoreImpl::new(store))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use tokio::sync::Semaphore;
+
+    use super::{ExploratoryDeployConfig, ReplayLock, RuntimeManager};
+
+    #[test]
+    fn exploratory_deploy_config_rejects_non_positive_values() {
+        assert!(ExploratoryDeployConfig::new(0, 5_000_000, Duration::from_secs(15)).is_err());
+        assert!(ExploratoryDeployConfig::new(1, 0, Duration::from_secs(15)).is_err());
+        assert!(ExploratoryDeployConfig::new(1, -1, Duration::from_secs(15)).is_err());
+        assert!(ExploratoryDeployConfig::new(1, 5_000_000, Duration::ZERO).is_err());
+
+        let valid =
+            ExploratoryDeployConfig::new(2, 42, Duration::from_millis(500)).expect("valid config");
+        assert_eq!(valid.max_concurrent, 2);
+        assert_eq!(valid.phlo_limit, 42);
+        assert_eq!(valid.execution_timeout, Duration::from_millis(500));
+    }
+
+    #[tokio::test]
+    async fn consensus_replay_has_priority_over_queued_reporting() {
+        let lock = Arc::new(ReplayLock::new());
+        let first_consensus = lock.acquire_consensus().await.expect("Replay lock closed");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let reporting_lock = lock.clone();
+        let reporting_tx = tx.clone();
+        let reporting = tokio::spawn(async move {
+            let _permit = reporting_lock
+                .acquire_reporting()
+                .await
+                .expect("Replay lock closed");
+            reporting_tx.send("reporting").expect("Receiver closed");
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        let consensus_lock = lock.clone();
+        let consensus = tokio::spawn(async move {
+            let _permit = consensus_lock
+                .acquire_consensus()
+                .await
+                .expect("Replay lock closed");
+            tx.send("consensus").expect("Receiver closed");
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        drop(first_consensus);
+
+        assert_eq!(rx.recv().await, Some("consensus"));
+        assert_eq!(rx.recv().await, Some("reporting"));
+        consensus.await.expect("Consensus task failed");
+        reporting.await.expect("Reporting task failed");
+    }
+
+    #[tokio::test]
+    async fn cancelled_consensus_waiter_releases_reporting() {
+        let lock = Arc::new(ReplayLock::new());
+        let reporting_permit = lock.acquire_reporting().await.expect("Replay lock closed");
+        let consensus_lock = lock.clone();
+        let consensus = tokio::spawn(async move { consensus_lock.acquire_consensus().await });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        consensus.abort();
+        consensus
+            .await
+            .expect_err("Consensus task was not cancelled");
+        drop(reporting_permit);
+
+        let _permit = tokio::time::timeout(Duration::from_secs(1), lock.acquire_reporting())
+            .await
+            .expect("Reporting remained blocked")
+            .expect("Replay lock closed");
+    }
+
+    #[test]
+    fn exploratory_deploy_permit_is_bounded_and_released() {
+        let semaphore = Arc::new(Semaphore::new(1));
+        let first = RuntimeManager::try_acquire_exploratory_deploy_permit_with(semaphore.clone());
+        assert!(first.is_some());
+
+        let second = RuntimeManager::try_acquire_exploratory_deploy_permit_with(semaphore.clone());
+        assert!(second.is_none());
+
+        drop(first);
+
+        let third = RuntimeManager::try_acquire_exploratory_deploy_permit_with(semaphore);
+        assert!(third.is_some());
     }
 }

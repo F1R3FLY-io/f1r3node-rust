@@ -4,14 +4,15 @@ use std::time::{Duration, Instant};
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{FromRequest, FromRequestParts, Path, Query, Request, State};
 use axum::http::request::Parts;
-use axum::http::StatusCode;
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use casper::rust::api::block_api::{
-    BlockNotFoundError, DeployNotFoundError, DeployValidationError, ExploratoryDeployBusyError,
-    ExploratoryDeployReadOnlyError, ExploratoryDeployTimeoutError, InvalidHashError,
-    InvalidPublicKeyError, LatestBlockMessageError, NoNewDeploysError, ProposeReadOnlyError,
+    BlockNotFoundError, DeployNotFoundError, DeployValidationError, ExploratoryDeployReadOnlyError,
+    ExploratoryDeployRejection, InvalidHashError, InvalidPublicKeyError, LatestBlockMessageError,
+    NoNewDeploysError, ProposeReadOnlyError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
+use casper::rust::casper::DeployError;
 use casper::rust::errors::CasperError;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
@@ -95,6 +96,12 @@ pub struct ApiErrorResponse {
     ///
     /// **502 Bad Gateway:**
     /// `comm_error`, `external_service_error`
+    ///
+    /// **503 Service Unavailable:**
+    /// `observer_busy` — carries `Retry-After`
+    ///
+    /// **504 Gateway Timeout:**
+    /// `exploratory_timeout`
     pub error: String,
     /// Human-readable description of the error.
     pub message: String,
@@ -113,14 +120,34 @@ impl IntoResponse for AppError {
             tracing::debug!("API error: {:#}", self.0);
         }
 
-        (
+        let retry_after = retry_after_secs(&self.0);
+
+        let mut response = (
             status,
             Json(ApiErrorResponse {
                 error: error_kind.to_string(),
                 message,
             }),
         )
-            .into_response()
+            .into_response();
+
+        if let Some(secs) = retry_after {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from(secs));
+        }
+
+        response
+    }
+}
+
+/// `Retry-After` hint for the rejections that carry one. Read from the error
+/// variant rather than recomputed from the rendered message, so the header and
+/// the body cannot disagree.
+fn retry_after_secs(err: &eyre::Error) -> Option<u64> {
+    match ExploratoryDeployRejection::classify(err) {
+        Some(ExploratoryDeployRejection::Busy { retry_after_secs }) => Some(retry_after_secs),
+        Some(ExploratoryDeployRejection::Timeout { .. }) | None => None,
     }
 }
 
@@ -207,8 +234,22 @@ where
 
 fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
     for cause in err.chain() {
+        if let Some(rejection) = ExploratoryDeployRejection::from_cause(cause) {
+            let (status, kind) = match rejection {
+                ExploratoryDeployRejection::Busy { .. } => {
+                    (StatusCode::SERVICE_UNAVAILABLE, "observer_busy")
+                }
+                ExploratoryDeployRejection::Timeout { .. } => {
+                    (StatusCode::GATEWAY_TIMEOUT, "exploratory_timeout")
+                }
+            };
+            return (status, kind, cause.to_string());
+        }
         if let Some(ce) = cause.downcast_ref::<CasperError>() {
             return classify_casper_error(ce);
+        }
+        if let Some(DeployError::DuplicateDeploy(_)) = cause.downcast_ref::<DeployError>() {
+            return (StatusCode::CONFLICT, "duplicate_deploy", cause.to_string());
         }
         if cause.downcast_ref::<DeployNotFoundError>().is_some() {
             return (StatusCode::NOT_FOUND, "deploy_not_found", cause.to_string());
@@ -226,23 +267,6 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
             return (
                 StatusCode::BAD_REQUEST,
                 "readonly_node_required",
-                cause.to_string(),
-            );
-        }
-        if cause.downcast_ref::<ExploratoryDeployBusyError>().is_some() {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "observer_busy",
-                cause.to_string(),
-            );
-        }
-        if cause
-            .downcast_ref::<ExploratoryDeployTimeoutError>()
-            .is_some()
-        {
-            return (
-                StatusCode::GATEWAY_TIMEOUT,
-                "exploratory_timeout",
                 cause.to_string(),
             );
         }
@@ -312,6 +336,7 @@ fn classify_casper_error(err: &CasperError) -> (StatusCode, &'static str, String
         ReplayFailure(_) => internal("replay_failure"),
         StreamError(_) => internal("stream_error"),
         LockError(_) => internal("lock_error"),
+        MissingBlock(_) => (S::SERVICE_UNAVAILABLE, "missing_block", err.to_string()),
         Other(_) => internal("other_error"),
     }
 }
@@ -435,6 +460,7 @@ pub async fn status_handler(State(app_state): State<AppState>) -> Response {
     responses(
         (status = 200, description = "Deploy accepted; returns the deploy ID (hex)", body = String),
         (status = 400, description = "Malformed request body or invalid field value (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`)", body = ApiErrorResponse),
+        (status = 409, description = "Deploy is already known (`duplicate_deploy`)", body = ApiErrorResponse),
         (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`)", body = ApiErrorResponse),
         (status = 502, description = "Upstream or peer communication failure (`comm_error`, `external_service_error`)", body = ApiErrorResponse),
@@ -455,6 +481,7 @@ pub async fn deploy_handler(
 #[utoipa::path(
     post,
     path = "/explore-deploy",
+    description = "Executes against the last finalized block post-state. Unfinalized DAG-tip state is not visible.",
     request_body = SimpleExploreDeployRequest,
     responses(
         (status = 200, description = "Exploratory deploy executed; returns channel data", body = RhoDataResponse),
@@ -462,7 +489,7 @@ pub async fn deploy_handler(
         (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
         (status = 502, description = "External service failure (`external_service_error`)", body = ApiErrorResponse),
-        (status = 503, description = "Observer query capacity is occupied (`observer_busy`)", body = ApiErrorResponse),
+        (status = 503, description = "Observer query capacity is occupied (`observer_busy`); carries `Retry-After`", body = ApiErrorResponse),
         (status = 504, description = "Exploratory execution exceeded its deadline (`exploratory_timeout`)", body = ApiErrorResponse),
     ),
     tag = "Deployment"
@@ -493,7 +520,7 @@ pub async fn explore_deploy_handler(
         (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
         (status = 502, description = "External service failure (`external_service_error`)", body = ApiErrorResponse),
-        (status = 503, description = "Observer query capacity is occupied (`observer_busy`)", body = ApiErrorResponse),
+        (status = 503, description = "Observer query capacity is occupied (`observer_busy`); carries `Retry-After`", body = ApiErrorResponse),
         (status = 504, description = "Exploratory execution exceeded its deadline (`exploratory_timeout`)", body = ApiErrorResponse),
     ),
     tag = "Deployment"
@@ -600,18 +627,50 @@ where
 
 #[cfg(test)]
 mod tests {
-    use axum::http::StatusCode;
+    use axum::http::{header, StatusCode};
+    use axum::response::IntoResponse;
     use casper::rust::api::block_api::{ExploratoryDeployBusyError, ExploratoryDeployTimeoutError};
 
-    use super::classify_error;
+    use super::{classify_error, retry_after_secs, AppError};
 
     #[test]
     fn exploratory_deploy_busy_is_service_unavailable() {
-        let error = eyre::Report::new(ExploratoryDeployBusyError);
+        let error = eyre::Report::new(ExploratoryDeployBusyError {
+            retry_after_secs: 15,
+        });
         let (status, kind, _) = classify_error(&error);
 
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(kind, "observer_busy");
+        assert_eq!(retry_after_secs(&error), Some(15));
+    }
+
+    #[test]
+    fn exploratory_deploy_busy_response_carries_retry_after() {
+        let response = AppError(eyre::Report::new(ExploratoryDeployBusyError {
+            retry_after_secs: 15,
+        }))
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok()),
+            Some("15")
+        );
+    }
+
+    #[test]
+    fn exploratory_deploy_timeout_response_has_no_retry_after() {
+        let response = AppError(eyre::Report::new(ExploratoryDeployTimeoutError {
+            timeout_ms: 15_000,
+        }))
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        assert!(response.headers().get(header::RETRY_AFTER).is_none());
     }
 
     #[test]

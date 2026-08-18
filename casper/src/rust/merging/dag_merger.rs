@@ -6,6 +6,7 @@ use std::sync::Arc;
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use models::rhoapi::ListParWithRandom;
 use models::rust::block_hash::BlockHash;
+use models::rust::casper::protocol::casper_message::RejectedDeploy;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
@@ -554,6 +555,46 @@ fn resolve_conflicts_with_unavailable_retry(
     }
 }
 
+/// Merge-time validity-window rule, keyed on the merging block's FLOOR: a
+/// chain carrying a USER deploy whose window is closed at the floor
+/// (`valid_after <= floor_block_number - deploy_lifespan`) must not merge.
+/// A silent validator's stale tip stays mergeable indefinitely (below-floor
+/// sibling), so a within-window carrier can arrive arbitrarily late;
+/// executing it would land effects after the deploy's validity window
+/// closed and reopen a settled Expired verdict.
+///
+/// The floor — never the merge height — is the correct clock: for any
+/// VALIDLY included chain, inclusion height `h <= valid_after + lifespan`,
+/// so if the rule fires (`floor > valid_after + lifespan >= h`) the
+/// chain's block lies below the floor — an above-floor ancestor being
+/// routinely re-applied onto the floor base can never be hit. The rule
+/// fires exactly on the below-floor-sibling (late-carrier) class. The
+/// floor is a pure function of the block's parents and justifications, and
+/// justification-regression validation stops a proposer from faking a
+/// lower one, so once any canonical block's floor passes a deploy's
+/// window, every future canonical merge rejects its late carriers — which
+/// is what makes a floor-keyed `Expired` verdict terminal.
+///
+/// Rejected chains are recorded like any other loser; the block-expired
+/// selection filter uses the same bound, so recovery never re-proposes
+/// them. Chains with no window entries (system-only) are exempt.
+fn split_window_closed_chains(
+    chains: Vec<DeployChainIndex>,
+    floor_block_number: i64,
+    deploy_lifespan: i64,
+) -> Result<(Vec<DeployChainIndex>, Vec<DeployChainIndex>), CasperError> {
+    let earliest_valid_after = crate::rust::util::deploy_window::earliest_valid_after(
+        floor_block_number,
+        deploy_lifespan,
+    )?;
+    Ok(chains.into_iter().partition(|chain| {
+        chain
+            .deploy_windows
+            .values()
+            .all(|valid_after| *valid_after > earliest_valid_after)
+    }))
+}
+
 pub fn merge(
     dag: &KeyValueDagRepresentation,
     lfb: &BlockHash,
@@ -563,11 +604,28 @@ pub fn merge(
     rejection_cost_f: impl Fn(&DeployChainIndex) -> u64,
     scope: Option<HashSet<BlockHash>>,
     disable_late_block_filtering: bool,
+    floor_block_number: i64,
+    deploy_lifespan: i64,
+    // True iff the sig's effect is already present in the BASE state. The
+    // dedup below seeds such sigs with an unbeatable freshest-copy
+    // sentinel so every scope copy drops: the settled copy lives in the
+    // base where scope-level dedup cannot see it, and without the seed the
+    // scope copy re-applies and doubles the deploy's cells.
+    sig_won_in_base: &dyn Fn(&Bytes) -> Result<bool, CasperError>,
 ) -> Result<
     (
         Blake2b256Hash,
+        // Rejected user deploys as full records: each names the CARRIER it
+        // adjudicated (the rejected chain's source block) and carries the
+        // formation-time duplicate flag. The record is consensus content —
+        // it travels to the block body as-is.
+        Vec<RejectedDeploy>,
         Vec<(Bytes, BlockHash)>,
-        Vec<(Bytes, BlockHash)>,
+        // User sigs whose chains this merge APPLIED from scope: their
+        // effects are in the returned state, so none of them may also be
+        // executed fresh on top of it. The merge is the only place this
+        // set is known.
+        HashSet<Bytes>,
     ),
     CasperError,
 > {
@@ -690,6 +748,9 @@ pub fn merge(
     // recovery path can re-propose them in a subsequent block.
     let mut collateral_lost_pairs: Vec<(Bytes, BlockHash)> = Vec::new();
 
+    let mut settled_checked: HashSet<Bytes> = HashSet::new();
+    let mut settled_sigs: HashSet<Bytes> = HashSet::new();
+
     // Deploy de-duplication. When the same deploy ID appears in chains from
     // multiple blocks in scope — for example, because a previously-rejected
     // deploy was re-proposed in a later block — keep the copy from the freshest
@@ -698,22 +759,49 @@ pub fn merge(
     // freshest source is a different chain is dropped; its diffs were computed
     // against a pre-state that the fresh execution replaces.
     if !actual_set_vec.is_empty() {
-        // Find the freshest source for each deploy_id across all chains.
-        let mut latest_for_deploy: HashMap<Bytes, (i64, BlockHash)> = HashMap::new();
+        enum FreshestSource {
+            SettledInBase,
+            Chain(i64, BlockHash),
+        }
+        let mut latest_for_deploy: HashMap<Bytes, FreshestSource> = HashMap::new();
+        for chain in &actual_set_vec {
+            for deploy in &chain.deploys_with_cost.0 {
+                if is_system_deploy_id(&deploy.deploy_id) {
+                    continue;
+                }
+                if settled_checked.insert(deploy.deploy_id.clone())
+                    && sig_won_in_base(&deploy.deploy_id)?
+                {
+                    tracing::info!(
+                        "DagMerger dedup: sig {} already settled in the base; dropping all scope copies",
+                        hex::encode(&deploy.deploy_id[..8.min(deploy.deploy_id.len())]),
+                    );
+                    settled_sigs.insert(deploy.deploy_id.clone());
+                    latest_for_deploy
+                        .insert(deploy.deploy_id.clone(), FreshestSource::SettledInBase);
+                }
+            }
+        }
         for chain in &actual_set_vec {
             for deploy in &chain.deploys_with_cost.0 {
                 let candidate = (chain.source_block_number, chain.source_block_hash.clone());
                 match latest_for_deploy.get(&deploy.deploy_id) {
-                    Some((best_num, best_hash)) => {
-                        // Fresher = higher block number, or byte-lex smaller hash at tie.
+                    Some(FreshestSource::SettledInBase) => {}
+                    Some(FreshestSource::Chain(best_num, best_hash)) => {
                         let is_fresher = candidate.0 > *best_num
                             || (candidate.0 == *best_num && candidate.1 < *best_hash);
                         if is_fresher {
-                            latest_for_deploy.insert(deploy.deploy_id.clone(), candidate);
+                            latest_for_deploy.insert(
+                                deploy.deploy_id.clone(),
+                                FreshestSource::Chain(candidate.0, candidate.1),
+                            );
                         }
                     }
                     None => {
-                        latest_for_deploy.insert(deploy.deploy_id.clone(), candidate);
+                        latest_for_deploy.insert(
+                            deploy.deploy_id.clone(),
+                            FreshestSource::Chain(candidate.0, candidate.1),
+                        );
                     }
                 }
             }
@@ -722,11 +810,15 @@ pub fn merge(
         if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
             tracing::debug!(target: "f1r3fly.merge.step", step = "merge.dedup.latest_for_deploy.ENTER",
                 n_deploy_ids = latest_for_deploy.len(), n_chains = actual_set_vec.len());
-            for (deploy_id, (num, hash)) in latest_for_deploy.iter() {
+            for (deploy_id, source) in latest_for_deploy.iter() {
+                let (num, hash) = match source {
+                    FreshestSource::SettledInBase => (i64::MAX, "settled-in-base".to_string()),
+                    FreshestSource::Chain(num, hash) => (*num, hex::encode(&hash[..])),
+                };
                 tracing::debug!(target: "f1r3fly.merge.step", step = "merge.dedup.latest_for_deploy",
                     deploy_id = %hex::encode(&deploy_id[..8.min(deploy_id.len())]),
-                    freshest_block_number = *num,
-                    freshest_block_hash = %hex::encode(&hash[..]));
+                    freshest_block_number = num,
+                    freshest_block_hash = %hash);
             }
         }
 
@@ -745,7 +837,8 @@ pub fn merge(
             .partition(|chain| {
                 chain.deploys_with_cost.0.iter().all(|deploy| {
                     match latest_for_deploy.get(&deploy.deploy_id) {
-                        Some((best_num, best_hash)) => {
+                        Some(FreshestSource::SettledInBase) => false,
+                        Some(FreshestSource::Chain(best_num, best_hash)) => {
                             chain.source_block_number == *best_num
                                 && chain.source_block_hash == *best_hash
                         }
@@ -781,7 +874,8 @@ pub fn merge(
                 }
                 let best = latest_for_deploy.get(&deploy.deploy_id);
                 let is_collateral = match best {
-                    Some((best_num, best_hash)) => {
+                    Some(FreshestSource::SettledInBase) => false,
+                    Some(FreshestSource::Chain(best_num, best_hash)) => {
                         chain.source_block_number == *best_num
                             && chain.source_block_hash == *best_hash
                     }
@@ -836,6 +930,30 @@ pub fn merge(
                 collateral_lost_pairs.len(),
             );
         }
+    }
+
+    // Merge-time validity-window rule (see split_window_closed_chains):
+    // closed-window chains join the LATE set — `resolve_conflicts` rejects
+    // late chains unconditionally (they reach the block's rejection record
+    // through the standard pair assembly) and rejects actual chains that
+    // depend on them; the stale-diff lineage expansion afterward covers
+    // state-lineage descendants. The floor-relative window is the
+    // deterministic lateness definition the legacy (nondeterministic,
+    // disabled) late-block query lacked. A chain both settled-in-base and
+    // window-closed was already dropped record-less by the dedup sentinel
+    // above — fine: its effect stands, a record would be dup-flagged
+    // testimony.
+    let (in_window, window_rejected) =
+        split_window_closed_chains(actual_set_vec, floor_block_number, deploy_lifespan)?;
+    actual_set_vec = in_window;
+    if !window_rejected.is_empty() {
+        tracing::info!(
+            target: "f1r3fly.merge.step",
+            "DagMerger window rule: rejected {} late chain(s) whose deploy validity window is closed at floor #{}",
+            window_rejected.len(),
+            floor_block_number,
+        );
+        late_set_vec.extend(window_rejected);
     }
 
     // Sort the deploy chain indices for deterministic iteration order
@@ -1463,6 +1581,19 @@ pub fn merge(
         }
     }
 
+    // The user sigs whose chains survived every rejection pass and are
+    // about to be APPLIED into the merged state. Returned to the caller:
+    // these effects are in the merged pre-state, so a deploy among them
+    // must not ALSO be executed fresh on top of it.
+    let applied_user_sigs: HashSet<Bytes> = resolved
+        .to_merge
+        .iter()
+        .flat_map(|branch| branch.0.iter())
+        .flat_map(|chain| chain.deploys_with_cost.0.iter())
+        .filter(|deploy| !is_system_deploy_id(&deploy.deploy_id))
+        .map(|deploy| deploy.deploy_id.clone())
+        .collect();
+
     // Channels where MORE THAN ONE accepted chain contributes datum adds:
     // only these can exhibit cross-writer accumulation, so only these are
     // subject to the base-empty single-value-cell overfill guard.
@@ -1517,11 +1648,33 @@ pub fn merge(
         })
         .collect();
 
-    let mut rejected_user_deploys: Vec<(Bytes, BlockHash)> = all_pairs
-        .iter()
-        .filter(|(id, _)| !is_system_deploy_id(id))
-        .cloned()
-        .collect();
+    // Duplicate flag: the record does not dispute the sig's standing win
+    // when the effect is present in THIS merge's own post-state — either a
+    // kept chain in the same merge carries a copy, or the effect is
+    // settled in the base. Both are frozen, validator-recomputable facts
+    // of this merge; readers discard duplicate-flagged records from the
+    // disposition ordering.
+    let mut duplicate_of = |sig: &Bytes| -> Result<bool, CasperError> {
+        if applied_user_sigs.contains(sig) || settled_sigs.contains(sig) {
+            return Ok(true);
+        }
+        if settled_checked.insert(sig.clone()) && sig_won_in_base(sig)? {
+            settled_sigs.insert(sig.clone());
+            return Ok(true);
+        }
+        Ok(false)
+    };
+
+    let mut rejected_user_deploys: Vec<RejectedDeploy> = Vec::new();
+    for (id, src) in &all_pairs {
+        if !is_system_deploy_id(id) {
+            rejected_user_deploys.push(RejectedDeploy {
+                sig: id.clone(),
+                duplicate: duplicate_of(id)?,
+                carrier: src.clone(),
+            });
+        }
+    }
     let mut rejected_slashes: Vec<(Bytes, BlockHash)> = all_pairs
         .into_iter()
         .filter(|(id, _)| is_slash_deploy_id(id))
@@ -1534,11 +1687,16 @@ pub fn merge(
     if !collateral_lost_pairs.is_empty() {
         let existing_ids: HashSet<Bytes> = rejected_user_deploys
             .iter()
-            .map(|(id, _)| id.clone())
+            .map(|record| record.sig.clone())
             .collect();
-        for pair in collateral_lost_pairs {
-            if !existing_ids.contains(&pair.0) {
-                rejected_user_deploys.push(pair);
+        for (id, src) in collateral_lost_pairs {
+            if !existing_ids.contains(&id) {
+                let duplicate = duplicate_of(&id)?;
+                rejected_user_deploys.push(RejectedDeploy {
+                    sig: id,
+                    duplicate,
+                    carrier: src,
+                });
             }
         }
     }
@@ -1562,7 +1720,13 @@ pub fn merge(
     if !rejected_user_deploys.is_empty() {
         let rejected_str: Vec<_> = rejected_user_deploys
             .iter()
-            .map(|(sig, _)| hex::encode(&sig[..std::cmp::min(8, sig.len())]))
+            .map(|record| {
+                format!(
+                    "{}{}",
+                    hex::encode(&record.sig[..std::cmp::min(8, record.sig.len())]),
+                    if record.duplicate { "(dup)" } else { "" }
+                )
+            })
             .collect();
         tracing::info!(
             "DagMerger rejected {} user deploys: {}",
@@ -1589,7 +1753,12 @@ pub fn merge(
             n_rejected_slash = rejected_slashes.len());
     }
 
-    Ok((new_state, rejected_user_deploys, rejected_slashes))
+    Ok((
+        new_state,
+        rejected_user_deploys,
+        rejected_slashes,
+        applied_user_sigs,
+    ))
 }
 
 #[cfg(test)]
@@ -1657,6 +1826,74 @@ mod tests {
             Bytes::from(vec![deploy_id; 32]),
             source_block_number,
         )
+    }
+
+    fn chain_with_window(
+        deploy_id: u8,
+        cost: u64,
+        source_block_number: i64,
+        valid_after: i64,
+        state_changes: StateChange,
+    ) -> DeployChainIndex {
+        let mut c = chain(deploy_id, cost, source_block_number, state_changes);
+        c.deploy_windows =
+            std::collections::HashMap::from([(Bytes::from(vec![deploy_id]), valid_after)]);
+        c
+    }
+
+    /// The window rule keys on `valid_after <= floor - lifespan` — the
+    /// proposer's block-expired bound evaluated at the merging block's
+    /// FLOOR (never the merge height: above-floor ancestors being
+    /// re-applied onto the floor base must be unreachable, which the floor
+    /// key guarantees arithmetically). Closed-window chains are split out
+    /// for rejection-with-record; the boundary (valid_after == floor -
+    /// lifespan) is CLOSED (matches the selection filter); window-less
+    /// (system-only) chains are exempt.
+    #[test]
+    fn window_rule_splits_closed_window_chains_only() {
+        let closed = chain_with_window(1, 10, 3, 0, StateChange::empty());
+        let at_boundary = chain_with_window(2, 10, 3, 5, StateChange::empty());
+        let open = chain_with_window(3, 10, 3, 6, StateChange::empty());
+        let system_only = {
+            let mut c = chain(4, 10, 3, StateChange::empty());
+            c.deploy_windows.clear();
+            c
+        };
+
+        // floor #55, lifespan 50 → earliest_valid_after = 5.
+        let (kept, rejected) = split_window_closed_chains(
+            vec![
+                closed.clone(),
+                at_boundary.clone(),
+                open.clone(),
+                system_only.clone(),
+            ],
+            55,
+            50,
+        )
+        .unwrap();
+
+        let kept_ids: Vec<u8> = kept
+            .iter()
+            .flat_map(|c| c.deploys_with_cost.0.iter())
+            .map(|d| d.deploy_id[0])
+            .collect();
+        let rejected_ids: Vec<u8> = rejected
+            .iter()
+            .flat_map(|c| c.deploys_with_cost.0.iter())
+            .map(|d| d.deploy_id[0])
+            .collect();
+
+        assert!(
+            rejected_ids.contains(&1) && rejected_ids.contains(&2),
+            "closed and boundary windows must be split out (got rejected={:?})",
+            rejected_ids
+        );
+        assert!(
+            kept_ids.contains(&3) && kept_ids.contains(&4),
+            "open-window and window-less chains must be kept (got kept={:?})",
+            kept_ids
+        );
     }
 
     fn mergeable_chain(

@@ -101,6 +101,14 @@ vps-bench-latency host="" duration="60" rate="2":
     scripts/bench/latency-benchmark.sh --host {{host}} --duration {{duration}} --rate {{rate}} --apply
 
 # =================================================================
+# CI MAINTENANCE
+# =================================================================
+
+# Re-pin the trusted system-integration harness (updates all pin sites, runs checks)
+repin-system-integration sha:
+    scripts/repin-system-integration.sh {{sha}}
+
+# =================================================================
 # HELP
 # =================================================================
 

@@ -37,8 +37,9 @@ struct TestContext {
 
 impl TestContext {
     async fn new() -> Self {
+        let parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(2));
         let genesis = GenesisBuilder::new()
-            .build_genesis_with_parameters(None)
+            .build_genesis_with_parameters(Some(parameters))
             .await
             .unwrap();
 
@@ -265,5 +266,69 @@ async fn purge_keeps_buffered_deploy_with_pending_rejection_above_finalized_win(
         hex::encode(&fixture.rejected_sig),
         hex::encode(&merge_block.block_hash),
         hex::encode(&next_block.block_hash)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn finalized_noncanonical_deploy_is_reproposed_after_canonical_rejection() {
+    let ctx = TestContext::new().await;
+    let mut fixture = build_conflict_siblings(&ctx).await;
+
+    fixture.nodes[0]
+        .block_dag_storage
+        .record_directly_finalized(fixture.block_a.block_hash.clone(), 1.0, |_| async {
+            Ok(())
+        })
+        .await
+        .expect("finalize the rejected deploy carrier");
+
+    let merge_block = propose_rejecting_merge(&mut fixture, 0).await;
+    {
+        let (a, b) = fixture.nodes.split_at_mut(1);
+        a[0].sync_with_one(&mut b[0])
+            .await
+            .expect("sync the rejecting merge");
+    }
+    fixture.nodes.sort_by(|left, right| {
+        left.validator_id_opt
+            .as_ref()
+            .expect("left validator identity")
+            .public_key
+            .bytes
+            .cmp(
+                &right
+                    .validator_id_opt
+                    .as_ref()
+                    .expect("right validator identity")
+                    .public_key
+                    .bytes,
+            )
+    });
+
+    fixture.nodes[0]
+        .block_dag_storage
+        .record_directly_finalized(merge_block.block_hash.clone(), 1.0, |_| async { Ok(()) })
+        .await
+        .expect("finalize the canonical rejecting merge");
+
+    let marker_deploy = {
+        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        construct_deploy::basic_deploy_data(1, None, Some(fixture.shard_id.clone()))
+            .expect("build recovery marker deploy")
+    };
+    let recovery_block = fixture.nodes[0]
+        .add_block_from_deploys(std::slice::from_ref(&marker_deploy))
+        .await
+        .expect("propose the recovery block");
+
+    assert!(
+        recovery_block
+            .body
+            .deploys
+            .iter()
+            .any(|processed| processed.deploy.sig == fixture.rejected_sig),
+        "deploy {} must be re-proposed after the canonical merge rejects its finalized noncanonical carrier",
+        hex::encode(&fixture.rejected_sig)
     );
 }

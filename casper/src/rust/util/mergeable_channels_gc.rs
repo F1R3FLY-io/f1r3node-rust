@@ -13,6 +13,8 @@ use models::rust::block_hash::BlockHash;
 use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::rust::casper::CasperShardConf;
+use crate::rust::finality::floor::{floor_of_block, Floor};
+use crate::rust::safety::clique_oracle::FtThreshold;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 /// Sweep state carried across garbage-collection passes.
@@ -41,7 +43,7 @@ impl GcSweep {
 ///
 /// A block's mergeable data is safe to delete when:
 /// 1. The block is finalized
-/// 2. The block is deeper than maxParentDepth + depthBuffer from current tips
+/// 2. The block is deeper than maxParentDepth + depthBuffer below the floor
 /// 3. Every validator's latest message sits strictly above it on the main chain
 pub async fn collect_garbage(
     sweep: &mut GcSweep,
@@ -52,7 +54,21 @@ pub async fn collect_garbage(
 ) -> Result<usize, KvStoreError> {
     let mut deleted_count = 0;
 
-    enumerate_newly_in_range(sweep, dag, casper_shard_conf);
+    // The deletion anchor, derived ONCE per pass: the floor of the last
+    // finalized block. Deletion is irreversible and the data serves merges,
+    // whose base is the floor — see `is_safe_to_delete`.
+    let floor = floor_of_block(
+        dag,
+        &dag.last_finalized_block(),
+        FtThreshold::from_ppm(casper_shard_conf.fault_tolerance_threshold_ppm),
+    )
+    .await
+    .map_err(|e| KvStoreError::IoError(e.to_string()))?;
+
+    // The sweep shares that anchor. A tip-anchored ceiling would enumerate the
+    // whole span between the floor and the tip — blocks `is_safe_to_delete`
+    // refuses on every pass, which is the work the sweep exists to avoid.
+    enumerate_newly_in_range(sweep, dag, &floor, casper_shard_conf);
     metrics::gauge!("mergeable_channels_gc_pending").set(sweep.pending.len() as f64);
 
     let common_strict_ancestors = common_strict_main_chain_ancestors(dag);
@@ -62,6 +78,7 @@ pub async fn collect_garbage(
         if is_safe_to_delete(
             dag,
             block_hash,
+            &floor,
             casper_shard_conf,
             common_strict_ancestors.as_ref(),
         )? {
@@ -109,6 +126,7 @@ pub async fn collect_garbage(
 fn is_safe_to_delete(
     dag: &KeyValueDagRepresentation,
     block_hash: &BlockHash,
+    floor: &Floor,
     casper_shard_conf: &CasperShardConf,
     common_strict_ancestors: Option<&HashSet<BlockHash>>,
 ) -> Result<bool, KvStoreError> {
@@ -117,14 +135,22 @@ fn is_safe_to_delete(
         return Ok(false);
     }
 
-    // 2. Check depth constraint
+    // 2. Depth is measured from the FLOOR, not from the tip. The data being
+    //    deleted is what merges need to compute number-channel diffs, and a
+    //    merge reads it for the blocks above its BASE — which is the floor, not
+    //    the tip. The floor trails the tip by the time mutual citation takes
+    //    (~3 blocks healthy, >100 during the observed pacification stall), so a
+    //    tip-anchored bound put the whole span between the floor and
+    //    `tip - max_allowed_depth` inside the deletable set while floor-based
+    //    merges still needed it. Anchoring on the floor is strictly more
+    //    conservative: the floor never leads the tip, so this can only delete
+    //    less than before, never more.
     let block_meta = dag.lookup_unsafe(block_hash)?;
-    let max_block_number = dag.latest_block_number();
-    let depth_from_tip = max_block_number - block_meta.block_number;
+    let depth_from_floor = floor.block_number - block_meta.block_number;
     let max_allowed_depth = (casper_shard_conf.max_parent_depth as i64)
         + (casper_shard_conf.mergeable_channels_gc_depth_buffer as i64);
 
-    if depth_from_tip <= max_allowed_depth {
+    if depth_from_floor <= max_allowed_depth {
         return Ok(false);
     }
 
@@ -159,14 +185,21 @@ fn is_safe_to_delete(
 /// would move the sweep past it for good; leaving it to condition 1 of
 /// `is_safe_to_delete` means it is simply retried until it qualifies.
 ///
-/// The ceiling is a coarse upper bound on what is worth looking at, not a
-/// second definition of the horizon — `is_safe_to_delete` remains the only
-/// place the `max_parent_depth + gc_depth_buffer` boundary is expressed, since
-/// that same distance also governs the LFS forward-horizon window a joiner
-/// syncs.
+/// The ceiling is a coarse upper bound on what is worth looking at, and it is
+/// anchored on the floor for the same reason `is_safe_to_delete` is: a
+/// tip-anchored ceiling would sweep in the entire span between the floor and the
+/// tip, which the predicate refuses on every pass.
+///
+/// It restates the `max_parent_depth + gc_depth_buffer` distance that the
+/// predicate also computes, which is a duplication worth removing — that
+/// distance is the LFS forward-horizon window a joiner syncs, so the two must
+/// not drift. `is_safe_to_delete` stays the authority: enumeration only has to
+/// over-approximate, and the boundary block it includes is one the predicate
+/// then declines.
 fn enumerate_newly_in_range(
     sweep: &mut GcSweep,
     dag: &KeyValueDagRepresentation,
+    floor: &Floor,
     casper_shard_conf: &CasperShardConf,
 ) {
     let max_allowed_depth = (casper_shard_conf.max_parent_depth as i64)
@@ -174,7 +207,7 @@ fn enumerate_newly_in_range(
 
     extend_pending_to_ceiling(
         sweep,
-        dag.latest_block_number() - max_allowed_depth,
+        floor.block_number - max_allowed_depth,
         &dag.height_map,
     );
 }
@@ -233,16 +266,16 @@ fn common_strict_ancestors(
 mod tests {
     use std::collections::HashMap;
 
-    use super::*;
-
-    fn hash(value: &'static [u8]) -> BlockHash { BlockHash::from_static(value) }
+    /// Named hashes for the ancestor tests, which care about chain shape rather
+    /// than height; the height-keyed fixtures below use `hash(n)` instead.
+    fn named_hash(value: &'static [u8]) -> BlockHash { BlockHash::from_static(value) }
 
     #[test]
     fn intersects_strict_main_chain_ancestors() {
-        let genesis = hash(b"genesis");
-        let common = hash(b"common");
-        let left = hash(b"left");
-        let right = hash(b"right");
+        let genesis = named_hash(b"genesis");
+        let common = named_hash(b"common");
+        let left = named_hash(b"left");
+        let right = named_hash(b"right");
         let parents = HashMap::from([
             (common.clone(), genesis.clone()),
             (left.clone(), common.clone()),
@@ -257,8 +290,8 @@ mod tests {
 
     #[test]
     fn excludes_latest_messages_from_strict_ancestors() {
-        let genesis = hash(b"genesis");
-        let latest = hash(b"latest");
+        let genesis = named_hash(b"genesis");
+        let latest = named_hash(b"latest");
         let parents = HashMap::from([(latest.clone(), genesis.clone())]);
 
         let ancestors =
@@ -370,5 +403,134 @@ mod tests {
         extend_pending_to_ceiling(&mut sweep, 6, &height_map(20));
 
         assert_eq!(sweep.pending.len(), 7);
+    }
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+    use models::rust::block_metadata::BlockMetadata;
+    use parking_lot::RwLock as PlRwLock;
+    use prost::bytes::Bytes;
+    use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+
+    use super::*;
+    use crate::rust::finality::floor::Floor;
+
+    const TOP: u8 = 20;
+
+    fn hash(n: u8) -> Bytes { Bytes::from(vec![n; 32]) }
+
+    fn linear_chain_dag() -> KeyValueDagRepresentation {
+        let store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
+        let mut metadata_store = BlockMetadataStore::new(store);
+        let validator = Bytes::from(vec![0xee; 65]);
+
+        let mut dag_set = imbl::HashSet::new();
+        let mut block_number_map = imbl::HashMap::new();
+        let mut main_parent_map = imbl::HashMap::new();
+        let mut child_map: imbl::HashMap<Bytes, imbl::HashSet<Bytes>> = imbl::HashMap::new();
+        let mut height_map: imbl::OrdMap<i64, imbl::HashSet<Bytes>> = imbl::OrdMap::new();
+        let mut finalized_blocks_set = imbl::HashSet::new();
+
+        for n in 0..=TOP {
+            let block_hash = hash(n);
+            dag_set.insert(block_hash.clone());
+            block_number_map.insert(block_hash.clone(), n as i64);
+            finalized_blocks_set.insert(block_hash.clone());
+            height_map.insert(n as i64, imbl::HashSet::unit(block_hash.clone()));
+
+            let parents = if n == 0 {
+                Vec::new()
+            } else {
+                let parent = hash(n - 1);
+                main_parent_map.insert(block_hash.clone(), parent.clone());
+                child_map
+                    .entry(parent.clone())
+                    .or_default()
+                    .insert(block_hash.clone());
+                vec![parent]
+            };
+
+            metadata_store
+                .add(BlockMetadata {
+                    block_hash: block_hash.clone(),
+                    parents,
+                    sender: validator.clone(),
+                    justifications: vec![],
+                    weight_map: BTreeMap::new(),
+                    block_number: n as i64,
+                    sequence_number: n as i32,
+                    invalid: false,
+                    directly_finalized: true,
+                    finalized: true,
+                    fault_tolerance_value: 1.0,
+                })
+                .expect("add metadata");
+        }
+
+        KeyValueDagRepresentation {
+            dag_set,
+            latest_messages_map: imbl::HashMap::unit(validator, hash(TOP)),
+            child_map,
+            height_map,
+            block_number_map,
+            main_parent_map,
+            self_justification_map: imbl::HashMap::new(),
+            invalid_blocks_set: imbl::HashSet::new(),
+            last_finalized_block_hash: hash(TOP),
+            finalized_blocks_set,
+            block_metadata_index: Arc::new(PlRwLock::new(metadata_store)),
+            deploy_index: Arc::new(PlRwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
+                InMemoryKeyValueStore::new(),
+            )))),
+            floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        }
+    }
+
+    fn conf() -> CasperShardConf {
+        let mut conf = CasperShardConf::new();
+        conf.max_parent_depth = 3;
+        conf.mergeable_channels_gc_depth_buffer = 1;
+        conf
+    }
+
+    fn floor_at(n: u8) -> Floor {
+        Floor {
+            hash: hash(n),
+            block_number: n as i64,
+        }
+    }
+
+    fn is_safe_to_delete_at_floor(
+        dag: &KeyValueDagRepresentation,
+        block_hash: &BlockHash,
+        floor: &Floor,
+        conf: &CasperShardConf,
+    ) -> Result<bool, KvStoreError> {
+        // Derived from the DAG exactly as `collect_garbage` does, so the depth
+        // clause is exercised against a real citation set rather than a stub
+        // that could refuse for the wrong reason.
+        let common_strict_ancestors = common_strict_main_chain_ancestors(dag);
+        is_safe_to_delete(
+            dag,
+            block_hash,
+            floor,
+            conf,
+            common_strict_ancestors.as_ref(),
+        )
+    }
+
+    #[test]
+    fn a_block_above_the_floor_is_never_collected_however_far_the_tip_has_run() {
+        let dag = linear_chain_dag();
+        let conf = conf();
+        assert_eq!(dag.latest_block_number(), TOP as i64 + 1);
+        assert!(
+            !is_safe_to_delete_at_floor(&dag, &hash(12), &floor_at(10), &conf)
+                .expect("safety check"),
+            "a block above the floor must retain its mergeable-channel data"
+        );
     }
 }

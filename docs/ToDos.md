@@ -1,7 +1,7 @@
 ---
 doc_type: todos
-version: "1.0"
-last_updated: 2026-08-05
+version: "1.1"
+last_updated: 2026-08-13
 mr_status:
   ready: false
   target_branch: master
@@ -32,6 +32,7 @@ This document tracks implementation work through **epics** (logical groupings of
      docs/work-logs/ for durable cross-agent notes, and keep this section to
      current operative facts only. -->
 
+- **System-integration PR #118 reviewed head repin prepared (2026-08-15).** PR #118 corrects four harness defects from f1r3node-rust CI run `31886226287`. FT convergence now requires `FT >= FTT` and monotonicity. Epoch-boundary bond blocks accept either valid closeBlock transition map. Phase 5 still requires exact activation. Retired log snapshots retain their owning test allowances without cross-test leakage. Bond assertions now use the finalization resolver's canonical deploy block instead of an orphaned first inclusion. Focused unit tests protect the log-scan bookkeeping. The local bonding suite passed in 208.90 seconds with 5,636 MB peak RSS. This branch pins all three `SYSTEM_INTEGRATION_REF` sites to immutable reviewed PR head `735a7b95a3af74677f9519a6f01049cbc004bca4`. It retains dedicated shards, canonical finalized-block selection, standard `--rss-ceiling-mb 10000` limits, and the weekend preflight's `45056` MB limit.
 - **PR #182** (`hotfix/renormalize-system-integration-pin-post-79` → `dev`, head `121029f1`) normalizes all three `SYSTEM_INTEGRATION_REF` sites to system-integration `main` `369d49df2f97e65b3d0ad869aa668a7383b11179` (the post-#79/#80 promotion). Multi-agent review posted 2026-08-01: approved 3-0 (anthropic abstained on an API billing error). This completes and supersedes the 2026-07-31T19:33 PDT handoff; the similarly named local branch `hotfix/normalize-system-integration-pin-post-79` is stale and has no PR.
 - **Soak memory envelope re-based; weekend soak awaiting 48GB VM (2026-08-10, claude-session-ecaee825).** The 2026-08-09 weekend-soak breaches (runs 31331480002/31332864501) were NOT a merge regression — local A/B exonerated master@eb4030c2 and the harness pin diff was empty; the 6-node shard's real envelope is 16.7–19.3GB. PR #217 (merged) raised SOAK_RSS_CEILING_MB→20480 / lowered floor→8192; run 31390673884 then showed 32GB cannot hold the envelope (orchestrator guardian, free 6524MB). FINAL (maintainer, both sessions): system-integration sets fleet default AMD64_MEM_GB=48 (branch hotfix/raise-soak-vm-memory there, awaiting push/PR/merge); this repo's hotfix/raise-soak-vm-memory then takes one commit: SYSTEM_INTEGRATION_REF bump ×3 sites + ceiling 20480→28672 + these doc updates, then re-dispatch weekend-60h. Budget follow-up RESOLVED (SI PR #99 verification): no dollar-denominated cap exists in the runner stack — all lifetime guards are time-based (reaper MAX_AGE_HOURS + soak-deadline-epoch exemption, cloud-init idle/wedge timeouts); the ~$12/~$33 figures in the TASK note below are cost ESTIMATES only, ≈$13 daily/≈$35 weekend at 48GB. Evidence: docs/work-logs/soak-rss-regression-2026-08-09.md (local).
 - **RESOLVED (2026-08-09): the hold below was overtaken — dev→master promoted via PR #213 and the weekend-soak pin question is moot under the re-based envelope above.** ~~Hold `dev` → `master` until the weekend soak snapshot is verified.~~ The Friday 19:30 Pacific scheduled `Merge Recovery Soak` run must exist with its `headSha` recorded, confirming it launched from the pre-normalization `master` (PR #181 pin `79262d8b`), before promoting. Merging first would silently move the weekend soak to the post-#79 `369d49df` pin. If no scheduled run appears, hold the promotion and investigate or manually dispatch from the intended pre-normalization `master`. Known discrepancy: scheduled runs initialize `target_ref=dev` although comments say the Friday weekend run targets `master` — treat the captured workflow `headSha`/pin and the resolved target SHA as separate evidence.
@@ -64,7 +65,7 @@ mr_status:
 
 ## Active Epics
 
-<!-- Epics ordered by priority. EPIC-011 is the current top priority. EPIC-001/002 are system-integration alignment (US-001). EPIC-003-008 are migration (US-002). -->
+<!-- Epics are ordered by priority. Work on the highest priority epic first. -->
 
 ---
 
@@ -162,6 +163,459 @@ tasks:
 - Included: dispatch input, red baseline run, `_3v` safety/liveness split, nightly-tier restoration, docs sync, follow-on `MC_EquivocationDetector` split
 - Excluded: raising `TLC_PER_CONFIG_TIMEOUT`; reducing validator count to make models cheap; the cargo-mutants nightly deadline overrun (separate, second independent nightly red — still untracked)
 - Coordination: touches `scripts/ci/check-tla-invariants.sh`, which the pending PR #198 reconciliation also modifies — keep tier-list edits minimal
+
+---
+
+### EPIC-012: Open-Issue Remediation PR Queue
+
+```yaml
+---
+epic_id: EPIC-012
+title: "Open-Issue Remediation PR Queue"
+status: pending
+priority: p0
+user_story: null
+blocked_by: []
+created_at: 2026-08-12
+claimed_by: null
+claimed_at: null
+execution_contract:
+  base_branch: dev
+  task_unit: "one task = one branch = one pull request"
+  merge_policy: "Start each unblocked branch from current origin/dev; after a dependency merges, start or rebase its dependent branch onto the updated origin/dev. Do not silently stack unrelated tasks."
+  issue_policy: "Put Refs #N in every PR body. Because these PRs target dev rather than the default branch, close an issue only after the fix is promoted to master and its acceptance evidence is confirmed."
+  completion_policy: "A task reaches review only when its acceptance checks and focused regression tests pass; it reaches complete only when the PR is merged."
+tasks:
+  - id: TASK-012-1
+    title: "Contain AI system-contract failures without crashing the node"
+    status: pending
+    issues: [11]
+    base_branch: dev
+    branch: fix/ai-contract-failure-isolation
+    proposed_pr_title: "fix(rholang): isolate AI system-contract failures"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "HTTP 5xx, timeout, and malformed responses from every external AI system contract become typed deploy failures rather than process panics"
+      - "The node remains responsive and can process a subsequent valid deploy"
+      - "Focused tests cover the failure path and successful recovery"
+
+  - id: TASK-012-2
+    title: "Align node readiness with Casper readiness"
+    status: pending
+    issues: [12]
+    base_branch: dev
+    branch: fix/casper-aware-readiness
+    proposed_pr_title: "fix(node): report ready only after Casper initialization"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "The wait/readiness surface remains false until Casper can serve exploratory deploys"
+      - "Observer startup cannot report ready during the Casper-unavailable window"
+      - "Regression coverage reproduces the documented observer --wait sequence"
+
+  - id: TASK-012-3
+    title: "Reject stale-chain peers after a network-ID relaunch"
+    status: pending
+    issues: [13]
+    base_branch: dev
+    branch: fix/genesis-bound-peer-handshake
+    proposed_pr_title: "fix(network): bind peer sessions to genesis identity"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "The peer handshake carries an immutable genesis/chain identity in addition to networkId"
+      - "Peers from an old chain with the same networkId are rejected before dependency fetching or block processing"
+      - "Compatibility and mixed-version rollout behavior are documented and tested"
+
+  - id: TASK-012-4
+    title: "Publish deb and rpm node packages from CI"
+    status: pending
+    issues: [14]
+    base_branch: dev
+    branch: feat/linux-package-artifacts
+    proposed_pr_title: "feat(ci): publish deb and rpm node packages"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "Release CI builds amd64 and arm64 deb/rpm artifacts with the node binary, service definition, and default configuration"
+      - "Package installation, version reporting, and clean removal are smoke-tested"
+      - "Artifact naming and supported-platform documentation are updated"
+
+  - id: TASK-012-5
+    title: "Replace HOCON with a maintained configuration format"
+    status: pending
+    issues: [15]
+    base_branch: dev
+    branch: feat/config-format-migration
+    proposed_pr_title: "feat(config): migrate node configuration away from HOCON"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "A maintained parser and canonical configuration format replace the unmaintained HOCON dependency"
+      - "Existing operator configuration has a documented compatibility or conversion path"
+      - "Configuration precedence, defaults, malformed-input behavior, and representative production configs are tested"
+
+  - id: TASK-012-6
+    title: "Extend DeployData parameters to all supported Rholang values"
+    status: pending
+    issues: [17]
+    base_branch: dev
+    branch: feat/deploy-parameter-types
+    proposed_pr_title: "feat(api): extend DeployData parameter value types"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "DeployData parameters support tuple, list, set, map, Nil, and URI values without lossy conversion"
+      - "Protobuf/JSON compatibility and deterministic normalization are covered"
+      - "Existing parameter clients remain compatible or receive a documented migration path"
+
+  - id: TASK-012-7
+    title: "Expose DeployData parameters through the observer Web API"
+    status: pending
+    issues: [16]
+    base_branch: dev
+    branch: feat/web-api-deploy-parameters
+    proposed_pr_title: "feat(web-api): expose DeployData parameters"
+    claimed_by: null
+    blocked_by: [TASK-012-6]
+    acceptance:
+      - "Observer HTTP responses expose the complete parameter representation introduced by TASK-012-6"
+      - "OpenAPI documentation and serialization tests cover every supported parameter type"
+      - "Responses for deploys without parameters remain backward compatible"
+
+  - id: TASK-012-8
+    title: "Exclude persistently nonparticipating validators from finality weight safely"
+    status: pending
+    issues: [18]
+    base_branch: dev
+    branch: fix/participation-based-finality-committee
+    proposed_pr_title: "fix(consensus): derive finality committee from finalized participation"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "A validator that bonds and activates but never produces cannot stall finalization indefinitely"
+      - "Participation is derived from finalized evidence; young-DAG and minority-finalization safety are preserved"
+      - "Tests cover never-started, temporarily offline, resumed, and newly activated validators"
+
+  - id: TASK-012-9
+    title: "Synchronize canonical Rholang resources after the parser upgrade"
+    status: pending
+    issues: [19]
+    base_branch: dev
+    branch: chore/sync-rholang-resources
+    proposed_pr_title: "chore(rholang): sync canonical resource contracts"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "The listed system and test .rho files are reconciled with their canonical implementations"
+      - "Multi-binding and @=* pattern syntax are covered by parser regressions"
+      - "The full affected contract test suites pass and obsolete parser workarounds are removed"
+
+  - id: TASK-012-10
+    title: "Cache fault tolerance for finalized-block API queries"
+    status: pending
+    issues: [22]
+    base_branch: dev
+    branch: perf/cache-finalized-fault-tolerance
+    proposed_pr_title: "perf(block-api): cache finalized-block fault tolerance"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "Finalized block metadata stores the computed fault-tolerance value at finalization time"
+      - "Block API queries use the cache only for finalized blocks and retain live computation for non-finalized blocks"
+      - "Correctness and deep-history performance regressions are tested"
+
+  - id: TASK-012-11
+    title: "Remove the 129-term random-split overflow"
+    status: pending
+    issues: [34]
+    base_branch: dev
+    branch: fix/rholang-random-split-overflow
+    proposed_pr_title: "fix(rholang): prevent random-split identifier overflow"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "Par values at the 128/129/256 boundaries reduce without panic"
+      - "The split identifier uses a range-compatible type or returns a structured error"
+      - "Generated regression cases cover both CLI and interpreter paths"
+
+  - id: TASK-012-12
+    title: "Keep LFS-synced observers inside the imported DAG horizon"
+    status: pending
+    issues: [37]
+    base_branch: dev
+    branch: fix/lfs-observer-parent-horizon
+    proposed_pr_title: "fix(observer): bound post-LFS parent validation to imported history"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "Normal block validation after LFS sync never requires DAG hashes or roots below the imported horizon"
+      - "A fresh observer catches up beyond approved-state height on a long-running shard"
+      - "The regression is distinct from reporter replay coverage in PR #210"
+
+  - id: TASK-012-13
+    title: "Install RhoSpecContract as a genesis resource"
+    status: pending
+    issues: [41]
+    base_branch: dev
+    branch: feat/genesis-rhospec-contract
+    proposed_pr_title: "feat(genesis): install the RhoSpec contract"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "RhoSpecContract is available from ordinary nodes without test-resource paths"
+      - "Genesis registration is deterministic and its URI is documented"
+      - "Existing RhoSpec tests consume the genesis-installed contract"
+
+  - id: TASK-012-14
+    title: "Resolve the PR #488 deferred review checklist"
+    status: pending
+    issues: [44]
+    base_branch: dev
+    branch: refactor/rejected-deploy-storage-followups
+    proposed_pr_title: "refactor(casper): resolve rejected-deploy review follow-ups"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "Every still-applicable item in issue #44 is implemented or dispositioned explicitly in the PR body"
+      - "Duplicated deploy/rejected-deploy storage logic is consolidated without weakening encapsulation"
+      - "Recovery-cycle, persistence, and storage regressions pass"
+
+  - id: TASK-012-15
+    title: "Resolve the PR #491 mergeable-channel review checklist"
+    status: pending
+    issues: [46]
+    base_branch: dev
+    branch: refactor/mergeable-channel-followups
+    proposed_pr_title: "refactor(rspace): resolve mergeable-channel review follow-ups"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "Every still-applicable item in issue #46 is implemented or dispositioned explicitly in the PR body"
+      - "Tag identity derivation has one source of truth and hot-path avoidable allocations are removed"
+      - "Mergeable-channel semantic and performance regressions pass"
+
+  - id: TASK-012-16
+    title: "Widen token vault arithmetic to BigInt"
+    status: pending
+    issues: [49]
+    base_branch: dev
+    branch: feat/bigint-token-vaults
+    proposed_pr_title: "feat(rholang): support BigInt token vault balances"
+    claimed_by: null
+    blocked_by: [TASK-012-9]
+    acceptance:
+      - "NonNegativeNumber and MakeMint support balances and transfers above 2^63-1"
+      - "New registry URIs provide an explicit protocol migration boundary"
+      - "10^30 round-trip, negative-value rejection, bridge compatibility, and genesis determinism are tested"
+
+  - id: TASK-012-17
+    title: "Characterize and improve intra-deploy Par execution scaling"
+    status: pending
+    issues: [50]
+    base_branch: dev
+    branch: perf/rholang-par-scaling
+    proposed_pr_title: "perf(rholang): address intra-deploy Par scaling"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "A reproducible benchmark separates reducer serialization, RSpace contention, replay overhead, and scheduler limits"
+      - "The PR either implements a measurable bounded speedup or documents and enforces the intended sequential contract"
+      - "Play/replay determinism and cost accounting remain unchanged"
+
+  - id: TASK-012-18
+    title: "Accept and print unsuffixed floating-point literals consistently"
+    status: pending
+    issues: [75]
+    base_branch: dev
+    branch: fix/rholang-float-literals
+    proposed_pr_title: "fix(rholang): normalize floating-point literal syntax"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "Unsuffixed and f64-suffixed literals parse to the same f64 value"
+      - "Printing has one canonical round-trippable representation"
+      - "Parser, normalizer, protobuf, and CLI round-trip boundaries are tested"
+
+  - id: TASK-012-19
+    title: "Instrument finality-frontier and long-running merge cost"
+    status: pending
+    issues: [45, 105]
+    base_branch: dev
+    branch: perf/instrument-finality-frontier
+    proposed_pr_title: "perf(consensus): instrument frontier and merge-cost growth"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "Metrics separate finalizer/oracle time, merge-scope construction, fallback rate, frontier width, and per-block storage cost"
+      - "A bounded automated scenario reproduces the growth signature from both issues"
+      - "The evidence identifies which subsequent fix owns each bottleneck rather than inferring causality from wall-clock latency"
+
+  - id: TASK-012-20
+    title: "Bound finality work as the unfinalized frontier grows"
+    status: pending
+    issues: [105]
+    base_branch: dev
+    branch: fix/bounded-finality-frontier
+    proposed_pr_title: "fix(consensus): bound finality work over the DAG frontier"
+    claimed_by: null
+    blocked_by: [TASK-012-19]
+    acceptance:
+      - "Empty-block finalization latency no longer grows monotonically with frontier width"
+      - "Any incremental cache or bound is invalidated deterministically on DAG/finality changes"
+      - "Long-running empty-block and adversarial wide-frontier regressions pass without weakening finality safety"
+
+  - id: TASK-012-21
+    title: "Prevent long-running multi-parent merge-scope degradation"
+    status: pending
+    issues: [45]
+    base_branch: dev
+    branch: fix/bounded-merge-scope-growth
+    proposed_pr_title: "fix(casper): bound long-running multi-parent merge scope"
+    claimed_by: null
+    blocked_by: [TASK-012-19, TASK-012-20]
+    acceptance:
+      - "Multi-parent merge remains the normal path after thousands of heartbeat blocks"
+      - "merge_scope_too_large fallback does not grow to dominate steady-state operation"
+      - "A multi-hour-equivalent accelerated regression preserves state and finalization progress"
+
+  - id: TASK-012-22
+    title: "Profile the exhaustive TLA+ configurations without guessed caps"
+    status: pending
+    issues: [206]
+    base_branch: dev
+    branch: ci/profile-exhaustive-tla
+    proposed_pr_title: "ci(formal): profile exhaustive TLA configurations"
+    claimed_by: null
+    blocked_by: [EPIC-011]
+    acceptance:
+      - "All three exhaustive configurations run uncapped on a sufficiently large runner"
+      - "Wall-clock, peak memory, state count, and completion/violation outcomes are recorded per configuration"
+      - "The PR contains no blind timeout increase and proposes measured caps only for configurations that complete"
+
+  - id: TASK-012-23
+    title: "Schedule an expected-green exhaustive formal-verification tier"
+    status: pending
+    issues: [206]
+    base_branch: dev
+    branch: ci/schedule-exhaustive-tla
+    proposed_pr_title: "ci(formal): schedule measured exhaustive TLA coverage"
+    claimed_by: null
+    blocked_by: [TASK-012-22]
+    acceptance:
+      - "Completable exhaustive configurations run on a nightly or weekly schedule with evidence-derived caps"
+      - "MC_EquivocationDetector receives an explicit retire/manual-reference/alternative-engine disposition"
+      - "Timeout, violation, infrastructure failure, and success remain distinct outcomes"
+
+  - id: TASK-012-24
+    title: "Measure cgroup-accounted memory during high-cap load"
+    status: pending
+    issues: [244]
+    base_branch: dev
+    branch: perf/cgroup-memory-observability
+    proposed_pr_title: "perf(soak): report cgroup-accounted node memory"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "Load reports capture cgroup memory.current/usageBytes alongside workingSetBytes and container restart reason"
+      - "Fast LMDB mmap or allocator spikes are visible before an OOM kill"
+      - "A cap 60-75 sweep records the actual memory ceiling and distinguishes budget pressure from a leak"
+
+  - id: TASK-012-25
+    title: "Remove the post-jemalloc high-load OOM ceiling"
+    status: pending
+    issues: [244]
+    base_branch: dev
+    branch: fix/jemalloc-high-load-memory
+    proposed_pr_title: "fix(node): bound allocator memory under concurrent load"
+    claimed_by: null
+    blocked_by: [TASK-012-24]
+    acceptance:
+      - "The fix follows measured evidence: tune jemalloc, reduce allocation-heavy hot paths, or change the supported resource envelope explicitly"
+      - "The affected profile completes the agreed cap sweep without OOM restart"
+      - "The #146 throughput/lock-contention improvement is retained"
+
+  - id: TASK-012-26
+    title: "Deduplicate protocol and runtime constants"
+    status: pending
+    issues: [245]
+    base_branch: dev
+    branch: refactor/shared-node-constants
+    proposed_pr_title: "refactor(node): consolidate duplicated protocol constants"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "Shared LFS backoff, retry, API threshold, keepalive, cache, and page-size values have one named source or an explicit documented distinction"
+      - "Requester/responder agreement values cannot drift across sibling modules"
+      - "Behavior remains unchanged and focused tests assert the shared values"
+
+  - id: TASK-012-27
+    title: "Move operator-tunable constants into configuration"
+    status: pending
+    issues: [245]
+    base_branch: dev
+    branch: feat/configurable-runtime-limits
+    proposed_pr_title: "feat(config): expose runtime cache and retry limits"
+    claimed_by: null
+    blocked_by: [TASK-012-26, TASK-012-5]
+    acceptance:
+      - "Runtime-manager caches, block-retriever timings/caps, startup deadlines, and network timeouts are configurable with safe defaults"
+      - "Configuration names, units, bounds, and disabled-value semantics are documented"
+      - "Default behavior matches the pre-change constants and invalid values fail closed"
+
+  - id: TASK-012-28
+    title: "Finish safe legacy-name migration with compatibility fallbacks"
+    status: pending
+    issues: [246]
+    base_branch: dev
+    branch: chore/f1r3fly-name-cleanup
+    proposed_pr_title: "chore(node): finish the F1R3FLY naming migration"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "Key/config/data paths, binary naming, metrics service tag, user-facing token text, tests, and scripts use F1R3FLY names"
+      - "Existing rnode.conf, key, and data paths have a warning-backed compatibility fallback for one release"
+      - "rho:rchain alias behavior is decided, implemented consistently, and documented"
+
+  - id: TASK-012-29
+    title: "Introduce a compatible successor to the rnode peer URI scheme"
+    status: pending
+    issues: [246]
+    base_branch: dev
+    branch: feat/f1r3fly-peer-uri-scheme
+    proposed_pr_title: "feat(network): introduce the f1r3fly peer URI scheme"
+    claimed_by: null
+    blocked_by: [TASK-012-28]
+    acceptance:
+      - "Nodes parse both legacy rnode:// and new f1r3fly:// addresses during a documented transition window"
+      - "Nodes emit the new scheme only when compatibility permits"
+      - "Mixed-version discovery, bootstrap configuration, CLI parsing, and eventual legacy-removal criteria are tested and documented"
+---
+```
+
+**Context:** An audit on 2026-08-12 compared all 43 open issues with all 28 open PRs. Nineteen issues had substantive open-PR coverage, including partial or stacked fixes. The 24 issues represented here had no open PR that addressed their remaining scope. Mere GitHub cross-references were not treated as coverage: PR #224 explicitly excludes the underlying #105 frontier behavior, PR #210 explicitly excludes #37's normal block-processing path, and #18's own analysis says its participation-based core fix remains outstanding.
+
+**PR/branch workflow:**
+
+1. Select the first unblocked `pending` task by priority and dependency order.
+2. Fetch `origin/dev`, create exactly the task's proposed branch from that tip, and set `status: in_progress`, `claimed_by`, and `claimed_at`.
+3. Keep the branch scoped to the listed issue(s). If investigation proves multiple independently reviewable fixes are required, add new TASK-012 entries before opening extra PRs rather than expanding the branch silently.
+4. Open one PR to `dev` using `proposed_pr_title`; include `Refs #N`, acceptance evidence, and explicit non-goals.
+5. Set the task to `review` and record `pr`, validation evidence, and any replacement dependency.
+6. After merge, set `status: complete`. Start dependent branches from the new `origin/dev`, not from the merged feature branch.
+7. When the fix reaches `master`, confirm production/default-branch acceptance evidence and close the referenced issue manually if GitHub did not.
+
+**Merge waves:**
+
+- **Wave A — independent and bounded:** TASK-012-1 through TASK-012-6, TASK-012-8 through TASK-012-19, TASK-012-24, TASK-012-26, and TASK-012-28 may proceed independently from fresh `origin/dev` branches.
+- **Wave B — evidence or API dependent:** TASK-012-7, TASK-012-20, TASK-012-22, TASK-012-25, TASK-012-27, and TASK-012-29 start only after their declared blockers merge.
+- **Wave C — cumulative behavior:** TASK-012-21 and TASK-012-23 start last in their respective chains and must validate the merged behavior, not a stacked approximation.
+
+**Scope:**
+
+- Included: branch/PR-sized implementation work for open issues lacking an addressing PR as of the audit.
+- Excluded: the 19 issues already addressed by open PRs; issue closure before promotion to `master`; unrelated cleanup discovered while implementing a task.
 
 ---
 
@@ -880,7 +1334,10 @@ tasks:
 
 ## Epic Dependency Graph
 
-```
+```text
+EPIC-011 (TLA exhaustive baseline) ────────> EPIC-012 / TASK-012-22
+EPIC-012 (open-issue PR queue)              (all other lanes start independently)
+
 EPIC-001 (system-integration alignment)    EPIC-003 (f1r3node: merge critical PRs)
 EPIC-002 (monitoring separation)               |
                                                  v
@@ -904,7 +1361,7 @@ EPIC-002 (monitoring separation)               |
 ## Task States
 
 | Status | Meaning | Next Action |
-| -------- | --------- | ------------- |
+|--------|---------|-------------|
 | `pending` | Not started | Available to claim |
 | `in_progress` | Being worked on | Continue or handoff |
 | `blocked` | Waiting on dependency | Check `blocked_by` |
@@ -916,11 +1373,10 @@ EPIC-002 (monitoring separation)               |
 ## Workflow
 
 1. **Find next task**: Use `/nextTask` to identify the highest priority unclaimed task
-2. **Claim task**: Set `claimed_by` and `status: in_progress`
+2. **Claim task**: Use the [Implementer Identification](https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/stigmergic-collaboration.md#implementer-identification) format for `claimed_by`. Set `status: in_progress`
 3. **Implement**: Use `/implement` to execute with full context
 4. **Complete**: Mark `status: complete` when acceptance criteria met
-5. **Signal**: Update completion signals in `/tmp/migrationPlan.md`
-6. **Move epic**: When all tasks complete, move epic to `docs/CompletedTasks.md`
+5. **Move epic**: When all tasks complete, move epic to `docs/CompletedTasks.md`
 
 ---
 

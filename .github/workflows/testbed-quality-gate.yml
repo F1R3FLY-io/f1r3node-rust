@@ -102,7 +102,7 @@ jobs:
           | **Testbed** | \`${{ inputs.testbed_repo }}@${{ inputs.testbed_ref }}\` |
           EOF
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: ${{ inputs.testbed_repo }}
           ref: ${{ inputs.testbed_ref }}
@@ -202,7 +202,7 @@ jobs:
           | **Testbed** | \`${{ inputs.testbed_repo }}@${{ inputs.testbed_ref }}\` |
           EOF
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: ${{ inputs.testbed_repo }}
           ref: ${{ inputs.testbed_ref }}
@@ -293,7 +293,7 @@ jobs:
           | **Testbed** | \`${{ inputs.testbed_repo }}@${{ inputs.testbed_ref }}\` |
           EOF
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: ${{ inputs.testbed_repo }}
           ref: ${{ inputs.testbed_ref }}
@@ -381,7 +381,7 @@ jobs:
           | **Testbed** | \`${{ inputs.testbed_repo }}@${{ inputs.testbed_ref }}\` |
           EOF
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: ${{ inputs.testbed_repo }}
           ref: ${{ inputs.testbed_ref }}
@@ -470,7 +470,7 @@ jobs:
           | **Testbed** | \`${{ inputs.testbed_repo }}@${{ inputs.testbed_ref }}\` |
           EOF
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: ${{ inputs.testbed_repo }}
           ref: ${{ inputs.testbed_ref }}
@@ -560,7 +560,7 @@ jobs:
           | **Testbed** | \`${{ inputs.testbed_repo }}@${{ inputs.testbed_ref }}\` |
           EOF
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: ${{ inputs.testbed_repo }}
           ref: ${{ inputs.testbed_ref }}
@@ -649,7 +649,7 @@ jobs:
           | **Testbed** | \`${{ inputs.testbed_repo }}@${{ inputs.testbed_ref }}\` |
           EOF
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: ${{ inputs.testbed_repo }}
           ref: ${{ inputs.testbed_ref }}

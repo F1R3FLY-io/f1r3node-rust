@@ -55,12 +55,14 @@ pub const ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT: usize = 4096;
 /// a separate concern.
 pub const UNLIMITED_PARENTS: i32 = -1;
 
+/// `Display` is implemented by hand below, so variants intentionally omit `#[error(...)]`.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DeployError {
     ParsingError(String),
     MissingUser,
     UnknownSignatureAlgorithm(String),
     SignatureVerificationFailed,
+    DuplicateDeploy(DeployId),
 }
 
 impl DeployError {
@@ -73,6 +75,7 @@ impl DeployError {
     }
 
     pub fn signature_verification_failed() -> Self { DeployError::SignatureVerificationFailed }
+    pub fn duplicate_deploy(deploy_id: DeployId) -> Self { DeployError::DuplicateDeploy(deploy_id) }
 }
 
 impl Display for DeployError {
@@ -84,6 +87,9 @@ impl Display for DeployError {
                 write!(f, "Unknown signature algorithm '{}'", alg)
             }
             DeployError::SignatureVerificationFailed => write!(f, "Signature verification failed"),
+            DeployError::DuplicateDeploy(deploy_id) => {
+                write!(f, "Deploy already known: {}", hex::encode(deploy_id))
+            }
         }
     }
 }

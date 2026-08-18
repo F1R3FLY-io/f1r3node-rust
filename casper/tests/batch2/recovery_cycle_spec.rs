@@ -27,9 +27,11 @@ struct TestContext {
 }
 
 impl TestContext {
-    async fn new() -> Self {
+    async fn new(validators_num: usize) -> Self {
+        let parameters =
+            GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(validators_num));
         let genesis = GenesisBuilder::new()
-            .build_genesis_with_parameters(None)
+            .build_genesis_with_parameters(Some(parameters))
             .await
             .unwrap();
 
@@ -156,7 +158,7 @@ fn assert_touched_integer_add_channels_single_valued(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
-    let ctx = TestContext::new().await;
+    let ctx = TestContext::new(2).await;
     let shard_id = ctx.genesis.genesis_block.shard_id.clone();
 
     // Two validators, no synchrony constraint, unlimited parents so the
@@ -330,6 +332,21 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
             .await
             .expect("sync merge_block 1 -> 0");
     }
+    nodes.sort_by(|left, right| {
+        left.validator_id_opt
+            .as_ref()
+            .expect("left validator identity")
+            .public_key
+            .bytes
+            .cmp(
+                &right
+                    .validator_id_opt
+                    .as_ref()
+                    .expect("right validator identity")
+                    .public_key
+                    .bytes,
+            )
+    });
     assert!(
         nodes[0].contains(&merge_block.block_hash),
         "validator 0 must observe merge_block before recovery propose"
@@ -446,13 +463,19 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
         hex::encode(&surviving_sig)
     );
 
-    // Terminal purge: once the replay block is finalized, the next proposal's
-    // buffer scan sees the sig finalized-won and drops the buffer entry.
+    // Buffer custody after the replay wins: the purge keys on floor-state
+    // evidence of the deploy's effect, and this deploy (`Nil` — the
+    // conflict is the system-level precharge) creates no number cells, so
+    // the probe can never attest it. Its custody therefore ends at window
+    // close via the retain, never at a node-local finality marker — the
+    // entry STAYS buffered here, while the canonical-won selection filter
+    // keeps it from ever being re-proposed. (The probe-visible purge path
+    // is pinned in exactly_once_spec.)
     nodes[0]
         .block_dag_storage
         .record_directly_finalized(recovery_block.block_hash.clone(), 1.0, |_| async { Ok(()) })
         .await
-        .expect("mark recovery_block finalized for terminal purge");
+        .expect("mark recovery_block finalized");
     let marker_deploy_3 = {
         tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         construct_deploy::basic_deploy_data(2, None, Some(shard_id.clone()))
@@ -473,10 +496,11 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
     {
         let buffer_guard = nodes[0].rejected_deploy_buffer.lock().expect("buffer lock");
         assert!(
-            !buffer_guard
+            buffer_guard
                 .contains_sig(&conflict_sig)
                 .expect("buffer.contains_sig"),
-            "finalized-won recovered sig must be purged from the rejected-deploy buffer"
+            "a probe-invisible deploy stays in buffer custody until window \
+             close; no node-local finality marker may evict it"
         );
     }
 }
@@ -484,7 +508,7 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() {
-    let ctx = TestContext::new().await;
+    let ctx = TestContext::new(3).await;
     let shard_id = ctx.genesis.genesis_block.shard_id.clone();
 
     let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
