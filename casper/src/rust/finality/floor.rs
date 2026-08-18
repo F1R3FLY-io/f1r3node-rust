@@ -89,25 +89,28 @@ fn state_parent_of(
     }
 }
 
-/// Metadata for a block on a state lineage. Absence here is not a fork: the
-/// walk has left the blocks this node holds, and nothing about the two
-/// lineages' relationship follows from that. Raising keeps the distinction the
-/// caller depends on; returning "no meet" would hand back a verdict derived
-/// from local retention.
-fn lineage_meta(
+/// Metadata for a block a walk needs, or [`CasperError::BlockNotHeld`].
+///
+/// Every descent in this file can leave the blocks a node holds — a node
+/// restored from a sync anchor has no history below it, and no walk here is
+/// bounded by that anchor. Absence is therefore a statement about this node,
+/// not about the blocks being compared, and the difference is load-bearing:
+/// the state-lineage walk would otherwise report "disconnected", the floor
+/// recursion would report a storage failure, and both become verdicts against
+/// whoever proposed the block. Naming the missing block lets the caller fetch
+/// it and retry.
+fn held_meta(
     dag: &KeyValueDagRepresentation,
     hash: &BlockHash,
 ) -> Result<models::rust::block_metadata::BlockMetadata, CasperError> {
     dag.lookup(hash)
         .map_err(CasperError::KvStoreError)?
-        .ok_or_else(|| {
-            CasperError::Other(format!(
-                "state lineage truncated at {}: this node does not hold that block, so \
-                 the lineages' relationship is undecidable here — this is NOT a \
-                 disconnected lineage",
-                PrettyPrinter::build_string_bytes(hash),
-            ))
-        })
+        .ok_or_else(|| CasperError::BlockNotHeld(hash.clone()))
+}
+
+/// The block number of a block a walk needs, or [`CasperError::BlockNotHeld`].
+fn held_number(dag: &KeyValueDagRepresentation, hash: &BlockHash) -> Result<i64, CasperError> {
+    Ok(held_meta(dag, hash)?.block_number)
 }
 
 /// The outcome of walking two state lineages toward each other. Truncation is
@@ -143,8 +146,8 @@ fn state_lineage_meet(
         if a == b {
             return Ok(StateLineage::Meet(a));
         }
-        let meta_a = lineage_meta(dag, &a)?;
-        let meta_b = lineage_meta(dag, &b)?;
+        let meta_a = held_meta(dag, &a)?;
+        let meta_b = held_meta(dag, &b)?;
         if meta_a.block_number > meta_b.block_number {
             match state_parent_of(&meta_a)? {
                 Some(parent) => a = parent,
@@ -216,7 +219,7 @@ fn segment_introduced_sigs(
     let mut cur = from.clone();
     while cur != *meet {
         sigs.extend(introduced_sigs(block_store, &cur, memo)?.iter().cloned());
-        let meta = dag.lookup_unsafe(&cur)?;
+        let meta = held_meta(dag, &cur)?;
         cur = state_parent_of(&meta)?.ok_or_else(|| {
             CasperError::Other(format!(
                 "state containment: lineage of {} reached a root without \
@@ -652,7 +655,7 @@ pub async fn floor_of_block(
             continue;
         }
 
-        let metadata = dag.lookup_unsafe(&current)?;
+        let metadata = held_meta(dag, &current)?;
         if metadata.parents.is_empty() {
             dag.put_cached_floor(current.clone(), current.clone())?;
             stack.pop();
@@ -676,7 +679,7 @@ pub async fn floor_of_block(
                 "parent floor must be cached: the missing set was empty for this stack entry",
             );
             inherited.push(Floor {
-                block_number: dag.block_number_unsafe(&hash)?,
+                block_number: held_number(dag, &hash)?,
                 hash,
             });
         }
@@ -714,7 +717,7 @@ pub async fn floor_of_block(
         .get_cached_floor(block_hash)?
         .expect("floor must be cached: the resolution stack drained for this block");
     Ok(Floor {
-        block_number: dag.block_number_unsafe(&hash)?,
+        block_number: held_number(dag, &hash)?,
         hash,
     })
 }
@@ -780,7 +783,7 @@ async fn incremental_frontier(
     latest_messages: &BTreeMap<Validator, BlockHash>,
     ftt: FtThreshold,
 ) -> Result<Option<Floor>, CasperError> {
-    let pivot_number = dag.block_number_unsafe(pivot_hash)?;
+    let pivot_number = held_number(dag, pivot_hash)?;
 
     // Collect the spine band [parent .. pivot] with cheap `main_parent` hops
     // (NO oracle calls). `spine[0]` = parent (top); the tail descends the main
@@ -846,7 +849,7 @@ async fn incremental_frontier(
         oracle_calls += 1;
         if finalized {
             best_hash = candidate.clone();
-            best_number = dag.block_number_unsafe(candidate)?;
+            best_number = held_number(dag, candidate)?;
             advance += 1;
         } else {
             break;
@@ -899,13 +902,13 @@ async fn cold_parent_frontier(
             target: "f1r3.trace.floor_walk",
             parent = %PrettyPrinter::build_string_bytes(parent),
             current = %PrettyPrinter::build_string_bytes(&current),
-            current_number = dag.block_number_unsafe(&current)?,
+            current_number = held_number(dag, &current)?,
             finalized,
             walked,
             "floor walk step"
         );
         if finalized {
-            let block_number = dag.block_number_unsafe(&current)?;
+            let block_number = held_number(dag, &current)?;
             metrics::counter!(
                 crate::rust::metrics_constants::FLOOR_WALK_ORACLE_CALLS_METRIC,
                 "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
@@ -938,7 +941,7 @@ async fn cold_parent_frontier(
             }
             None => {
                 // No main parent: `current` is genesis, finalized by definition.
-                let block_number = dag.block_number_unsafe(&current)?;
+                let block_number = held_number(dag, &current)?;
                 metrics::counter!(
                     crate::rust::metrics_constants::FLOOR_WALK_ORACLE_CALLS_METRIC,
                     "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
@@ -1945,11 +1948,36 @@ mod frontier_determinism_tests {
 
         let err = state_lineage_meet(&dag, &a, &b)
             .expect_err("a lineage that leaves the held blocks cannot yield a verdict");
-        let msg = err.to_string();
         assert!(
-            msg.contains("state lineage"),
-            "the error must name the state-lineage walk so truncation is not read as \
-             a fork; got {msg}"
+            matches!(err, CasperError::BlockNotHeld(ref h) if *h == gone),
+            "truncation must be a TYPED error naming the block this node does not hold, so \
+             the caller can request it and retry instead of turning it into a verdict; got {err}"
+        );
+    }
+
+    /// The floor's own recursion has the same edge. `floor_of_block` walks down
+    /// to a cached floor or a parentless block; a node whose history was
+    /// truncated has neither, so the walk leaves the blocks it holds. That is a
+    /// gap to be filled, not a fact about the block, and it has to be reported
+    /// as one — the caller turns anything else into a slashable verdict against
+    /// whoever proposed the block.
+    #[tokio::test]
+    async fn floor_of_block_reports_the_block_it_does_not_hold() {
+        let gone = Bytes::from_static(b"below-the-sync-window");
+        let oldest = Bytes::from_static(b"oldest-retained");
+        let tip = Bytes::from_static(b"tip");
+
+        let dag = build_dag(vec![
+            md_base(oldest.clone(), vec![gone.clone()], 36, gone.clone()),
+            md_base(tip.clone(), vec![oldest.clone()], 37, oldest.clone()),
+        ]);
+
+        let err = floor_of_block(&dag, &mk_store(), &tip, FtThreshold::from_f32_lossy(0.1))
+            .await
+            .expect_err("a floor recursion that leaves the held blocks cannot yield a floor");
+        assert!(
+            matches!(err, CasperError::BlockNotHeld(ref h) if *h == gone),
+            "the floor recursion must name the block it does not hold; got {err}"
         );
     }
 

@@ -1,6 +1,8 @@
 use std::fmt;
 
 use comm::rust::errors::CommError;
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::pretty_printer::PrettyPrinter;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rspace_plus_plus::rspace::errors::HistoryError;
 use shared::rust::store::key_value_store::KvStoreError;
@@ -26,6 +28,13 @@ pub enum CasperError {
     /// `engine::multi_parent_casper::validation_dispatcher` can `match` on the structured
     /// reason instead of grepping a stringified error.
     SlashAuth(SlashAuthError),
+    /// A walk needed a block this node does not hold. It is a statement about
+    /// this node's history, never about the block being judged: a node whose
+    /// history is truncated below its sync anchor legitimately lacks blocks its
+    /// peers have. Carried as a variant rather than a message so the block
+    /// processor can request the named block and retry, instead of folding it
+    /// into the storage-failure class that becomes a slashable verdict.
+    BlockNotHeld(BlockHash),
     Other(String),
 }
 
@@ -43,6 +52,11 @@ impl fmt::Display for CasperError {
             CasperError::StreamError(error) => write!(f, "Stream error: {}", error),
             CasperError::LockError(error) => write!(f, "Lock error: {}", error),
             CasperError::SlashAuth(error) => write!(f, "Slash authorization error: {}", error),
+            CasperError::BlockNotHeld(hash) => write!(
+                f,
+                "block not held by this node: {} — its history does not reach that block",
+                PrettyPrinter::build_string_bytes(hash)
+            ),
             CasperError::Other(error) => write!(f, "Other error: {}", error),
         }
     }
