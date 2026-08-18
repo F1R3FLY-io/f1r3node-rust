@@ -1,0 +1,9 @@
+node/src/rust/instances/heartbeat_proposer.rs cbc=mandatory cbc-weight=high
+casper/src/rust/engine/multi_parent_casper/snapshot.rs cbc=mandatory cbc-weight=high
+casper/src/rust/engine/multi_parent_casper/validation_dispatcher.rs cbc=mandatory cbc-weight=high
+casper/src/rust/finality/** cbc=mandatory cbc-weight=high
+casper/src/rust/rholang/replay_runtime.rs cbc=mandatory cbc-weight=high
+casper/src/rust/util/rholang/interpreter_util.rs cbc=mandatory cbc-weight=high
+casper/src/rust/util/rholang/runtime_manager.rs cbc=mandatory cbc-weight=high
+rspace++/src/rspace/replay_rspace.rs cbc=mandatory cbc-weight=high
+rholang/src/rust/interpreter/reduce.rs cbc=mandatory cbc-weight=high
