@@ -295,7 +295,17 @@ Promotion must not run `cargo build` or `docker build`.
 
 The stable release remains valid when `master` advances during the soak. Evidence follows the candidate SHA, not the branch tip.
 
-## 12. Deployment Trains
+## 12. Soak-in shards
+
+A Soak-in adds each weekly stable candidate to a long-running quorum of shards. "Soak-in" is the SRE-style term that already means "run it long enough to trust it."
+
+New stable nodes enter a soak period inside or adjacent to the quorum. The Soak-in measures how the new nodes behave with the current quorum members. The Soak-in catches compatibility issues and confirms that the new nodes stay up.
+
+A node becomes a true Anchor only after it completes the soak period. Until that point, the node holds no Anchor role in the quorum.
+
+**Follow-on:** a future change will separate the Casper consensus into its own repository. The Soak-in quorum will then consume consensus releases from that repository.
+
+## 13. Deployment Trains
 
 A Deployment Train releases a reviewed feature independently from other active trains.
 
@@ -307,7 +317,7 @@ Each train uses a reviewed manifest under this directory:
 
 A manifest is a control-plane record. A normal pull request must add or change the manifest.
 
-### 12.1 Manifest schema
+### 13.1 Manifest schema
 
 ```yaml
 schema_version: 1
@@ -335,7 +345,7 @@ The manifest can use these states:
 
 Automation records live state outside Git. The manifest records reviewed intent and the final result.
 
-### 12.2 Train setup
+### 13.2 Train setup
 
 A maintainer dispatches train setup with the manifest path.
 
@@ -354,7 +364,7 @@ The setup workflow performs these actions:
 
 Multiple trains can run at the same time. Workflow concurrency keys include the train identifier and target version.
 
-### 12.3 Merge requirement
+### 13.3 Merge requirement
 
 The train pull request must merge before stable publication.
 
@@ -364,7 +374,7 @@ A squash or rebase creates a different release commit. The controller rejects th
 
 The stable tag still points to the exact soaked commit. The merge proves that the reviewed candidate entered `master` before publication.
 
-### 12.4 Version reservations
+### 13.4 Version reservations
 
 Each active train reserves one semantic version.
 
@@ -377,7 +387,7 @@ Setup rejects these conditions:
 
 If another train publishes a higher stable version first, the lower train enters `held`. A maintainer must assign a new version and rerun setup.
 
-## 13. Feature-specific gates
+## 14. Feature-specific gates
 
 A feature gate is mandatory when its manifest lists the gate.
 
@@ -387,7 +397,7 @@ A train cannot declare a gate as optional after setup. A reviewed manifest chang
 
 The first planned use is the cost-accounting train from pull request #216.
 
-## 14. Failure and recovery rules
+## 15. Failure and recovery rules
 
 | Failure | Required response |
 |---|---|
@@ -409,7 +419,7 @@ No override can replace failed exact-SHA evidence.
 
 A maintainer can cancel a candidate or train. Cancellation does not delete tags, releases, or evidence.
 
-## 15. Security model
+## 16. Security model
 
 Secret-bearing workflows always use trusted workflow files from the default branch.
 
@@ -423,7 +433,7 @@ The promotion controller validates repository, workflow path, run event, source 
 
 All external action references must use approved immutable references during implementation.
 
-## 16. Workflow changes
+## 17. Workflow changes
 
 Implementation adds or changes these components.
 
@@ -442,7 +452,7 @@ Implementation adds or changes these components.
 
 Exact script boundaries can change after test design. The release invariants must not change without maintainer ratification.
 
-## 17. Migration plan
+## 18. Migration plan
 
 Use staged migration to prevent an unintended stable release.
 
@@ -483,7 +493,7 @@ Phase 1 disables automatic stable publication. A manual workflow generates evide
 3. Run the cost-accounting train as the first publishing train.
 4. Document the completed train evidence.
 
-## 18. Ratification checklist
+## 19. Ratification checklist
 
 Maintainers must ratify these decisions before stable automation is enabled.
 
