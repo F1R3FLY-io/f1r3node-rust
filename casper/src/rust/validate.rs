@@ -379,7 +379,10 @@ impl Validate {
             .await
             {
                 Ok(ctx) => *floor_ctx_slot = Some(ctx),
-                Err(ex) => return Either::Left(BlockError::BlockException(ex)),
+                // A derivation that needed history this node lacks is not a
+                // verdict on the block; `from_validation_error` keeps it out of
+                // the exception class that becomes a slashable InvalidTransaction.
+                Err(ex) => return Either::Left(BlockError::from_validation_error(ex)),
             }
         }
         match __step!(
@@ -593,7 +596,7 @@ impl Validate {
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-get-parents");
         let init_parents = match proto_util::get_parents_metadata(&s.dag, &block_metadata) {
             Ok(parents) => parents,
-            Err(e) => return Either::Left(BlockError::BlockException(CasperError::from(e))),
+            Err(e) => return Either::Left(BlockError::from_validation_error(e)),
         };
 
         // Calculate max block number and earliest acceptable block number
@@ -668,11 +671,13 @@ impl Validate {
                 )
             },
             |block_metadata| {
-                block_store.has_any_deploy_sig_strict(&block_metadata.block_hash, &deploy_key_set)
+                block_store
+                    .has_any_deploy_sig_strict(&block_metadata.block_hash, &deploy_key_set)
+                    .map_err(CasperError::KvStoreError)
             },
         ) {
             Ok(found) => found,
-            Err(e) => return Either::Left(BlockError::BlockException(CasperError::from(e))),
+            Err(e) => return Either::Left(BlockError::from_validation_error(e)),
         };
 
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block-log");

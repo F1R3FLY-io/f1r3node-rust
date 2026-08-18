@@ -1,5 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/BlockStatus.scala
 
+use models::rust::block_hash::BlockHash;
 use shared::rust::store::key_value_store::KvStoreError;
 
 use super::errors::CasperError;
@@ -22,9 +23,31 @@ pub enum ValidBlock {
 pub enum BlockError {
     Processed,
     CasperIsBusy,
+    /// Dependencies were not ready when the block arrived — established before
+    /// validation, and the block is already buffered against them.
     MissingBlocks,
+    /// Validation could not reach a verdict: it needed the named block and this
+    /// node does not hold it. NOT a judgement of the block — a node restored
+    /// from a sync anchor legitimately lacks history its peers have, and the
+    /// only correct response is to fetch the named block and try again.
+    Undecidable(BlockHash),
     BlockException(CasperError),
     Invalid(InvalidBlock),
+}
+
+impl BlockError {
+    /// Classify an error raised during validation.
+    ///
+    /// `BlockException` is converted to `InvalidTransaction` downstream, which
+    /// `is_slashable`, so anything folded into it becomes evidence against the
+    /// block's proposer. A block this node does not hold says nothing about the
+    /// proposer and must stay distinguishable.
+    pub fn from_validation_error(error: CasperError) -> Self {
+        match error {
+            CasperError::BlockNotHeld(hash) => BlockError::Undecidable(hash),
+            other => BlockError::BlockException(other),
+        }
+    }
 }
 
 /// Represents an invalid block
@@ -255,4 +278,39 @@ impl InvalidBlock {
 
 impl From<KvStoreError> for BlockError {
     fn from(error: KvStoreError) -> Self { BlockError::BlockException(CasperError::from(error)) }
+}
+
+#[cfg(test)]
+mod tests {
+    use models::rust::block_hash::BlockHash;
+
+    use super::*;
+
+    /// Validation raises for two unrelated reasons, and only one of them is a
+    /// statement about the block. A storage failure means this node is broken;
+    /// a block it does not hold means its history is short, which is the normal
+    /// condition of a node restored from a sync anchor. They must not share an
+    /// outcome: `BlockException` is converted to `InvalidTransaction`, which is
+    /// slashable, so folding the second into it mints evidence against an
+    /// honest proposer for history this node never had.
+    #[test]
+    fn a_block_not_held_is_undecidable_not_an_exception() {
+        let missing = BlockHash::from(b"not-held".to_vec());
+
+        let undecidable =
+            BlockError::from_validation_error(CasperError::BlockNotHeld(missing.clone()));
+        assert_eq!(
+            undecidable,
+            BlockError::Undecidable(missing),
+            "a block this node does not hold must carry through as Undecidable, naming \
+             the block so the caller can fetch it"
+        );
+
+        let broken = BlockError::from_validation_error(CasperError::RuntimeError("disk".into()));
+        assert!(
+            matches!(broken, BlockError::BlockException(_)),
+            "every other failure is still an exception; this must not become a \
+             catch-all that swallows real storage faults"
+        );
+    }
 }

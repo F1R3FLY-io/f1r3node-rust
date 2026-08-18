@@ -21,6 +21,8 @@ use rholang::rust::interpreter::deploy_parameters::DeployParameters;
 use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::ByteString;
 
+use crate::rust::errors::CasperError;
+
 pub fn get_main_chain_until_depth(
     block_store: &KeyValueBlockStore,
     estimate: BlockMessage,
@@ -239,14 +241,26 @@ pub fn get_parents(block_store: &KeyValueBlockStore, block: &BlockMessage) -> Ve
         .collect()
 }
 
+/// The metadata of every parent, or [`CasperError::BlockNotHeld`] naming the
+/// first parent this node does not have.
+///
+/// A node restored from a sync anchor holds no history below it, so the walks
+/// that call this can legitimately reach a parent it will never have. That is a
+/// fact about the node, not about the block being validated, and it must stay
+/// distinguishable from a storage fault: the caller turns the latter into a
+/// slashable verdict against the block's proposer.
 pub fn get_parents_metadata(
     dag: &KeyValueDagRepresentation,
     block: &BlockMetadata,
-) -> Result<Vec<BlockMetadata>, KvStoreError> {
+) -> Result<Vec<BlockMetadata>, CasperError> {
     block
         .parents
         .iter()
-        .map(|parent| dag.lookup_unsafe(parent))
+        .map(|parent| {
+            dag.lookup(parent)
+                .map_err(CasperError::KvStoreError)?
+                .ok_or_else(|| CasperError::BlockNotHeld(parent.clone()))
+        })
         .collect()
 }
 
@@ -254,7 +268,7 @@ pub fn get_parent_metadatas_above_block_number(
     block: &BlockMetadata,
     block_number: i64,
     dag: &KeyValueDagRepresentation,
-) -> Result<Vec<BlockMetadata>, KvStoreError> {
+) -> Result<Vec<BlockMetadata>, CasperError> {
     get_parents_metadata(dag, block).map(|parents| {
         parents
             .into_iter()

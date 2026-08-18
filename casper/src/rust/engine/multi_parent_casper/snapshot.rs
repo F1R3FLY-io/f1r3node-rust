@@ -541,7 +541,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             // `InvalidRepeatDeploy` detection.
             let neighbor_fn = |block_metadata: &models::rust::block_metadata::BlockMetadata| -> Result<
                 Vec<models::rust::block_metadata::BlockMetadata>,
-                shared::rust::store::key_value_store::KvStoreError,
+                CasperError,
             > {
                 proto_util::get_parent_metadatas_above_block_number(
                     block_metadata,

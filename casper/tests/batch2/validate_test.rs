@@ -1069,9 +1069,12 @@ async fn repeat_deploy_validation_should_surface_a_storage_failure_not_admit_the
 
         let result = Validate::repeat_deploy(&head, &mut casper_snapshot, &block_store, 50, None);
         assert!(
-            matches!(result, Either::Left(BlockError::BlockException(_))),
-            "an unreadable ancestry must surface as a storage failure; got {:?} — \
-             a swallowed error admits the repeated deploy carried by genesis",
+            matches!(result, Either::Left(BlockError::Undecidable(_))),
+            "an ancestry this node cannot read must name the block it is missing, not be \
+             swallowed (which admits the repeated deploy genesis carries) and not be \
+             reported as a storage fault (which becomes a slashable verdict). Validation \
+             reports the gap; whether this node may act on it is decided by the block \
+             processor, which alone knows if its own history is cut short. Got {:?}",
             result
         );
     })

@@ -49,6 +49,57 @@ pub struct BlockProcessor<T: TransportLayer + Send + Sync> {
     dependencies: BlockProcessorDependencies<T>,
 }
 
+/// What must happen to a block once validation has returned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PostValidation {
+    /// The block was judged. Drop it from the buffer and stop tracking it.
+    Settled,
+    /// The block was NOT judged: validation needed a block this node does not
+    /// hold. Keep it buffered against the named dependency and fetch that, or
+    /// the block is dropped un-judged and the gap it needs is never requested.
+    AwaitingBlock(BlockHash),
+}
+
+/// Withdraw the deferral if this node has no hole in its history.
+///
+/// `Undecidable` is the one outcome that is not a verdict, so it is also the
+/// one an attacker would want: a block that induces it is never judged, never
+/// recorded invalid, and produces no evidence. That is only acceptable when the
+/// node truly cannot know — which is exactly when its own history is cut short.
+///
+/// A node built from genesis holds a complete main-parent spine, so a block it
+/// cannot find is corruption and must be judged as before. A node restored from
+/// a sync anchor has nothing below that anchor and never will:
+/// `last_approved_block` is written once — at the genesis ceremony or at LFS
+/// restore — and never advances, so its height is a durable statement about
+/// what that node can answer, not a transient flag.
+pub(crate) fn guard_deferral(
+    status: ValidBlockProcessing,
+    approved_block_number: i64,
+) -> ValidBlockProcessing {
+    match status {
+        Either::Left(BlockError::Undecidable(hash)) if approved_block_number == 0 => {
+            Either::Left(BlockError::BlockException(CasperError::BlockNotHeld(hash)))
+        }
+        other => other,
+    }
+}
+
+/// Classify a validation outcome for post-processing.
+///
+/// Everything except `Undecidable` is a verdict and is settled. `Undecidable`
+/// is the absence of one, so the block must survive to be retried: dropping it
+/// loses the block, and the missing hash it names is the only thing that can
+/// unstick the node.
+pub(crate) fn post_validation(status: &ValidBlockProcessing) -> PostValidation {
+    match status {
+        Either::Left(BlockError::Undecidable(missing)) => {
+            PostValidation::AwaitingBlock(missing.clone())
+        }
+        _ => PostValidation::Settled,
+    }
+}
+
 const CASPER_BUFFER_PRUNE_INTERVAL_MS: u64 = 5_000;
 const CASPER_BUFFER_STALE_TTL_MS: u64 = 180_000;
 const CASPER_BUFFER_MAX_APPROX_NODES: usize = 16_384;
@@ -170,6 +221,17 @@ fn missing_dependency_quarantine_ms() -> u64 {
 
 impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
     pub fn new(dependencies: BlockProcessorDependencies<T>) -> Self { Self { dependencies } }
+
+    /// The height this node was started from. Zero means genesis — a complete
+    /// spine, so nothing below it can legitimately be absent.
+    fn approved_block_number(
+        &self,
+        casper: Arc<dyn Casper + Send + Sync + 'static>,
+    ) -> Result<i64, CasperError> {
+        casper
+            .get_approved_block()
+            .map(|approved| proto_util::block_number(approved))
+    }
 
     /// check if block should be processed
     pub fn check_if_of_interest(
@@ -330,11 +392,42 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
         let setup_start = Instant::now();
         let mut snapshot = match snapshot_opt {
             Some(snapshot) => snapshot,
-            None => {
-                self.dependencies
-                    .get_casper_state_snapshot(casper.clone())
-                    .await?
-            }
+            None => match self
+                .dependencies
+                .get_casper_state_snapshot(casper.clone())
+                .await
+            {
+                Ok(snapshot) => snapshot,
+                // The snapshot walks the same history the floor does, so it hits
+                // the same edge first on a node whose history is short. Report it
+                // as the absence of a verdict rather than erroring the block out
+                // of the pipeline un-judged and untracked — but only if this node
+                // is entitled to defer at all.
+                Err(CasperError::BlockNotHeld(missing)) => {
+                    let guarded = guard_deferral(
+                        Either::Left(BlockError::Undecidable(missing.clone())),
+                        self.approved_block_number(casper.clone())?,
+                    );
+                    if !matches!(guarded, Either::Left(BlockError::Undecidable(_))) {
+                        return Err(CasperError::BlockNotHeld(missing));
+                    }
+                    tracing::warn!(
+                        "Snapshot for block {} needs {}, which this node does not hold.",
+                        PrettyPrinter::build_string_bytes(&block.block_hash),
+                        PrettyPrinter::build_string_bytes(&missing)
+                    );
+                    let deps = HashSet::from([missing.clone()]);
+                    self.dependencies
+                        .commit_to_buffer(block, Some(deps.clone()))
+                        .await?;
+                    self.dependencies
+                        .request_missing_dependencies(&deps)
+                        .await?;
+                    self.dependencies.ack_processed(block).await?;
+                    return Ok(guarded);
+                }
+                Err(err) => return Err(err),
+            },
         };
         metrics::histogram!(BLOCK_PROCESSING_VALIDATION_SETUP_TIME_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
             .record(setup_start.elapsed().as_secs_f64());
@@ -345,6 +438,9 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
             .dependencies
             .validate_block(casper.clone(), &mut snapshot, block)
             .await?;
+        // Validation reports what it found; whether this node may answer "I
+        // cannot judge" is a fact about the node, decided here.
+        let status = guard_deferral(status, self.approved_block_number(casper.clone())?);
         metrics::histogram!(BLOCK_VALIDATION_TIME_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
             .record(validation_start.elapsed().as_secs_f64());
 
@@ -393,9 +489,29 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
             }
         }?;
 
-        // once block is validated and effects are invoked, it should be removed from buffer
-        self.dependencies.remove_from_buffer(block).await?;
-        self.dependencies.ack_processed(block).await?;
+        match post_validation(&status) {
+            PostValidation::Settled => {
+                // once block is validated and effects are invoked, it should be removed from buffer
+                self.dependencies.remove_from_buffer(block).await?;
+                self.dependencies.ack_processed(block).await?;
+            }
+            PostValidation::AwaitingBlock(missing) => {
+                tracing::warn!(
+                    "Block {} could not be judged: this node does not hold {}. Keeping it \
+                     buffered and requesting that block.",
+                    PrettyPrinter::build_string_bytes(&block.block_hash),
+                    PrettyPrinter::build_string_bytes(&missing)
+                );
+                let deps = HashSet::from([missing]);
+                self.dependencies
+                    .commit_to_buffer(block, Some(deps.clone()))
+                    .await?;
+                self.dependencies
+                    .request_missing_dependencies(&deps)
+                    .await?;
+                self.dependencies.ack_processed(block).await?;
+            }
+        }
         maybe_trim_allocator_after_block();
 
         Ok(status)
@@ -1005,4 +1121,78 @@ pub fn new_block_processor<T: TransportLayer + Send + Sync>(
     );
 
     BlockProcessor::new(dependencies)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rust::block_status::ValidBlock;
+
+    /// A block validation could not judge must not be cleaned up like one it
+    /// did. Settling it drops it from the buffer, and because an invalid block
+    /// counts as a satisfied dependency, the next block in line then becomes
+    /// "ready" and is mis-handled the same way — the gap is never fetched and
+    /// the node never catches up.
+    #[test]
+    fn an_undecidable_block_waits_for_the_block_it_named() {
+        let missing = BlockHash::from(b"the-block-we-lack".to_vec());
+
+        assert_eq!(
+            post_validation(&Either::Left(BlockError::Undecidable(missing.clone()))),
+            PostValidation::AwaitingBlock(missing),
+            "an undecidable block must stay buffered against the block it needs"
+        );
+    }
+
+    /// Deferral is only honest for a node that actually has a hole in its
+    /// history. A node built from genesis holds a complete spine, so a block it
+    /// cannot find is corruption, and it must still judge — otherwise any
+    /// crafted block that induces the error would buy its proposer a permanent
+    /// non-verdict: never judged, never invalid, no evidence, sitting in the
+    /// buffer while every honest node judges it normally.
+    ///
+    /// A node restored from a sync anchor is truncated for the life of its data
+    /// directory: `last_approved_block` is written once, at genesis ceremony or
+    /// at restore, and never advances. Its anchor height is therefore a durable
+    /// statement that history below it will never arrive.
+    #[test]
+    fn only_a_node_with_a_hole_in_its_history_may_defer() {
+        let missing = BlockHash::from(b"below-my-anchor".to_vec());
+        let undecidable = || Either::Left(BlockError::Undecidable(missing.clone()));
+
+        assert_eq!(
+            guard_deferral(undecidable(), 87),
+            Either::Left(BlockError::Undecidable(missing.clone())),
+            "a node restored at an anchor genuinely cannot judge below it"
+        );
+
+        assert!(
+            matches!(
+                guard_deferral(undecidable(), 0),
+                Either::Left(BlockError::BlockException(CasperError::BlockNotHeld(_)))
+            ),
+            "a genesis-rooted node has the whole spine, so a missing block is corruption \
+             and must be judged — deferring here is an escape hatch for crafted blocks"
+        );
+    }
+
+    /// Every actual verdict — valid, invalid, or a genuine storage fault — is
+    /// settled. Only the absence of a verdict waits.
+    #[test]
+    fn every_verdict_settles() {
+        for status in [
+            Either::Right(ValidBlock::Valid),
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidTransaction)),
+            Either::Left(BlockError::BlockException(CasperError::RuntimeError(
+                "disk".into(),
+            ))),
+            Either::Left(BlockError::MissingBlocks),
+        ] {
+            assert_eq!(
+                post_validation(&status),
+                PostValidation::Settled,
+                "{status:?} is a verdict and must be settled, not retried"
+            );
+        }
+    }
 }
