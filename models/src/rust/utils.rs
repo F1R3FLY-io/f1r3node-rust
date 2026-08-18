@@ -142,6 +142,34 @@ impl Par {
         T::generated_family(self).len()
     }
 
+    pub fn replace_sends(&mut self, values: Vec<Send>) { self.sends = values }
+
+    pub fn replace_receives(&mut self, values: Vec<Receive>) { self.receives = values }
+
+    pub fn replace_news(&mut self, values: Vec<New>) { self.news = values }
+
+    pub fn replace_exprs(&mut self, values: Vec<Expr>) { self.exprs = values }
+
+    pub fn replace_matches(&mut self, values: Vec<Match>) { self.matches = values }
+
+    pub fn replace_unforgeables(&mut self, values: Vec<GUnforgeable>) {
+        self.unforgeables = values;
+    }
+
+    pub fn replace_bundles(&mut self, values: Vec<Bundle>) { self.bundles = values }
+
+    pub fn replace_connectives(&mut self, values: Vec<Connective>) { self.connectives = values }
+
+    pub fn replace_conditionals(&mut self, values: Vec<If>) { self.conditionals = values }
+
+    pub fn replace_locally_free(&mut self, locally_free: Vec<u8>) {
+        self.locally_free = locally_free;
+    }
+
+    pub const fn replace_connective_used(&mut self, connective_used: bool) {
+        self.connective_used = connective_used;
+    }
+
     pub fn with_sends(&self, new_sends: Vec<Send>) -> Par {
         let mut out = self.clone();
         out.sends = new_sends;

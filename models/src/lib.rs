@@ -66,6 +66,17 @@
 /// assigns each explicitly named field once.
 #[macro_export]
 macro_rules! par_from_default {
+    (@assign $par:ident sends $value:expr) => { $par.replace_sends($value) };
+    (@assign $par:ident receives $value:expr) => { $par.replace_receives($value) };
+    (@assign $par:ident news $value:expr) => { $par.replace_news($value) };
+    (@assign $par:ident exprs $value:expr) => { $par.replace_exprs($value) };
+    (@assign $par:ident matches $value:expr) => { $par.replace_matches($value) };
+    (@assign $par:ident unforgeables $value:expr) => { $par.replace_unforgeables($value) };
+    (@assign $par:ident bundles $value:expr) => { $par.replace_bundles($value) };
+    (@assign $par:ident connectives $value:expr) => { $par.replace_connectives($value) };
+    (@assign $par:ident conditionals $value:expr) => { $par.replace_conditionals($value) };
+    (@assign $par:ident locally_free $value:expr) => { $par.replace_locally_free($value) };
+    (@assign $par:ident connective_used $value:expr) => { $par.replace_connective_used($value) };
     (@collect $par:ident [$($assignments:tt)*] ..$base:expr $(,)?) => {{
         let mut $par: $crate::rhoapi::Par = $base;
         $($assignments)*
@@ -74,13 +85,13 @@ macro_rules! par_from_default {
     (@collect $par:ident [$($assignments:tt)*] $field:ident: $value:expr, $($rest:tt)*) => {
         $crate::par_from_default!(@collect $par [
             $($assignments)*
-            $par.$field = $value;
+            $crate::par_from_default!(@assign $par $field $value);
         ] $($rest)*)
     };
     (@collect $par:ident [$($assignments:tt)*] $field:ident, $($rest:tt)*) => {
         $crate::par_from_default!(@collect $par [
             $($assignments)*
-            $par.$field = $field;
+            $crate::par_from_default!(@assign $par $field $field);
         ] $($rest)*)
     };
     ($($fields:tt)*) => {

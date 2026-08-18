@@ -215,53 +215,78 @@ impl Par {
         })
     }
 
-    fn replacing_family<T: ParBagComponent>(mut self, values: Vec<T>) -> Self {
+    fn replace_family<T: ParBagComponent>(&mut self, values: Vec<T>) {
         self.components.remove_family::<T>();
         for value in values {
             self.components
                 .insert(&value)
                 .expect("a finite component vector cannot overflow u64 multiplicity");
         }
-        self
     }
 
-    pub fn with_sends(&self, values: Vec<Send>) -> Self { self.clone().replacing_family(values) }
+    pub fn replace_sends(&mut self, values: Vec<Send>) { self.replace_family(values) }
 
-    pub fn with_receives(&self, values: Vec<Receive>) -> Self {
-        self.clone().replacing_family(values)
+    pub fn replace_receives(&mut self, values: Vec<Receive>) { self.replace_family(values) }
+
+    pub fn replace_news(&mut self, values: Vec<New>) { self.replace_family(values) }
+
+    pub fn replace_exprs(&mut self, values: Vec<Expr>) { self.replace_family(values) }
+
+    pub fn replace_matches(&mut self, values: Vec<Match>) { self.replace_family(values) }
+
+    pub fn replace_unforgeables(&mut self, values: Vec<GUnforgeable>) {
+        self.replace_family(values)
     }
 
-    pub fn with_news(&self, values: Vec<New>) -> Self { self.clone().replacing_family(values) }
+    pub fn replace_bundles(&mut self, values: Vec<Bundle>) { self.replace_family(values) }
 
-    pub fn with_exprs(&self, values: Vec<Expr>) -> Self { self.clone().replacing_family(values) }
+    pub fn replace_connectives(&mut self, values: Vec<Connective>) { self.replace_family(values) }
 
-    pub fn with_matches(&self, values: Vec<Match>) -> Self { self.clone().replacing_family(values) }
+    pub fn replace_conditionals(&mut self, values: Vec<If>) { self.replace_family(values) }
+
+    pub fn replace_locally_free(&mut self, locally_free: Vec<u8>) {
+        self.locally_free = locally_free;
+    }
+
+    pub const fn replace_connective_used(&mut self, connective_used: bool) {
+        self.connective_used = connective_used;
+    }
+
+    fn with_replaced<T: ParBagComponent>(&self, values: Vec<T>) -> Self {
+        let mut result = self.clone();
+        result.replace_family(values);
+        result
+    }
+
+    pub fn with_sends(&self, values: Vec<Send>) -> Self { self.with_replaced(values) }
+
+    pub fn with_receives(&self, values: Vec<Receive>) -> Self { self.with_replaced(values) }
+
+    pub fn with_news(&self, values: Vec<New>) -> Self { self.with_replaced(values) }
+
+    pub fn with_exprs(&self, values: Vec<Expr>) -> Self { self.with_replaced(values) }
+
+    pub fn with_matches(&self, values: Vec<Match>) -> Self { self.with_replaced(values) }
 
     pub fn with_unforgeables(&self, values: Vec<GUnforgeable>) -> Self {
-        self.clone().replacing_family(values)
+        self.with_replaced(values)
     }
 
-    pub fn with_bundles(&self, values: Vec<Bundle>) -> Self {
-        self.clone().replacing_family(values)
-    }
+    pub fn with_bundles(&self, values: Vec<Bundle>) -> Self { self.with_replaced(values) }
 
-    pub fn with_connectives(&self, values: Vec<Connective>) -> Self {
-        self.clone().replacing_family(values)
-    }
+    pub fn with_connectives(&self, values: Vec<Connective>) -> Self { self.with_replaced(values) }
 
-    pub fn with_conditionals(&self, values: Vec<If>) -> Self {
-        self.clone().replacing_family(values)
-    }
+    pub fn with_conditionals(&self, values: Vec<If>) -> Self { self.with_replaced(values) }
 
     pub fn with_locally_free(&self, locally_free: Vec<u8>) -> Self {
         let mut result = self.clone();
-        result.locally_free = locally_free;
+        result.replace_locally_free(locally_free);
         result
     }
 
     pub fn with_connective_used(&self, connective_used: bool) -> Self {
         let mut result = self.clone();
-        result.connective_used = connective_used;
+        result.replace_connective_used(connective_used);
         result
     }
 
