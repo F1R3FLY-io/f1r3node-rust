@@ -371,10 +371,36 @@ where
 
         // get snapshot to serve as a base for propose
         let snapshot_start = std::time::Instant::now();
-        let mut casper_snapshot = self
+        let mut casper_snapshot = match self
             .casper_snapshot_provider
             .get_casper_snapshot(casper.clone())
-            .await?;
+            .await
+        {
+            Ok(snapshot) => snapshot,
+            // Not having the history to build a snapshot is a reason not to
+            // propose, not an error to retry. The constraint that would have
+            // stopped this node lives inside the snapshot it cannot build, so
+            // as an error every attempt re-runs the whole failing walk.
+            Err(CasperError::BlockNotHeld(missing)) => {
+                tracing::info!(
+                    target: "f1r3fly.casper.proposer",
+                    "Not proposing: snapshot needs {}, which this node does not hold.",
+                    PrettyPrinter::build_string_bytes(&missing)
+                );
+                let result = ProposeResult::failure(ProposeFailure::CheckConstraintsFailure(
+                    CheckProposeConstraintsFailure::HistoryIncomplete,
+                ));
+                return Ok(ProposeReturnType {
+                    propose_result_to_send: ProposerResult::failure(
+                        result.propose_status.clone(),
+                        0,
+                    ),
+                    propose_result: result,
+                    block_message_opt: None,
+                });
+            }
+            Err(err) => return Err(err),
+        };
         let snapshot_ms = snapshot_start.elapsed().as_millis();
 
         let elapsed = start_time.elapsed();

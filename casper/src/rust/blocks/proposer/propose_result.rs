@@ -52,6 +52,10 @@ pub enum CheckProposeConstraintsFailure {
     NotBonded,
     NotEnoughNewBlocks,
     TooFarAheadOfLastFinalized,
+    /// This node's history does not reach far enough to build a snapshot, so
+    /// there is nothing to propose from. Distinct from the constraints above:
+    /// those are decided FROM a snapshot, and this one is why there isn't one.
+    HistoryIncomplete,
 }
 
 /// Block creator result
@@ -79,6 +83,10 @@ impl CheckProposeConstraintsResult {
         CheckProposeConstraintsResult::Failure(
             CheckProposeConstraintsFailure::TooFarAheadOfLastFinalized,
         )
+    }
+
+    pub fn history_incomplete() -> Self {
+        CheckProposeConstraintsResult::Failure(CheckProposeConstraintsFailure::HistoryIncomplete)
     }
 }
 
@@ -171,6 +179,13 @@ impl fmt::Display for ProposeStatus {
                         write!(
                             f,
                             "Proposal failed: too far ahead of the last finalized block"
+                        )
+                    }
+                    CheckProposeConstraintsFailure::HistoryIncomplete => {
+                        write!(
+                            f,
+                            "Proposal failed: this node's history does not reach far enough to \
+                             build a snapshot; it is still catching up"
                         )
                     }
                 },
