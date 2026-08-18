@@ -21,7 +21,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     self, ApprovedBlock, ApprovedBlockCandidate, BlockHashMessage, BlockMessage, BlockRequest,
-    CasperMessage, HasBlock, HasBlockRequest,
+    CasperMessage, FinalizedFloorSeed, HasBlock, HasBlockRequest,
 };
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
@@ -36,9 +36,11 @@ use crate::rust::engine::engine::{self, Engine};
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
+use crate::rust::finality::floor::floor_of_block;
 use crate::rust::metrics_constants::{
     BLOCK_HASH_RECEIVED_METRIC, BLOCK_REQUEST_RECEIVED_METRIC, RUNNING_METRICS_SOURCE,
 };
+use crate::rust::safety::clique_oracle::FtThreshold;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,11 +256,16 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                         required_sigs: 0,
                     },
                     sigs: vec![],
+                    // Filled in below, and only for a trimmed response.
+                    floor_seed: None,
                 };
 
                 let approved_block = if abr.trim_state {
                     // If Last Finalized State is requested return Last Finalized block as Approved block
-                    last_approved_block
+                    ApprovedBlock {
+                        floor_seed: self.floor_seed_for(&last_finalized_block_hash).await,
+                        ..last_approved_block
+                    }
                 } else {
                     // Respond with approved block that this node is started from.
                     // The very first one is genesis, but this node still might start from later block,
@@ -399,6 +406,72 @@ fn should_rejoin_from_approved_block(
 }
 
 impl<T: TransportLayer + Send + Sync> Running<T> {
+    /// The floor and frontier of the block we are about to hand over as a sync
+    /// anchor.
+    ///
+    /// A trimmed response gives the requester nothing below the anchor, and
+    /// `floor(B)` is defined by recursion through B's parents — so the
+    /// requester cannot derive the anchor's own floor no matter how it tries.
+    /// We can: the anchor is our last finalized block and its floor is either
+    /// cached or derivable from history we still hold.
+    ///
+    /// Returns `None` rather than failing the request. A seedless anchor leaves
+    /// the requester deferring — visibly, and without accusing anyone — which is
+    /// strictly better than refusing to serve it at all. Genesis reaches here
+    /// with no frontier (it is its own floor, cached without one) and needs no
+    /// seed: a genesis anchor is not trimmed.
+    async fn floor_seed_for(&self, anchor: &BlockHash) -> Option<FinalizedFloorSeed> {
+        let seed: Result<Option<FinalizedFloorSeed>, CasperError> = async {
+            let dag = self.casper.block_dag().await?;
+            let ftt = FtThreshold::from_ppm(
+                self.casper
+                    .casper_shard_conf()
+                    .fault_tolerance_threshold_ppm,
+            );
+            // Populates BOTH caches from one derivation, so the frontier read
+            // below cannot miss for any block that has parents.
+            let floor = floor_of_block(&dag, self.casper.block_store(), anchor, ftt).await?;
+            let Some(frontier_hash) = dag.get_cached_frontier(anchor)? else {
+                return Ok(None);
+            };
+            let frontier_number = dag
+                .lookup(&frontier_hash)?
+                .map(|meta| meta.block_number)
+                .ok_or_else(|| CasperError::BlockNotHeld(frontier_hash.clone()))?;
+            Ok(Some(FinalizedFloorSeed {
+                floor_hash: floor.hash,
+                floor_number: floor.block_number,
+                frontier_hash,
+                frontier_number,
+            }))
+        }
+        .await;
+
+        match seed {
+            Ok(Some(seed)) => {
+                tracing::info!(
+                    anchor = %PrettyPrinter::build_string_bytes(anchor),
+                    floor = %PrettyPrinter::build_string_bytes(&seed.floor_hash),
+                    floor_number = seed.floor_number,
+                    frontier = %PrettyPrinter::build_string_bytes(&seed.frontier_hash),
+                    frontier_number = seed.frontier_number,
+                    "Serving trimmed approved block with a finalized-floor seed"
+                );
+                Some(seed)
+            }
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(
+                    anchor = %PrettyPrinter::build_string_bytes(anchor),
+                    error = %e,
+                    "Could not derive a floor seed for the trimmed approved block; the \
+                     requester will not be able to derive finality above it"
+                );
+                None
+            }
+        }
+    }
+
     pub fn new(
         block_processing_queue_tx: mpsc::Sender<(
             Arc<dyn MultiParentCasper + Send + Sync>,

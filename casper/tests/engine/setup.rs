@@ -338,6 +338,7 @@ impl TestFixture {
                 block: genesis.clone(),
                 required_sigs: 0,
             },
+            floor_seed: None,
             sigs: Vec::new(),
         };
 

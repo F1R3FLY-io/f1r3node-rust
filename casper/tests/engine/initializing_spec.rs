@@ -80,6 +80,7 @@ impl InitializingSpec {
 
             ApprovedBlock {
                 candidate: approved_block_candidate,
+                floor_seed: None,
                 sigs: vec![Signature {
                     public_key: validator_pk.bytes.clone(),
                     algorithm: "secp256k1".to_string(),

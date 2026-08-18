@@ -1125,6 +1125,7 @@ impl TestNode {
                 required_sigs: 0,
             },
             sigs: vec![],
+            floor_seed: None,
         };
 
         let shard_conf = CasperShardConf {

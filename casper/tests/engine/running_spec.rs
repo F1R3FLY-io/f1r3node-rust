@@ -264,6 +264,7 @@ mod tests {
                     block: genesis_block,
                     required_sigs: 0,
                 },
+                floor_seed: None,
                 sigs: Vec::new(),
             };
 
@@ -386,6 +387,7 @@ mod tests {
                 block: fixture.genesis.clone(),
                 required_sigs: 0,
             },
+            floor_seed: None,
             sigs: Vec::new(),
         };
 
@@ -492,6 +494,7 @@ mod tests {
                 block: fixture.genesis.clone(),
                 required_sigs: 0,
             },
+            floor_seed: None,
             sigs: Vec::new(),
         };
 

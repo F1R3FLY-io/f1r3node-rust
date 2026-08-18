@@ -193,9 +193,55 @@ pub fn lfs_min_block_number(
     std::cmp::min(lifespan_bound, horizon_bound)
 }
 
+/// Lower the LFS download floor so the responder's floor seed is usable.
+///
+/// The seed names two blocks by number precisely because the receiver has to
+/// size its window before it holds anything to look up. Both must land in the
+/// window, and so must the block below the lower of them: resolving the anchor's
+/// frontier walks the band between anchor and frontier, and the clique oracle
+/// takes each band block's corresponding weight map from that block's own MAIN
+/// PARENT. A window stopping exactly at the frontier is one lookup short, and
+/// that lookup is the difference between deriving forward and deferring forever.
+///
+/// Never narrows: `unseeded` also serves the deploy-lifespan and forward-horizon
+/// windows, which the seed knows nothing about.
+pub fn lfs_seeded_min_block_number(unseeded: i64, floor_number: i64, frontier_number: i64) -> i64 {
+    let seed_reach = std::cmp::min(floor_number, frontier_number) - 1;
+    std::cmp::max(0, std::cmp::min(unseeded, seed_reach))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The seed only helps if the blocks it names are downloaded, and one block
+    /// deeper than that: resolving the frontier reads each band block's own MAIN
+    /// PARENT for its corresponding weight map, so a window that stops exactly
+    /// at the frontier leaves the oracle one lookup short.
+    #[test]
+    fn a_seed_widens_the_window_to_one_below_the_blocks_it_names() {
+        // Anchor 87 with the test-shard geometry: unseeded bound 37.
+        assert_eq!(lfs_min_block_number(87, 50, 15, 10), 37);
+        // A floor/frontier at 30 must pull the window down to 29, not 30.
+        assert_eq!(lfs_seeded_min_block_number(37, 30, 33), 29);
+        // The LOWER of the two names the bound.
+        assert_eq!(lfs_seeded_min_block_number(37, 33, 30), 29);
+    }
+
+    /// A seed inside the window the node was going to download anyway must not
+    /// shrink it. The unseeded bound serves the deploy-lifespan and
+    /// forward-horizon windows, which the seed knows nothing about.
+    #[test]
+    fn a_seed_above_the_bound_never_narrows_the_window() {
+        assert_eq!(lfs_seeded_min_block_number(37, 80, 82), 37);
+        assert_eq!(lfs_seeded_min_block_number(0, 80, 82), 0);
+    }
+
+    /// Genesis is a valid floor, and block -1 is not a valid bound.
+    #[test]
+    fn a_seed_at_genesis_clamps_to_zero() {
+        assert_eq!(lfs_seeded_min_block_number(37, 0, 0), 0);
+    }
 
     #[test]
     fn min_block_number_takes_lifespan_when_horizon_wider() {

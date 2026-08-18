@@ -534,7 +534,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // See `rspace_history_horizon::lfs_min_block_number` for the rule
         // and `casper/tests/util/rspace_history_horizon_test.rs` plus the
         // module's `#[cfg(test)] mod tests` for the spec.
-        let min_block_number_for_deploy_lifespan =
+        let unseeded_min_block_number =
             crate::rust::util::rspace_history_horizon::lfs_min_block_number(
                 start_block_number,
                 self.casper_shard_conf.deploy_lifespan,
@@ -542,10 +542,26 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 self.casper_shard_conf.mergeable_channels_gc_depth_buffer,
             );
 
+        // The anchor's floor cannot be derived from anything above the anchor,
+        // so the responder sent it. Widening the window here — before a single
+        // block is requested — is the only chance to do it: the requester
+        // accepts a block only if its height clears this bound, and the seed's
+        // blocks are useless to us unless we hold them.
+        let min_block_number_for_deploy_lifespan = match &approved_block.floor_seed {
+            Some(seed) => crate::rust::util::rspace_history_horizon::lfs_seeded_min_block_number(
+                unseeded_min_block_number,
+                seed.floor_number,
+                seed.frontier_number,
+            ),
+            None => unseeded_min_block_number,
+        };
+
         tracing::info!(
-            "request_approved_state: start (block {}, min_height {})",
+            "request_approved_state: start (block {}, min_height {}, unseeded_min_height {}, seeded {})",
             PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true),
-            min_block_number_for_deploy_lifespan
+            min_block_number_for_deploy_lifespan,
+            unseeded_min_block_number,
+            approved_block.floor_seed.is_some()
         );
 
         // Use external block message receiver provided by test (equivalent to Scala blockMessageQueue)
@@ -660,6 +676,10 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 st.height_map,
             )
             .await?;
+            // After the blocks are in, never before: the caches are keyed by
+            // hash, and a floor entry pointing at a block the DAG does not hold
+            // reads back as a missing block rather than as a floor.
+            self.seed_floor_caches(approved_block)?;
         } else {
             tracing::warn!(
                 "request_approved_state: block_request_stream returned no final state (None)"
@@ -686,7 +706,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     &self.casper_shard_conf,
                     min_block_number_for_deploy_lifespan,
                 )
-                .map_err(|e| CasperError::KvStoreError(e))?;
+                .map_err(CasperError::from)?;
 
             if !horizon_roots.is_empty() {
                 // Phase 1's tuple_space_message_receiver was consumed by
@@ -812,6 +832,59 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 _ => false,
             }
         }
+    }
+
+    /// Record the anchor's floor and frontier as this node's own, so the first
+    /// block above the anchor inherits them instead of trying to re-derive
+    /// finality from history that stops at the anchor.
+    ///
+    /// This is what makes a restored node able to judge at all. Both entries are
+    /// pure functions of the anchor, so accepting them from the peer that served
+    /// the anchor adds no trust: that peer already chose the anchor, and every
+    /// block below it arrived by hash from the anchor's own ancestry.
+    ///
+    /// A seed naming a block the download did not reach is refused rather than
+    /// written — a floor entry pointing at absent history would turn every later
+    /// derivation into a deferral, which is worse than having no seed at all,
+    /// because it looks like success.
+    fn seed_floor_caches(&self, approved_block: &ApprovedBlock) -> Result<(), CasperError> {
+        let Some(seed) = &approved_block.floor_seed else {
+            tracing::warn!(
+                "LFS restore has no floor seed: this node cannot derive finality above \
+                 its anchor and will defer on blocks it cannot judge. The serving peer \
+                 predates the seed, or could not derive one."
+            );
+            return Ok(());
+        };
+
+        let anchor = approved_block.candidate.block.block_hash.clone();
+        let dag = self.block_dag_storage.get_representation()?;
+        for (hash, label) in [
+            (&seed.floor_hash, "floor"),
+            (&seed.frontier_hash, "frontier"),
+        ] {
+            if !dag.contains(hash) {
+                tracing::warn!(
+                    seeded = %PrettyPrinter::build_string_bytes(hash),
+                    kind = label,
+                    "Floor seed names a block the sync did not download; discarding the \
+                     seed rather than caching a floor this node cannot read"
+                );
+                return Ok(());
+            }
+        }
+
+        dag.put_cached_floor(anchor.clone(), seed.floor_hash.clone())?;
+        dag.put_cached_frontier(anchor.clone(), seed.frontier_hash.clone())?;
+        tracing::info!(
+            anchor = %PrettyPrinter::build_string_bytes(&anchor),
+            floor = %PrettyPrinter::build_string_bytes(&seed.floor_hash),
+            floor_number = seed.floor_number,
+            frontier = %PrettyPrinter::build_string_bytes(&seed.frontier_hash),
+            frontier_number = seed.frontier_number,
+            "Seeded the anchor's finalized floor and frontier from the approved block"
+        );
+        Ok(())
     }
 
     async fn populate_dag(

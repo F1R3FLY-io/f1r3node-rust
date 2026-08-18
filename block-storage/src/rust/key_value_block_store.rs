@@ -601,6 +601,7 @@ mod tests {
         ApprovedBlock {
             candidate,
             sigs: vec![],
+            floor_seed: None,
         }
     }
 

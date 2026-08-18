@@ -66,10 +66,30 @@ message BlockApprovalProto {
   Signature sig                         = 2 [(scalapb.field).no_box = true];
 }
 
+// The anchor's finalized floor and frontier as the responder derived them,
+// so a node restored from that anchor can start deriving forward instead of
+// re-deriving finality from history it will never hold.
+//
+// Both blocks are named by hash AND number because the receiver needs the
+// numbers before it holds the blocks: they size the download window, and the
+// hashes are useless until the blocks they name are on disk.
+message FinalizedFloorSeedProto {
+  bytes floorHash       = 1;
+  int64 floorNumber     = 2;
+  bytes frontierHash    = 3;
+  int64 frontierNumber  = 4;
+}
+
 message ApprovedBlockProto  {
   option (scalapb.message).extends = "CasperMessageProto";
   ApprovedBlockCandidateProto candidate = 1 [(scalapb.field).no_box = true];
   repeated Signature sigs               = 2;
+  // Deliberately here and not on the candidate: the candidate's serialized
+  // bytes are the payload the genesis ceremony signs and `Validate::approved_block`
+  // re-derives, so a field there would put unsigned peer-supplied data inside
+  // the signed envelope. Absent from peers that predate it, which the receiver
+  // handles by deferring rather than by assuming a floor.
+  FinalizedFloorSeedProto floorSeed     = 3;
 }
 
 message ApprovedBlockRequestProto {

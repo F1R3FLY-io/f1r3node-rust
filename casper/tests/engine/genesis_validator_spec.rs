@@ -153,6 +153,7 @@ impl GenesisValidatorSpec {
                 block: fixture.genesis.clone(),
                 required_sigs: fixture.required_sigs,
             },
+            floor_seed: None,
             sigs: Vec::new(),
         };
 

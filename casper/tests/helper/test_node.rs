@@ -1074,6 +1074,7 @@ impl TestNode {
                 block: genesis.clone(),
                 required_sigs: 0,
             },
+            floor_seed: None,
             sigs: vec![],
         };
         let last_approved_block = Arc::new(Mutex::new(Some(_approved_block.clone())));

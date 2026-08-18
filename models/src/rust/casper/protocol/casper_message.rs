@@ -239,10 +239,46 @@ impl BlockApproval {
     }
 }
 
+/// The anchor's finalized floor and frontier, carried with the approved block
+/// so a restored node can start deriving forward from them.
+///
+/// Each block is named by hash AND number: the number sizes the receiver's
+/// download window, which it must fix before it holds any block to look up.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FinalizedFloorSeed {
+    pub floor_hash: ByteString,
+    pub floor_number: i64,
+    pub frontier_hash: ByteString,
+    pub frontier_number: i64,
+}
+
+impl FinalizedFloorSeed {
+    pub fn from_proto(proto: FinalizedFloorSeedProto) -> Self {
+        Self {
+            floor_hash: proto.floor_hash,
+            floor_number: proto.floor_number,
+            frontier_hash: proto.frontier_hash,
+            frontier_number: proto.frontier_number,
+        }
+    }
+
+    pub fn to_proto(self) -> FinalizedFloorSeedProto {
+        FinalizedFloorSeedProto {
+            floor_hash: self.floor_hash,
+            floor_number: self.floor_number,
+            frontier_hash: self.frontier_hash,
+            frontier_number: self.frontier_number,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApprovedBlock {
     pub candidate: ApprovedBlockCandidate,
     pub sigs: Vec<Signature>,
+    /// Absent from peers that predate the seed, and from the non-trim response
+    /// (a node syncing from genesis derives its own floors).
+    pub floor_seed: Option<FinalizedFloorSeed>,
 }
 
 impl ApprovedBlock {
@@ -254,6 +290,7 @@ impl ApprovedBlock {
                     .ok_or_else(|| "Missing candidate field".to_string())?,
             )?,
             sigs: proto.sigs,
+            floor_seed: proto.floor_seed.map(FinalizedFloorSeed::from_proto),
         })
     }
 
@@ -261,6 +298,7 @@ impl ApprovedBlock {
         ApprovedBlockProto {
             candidate: Some(self.candidate.to_proto()),
             sigs: self.sigs,
+            floor_seed: self.floor_seed.map(FinalizedFloorSeed::to_proto),
         }
     }
 }
@@ -1315,5 +1353,99 @@ impl MergeableEntryResponse {
             block_hash: self.block_hash,
             serialized_entry: self.serialized_entry,
         }
+    }
+}
+
+#[cfg(test)]
+mod approved_block_tests {
+    use prost::bytes::Bytes;
+
+    use super::*;
+
+    fn candidate() -> ApprovedBlockCandidate {
+        ApprovedBlockCandidate {
+            block: BlockMessage {
+                block_hash: Bytes::from_static(b"anchor"),
+                header: Header {
+                    parents_hash_list: vec![],
+                    timestamp: 0,
+                    version: 0,
+                    extra_bytes: Bytes::new(),
+                },
+                body: Body {
+                    state: F1r3flyState {
+                        pre_state_hash: Bytes::new(),
+                        post_state_hash: Bytes::new(),
+                        bonds: vec![],
+                        block_number: 87,
+                    },
+                    deploys: vec![],
+                    rejected_deploys: vec![],
+                    system_deploys: vec![],
+                    extra_bytes: Bytes::new(),
+                    applied_from_scope: vec![],
+                    merge_base: Bytes::new(),
+                },
+                justifications: vec![],
+                sender: Bytes::new(),
+                seq_num: 0,
+                sig: Bytes::new(),
+                sig_algorithm: String::new(),
+                shard_id: "root".to_string(),
+                extra_bytes: Bytes::new(),
+            },
+            required_sigs: 0,
+        }
+    }
+
+    /// The seed rides on the ApprovedBlock, never inside its candidate: the
+    /// candidate's serialized bytes are what the genesis ceremony signs and
+    /// what `Validate::approved_block` re-derives to verify, so a field added
+    /// there would put unsigned peer-supplied data inside the signed envelope
+    /// and make two ceremony participants disagree on the digest.
+    #[test]
+    fn the_floor_seed_survives_the_wire_and_the_candidate_digest_does_not_move() {
+        let seed = FinalizedFloorSeed {
+            floor_hash: Bytes::from_static(b"floor"),
+            floor_number: 37,
+            frontier_hash: Bytes::from_static(b"frontier"),
+            frontier_number: 41,
+        };
+        let seeded = ApprovedBlock {
+            candidate: candidate(),
+            sigs: vec![],
+            floor_seed: Some(seed.clone()),
+        };
+        let bare = ApprovedBlock {
+            candidate: candidate(),
+            sigs: vec![],
+            floor_seed: None,
+        };
+
+        assert_eq!(
+            ApprovedBlock::from_proto(seeded.clone().to_proto()).expect("round trip"),
+            seeded,
+            "the seed must survive the wire intact: the receiver sizes its download \
+             window from these numbers before it requests a single block"
+        );
+        assert_eq!(
+            ApprovedBlock::from_proto(bare.clone().to_proto()).expect("round trip"),
+            bare,
+            "a peer that sends no seed must decode as no seed, not as a zero floor"
+        );
+
+        assert_eq!(
+            seeded
+                .to_proto()
+                .candidate
+                .expect("candidate")
+                .encode_to_vec(),
+            bare.to_proto()
+                .candidate
+                .expect("candidate")
+                .encode_to_vec(),
+            "seeding must not shift one byte of the candidate: those bytes are the \
+             ceremony's signed payload"
+        );
     }
 }
