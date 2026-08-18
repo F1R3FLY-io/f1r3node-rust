@@ -445,6 +445,7 @@ Implementation adds or changes these components.
 | `.github/workflows/oci-validation.yml` | Add trusted exact-candidate dispatch mode |
 | `.github/workflows/reusable-oci-validation.yml` | Consume a candidate image digest without rebuilding |
 | `.github/workflows/deployment-train.yml` | Validate manifests and start independent trains |
+| `.github/workflows/soak-in.yml` | Enroll stable releases into the Soak-in quorum |
 | `.github/scripts/release-evidence.sh` | Build and validate evidence documents |
 | `.github/scripts/release-gates.sh` | Validate exact-SHA gate runs |
 | `.github/scripts/promote-release.sh` | Perform idempotent artifact promotion |
@@ -493,6 +494,13 @@ Phase 1 disables automatic stable publication. A manual workflow generates evide
 3. Run the cost-accounting train as the first publishing train.
 4. Document the completed train evidence.
 
+### Phase 6: Soak-in quorum
+
+1. Stand up the long-running quorum of shards.
+2. Enroll each weekly stable release into the Soak-in.
+3. Promote soaked nodes to the Anchor role after the soak period.
+4. Document the Soak-in enrollment and Anchor promotion evidence.
+
 ## 19. Ratification checklist
 
 Maintainers must ratify these decisions before stable automation is enabled.
@@ -509,3 +517,4 @@ Maintainers must ratify these decisions before stable automation is enabled.
 - [ ] Merge, squash, and rebase rules
 - [ ] Version reservation and ordering rules
 - [ ] First Deployment Train selection
+- [ ] Soak-in shard and Anchor promotion policy

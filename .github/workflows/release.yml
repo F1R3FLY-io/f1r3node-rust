@@ -19,4 +19,8 @@ jobs:
             echo
             echo "The release process is in its evidence-only migration phase."
             echo "This workflow did not create a commit, tag, release, package, or image."
+            echo
+            echo "After stable promotion is enabled, each stable release enters the"
+            echo "Soak-in phase before its nodes gain the Anchor role."
+            echo "docs/release-process.md section 12 defines the Soak-in phase."
           } >> "$GITHUB_STEP_SUMMARY"

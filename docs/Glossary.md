@@ -65,6 +65,18 @@ A Deployment Train is an independent release path that starts from a reviewed pu
 
 **Preferred usage.** Use this term for the complete independent release path. *Distinguish from* a CI job, workflow run, or branch.
 
+### Soak-in
+
+A Soak-in is the post-promotion period in which a weekly [stable release](#stable-release) runs in a long-running quorum of shards. The Soak-in measures node behavior with the current quorum members, catches compatibility issues, and confirms that the new nodes stay up.
+
+**Preferred usage.** Use this term for post-promotion quorum trials. *Distinguish from* the weekend soak, which is a pre-promotion release gate on one candidate.
+
+### Anchor
+
+An Anchor is a node that completed its [Soak-in](#soak-in) period and holds full membership in the quorum of shards.
+
+**Preferred usage.** Use this term only after a completed Soak-in. *Distinguish from* a soaking node, which runs inside or adjacent to the quorum without the Anchor role.
+
 ### Peak node RSS
 
 Peak node resident set size (RSS) is the maximum combined memory use of all

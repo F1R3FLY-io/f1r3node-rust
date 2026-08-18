@@ -1,0 +1,45 @@
+name: Soak-in Enrollment
+
+run-name: Soak-in Enrollment [${{ inputs.stable_tag }}]
+
+on:
+  workflow_dispatch:
+    inputs:
+      stable_tag:
+        description: Stable release tag to enroll (vMAJOR.MINOR.PATCH)
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  held:
+    name: Soak-in Enrollment Held
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate stable tag format
+        env:
+          STABLE_TAG: ${{ inputs.stable_tag }}
+        shell: bash -euo pipefail {0}
+        run: |
+          if ! [[ "$STABLE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::stable_tag must use the vMAJOR.MINOR.PATCH stable release format"
+            exit 1
+          fi
+
+      - name: Report migration state
+        env:
+          STABLE_TAG: ${{ inputs.stable_tag }}
+        shell: bash -euo pipefail {0}
+        run: |
+          {
+            echo "### Soak-in enrollment is held"
+            echo
+            echo "The requested stable tag has a valid format: \`$STABLE_TAG\`."
+            echo
+            echo "The Soak-in quorum infrastructure is not provisioned yet."
+            echo "docs/release-process.md section 12 defines the Soak-in phase."
+            echo "Section 18 Phase 6 defines the enrollment migration steps."
+            echo "This workflow did not deploy a node, change a quorum, or grant an Anchor role."
+          } >> "$GITHUB_STEP_SUMMARY"
