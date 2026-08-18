@@ -9,7 +9,7 @@ use models::rust::par_bag::{
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 use prost::Message as _;
-use rspace_plus_plus::rspace::bag::{Bag, Multiplicity};
+use rspace_plus_plus::rspace::bag::{Bag, BagError, Multiplicity};
 
 mod par_corpus;
 use par_corpus as corpus;
@@ -225,6 +225,104 @@ fn clone_is_copy_on_write_and_family_removal_is_prefix_native() {
 }
 
 #[test]
+fn family_metrics_track_every_mutation_and_compact_round_trip() {
+    let first = Expr {
+        expr_instance: Some(ExprInstance::GInt(1)),
+    };
+    let second = Expr {
+        expr_instance: Some(ExprInstance::GInt(2)),
+    };
+    let send = Send {
+        chan: Some(Par::default()),
+        ..Send::default()
+    };
+    let mut bag = ParBag::new();
+    bag.insert_many(&first, Multiplicity::new(3).expect("positive"))
+        .expect("insert first expression");
+    bag.insert_many(&second, Multiplicity::new(2).expect("positive"))
+        .expect("insert second expression");
+    bag.insert(&send).expect("insert send");
+    assert_eq!(bag.family_cardinality::<Expr>(), 5);
+    assert_eq!(bag.family_distinct_len::<Expr>(), 2);
+    assert_eq!(bag.family_cardinality::<Send>(), 1);
+
+    assert_eq!(
+        bag.remove_many(&first, Multiplicity::new(2).expect("positive")),
+        Some(Multiplicity::ONE)
+    );
+    assert_eq!(bag.family_cardinality::<Expr>(), 3);
+    assert_eq!(bag.family_distinct_len::<Expr>(), 2);
+    assert!(matches!(
+        bag.try_remove_many(&first, Multiplicity::new(2).expect("positive")),
+        Err(BagError::InsufficientMultiplicity {
+            available: 1,
+            requested: 2
+        })
+    ));
+    assert_eq!(bag.family_cardinality::<Expr>(), 3);
+    assert_eq!(bag.family_distinct_len::<Expr>(), 2);
+
+    assert_eq!(
+        bag.remove_many(&second, Multiplicity::new(9).expect("positive")),
+        None
+    );
+    assert_eq!(bag.family_cardinality::<Expr>(), 1);
+    assert_eq!(bag.family_distinct_len::<Expr>(), 1);
+    assert_eq!(bag.remove_family::<Send>(), (1, 1));
+    assert_eq!(bag.family_cardinality::<Send>(), 0);
+    assert_eq!(bag.family_distinct_len::<Send>(), 0);
+
+    let decoded = ParBag::from_compact_bytes(bag.compact_snapshot()).expect("compact round trip");
+    assert_eq!(decoded.family_cardinality::<Expr>(), 1);
+    assert_eq!(decoded.family_distinct_len::<Expr>(), 1);
+    assert_eq!(decoded.family_cardinality::<Send>(), 0);
+}
+
+#[test]
+fn endpoint_u64_overflow_is_atomic_while_family_aggregates_remain_closed() {
+    let first = Expr {
+        expr_instance: Some(ExprInstance::GInt(1)),
+    };
+    let second = Expr {
+        expr_instance: Some(ExprInstance::GInt(2)),
+    };
+    let maximum = Multiplicity::new(u64::MAX).expect("positive");
+
+    let mut bag = ParBag::new();
+    bag.insert_many(&first, maximum).expect("maximum family");
+    let snapshot_ptr = bag.compact_snapshot().as_ptr();
+    assert!(matches!(
+        bag.insert(&first),
+        Err(BagError::MultiplicityOverflow {
+            current: u64::MAX,
+            added: 1
+        })
+    ));
+    assert_eq!(bag.family_cardinality::<Expr>(), u128::from(u64::MAX));
+    assert_eq!(bag.family_distinct_len::<Expr>(), 1);
+    assert_eq!(bag.compact_snapshot().as_ptr(), snapshot_ptr);
+
+    bag.insert(&second)
+        .expect("a distinct endpoint preserves the u64 value domain");
+    assert_eq!(bag.family_cardinality::<Expr>(), u128::from(u64::MAX) + 1);
+    assert_eq!(bag.family_distinct_len::<Expr>(), 2);
+
+    let mut raw = Bag::new();
+    with_component_key(&first, |key| {
+        raw.insert_many(key, maximum).expect("raw maximum endpoint");
+    });
+    with_component_key(&second, |key| {
+        raw.insert(key).expect("raw second endpoint");
+    });
+    let decoded = ParBag::from_compact_bytes(&raw.compact_bytes()).expect("valid ACT family");
+    assert_eq!(
+        decoded.family_cardinality::<Expr>(),
+        u128::from(u64::MAX) + 1
+    );
+    assert_eq!(decoded.family_distinct_len::<Expr>(), 2);
+}
+
+#[test]
 fn exact_bag_algebra_preserves_multiplicity_laws() {
     let value = Expr {
         expr_instance: Some(ExprInstance::GInt(42)),
@@ -236,10 +334,18 @@ fn exact_bag_algebra_preserves_multiplicity_laws() {
         .insert_many(&value, Multiplicity::new(3).expect("positive"))
         .expect("three");
 
-    assert_eq!(one.sum(&three).expect("sum").count(&value), 4);
-    assert_eq!(one.join(&three).count(&value), 3);
-    assert_eq!(one.meet(&three).count(&value), 1);
-    assert_eq!(three.subtract(&one).count(&value), 2);
+    let sum = one.sum(&three).expect("sum");
+    let join = one.join(&three);
+    let meet = one.meet(&three);
+    let difference = three.subtract(&one);
+    assert_eq!(sum.count(&value), 4);
+    assert_eq!(sum.family_cardinality::<Expr>(), 4);
+    assert_eq!(join.count(&value), 3);
+    assert_eq!(join.family_cardinality::<Expr>(), 3);
+    assert_eq!(meet.count(&value), 1);
+    assert_eq!(meet.family_cardinality::<Expr>(), 1);
+    assert_eq!(difference.count(&value), 2);
+    assert_eq!(difference.family_cardinality::<Expr>(), 2);
     assert!(one.is_subbag_of(&three));
 }
 

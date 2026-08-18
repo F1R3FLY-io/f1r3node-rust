@@ -4,7 +4,7 @@ use expr::ExprInstance;
 use rspace_plus_plus::rspace::bag::Multiplicity;
 use serde::{Deserialize, Serialize};
 
-use super::par_bag::{ParBagCodecError, ParBagComponent, ParBagVisitError};
+use super::par_bag::{ParBagCodecError, ParBagComponent, ParBagVisitError, ParComponentItem};
 use super::par_map::ParMap;
 use super::par_map_type_mapper::ParMapTypeMapper;
 use super::par_set::ParSet;
@@ -31,12 +31,14 @@ pub struct OptionResult<A, K> {
 #[doc(hidden)]
 pub trait GeneratedParComponent: ParBagComponent + Clone {
     fn generated_family(par: &Par) -> &[Self];
+    fn take_generated_family(par: &mut Par) -> Vec<Self>;
 }
 
 macro_rules! generated_par_component {
     ($component:ty, $field:ident) => {
         impl GeneratedParComponent for $component {
             fn generated_family(par: &Par) -> &[Self] { &par.$field }
+            fn take_generated_family(par: &mut Par) -> Vec<Self> { std::mem::take(&mut par.$field) }
         }
     };
 }
@@ -86,6 +88,38 @@ impl Par {
         Ok(())
     }
 
+    /// Transitional zero-clone worklist feed. Generated `Par` lends its
+    /// existing repeated-field elements; PathMap `Par` yields owned values
+    /// decoded once per distinct endpoint through the same call surface.
+    pub fn try_visit_components<'a, T, E>(
+        &'a self,
+        mut visitor: impl FnMut(ParComponentItem<'a, T>, Multiplicity) -> Result<(), E>,
+    ) -> Result<(), ParBagVisitError<E>>
+    where
+        T: GeneratedParComponent,
+    {
+        for value in T::generated_family(self) {
+            visitor(ParComponentItem::Borrowed(value), Multiplicity::ONE)
+                .map_err(ParBagVisitError::Visitor)?;
+        }
+        Ok(())
+    }
+
+    /// Consuming counterpart for an owned worklist node. Values move out of
+    /// the generated repeated field instead of cloning its recursive subtree.
+    pub fn try_into_components<T, E>(
+        mut self,
+        mut visitor: impl FnMut(T, Multiplicity) -> Result<(), E>,
+    ) -> Result<(), ParBagVisitError<E>>
+    where
+        T: GeneratedParComponent,
+    {
+        for value in T::take_generated_family(&mut self) {
+            visitor(value, Multiplicity::ONE).map_err(ParBagVisitError::Visitor)?;
+        }
+        Ok(())
+    }
+
     pub fn first<T>(&self) -> Result<Option<(T, Multiplicity)>, ParBagCodecError>
     where T: GeneratedParComponent {
         Ok(T::generated_family(self)
@@ -97,6 +131,15 @@ impl Par {
     pub fn family_cardinality<T>(&self) -> u128
     where T: GeneratedParComponent {
         T::generated_family(self).len() as u128
+    }
+
+    /// Transitional count of values emitted by [`Self::try_visit_decoded`].
+    /// The generated representation stores every occurrence separately, so
+    /// this equals cardinality. The PathMap-backed representation returns the
+    /// number of distinct trie endpoints instead.
+    pub fn family_distinct_len<T>(&self) -> usize
+    where T: GeneratedParComponent {
+        T::generated_family(self).len()
     }
 
     pub fn with_sends(&self, new_sends: Vec<Send>) -> Par {

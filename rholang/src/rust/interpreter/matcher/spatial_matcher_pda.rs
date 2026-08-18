@@ -256,7 +256,11 @@ enum Frame {
     OrBranch {
         target: Option<Box<Par>>,
         patterns: std::vec::IntoIter<Par>,
-        snapshot: FreeMap,
+        // This is the only branch state whose iterator, retained target, and
+        // map together exceed one cache line when the map header is inline.
+        // The map already owns heap nodes; boxing its small root header keeps
+        // every Frame at <= 64 bytes without changing restore semantics.
+        snapshot: Box<FreeMap>,
     },
     Not {
         snapshot: FreeMap,
@@ -374,7 +378,7 @@ fn resume(
             patterns,
             snapshot,
         } => {
-            context.free_map = snapshot;
+            context.free_map = *snapshot;
             if result {
                 Job::Return(true)
             } else if let Some(target) = target {
@@ -888,7 +892,7 @@ fn start_or_branch(
     frames.push(Frame::OrBranch {
         target: retained_target,
         patterns,
-        snapshot,
+        snapshot: Box::new(snapshot),
     });
     match_job(MatchPair::Par(target, pattern))
 }

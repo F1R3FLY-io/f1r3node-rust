@@ -1,27 +1,29 @@
+use models::rust::par_bag::ParComponentItem;
+
 use super::exports::*;
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/ParCount.scala
 #[derive(Clone, Debug)]
 pub struct ParCount {
-    pub sends: usize,
-    pub receives: usize,
-    pub news: usize,
-    pub exprs: usize,
-    pub matches: usize,
-    pub unforgeables: usize,
-    pub bundles: usize,
+    pub sends: u64,
+    pub receives: u64,
+    pub news: u64,
+    pub exprs: u64,
+    pub matches: u64,
+    pub unforgeables: u64,
+    pub bundles: u64,
 }
 
 impl ParCount {
     pub fn new(par: &Par) -> Self {
         ParCount {
-            sends: par.sends.len(),
-            receives: par.receives.len(),
-            news: par.news.len(),
-            exprs: par.exprs.len(),
-            matches: par.matches.len(),
-            unforgeables: par.unforgeables.len(),
-            bundles: par.bundles.len(),
+            sends: matching_bound(par.family_cardinality::<Send>()),
+            receives: matching_bound(par.family_cardinality::<Receive>()),
+            news: matching_bound(par.family_cardinality::<New>()),
+            exprs: matching_bound(par.family_cardinality::<Expr>()),
+            matches: matching_bound(par.family_cardinality::<Match>()),
+            unforgeables: matching_bound(par.family_cardinality::<GUnforgeable>()),
+            bundles: matching_bound(par.family_cardinality::<Bundle>()),
         }
     }
 
@@ -85,6 +87,18 @@ impl ParCount {
         }
     }
 
+    fn scale(&self, amount: u64) -> Self {
+        Self {
+            sends: self.sends.saturating_mul(amount),
+            receives: self.receives.saturating_mul(amount),
+            news: self.news.saturating_mul(amount),
+            exprs: self.exprs.saturating_mul(amount),
+            matches: self.matches.saturating_mul(amount),
+            unforgeables: self.unforgeables.saturating_mul(amount),
+            bundles: self.bundles.saturating_mul(amount),
+        }
+    }
+
     pub fn min_max_par(&self, par: Par) -> (ParCount, ParCount) { self.min_max_par_ref(&par) }
 
     pub fn min_max_con(&self, con: Connective) -> (ParCount, ParCount) {
@@ -103,6 +117,66 @@ impl ParCount {
         self.min_max_drive(CountNode::Connective(con))
     }
 
+    fn par_frame(&self, par: &Par) -> (usize, (ParCount, ParCount)) {
+        let mut free_exprs = 0u64;
+        par.try_visit_components::<Expr, std::convert::Infallible>(|expr, multiplicity| {
+            if matches!(
+                expr.as_ref().expr_instance.as_ref(),
+                Some(EVarBody(EVar {
+                    v: Some(Var {
+                        var_instance: Some(FreeVar(_) | Wildcard(_)),
+                    }),
+                }))
+            ) {
+                free_exprs = free_exprs.saturating_add(multiplicity.get());
+            }
+            Ok(())
+        })
+        .expect("Par invariant: expression endpoints are canonical");
+        let wildcard = free_exprs != 0;
+        let exprs = matching_bound(par.family_cardinality::<Expr>());
+        let pc = ParCount {
+            sends: matching_bound(par.family_cardinality::<Send>()),
+            receives: matching_bound(par.family_cardinality::<Receive>()),
+            news: matching_bound(par.family_cardinality::<New>()),
+            exprs: exprs.saturating_sub(free_exprs),
+            matches: matching_bound(par.family_cardinality::<Match>()),
+            unforgeables: matching_bound(par.family_cardinality::<GUnforgeable>()),
+            bundles: matching_bound(par.family_cardinality::<Bundle>()),
+        };
+        let base = (pc.clone(), if wildcard { self._max() } else { pc });
+        (par.family_distinct_len::<Connective>(), base)
+    }
+
+    fn schedule_borrowed_par<'a>(&self, par: &'a Par, work: &mut Vec<CountWork<'a>>) {
+        let (child_count, base) = self.par_frame(par);
+        work.push(CountWork::ReducePar { child_count, base });
+        par.try_visit_components::<Connective, std::convert::Infallible>(
+            |connective, multiplicity| {
+                work.push(CountWork::Scale(multiplicity.get()));
+                work.push(CountWork::Visit(match connective {
+                    ParComponentItem::Borrowed(value) => CountNode::Connective(value),
+                    ParComponentItem::Owned(value) => CountNode::OwnedConnective(value),
+                }));
+                Ok(())
+            },
+        )
+        .expect("Par invariant: connective endpoints are canonical");
+    }
+
+    fn schedule_owned_par<'a>(&self, par: Par, work: &mut Vec<CountWork<'a>>) {
+        let (child_count, base) = self.par_frame(&par);
+        work.push(CountWork::ReducePar { child_count, base });
+        par.try_into_components::<Connective, std::convert::Infallible>(
+            |connective, multiplicity| {
+                work.push(CountWork::Scale(multiplicity.get()));
+                work.push(CountWork::Visit(CountNode::OwnedConnective(connective)));
+                Ok(())
+            },
+        )
+        .expect("Par invariant: connective endpoints are canonical");
+    }
+
     /// Defunctionalized evaluator for the mutually recursive
     /// `min_max_par`/`min_max_con` equations.
     ///
@@ -117,40 +191,7 @@ impl ParCount {
 
         while let Some(task) = work.pop() {
             match task {
-                CountWork::Visit(CountNode::Par(par)) => {
-                    let free_exprs = par
-                        .exprs
-                        .iter()
-                        .filter(|expr| {
-                            matches!(
-                                expr.expr_instance,
-                                Some(EVarBody(EVar {
-                                    v: Some(Var {
-                                        var_instance: Some(FreeVar(_) | Wildcard(_)),
-                                    }),
-                                }))
-                            )
-                        })
-                        .count();
-                    let wildcard = free_exprs != 0;
-                    let pc = ParCount {
-                        sends: par.sends.len(),
-                        receives: par.receives.len(),
-                        news: par.news.len(),
-                        exprs: par.exprs.len() - free_exprs,
-                        matches: par.matches.len(),
-                        unforgeables: par.unforgeables.len(),
-                        bundles: par.bundles.len(),
-                    };
-                    let base = (pc.clone(), if wildcard { self._max() } else { pc });
-                    work.push(CountWork::ReducePar {
-                        child_count: par.connectives.len(),
-                        base,
-                    });
-                    for connective in par.connectives.iter().rev() {
-                        work.push(CountWork::Visit(CountNode::Connective(connective)));
-                    }
-                }
+                CountWork::Visit(CountNode::Par(par)) => self.schedule_borrowed_par(par, &mut work),
                 CountWork::Visit(CountNode::Connective(connective)) => {
                     match connective.connective_instance.as_ref() {
                         Some(ConnAndBody(ConnectiveBody { ps })) => {
@@ -178,6 +219,43 @@ impl ParCount {
                             values.push((one.clone(), one));
                         }
                     }
+                }
+                CountWork::Visit(CountNode::OwnedConnective(connective)) => {
+                    match connective.connective_instance {
+                        Some(ConnAndBody(ConnectiveBody { ps })) => {
+                            work.push(CountWork::ReduceAnd(ps.len()));
+                            for par in ps.into_iter().rev() {
+                                work.push(CountWork::Visit(CountNode::OwnedPar(par)));
+                            }
+                        }
+                        Some(ConnOrBody(ConnectiveBody { ps })) => {
+                            work.push(CountWork::ReduceOr(ps.len()));
+                            for par in ps.into_iter().rev() {
+                                work.push(CountWork::Visit(CountNode::OwnedPar(par)));
+                            }
+                        }
+                        Some(ConnNotBody(_)) => values.push((self._new(), self._max())),
+                        None | Some(VarRefBody(_)) => {
+                            values.push((self._new(), self._new()));
+                        }
+                        Some(
+                            ConnBool(_) | ConnInt(_) | ConnString(_) | ConnUri(_)
+                            | ConnByteArray(_),
+                        ) => {
+                            let mut one = self._new();
+                            one.exprs = 1;
+                            values.push((one.clone(), one));
+                        }
+                    }
+                }
+                CountWork::Visit(CountNode::OwnedPar(par)) => {
+                    self.schedule_owned_par(par, &mut work);
+                }
+                CountWork::Scale(amount) => {
+                    let (minimum, maximum) = values
+                        .pop()
+                        .expect("multiplicity scales one connective result");
+                    values.push((minimum.scale(amount), maximum.scale(amount)));
                 }
                 CountWork::ReducePar { child_count, base } => {
                     let start = values.len() - child_count;
@@ -220,10 +298,17 @@ impl ParCount {
     }
 }
 
-#[derive(Clone, Copy)]
+/// Project an exact trie-family cardinality into the matcher's compact,
+/// saturating abstract domain. A resident repeated-field subset cannot contain
+/// more than `u64::MAX` occurrences; saturation therefore preserves
+/// conservative pruning without widening every hot `ParCount` frame to u128.
+fn matching_bound(value: u128) -> u64 { u64::try_from(value).unwrap_or(u64::MAX) }
+
 enum CountNode<'a> {
     Par(&'a Par),
     Connective(&'a Connective),
+    OwnedPar(Par),
+    OwnedConnective(Connective),
 }
 
 enum CountWork<'a> {
@@ -234,4 +319,5 @@ enum CountWork<'a> {
     },
     ReduceAnd(usize),
     ReduceOr(usize),
+    Scale(u64),
 }

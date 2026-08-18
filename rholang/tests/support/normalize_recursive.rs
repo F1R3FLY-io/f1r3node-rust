@@ -1306,15 +1306,17 @@ fn normalize_p_send_recursive<'ast>(
         data: acc.0,
         persistent,
         locally_free: union(
-            name_match_result.par.clone().locally_free(
+            <Par as HasLocallyFree<Par>>::locally_free(
+                &name_match_result.par,
                 name_match_result.par.clone(),
                 input.bound_map_chain.depth() as i32,
             ),
             acc.2,
         ),
-        connective_used: name_match_result
-            .par
-            .connective_used(name_match_result.par.clone())
+        connective_used: <Par as HasLocallyFree<Par>>::connective_used(
+            &name_match_result.par,
+            name_match_result.par.clone(),
+        )
             || acc.3,
     };
 
@@ -1386,10 +1388,17 @@ fn normalize_p_method_recursive<'ast>(
         target: Some(target.clone()),
         arguments: arg_results.0,
         locally_free: union(
-            target.locally_free(target.clone(), input.bound_map_chain.depth() as i32),
+            <Par as HasLocallyFree<Par>>::locally_free(
+                &target,
+                target.clone(),
+                input.bound_map_chain.depth() as i32,
+            ),
             arg_results.2,
         ),
-        connective_used: target.connective_used(target.clone()) || arg_results.3,
+        connective_used: <Par as HasLocallyFree<Par>>::connective_used(
+            &target,
+            target.clone(),
+        ) || arg_results.3,
     };
 
     let updated_par = prepend_expr(
@@ -1876,7 +1885,8 @@ fn normalize_p_contr_recursive<'ast>(
         init_acc.1 = result.free_map.clone();
         init_acc.2 = union(
             init_acc.clone().2,
-            result.par.locally_free(
+            <Par as HasLocallyFree<Par>>::locally_free(
+                &result.par,
                 result.par.clone(),
                 (input.bound_map_chain.depth() + 1) as i32,
             ),
@@ -1916,7 +1926,8 @@ fn normalize_p_contr_recursive<'ast>(
         peek: false,
         bind_count: bound_count as i32,
         locally_free: union(
-            name_match_result.par.locally_free(
+            <Par as HasLocallyFree<Par>>::locally_free(
+                &name_match_result.par,
                 name_match_result.par.clone(),
                 input.bound_map_chain.depth() as i32,
             ),
@@ -1925,9 +1936,10 @@ fn normalize_p_contr_recursive<'ast>(
                 body_locally_free,
             ),
         ),
-        connective_used: name_match_result
-            .par
-            .connective_used(name_match_result.par.clone())
+        connective_used: <Par as HasLocallyFree<Par>>::connective_used(
+            &name_match_result.par,
+            name_match_result.par.clone(),
+        )
             || body_connective_used,
         condition: None,
     };
@@ -2729,9 +2741,14 @@ fn normalize_p_input_recursive<'ast>(
                 current_known_free = updated_known_free;
                 locally_free = union(
                     locally_free,
-                    par.locally_free(par.clone(), input.bound_map_chain.depth() as i32),
+                    <Par as HasLocallyFree<Par>>::locally_free(
+                        &par,
+                        par.clone(),
+                        input.bound_map_chain.depth() as i32,
+                    ),
                 );
-                connective_used = connective_used || par.clone().connective_used(par);
+                connective_used = connective_used
+                    || <Par as HasLocallyFree<Par>>::connective_used(&par, par.clone());
             }
 
             Ok((
@@ -2795,7 +2812,11 @@ fn normalize_p_input_recursive<'ast>(
                         current_known_free = updated_known_free;
                         locally_free = union(
                             locally_free,
-                            par.locally_free(par.clone(), input.bound_map_chain.depth() as i32 + 1),
+                            <Par as HasLocallyFree<Par>>::locally_free(
+                                &par,
+                                par.clone(),
+                                input.bound_map_chain.depth() as i32 + 1,
+                            ),
                         );
                     }
 

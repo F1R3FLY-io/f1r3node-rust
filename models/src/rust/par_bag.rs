@@ -60,6 +60,7 @@ use crate::rust::rholang::sorter::unforgeable_sort_matcher::UnforgeableSortMatch
 /// silently collide with or reinterpret this key language.
 pub const PAR_BAG_KEY_DOMAIN: [u8; 4] = *b"RPB\x02";
 const PAR_BAG_KEY_HEADER_LEN: usize = PAR_BAG_KEY_DOMAIN.len() + 1;
+const PAR_COMPONENT_FAMILY_COUNT: usize = 9;
 
 /// Constructor-family tags, chosen to match the corresponding `Par` protobuf
 /// field numbers. Numeric trie order is consequently schema order.
@@ -79,6 +80,20 @@ pub enum ParComponentTag {
 
 impl ParComponentTag {
     pub const fn byte(self) -> u8 { self as u8 }
+
+    const fn index(self) -> usize {
+        match self {
+            Self::Send => 0,
+            Self::Receive => 1,
+            Self::New => 2,
+            Self::Expr => 3,
+            Self::Match => 4,
+            Self::GUnforgeable => 5,
+            Self::Connective => 6,
+            Self::Bundle => 7,
+            Self::If => 8,
+        }
+    }
 
     fn from_byte(byte: u8) -> Option<Self> {
         match byte {
@@ -383,6 +398,9 @@ pub enum ParBagCodecError {
     NonCanonicalComponent {
         tag: ParComponentTag,
     },
+    FamilyCardinalityOverflow {
+        tag: ParComponentTag,
+    },
 }
 
 impl fmt::Display for ParBagCodecError {
@@ -406,6 +424,10 @@ impl fmt::Display for ParBagCodecError {
             Self::NonCanonicalComponent { tag } => {
                 write!(formatter, "non-canonical {tag:?} ParBag key")
             }
+            Self::FamilyCardinalityOverflow { tag } => write!(
+                formatter,
+                "{tag:?} ParBag family cardinality exceeds u128::MAX"
+            ),
         }
     }
 }
@@ -571,7 +593,7 @@ fn validate_typed_key<T: ParBagComponent>(
     Ok(())
 }
 
-fn validate_key(path: &[u8]) -> Result<(), ParBagCodecError> {
+fn validate_key(path: &[u8]) -> Result<ParComponentTag, ParBagCodecError> {
     let (tag, payload) = split_key(path)?;
     match tag {
         ParComponentTag::Send => validate_typed_key::<Send>(path, payload)?,
@@ -584,7 +606,7 @@ fn validate_key(path: &[u8]) -> Result<(), ParBagCodecError> {
         ParComponentTag::Bundle => validate_typed_key::<Bundle>(path, payload)?,
         ParComponentTag::If => validate_typed_key::<If>(path, payload)?,
     }
-    Ok(())
+    Ok(tag)
 }
 
 /// A borrowed, byte-native typed occurrence visited directly from the trie.
@@ -594,6 +616,27 @@ pub struct EncodedParComponent<'a, T> {
     payload: &'a [u8],
     multiplicity: Multiplicity,
     marker: PhantomData<fn() -> T>,
+}
+
+/// One typed component yielded to a representation-independent worklist.
+///
+/// Generated protobuf `Par` can lend its already-decoded repeated-field
+/// elements. A PathMap-backed `Par` decodes one distinct trie endpoint and
+/// transfers ownership to the worklist. Keeping that distinction explicit
+/// prevents the transitional generated representation from deep-cloning a
+/// recursive component merely to feed an iterative consumer.
+pub enum ParComponentItem<'a, T> {
+    Borrowed(&'a T),
+    Owned(T),
+}
+
+impl<T> AsRef<T> for ParComponentItem<'_, T> {
+    fn as_ref(&self) -> &T {
+        match self {
+            Self::Borrowed(value) => value,
+            Self::Owned(value) => value,
+        }
+    }
 }
 
 impl<'a, T: ParBagComponent> EncodedParComponent<'a, T> {
@@ -641,19 +684,68 @@ impl<T: ParBagComponent> fmt::Debug for CanonicalParBagKey<T> {
 
 /// One homogeneous PathMap-backed multiset containing every top-level `Par`
 /// component category. Empty `Par` is exactly an empty `ParBag`.
+#[derive(Clone, Copy, Default)]
+struct ParFamilyMetrics {
+    cardinalities: [u128; PAR_COMPONENT_FAMILY_COUNT],
+    distinct_lengths: [usize; PAR_COMPONENT_FAMILY_COUNT],
+}
+
+impl ParFamilyMetrics {
+    fn add_decoded(
+        &mut self,
+        tag: ParComponentTag,
+        multiplicity: Multiplicity,
+    ) -> Result<(), ParBagCodecError> {
+        let index = tag.index();
+        self.cardinalities[index] = self.cardinalities[index]
+            .checked_add(u128::from(multiplicity.get()))
+            .ok_or(ParBagCodecError::FamilyCardinalityOverflow { tag })?;
+        self.distinct_lengths[index] = self.distinct_lengths[index]
+            .checked_add(1)
+            .expect("Bag distinct length already fits usize");
+        Ok(())
+    }
+
+    fn from_trusted_components(components: &Bag) -> Self {
+        let mut metrics = Self::default();
+        for (path, multiplicity) in components.iter() {
+            let (tag, _) = split_key(&path)
+                .expect("ParBag invariant: every internally produced key has a valid header");
+            metrics
+                .add_decoded(tag, multiplicity)
+                .expect("a resident Bag family cardinality fits u128");
+        }
+        metrics
+    }
+}
+
+struct ParBagAux {
+    metrics: ParFamilyMetrics,
+    compact_snapshot: OnceLock<Arc<[u8]>>,
+}
+
+impl ParBagAux {
+    fn new(metrics: ParFamilyMetrics) -> Self {
+        Self {
+            metrics,
+            compact_snapshot: OnceLock::new(),
+        }
+    }
+}
+
 pub struct ParBag {
     components: Bag,
-    /// Canonical ACTree03 image derived from `components` and shared by CoW
-    /// clones. Every successful mutation detaches this cache before the next
-    /// read, so an unchanged clone keeps its already-materialized image.
-    compact_snapshot: Arc<OnceLock<Arc<[u8]>>>,
+    /// Cardinalities, distinct counts, and the canonical ACTree03 image are
+    /// shared by CoW clones. A successful mutation detaches this compact
+    /// metadata/cache block exactly once.
+    aux: Arc<ParBagAux>,
 }
 
 impl Default for ParBag {
     fn default() -> Self {
         Self {
             components: Bag::new(),
-            compact_snapshot: Arc::new(OnceLock::new()),
+            aux: Arc::new(ParBagAux::new(ParFamilyMetrics::default())),
         }
     }
 }
@@ -662,7 +754,7 @@ impl Clone for ParBag {
     fn clone(&self) -> Self {
         Self {
             components: self.components.clone(),
-            compact_snapshot: Arc::clone(&self.compact_snapshot),
+            aux: Arc::clone(&self.aux),
         }
     }
 }
@@ -690,6 +782,7 @@ impl fmt::Debug for ParBag {
         formatter
             .debug_struct("ParBag")
             .field("components", &self.components)
+            .field("family_cardinalities", &self.aux.metrics.cardinalities)
             .finish()
     }
 }
@@ -698,10 +791,76 @@ impl ParBag {
     pub fn new() -> Self { Self::default() }
 
     #[inline]
-    fn invalidate_compact_snapshot(&mut self) {
-        if Arc::strong_count(&self.compact_snapshot) != 1 || self.compact_snapshot.get().is_some() {
-            self.compact_snapshot = Arc::new(OnceLock::new());
+    fn aux_for_mutation(&mut self) -> &mut ParBagAux {
+        if Arc::get_mut(&mut self.aux).is_none() {
+            self.aux = Arc::new(ParBagAux::new(self.aux.metrics));
         }
+        let aux = Arc::get_mut(&mut self.aux).expect("ParBag owns its detached auxiliary state");
+        let _ = aux.compact_snapshot.take();
+        aux
+    }
+
+    #[inline]
+    fn record_insert(&mut self, tag: ParComponentTag, amount: Multiplicity, distinct_added: bool) {
+        let metrics = &mut self.aux_for_mutation().metrics;
+        let index = tag.index();
+        metrics.cardinalities[index] = metrics.cardinalities[index]
+            .checked_add(u128::from(amount.get()))
+            .expect("a resident Bag family cardinality fits u128");
+        if distinct_added {
+            metrics.distinct_lengths[index] = metrics.distinct_lengths[index]
+                .checked_add(1)
+                .expect("Bag distinct length already fits usize");
+        }
+    }
+
+    #[inline]
+    fn record_remove(&mut self, tag: ParComponentTag, removed: u64, distinct_removed: bool) {
+        let metrics = &mut self.aux_for_mutation().metrics;
+        let index = tag.index();
+        metrics.cardinalities[index] -= u128::from(removed);
+        if distinct_removed {
+            metrics.distinct_lengths[index] -= 1;
+        }
+    }
+
+    fn insert_bytes(
+        &mut self,
+        tag: ParComponentTag,
+        key: &[u8],
+        amount: Multiplicity,
+    ) -> Result<Multiplicity, BagError> {
+        let distinct_added = !self.components.contains(key);
+        let next = self.components.insert_many(key, amount)?;
+        self.record_insert(tag, amount, distinct_added);
+        Ok(next)
+    }
+
+    fn remove_bytes(
+        &mut self,
+        tag: ParComponentTag,
+        key: &[u8],
+        amount: Multiplicity,
+    ) -> Option<Multiplicity> {
+        let current = self.components.count(key);
+        if current == 0 {
+            return None;
+        }
+        let removed = current.min(amount.get());
+        let next = self.components.remove_many(key, amount);
+        self.record_remove(tag, removed, removed == current);
+        next
+    }
+
+    fn try_remove_bytes(
+        &mut self,
+        tag: ParComponentTag,
+        key: &[u8],
+        amount: Multiplicity,
+    ) -> Result<Option<Multiplicity>, BagError> {
+        let next = self.components.try_remove_many(key, amount)?;
+        self.record_remove(tag, amount.get(), next.is_none());
+        Ok(next)
     }
 
     /// Import the legacy repeated fields once. Root metadata is deliberately
@@ -740,12 +899,14 @@ impl ParBag {
     }
 
     pub fn try_from_bag(components: Bag) -> Result<Self, ParBagCodecError> {
-        for (path, _) in components.iter() {
-            validate_key(&path)?;
+        let mut metrics = ParFamilyMetrics::default();
+        for (path, multiplicity) in components.iter() {
+            let tag = validate_key(&path)?;
+            metrics.add_decoded(tag, multiplicity)?;
         }
         Ok(Self {
             components,
-            compact_snapshot: Arc::new(OnceLock::new()),
+            aux: Arc::new(ParBagAux::new(metrics)),
         })
     }
 
@@ -779,11 +940,9 @@ impl ParBag {
     }
 
     pub fn insert<T: ParBagComponent>(&mut self, value: &T) -> Result<Multiplicity, BagError> {
-        let result = with_component_key(value, |key| self.components.insert(key));
-        if result.is_ok() {
-            self.invalidate_compact_snapshot();
-        }
-        result
+        with_component_key(value, |key| {
+            self.insert_bytes(T::TAG, key, Multiplicity::ONE)
+        })
     }
 
     #[inline]
@@ -791,11 +950,7 @@ impl ParBag {
         &mut self,
         key: &CanonicalParBagKey<T>,
     ) -> Result<Multiplicity, BagError> {
-        let result = self.components.insert(key.as_bytes());
-        if result.is_ok() {
-            self.invalidate_compact_snapshot();
-        }
-        result
+        self.insert_bytes(T::TAG, key.as_bytes(), Multiplicity::ONE)
     }
 
     pub fn insert_many<T: ParBagComponent>(
@@ -803,11 +958,7 @@ impl ParBag {
         value: &T,
         amount: Multiplicity,
     ) -> Result<Multiplicity, BagError> {
-        let result = with_component_key(value, |key| self.components.insert_many(key, amount));
-        if result.is_ok() {
-            self.invalidate_compact_snapshot();
-        }
-        result
+        with_component_key(value, |key| self.insert_bytes(T::TAG, key, amount))
     }
 
     #[inline]
@@ -816,22 +967,13 @@ impl ParBag {
         key: &CanonicalParBagKey<T>,
         amount: Multiplicity,
     ) -> Result<Multiplicity, BagError> {
-        let result = self.components.insert_many(key.as_bytes(), amount);
-        if result.is_ok() {
-            self.invalidate_compact_snapshot();
-        }
-        result
+        self.insert_bytes(T::TAG, key.as_bytes(), amount)
     }
 
     pub fn remove<T: ParBagComponent>(&mut self, value: &T) -> Option<Multiplicity> {
-        let (result, changed) = with_component_key(value, |key| {
-            let changed = self.components.contains(key);
-            (self.components.remove(key), changed)
-        });
-        if changed {
-            self.invalidate_compact_snapshot();
-        }
-        result
+        with_component_key(value, |key| {
+            self.remove_bytes(T::TAG, key, Multiplicity::ONE)
+        })
     }
 
     #[inline]
@@ -839,12 +981,7 @@ impl ParBag {
         &mut self,
         key: &CanonicalParBagKey<T>,
     ) -> Option<Multiplicity> {
-        let changed = self.components.contains(key.as_bytes());
-        let result = self.components.remove(key.as_bytes());
-        if changed {
-            self.invalidate_compact_snapshot();
-        }
-        result
+        self.remove_bytes(T::TAG, key.as_bytes(), Multiplicity::ONE)
     }
 
     pub fn remove_many<T: ParBagComponent>(
@@ -852,14 +989,7 @@ impl ParBag {
         value: &T,
         amount: Multiplicity,
     ) -> Option<Multiplicity> {
-        let (result, changed) = with_component_key(value, |key| {
-            let changed = self.components.contains(key);
-            (self.components.remove_many(key, amount), changed)
-        });
-        if changed {
-            self.invalidate_compact_snapshot();
-        }
-        result
+        with_component_key(value, |key| self.remove_bytes(T::TAG, key, amount))
     }
 
     #[inline]
@@ -868,12 +998,7 @@ impl ParBag {
         key: &CanonicalParBagKey<T>,
         amount: Multiplicity,
     ) -> Option<Multiplicity> {
-        let changed = self.components.contains(key.as_bytes());
-        let result = self.components.remove_many(key.as_bytes(), amount);
-        if changed {
-            self.invalidate_compact_snapshot();
-        }
-        result
+        self.remove_bytes(T::TAG, key.as_bytes(), amount)
     }
 
     pub fn try_remove_many<T: ParBagComponent>(
@@ -881,11 +1006,7 @@ impl ParBag {
         value: &T,
         amount: Multiplicity,
     ) -> Result<Option<Multiplicity>, BagError> {
-        let result = with_component_key(value, |key| self.components.try_remove_many(key, amount));
-        if result.is_ok() {
-            self.invalidate_compact_snapshot();
-        }
-        result
+        with_component_key(value, |key| self.try_remove_bytes(T::TAG, key, amount))
     }
 
     #[inline]
@@ -894,38 +1015,31 @@ impl ParBag {
         key: &CanonicalParBagKey<T>,
         amount: Multiplicity,
     ) -> Result<Option<Multiplicity>, BagError> {
-        let result = self.components.try_remove_many(key.as_bytes(), amount);
-        if result.is_ok() {
-            self.invalidate_compact_snapshot();
-        }
-        result
+        self.try_remove_bytes(T::TAG, key.as_bytes(), amount)
     }
 
     /// Remove one entire constructor family with one prefix operation.
     pub fn remove_family<T: ParBagComponent>(&mut self) -> (usize, u128) {
+        let index = T::TAG.index();
+        let expected_distinct = self.aux.metrics.distinct_lengths[index];
+        let expected_cardinality = self.aux.metrics.cardinalities[index];
         let removed = self.components.remove_prefix(&component_prefix(T::TAG));
         if removed.0 != 0 {
-            self.invalidate_compact_snapshot();
+            debug_assert_eq!(removed.0, expected_distinct);
+            debug_assert_eq!(removed.1, expected_cardinality);
+            let metrics = &mut self.aux_for_mutation().metrics;
+            metrics.distinct_lengths[index] = 0;
+            metrics.cardinalities[index] = 0;
         }
         removed
     }
 
     pub fn family_distinct_len<T: ParBagComponent>(&self) -> usize {
-        let mut count = 0usize;
-        self.components
-            .visit_prefix(&component_prefix(T::TAG), |_path, _multiplicity| {
-                count += 1;
-            });
-        count
+        self.aux.metrics.distinct_lengths[T::TAG.index()]
     }
 
     pub fn family_cardinality<T: ParBagComponent>(&self) -> u128 {
-        let mut cardinality = 0u128;
-        self.components
-            .visit_prefix(&component_prefix(T::TAG), |_path, multiplicity| {
-                cardinality += u128::from(multiplicity.get());
-            });
-        cardinality
+        self.aux.metrics.cardinalities[T::TAG.index()]
     }
 
     /// Visit one constructor family without decoding its payloads.
@@ -1029,9 +1143,10 @@ impl ParBag {
     }
 
     fn from_components(components: Bag) -> Self {
+        let metrics = ParFamilyMetrics::from_trusted_components(&components);
         Self {
             components,
-            compact_snapshot: Arc::new(OnceLock::new()),
+            aux: Arc::new(ParBagAux::new(metrics)),
         }
     }
 
@@ -1039,7 +1154,8 @@ impl ParBag {
     /// access materializes PathMap's compact arena once; subsequent encoders
     /// and CoW clones share the immutable byte array.
     pub fn compact_snapshot(&self) -> &[u8] {
-        self.compact_snapshot
+        self.aux
+            .compact_snapshot
             .get_or_init(|| Arc::from(self.components.compact_bytes()))
             .as_ref()
     }
@@ -1049,8 +1165,12 @@ impl ParBag {
 
     pub fn from_compact_bytes(bytes: &[u8]) -> Result<Self, ParBagCodecError> {
         let components = Bag::from_compact_bytes(bytes)?;
-        let bag = Self::try_from_bag(components)?;
-        let _ = bag.compact_snapshot.set(Arc::from(bytes));
+        let mut bag = Self::try_from_bag(components)?;
+        Arc::get_mut(&mut bag.aux)
+            .expect("newly decoded ParBag uniquely owns its auxiliary state")
+            .compact_snapshot
+            .set(Arc::from(bytes))
+            .expect("newly decoded ParBag has no compact snapshot");
         Ok(bag)
     }
 

@@ -11,76 +11,91 @@ pub fn sub_pars(
     min_prune: &ParCount,
     max_prune: &ParCount,
 ) -> impl Iterator<Item = (Par, Par)> {
-    let send_max = std::cmp::min(
-        max.sends as isize,
-        par.sends.len() as isize - min_prune.sends as isize,
-    );
-    let receive_max = std::cmp::min(
-        max.receives as isize,
-        par.receives.len() as isize - min_prune.receives as isize,
-    );
-    let new_max = std::cmp::min(
-        max.news as isize,
-        par.news.len() as isize - min_prune.news as isize,
-    );
-    let expr_max = std::cmp::min(
-        max.exprs as isize,
-        par.exprs.len() as isize - min_prune.exprs as isize,
-    );
-    let match_max = std::cmp::min(
-        max.matches as isize,
-        par.matches.len() as isize - min_prune.matches as isize,
-    );
-    let unf_max = std::cmp::min(
-        max.unforgeables as isize,
-        par.unforgeables.len() as isize - min_prune.unforgeables as isize,
-    );
-    let bundle_max = std::cmp::min(
-        max.bundles as isize,
-        par.bundles.len() as isize - min_prune.bundles as isize,
-    );
+    fn feasible_range(
+        available: usize,
+        minimum: u64,
+        maximum: u64,
+        minimum_prune: u64,
+        maximum_prune: u64,
+    ) -> (usize, usize) {
+        let available_u64 = u64::try_from(available)
+            .expect("a resident repeated-field length fits the u64 multiplicity domain");
+        let Some(after_required_prune) = available_u64.checked_sub(minimum_prune) else {
+            return (1, 0);
+        };
+        let upper = maximum.min(after_required_prune);
+        let lower = minimum.max(available_u64.saturating_sub(maximum_prune));
+        if lower > upper {
+            return (1, 0);
+        }
+        (
+            usize::try_from(lower).expect("lower subset bound is at most the family length"),
+            usize::try_from(upper).expect("upper subset bound is at most the family length"),
+        )
+    }
 
-    let send_min = std::cmp::max(
-        min.sends as isize,
-        par.sends.len() as isize - max_prune.sends as isize,
+    let (send_min, send_max) = feasible_range(
+        par.sends.len(),
+        min.sends,
+        max.sends,
+        min_prune.sends,
+        max_prune.sends,
     );
-    let receive_min = std::cmp::max(
-        min.receives as isize,
-        par.receives.len() as isize - max_prune.receives as isize,
+    let (receive_min, receive_max) = feasible_range(
+        par.receives.len(),
+        min.receives,
+        max.receives,
+        min_prune.receives,
+        max_prune.receives,
     );
-    let new_min = std::cmp::max(
-        min.news as isize,
-        par.news.len() as isize - max_prune.news as isize,
+    let (new_min, new_max) = feasible_range(
+        par.news.len(),
+        min.news,
+        max.news,
+        min_prune.news,
+        max_prune.news,
     );
-    let expr_min = std::cmp::max(
-        min.exprs as isize,
-        par.exprs.len() as isize - max_prune.exprs as isize,
+    let (expr_min, expr_max) = feasible_range(
+        par.exprs.len(),
+        min.exprs,
+        max.exprs,
+        min_prune.exprs,
+        max_prune.exprs,
     );
-    let match_min = std::cmp::max(
-        min.matches as isize,
-        par.matches.len() as isize - max_prune.matches as isize,
+    let (match_min, match_max) = feasible_range(
+        par.matches.len(),
+        min.matches,
+        max.matches,
+        min_prune.matches,
+        max_prune.matches,
     );
-    let unf_min = std::cmp::max(
-        min.unforgeables as isize,
-        par.unforgeables.len() as isize - max_prune.unforgeables as isize,
+    let (unf_min, unf_max) = feasible_range(
+        par.unforgeables.len(),
+        min.unforgeables,
+        max.unforgeables,
+        min_prune.unforgeables,
+        max_prune.unforgeables,
     );
-    let bundle_min = std::cmp::max(
-        min.bundles as isize,
-        par.bundles.len() as isize - max_prune.bundles as isize,
+    let (bundle_min, bundle_max) = feasible_range(
+        par.bundles.len(),
+        min.bundles,
+        max.bundles,
+        min_prune.bundles,
+        max_prune.bundles,
     );
 
     // This ideally should return type 'Iterator' instead of type 'Vec'
     fn min_max_subsets<A: Clone + std::fmt::Debug>(
         _as: &Vec<A>,
-        min_size: isize,
-        max_size: isize,
+        min_size: usize,
+        max_size: usize,
     ) -> Vec<(Vec<A>, Vec<A>)> {
-        type Counted<A> = (Vec<A>, Vec<A>, isize);
+        type Counted<A> = (Vec<A>, Vec<A>, usize);
 
         /// Bottom-up form of `counted_max_subsets`. Processing suffixes from
         /// right to left emits the same result order as the recursive
         /// definition without retaining one native frame per element.
-        fn counted_max_subsets<A: Clone>(_as: &[A], max_size: isize) -> Vec<Counted<A>> {
+        fn counted_max_subsets<A: Clone>(_as: &[A], max_size: usize) -> Vec<Counted<A>> {
             let mut child = vec![(Vec::new(), Vec::new(), 0)];
             for start in (0.._as.len()).rev() {
                 let head = &_as[start];
@@ -107,14 +122,14 @@ pub fn sub_pars(
         enum SubsetWork {
             Call {
                 start: usize,
-                min_size: isize,
-                max_size: isize,
+                min_size: usize,
+                max_size: usize,
             },
             Combine {
                 head: usize,
-                decr: isize,
-                min_size: isize,
-                max_size: isize,
+                decr: usize,
+                min_size: usize,
+                max_size: usize,
             },
         }
 
@@ -133,12 +148,12 @@ pub fn sub_pars(
                     start: _,
                     min_size,
                     max_size,
-                } if max_size < 0 || min_size > max_size => values.push(Vec::new()),
+                } if min_size > max_size => values.push(Vec::new()),
                 SubsetWork::Call {
                     start,
-                    min_size,
+                    min_size: 0,
                     max_size,
-                } if min_size <= 0 => {
+                } => {
                     if max_size == 0 {
                         values.push(vec![(Vec::new(), _as[start..].to_vec(), 0)]);
                     } else {

@@ -21,6 +21,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::par_bag::{
     EncodedParComponent, ParBag, ParBagComponent, ParBagProtobufError, ParBagVisitError,
+    ParComponentItem,
 };
 use crate::rhoapi::{Bundle, Connective, Expr, GUnforgeable, If, Match, New, Receive, Send};
 
@@ -123,6 +124,34 @@ impl Par {
 
     pub fn try_visit_decoded<T, E>(
         &self,
+        visitor: impl FnMut(T, Multiplicity) -> Result<(), E>,
+    ) -> Result<(), ParBagVisitError<E>>
+    where
+        T: ParBagComponent,
+    {
+        self.components.try_visit_decoded(visitor)
+    }
+
+    /// Feed an iterative consumer one owned value per distinct trie endpoint.
+    /// Multiplicity remains separate, so the consumer can apply it
+    /// algebraically instead of repeating decode or traversal work.
+    pub fn try_visit_components<'a, T, E>(
+        &'a self,
+        mut visitor: impl FnMut(ParComponentItem<'a, T>, Multiplicity) -> Result<(), E>,
+    ) -> Result<(), ParBagVisitError<E>>
+    where
+        T: ParBagComponent,
+    {
+        self.components.try_visit_decoded(|value, multiplicity| {
+            visitor(ParComponentItem::Owned(value), multiplicity)
+        })
+    }
+
+    /// Consuming worklist feed. PathMap endpoints remain canonical bytes, so
+    /// each distinct value is decoded exactly once and transferred directly
+    /// to the caller with its multiplicity.
+    pub fn try_into_components<T, E>(
+        self,
         visitor: impl FnMut(T, Multiplicity) -> Result<(), E>,
     ) -> Result<(), ParBagVisitError<E>>
     where
