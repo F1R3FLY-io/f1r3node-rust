@@ -136,15 +136,14 @@ use typed_arena::Arena;
 use super::score_tree::ScoredTerm;
 use super::sort_combine::{
     combine_bind, combine_bundle, combine_case, combine_connective, combine_expr, combine_if,
-    combine_match, combine_new, combine_par, combine_receive, combine_send, connective_child_pars,
-    empty_par, expr_child_pars, sort_unforgeable, ParParts,
+    combine_match, combine_new, combine_receive, combine_send, connective_child_pars, empty_par,
+    expr_child_pars,
 };
 use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::{
-    Bundle, Connective, EPathMap, Expr, GUnforgeable, If, Match, MatchCase, New, Par, Receive,
-    ReceiveBind, Send,
+    Bundle, Connective, EPathMap, Expr, If, Match, MatchCase, New, Par, Receive, ReceiveBind, Send,
 };
-use crate::rust::canonical_path::decode_trie_path;
+use crate::rust::canonical_path::decode_trie_path_after_validation;
 use crate::rust::epathmap_trie_codec::EPathMapMode;
 use crate::rust::rholang::drive::{drive, Outcome, Step, Traversal};
 
@@ -165,7 +164,6 @@ pub(crate) enum SortVal {
     If(ScoredTerm<If>),
     Bundle(ScoredTerm<Bundle>),
     Connective(ScoredTerm<Connective>),
-    Unforgeable(ScoredTerm<GUnforgeable>),
 }
 
 /// A value plus its **source index** — its position in its parent's slot list.
@@ -197,11 +195,6 @@ pub(crate) enum NodeKind<'t> {
     If(&'t If),
     Bundle(&'t Bundle),
     Connective(&'t Connective),
-    /// A leaf: no sub-`Par`, scored in place. (`Var` is a leaf too, but it is
-    /// never a *child slot* of anything this machine descends into — the only
-    /// `Var` positions are `EVar::v` and the two remainders, all scored in
-    /// place inside `sort_combine` — so it has no node variant.)
-    Unforgeable(&'t GUnforgeable),
 }
 
 /// A node plus the **source index** the value it produces must carry.
@@ -226,18 +219,6 @@ pub(crate) struct IxKont<'t> {
 /// Post-order continuation: the borrowed shell plus the child counts needed to
 /// slice the value stack. Never a child value — those live on `vals`.
 pub(crate) enum SortKont<'t> {
-    ParK {
-        par: &'t Par,
-        n_sends: usize,
-        n_receives: usize,
-        n_exprs: usize,
-        n_news: usize,
-        n_matches: usize,
-        n_bundles: usize,
-        n_connectives: usize,
-        n_unforgeables: usize,
-        n_conditionals: usize,
-    },
     SendK {
         send: &'t Send,
         n_data: usize,
@@ -292,28 +273,6 @@ impl SortKont<'_> {
     /// without an arity is a compile error.
     fn arity(&self) -> usize {
         match self {
-            SortKont::ParK {
-                n_sends,
-                n_receives,
-                n_exprs,
-                n_news,
-                n_matches,
-                n_bundles,
-                n_connectives,
-                n_unforgeables,
-                n_conditionals,
-                ..
-            } => {
-                n_sends
-                    + n_receives
-                    + n_exprs
-                    + n_news
-                    + n_matches
-                    + n_bundles
-                    + n_connectives
-                    + n_unforgeables
-                    + n_conditionals
-            }
             // `chan` + `data`
             SortKont::SendK { n_data, .. } => 1 + n_data,
             // `patterns` + `source`
@@ -365,17 +324,8 @@ macro_rules! sort_pop_ix {
 }
 
 sort_pop_ix!(pop_par_ix, Par, Par);
-sort_pop_ix!(pop_expr_ix, Expr, Expr);
-sort_pop_ix!(pop_send_ix, Send, Send);
-sort_pop_ix!(pop_receive_ix, Receive, Receive);
 sort_pop_ix!(pop_bind_ix, Bind, ReceiveBind);
-sort_pop_ix!(pop_new_ix, New, New);
-sort_pop_ix!(pop_match_ix, Match, Match);
 sort_pop_ix!(pop_case_ix, Case, MatchCase);
-sort_pop_ix!(pop_if_ix, If, If);
-sort_pop_ix!(pop_bundle_ix, Bundle, Bundle);
-sort_pop_ix!(pop_connective_ix, Connective, Connective);
-sort_pop_ix!(pop_unforgeable_ix, Unforgeable, GUnforgeable);
 
 /// Pop one `Par` value, discarding its index. The whole child run has already
 /// been checked by [`assert_children_are_in_source_order`].
@@ -420,17 +370,8 @@ macro_rules! sort_pop_n {
 }
 
 sort_pop_n!(pop_n_par, pop_par_ix, Par);
-sort_pop_n!(pop_n_expr, pop_expr_ix, Expr);
-sort_pop_n!(pop_n_send, pop_send_ix, Send);
-sort_pop_n!(pop_n_receive, pop_receive_ix, Receive);
 sort_pop_n!(pop_n_bind, pop_bind_ix, ReceiveBind);
-sort_pop_n!(pop_n_new, pop_new_ix, New);
-sort_pop_n!(pop_n_match, pop_match_ix, Match);
 sort_pop_n!(pop_n_case, pop_case_ix, MatchCase);
-sort_pop_n!(pop_n_if, pop_if_ix, If);
-sort_pop_n!(pop_n_bundle, pop_bundle_ix, Bundle);
-sort_pop_n!(pop_n_connective, pop_connective_ix, Connective);
-sort_pop_n!(pop_n_unforgeable, pop_unforgeable_ix, GUnforgeable);
 
 /// The children a `Combine` is about to consume must sit on the value stack as
 /// a contiguous ascending run `0, 1, …, arity-1`.
@@ -523,36 +464,6 @@ fn push_one<'t>(work: &mut Vec<Step<'t, SortTraversal<'_>>>, next: &mut u32, kin
 // ===========================================================================
 // descent — pushes `Combine` first, then children in REVERSE
 // ===========================================================================
-
-fn descend_par<'t>(par: &'t Par, idx: u32, work: &mut Vec<Step<'t, SortTraversal<'_>>>) {
-    let kont = SortKont::ParK {
-        par,
-        n_sends: par.sends.len(),
-        n_receives: par.receives.len(),
-        n_exprs: par.exprs.len(),
-        n_news: par.news.len(),
-        n_matches: par.matches.len(),
-        n_bundles: par.bundles.len(),
-        n_connectives: par.connectives.len(),
-        n_unforgeables: par.unforgeables.len(),
-        n_conditionals: par.conditionals.len(),
-    };
-    let mut next = kont.arity() as u32;
-    work.push(Step::Combine(IxKont { idx, kont }));
-    // Visit order is the pre-conversion matcher's: sends, receives, exprs,
-    // news, matches, bundles, connectives, unforgeables, conditionals. Pushed
-    // in reverse so LIFO pops them in that order.
-    push_reversed(work, &mut next, &par.conditionals, NodeKind::If);
-    push_reversed(work, &mut next, &par.unforgeables, NodeKind::Unforgeable);
-    push_reversed(work, &mut next, &par.connectives, NodeKind::Connective);
-    push_reversed(work, &mut next, &par.bundles, NodeKind::Bundle);
-    push_reversed(work, &mut next, &par.matches, NodeKind::Match);
-    push_reversed(work, &mut next, &par.news, NodeKind::New);
-    push_reversed(work, &mut next, &par.exprs, NodeKind::Expr);
-    push_reversed(work, &mut next, &par.receives, NodeKind::Receive);
-    push_reversed(work, &mut next, &par.sends, NodeKind::Send);
-    debug_assert_eq!(next, 0, "descend_par: slot list and arity disagree");
-}
 
 fn descend_send<'t>(send: &'t Send, idx: u32, work: &mut Vec<Step<'t, SortTraversal<'_>>>) {
     let chan = send
@@ -747,7 +658,7 @@ fn descend_expr<'t>(
                 pathmap
                     .entry_trie()
                     .for_each_raw_set_entry(|key| {
-                        let entry = decode_trie_path(key)
+                        let entry = decode_trie_path_after_validation(key)
                             .expect("set-mode EPathMap keys are canonical Par paths");
                         kids.push(decoded_entries.alloc(entry));
                     })
@@ -757,7 +668,7 @@ fn descend_expr<'t>(
                 pathmap
                     .entry_trie()
                     .for_each_raw_map_entry(|key, value| {
-                        let key = decode_trie_path(key)
+                        let key = decode_trie_path_after_validation(key)
                             .expect("map-mode EPathMap keys are canonical Par paths");
                         kids.push(decoded_entries.alloc(key));
                         kids.push(value);
@@ -848,7 +759,17 @@ impl<'arena> Traversal for SortTraversal<'arena> {
     ) -> Result<(), Never> {
         let SortNode { idx, kind } = node;
         match kind {
-            NodeKind::Par(p) => descend_par(p, idx, work),
+            // Every direct component was canonicalized before insertion into
+            // ParBag, and its score prefix is retained in the trie key.  Par is
+            // therefore a byte-native terminal for the sorter PDA: reconstruct
+            // the score from prefixes and share the canonical term by CoW.
+            NodeKind::Par(p) => vals.push(ValItem {
+                idx,
+                val: SortVal::Par(ScoredTerm {
+                    term: p.clone(),
+                    score: p.canonical_score(),
+                }),
+            }),
             NodeKind::Expr(e) => descend_expr(e, idx, self.decoded_entries, work),
             NodeKind::Send(s) => descend_send(s, idx, work),
             NodeKind::Receive(r) => descend_receive(r, idx, work),
@@ -859,11 +780,6 @@ impl<'arena> Traversal for SortTraversal<'arena> {
             NodeKind::If(i) => descend_if(i, idx, work),
             NodeKind::Bundle(b) => descend_bundle(b, idx, work),
             NodeKind::Connective(c) => descend_connective(c, idx, work),
-            // The one leaf: no sub-`Par`, scored in place.
-            NodeKind::Unforgeable(u) => vals.push(ValItem {
-                idx,
-                val: SortVal::Unforgeable(sort_unforgeable(u)),
-            }),
         }
         Ok(())
     }
@@ -938,32 +854,6 @@ pub(crate) fn sort_drive(root: NodeKind<'_>) -> SortVal {
 #[inline]
 fn run_combine(k: SortKont<'_>, vals: &mut Vec<ValItem>) -> SortVal {
     match k {
-        SortKont::ParK {
-            par,
-            n_sends,
-            n_receives,
-            n_exprs,
-            n_news,
-            n_matches,
-            n_bundles,
-            n_connectives,
-            n_unforgeables,
-            n_conditionals,
-        } => combine_par_k(
-            par,
-            [
-                n_sends,
-                n_receives,
-                n_exprs,
-                n_news,
-                n_matches,
-                n_bundles,
-                n_connectives,
-                n_unforgeables,
-                n_conditionals,
-            ],
-            vals,
-        ),
         SortKont::SendK { send, n_data } => combine_send_k(send, n_data, vals),
         SortKont::BindK { bind, n_patterns } => combine_bind_k(bind, n_patterns, vals),
         SortKont::ReceiveK { recv, n_binds } => combine_receive_k(recv, n_binds, vals),
@@ -975,42 +865,6 @@ fn run_combine(k: SortKont<'_>, vals: &mut Vec<ValItem>) -> SortVal {
         SortKont::ConnK { conn, n } => combine_conn_k(conn, n, vals),
         SortKont::ExprK { expr, n } => combine_expr_k(expr, n, vals),
     }
-}
-
-/// The nine category counts, in `descend_par`'s visit order.
-const N_SENDS: usize = 0;
-const N_RECEIVES: usize = 1;
-const N_EXPRS: usize = 2;
-const N_NEWS: usize = 3;
-const N_MATCHES: usize = 4;
-const N_BUNDLES: usize = 5;
-const N_CONNECTIVES: usize = 6;
-const N_UNFORGEABLES: usize = 7;
-const N_CONDITIONALS: usize = 8;
-
-#[inline(never)]
-fn combine_par_k(par: &Par, counts: [usize; 9], vals: &mut Vec<ValItem>) -> SortVal {
-    // Popped in the REVERSE of `descend_par`'s visit order.
-    let conditionals = pop_n_if(vals, counts[N_CONDITIONALS]);
-    let unforgeables = pop_n_unforgeable(vals, counts[N_UNFORGEABLES]);
-    let connectives = pop_n_connective(vals, counts[N_CONNECTIVES]);
-    let bundles = pop_n_bundle(vals, counts[N_BUNDLES]);
-    let matches = pop_n_match(vals, counts[N_MATCHES]);
-    let news = pop_n_new(vals, counts[N_NEWS]);
-    let exprs = pop_n_expr(vals, counts[N_EXPRS]);
-    let receives = pop_n_receive(vals, counts[N_RECEIVES]);
-    let sends = pop_n_send(vals, counts[N_SENDS]);
-    SortVal::Par(combine_par(par, ParParts {
-        sends,
-        receives,
-        exprs,
-        news,
-        matches,
-        bundles,
-        connectives,
-        unforgeables,
-        conditionals,
-    }))
 }
 
 #[inline(never)]
@@ -1104,7 +958,6 @@ macro_rules! sort_entry {
     };
 }
 
-sort_entry!(sort_par, Par, Par, Par);
 sort_entry!(sort_expr, Expr, Expr, Expr);
 sort_entry!(sort_send, Send, Send, Send);
 sort_entry!(sort_receive, Receive, Receive, Receive);

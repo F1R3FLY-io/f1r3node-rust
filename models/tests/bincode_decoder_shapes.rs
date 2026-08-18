@@ -99,7 +99,15 @@ fn shape_1_injections_are_a_map_of_key_value_pairs() {
     );
 
     let decoded = both(&par);
-    assert_eq!(decoded.news[0].injections, injections);
+    assert_eq!(
+        decoded
+            .first::<New>()
+            .expect("New endpoint decodes")
+            .expect("one New")
+            .0
+            .injections,
+        injections
+    );
 }
 
 /// serde's map visitor `insert`s each pair in stream order, so a **duplicate
@@ -128,27 +136,17 @@ fn shape_1_duplicate_and_unsorted_map_keys_behave_like_btreemap_insert() {
     }
     bytes.extend_from_slice(&0u64.to_le_bytes()); // New.locally_free = []
 
-    // Wrap it in a `Par` with exactly one `New` and nothing else.
-    let mut par_bytes: Vec<u8> = Vec::new();
-    par_bytes.extend_from_slice(&0u64.to_le_bytes()); // sends
-    par_bytes.extend_from_slice(&0u64.to_le_bytes()); // receives
-    par_bytes.extend_from_slice(&1u64.to_le_bytes()); // news: 1
-    par_bytes.extend_from_slice(&bytes);
-    par_bytes.extend_from_slice(&0u64.to_le_bytes()); // exprs
-    par_bytes.extend_from_slice(&0u64.to_le_bytes()); // matches
-    par_bytes.extend_from_slice(&0u64.to_le_bytes()); // unforgeables
-    par_bytes.extend_from_slice(&0u64.to_le_bytes()); // bundles
-    par_bytes.extend_from_slice(&0u64.to_le_bytes()); // connectives
-    par_bytes.extend_from_slice(&0u64.to_le_bytes()); // conditionals
-    par_bytes.extend_from_slice(&0u64.to_le_bytes()); // locally_free
-    par_bytes.push(0); // connective_used
-
-    let oracle: Par = bincode::deserialize(&par_bytes)
+    // `Par` itself now serializes one canonical ParBag trie snapshot, so a
+    // non-canonical repeated-field stream is intentionally outside its input
+    // language. Exercise the generated `New` root directly: this is the layer
+    // where serde's BTreeMap acceptance contract still applies before an
+    // admitted value receives its canonical PathMap key.
+    let oracle: New = bincode::deserialize(&bytes)
         .expect("the derived decoder must ACCEPT an unsorted map with duplicates");
-    let machine = Par::cold_decode(&par_bytes).expect("machine must accept it too");
+    let machine = New::cold_decode(&bytes).expect("machine must accept it too");
     assert!(machine == oracle);
 
-    let injections = &machine.news[0].injections;
+    let injections = &machine.injections;
     assert_eq!(injections.len(), 2, "the duplicate key must collapse");
     assert_eq!(injections["a"], corpus::gint(2));
     assert_eq!(
@@ -170,9 +168,10 @@ fn shape_1_duplicate_and_unsorted_map_keys_behave_like_btreemap_insert() {
 ///
 /// Two consequences, both load-bearing:
 ///
-/// 1. A round-trip **loses** `locally_free` — for the derived decoder too. So
-///    "the decoder dropped my bitset" is correct behaviour, and a decoder that
-///    "fixed" it would change what every node stores.
+/// 1. A `Par` round-trip loses its own root `locally_free` metadata. Its
+///    component trie is copied as an opaque canonical snapshot, so nested
+///    protobuf component bodies retain their metadata rather than being
+///    re-serialized through each component's standalone bincode view.
 /// 2. The decoder must read the stream's **real** length. The encoder only ever
 ///    writes zero, but the bytes in LMDB did not necessarily come from this
 ///    encoder, and a decoder that skipped eight bytes unconditionally would
@@ -181,7 +180,7 @@ fn shape_1_duplicate_and_unsorted_map_keys_behave_like_btreemap_insert() {
 fn shape_2_locally_free_is_written_empty_and_read_as_a_real_sequence() {
     let par = corpus::all_par_fields();
     assert!(
-        !par.locally_free.is_empty(),
+        !par.locally_free().is_empty(),
         "fixture must carry a non-empty locally_free"
     );
 
@@ -192,21 +191,21 @@ fn shape_2_locally_free_is_written_empty_and_read_as_a_real_sequence() {
 
     // Consequence 1: blanked on serialize, so both decoders see empty.
     assert!(
-        machine.locally_free.is_empty(),
+        machine.locally_free().is_empty(),
         "shape 2: `serialize_as_empty_bytes` blanks the field on the way OUT"
     );
-    assert!(machine.sends[0].locally_free.is_empty());
-    assert!(machine.receives[0].locally_free.is_empty());
-    assert!(machine.news[0].locally_free.is_empty());
-    assert!(machine.matches[0].locally_free.is_empty());
-    assert!(machine.conditionals[0].locally_free.is_empty());
+    assert_eq!(
+        machine.compact_snapshot(),
+        par.compact_snapshot(),
+        "shape 2: bincode must copy the authoritative component trie without re-encoding it"
+    );
 
     // Consequence 2: hand-build a stream whose outermost `locally_free` is
     // NON-empty and check that both decoders read it back verbatim.
+    let snapshot = Par::default().compact_snapshot().to_vec();
     let mut hand: Vec<u8> = Vec::new();
-    for _ in 0..9 {
-        hand.extend_from_slice(&0u64.to_le_bytes()); // the nine empty child seqs
-    }
+    hand.extend_from_slice(&(snapshot.len() as u64).to_le_bytes());
+    hand.extend_from_slice(&snapshot);
     hand.extend_from_slice(&3u64.to_le_bytes()); // locally_free: THREE bytes
     hand.extend_from_slice(&[0xAA, 0xBB, 0xCC]);
     hand.push(1); // connective_used
@@ -215,12 +214,12 @@ fn shape_2_locally_free_is_written_empty_and_read_as_a_real_sequence() {
     let machine = Par::cold_decode(&hand).expect("machine reads real bytes");
     assert!(machine == oracle);
     assert_eq!(
-        machine.locally_free,
-        vec![0xAA, 0xBB, 0xCC],
+        machine.locally_free(),
+        [0xAA, 0xBB, 0xCC],
         "shape 2: the DECODER must read the stream's real length — the blanking is \
          serialize-only"
     );
-    assert!(machine.connective_used);
+    assert!(machine.connective_used());
 }
 
 /// `ETuple` has **no** `remainder` field, unlike `EList`, `ESet` and `EMap`.
@@ -330,7 +329,13 @@ fn shape_3_epathmap_is_four_serde_fields_whose_first_is_the_epm1_snapshot() {
     let decoded = both(&par_of(ExprInstance::EPathmapBody(map)));
     assert!(
         matches!(
-            decoded.exprs[0].expr_instance.as_ref(),
+            decoded
+                .first::<Expr>()
+                .unwrap()
+                .unwrap()
+                .0
+                .expr_instance
+                .as_ref(),
             Some(ExprInstance::EPathmapBody(_))
         ),
         "expected EPathmapBody"
@@ -423,7 +428,11 @@ fn bincode_decoder_variant_indices_agree() {
         let index = expr_instance_variant_index(&instance);
         let par = par_of(instance);
         let decoded = both(&par);
-        let round_tripped = decoded.exprs[0]
+        let round_tripped = decoded
+            .first::<Expr>()
+            .unwrap()
+            .unwrap()
+            .0
             .expr_instance
             .as_ref()
             .map(expr_instance_variant_index)
@@ -452,7 +461,11 @@ fn bincode_decoder_variant_indices_agree() {
             ..Default::default()
         };
         let decoded = both(&par);
-        let round_tripped = decoded.connectives[0]
+        let round_tripped = decoded
+            .first::<Connective>()
+            .unwrap()
+            .unwrap()
+            .0
             .connective_instance
             .as_ref()
             .map(connective_instance_variant_index)
@@ -646,31 +659,20 @@ fn bincode_decoder_type_partition() {
 // The property the partition exists to support
 // ===========================================================================
 
-/// The machine decodes a term far deeper than the derived decoder survives, on
-/// a stack far smaller than the derived decoder needs.
-///
-/// Measured on 2026-07-26, the derived `Par` decode costs **28,362 B/level** in
-/// debug and **12,894 B/level** in release. At depth 4,096 that is ~110 MiB
-/// (debug) / ~50 MiB (release); this test gives the thread **256 KiB**.
+/// The machine imports a component whose canonical protobuf body is nested
+/// 4,096 levels deep on a 256 KiB stack. The resident `ParBag` keeps that body
+/// in its authoritative trie key; the non-vacuity proof therefore follows the
+/// typed encoded-Expr cursor in one linear byte scan instead of decoding every
+/// successively shorter suffix.
 ///
 /// The cross-process, bisected version of this claim — with the zero-slope
 /// assertion over a 4 → 4,096 ladder in both profiles — lives in
 /// `rholang/tests/stack_depth_gate.rs`.
 #[test]
 fn machine_decodes_depth_4096_on_a_256_kib_stack() {
-    // Encode on a generous stack: `bincode::serialize` is Θ(depth) too
-    // (3,052 / 329 B per level), and this test is about the DECODER.
-    let bytes = std::thread::Builder::new()
-        .stack_size(512 * 1024 * 1024)
-        .spawn(|| {
-            let term = corpus::deep_par(4096);
-            let b = bincode::serialize(&term).expect("serialize");
-            models::rust::rholang::par_children::dismantle(term);
-            b
-        })
-        .expect("spawn encoder")
-        .join()
-        .expect("encoder panicked");
+    let term = corpus::deep_par(4096);
+    let bytes = bincode::serialize(&term).expect("serialize");
+    models::rust::rholang::par_children::dismantle(term);
 
     assert!(
         bytes.len() > 4096,
@@ -682,24 +684,16 @@ fn machine_decodes_depth_4096_on_a_256_kib_stack() {
         .stack_size(256 * 1024)
         .spawn(move || {
             let decoded = Par::cold_decode(&bytes).expect("machine must decode depth 4096");
-            // Confirm the nesting really came back — a decoder that returned an
-            // empty `Par` would also "survive".
-            let depth = {
-                let mut d = 0usize;
-                let mut current = &decoded;
-                while let Some(ExprInstance::EListBody(list)) =
-                    current.exprs.first().and_then(|e| e.expr_instance.as_ref())
-                {
-                    d += 1;
-                    match list.ps.first() {
-                        Some(next) => current = next,
-                        None => break,
-                    }
-                }
-                d
-            };
-            assert_eq!(depth, 4096, "the DECODED term must carry the nesting");
-            // Tear down iteratively; `<Par as Drop>` is Θ(depth) too.
+            let mut depth = None;
+            decoded.visit_encoded::<Expr>(|entry| {
+                assert!(
+                    depth.is_none(),
+                    "fixture must contain exactly one Expr endpoint"
+                );
+                assert_eq!(entry.multiplicity().get(), 1);
+                depth = entry.canonical_unary_elist_depth();
+            });
+            assert_eq!(depth, Some(4096), "the decoded term must carry the nesting");
             models::rust::rholang::par_children::dismantle(decoded);
         })
         .expect("spawn decoder")
@@ -707,30 +701,20 @@ fn machine_decodes_depth_4096_on_a_256_kib_stack() {
         .expect("the machine overflowed a 256 KiB stack at depth 4096");
 }
 
-/// The same, on the error path. A decode that FAILS at the last byte of a deep
-/// term still holds a deep partial result, and `<Par as Drop>` is Θ(depth) —
-/// so a machine without iterative teardown would abort while *rejecting* a
-/// hostile input, which is the exact failure mode this work removes.
+/// The same on the error path. The nested component remains an opaque canonical
+/// trie key while the machine reaches the outermost trailing metadata; rejecting
+/// that truncation must not introduce recursive teardown or a large-stack crutch.
 #[test]
 fn machine_rejects_a_truncated_deep_term_without_overflowing() {
-    let bytes = std::thread::Builder::new()
-        .stack_size(512 * 1024 * 1024)
-        .spawn(|| {
-            let term = corpus::deep_par(4096);
-            let b = bincode::serialize(&term).expect("serialize");
-            models::rust::rholang::par_children::dismantle(term);
-            b
-        })
-        .expect("spawn encoder")
-        .join()
-        .expect("encoder panicked");
+    let term = corpus::deep_par(4096);
+    let bytes = bincode::serialize(&term).expect("serialize");
+    models::rust::rholang::par_children::dismantle(term);
 
     std::thread::Builder::new()
         .stack_size(256 * 1024)
         .spawn(move || {
-            // Drop the final byte: everything parses until the outermost
-            // `connective_used`, at which point ~4,096 levels are live on the
-            // machine's value stacks and must be released iteratively.
+            // Drop the final outer `connective_used` byte after the complete
+            // canonical ParBag snapshot and `locally_free` field.
             let truncated = &bytes[..bytes.len() - 1];
             let err =
                 Par::cold_decode(truncated).expect_err("a truncated encoding must be REJECTED");

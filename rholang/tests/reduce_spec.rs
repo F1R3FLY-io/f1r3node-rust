@@ -122,7 +122,7 @@ async fn eval_expr_should_handle_simple_addition() {
     let expected = vec![new_gint_expr(15)];
 
     assert!(result.is_ok());
-    assert_eq!(result.unwrap().exprs, expected);
+    assert_eq!(result.unwrap().decode_occurrences::<Expr>(), expected);
 }
 
 /// ★★ REWRITTEN 2026-07-29 — this cell used to SPECIFY the wrapping defect.
@@ -133,7 +133,7 @@ async fn eval_expr_should_handle_simple_addition() {
 ///     let add_expr = new_eplus_par_gint(i64::MAX, i64::MAX, Vec::new(), false);
 ///     let expected = vec![new_gint_expr(i64::MAX.wrapping_mul(2))];   // == -2
 ///     assert!(result.is_ok());
-///     assert_eq!(result.unwrap().exprs, expected);
+///     assert_eq!(result.unwrap().decode_occurrences::<Expr>(), expected);
 /// ```
 ///
 /// i.e. it asserted that `i64::MAX + i64::MAX` **succeeds** and answers `-2`. Named "long
@@ -158,7 +158,7 @@ async fn eval_expr_should_handle_long_addition() {
          produced here until 2026-07-29 — is a DIFFERENT number presented as the sum, and in a \
          consensus interpreter every validator agrees on it. Got: {:?}",
         i64::MAX.wrapping_mul(2),
-        result.as_ref().map(|par| &par.exprs),
+        result.as_ref().map(|par| par.decode_occurrences::<Expr>()),
     );
     assert_eq!(
         result.unwrap_err(),
@@ -186,7 +186,7 @@ async fn eval_expr_should_handle_simple_division() {
     let expected = vec![new_gint_expr(5)];
 
     assert!(result.is_ok());
-    assert_eq!(result.unwrap().exprs, expected);
+    assert_eq!(result.unwrap().decode_occurrences::<Expr>(), expected);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -226,7 +226,7 @@ async fn eval_expr_should_handle_simple_modulo() {
     let expected = vec![new_gint_expr(2)];
 
     assert!(result.is_ok());
-    assert_eq!(result.unwrap().exprs, expected);
+    assert_eq!(result.unwrap().decode_occurrences::<Expr>(), expected);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -266,7 +266,7 @@ async fn eval_expr_should_handle_simple_multiplication() {
     let expected = vec![new_gint_expr(15)];
 
     assert!(result.is_ok());
-    assert_eq!(result.unwrap().exprs, expected);
+    assert_eq!(result.unwrap().decode_occurrences::<Expr>(), expected);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -306,7 +306,7 @@ async fn eval_expr_should_handle_simple_subtraction() {
     let expected = vec![new_gint_expr(7)];
 
     assert!(result.is_ok());
-    assert_eq!(result.unwrap().exprs, expected);
+    assert_eq!(result.unwrap().decode_occurrences::<Expr>(), expected);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -324,7 +324,7 @@ async fn eval_expr_should_handle_simple_negation() {
     let expected = vec![new_gint_expr(-5)];
 
     assert!(result.is_ok());
-    assert_eq!(result.unwrap().exprs, expected);
+    assert_eq!(result.unwrap().decode_occurrences::<Expr>(), expected);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -373,7 +373,7 @@ async fn eval_expr_should_return_error_for_addition_overflow() {
     assert!(
         result.is_err(),
         "`i64::MAX + 1` must REFUSE, not wrap to i64::MIN. Got: {:?}",
-        result.as_ref().map(|par| &par.exprs),
+        result.as_ref().map(|par| par.decode_occurrences::<Expr>()),
     );
     assert_eq!(
         result.unwrap_err(),
@@ -415,7 +415,7 @@ async fn eval_expr_should_still_handle_simple_addition_after_the_overflow_fix() 
             "{lhs} + {rhs} must still compute: {result:?}"
         );
         assert_eq!(
-            result.unwrap().exprs,
+            result.unwrap().decode_occurrences::<Expr>(),
             vec![new_gint_expr(sum)],
             "{lhs} + {rhs}"
         );
@@ -441,7 +441,7 @@ async fn eval_expr_should_return_error_for_subtraction_overflow() {
     assert!(
         result.is_err(),
         "`i64::MIN - 1` must REFUSE, not wrap to i64::MAX. Got: {:?}",
-        result.as_ref().map(|par| &par.exprs),
+        result.as_ref().map(|par| par.decode_occurrences::<Expr>()),
     );
     assert_eq!(
         result.unwrap_err(),
@@ -479,7 +479,7 @@ async fn eval_expr_should_still_handle_simple_subtraction_after_the_overflow_fix
             "{lhs} - {rhs} must still compute: {result:?}"
         );
         assert_eq!(
-            result.unwrap().exprs,
+            result.unwrap().decode_occurrences::<Expr>(),
             vec![new_gint_expr(difference)],
             "{lhs} - {rhs}"
         );
@@ -546,7 +546,7 @@ async fn every_int_operator_refuses_a_result_it_cannot_represent() {
             "★ `{operator}` produced a VALUE for an unrepresentable result. Every Int operator \
              must refuse; a wrapping one is a silent wrong answer that every validator agrees on. \
              Got: {:?}",
-            result.as_ref().map(|par| &par.exprs),
+            result.as_ref().map(|par| par.decode_occurrences::<Expr>()),
         );
     }
 }
@@ -583,7 +583,7 @@ async fn eval_expr_should_leave_ground_values_alone() {
     let expected = vec![new_gint_expr(7)];
 
     assert!(result.is_ok());
-    assert_eq!(result.unwrap().exprs, expected);
+    assert_eq!(result.unwrap().decode_occurrences::<Expr>(), expected);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -606,7 +606,7 @@ async fn eval_expr_should_handle_equality_between_arbitary_processes() {
     let expected = vec![new_gbool_expr(true)];
 
     assert!(result.is_ok());
-    assert_eq!(result.unwrap().exprs, expected);
+    assert_eq!(result.unwrap().decode_occurrences::<Expr>(), expected);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -630,7 +630,7 @@ async fn eval_expr_should_substitute_before_comparison() {
     let expected = vec![new_gbool_expr(true)];
 
     assert!(result.is_ok());
-    assert_eq!(result.unwrap().exprs, expected);
+    assert_eq!(result.unwrap().decode_occurrences::<Expr>(), expected);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2944,7 +2944,7 @@ async fn one_matches_one_should_return_true() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![new_gbool_expr(true)])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gbool_expr(true)])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2964,7 +2964,7 @@ async fn one_matches_zero_should_return_false() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![new_gbool_expr(false)])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gbool_expr(false)])
 }
 
 // "1 matches _"
@@ -2985,7 +2985,7 @@ async fn one_matches_wildcard_should_return_true() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![new_gbool_expr(true)])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gbool_expr(true)])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3006,7 +3006,7 @@ async fn x_matches_one_should_return_true_when_x_is_bound_to_one() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![new_gbool_expr(true)])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gbool_expr(true)])
 }
 
 // "1 matches =x"
@@ -3030,7 +3030,7 @@ async fn one_matches_equal_sign_x_should_return_true_when_x_is_bound_to_one() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![new_gbool_expr(true)])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gbool_expr(true)])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3053,7 +3053,7 @@ async fn length_should_return_the_length_of_the_string() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![new_gint_expr(3)])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gint_expr(3)])
 }
 
 // "'abcabac'.slice(3, 6)" should "return 'aba'"
@@ -3080,7 +3080,7 @@ async fn slice_should_work_correctly_1() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![new_gstring_expr(
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gstring_expr(
         "aba".to_string()
     )])
 }
@@ -3109,7 +3109,7 @@ async fn slice_should_work_correctly_2() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![new_gstring_expr("".to_string())])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gstring_expr("".to_string())])
 }
 
 // "'abcabcac'.slice(8,9)" should "return empty string"
@@ -3136,7 +3136,7 @@ async fn slice_should_work_correctly_3() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![new_gstring_expr("".to_string())])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gstring_expr("".to_string())])
 }
 
 // "'abcabcac'.slice(-2,2)" should "return 'ab'"
@@ -3163,7 +3163,7 @@ async fn slice_should_work_correctly_4() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![new_gstring_expr("ab".to_string())])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gstring_expr("ab".to_string())])
 }
 
 // "'Hello, ${name}!' % {'name': 'Alice'}" should "return 'Hello, Alice!"
@@ -3195,7 +3195,7 @@ async fn percent_percent_should_work_correctly() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![new_gstring_expr(
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gstring_expr(
         "Hello, Alice!".to_string()
     )])
 }
@@ -3218,7 +3218,7 @@ async fn plus_plus_should_work_correctly_with_string() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![new_gstring_expr(
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gstring_expr(
         "abcdef".to_string()
     )])
 }
@@ -3249,7 +3249,7 @@ async fn plus_plus_should_work_correctly_with_byte_array() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![Expr {
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![Expr {
         expr_instance: Some(ExprInstance::GByteArray(StringOps::unsafe_decode_hex(
             "deadbeef".to_string(),
         ))),
@@ -3290,7 +3290,7 @@ async fn interpolate_should_work_correctly() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![new_gstring_expr(
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gstring_expr(
         "1 ${b} 2 ${a}".to_string()
     )])
 }
@@ -3316,7 +3316,7 @@ async fn interpolate_should_interpolate_boolean_values() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![new_gstring_expr(
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gstring_expr(
         "false true".to_string()
     )])
 }
@@ -3346,7 +3346,7 @@ async fn interpolate_should_interpolate_uris() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![new_gstring_expr(
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gstring_expr(
         "testUriA testUriB".to_string()
     )])
 }
@@ -3384,7 +3384,7 @@ async fn length_should_return_the_length_of_the_list() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![new_gint_expr(4)])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gint_expr(4)])
 }
 
 // "[3, 7, 2, 9, 4, 3, 7].slice(3, 5)" should "return [9, 4]"
@@ -3427,7 +3427,7 @@ async fn slice_should_work_correctly_with_list_1() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![Expr {
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![Expr {
         expr_instance: Some(ExprInstance::EListBody(EList {
             ps: vec![
                 new_gint_par(9, Vec::new(), false),
@@ -3480,7 +3480,7 @@ async fn slice_should_work_correctly_with_list_2() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![Expr {
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![Expr {
         expr_instance: Some(ExprInstance::EListBody(EList {
             ps: vec![],
             locally_free: Vec::new(),
@@ -3530,7 +3530,7 @@ async fn slice_should_work_correctly_with_list_3() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![Expr {
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![Expr {
         expr_instance: Some(ExprInstance::EListBody(EList {
             ps: vec![],
             locally_free: Vec::new(),
@@ -3580,7 +3580,7 @@ async fn slice_should_work_correctly_with_list_4() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![Expr {
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![Expr {
         expr_instance: Some(ExprInstance::EListBody(EList {
             ps: vec![
                 new_gint_par(3, Vec::new(), false),
@@ -3636,7 +3636,7 @@ async fn plus_plus_should_work_correctly_with_list() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![new_elist_expr(
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_elist_expr(
         vec![
             new_gint_par(3, Vec::new(), false),
             new_gint_par(2, Vec::new(), false),
@@ -3690,7 +3690,7 @@ async fn get_or_else_method_should_work_correctly_1() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![new_gstring_expr("a".to_string())])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gstring_expr("a".to_string())])
 }
 
 // "{1: 'a', 2: 'b'}.getOrElse(3, 'c')" should "return 'c'"
@@ -3732,7 +3732,7 @@ async fn get_or_else_method_should_work_correctly_2() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![new_gstring_expr("c".to_string())])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gstring_expr("c".to_string())])
 }
 
 // "{1: 'a', 2: 'b'}.set(3, 'c')" should "return {1: 'a', 2: 'b', 3: 'c'}"
@@ -3774,7 +3774,7 @@ async fn set_method_should_work_correctly_1() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![Expr {
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![Expr {
         expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
             ParMap::create_from_vec(vec![
                 (
@@ -3833,7 +3833,7 @@ async fn set_method_should_work_correctly_2() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![Expr {
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![Expr {
         expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
             ParMap::create_from_vec(vec![
                 (
@@ -3889,7 +3889,7 @@ async fn keys_method_should_work_correctly() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![Expr {
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![Expr {
         expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
             ParSet::create_from_vec(vec![
                 new_gint_par(1, Vec::new(), false),
@@ -3939,7 +3939,7 @@ async fn size_method_should_work_correctly_emap() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![new_gint_expr(3)])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gint_expr(3)])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3972,7 +3972,7 @@ async fn size_method_should_work_correctly_with_eset() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![new_gint_expr(3)])
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_gint_expr(3)])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -4001,7 +4001,7 @@ async fn plus_method_should_work_correctly_with_eset() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![Expr {
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![Expr {
         expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
             ParSet::create_from_vec(vec![
                 new_gint_par(1, Vec::new(), false),
@@ -4049,7 +4049,7 @@ async fn minus_method_should_work_correctly_with_emap() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![Expr {
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![Expr {
         expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
             ParMap::create_from_vec(vec![
                 (
@@ -4092,7 +4092,7 @@ async fn minus_method_should_work_correctly_with_eset() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![Expr {
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![Expr {
         expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
             ParSet::create_from_vec(vec![
                 new_gint_par(1, Vec::new(), false),
@@ -4136,7 +4136,7 @@ async fn plus_plus_method_should_work_correctly_with_eset() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![Expr {
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![Expr {
         expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
             ParSet::create_from_vec(vec![
                 new_gint_par(1, Vec::new(), false),
@@ -4194,7 +4194,7 @@ async fn plus_plus_method_with_map_should_return_union() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![Expr {
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![Expr {
         expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
             ParMap::create_from_vec(vec![
                 (
@@ -4254,7 +4254,7 @@ async fn minus_minus_method_should_work_correctly_with_eset() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![Expr {
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![Expr {
         expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
             ParSet::create_from_vec(vec![
                 new_gint_par(3, Vec::new(), false),
@@ -4412,7 +4412,7 @@ async fn to_list_method_should_transform_set_into_list() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![new_elist_expr(
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_elist_expr(
         vec![
             new_gint_par(1, Vec::new(), false),
             new_gint_par(2, Vec::new(), false),
@@ -4461,7 +4461,7 @@ async fn to_list_method_should_transform_map_into_list_of_tuples() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![new_elist_expr(
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_elist_expr(
         vec![
             new_etuple_par(vec![
                 new_gstring_par("a".to_string(), Vec::new(), false),
@@ -4512,7 +4512,7 @@ async fn to_list_method_should_transform_tuple_into_list() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![new_elist_expr(
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![new_elist_expr(
         vec![
             new_gint_par(1, Vec::new(), false),
             new_gint_par(2, Vec::new(), false),
@@ -4555,7 +4555,7 @@ async fn to_set_method_should_turn_list_into_set() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![Expr {
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![Expr {
         expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
             ParSet::create_from_vec(vec![
                 new_gint_par(1, Vec::new(), false),
@@ -4596,7 +4596,7 @@ async fn to_set_method_should_turn_list_with_duplicate_into_set_without_duplicat
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![Expr {
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![Expr {
         expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
             ParSet::create_from_vec(vec![new_gint_par(1, Vec::new(), false)]),
         ))),
@@ -4630,7 +4630,7 @@ async fn to_set_method_should_turn_empty_list_into_empty_set() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![Expr {
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![Expr {
         expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
             ParSet::create_from_vec(vec![]),
         ))),
@@ -4675,7 +4675,7 @@ async fn to_map_method_should_transform_list_of_tuples_into_map() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![Expr {
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![Expr {
         expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
             ParMap::create_from_vec(vec![
                 (
@@ -4733,7 +4733,7 @@ async fn to_map_method_should_transform_set_of_tuples_into_map() {
     );
 
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![Expr {
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![Expr {
         expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
             ParMap::create_from_vec(vec![
                 (
@@ -4791,7 +4791,7 @@ async fn to_set_method_should_turn_map_into_set() {
     );
 
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![Expr {
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![Expr {
         expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
             ParSet::create_from_vec(vec![
                 new_etuple_par(vec![
@@ -4846,7 +4846,7 @@ async fn to_map_method_should_correctly_do_put_operations() {
     );
 
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![Expr {
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![Expr {
         expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
             ParMap::create_from_vec(vec![(
                 new_gstring_par("a".to_string(), Vec::new(), false),
@@ -4882,7 +4882,7 @@ async fn to_map_method_should_turn_empty_list_into_empty_map() {
     );
 
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![Expr {
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![Expr {
         expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
             ParMap::create_from_vec(vec![]),
         ))),
@@ -4910,7 +4910,7 @@ async fn to_set_method_should_not_change_the_object_it_is_applied_on() {
     );
 
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![Expr {
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![Expr {
         expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
             ParSet::create_from_vec(vec![
                 new_gint_par(1, Vec::new(), false),
@@ -4959,7 +4959,7 @@ async fn to_map_method_should_not_change_the_object_it_is_applied_on() {
     );
 
     assert!(res.is_ok());
-    assert_eq!(res.unwrap().exprs, vec![Expr {
+    assert_eq!(res.unwrap().decode_occurrences::<Expr>(), vec![Expr {
         expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
             ParMap::create_from_vec(vec![
                 (
@@ -6229,7 +6229,7 @@ fn resting_offers(
             .data
             .iter()
             .flat_map(|datum| datum.a.pars.iter())
-            .flat_map(|par| par.exprs.iter())
+            .flat_map(|par| par.decode_occurrences::<Expr>().into_iter())
             .filter_map(|expr| match expr.expr_instance {
                 Some(ExprInstance::GInt(value)) => Some(value),
                 _ => None,

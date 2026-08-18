@@ -49,6 +49,7 @@
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
@@ -75,16 +76,14 @@ pub fn gint(n: i64) -> Par { par_of(ExprInstance::GInt(n)) }
 
 pub fn tagged(tag: u8) -> Par {
     let mut out = Par::default();
-    out.locally_free.push(tag);
+    out.replace_locally_free(vec![tag]);
     out
 }
 
 fn par_of(instance: ExprInstance) -> Par {
-    let mut out = Par::default();
-    out.exprs.push(Expr {
+    Par::default().with_exprs(vec![Expr {
         expr_instance: Some(instance),
-    });
-    out
+    }])
 }
 
 fn some_var() -> Option<Var> {
@@ -360,142 +359,142 @@ pub fn every_opt_var() -> Vec<Option<Var>> {
 /// A `Par` whose every field is populated, including the two that
 /// `generate_par` never reaches (`conditionals`, `unforgeables`).
 pub fn all_par_fields() -> Par {
-    Par {
-        sends: vec![
-            Send {
-                chan: Some(gint(1)),
-                data: vec![gint(2), gint(3)],
-                persistent: true,
-                locally_free: vec![0x11, 0x12],
-                connective_used: true,
-            },
-            Send {
-                chan: None,
-                data: vec![],
-                persistent: false,
-                locally_free: vec![],
-                connective_used: false,
-            },
-        ],
-        receives: vec![Receive {
-            binds: vec![
-                ReceiveBind {
-                    patterns: vec![gint(4), gint(5)],
-                    source: Some(gint(6)),
-                    remainder: some_var(),
-                    free_count: -7,
-                },
-                ReceiveBind {
-                    patterns: vec![],
-                    source: None,
-                    remainder: None,
-                    free_count: 0,
-                },
-            ],
-            body: Some(gint(7)),
+    let mut par = Par::default();
+    par.replace_sends(vec![
+        Send {
+            chan: Some(gint(1)),
+            data: vec![gint(2), gint(3)],
             persistent: true,
-            peek: true,
-            bind_count: i32::MIN,
-            locally_free: vec![0x21],
+            locally_free: vec![0x11, 0x12],
             connective_used: true,
-            // `Receive.condition` — a slot `generate_par` never fills.
-            condition: Some(gint(8)),
-        }],
-        news: vec![
-            New {
-                bind_count: 3,
-                p: Some(gint(9)),
-                uri: vec!["rho:io:stdout".into(), String::new()],
-                injections: {
-                    let mut m = BTreeMap::new();
-                    m.insert("alpha".to_string(), gint(10));
-                    m.insert("beta".to_string(), gint(11));
-                    m.insert(String::new(), gint(12));
-                    m
-                },
-                locally_free: vec![0x31],
+        },
+        Send {
+            chan: None,
+            data: vec![],
+            persistent: false,
+            locally_free: vec![],
+            connective_used: false,
+        },
+    ]);
+    par.replace_receives(vec![Receive {
+        binds: vec![
+            ReceiveBind {
+                patterns: vec![gint(4), gint(5)],
+                source: Some(gint(6)),
+                remainder: some_var(),
+                free_count: -7,
             },
-            New {
-                bind_count: 0,
-                p: None,
-                uri: vec![],
-                injections: BTreeMap::new(),
-                locally_free: vec![],
+            ReceiveBind {
+                patterns: vec![],
+                source: None,
+                remainder: None,
+                free_count: 0,
             },
         ],
-        exprs: {
-            let mut exprs: Vec<Expr> = every_expr_instance()
-                .into_iter()
-                .map(|(_, instance)| Expr {
-                    expr_instance: Some(instance),
-                })
-                .collect();
-            exprs.push(Expr {
-                expr_instance: None,
-            });
-            exprs
-        },
-        matches: vec![Match {
-            target: Some(gint(13)),
-            cases: vec![
-                MatchCase {
-                    pattern: Some(gint(14)),
-                    source: Some(gint(15)),
-                    free_count: 2,
-                    // `MatchCase.guard` — another slot `generate_par` never fills.
-                    guard: Some(gint(16)),
-                },
-                MatchCase {
-                    pattern: None,
-                    source: None,
-                    free_count: -1,
-                    guard: None,
-                },
-            ],
-            locally_free: vec![0xA1],
-            connective_used: true,
-        }],
-        unforgeables: every_unforgeable(),
-        bundles: vec![
-            Bundle {
-                body: Some(gint(17)),
-                write_flag: true,
-                read_flag: false,
-            },
-            Bundle {
-                body: None,
-                write_flag: false,
-                read_flag: true,
-            },
-        ],
-        connectives: {
-            let mut cs: Vec<Connective> = every_connective_instance()
-                .into_iter()
-                .map(|(_, instance)| Connective {
-                    connective_instance: Some(instance),
-                })
-                .collect();
-            cs.push(Connective {
-                connective_instance: None,
-            });
-            cs
-        },
-        conditionals: vec![If {
-            condition: Some(gint(18)),
-            if_true: Some(gint(19)),
-            if_false: None,
-            locally_free: vec![0xD1],
-            connective_used: true,
-        }],
-        locally_free: vec![0xE1, 0xE2, 0xE3],
+        body: Some(gint(7)),
+        persistent: true,
+        peek: true,
+        bind_count: i32::MIN,
+        locally_free: vec![0x21],
         connective_used: true,
-    }
+        // `Receive.condition` — a slot `generate_par` never fills.
+        condition: Some(gint(8)),
+    }]);
+    par.replace_news(vec![
+        New {
+            bind_count: 3,
+            p: Some(gint(9)),
+            uri: vec!["rho:io:stdout".into(), String::new()],
+            injections: {
+                let mut m = BTreeMap::new();
+                m.insert("alpha".to_string(), gint(10));
+                m.insert("beta".to_string(), gint(11));
+                m.insert(String::new(), gint(12));
+                m
+            },
+            locally_free: vec![0x31],
+        },
+        New {
+            bind_count: 0,
+            p: None,
+            uri: vec![],
+            injections: BTreeMap::new(),
+            locally_free: vec![],
+        },
+    ]);
+    par.replace_exprs({
+        let mut exprs: Vec<Expr> = every_expr_instance()
+            .into_iter()
+            .map(|(_, instance)| Expr {
+                expr_instance: Some(instance),
+            })
+            .collect();
+        exprs.push(Expr {
+            expr_instance: None,
+        });
+        exprs
+    });
+    par.replace_matches(vec![Match {
+        target: Some(gint(13)),
+        cases: vec![
+            MatchCase {
+                pattern: Some(gint(14)),
+                source: Some(gint(15)),
+                free_count: 2,
+                // `MatchCase.guard` — another slot `generate_par` never fills.
+                guard: Some(gint(16)),
+            },
+            MatchCase {
+                pattern: None,
+                source: None,
+                free_count: -1,
+                guard: None,
+            },
+        ],
+        locally_free: vec![0xA1],
+        connective_used: true,
+    }]);
+    par.replace_unforgeables(every_unforgeable());
+    par.replace_bundles(vec![
+        Bundle {
+            body: Some(gint(17)),
+            write_flag: true,
+            read_flag: false,
+        },
+        Bundle {
+            body: None,
+            write_flag: false,
+            read_flag: true,
+        },
+    ]);
+    par.replace_connectives({
+        let mut cs: Vec<Connective> = every_connective_instance()
+            .into_iter()
+            .map(|(_, instance)| Connective {
+                connective_instance: Some(instance),
+            })
+            .collect();
+        cs.push(Connective {
+            connective_instance: None,
+        });
+        cs
+    });
+    par.replace_conditionals(vec![If {
+        condition: Some(gint(18)),
+        if_true: Some(gint(19)),
+        if_false: None,
+        locally_free: vec![0xD1],
+        connective_used: true,
+    }]);
+    par.replace_locally_free(vec![0xE1, 0xE2, 0xE3]);
+    par.replace_connective_used(true);
+    par
 }
 
 /// A left-spine `Par` of the requested nesting depth, built through `EList`.
 ///
-/// ⚠ See the module header on why callers cap this at 48: the *oracle* is
-/// Θ(depth), not the machine.
+/// Depth 48 is large enough to exercise every containment shape repeatedly
+/// while remaining suitable for the retained serde differential in debug mode.
 pub fn deep_par(depth: usize) -> Par {
     let mut p = gint(0);
     for _ in 0..depth {
@@ -516,18 +515,18 @@ pub fn deep_mixed_par(depth: usize) -> Par {
         p = match level % 8 {
             0 => {
                 let mut out = Par::default();
-                out.sends.push(Send {
+                out.replace_sends(vec![Send {
                     chan: Some(p),
                     data: vec![],
                     persistent: false,
                     locally_free: vec![level as u8],
                     connective_used: false,
-                });
+                }]);
                 out
             }
             1 => {
                 let mut out = Par::default();
-                out.receives.push(Receive {
+                out.replace_receives(vec![Receive {
                     binds: vec![ReceiveBind {
                         patterns: vec![p],
                         source: None,
@@ -541,12 +540,12 @@ pub fn deep_mixed_par(depth: usize) -> Par {
                     locally_free: vec![],
                     connective_used: false,
                     condition: None,
-                });
+                }]);
                 out
             }
             2 => {
                 let mut out = Par::default();
-                out.news.push(New {
+                out.replace_news(vec![New {
                     bind_count: 1,
                     p: None,
                     uri: vec![],
@@ -556,12 +555,12 @@ pub fn deep_mixed_par(depth: usize) -> Par {
                         m
                     },
                     locally_free: vec![],
-                });
+                }]);
                 out
             }
             3 => {
                 let mut out = Par::default();
-                out.matches.push(Match {
+                out.replace_matches(vec![Match {
                     target: None,
                     cases: vec![MatchCase {
                         pattern: None,
@@ -571,25 +570,25 @@ pub fn deep_mixed_par(depth: usize) -> Par {
                     }],
                     locally_free: vec![],
                     connective_used: false,
-                });
+                }]);
                 out
             }
             4 => {
                 let mut out = Par::default();
-                out.conditionals.push(If {
+                out.replace_conditionals(vec![If {
                     condition: None,
                     if_true: None,
                     if_false: Some(p),
                     locally_free: vec![],
                     connective_used: false,
-                });
+                }]);
                 out
             }
             5 => {
                 let mut out = Par::default();
-                out.connectives.push(Connective {
+                out.replace_connectives(vec![Connective {
                     connective_instance: Some(ConnectiveInstance::ConnNotBody(p)),
-                });
+                }]);
                 out
             }
             6 => par_of(ExprInstance::EMapBody(EMap {
@@ -599,19 +598,19 @@ pub fn deep_mixed_par(depth: usize) -> Par {
                 }],
                 ..Default::default()
             })),
-            _ => par_of(ExprInstance::EPathmapBody(EPathMap::new(
-                vec![p],
-                vec![1],
-                true,
-                None,
-            ))),
+            _ => {
+                let map = EPathMap::new(vec![p], vec![1], true, None);
+                par_of(ExprInstance::EPathmapBody(map))
+            }
         };
     }
     p
 }
 
-/// The full `Par` corpus: exhaustive, edge, and structural-depth cases.
-pub fn par_corpus() -> Vec<(String, Par)> {
+/// Construct the full `Par` corpus: exhaustive, edge, and structural-depth
+/// cases. Callers use [`par_corpus`], which memoizes this expensive canonical
+/// PathMap construction once per test binary and returns cheap CoW clones.
+fn build_par_corpus() -> Vec<(String, Par)> {
     let mut out: Vec<(String, Par)> = Vec::new();
 
     out.push(("nil".to_string(), nil()));
@@ -624,9 +623,9 @@ pub fn par_corpus() -> Vec<(String, Par)> {
     // One `Par` per `ConnectiveInstance` arm.
     for (name, instance) in every_connective_instance() {
         let mut par = Par::default();
-        par.connectives.push(Connective {
+        par.replace_connectives(vec![Connective {
             connective_instance: Some(instance),
-        });
+        }]);
         out.push((format!("connective::{name}"), par));
     }
     // Every `Option<Var>` shape, through `EList.remainder`.
@@ -644,7 +643,7 @@ pub fn par_corpus() -> Vec<(String, Par)> {
     // Every `GUnforgeable` shape.
     for (i, u) in every_unforgeable().into_iter().enumerate() {
         let mut par = Par::default();
-        par.unforgeables.push(u);
+        par.replace_unforgeables(vec![u]);
         out.push((format!("unforgeable::{i}"), par));
     }
 
@@ -655,18 +654,29 @@ pub fn par_corpus() -> Vec<(String, Par)> {
 
     // Wide, to exercise the counted repeat past its first iteration.
     let mut wide = Par::default();
-    wide.sends = (0..64)
-        .map(|i| Send {
-            chan: Some(gint(i)),
-            data: (0..3).map(gint).collect(),
-            persistent: i % 2 == 0,
-            locally_free: vec![i as u8],
-            connective_used: i % 3 == 0,
-        })
-        .collect();
+    wide.replace_sends(
+        (0..64)
+            .map(|i| Send {
+                chan: Some(gint(i)),
+                data: (0..3).map(gint).collect(),
+                persistent: i % 2 == 0,
+                locally_free: vec![i as u8],
+                connective_used: i % 3 == 0,
+            })
+            .collect(),
+    );
     out.push(("wide_sends".to_string(), wide));
 
     out
+}
+
+/// The full `Par` corpus, materialized once per test binary. Multiple tests in
+/// the same binary intentionally exercise different codec properties over the
+/// identical population; rebuilding every nested canonical PathMap for each
+/// property adds quadratic fixture work without increasing coverage.
+pub fn par_corpus() -> Vec<(String, Par)> {
+    static CORPUS: OnceLock<Vec<(String, Par)>> = OnceLock::new();
+    CORPUS.get_or_init(build_par_corpus).clone()
 }
 
 // ---------------------------------------------------------------------------

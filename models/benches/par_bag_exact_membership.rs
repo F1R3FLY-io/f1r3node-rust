@@ -13,7 +13,7 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{Expr, Par};
+use models::rhoapi::Expr;
 use models::rust::par_bag::{CanonicalParBagKey, ParBag};
 
 const CARDINALITIES: [usize; 4] = [1, 16, 256, 4_096];
@@ -70,9 +70,12 @@ impl Fixture {
         let legacy = (0..cardinality)
             .map(|ordinal| topology.value(ordinal))
             .collect::<Vec<_>>();
-        let mut par = Par::default();
-        par.exprs.clone_from(&legacy);
-        let pathmap = ParBag::import_legacy(&par).expect("fixture multiplicities fit u64");
+        let mut pathmap = ParBag::new();
+        for value in &legacy {
+            pathmap
+                .insert(value)
+                .expect("fixture multiplicities fit u64");
+        }
 
         let mut queries = Vec::with_capacity(QUERIES_PER_BATCH);
         for query in 0..QUERY_PAIRS {

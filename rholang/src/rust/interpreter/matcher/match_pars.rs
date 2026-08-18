@@ -18,11 +18,11 @@ pub fn compare_sends_without_locally_free(a: &Send, b: &Send) -> bool {
 }
 
 pub fn compare_receives_without_locally_free(a: &Receive, b: &Receive) -> bool {
-    match_pars_drive(MatchWork::Receive(a, b))
+    match_pars_drive(MatchWork::Receive(a.clone(), b.clone()))
 }
 
 pub fn compare_news_without_locally_free(a: &New, b: &New) -> bool {
-    match_pars_drive(MatchWork::New(a, b))
+    match_pars_drive(MatchWork::New(a.clone(), b.clone()))
 }
 
 pub fn compare_exprs_without_locally_free(a: &Expr, b: &Expr) -> bool {
@@ -46,69 +46,83 @@ pub fn compare_connectives_without_locally_free(a: &Connective, b: &Connective) 
 }
 
 pub fn compare_receive_binds_without_locally_free(a: &ReceiveBind, b: &ReceiveBind) -> bool {
-    match_pars_drive(MatchWork::ReceiveBind(a, b))
+    match_pars_drive(MatchWork::ReceiveBind(a.clone(), b.clone()))
 }
 
 pub fn match_pars(target: &Par, pattern: &Par) -> bool {
-    match_pars_drive(MatchWork::Par(target, pattern))
+    match_pars_drive(MatchWork::Par(target.clone(), pattern.clone()))
 }
 
 /// The recursive edges of the concrete fast path. All other fields are either
 /// scalars or use the schema-generated stack-safe equality PDA.
-enum MatchWork<'a> {
-    Par(&'a Par, &'a Par),
-    Receive(&'a Receive, &'a Receive),
-    New(&'a New, &'a New),
-    ReceiveBind(&'a ReceiveBind, &'a ReceiveBind),
+enum MatchWork {
+    Par(Par, Par),
+    Receive(Receive, Receive),
+    New(New, New),
+    ReceiveBind(ReceiveBind, ReceiveBind),
 }
 
-fn match_pars_drive(root: MatchWork<'_>) -> bool {
+fn match_pars_drive(root: MatchWork) -> bool {
     let mut work = vec![root];
     while let Some(task) = work.pop() {
         match task {
             MatchWork::Par(target, pattern) => {
-                if target.sends.len() != pattern.sends.len()
-                    || target.receives.len() != pattern.receives.len()
-                    || target.news.len() != pattern.news.len()
-                    || target.exprs.len() != pattern.exprs.len()
-                    || target.matches.len() != pattern.matches.len()
-                    || target.unforgeables.len() != pattern.unforgeables.len()
-                    || target.bundles.len() != pattern.bundles.len()
-                    || target.connective_used != pattern.connective_used
-                    || !target
-                        .sends
+                if target.family_cardinality::<Send>() != pattern.family_cardinality::<Send>()
+                    || target.family_cardinality::<Receive>()
+                        != pattern.family_cardinality::<Receive>()
+                    || target.family_cardinality::<New>() != pattern.family_cardinality::<New>()
+                    || target.family_cardinality::<Expr>() != pattern.family_cardinality::<Expr>()
+                    || target.family_cardinality::<Match>() != pattern.family_cardinality::<Match>()
+                    || target.family_cardinality::<GUnforgeable>()
+                        != pattern.family_cardinality::<GUnforgeable>()
+                    || target.family_cardinality::<Bundle>()
+                        != pattern.family_cardinality::<Bundle>()
+                    || target.connective_used() != pattern.connective_used()
+                {
+                    return false;
+                }
+
+                let target_sends = target.decode_occurrences::<Send>();
+                let pattern_sends = pattern.decode_occurrences::<Send>();
+                let target_exprs = target.decode_occurrences::<Expr>();
+                let pattern_exprs = pattern.decode_occurrences::<Expr>();
+                let target_matches = target.decode_occurrences::<Match>();
+                let pattern_matches = pattern.decode_occurrences::<Match>();
+                let target_unforgeables = target.decode_occurrences::<GUnforgeable>();
+                let pattern_unforgeables = pattern.decode_occurrences::<GUnforgeable>();
+                let target_bundles = target.decode_occurrences::<Bundle>();
+                let pattern_bundles = pattern.decode_occurrences::<Bundle>();
+                let target_connectives = target.decode_occurrences::<Connective>();
+                let pattern_connectives = pattern.decode_occurrences::<Connective>();
+
+                if !target_sends
+                    .iter()
+                    .zip(&pattern_sends)
+                    .all(|(target, pattern)| compare_sends_without_locally_free(target, pattern))
+                    || !target_exprs
                         .iter()
-                        .zip(&pattern.sends)
-                        .all(|(target, pattern)| {
-                            compare_sends_without_locally_free(target, pattern)
-                        })
-                    || !target
-                        .exprs
-                        .iter()
-                        .zip(&pattern.exprs)
+                        .zip(&pattern_exprs)
                         .all(|(target, pattern)| {
                             compare_exprs_without_locally_free(target, pattern)
                         })
-                    || !target
-                        .matches
+                    || !target_matches
                         .iter()
-                        .zip(&pattern.matches)
+                        .zip(&pattern_matches)
                         .all(|(target, pattern)| {
                             compare_matches_without_locally_free(target, pattern)
                         })
-                    || !target.unforgeables.iter().zip(&pattern.unforgeables).all(
+                    || !target_unforgeables.iter().zip(&pattern_unforgeables).all(
                         |(target, pattern)| {
                             compare_unforgeables_without_locally_free(target, pattern)
                         },
                     )
-                    || !target
-                        .bundles
+                    || !target_bundles
                         .iter()
-                        .zip(&pattern.bundles)
+                        .zip(&pattern_bundles)
                         .all(|(target, pattern)| {
                             compare_bundles_without_locally_free(target, pattern)
                         })
-                    || !target.connectives.iter().zip(&pattern.connectives).all(
+                    || !target_connectives.iter().zip(&pattern_connectives).all(
                         |(target, pattern)| {
                             compare_connectives_without_locally_free(target, pattern)
                         },
@@ -118,17 +132,17 @@ fn match_pars_drive(root: MatchWork<'_>) -> bool {
                 }
                 work.extend(
                     target
-                        .news
-                        .iter()
-                        .zip(&pattern.news)
+                        .decode_occurrences::<New>()
+                        .into_iter()
+                        .zip(pattern.decode_occurrences::<New>())
                         .rev()
                         .map(|(target, pattern)| MatchWork::New(target, pattern)),
                 );
                 work.extend(
                     target
-                        .receives
-                        .iter()
-                        .zip(&pattern.receives)
+                        .decode_occurrences::<Receive>()
+                        .into_iter()
+                        .zip(pattern.decode_occurrences::<Receive>())
                         .rev()
                         .map(|(target, pattern)| MatchWork::Receive(target, pattern)),
                 );
@@ -142,14 +156,14 @@ fn match_pars_drive(root: MatchWork<'_>) -> bool {
                     return false;
                 }
                 work.push(MatchWork::Par(
-                    target.body.as_ref().expect("Receive.body (target)"),
-                    pattern.body.as_ref().expect("Receive.body (pattern)"),
+                    target.body.expect("Receive.body (target)"),
+                    pattern.body.expect("Receive.body (pattern)"),
                 ));
                 work.extend(
                     target
                         .binds
-                        .iter()
-                        .zip(&pattern.binds)
+                        .into_iter()
+                        .zip(pattern.binds)
                         .rev()
                         .map(|(target, pattern)| MatchWork::ReceiveBind(target, pattern)),
                 );
@@ -162,8 +176,8 @@ fn match_pars_drive(root: MatchWork<'_>) -> bool {
                     return false;
                 }
                 work.push(MatchWork::Par(
-                    target.p.as_ref().expect("New.p (target)"),
-                    pattern.p.as_ref().expect("New.p (pattern)"),
+                    target.p.expect("New.p (target)"),
+                    pattern.p.expect("New.p (pattern)"),
                 ));
             }
             MatchWork::ReceiveBind(target, pattern) => {
@@ -172,17 +186,14 @@ fn match_pars_drive(root: MatchWork<'_>) -> bool {
                     return false;
                 }
                 work.push(MatchWork::Par(
-                    target.source.as_ref().expect("ReceiveBind.source (target)"),
-                    pattern
-                        .source
-                        .as_ref()
-                        .expect("ReceiveBind.source (pattern)"),
+                    target.source.expect("ReceiveBind.source (target)"),
+                    pattern.source.expect("ReceiveBind.source (pattern)"),
                 ));
                 work.extend(
                     target
                         .patterns
-                        .iter()
-                        .zip(&pattern.patterns)
+                        .into_iter()
+                        .zip(pattern.patterns)
                         .rev()
                         .map(|(target, pattern)| MatchWork::Par(target, pattern)),
                 );

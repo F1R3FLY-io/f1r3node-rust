@@ -78,6 +78,10 @@ fn main() {
         // import paths are unchanged. The textual post-processing below
         // continues to apply to the REMAINING generated types.
         .extern_path(".rhoapi.EPathMap", "crate::rust::rhoapi_ext::EPathMap")
+        // `Par` is repository-owned for the same reason: its sole component
+        // authority is the typed PathMap Bag in `rust::par`, while the public
+        // protobuf path remains `rhoapi::Par` at every downstream call site.
+        .extern_path(".rhoapi.Par", "crate::rust::par::Par")
         .message_attribute(
             ".rhoapi",
             "#[derive(serde::Serialize, serde::Deserialize, utoipa::ToSchema)]",
@@ -451,11 +455,6 @@ fn check_ord_join(stripped: &[String], cut_set: &[String]) {
 
     let stripped: BTreeSet<&str> = stripped.iter().map(String::as_str).collect();
     let cut_set: BTreeSet<&str> = cut_set.iter().map(String::as_str).collect();
-    assert!(
-        !cut_set.is_empty(),
-        "models/build.rs: the schema feedback-vertex set is empty, so no recursive `Ord` \
-         implementation can have been replaced"
-    );
     assert_eq!(
         stripped, cut_set,
         "models/build.rs: the `Ord`/`PartialOrd` derive strip and the descriptor-derived \

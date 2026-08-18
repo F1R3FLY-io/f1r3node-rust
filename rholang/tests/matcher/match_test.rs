@@ -319,9 +319,9 @@ fn par_remainder_preserves_the_exact_multiplicity_of_identical_sends() {
         Vec::new(),
         false,
     )
-    .sends
-    .first()
-    .cloned()
+    .first::<models::rhoapi::Send>()
+    .expect("resident send decodes")
+    .map(|(send, _)| send)
     .expect("the helper constructs one send");
     let target = vector_par(Vec::new(), false).with_sends(vec![
         duplicated_send.clone(),

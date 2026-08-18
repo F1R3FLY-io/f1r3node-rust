@@ -91,9 +91,10 @@ use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMinus, EMinusMinus, EMod, EMult,
-    ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ETuple, EVar, Expr,
-    MatchCase, Par,
+    Bundle, Connective, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMinus,
+    EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus,
+    EPlusPlus, ETuple, EVar, Expr, GUnforgeable, Match, MatchCase, New, Par, Receive,
+    Send as RhoSend,
 };
 use models::rust::bundle_ops::BundleOps;
 use models::rust::epathmap_trie_codec::EPathMapMode;
@@ -541,9 +542,13 @@ impl PrettyPrinter {
                             framed.push(tag::TERM);
                             let rendered = match decode_trie_path(&framed) {
                                 Ok(par) => match par
-                                    .exprs
-                                    .first()
-                                    .and_then(|ex| ex.expr_instance.as_ref())
+                                    .first::<Expr>()
+                                    .ok()
+                                    .flatten()
+                                    .and_then(|(ex, multiplicity)| {
+                                        (multiplicity.get() == 1).then_some(ex.expr_instance)
+                                    })
+                                    .flatten()
                                 {
                                     Some(ExprInstance::EListBody(list))
                                         if !list.ps.is_empty() =>
@@ -652,8 +657,11 @@ impl PrettyPrinter {
         indent: usize,
     ) -> Result<String, InterpreterError> {
         let quote_if_not_new = |s: String, news_shift_indices: &[NewBindRange], bound_shift: i32| {
-            let is_bound_new = match p.exprs.as_slice() {
-                [x] => match &x.expr_instance {
+            let expression = (p.family_cardinality::<Expr>() == 1)
+                .then(|| p.first::<Expr>().ok().flatten().map(|(expr, _)| expr))
+                .flatten();
+            let is_bound_new = match expression.as_ref() {
+                Some(x) => match &x.expr_instance {
                     Some(instance) => match instance {
                         ExprInstance::EVarBody(EVar { v }) => match v {
                             Some(v) => match &v.var_instance {
@@ -674,7 +682,7 @@ impl PrettyPrinter {
                     },
                     None => false,
                 },
-                _ => false,
+                None => false,
             };
 
             if is_bound_new {
@@ -971,15 +979,23 @@ impl PrettyPrinter {
                 // This avoids type erasure issues that cause panics when downcast_ref fails
                 let mut prev_non_empty = false;
                 let mut result = String::new();
+                let bundles = p.decode_occurrences::<Bundle>();
+                let sends = p.decode_occurrences::<RhoSend>();
+                let receives = p.decode_occurrences::<Receive>();
+                let news = p.decode_occurrences::<New>();
+                let exprs = p.decode_occurrences::<Expr>();
+                let matches = p.decode_occurrences::<Match>();
+                let unforgeables = p.decode_occurrences::<GUnforgeable>();
+                let connectives = p.decode_occurrences::<Connective>();
 
                 // Process bundles
-                if !p.bundles.is_empty() {
+                if !bundles.is_empty() {
                     if prev_non_empty {
                         result.push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                     }
-                    for (index, bundle) in p.bundles.iter().enumerate() {
+                    for (index, bundle) in bundles.iter().enumerate() {
                         result.push_str(&self._oracle_build_string_from_message(PpNode::Bundle(bundle), indent)?);
-                        if index != p.bundles.len() - 1 {
+                        if index != bundles.len() - 1 {
                             result
                                 .push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                         }
@@ -988,13 +1004,13 @@ impl PrettyPrinter {
                 }
 
                 // Process sends
-                if !p.sends.is_empty() {
+                if !sends.is_empty() {
                     if prev_non_empty {
                         result.push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                     }
-                    for (index, send) in p.sends.iter().enumerate() {
+                    for (index, send) in sends.iter().enumerate() {
                         result.push_str(&self._oracle_build_string_from_message(PpNode::Send(send), indent)?);
-                        if index != p.sends.len() - 1 {
+                        if index != sends.len() - 1 {
                             result
                                 .push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                         }
@@ -1003,13 +1019,13 @@ impl PrettyPrinter {
                 }
 
                 // Process receives
-                if !p.receives.is_empty() {
+                if !receives.is_empty() {
                     if prev_non_empty {
                         result.push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                     }
-                    for (index, receive) in p.receives.iter().enumerate() {
+                    for (index, receive) in receives.iter().enumerate() {
                         result.push_str(&self._oracle_build_string_from_message(PpNode::Receive(receive), indent)?);
-                        if index != p.receives.len() - 1 {
+                        if index != receives.len() - 1 {
                             result
                                 .push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                         }
@@ -1018,13 +1034,13 @@ impl PrettyPrinter {
                 }
 
                 // Process news
-                if !p.news.is_empty() {
+                if !news.is_empty() {
                     if prev_non_empty {
                         result.push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                     }
-                    for (index, new_item) in p.news.iter().enumerate() {
+                    for (index, new_item) in news.iter().enumerate() {
                         result.push_str(&self._oracle_build_string_from_message(PpNode::New(new_item), indent)?);
-                        if index != p.news.len() - 1 {
+                        if index != news.len() - 1 {
                             result
                                 .push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                         }
@@ -1033,13 +1049,13 @@ impl PrettyPrinter {
                 }
 
                 // Process exprs
-                if !p.exprs.is_empty() {
+                if !exprs.is_empty() {
                     if prev_non_empty {
                         result.push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                     }
-                    for (index, expr) in p.exprs.iter().enumerate() {
+                    for (index, expr) in exprs.iter().enumerate() {
                         result.push_str(&self._oracle_build_string_from_message(PpNode::Expr(expr), indent)?);
-                        if index != p.exprs.len() - 1 {
+                        if index != exprs.len() - 1 {
                             result
                                 .push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                         }
@@ -1048,13 +1064,13 @@ impl PrettyPrinter {
                 }
 
                 // Process matches
-                if !p.matches.is_empty() {
+                if !matches.is_empty() {
                     if prev_non_empty {
                         result.push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                     }
-                    for (index, match_item) in p.matches.iter().enumerate() {
+                    for (index, match_item) in matches.iter().enumerate() {
                         result.push_str(&self._oracle_build_string_from_message(PpNode::Match(match_item), indent)?);
-                        if index != p.matches.len() - 1 {
+                        if index != matches.len() - 1 {
                             result
                                 .push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                         }
@@ -1063,13 +1079,13 @@ impl PrettyPrinter {
                 }
 
                 // Process unforgeables
-                if !p.unforgeables.is_empty() {
+                if !unforgeables.is_empty() {
                     if prev_non_empty {
                         result.push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                     }
-                    for (index, unforgeable) in p.unforgeables.iter().enumerate() {
+                    for (index, unforgeable) in unforgeables.iter().enumerate() {
                         result.push_str(&self._oracle_build_string_from_message(PpNode::Unforgeable(unforgeable), indent)?);
-                        if index != p.unforgeables.len() - 1 {
+                        if index != unforgeables.len() - 1 {
                             result
                                 .push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                         }
@@ -1078,13 +1094,13 @@ impl PrettyPrinter {
                 }
 
                 // Process connectives
-                if !p.connectives.is_empty() {
+                if !connectives.is_empty() {
                     if prev_non_empty {
                         result.push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                     }
-                    for (index, connective) in p.connectives.iter().enumerate() {
+                    for (index, connective) in connectives.iter().enumerate() {
                         result.push_str(&self._oracle_build_string_from_message(PpNode::Connective(connective), indent)?);
-                        if index != p.connectives.len() - 1 {
+                        if index != connectives.len() - 1 {
                             result
                                 .push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                         }

@@ -1511,7 +1511,12 @@ fn normalize_p_bundle_recursive<'ast>(
         },
     };
 
-    let res = if !target_result.clone().par.connectives.is_empty() {
+    let res = if target_result
+        .clone()
+        .par
+        .family_cardinality::<Connective>()
+        != 0
+    {
         Err(InterpreterError::UnexpectedBundleContent(format!(
             "Illegal top-level connective in bundle at line {}, column {}.",
             span.start.line, span.start.col
@@ -1544,7 +1549,7 @@ fn normalize_p_if_recursive<'ast>(
     condition: &'ast AnnProc<'ast>,
     if_true: &'ast AnnProc<'ast>,
     if_false: Option<&'ast AnnProc<'ast>>,
-    mut input: ProcVisitInputs,
+    input: ProcVisitInputs,
     env: &HashMap<String, Par>,
     parser: &'ast rholang_parser::RholangParser<'ast>,
 ) -> Result<ProcVisitOutputs, InterpreterError> {

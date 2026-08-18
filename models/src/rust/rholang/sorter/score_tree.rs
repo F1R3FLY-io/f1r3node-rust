@@ -406,6 +406,89 @@ pub(crate) fn encode_order_key(score: &Tree<ScoreAtom>, out: &mut Vec<u8>) {
     }
 }
 
+/// Decode one prefix-free key produced by [`encode_order_key`].
+///
+/// The parser is an explicit stack of unfinished node child vectors, so score
+/// depth consumes heap rather than native stack.  The returned extent permits
+/// callers such as `ParBag` to retain the following canonical protobuf body as
+/// an opaque byte slice.
+pub(crate) fn decode_order_key(bytes: &[u8]) -> Option<(Tree<ScoreAtom>, usize)> {
+    fn decode_escaped(bytes: &[u8], at: &mut usize) -> Option<Vec<u8>> {
+        let mut decoded = Vec::new();
+        loop {
+            let byte = *bytes.get(*at)?;
+            *at += 1;
+            if byte != 0 {
+                decoded.push(byte);
+                continue;
+            }
+            match *bytes.get(*at)? {
+                0 => {
+                    *at += 1;
+                    return Some(decoded);
+                }
+                0xff => {
+                    *at += 1;
+                    decoded.push(0);
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    let mut at = 0usize;
+    let mut frames: Vec<Vec<Tree<ScoreAtom>>> = Vec::new();
+    loop {
+        match *bytes.get(at)? {
+            0 => {
+                at += 1;
+                let children = frames.pop()?;
+                let tree = Tree::Node(children);
+                if frames.is_empty() {
+                    return Some((tree, at));
+                }
+                frames
+                    .last_mut()
+                    .expect("non-empty score frame stack")
+                    .push(tree);
+            }
+            1 => {
+                at += 1;
+                let atom = match *bytes.get(at)? {
+                    1 => {
+                        at += 1;
+                        let end = at.checked_add(8)?;
+                        let biased = u64::from_be_bytes(bytes.get(at..end)?.try_into().ok()?);
+                        at = end;
+                        ScoreAtom::create_from_i64((biased ^ (1u64 << 63)) as i64)
+                    }
+                    2 => {
+                        at += 1;
+                        let value = String::from_utf8(decode_escaped(bytes, &mut at)?).ok()?;
+                        ScoreAtom::create_from_string(value)
+                    }
+                    3 => {
+                        at += 1;
+                        ScoreAtom::create_from_bytes(decode_escaped(bytes, &mut at)?)
+                    }
+                    _ => return None,
+                };
+                let tree = Tree::Leaf(atom);
+                if let Some(children) = frames.last_mut() {
+                    children.push(tree);
+                } else {
+                    return Some((tree, at));
+                }
+            }
+            2 => {
+                at += 1;
+                frames.push(Vec::new());
+            }
+            _ => return None,
+        }
+    }
+}
+
 /// Return the extent of one key written by [`encode_order_key`].
 ///
 /// This validates only the self-delimiting byte grammar.  A persisted ParBag

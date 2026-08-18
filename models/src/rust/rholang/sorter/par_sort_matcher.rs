@@ -6,7 +6,6 @@
 
 use super::score_tree::{ScoreAtom, ScoredTerm, Tree};
 use super::sort_combine::split_scored_terms as split_scored_terms_impl;
-use super::sort_drive::sort_par;
 use super::sortable::Sortable;
 use crate::rhoapi::Par;
 
@@ -19,7 +18,12 @@ impl Sortable<Par> for ParSortMatcher {
     /// so this function's output IS the consensus-visible canonical form. See
     /// `sort_drive`'s module documentation for the conversion's neutrality
     /// argument and the three checks behind it.
-    fn sort_match(par: &Par) -> ScoredTerm<Par> { sort_par(par) }
+    fn sort_match(par: &Par) -> ScoredTerm<Par> {
+        ScoredTerm {
+            term: par.clone(),
+            score: par.canonical_score(),
+        }
+    }
 }
 
 /// Retained at its original path because callers outside the sorter use it.

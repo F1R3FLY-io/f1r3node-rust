@@ -52,8 +52,8 @@
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{
-    Bundle, Connective, ConnectiveBody, EPathMap, Expr, If, Match, MatchCase, New, Par, Receive,
-    ReceiveBind, Send,
+    Bundle, Connective, ConnectiveBody, EPathMap, Expr, GUnforgeable, If, Match, MatchCase, New,
+    Par, Receive, ReceiveBind, Send,
 };
 use models::rust::canonical_path::decode_trie_path;
 use models::rust::rhoapi_ext::{EntryTrie, OwnedEPathMapEntry};
@@ -82,15 +82,15 @@ pub(crate) fn par_recursive(
     ctx: SubCtx,
     env: EnvView<'_>,
 ) -> Result<Par, InterpreterError> {
-    let sends = std::mem::take(&mut term.sends);
-    let receives = std::mem::take(&mut term.receives);
-    let news = std::mem::take(&mut term.news);
-    let exprs = std::mem::take(&mut term.exprs);
-    let matches = std::mem::take(&mut term.matches);
-    let unforgeables = std::mem::take(&mut term.unforgeables);
-    let bundles = std::mem::take(&mut term.bundles);
-    let connectives = std::mem::take(&mut term.connectives);
-    let conditionals = std::mem::take(&mut term.conditionals);
+    let sends = term.take_occurrences::<Send>();
+    let receives = term.take_occurrences::<Receive>();
+    let news = term.take_occurrences::<New>();
+    let exprs = term.take_occurrences::<Expr>();
+    let matches = term.take_occurrences::<Match>();
+    let unforgeables = term.take_occurrences::<GUnforgeable>();
+    let bundles = term.take_occurrences::<Bundle>();
+    let connectives = term.take_occurrences::<Connective>();
+    let conditionals = term.take_occurrences::<If>();
     let locally_free = std::mem::take(&mut term.locally_free);
     let connective_used = term.connective_used;
 

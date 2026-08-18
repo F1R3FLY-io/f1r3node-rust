@@ -28,7 +28,7 @@
 //! sweep fails instead of changing what programs are accepted.
 
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{EMatches, Par};
+use models::rhoapi::{Connective, EMatches, Expr, Match, Par, Receive, Send};
 use rholang::rust::interpreter::matcher::has_locally_free::ematches_locally_free;
 use rholang::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
 
@@ -41,53 +41,72 @@ fn compile(src: &str) -> Par {
 // test is about fails by NAME instead of by a silently-vacuous `[]` comparison.
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn only_receive_body(par: &Par) -> &Par {
+fn only_receive_body(par: &Par) -> Par {
     let r = par
-        .receives
-        .first()
+        .first::<Receive>()
+        .expect("resident receive decodes")
+        .map(|(receive, _)| receive)
         .expect("the program's top level is a single `for`");
-    r.body.as_ref().expect("Receive.body")
+    r.body.expect("Receive.body")
 }
 
-fn only_receive(par: &Par) -> &models::rhoapi::Receive {
-    par.receives.first().expect("a single `for` at this level")
+fn only_receive(par: &Par) -> Receive {
+    par.first::<Receive>()
+        .expect("resident receive decodes")
+        .map(|(receive, _)| receive)
+        .expect("a single `for` at this level")
 }
 
 /// The single datum of the single send at this level.
-fn only_sent_datum(par: &Par) -> &Par {
-    let s = par.sends.first().expect("a single send at this level");
+fn only_sent_datum(par: &Par) -> Par {
+    let s = par
+        .first::<Send>()
+        .expect("resident send decodes")
+        .map(|(send, _)| send)
+        .expect("a single send at this level");
     assert_eq!(s.data.len(), 1, "the send carries exactly one datum");
-    &s.data[0]
+    s.data.into_iter().next().expect("one datum")
 }
 
 /// `(target, pattern)` of the single `EMatches` carried by `par`.
-fn ematches_slots(par: &Par) -> (&Par, &Par) {
+fn ematches_slots(par: &Par) -> (Par, Par) {
     let expr = par
-        .exprs
-        .first()
+        .first::<Expr>()
+        .expect("resident expression decodes")
+        .map(|(expr, _)| expr)
         .expect("this Par must carry exactly one Expr");
     match expr
         .expr_instance
-        .as_ref()
         .expect("Expr.expr_instance must be populated")
     {
         ExprInstance::EMatchesBody(EMatches { target, pattern }) => (
-            target.as_ref().expect("EMatches.target"),
-            pattern.as_ref().expect("EMatches.pattern"),
+            target.expect("EMatches.target"),
+            pattern.expect("EMatches.pattern"),
         ),
         other => panic!("expected an EMatchesBody, got {other:?}"),
     }
 }
 
 /// The single case pattern of the single `match` carried by `par`.
-fn match_case_pattern(par: &Par) -> &Par {
-    let m = par.matches.first().expect("this Par must carry one Match");
-    let case = m.cases.first().expect("Match must have one case");
-    case.pattern.as_ref().expect("MatchCase.pattern")
+fn match_case_pattern(par: &Par) -> Par {
+    let m = par
+        .first::<Match>()
+        .expect("resident match decodes")
+        .map(|(matched, _)| matched)
+        .expect("this Par must carry one Match");
+    let case = m
+        .cases
+        .into_iter()
+        .next()
+        .expect("Match must have one case");
+    case.pattern.expect("MatchCase.pattern")
 }
 
-fn only_match(par: &Par) -> &models::rhoapi::Match {
-    par.matches.first().expect("this Par must carry one Match")
+fn only_match(par: &Par) -> Match {
+    par.first::<Match>()
+        .expect("resident match decodes")
+        .map(|(matched, _)| matched)
+        .expect("this Par must carry one Match")
 }
 
 // `create_bit_vector` is one BYTE per index, not packed bits: index `i` set is
@@ -125,8 +144,8 @@ const ADJUSTED_PAST_ONE_BINDER: &[u8] = IDX_0;
 fn a_matches_pattern_var_ref_reaches_the_enclosing_par() {
     let par = compile(r#"for (@x <- @"c") { @"o"!(10 matches =x) }"#);
     let body = only_receive_body(&par);
-    let datum = only_sent_datum(body);
-    let (target, pattern) = ematches_slots(datum);
+    let datum = only_sent_datum(&body);
+    let (target, pattern) = ematches_slots(&datum);
 
     // The two slots, so the test says WHERE the bit comes from.
     assert_eq!(target.locally_free, CLOSED, "`10` is closed");
@@ -141,7 +160,12 @@ fn a_matches_pattern_var_ref_reaches_the_enclosing_par() {
         "the Par carrying `10 matches =x` must report index 0 free"
     );
     assert_eq!(
-        body.sends[0].locally_free, IDX_0,
+        body.first::<Send>()
+            .expect("resident send decodes")
+            .expect("body carries one Send")
+            .0
+            .locally_free,
+        IDX_0,
         "the Send carrying it must report index 0 free"
     );
     assert_eq!(
@@ -164,10 +188,10 @@ fn a_matches_pattern_var_ref_reaches_the_enclosing_par() {
 fn b_match_case_pattern_var_ref_reaches_the_enclosing_par() {
     let par = compile(r#"for (@x <- @"c") { @"o"!(match 10 { =x => Nil }) }"#);
     let body = only_receive_body(&par);
-    let datum = only_sent_datum(body);
+    let datum = only_sent_datum(&body);
 
-    assert_eq!(match_case_pattern(datum).locally_free, IDX_0);
-    assert_eq!(only_match(datum).locally_free, IDX_0);
+    assert_eq!(match_case_pattern(&datum).locally_free, IDX_0);
+    assert_eq!(only_match(&datum).locally_free, IDX_0);
     assert_eq!(datum.locally_free, IDX_0);
     assert_eq!(
         body.locally_free, CLOSED,
@@ -181,7 +205,7 @@ fn b_match_case_pattern_var_ref_reaches_the_enclosing_par() {
 fn c_receive_bind_pattern_var_ref_reaches_the_enclosing_par() {
     let par = compile(r#"for (@x <- @"c") { for (@{=x} <- @"d") { Nil } }"#);
     let body = only_receive_body(&par);
-    let inner = only_receive(body);
+    let inner = only_receive(&body);
 
     assert_eq!(
         inner.binds[0].patterns[0].locally_free, IDX_0,
@@ -205,26 +229,20 @@ fn d_all_three_pattern_positions_agree() {
     let rows = [
         (
             "EMatches::pattern",
-            only_sent_datum(only_receive_body(&via_matches))
-                .locally_free
-                .as_slice(),
+            only_sent_datum(&only_receive_body(&via_matches)).locally_free,
         ),
         (
             "MatchCase::pattern",
-            only_sent_datum(only_receive_body(&via_match))
-                .locally_free
-                .as_slice(),
+            only_sent_datum(&only_receive_body(&via_match)).locally_free,
         ),
         (
             "ReceiveBind::patterns",
-            only_receive(only_receive_body(&via_receive))
-                .locally_free
-                .as_slice(),
+            only_receive(&only_receive_body(&via_receive)).locally_free,
         ),
     ];
     for (position, cache) in rows {
         assert_eq!(
-            cache,
+            cache.as_slice(),
             IDX_0,
             "{position}: a VarRef naming index 0 must reach that position's nearest semantic cache owner"
         );
@@ -244,16 +262,16 @@ fn d_all_three_pattern_positions_agree() {
 fn e_matches_pattern_var_ref_escapes_an_intervening_binder() {
     let par = compile(r#"for (@x <- @"c") { for (@y <- @"d") { @"o"!(10 matches =x) } }"#);
     let outer_body = only_receive_body(&par);
-    let inner = only_receive(outer_body);
+    let inner = only_receive(&outer_body);
     let inner_body = inner.body.as_ref().expect("inner Receive.body");
-    let (_, pattern) = ematches_slots(only_sent_datum(inner_body));
+    let (_, pattern) = ematches_slots(&only_sent_datum(inner_body));
 
     assert_eq!(
         pattern.locally_free, IDX_1,
         "inside two binders, `x` is index 1 and `y` is index 0"
     );
     assert_eq!(
-        only_sent_datum(inner_body).locally_free,
+        only_sent_datum(&inner_body).locally_free,
         IDX_1,
         "the EMatches carrier retains the semantic bit"
     );
@@ -293,10 +311,10 @@ fn e_f_the_matches_and_match_chains_are_byte_equal() {
     fn chain(src: &str) -> Vec<Vec<u8>> {
         let par = compile(src);
         let outer_body = only_receive_body(&par);
-        let inner = only_receive(outer_body);
+        let inner = only_receive(&outer_body);
         let inner_body = inner.body.as_ref().expect("inner Receive.body");
         vec![
-            only_sent_datum(inner_body).locally_free.clone(),
+            only_sent_datum(&inner_body).locally_free.clone(),
             inner_body.locally_free.clone(),
             inner.locally_free.clone(),
             outer_body.locally_free.clone(),
@@ -332,14 +350,14 @@ fn e_f_the_matches_and_match_chains_are_byte_equal() {
 fn f_match_case_pattern_var_ref_escapes_an_intervening_binder() {
     let par = compile(r#"for (@x <- @"c") { for (@y <- @"d") { @"o"!(match 10 { =x => Nil }) } }"#);
     let outer_body = only_receive_body(&par);
-    let inner = only_receive(outer_body);
+    let inner = only_receive(&outer_body);
     let inner_body = inner.body.as_ref().expect("inner Receive.body");
 
     assert_eq!(
-        match_case_pattern(only_sent_datum(inner_body)).locally_free,
+        match_case_pattern(&only_sent_datum(inner_body)).locally_free,
         IDX_1
     );
-    assert_eq!(only_sent_datum(inner_body).locally_free, IDX_1);
+    assert_eq!(only_sent_datum(&inner_body).locally_free, IDX_1);
     assert_eq!(inner_body.locally_free, CLOSED);
     assert_eq!(inner.locally_free, ADJUSTED_PAST_ONE_BINDER);
     assert_eq!(outer_body.locally_free, CLOSED);
@@ -357,8 +375,8 @@ fn f_match_case_pattern_var_ref_escapes_an_intervening_binder() {
 fn g_a_ground_matches_pattern_stays_closed() {
     let par = compile(r#"for (@x <- @"c") { @"o"!(10 matches 10) }"#);
     let body = only_receive_body(&par);
-    let datum = only_sent_datum(body);
-    let (target, pattern) = ematches_slots(datum);
+    let datum = only_sent_datum(&body);
+    let (target, pattern) = ematches_slots(&datum);
 
     assert_eq!(target.locally_free, CLOSED);
     assert_eq!(pattern.locally_free, CLOSED);
@@ -374,7 +392,7 @@ fn h_an_ordinary_bound_reference_is_still_reported() {
     let par = compile(r#"for (@x <- @"c") { @"o"!(x) }"#);
     let body = only_receive_body(&par);
     assert_eq!(
-        only_sent_datum(body).locally_free,
+        only_sent_datum(&body).locally_free,
         IDX_0,
         "a plain `x` is a BoundVar at index 0 and must be reported"
     );
@@ -392,8 +410,8 @@ fn h_an_ordinary_bound_reference_is_still_reported() {
 fn i_a_plain_name_inside_a_matches_pattern_contributes_nothing() {
     let par = compile(r#"for (@x <- @"c") { @"o"!(10 matches x) }"#);
     let body = only_receive_body(&par);
-    let datum = only_sent_datum(body);
-    let (_, pattern) = ematches_slots(datum);
+    let datum = only_sent_datum(&body);
+    let (_, pattern) = ematches_slots(&datum);
 
     assert_eq!(
         pattern.locally_free, CLOSED,
@@ -461,10 +479,11 @@ fn k_the_pattern_var_ref_depth_is_exactly_one_deeper() {
     use models::rhoapi::connective::ConnectiveInstance;
 
     let par = compile(r#"for (@x <- @"c") { @"o"!(10 matches =x) }"#);
-    let (_, pattern) = ematches_slots(only_sent_datum(only_receive_body(&par)));
+    let (_, pattern) = ematches_slots(&only_sent_datum(&only_receive_body(&par)));
     let conn = pattern
-        .connectives
-        .first()
+        .first::<Connective>()
+        .expect("resident connective decodes")
+        .map(|(connective, _)| connective)
         .expect("the pattern is a single VarRef connective");
     match conn
         .connective_instance
@@ -485,10 +504,15 @@ fn k_the_pattern_var_ref_depth_is_exactly_one_deeper() {
 
     // The same content in a `for` pattern — also exactly one level deeper.
     let sibling = compile(r#"for (@x <- @"c") { for (@{=x} <- @"d") { Nil } }"#);
-    let sib_pattern = &only_receive(only_receive_body(&sibling)).binds[0].patterns[0];
-    match sib_pattern.connectives[0]
+    let sibling_body = only_receive_body(&sibling);
+    let sibling_receive = only_receive(&sibling_body);
+    let sib_pattern = &sibling_receive.binds[0].patterns[0];
+    match sib_pattern
+        .first::<Connective>()
+        .expect("resident connective decodes")
+        .expect("the sibling pattern is a single VarRef connective")
+        .0
         .connective_instance
-        .as_ref()
         .expect("Connective.connective_instance")
     {
         ConnectiveInstance::VarRefBody(v) => assert_eq!(
@@ -515,8 +539,8 @@ fn k_the_pattern_var_ref_depth_is_exactly_one_deeper() {
 fn l_connective_used_still_reads_the_target_alone() {
     let par = compile(r#"for (@x <- @"c") { @"o"!(10 matches ~10) }"#);
     let body = only_receive_body(&par);
-    let datum = only_sent_datum(body);
-    let (target, pattern) = ematches_slots(datum);
+    let datum = only_sent_datum(&body);
+    let (target, pattern) = ematches_slots(&datum);
 
     assert!(!target.connective_used, "`10` is concrete");
     assert!(

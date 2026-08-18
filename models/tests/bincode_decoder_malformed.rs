@@ -53,6 +53,7 @@
 //! same disposition on both sides, which is exactly the property under test.
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::io::{Read, Write};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Mutex, MutexGuard};
@@ -259,27 +260,32 @@ fn encodings() -> Vec<(String, Kind, Vec<u8>)> {
         ));
     }
     let par = corpus::all_par_fields();
-    out.push(component_encoding("Send", Kind::Send, &par.sends[0]));
-    out.push(component_encoding(
-        "Receive",
-        Kind::Receive,
-        &par.receives[0],
-    ));
-    out.push(component_encoding("New", Kind::New, &par.news[0]));
-    out.push(component_encoding("Expr", Kind::Expr, &par.exprs[0]));
-    out.push(component_encoding("Match", Kind::Match, &par.matches[0]));
+    let send = par.first::<Send>().unwrap().unwrap().0;
+    out.push(component_encoding("Send", Kind::Send, &send));
+    let receive = par.first::<Receive>().unwrap().unwrap().0;
+    out.push(component_encoding("Receive", Kind::Receive, &receive));
+    let new = par.first::<New>().unwrap().unwrap().0;
+    out.push(component_encoding("New", Kind::New, &new));
+    let expr = par.first::<Expr>().unwrap().unwrap().0;
+    out.push(component_encoding("Expr", Kind::Expr, &expr));
+    let matched = par.first::<Match>().unwrap().unwrap().0;
+    out.push(component_encoding("Match", Kind::Match, &matched));
+    let unforgeable = par.first::<GUnforgeable>().unwrap().unwrap().0;
     out.push(component_encoding(
         "GUnforgeable",
         Kind::GUnforgeable,
-        &par.unforgeables[0],
+        &unforgeable,
     ));
-    out.push(component_encoding("Bundle", Kind::Bundle, &par.bundles[0]));
+    let bundle = par.first::<Bundle>().unwrap().unwrap().0;
+    out.push(component_encoding("Bundle", Kind::Bundle, &bundle));
+    let connective = par.first::<Connective>().unwrap().unwrap().0;
     out.push(component_encoding(
         "Connective",
         Kind::Connective,
-        &par.connectives[0],
+        &connective,
     ));
-    out.push(component_encoding("If", Kind::If, &par.conditionals[0]));
+    let conditional = par.first::<If>().unwrap().unwrap().0;
+    out.push(component_encoding("If", Kind::If, &conditional));
     out
 }
 
@@ -312,6 +318,45 @@ enum Kind {
     TaggedContinuation,
 }
 
+impl Kind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Par => "Par",
+            Self::Send => "Send",
+            Self::Receive => "Receive",
+            Self::New => "New",
+            Self::Expr => "Expr",
+            Self::Match => "Match",
+            Self::GUnforgeable => "GUnforgeable",
+            Self::Bundle => "Bundle",
+            Self::Connective => "Connective",
+            Self::If => "If",
+            Self::ListParWithRandom => "ListParWithRandom",
+            Self::BindPattern => "BindPattern",
+            Self::TaggedContinuation => "TaggedContinuation",
+        }
+    }
+
+    fn parse(name: &str) -> Self {
+        match name {
+            "Par" => Self::Par,
+            "Send" => Self::Send,
+            "Receive" => Self::Receive,
+            "New" => Self::New,
+            "Expr" => Self::Expr,
+            "Match" => Self::Match,
+            "GUnforgeable" => Self::GUnforgeable,
+            "Bundle" => Self::Bundle,
+            "Connective" => Self::Connective,
+            "If" => Self::If,
+            "ListParWithRandom" => Self::ListParWithRandom,
+            "BindPattern" => Self::BindPattern,
+            "TaggedContinuation" => Self::TaggedContinuation,
+            other => panic!("unknown malformed fixture kind {other:?}"),
+        }
+    }
+}
+
 fn check<F>(label: F, kind: Kind, bytes: &[u8], rejections: &mut usize)
 where F: FnOnce() -> String {
     match kind {
@@ -337,23 +382,23 @@ where F: FnOnce() -> String {
 /// allocator retention in the long-lived libtest process. Every child inherits
 /// the parent's cgroup, and every individual decode is additionally checked by
 /// the 8 MiB allocation gate above.
-/// Offsets per isolated worker. One offset expands to five byte/variant
-/// mutations or six hostile-length mutations, and each mutation runs both
-/// decoders. The derived decoder may retain freed arenas until the worker
-/// exits, so the resource unit is the number of *decode attempts*, not merely
-/// the number of offsets. Four offsets bound a worker to at most 24 mutations
-/// (48 decoder invocations) while still amortising process startup. The parent
-/// starts the next two-worker window only after both preceding workers exit, so
-/// the operating system returns every retained arena between windows without
-/// dropping or sampling any mutation.
-const MUTATION_BATCH_OFFSETS: usize = 4;
-/// Independent batches execute in a small fixed-width window. Two workers use
-/// otherwise idle cores without multiplying the post-fix resident-set bound
-/// back toward the pre-fix multi-gigabyte peak. Results are joined and folded
-/// in source order, so scheduling cannot affect counts or diagnostics.
-const MUTATION_BATCH_WORKERS: usize = 2;
+/// One offset expands to five byte/variant mutations or six hostile-length
+/// mutations, and every mutation runs both decoders. Each fixture is divided
+/// evenly among four short-lived workers. Within one worker, sequential
+/// decodes reuse allocator arenas; at the fixture boundary the process returns
+/// those arenas to the operating system. The allocation tracker independently
+/// proves the live-heap bound of every decode, so thousands of smaller process
+/// batches would add startup cost without strengthening the resource proof.
+/// The parent serializes the corpus once and pipes only the selected fixture
+/// into each worker.
+///
+/// Four workers use a small, fixed fraction of the target host's physical
+/// cores. Results are joined and folded in source order, so scheduling cannot
+/// affect counts or diagnostics.
+const MUTATION_BATCH_WORKERS: usize = 4;
 const MUTATION_CHILD_FAMILY: &str = "BINCODE_MALFORMED_CHILD_FAMILY";
-const MUTATION_CHILD_FIXTURE: &str = "BINCODE_MALFORMED_CHILD_FIXTURE";
+const MUTATION_CHILD_KIND: &str = "BINCODE_MALFORMED_CHILD_KIND";
+const MUTATION_CHILD_LABEL: &str = "BINCODE_MALFORMED_CHILD_LABEL";
 const MUTATION_CHILD_START: &str = "BINCODE_MALFORMED_CHILD_START";
 const MUTATION_CHILD_END: &str = "BINCODE_MALFORMED_CHILD_END";
 const MUTATION_BATCH_RESULT: &str = "BINCODE_MALFORMED_BATCH_RESULT";
@@ -398,33 +443,39 @@ fn run_mutation_batches(family: MutationFamily) -> (usize, usize) {
     let mut mutations = 0usize;
     let mut rejections = 0usize;
 
-    for (fixture, (label, _kind, bytes)) in fixtures.iter().enumerate() {
+    for (label, kind, bytes) in &fixtures {
         let count = family.offset_count(bytes.len());
-        let window_stride = MUTATION_BATCH_OFFSETS * MUTATION_BATCH_WORKERS;
-        for window_start in (0..count).step_by(window_stride) {
-            let executable_path = executable.as_path();
-            let label_text = label.as_str();
-            let results = std::thread::scope(|scope| {
-                let mut handles = Vec::with_capacity(MUTATION_BATCH_WORKERS);
-                for worker in 0..MUTATION_BATCH_WORKERS {
-                    let start = window_start + worker * MUTATION_BATCH_OFFSETS;
-                    if start >= count {
-                        break;
-                    }
-                    let end = (start + MUTATION_BATCH_OFFSETS).min(count);
-                    handles.push(scope.spawn(move || {
-                        run_mutation_batch(executable_path, family, fixture, label_text, start, end)
-                    }));
+        let offsets_per_worker = count.div_ceil(MUTATION_BATCH_WORKERS);
+        let executable_path = executable.as_path();
+        let label_text = label.as_str();
+        let results = std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(MUTATION_BATCH_WORKERS);
+            for worker in 0..MUTATION_BATCH_WORKERS {
+                let start = worker * offsets_per_worker;
+                if start >= count {
+                    break;
                 }
-                handles
-                    .into_iter()
-                    .map(|handle| handle.join().expect("malformed mutation worker panicked"))
-                    .collect::<Vec<_>>()
-            });
-            for (batch_mutations, batch_rejections) in results {
-                mutations += batch_mutations;
-                rejections += batch_rejections;
+                let end = (start + offsets_per_worker).min(count);
+                handles.push(scope.spawn(move || {
+                    run_mutation_batch(
+                        executable_path,
+                        family,
+                        *kind,
+                        label_text,
+                        bytes,
+                        start,
+                        end,
+                    )
+                }));
             }
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("malformed mutation worker panicked"))
+                .collect::<Vec<_>>()
+        });
+        for (batch_mutations, batch_rejections) in results {
+            mutations += batch_mutations;
+            rejections += batch_rejections;
         }
     }
     (mutations, rejections)
@@ -433,27 +484,49 @@ fn run_mutation_batches(family: MutationFamily) -> (usize, usize) {
 fn run_mutation_batch(
     executable: &std::path::Path,
     family: MutationFamily,
-    fixture: usize,
+    kind: Kind,
     label: &str,
+    bytes: &[u8],
     start: usize,
     end: usize,
 ) -> (usize, usize) {
-    let output = Command::new(executable)
+    let mut child = Command::new(executable)
         .arg("mutation_batch_child")
         .arg("--exact")
         .arg("--ignored")
         .arg("--nocapture")
         .env(MUTATION_CHILD_FAMILY, family.name())
-        .env(MUTATION_CHILD_FIXTURE, fixture.to_string())
+        .env(MUTATION_CHILD_KIND, kind.name())
+        .env(MUTATION_CHILD_LABEL, label)
         .env(MUTATION_CHILD_START, start.to_string())
         .env(MUTATION_CHILD_END, end.to_string())
-        .output()
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .unwrap_or_else(|error| {
             panic!(
                 "failed to start {} mutation child for {label}[{start}..{end}]: {error}",
                 family.name()
             )
         });
+    child
+        .stdin
+        .take()
+        .expect("piped malformed worker stdin")
+        .write_all(bytes)
+        .unwrap_or_else(|error| {
+            panic!(
+                "failed to send {} mutation fixture {label}[{start}..{end}]: {error}",
+                family.name()
+            )
+        });
+    let output = child.wait_with_output().unwrap_or_else(|error| {
+        panic!(
+            "failed to join {} mutation child for {label}[{start}..{end}]: {error}",
+            family.name()
+        )
+    });
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -508,16 +581,21 @@ fn mutation_batch_child() {
         return;
     };
     let family = MutationFamily::parse(&family_name);
-    let fixture = required_child_usize(MUTATION_CHILD_FIXTURE);
+    let kind = Kind::parse(
+        &std::env::var(MUTATION_CHILD_KIND)
+            .unwrap_or_else(|_| panic!("mutation child requires {MUTATION_CHILD_KIND}")),
+    );
+    let label = std::env::var(MUTATION_CHILD_LABEL)
+        .unwrap_or_else(|_| panic!("mutation child requires {MUTATION_CHILD_LABEL}"));
     let start = required_child_usize(MUTATION_CHILD_START);
     let end = required_child_usize(MUTATION_CHILD_END);
-    let (label, kind, bytes) = encodings()
-        .into_iter()
-        .nth(fixture)
-        .unwrap_or_else(|| panic!("mutation child fixture {fixture} is out of range"));
+    let mut bytes = Vec::new();
+    std::io::stdin()
+        .read_to_end(&mut bytes)
+        .expect("read malformed fixture from parent stdin");
     let count = family.offset_count(bytes.len());
     assert!(
-        start <= end && end <= count && end - start <= MUTATION_BATCH_OFFSETS,
+        start <= end && end <= count,
         "invalid {} mutation batch {start}..{end} for {label} with {count} offsets",
         family.name()
     );

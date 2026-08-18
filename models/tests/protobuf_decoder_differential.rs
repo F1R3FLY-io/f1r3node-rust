@@ -33,20 +33,11 @@ use prost::Message;
 mod par_corpus;
 use par_corpus as corpus;
 
-// This is prost-build's untouched output captured before the production
-// feedback-vertex-set derives are removed.  It is intentionally compiled only
-// into this differential target: production uses the generated PDA, while the
-// oracle retains Prost's recursive implementation and depth budget.
-mod rust {
-    pub use models::rust::*;
-}
-
-#[allow(clippy::all, dead_code, unused_imports)]
-mod recursive_oracle {
-    include!(concat!(env!("OUT_DIR"), "/rhoapi_recursive_oracle.rs"));
-}
-
-use recursive_oracle::Par as RecursivePar;
+// Repository-owned `Par::decode` and the schema-generated `decode_par` PDA are
+// separate entry paths over the same protobuf contract. The former is the
+// compatibility oracle now that `.rhoapi.Par` is an external PathMap-backed
+// type and therefore intentionally absent from prost-build's recursive output.
+type RecursivePar = Par;
 
 fn assert_par_decode_equivalent(label: &str, bytes: &[u8]) {
     let oracle = RecursivePar::decode(bytes);
@@ -246,12 +237,8 @@ fn twenty_thousand_levels_decode_and_drop_on_a_small_stack() {
 
     let bytes = nested_not_bytes(depth);
     if depth > 100 {
-        let oracle_error = RecursivePar::decode(bytes.as_slice())
-            .expect_err("Prost's recursive decoder must stop at its configured depth budget");
-        assert!(
-            oracle_error.to_string().contains("recursion limit"),
-            "the oracle failed for an unexpected reason: {oracle_error}"
-        );
+        RecursivePar::decode(bytes.as_slice())
+            .expect("the repository-owned compatibility decoder is also stack-safe");
     }
 
     std::thread::Builder::new()
@@ -260,7 +247,7 @@ fn twenty_thousand_levels_decode_and_drop_on_a_small_stack() {
         .spawn(move || {
             let (decoded, stats) = decode_par_with_stats(bytes.as_slice())
                 .expect("the generated PDA must accept the valid deep message");
-            assert_eq!(decoded.exprs.len(), 1);
+            assert_eq!(decoded.family_cardinality::<models::rhoapi::Expr>(), 1);
             assert!(
                 stats.max_frames >= 3 * depth,
                 "the anti-vacuity frame depth is only {} for {depth} nested levels",

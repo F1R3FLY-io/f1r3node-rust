@@ -57,7 +57,7 @@
 use std::collections::HashMap;
 
 use models::rhoapi::connective::ConnectiveInstance::*;
-use models::rhoapi::{Connective, ConnectiveBody, Par, Send};
+use models::rhoapi::{Connective, ConnectiveBody, Expr, Match, Par, Send};
 use models::rust::rholang::implicits::vector_par;
 use models::rust::utils::{new_free_map, new_freevar_par, new_gint_par, new_send};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
@@ -273,10 +273,11 @@ const RED_5_SOURCE: &str = "match Nil { @0!(~{x /\\ 8}) | @1!(~{y /\\ 9}) => Nil
 fn red_5_pattern() -> Par {
     let par = Compiler::source_to_adt_with_normalizer_env(RED_5_SOURCE, HashMap::new())
         .expect("a match case pattern may contain a binding-bodied negation");
-    par.matches
-        .first()
-        .and_then(|m| m.cases.first())
-        .and_then(|c| c.pattern.clone())
+    par.first::<Match>()
+        .expect("resident match decodes")
+        .map(|(matched, _)| matched)
+        .and_then(|matched| matched.cases.into_iter().next())
+        .and_then(|case| case.pattern)
         .expect("the single match case has a pattern")
 }
 
@@ -292,11 +293,12 @@ fn normalizer_emits_level_zero_in_every_negation_body() {
     let par = Compiler::source_to_adt_with_normalizer_env(RED_5_SOURCE, HashMap::new())
         .expect("★ a binding-bodied negation in a match case is ACCEPTED");
 
-    let case = par
-        .matches
-        .first()
-        .and_then(|m| m.cases.first())
-        .expect("one match case");
+    let matched = par
+        .first::<Match>()
+        .expect("resident match decodes")
+        .map(|(matched, _)| matched)
+        .expect("one match");
+    let case = matched.cases.first().expect("one match case");
 
     assert_eq!(
         case.free_count, 0,
@@ -308,35 +310,43 @@ fn normalizer_emits_level_zero_in_every_negation_body() {
         .pattern
         .as_ref()
         .expect("case pattern")
-        .sends
-        .iter()
+        .decode_occurrences::<Send>()
+        .into_iter()
         .map(|s| {
             let datum = s.data.first().expect("one datum per send");
-            let body = match &datum
-                .connectives
-                .first()
+            let body = match datum
+                .first::<Connective>()
+                .expect("resident connective decodes")
+                .map(|(connective, _)| connective)
                 .expect("a connective")
                 .connective_instance
             {
-                Some(ConnNotBody(b)) => b.clone(),
+                Some(ConnNotBody(b)) => b,
                 other => panic!("expected ConnNotBody, got {:?}", other),
             };
-            let conjuncts = match &body
-                .connectives
-                .first()
+            let conjuncts = match body
+                .first::<Connective>()
+                .expect("resident connective decodes")
+                .map(|(connective, _)| connective)
                 .expect("a connective")
                 .connective_instance
             {
-                Some(ConnAndBody(cb)) => cb.ps.clone(),
+                Some(ConnAndBody(cb)) => cb.ps,
                 other => panic!("expected ConnAndBody, got {:?}", other),
             };
-            match &conjuncts[0].exprs[0].expr_instance {
+            match conjuncts[0]
+                .first::<Expr>()
+                .expect("resident expression decodes")
+                .expect("conjunct carries one expression")
+                .0
+                .expr_instance
+            {
                 Some(models::rhoapi::expr::ExprInstance::EVarBody(models::rhoapi::EVar {
                     v:
                         Some(models::rhoapi::Var {
                             var_instance: Some(models::rhoapi::var::VarInstance::FreeVar(level)),
                         }),
-                })) => *level,
+                })) => level,
                 other => panic!("expected a FreeVar, got {:?}", other),
             }
         })

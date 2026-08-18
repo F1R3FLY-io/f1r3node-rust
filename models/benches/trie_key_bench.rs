@@ -28,7 +28,7 @@ mod paired;
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
-use models::rhoapi::{Connective, ETuple, Expr, Par};
+use models::rhoapi::{Connective, ETuple, Expr, GUnforgeable, Par};
 use models::rust::canonical_path::encode_trie_path;
 use models::rust::pathmap_crate_type_mapper::{eval_stable_epathmap, eval_stable_par_for_test};
 use models::rust::rholang::protobuf_encoder;
@@ -93,13 +93,16 @@ fn unstable_chain(depth: usize) -> Par {
 }
 
 // ===========================================================================
-// §B  ★ the "before" arm of the classifier cell — the pre-change body, verbatim
+// §B  ★ representation-independent recursive classifier specification
 // ===========================================================================
 
-/// The pre-change `eval_stable_par`, transcribed.
+/// The pre-change `eval_stable_par` semantics, expressed through the current
+/// typed `ParBag` accessors.
 ///
-/// ⚠ Quoted in full so a reader can check the transcription rather than trust it.
-/// `models/src/rust/pathmap_crate_type_mapper.rs`, before the PDA conversion:
+/// The historical generated representation used direct repeated-field slices;
+/// the quotation below records that semantic oracle. The executable reference
+/// uses total/family cardinality and `first<T>()`, so it does not construct a
+/// repeated-field or `Vec<Par>` shadow merely to recover the old syntax.
 ///
 /// ```text
 ///   pub(crate) fn eval_stable_par(par: &Par) -> bool {
@@ -130,23 +133,29 @@ fn unstable_chain(depth: usize) -> Par {
 ///   }
 /// ```
 fn recursive_stable_par(par: &Par) -> bool {
-    if !par.sends.is_empty()
-        || !par.receives.is_empty()
-        || !par.news.is_empty()
-        || !par.matches.is_empty()
-        || !par.bundles.is_empty()
-        || !par.connectives.is_empty()
-        || !par.conditionals.is_empty()
-        || !par.locally_free.is_empty()
-        || par.connective_used
-    {
+    if par.cardinality() != 1 || !par.locally_free().is_empty() || par.connective_used() {
         return false;
     }
-    match (par.exprs.as_slice(), par.unforgeables.as_slice()) {
-        ([], [unforgeable]) => {
+    match (
+        par.family_cardinality::<Expr>(),
+        par.family_cardinality::<GUnforgeable>(),
+    ) {
+        (0, 1) => {
+            let unforgeable = par
+                .first::<GUnforgeable>()
+                .expect("canonical resident ParBag endpoint")
+                .expect("the cardinality check proved one unforgeable")
+                .0;
             matches!(unforgeable.unf_instance, Some(UnfInstance::GPrivateBody(_)))
         }
-        ([expr], []) => recursive_stable_expr(expr),
+        (1, 0) => {
+            let expr = par
+                .first::<Expr>()
+                .expect("canonical resident ParBag endpoint")
+                .expect("the cardinality check proved one expression")
+                .0;
+            recursive_stable_expr(&expr)
+        }
         _ => false,
     }
 }

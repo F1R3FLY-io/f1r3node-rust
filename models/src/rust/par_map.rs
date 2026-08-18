@@ -50,14 +50,14 @@ impl ParMap {
 
     fn connective_used(map: &Vec<(Par, Par)>) -> bool {
         map.iter()
-            .any(|(k, v)| k.connective_used || v.connective_used)
+            .any(|(k, v)| k.connective_used() || v.connective_used())
     }
 
     fn update_locally_free(ps: &Vec<(Par, Par)>) -> Vec<u8> {
         ps.iter().fold(Vec::new(), |acc, (key, value)| {
             union(
                 acc,
-                union(key.locally_free.clone(), value.locally_free.clone()),
+                union(key.locally_free().to_vec(), value.locally_free().to_vec()),
             )
         })
     }

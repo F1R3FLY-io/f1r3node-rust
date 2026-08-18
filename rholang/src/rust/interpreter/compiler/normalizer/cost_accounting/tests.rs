@@ -15,7 +15,7 @@
 //!  4. **Pattern rejection** — cost syntax is rejected in match-case, receive-bind,
 //!     and contract-formal pattern positions.
 
-use models::rhoapi::Par;
+use models::rhoapi::{New, Par, Receive};
 
 use super::ir::{Sig, DOMAIN_BOUND};
 use super::sig::{canon_bound, canon_ground};
@@ -386,10 +386,12 @@ fn signed_join_normalizes_identically_to_unsigned_join() {
 
     // The data join keeps its NATURAL arity — exactly the two data clauses, with
     // no fuel bind folded in.
-    let body = signed.news[0].p.as_ref().expect("new body");
-    assert_eq!(body.receives.len(), 1, "one receive (the join)");
+    let news = signed.decode_occurrences::<New>();
+    let body = news[0].p.as_ref().expect("new body");
+    let receives = body.decode_occurrences::<Receive>();
+    assert_eq!(receives.len(), 1, "one receive (the join)");
     assert_eq!(
-        body.receives[0].binds.len(),
+        receives[0].binds.len(),
         2,
         "the data join has exactly its 2 natural clauses — no fuel bind"
     );

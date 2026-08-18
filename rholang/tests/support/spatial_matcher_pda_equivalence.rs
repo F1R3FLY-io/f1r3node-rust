@@ -415,13 +415,19 @@ fn recursive_oracle_and_pda_agree_on_the_semantic_corpus() {
         send(one(), vec![seven()], false),
         send(free(0), vec![free(1)], true),
     );
-    let duplicate = send(one(), vec![seven()], false).sends[0].clone();
+    let duplicate = send(one(), vec![seven()], false)
+        .first::<Send>()
+        .unwrap()
+        .unwrap()
+        .0;
     let duplicate_target = models::par_from_default! {
         sends: vec![duplicate.clone(), duplicate.clone(), duplicate],
         ..Default::default()
     };
     let mut duplicate_pattern = send(one(), vec![free(0)], true);
-    duplicate_pattern.exprs.push(new_freevar_expr(1));
+    let mut expressions = duplicate_pattern.take_occurrences::<Expr>();
+    expressions.push(new_freevar_expr(1));
+    duplicate_pattern.replace_exprs(expressions);
     duplicate_pattern.connective_used = true;
     compare(
         "Par remainder over byte-identical sends",
@@ -831,8 +837,8 @@ fn production_list_pda_connective_candidate_algebra_is_conservative_and_exactly_
     // matches them; these compound cases prove the fast transition against
     // the pre-PDA oracle in both directions.
     let mut compound = integer(0);
-    let mut second = integer(1);
-    compound.exprs.append(&mut second.exprs);
+    let second = integer(1);
+    compound = compound.append(second);
     compare(
         "pure OR carrier accepts the whole compound target",
         compound.clone(),

@@ -188,18 +188,18 @@ fn event_hash_bytes_match_legacy_bincode_for_every_container_position() {
         ),
         ("send data+chan", {
             let mut par = Par::default();
-            par.sends = vec![Send {
+            par.replace_sends(vec![Send {
                 chan: Some(map_par()),
                 data: vec![map_par(), gstring_par("d")],
                 persistent: true,
                 locally_free: vec![4],
                 connective_used: false,
-            }];
+            }]);
             par
         }),
         ("receive bind+body+condition", {
             let mut par = Par::default();
-            par.receives = vec![Receive {
+            par.replace_receives(vec![Receive {
                 binds: vec![ReceiveBind {
                     patterns: vec![map_par()],
                     source: Some(map_par()),
@@ -213,25 +213,25 @@ fn event_hash_bytes_match_legacy_bincode_for_every_container_position() {
                 locally_free: vec![8],
                 connective_used: false,
                 condition: Some(map_par()),
-            }];
+            }]);
             par
         }),
         ("new body+injection", {
             let mut par = Par::default();
             let mut injections = std::collections::BTreeMap::new();
             injections.insert("rho:injection".to_string(), map_par());
-            par.news = vec![New {
+            par.replace_news(vec![New {
                 bind_count: 2,
                 p: Some(map_par()),
                 uri: vec!["rho:io:stdout".to_string()],
                 injections,
                 locally_free: vec![16],
-            }];
+            }]);
             par
         }),
         ("match target+case+guard", {
             let mut par = Par::default();
-            par.matches = vec![Match {
+            par.replace_matches(vec![Match {
                 target: Some(map_par()),
                 cases: vec![MatchCase {
                     pattern: Some(gstring_par("p")),
@@ -241,32 +241,32 @@ fn event_hash_bytes_match_legacy_bincode_for_every_container_position() {
                 }],
                 locally_free: Vec::new(),
                 connective_used: true,
-            }];
+            }]);
             par
         }),
         ("if all three arms", {
             let mut par = Par::default();
-            par.conditionals = vec![If {
+            par.replace_conditionals(vec![If {
                 condition: Some(map_par()),
                 if_true: Some(map_par()),
                 if_false: Some(map_par()),
                 locally_free: vec![32],
                 connective_used: false,
-            }];
+            }]);
             par
         }),
         ("bundle body", {
             let mut par = Par::default();
-            par.bundles = vec![Bundle {
+            par.replace_bundles(vec![Bundle {
                 body: Some(map_par()),
                 write_flag: true,
                 read_flag: false,
-            }];
+            }]);
             par
         }),
         ("connective and/or/not", {
             let mut par = Par::default();
-            par.connectives = vec![
+            par.replace_connectives(vec![
                 Connective {
                     connective_instance: Some(ConnectiveInstance::ConnAndBody(ConnectiveBody {
                         ps: vec![map_par()],
@@ -278,8 +278,8 @@ fn event_hash_bytes_match_legacy_bincode_for_every_container_position() {
                 Connective {
                     connective_instance: Some(ConnectiveInstance::ConnBool(true)),
                 },
-            ];
-            par.connective_used = true;
+            ]);
+            par.replace_connective_used(true);
             par
         }),
     ];
@@ -475,13 +475,13 @@ fn par_strategy() -> impl Strategy<Value = Par> {
             )
                 .prop_map(|(chan, data)| {
                     let mut par = Par::default();
-                    par.sends = vec![Send {
+                    par.replace_sends(vec![Send {
                         chan: Some(chan),
                         data,
                         persistent: false,
                         locally_free: vec![2],
                         connective_used: false,
-                    }];
+                    }]);
                     par
                 }),
             proptest::collection::vec(inner.clone(), 1..3).prop_map(|ps| {

@@ -14,8 +14,8 @@
 //! | § | property | the mistake it forecloses |
 //! |---|---|---|
 //! | 1 | the prost order IS ascending minimum tag, per message | reusing the bincode order table for the protobuf driver |
-//! | 2 | `Par` and `TaggedContinuation` differ from declaration order — and no other message does | "the two orders are the same in practice" |
-//! | 3 | `Par` is a feedback vertex set of size 1, and the `Par`-free chain is 3 edges | "one `impl Drop` is probably enough" |
+//! | 2 | `TaggedContinuation` differs between generated formats; external `Par` is tested on its hand-written surfaces | "the two orders are the same in practice" |
+//! | 3 | external `Par` breaks every generated cycle, and the longest generated path to that boundary is 3 edges | "externalizing the type probably removed the recursion" |
 //! | 4 | every derive surface is dispositioned and the registry is not degenerate | a hand-picked driver list that missed `Hash` |
 //!
 //! ⚠ None of these is a byte-level claim, so none of them can fork consensus by
@@ -23,6 +23,8 @@
 //! is the layer at which a wrong belief becomes a wrong encoder.
 
 use std::collections::{BTreeMap, BTreeSet};
+
+use prost::Message;
 
 use models::rust::rholang::bincode_schema_tables::CONFORMANCE_REGISTRY;
 use models::rust::rholang::protobuf_schema::{ProtobufField, ProtobufKind};
@@ -46,7 +48,7 @@ use models::rust::rholang::schema_meta_tables::{
 #[test]
 fn the_four_generated_tables_are_populated() {
     assert!(
-        CONFORMANCE_REGISTRY.len() >= 57,
+        CONFORMANCE_REGISTRY.len() >= 56,
         "the bincode registry collapsed to {} rows",
         CONFORMANCE_REGISTRY.len()
     );
@@ -65,9 +67,20 @@ fn the_four_generated_tables_are_populated() {
         SCHEMA_CHILDREN.len(),
         PROTOBUF_CONFORMANCE_REGISTRY.len()
     );
+    assert!(!SCHEMA_SCC.is_empty(), "the SCC decomposition is empty");
     assert!(
-        !SCHEMA_SCC.is_empty() && !RECURSIVE_TYPES.is_empty(),
-        "the SCC decomposition is empty, so every claim about recursion below is vacuous"
+        SCHEMA_SCC.iter().all(|component| component.len() == 1),
+        "external PathMap-backed Par must break every generated cycle; found {:?}",
+        SCHEMA_SCC
+            .iter()
+            .filter(|component| component.len() != 1)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        RECURSIVE_TYPES.is_empty(),
+        "the generated child graph is acyclic after externalizing Par, but RECURSIVE_TYPES is \
+         {:?}",
+        RECURSIVE_TYPES
     );
     assert!(
         DERIVE_DISPOSITION_REGISTRY.len() >= 8 * PROTOBUF_CONFORMANCE_REGISTRY.len(),
@@ -85,6 +98,14 @@ fn the_four_generated_tables_are_populated() {
     assert_eq!(
         bincode, protobuf,
         "the two registries must name the same messages"
+    );
+    assert!(
+        !bincode.contains("Par"),
+        "repository-owned PathMap Par must remain outside descriptor-generated codec tables"
+    );
+    assert!(
+        SCHEMA_CHILDREN.iter().any(|(name, _)| *name == "Par"),
+        "external Par must remain in the containment graph even though it has no generated program"
     );
 }
 
@@ -171,7 +192,7 @@ fn the_two_tables_are_permutations_of_one_another() {
 }
 
 // ===========================================================================
-// §2  ★★ The two messages where the orders DIFFER — and only those two
+// §2  ★★ The generated message where the orders DIFFER — and only it
 // ===========================================================================
 
 /// ★★★ **The whole reason the order table is per-format, made executable.**
@@ -189,12 +210,12 @@ fn the_two_tables_are_permutations_of_one_another() {
 ///
 /// So this test asserts the difference in both directions:
 ///
-/// * the two named messages DO differ, arm for arm;
-/// * **no other message differs** — which is what makes the two named ones a
-///   finding rather than an anecdote, and what fails if a future `.proto` edit
-///   introduces a third.
+/// * `TaggedContinuation` differs, arm for arm;
+/// * **no other generated message differs**. Repository-owned `Par` is absent
+///   by construction and its independent tag-order mutation proof lives in
+///   `protobuf_encoder_differential.rs`.
 #[test]
-fn exactly_two_messages_order_differently_under_the_two_formats() {
+fn exactly_one_generated_message_orders_differently_under_the_two_formats() {
     let protobuf: BTreeMap<&str, &[ProtobufField]> =
         PROTOBUF_CONFORMANCE_REGISTRY.iter().copied().collect();
 
@@ -210,48 +231,18 @@ fn exactly_two_messages_order_differently_under_the_two_formats() {
 
     assert_eq!(
         differing,
-        vec!["Par", "TaggedContinuation"],
-        "EXACTLY two messages must order differently under serde and protobuf. Found {:?}.\n\
+        vec!["TaggedContinuation"],
+        "EXACTLY one generated message must order differently under serde and protobuf. Found {:?}.\n\
          \n\
-         If this grew, a `.proto` edit introduced a third message whose declaration order and \
+         If this grew, a `.proto` edit introduced another message whose declaration order and \
          tag order disagree — which is fine, but it means any code that assumed \"the orders \
-         coincide except for the two known cases\" is now wrong. If it SHRANK, an emitter has \
-         stopped applying its own sort key, and one of the two tables is now describing the \
+         coincide except for the known case\" is now wrong. If it SHRANK, an emitter has \
+         stopped applying its own sort key, and one table is now describing the \
          other format's layout.",
         differing
     );
 
-    // ── the exact orders, so "differs" cannot be satisfied by differing wrongly ──
-    let par_serde: Vec<&str> = CONFORMANCE_REGISTRY
-        .iter()
-        .find(|(n, _, _)| *n == "Par")
-        .map(|(_, _, names)| names.to_vec())
-        .expect("Par is in the bincode registry");
-    assert_eq!(
-        par_serde,
-        vec![
-            "sends",
-            "receives",
-            "news",
-            "exprs",
-            "matches",
-            "unforgeables",
-            "bundles",
-            "connectives",
-            "conditionals",
-            "locally_free",
-            "connective_used",
-        ],
-        "`Par`'s SERDE order is declaration order: tags 1,2,4,5,6,7,11,8,12,9,10"
-    );
-    let par_protobuf: Vec<u32> = protobuf["Par"].iter().map(|f| f.tag).collect();
-    assert_eq!(
-        par_protobuf,
-        vec![1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12],
-        "`Par`'s PROTOBUF order is ascending tag — `bundles` (11) and `conditionals` (12) move \
-         to the END, past `connectives` (8), `locally_free` (9) and `connective_used` (10)"
-    );
-
+    // ── the exact order, so "differs" cannot be satisfied by differing wrongly ──
     let tc_serde: Vec<&str> = CONFORMANCE_REGISTRY
         .iter()
         .find(|(n, _, _)| *n == "TaggedContinuation")
@@ -310,14 +301,26 @@ fn locally_free_is_ordinary_bytes_on_the_protobuf_wire() {
         }
     }
     assert_eq!(
-        seen, 12,
-        "the schema has 12 `locally_free` fields (the count `models/build.rs` cross-checks \
-         against its own textual rewrite); the prost table carries {seen}"
+        seen, 11,
+        "the generated schema has 11 `locally_free` fields; external PathMap-backed `Par` owns \
+         the twelfth protobuf field independently, so the generated table carries {seen}"
     );
+
+    let original = models::rhoapi::Par::default().with_locally_free(vec![0xA5, 0x5A, 0x01]);
+    let encoded = original.encode_to_vec();
+    assert!(
+        encoded
+            .windows(5)
+            .any(|window| window == [0x4A, 0x03, 0xA5, 0x5A, 0x01]),
+        "external Par did not emit locally_free as ordinary protobuf field 9: {encoded:02x?}"
+    );
+    let decoded = models::rhoapi::Par::decode(encoded.as_slice())
+        .expect("external Par must decode its own protobuf field 9");
+    assert_eq!(decoded.locally_free(), original.locally_free());
 }
 
 // ===========================================================================
-// §3  ★★ `Par` is a FEEDBACK VERTEX SET of size one
+// §3  ★★ external `Par` is the generated graph's acyclic boundary
 // ===========================================================================
 
 /// Iterative Tarjan over a NAMED SUBSET of [`SCHEMA_CHILDREN`].
@@ -401,70 +404,49 @@ fn cyclic_components(nodes: &BTreeSet<&'static str>) -> Vec<Vec<&'static str>> {
     out
 }
 
-/// ★★★ **`Par` alone suffices, and this is the proof — not the assumption.**
-///
-/// The question is whether a single `impl Drop for Par` (forwarding into the
-/// existing iterative teardown, `par_children::dismantle`) bounds the schema's
-/// recursion, or whether other types need one too. It does **iff every cycle in
-/// the containment graph passes through `Par`** — i.e. iff `{Par}` is a feedback
-/// vertex set.
-///
-/// The test is direct: remove `Par` from the graph and recompute the strongly
-/// connected components. If none of them is cyclic, no cycle avoided `Par`.
-///
-/// ⚠ It was NOT assumed. The claim arrived as "the cycle is
-/// `Par → Expr → ExprInstance → Par`, so ~3 frames"; the schema in fact has ONE
-/// cyclic component of **37 members**, and a 37-member component can perfectly
-/// well contain sub-cycles that avoid any given vertex. It does not — but that is
-/// a computation, and this is where it is computed.
+/// The `.rhoapi.Par` descriptor remains a node so generated fields can name the
+/// boundary, but its child row is empty because the implementation and its
+/// recursive payload traversal live in `models/src/rust/par.rs`. The generated
+/// graph must therefore be acyclic in its entirety; an SCC here would be a new
+/// recursive family that bypasses the external stack-safe boundary.
 #[test]
-fn par_is_a_feedback_vertex_set_of_size_one() {
+fn external_par_breaks_every_generated_schema_cycle() {
     let all: BTreeSet<&str> = SCHEMA_CHILDREN.iter().map(|(n, _)| *n).collect();
     assert!(all.contains("Par"), "the child relation must contain `Par`");
+    let par_children = SCHEMA_CHILDREN
+        .iter()
+        .find(|(name, _)| *name == "Par")
+        .map(|(_, children)| *children)
+        .expect("external Par must have a child-relation row");
+    assert!(
+        par_children.is_empty(),
+        "external Par's generated boundary row must be childless, found {par_children:?}"
+    );
+    assert!(
+        SCHEMA_CHILDREN
+            .iter()
+            .any(|(name, children)| *name != "Par" && children.contains(&"Par")),
+        "no generated field reaches external Par, so this boundary check would be vacuous"
+    );
 
-    // ── the whole graph: exactly ONE cyclic component, and `Par` is in it ──
     let whole = cyclic_components(&all);
-    assert_eq!(
-        whole.len(),
-        1,
-        "the schema must have exactly ONE cyclic component; found {}: {:?}",
-        whole.len(),
-        whole
+    assert!(
+        whole.is_empty(),
+        "external Par failed to break {} generated cyclic component(s): {whole:?}",
+        whole.len()
     );
     assert!(
-        whole[0].contains(&"Par"),
-        "the sole cyclic component must contain `Par`; it contains {:?}",
-        whole[0]
-    );
-    assert_eq!(
-        whole[0].len(),
-        RECURSIVE_TYPES.len(),
-        "`RECURSIVE_TYPES` ({}) must be exactly the members of the cyclic component ({})",
-        RECURSIVE_TYPES.len(),
-        whole[0].len()
-    );
-
-    // ── ★ THE PROPERTY: remove `Par` and nothing cyclic remains ──
-    let without_par: BTreeSet<&str> = all.iter().copied().filter(|n| *n != "Par").collect();
-    let remaining = cyclic_components(&without_par);
-    assert!(
-        remaining.is_empty(),
-        "REMOVING `Par` LEFT {} CYCLIC COMPONENT(S): {:?}.\n\
-         \n\
-         `{{Par}}` is therefore NOT a feedback vertex set, and a single `impl Drop for Par` \
-         would leave those cycles recursive — a term nested through them would still consume \
-         native stack proportional to its depth. Each listed component needs a member with \
-         its own `Drop`, and the count is what it is.",
-        remaining.len(),
-        remaining
+        RECURSIVE_TYPES.is_empty(),
+        "RECURSIVE_TYPES must be the empty flattening of the generated cyclic SCCs; found \
+         {RECURSIVE_TYPES:?}"
     );
 }
 
 /// How much DERIVED recursion runs before the iterative teardown is reached.
 ///
-/// With `Drop` on `Par` alone, dropping a bare `Expr` (say) descends through
-/// rustc's derived glue until it reaches a `Par`, at which point the whole
-/// remaining subtree unwinds iteratively. The depth of that prelude is a
+/// A generated field walk starting at a bare `Expr` can descend through the
+/// finite generated type graph until it reaches external `Par`, at which point
+/// the PathMap-owned implementation takes over. The depth of that prelude is a
 /// property of the **type graph**, not of the term — and this is the number.
 ///
 /// ## ⚠★ The quantity is "longest path that ENDS AT a `Par`", not "longest path"
@@ -496,11 +478,11 @@ fn par_is_a_feedback_vertex_set_of_size_one() {
 /// edit that lengthens the chain fails here with the new number and the new
 /// witness.
 #[test]
-fn the_derived_prelude_before_reaching_a_par_is_bounded_by_the_schema() {
+fn the_generated_prelude_before_reaching_external_par_is_bounded_by_the_schema() {
     let adjacency: BTreeMap<&str, &[&str]> = SCHEMA_CHILDREN.iter().copied().collect();
 
     // Reverse-topological order over the `Par`-free subgraph, which
-    // `par_is_a_feedback_vertex_set_of_size_one` proves is a DAG.
+    // `external_par_breaks_every_generated_schema_cycle` proves is a DAG.
     //
     // ⚠ Iterative, again: the checker must not be the thing it is measuring.
     let mut order: Vec<&str> = Vec::new();
@@ -546,7 +528,7 @@ fn the_derived_prelude_before_reaching_a_par_is_bounded_by_the_schema() {
                     panic!(
                         "`{v}`'s child `{child}` was not scored before it. The reverse \
                          topological order is broken, which means the `Par`-free subgraph is \
-                         not the DAG `par_is_a_feedback_vertex_set_of_size_one` proves it is."
+                         not the DAG `external_par_breaks_every_generated_schema_cycle` proves it is."
                     )
                 });
                 scored.map(|d| d + 1)
@@ -581,9 +563,8 @@ fn the_derived_prelude_before_reaching_a_par_is_bounded_by_the_schema() {
         (3, ["Expr"].as_slice()),
         "the longest `Par`-terminating containment chain is {worst} edges, attained by {:?}.\n\
          \n\
-         This is the derived recursion an `impl Drop for Par` does NOT bound: dropping a bare \
-         value of one of those types runs that many levels of rustc's derived glue before it \
-         reaches a `Par` and the iterative teardown takes over. It is bounded by the SCHEMA \
+         This is the native generated prelude before an operation reaches the external \
+         PathMap-backed `Par`. It is bounded by the SCHEMA \
          and not by the input — which is why one `Drop` suffices — but the constant is worth \
          knowing, and a `.proto` edit that lengthens it should say so here rather than in a \
          stack trace.\n\
@@ -697,31 +678,13 @@ fn every_recursive_derive_surface_has_a_driver_or_a_bounded_cut_set_path() {
     }
     assert_eq!(
         converted.iter().copied().collect::<Vec<_>>(),
-        vec![
-            // Stage F — the cold-store DECODER (`bincode_decoder`).
-            "Deserialize::deserialize",
-            // Stage H — the cold-store ENCODER (`bincode_encoder`).
-            "Serialize::serialize",
-            // ★ Stage F-4 — `term_ops::clone`, `drive_with` over the CLONE CUT
-            // SET. Gate subject `clone`, in `CONVERTED_DEPTH`.
-            "Clone::clone",
-            // Stage F-6 — declaration-order formatter PDA at the feedback
-            // vertex set. Gate subject `debug`.
-            "Debug::fmt",
-            "Message::clear",
-            "Message::encode_raw",
-            "Message::encoded_len",
-            "Message::merge_field",
-            // Stage F-5 — descriptor-generated lexicographic PDA at the same
-            // feedback vertex set. Gate subject `ord`.
-            "Ord::cmp",
-        ]
+        vec!["Deserialize::deserialize", "Serialize::serialize"]
         .into_iter()
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>(),
-        "the converted surfaces must include both bincode PDAs, the generated Clone/Ord/Debug \
-         PDAs, and all four generated Message methods at the schema feedback vertex"
+        "only the two whole-value bincode surfaces remain converted in the generated acyclic \
+         schema; recursive protobuf and term operations now terminate at external Par"
     );
 }
 
@@ -734,7 +697,8 @@ fn every_recursive_derive_surface_has_a_driver_or_a_bounded_cut_set_path() {
 /// |---|---|---|
 /// | not in `EMITTED_TRAVERSALS` | `NotATraversal` | prost derives `Copy`; `Clone` is `*self` |
 /// | in `CLONE_CUT_SET` | `Converted` | the feedback vertex set the emitter computed |
-/// | emitted, not in the cut set | `FollowsFrom` | a flat field-wise `Clone` |
+/// | emitted, reaches a non-empty cut set | `FollowsFrom` | a field-wise prelude to a driven clone |
+/// | emitted in the current acyclic graph | `Bounded` | a field-wise walk bounded by the generated DAG |
 ///
 /// ⚠ A uniform `Converted("term_ops::clone")` would be a **false claim about 61
 /// of the 62 generated items** — which is what the row said before
@@ -744,15 +708,27 @@ fn every_recursive_derive_surface_has_a_driver_or_a_bounded_cut_set_path() {
 /// consumed twice.
 #[test]
 fn the_clone_disposition_agrees_with_what_the_emitter_actually_did() {
-    use models::rust::rholang::term_ops::{CLONE_CUT_SET, EMITTED_TRAVERSALS};
+    use models::rust::rholang::term_ops::{
+        CLONE_CUT_SET, CLONE_DESCEND_SET, CLONE_EXTERN_BOUNDED, EMITTED_TRAVERSALS,
+    };
 
     let emitted: BTreeMap<&str, &str> = EMITTED_TRAVERSALS.iter().copied().collect();
     let cut: BTreeSet<&str> = CLONE_CUT_SET.iter().copied().collect();
 
     assert!(
-        !cut.is_empty(),
-        "the CLONE CUT SET is empty, so no `Clone` was converted at all and every row below \
-         would be vacuously consistent. The `rhoapi` child relation is cyclic by construction."
+        cut.is_empty(),
+        "external Par must make the generated clone graph acyclic; cut set is {cut:?}"
+    );
+    assert!(
+        CLONE_DESCEND_SET.is_empty(),
+        "an empty clone cut set cannot have driven descend nodes: {CLONE_DESCEND_SET:?}"
+    );
+    let extern_bounded: BTreeSet<&str> = CLONE_EXTERN_BOUNDED.iter().copied().collect();
+    assert_eq!(
+        extern_bounded,
+        BTreeSet::from(["EPathMap", "Par"]),
+        "the acyclic proof is only sound while both external recursive payload types remain \
+         explicit O(1) CoW-clone obligations"
     );
     assert!(
         !emitted.is_empty(),
@@ -762,7 +738,7 @@ fn the_clone_disposition_agrees_with_what_the_emitter_actually_did() {
 
     let mut rows = 0usize;
     let mut converted = 0usize;
-    let mut follows = 0usize;
+    let mut bounded = 0usize;
     let mut not_a_traversal = 0usize;
     for (item, surface, disposition) in DERIVE_DISPOSITION_REGISTRY {
         if *surface != "Clone::clone" {
@@ -781,17 +757,15 @@ fn the_clone_disposition_agrees_with_what_the_emitter_actually_did() {
                 );
                 converted += 1;
             }
-            // Emitted but not in the cut set: FIELD-WISE, and flat only because
-            // every cycle passes through the cut set.
+            // With external Par the generated graph itself is a DAG, so every
+            // emitted field-wise clone has a schema-bounded native prelude.
             (Some("field-wise"), false) => {
                 assert!(
-                    matches!(disposition, Disposition::FollowsFrom(_)),
-                    "`{item}`'s `Clone` is emitted FIELD-WISE, which is flat only because a \
-                     driven clone is reached within CLONE_RESIDUAL_HEIGHT frames — that is \
-                     `FollowsFrom`, not {disposition:?}. `Converted` would claim a driver this \
-                     item does not have."
+                    matches!(disposition, Disposition::Bounded(_)),
+                    "`{item}`'s `Clone` is emitted FIELD-WISE over an acyclic generated graph, \
+                     so it must be `Bounded`, not {disposition:?}"
                 );
-                follows += 1;
+                bounded += 1;
             }
             // Not emitted at all: prost derived `Copy`, so `Clone` is `*self`.
             (None, false) => {
@@ -832,12 +806,11 @@ fn the_clone_disposition_agrees_with_what_the_emitter_actually_did() {
         cut.len()
     );
     assert_eq!(
-        converted + follows,
+        bounded,
         emitted.len(),
-        "every emitted `impl Clone` must be dispositioned either `Converted` (driven) or \
-         `FollowsFrom` (field-wise): {} + {} against {} emitted",
-        converted,
-        follows,
+        "every emitted field-wise `impl Clone` must be dispositioned `Bounded`: {} against {} \
+         emitted",
+        bounded,
         emitted.len()
     );
     assert!(
@@ -849,7 +822,7 @@ fn the_clone_disposition_agrees_with_what_the_emitter_actually_did() {
          silently collapsed into two."
     );
     println!(
-        "  Clone::clone — {converted} Converted (the cut set), {follows} FollowsFrom \
+        "  Clone::clone — {converted} Converted (the cut set), {bounded} Bounded \
          (field-wise), {not_a_traversal} NotATraversal (`Copy`); {rows} rows"
     );
 }
@@ -876,9 +849,9 @@ fn the_ord_disposition_agrees_with_the_schema_cut_set() {
             converted += 1;
         } else if non_copy.contains(item) {
             assert!(
-                matches!(disposition, Disposition::FollowsFrom(_)),
-                "non-cut recursive-capable `{item}` retains field-wise ordering bounded by the \
-                 residual graph; found {disposition:?}"
+                matches!(disposition, Disposition::Bounded(_)),
+                "non-Copy `{item}` retains field-wise ordering bounded by the acyclic generated \
+                 graph; found {disposition:?}"
             );
         } else {
             assert!(
@@ -922,9 +895,9 @@ fn the_debug_disposition_agrees_with_the_schema_cut_set() {
             converted += 1;
         } else if non_copy.contains(item) {
             assert!(
-                matches!(disposition, Disposition::FollowsFrom(_)),
-                "non-cut recursive-capable `{item}` retains field-wise Debug bounded by the \
-                 residual graph; found {disposition:?}"
+                matches!(disposition, Disposition::Bounded(_)),
+                "non-Copy `{item}` retains field-wise Debug bounded by the acyclic generated \
+                 graph; found {disposition:?}"
             );
         } else {
             assert!(
@@ -956,28 +929,24 @@ fn the_debug_disposition_agrees_with_the_schema_cut_set() {
 ///
 /// This asserts both halves: they are ABSENT from the derive registry (so the
 /// registry is not silently claiming to cover them), and PRESENT in
-/// `HAND_WRITTEN_TRAVERSALS` (so the campaign has not lost them).
+/// `HAND_WRITTEN_TRAVERSALS`. External PathMap-backed `Par` no longer has any
+/// native recursive rhoapi walk: equality, hashing, clone, and drop terminate at
+/// the compressed-trie boundary.
 #[test]
-fn the_hand_written_traversals_are_named_and_not_in_the_derive_registry() {
+fn no_obsolete_generated_par_walk_remains_in_the_hand_written_registry() {
     let surfaces: BTreeSet<&str> = DERIVE_DISPOSITION_REGISTRY
         .iter()
         .map(|(_, s, _)| *s)
         .collect();
     let hand: BTreeSet<&str> = HAND_WRITTEN_TRAVERSALS.iter().map(|(s, _)| *s).collect();
 
+    assert!(
+        hand.is_empty(),
+        "external PathMap-backed Par removed the generated recursive family, so stale \
+         hand-written traversal claims remain: {hand:?}"
+    );
     for surface in ["PartialEq::eq", "Hash::hash", "Drop::drop"] {
-        assert!(
-            hand.contains(surface),
-            "`{surface}` must be in HAND_WRITTEN_TRAVERSALS — it is a recursive walk over \
-             the `Par` family that no `#[derive]` scan can see"
-        );
-        assert!(
-            !surfaces.contains(surface),
-            "`{surface}` appears in the DERIVE registry, but it is not a derive: \
-             `models/build.rs` strips it and `models/src/lib.rs` (or rustc's implicit glue) \
-             provides it. A registry that claimed it would make the cross-check against the \
-             `#[derive]` scan fail for the wrong reason."
-        );
+        assert!(!surfaces.contains(surface));
     }
     for (surface, why) in HAND_WRITTEN_TRAVERSALS {
         assert!(

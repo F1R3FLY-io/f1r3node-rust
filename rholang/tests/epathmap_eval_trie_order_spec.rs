@@ -26,14 +26,15 @@ fn pathmap_expr(pathmap: EPathMap) -> Par {
     }])
 }
 
-fn evaluated_pathmap(par: &Par) -> &EPathMap {
-    let [expr] = par.exprs.as_slice() else {
-        panic!("evaluated EPathMap must remain one expression")
-    };
-    let Some(ExprInstance::EPathmapBody(pathmap)) = &expr.expr_instance else {
-        panic!("evaluated expression must remain an EPathMap")
-    };
-    pathmap
+fn evaluated_pathmap(par: &Par) -> EPathMap {
+    match par
+        .first::<Expr>()
+        .expect("resident expression decodes")
+        .map(|(expr, _)| expr.expr_instance)
+    {
+        Some(Some(ExprInstance::EPathmapBody(pathmap))) => pathmap,
+        _ => panic!("evaluated expression must remain an EPathMap"),
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -82,7 +83,7 @@ async fn evaluator_preserves_native_roots_when_eval_is_identity() {
     let env = Env::new();
 
     let mut reflected_process = Par::default();
-    reflected_process.sends.push(Send::default());
+    reflected_process.replace_sends(vec![Send::default()]);
 
     let fixtures = [
         (

@@ -124,12 +124,15 @@ fn source_bracket_depth(src: &str) -> usize {
 /// checker would be the thing that overflows.
 fn par_depth(p: &Par) -> usize {
     let mut n = 0usize;
-    let mut cur = p;
+    let mut cur = p.clone();
     loop {
-        let next = cur.exprs.first().and_then(|e| match &e.expr_instance {
-            Some(ExprInstance::EListBody(l)) => l.ps.first(),
-            _ => None,
-        });
+        let next = cur
+            .first::<Expr>()
+            .expect("resident expression decodes")
+            .and_then(|(expr, _)| match expr.expr_instance {
+                Some(ExprInstance::EListBody(l)) => l.ps.into_iter().next(),
+                _ => None,
+            });
         match next {
             Some(child) => {
                 n += 1;

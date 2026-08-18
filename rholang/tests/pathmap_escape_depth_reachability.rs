@@ -181,8 +181,8 @@ fn ordinary_rholang_reaches_the_stack_safe_escape_reader() {
 
     // Dig out the map's single entry.
     let entry = par
-        .exprs
-        .iter()
+        .decode_occurrences::<Expr>()
+        .into_iter()
         .find_map(|expr| match expr.expr_instance.as_ref() {
             Some(ExprInstance::EPathmapBody(map)) => map.entry_trie().find_entry(|_| true),
             _ => None,

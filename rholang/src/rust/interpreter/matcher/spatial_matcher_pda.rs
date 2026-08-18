@@ -15,6 +15,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::If;
 use models::rust::canonical_path::decode_trie_path;
 use models::rust::epathmap_trie_codec::EPathMapMode;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
@@ -544,11 +545,12 @@ struct ConnectiveCandidates {
 }
 
 fn evaluate_par(target: Par, mut pattern: Par) -> Job {
-    if !pattern.connective_used {
+    if !pattern.connective_used() {
         return Job::Return(match_pars(&target, &pattern));
     }
 
-    let remainder_level = pattern.exprs.iter().find_map(|expr| match expr {
+    let mut expressions = pattern.take_occurrences::<Expr>();
+    let remainder_level = expressions.iter().find_map(|expr| match expr {
         Expr {
             expr_instance:
                 Some(EVarBody(EVar {
@@ -560,7 +562,7 @@ fn evaluate_par(target: Par, mut pattern: Par) -> Job {
         } => Some(*level),
         _ => None,
     });
-    let wildcard = pattern.exprs.iter().any(|expr| {
+    let wildcard = expressions.iter().any(|expr| {
         matches!(expr, Expr {
             expr_instance: Some(EVarBody(EVar {
                 v: Some(Var {
@@ -570,7 +572,7 @@ fn evaluate_par(target: Par, mut pattern: Par) -> Job {
         })
     });
 
-    pattern.exprs.retain(|expr| {
+    expressions.retain(|expr| {
         !matches!(expr, Expr {
             expr_instance: Some(EVarBody(EVar {
                 v: Some(Var {
@@ -579,6 +581,7 @@ fn evaluate_par(target: Par, mut pattern: Par) -> Job {
             })),
         })
     });
+    pattern.replace_exprs(expressions);
 
     // A Par carrying only one connective and no remainder can only accept the
     // whole target. The general `sub_pars` machine may enumerate proper
@@ -586,12 +589,10 @@ fn evaluate_par(target: Par, mut pattern: Par) -> Job {
     // complement is matched against the empty residual pattern. Transitioning
     // directly is therefore equivalent and prevents a depth-d unary
     // connective chain from recomputing bounds over all d suffixes (O(d^2)).
-    if remainder_level.is_none() && !wildcard && single_connective_carrier(&pattern).is_some() {
-        let connective = pattern
-            .connectives
-            .pop()
-            .expect("a single-connective carrier owns one connective");
-        return match_job(MatchPair::Connective(target, connective));
+    if remainder_level.is_none() && !wildcard {
+        if let Some(connective) = single_connective_carrier(&pattern) {
+            return match_job(MatchPair::Connective(target, connective));
+        }
     }
 
     let count = ParCount::new(&pattern);
@@ -601,8 +602,8 @@ fn evaluate_par(target: Par, mut pattern: Par) -> Job {
     } else {
         count.clone()
     };
-    let individual: Vec<_> = pattern
-        .connectives
+    let connectives = pattern.take_occurrences::<Connective>();
+    let individual: Vec<_> = connectives
         .iter()
         .map(|connective| count.min_max_con_ref(connective))
         .collect();
@@ -616,7 +617,7 @@ fn evaluate_par(target: Par, mut pattern: Par) -> Job {
     remainder_bounds.pop();
     remainder_bounds.reverse();
 
-    let plans = std::mem::take(&mut pattern.connectives)
+    let plans = connectives
         .into_iter()
         .zip(individual)
         .zip(remainder_bounds)
@@ -705,11 +706,13 @@ fn start_par_fields(state: ParConnectiveState, frames: &mut FrameStack) -> Job {
     let wildcard = state.wildcard;
     let requests = vec![
         ListRequest::new(
-            std::mem::take(&mut target.sends)
+            target
+                .take_occurrences::<Send>()
                 .into_iter()
                 .map(MatchValue::Send)
                 .collect(),
-            std::mem::take(&mut pattern.sends)
+            pattern
+                .take_occurrences::<Send>()
                 .into_iter()
                 .map(MatchValue::Send)
                 .collect(),
@@ -718,11 +721,13 @@ fn start_par_fields(state: ParConnectiveState, frames: &mut FrameStack) -> Job {
             wildcard,
         ),
         ListRequest::new(
-            std::mem::take(&mut target.receives)
+            target
+                .take_occurrences::<Receive>()
                 .into_iter()
                 .map(MatchValue::Receive)
                 .collect(),
-            std::mem::take(&mut pattern.receives)
+            pattern
+                .take_occurrences::<Receive>()
                 .into_iter()
                 .map(MatchValue::Receive)
                 .collect(),
@@ -731,11 +736,13 @@ fn start_par_fields(state: ParConnectiveState, frames: &mut FrameStack) -> Job {
             wildcard,
         ),
         ListRequest::new(
-            std::mem::take(&mut target.news)
+            target
+                .take_occurrences::<New>()
                 .into_iter()
                 .map(MatchValue::New)
                 .collect(),
-            std::mem::take(&mut pattern.news)
+            pattern
+                .take_occurrences::<New>()
                 .into_iter()
                 .map(MatchValue::New)
                 .collect(),
@@ -744,11 +751,13 @@ fn start_par_fields(state: ParConnectiveState, frames: &mut FrameStack) -> Job {
             wildcard,
         ),
         ListRequest::new(
-            std::mem::take(&mut target.exprs)
+            target
+                .take_occurrences::<Expr>()
                 .into_iter()
                 .map(MatchValue::Expr)
                 .collect(),
-            std::mem::take(&mut pattern.exprs)
+            pattern
+                .take_occurrences::<Expr>()
                 .into_iter()
                 .map(MatchValue::Expr)
                 .collect(),
@@ -757,11 +766,13 @@ fn start_par_fields(state: ParConnectiveState, frames: &mut FrameStack) -> Job {
             wildcard,
         ),
         ListRequest::new(
-            std::mem::take(&mut target.matches)
+            target
+                .take_occurrences::<Match>()
                 .into_iter()
                 .map(MatchValue::Match)
                 .collect(),
-            std::mem::take(&mut pattern.matches)
+            pattern
+                .take_occurrences::<Match>()
                 .into_iter()
                 .map(MatchValue::Match)
                 .collect(),
@@ -770,11 +781,13 @@ fn start_par_fields(state: ParConnectiveState, frames: &mut FrameStack) -> Job {
             wildcard,
         ),
         ListRequest::new(
-            std::mem::take(&mut target.bundles)
+            target
+                .take_occurrences::<Bundle>()
                 .into_iter()
                 .map(MatchValue::Bundle)
                 .collect(),
-            std::mem::take(&mut pattern.bundles)
+            pattern
+                .take_occurrences::<Bundle>()
                 .into_iter()
                 .map(MatchValue::Bundle)
                 .collect(),
@@ -783,11 +796,13 @@ fn start_par_fields(state: ParConnectiveState, frames: &mut FrameStack) -> Job {
             wildcard,
         ),
         ListRequest::new(
-            std::mem::take(&mut target.unforgeables)
+            target
+                .take_occurrences::<GUnforgeable>()
                 .into_iter()
                 .map(MatchValue::Unforgeable)
                 .collect(),
-            std::mem::take(&mut pattern.unforgeables)
+            pattern
+                .take_occurrences::<GUnforgeable>()
                 .into_iter()
                 .map(MatchValue::Unforgeable)
                 .collect(),
@@ -979,7 +994,7 @@ fn ordered_pairs(
     if !surplus.is_empty() {
         match remainder.as_ref().and_then(|var| var.var_instance.as_ref()) {
             Some(Wildcard(_)) => {}
-            Some(FreeVar(_)) if surplus.iter().all(|par| par.locally_free.is_empty()) => {}
+            Some(FreeVar(_)) if surplus.iter().all(|par| par.locally_free().is_empty()) => {}
             _ => return None,
         }
     }
@@ -1385,21 +1400,19 @@ impl MatchValue {
 
     fn connective_used(&self, _context: &SpatialMatcherContext) -> bool {
         match self {
-            MatchValue::Par(value) => value.connective_used,
-            MatchValue::ParPair((key, value)) => key.connective_used || value.connective_used,
+            MatchValue::Par(value) => value.connective_used(),
+            MatchValue::ParPair((key, value)) => key.connective_used() || value.connective_used(),
             MatchValue::Send(value) => value.connective_used,
             MatchValue::Receive(value) => value.connective_used,
-            MatchValue::New(value) => value.p.as_ref().expect("New.p").connective_used,
+            MatchValue::New(value) => value.p.as_ref().expect("New.p").connective_used(),
             MatchValue::Expr(value) => expr_connective_used(value),
             MatchValue::Match(value) => value.connective_used,
             MatchValue::Bundle(_) | MatchValue::Unforgeable(_) => false,
-            MatchValue::ReceiveBind(value) => {
-                value
-                    .source
-                    .as_ref()
-                    .expect("ReceiveBind.source")
-                    .connective_used
-            }
+            MatchValue::ReceiveBind(value) => value
+                .source
+                .as_ref()
+                .expect("ReceiveBind.source")
+                .connective_used(),
         }
     }
 
@@ -1455,8 +1468,8 @@ impl MatchValue {
     }
 }
 
-enum CandidateCompileWork<'a> {
-    Enter(&'a Par),
+enum CandidateCompileWork {
+    Enter(Par),
     FinishUnion(usize),
     FinishIntersection(usize),
 }
@@ -1514,17 +1527,23 @@ impl ListCandidatePlan {
     }
 }
 
-fn single_connective_carrier(pattern: &Par) -> Option<&Connective> {
-    (pattern.sends.is_empty()
-        && pattern.receives.is_empty()
-        && pattern.news.is_empty()
-        && pattern.exprs.is_empty()
-        && pattern.matches.is_empty()
-        && pattern.unforgeables.is_empty()
-        && pattern.bundles.is_empty()
-        && pattern.connectives.len() == 1
-        && pattern.conditionals.is_empty())
-    .then(|| &pattern.connectives[0])
+fn single_connective_carrier(pattern: &Par) -> Option<Connective> {
+    (pattern.family_cardinality::<Send>() == 0
+        && pattern.family_cardinality::<Receive>() == 0
+        && pattern.family_cardinality::<New>() == 0
+        && pattern.family_cardinality::<Expr>() == 0
+        && pattern.family_cardinality::<Match>() == 0
+        && pattern.family_cardinality::<GUnforgeable>() == 0
+        && pattern.family_cardinality::<Bundle>() == 0
+        && pattern.family_cardinality::<Connective>() == 1
+        && pattern.family_cardinality::<If>() == 0)
+        .then(|| {
+            pattern
+                .first::<Connective>()
+                .expect("resident Par Connective endpoints are canonical")
+                .expect("the family cardinality proved one Connective")
+                .0
+        })
 }
 
 fn compile_par_candidate_plan(root: &Par, captures: &mut PathMap<()>) -> ListCandidatePlan {
@@ -1533,14 +1552,14 @@ fn compile_par_candidate_plan(root: &Par, captures: &mut PathMap<()>) -> ListCan
         return ListCandidatePlan::All;
     }
 
-    let mut work = vec![CandidateCompileWork::Enter(root)];
+    let mut work = vec![CandidateCompileWork::Enter(root.clone())];
     let mut values = Vec::new();
 
     while let Some(next) = work.pop() {
         match next {
             CandidateCompileWork::Enter(pattern) => {
-                let Some(connective) = single_connective_carrier(pattern) else {
-                    let plan = rho_path_query_atom(pattern, captures)
+                let Some(connective) = single_connective_carrier(&pattern) else {
+                    let plan = rho_path_query_atom(&pattern, captures)
                         .map(|atom| {
                             ListCandidatePlan::Query(RhoPathQuery::structural_sequence(
                                 [atom],
@@ -1552,14 +1571,14 @@ fn compile_par_candidate_plan(root: &Par, captures: &mut PathMap<()>) -> ListCan
                     continue;
                 };
 
-                match connective.connective_instance.as_ref() {
+                match connective.connective_instance {
                     Some(ConnOrBody(ConnectiveBody { ps })) => {
                         work.push(CandidateCompileWork::FinishUnion(ps.len()));
-                        work.extend(ps.iter().rev().map(CandidateCompileWork::Enter));
+                        work.extend(ps.into_iter().rev().map(CandidateCompileWork::Enter));
                     }
                     Some(ConnAndBody(ConnectiveBody { ps })) => {
                         work.push(CandidateCompileWork::FinishIntersection(ps.len()));
-                        work.extend(ps.iter().rev().map(CandidateCompileWork::Enter));
+                        work.extend(ps.into_iter().rev().map(CandidateCompileWork::Enter));
                     }
                     // A conservative child query Q satisfies success ⊆ Q.
                     // Complementing it would reverse that inclusion, so NOT
@@ -1622,8 +1641,8 @@ fn expr_connective_used(expr: &Expr) -> bool {
                 .expect("Var.var_instance"),
             FreeVar(_) | Wildcard(_)
         ),
-        Some(ENotBody(ENot { p })) => p.as_ref().expect("ENot.p").connective_used,
-        Some(ENegBody(ENeg { p })) => p.as_ref().expect("ENeg.p").connective_used,
+        Some(ENotBody(ENot { p })) => p.as_ref().expect("ENot.p").connective_used(),
+        Some(ENegBody(ENeg { p })) => p.as_ref().expect("ENeg.p").connective_used(),
         Some(EMultBody(EMult { p1, p2 }))
         | Some(EDivBody(EDiv { p1, p2 }))
         | Some(EModBody(EMod { p1, p2 }))
@@ -1640,12 +1659,12 @@ fn expr_connective_used(expr: &Expr) -> bool {
         | Some(ENeqBody(ENeq { p1, p2 }))
         | Some(EAndBody(EAnd { p1, p2 }))
         | Some(EOrBody(EOr { p1, p2 })) => {
-            p1.as_ref().expect("binary expression p1").connective_used
-                || p2.as_ref().expect("binary expression p2").connective_used
+            p1.as_ref().expect("binary expression p1").connective_used()
+                || p2.as_ref().expect("binary expression p2").connective_used()
         }
         Some(EMethodBody(value)) => value.connective_used,
         Some(EMatchesBody(EMatches { target, .. })) => {
-            target.as_ref().expect("EMatches.target").connective_used
+            target.as_ref().expect("EMatches.target").connective_used()
         }
     }
 }
@@ -2751,7 +2770,7 @@ fn init_single_path(
                 if target_key != pattern_key {
                     return Job::Return(false);
                 }
-                if !pattern_value.connective_used {
+                if !pattern_value.connective_used() {
                     return Job::Return(target_value == pattern_value);
                 }
                 MatchPair::Par(target_value, pattern_value)
@@ -2942,7 +2961,7 @@ fn path_target_is_concrete(target: &EPathMap, key: &[u8]) -> bool {
                 .get_map_value_by_encoded_key(key)
                 .expect("PathMap target mode was checked")
                 .expect("a PathMap candidate key names a value");
-            key_metadata.locally_free_is_empty && value.locally_free.is_empty()
+            key_metadata.locally_free_is_empty && value.locally_free().is_empty()
         }
     }
 }
@@ -3027,7 +3046,7 @@ fn prepare_path_entries(
                             key,
                             pattern_value.clone(),
                         ))));
-                    } else if pattern_value.connective_used {
+                    } else if pattern_value.connective_used() {
                         dynamic_patterns.push(PathPattern::MapExactKey {
                             encoded_key: Arc::from(encoded),
                             value: Arc::new(pattern_value.clone()),

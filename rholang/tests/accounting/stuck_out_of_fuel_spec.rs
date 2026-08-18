@@ -55,7 +55,7 @@ async fn cell_values(runtime: &RhoRuntimeImpl, name: &str) -> Vec<i64> {
         .await
         .iter()
         .flat_map(|datum| datum.a.pars.iter())
-        .flat_map(|par| par.exprs.iter())
+        .flat_map(|par| par.decode_occurrences::<Expr>().into_iter())
         .filter_map(|expr| match &expr.expr_instance {
             Some(ExprInstance::GInt(n)) => Some(*n),
             _ => None,

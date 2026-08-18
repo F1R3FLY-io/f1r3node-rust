@@ -38,7 +38,6 @@
 
 use std::collections::BTreeSet;
 
-use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
@@ -305,29 +304,21 @@ fn truncated_par_typed_records_are_rejected_by_both() {
 fn a_datum_too_deep_for_the_derived_decoder_still_reads_back() {
     // 4,096 levels. At the measured 28,362 B/level (debug) the derived decoder
     // would need ~110 MiB of native stack; this thread gets 256 KiB.
-    let bytes = std::thread::Builder::new()
-        .stack_size(512 * 1024 * 1024)
-        .spawn(|| {
-            let datum = Datum {
-                a: ListParWithRandom {
-                    pars: vec![corpus::deep_par(4096)],
-                    random_state: vec![1, 2, 3],
-                }
-                .into(),
-                persist: true,
-                source: Produce::new(Blake2b256Hash::new(&[1]), Blake2b256Hash::new(&[2]), true),
-            };
-            let bytes = encode_datum(&datum);
-            models::rust::rholang::par_children::dismantle_all(
-                std::sync::Arc::try_unwrap(datum.a)
-                    .map(|a| a.pars)
-                    .unwrap_or_default(),
-            );
-            bytes
-        })
-        .expect("spawn encoder")
-        .join()
-        .expect("encoder panicked");
+    let datum = Datum {
+        a: ListParWithRandom {
+            pars: vec![corpus::deep_par(4096)],
+            random_state: vec![1, 2, 3],
+        }
+        .into(),
+        persist: true,
+        source: Produce::new(Blake2b256Hash::new(&[1]), Blake2b256Hash::new(&[2]), true),
+    };
+    let bytes = encode_datum(&datum);
+    models::rust::rholang::par_children::dismantle_all(
+        std::sync::Arc::try_unwrap(datum.a)
+            .map(|a| a.pars)
+            .unwrap_or_default(),
+    );
 
     std::thread::Builder::new()
         .stack_size(256 * 1024)
@@ -338,21 +329,17 @@ fn a_datum_too_deep_for_the_derived_decoder_still_reads_back() {
             assert_eq!(datums.len(), 1);
             assert!(datums[0].persist, "the tail must still be read correctly");
 
-            // The nesting really came back.
-            let mut depth = 0usize;
-            let mut current = &datums[0].a.pars[0];
-            while let Some(ExprInstance::EListBody(list)) = current
-                .exprs
-                .first()
-                .and_then(|e: &Expr| e.expr_instance.as_ref())
-            {
-                depth += 1;
-                match list.ps.first() {
-                    Some(next) => current = next,
-                    None => break,
-                }
-            }
-            assert_eq!(depth, 4096, "the DECODED datum must carry the nesting");
+            // The nesting really came back. Inspect the canonical Expr body in
+            // one byte-native pass: decoding every successively shorter suffix
+            // would make this oracle quadratic and says nothing more about the
+            // cold-store reader.
+            let mut depth = None;
+            datums[0].a.pars[0].visit_encoded::<Expr>(|entry| {
+                assert!(depth.is_none(), "fixture has exactly one Expr endpoint");
+                assert_eq!(entry.multiplicity().get(), 1);
+                depth = entry.canonical_unary_elist_depth();
+            });
+            assert_eq!(depth, Some(4096), "the DECODED datum must carry the nesting");
 
             let datums = datums;
             for d in datums {
@@ -381,6 +368,10 @@ fn step_a_golden_shapes_read_back_through_the_new_path() {
 
     // And the `Par` inside is the same one the oracle sees, field for field.
     let par: &Par = &decoded[0].a.pars[0];
-    assert!(!par.sends.is_empty() && !par.exprs.is_empty() && !par.conditionals.is_empty());
-    assert!(!par.unforgeables.is_empty());
+    assert!(
+        par.family_cardinality::<models::rhoapi::Send>() != 0
+            && par.family_cardinality::<Expr>() != 0
+            && par.family_cardinality::<models::rhoapi::If>() != 0
+    );
+    assert!(par.family_cardinality::<models::rhoapi::GUnforgeable>() != 0);
 }

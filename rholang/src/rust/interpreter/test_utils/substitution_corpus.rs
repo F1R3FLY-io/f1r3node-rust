@@ -601,7 +601,7 @@ pub fn substitution_corpus() -> Vec<SubstitutionCase> {
     // driver's per-slot ordering, not just each slot in isolation.
     out.push(case(
         "par/all-slots-occupied",
-        Par {
+        models::par_from_default! {
             exprs: vec![
                 Expr {
                     expr_instance: Some(ExprInstance::GInt(2)),
@@ -665,6 +665,7 @@ pub fn substitution_corpus() -> Vec<SubstitutionCase> {
             locally_free: vec![0xff, 0xff, 0xff, 0xff],
             connective_used: true,
             unforgeables: vec![],
+            ..Default::default()
         },
         0,
     ));
@@ -739,50 +740,69 @@ mod tests {
     fn corpus_reaches_the_shapes_it_claims_to() {
         let corpus = substitution_corpus();
         let has = |predicate: fn(&Par) -> bool| {
-            corpus
-                .iter()
-                .any(|c| reachable_pars(&c.term).into_iter().any(predicate))
+            corpus.iter().any(|c| {
+                reachable_pars(&c.term)
+                    .into_iter()
+                    .any(|par| predicate(&par))
+            })
         };
 
         assert!(
-            has(|p| p.receives.iter().any(|r| r.bind_count > 0)),
+            has(|p| {
+                p.decode_occurrences::<Receive>()
+                    .iter()
+                    .any(|r| r.bind_count > 0)
+            }),
             "corpus has no Receive with bind_count > 0"
         );
         assert!(
-            has(|p| p.receives.iter().any(|r| r.condition.is_some())),
+            has(|p| {
+                p.decode_occurrences::<Receive>()
+                    .iter()
+                    .any(|r| r.condition.is_some())
+            }),
             "corpus has no Receive with a where-clause guard"
         );
         assert!(
-            has(|p| p.news.iter().any(|n| n.bind_count > 0)),
+            has(|p| {
+                p.decode_occurrences::<New>()
+                    .iter()
+                    .any(|n| n.bind_count > 0)
+            }),
             "corpus has no New with binders"
         );
         assert!(
-            has(|p| p.news.iter().any(|n| !n.injections.is_empty())),
+            has(|p| {
+                p.decode_occurrences::<New>()
+                    .iter()
+                    .any(|n| !n.injections.is_empty())
+            }),
             "corpus has no New with injections"
         );
         assert!(
             has(|p| p
-                .matches
+                .decode_occurrences::<Match>()
                 .iter()
                 .any(|m| m.cases.iter().any(|c| c.free_count > 0))),
             "corpus has no MatchCase with free_count > 0"
         );
         assert!(
             has(|p| p
-                .matches
+                .decode_occurrences::<Match>()
                 .iter()
                 .any(|m| m.cases.iter().any(|c| c.guard.is_some()))),
             "corpus has no MatchCase with a guard"
         );
         assert!(
-            has(|p| p
-                .bundles
-                .iter()
-                .any(|b| b.body.iter().any(|inner| !inner.bundles.is_empty()))),
+            has(|p| p.decode_occurrences::<Bundle>().iter().any(|b| {
+                b.body
+                    .iter()
+                    .any(|inner| inner.family_cardinality::<Bundle>() != 0)
+            })),
             "corpus has no nested Bundle"
         );
         assert!(
-            has(|p| p.conditionals.iter().any(|_| true)),
+            has(|p| p.family_cardinality::<If>() != 0),
             "corpus has no If"
         );
         assert!(

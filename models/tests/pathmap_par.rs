@@ -1,53 +1,80 @@
+//! Representation and compatibility gates for the authoritative PathMap-backed `Par`.
+
+use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{
-    Bundle, Connective, ETuple, Expr, GUnforgeable, If, Match, New, Par as GeneratedPar, Receive,
-    Send,
+    Bundle, Connective, Expr, GSysAuthToken, GUnforgeable, If, Match, MatchCase, New, Par, Receive,
+    ReceiveBind, Send,
 };
-use models::rust::par::Par;
-use models::rust::par_ext::ParExt;
-use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
-use models::rust::rholang::sorter::sortable::Sortable;
 use prost::bytes::Buf;
 use prost::Message;
 
-mod par_corpus;
-
-fn valid_all_par_fields() -> GeneratedPar {
-    let mut source = par_corpus::all_par_fields();
-    source.sends.retain(|send| send.chan.is_some());
-    for receive in &mut source.receives {
-        receive.binds.retain(|bind| bind.source.is_some());
-    }
-    source.news.retain(|new_node| new_node.p.is_some());
-    source.exprs.truncate(1);
-    for match_node in &mut source.matches {
-        match_node
-            .cases
-            .retain(|case| case.pattern.is_some() && case.source.is_some());
-    }
-    source.bundles.retain(|bundle| bundle.body.is_some());
-    for conditional in &mut source.conditionals {
-        conditional
-            .if_false
-            .get_or_insert_with(GeneratedPar::default);
-    }
-    source
+fn integer(value: i64) -> Par {
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GInt(value)),
+    }])
 }
 
-fn assert_generated_equivalent(expected: &GeneratedPar, actual: &Par) {
-    let canonical = ParSortMatcher::sort_match(expected).term;
-    assert_eq!(
-        actual.protobuf_bytes().expect("encode PathMap-backed Par"),
-        models::rust::rholang::protobuf_encoder::encode_to_vec(&canonical),
-    );
-    assert_eq!(actual.locally_free(), expected.locally_free);
-    assert_eq!(actual.connective_used(), expected.connective_used);
+fn valid_all_families() -> Par {
+    let mut par = Par::default();
+    par.replace_sends(vec![Send {
+        chan: Some(integer(1)),
+        data: vec![integer(2)],
+        ..Send::default()
+    }]);
+    par.replace_receives(vec![Receive {
+        binds: vec![ReceiveBind {
+            source: Some(integer(3)),
+            patterns: vec![integer(4)],
+            ..ReceiveBind::default()
+        }],
+        body: Some(integer(5)),
+        condition: Some(integer(6)),
+        ..Receive::default()
+    }]);
+    par.replace_news(vec![New {
+        p: Some(integer(7)),
+        ..New::default()
+    }]);
+    par.replace_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GInt(8)),
+    }]);
+    par.replace_matches(vec![Match {
+        target: Some(integer(9)),
+        cases: vec![MatchCase {
+            pattern: Some(integer(10)),
+            source: Some(integer(11)),
+            guard: Some(integer(12)),
+            ..MatchCase::default()
+        }],
+        ..Match::default()
+    }]);
+    par.replace_unforgeables(vec![GUnforgeable {
+        unf_instance: Some(UnfInstance::GSysAuthTokenBody(GSysAuthToken {})),
+    }]);
+    par.replace_bundles(vec![Bundle {
+        body: Some(integer(13)),
+        ..Bundle::default()
+    }]);
+    par.replace_connectives(vec![Connective {
+        connective_instance: Some(ConnectiveInstance::ConnBool(true)),
+    }]);
+    par.replace_conditionals(vec![If {
+        condition: Some(integer(14)),
+        if_true: Some(integer(15)),
+        if_false: Some(integer(16)),
+        ..If::default()
+    }]);
+    par.replace_locally_free(vec![0x05]);
+    par.replace_connective_used(true);
+    par
 }
 
 #[test]
-fn pathmap_par_streams_the_exact_canonical_protobuf_surface() {
-    let source = models::par_from_default! {
-        exprs: vec![
+fn protobuf_stream_is_exact_and_round_trips_without_a_vec_shadow() {
+    let value = Par::default()
+        .with_exprs(vec![
             Expr {
                 expr_instance: Some(ExprInstance::GInt(9)),
             },
@@ -57,239 +84,111 @@ fn pathmap_par_streams_the_exact_canonical_protobuf_surface() {
             Expr {
                 expr_instance: Some(ExprInstance::GInt(9)),
             },
-        ],
-        locally_free: vec![0x05],
-        connective_used: true,
-        ..GeneratedPar::default()
-    };
-    let expected = models::rust::rholang::protobuf_encoder::encode_to_vec(
-        &ParSortMatcher::sort_match(&source).term,
-    );
-    let actual = Par::import_generated(&source).expect("import generated Par");
+        ])
+        .with_locally_free(vec![0x05])
+        .with_connective_used(true);
 
+    let expected = models::rust::rholang::protobuf_encoder::encode_to_vec(&value);
     let mut streamed = Vec::new();
-    actual
-        .encode_protobuf(&mut streamed)
-        .expect("stream PathMap-backed Par");
+    value.encode_protobuf(&mut streamed).expect("stream Par");
     assert_eq!(streamed, expected);
     assert_eq!(
-        actual.protobuf_encoded_len().expect("length"),
+        value.protobuf_encoded_len().expect("length"),
         expected.len()
     );
-    assert_eq!(actual.protobuf_bytes().expect("collected bytes"), expected);
-    let decoded = Par::decode(expected.as_slice()).expect("decode into PathMap-backed Par");
-    assert_eq!(decoded, actual);
-    assert_eq!(decoded.locally_free(), actual.locally_free());
-    assert_eq!(actual.components().distinct_len(), 2);
-    assert_eq!(actual.components().cardinality(), 3);
-    assert_eq!(actual.locally_free(), [0x05]);
-    assert!(actual.connective_used());
+    assert_eq!(value.protobuf_bytes().expect("collect"), expected);
+    assert_eq!(Par::decode(expected.as_slice()).expect("decode"), value);
+    assert_eq!(value.distinct_len(), 2);
+    assert_eq!(value.cardinality(), 3);
 }
 
 #[test]
-fn protobuf_merge_accumulates_multiplicity_without_a_repeated_field_collection() {
-    let occurrence = models::par_from_default! {
-        exprs: vec![Expr {
-            expr_instance: Some(ExprInstance::GInt(11)),
-        }],
-        ..GeneratedPar::default()
-    };
-    let mut bytes = models::rust::rholang::protobuf_encoder::encode_to_vec(&occurrence);
+fn protobuf_merge_accumulates_multiplicity_without_repeated_storage() {
+    let occurrence = integer(11);
+    let mut bytes = occurrence.encode_to_vec();
     bytes.extend_from_within(..);
-
     let decoded = Par::decode(bytes.as_slice()).expect("decode repeated occurrence");
-    assert_eq!(decoded.components().distinct_len(), 1);
-    assert_eq!(decoded.components().cardinality(), 2);
+    assert_eq!(decoded.distinct_len(), 1);
+    assert_eq!(decoded.cardinality(), 2);
 }
 
 #[test]
-fn first_component_uses_canonical_family_order_and_preserves_multiplicity() {
-    let source = models::par_from_default! {
-        exprs: vec![
-            Expr {
-                expr_instance: Some(ExprInstance::GInt(9)),
-            },
-            Expr {
-                expr_instance: Some(ExprInstance::GInt(3)),
-            },
-            Expr {
-                expr_instance: Some(ExprInstance::GInt(3)),
-            },
-        ],
-        ..GeneratedPar::default()
-    };
-    let value = Par::import_generated(&source).expect("import");
-
-    let (first, multiplicity) = value
-        .first::<Expr>()
-        .expect("decode first expression")
-        .expect("expression family is nonempty");
+fn first_and_visitors_preserve_canonical_order_and_multiplicity() {
+    let value = Par::default().with_exprs(vec![
+        Expr {
+            expr_instance: Some(ExprInstance::GInt(9)),
+        },
+        Expr {
+            expr_instance: Some(ExprInstance::GInt(3)),
+        },
+        Expr {
+            expr_instance: Some(ExprInstance::GInt(3)),
+        },
+    ]);
+    let (first, multiplicity) = value.first::<Expr>().unwrap().unwrap();
     assert_eq!(first.expr_instance, Some(ExprInstance::GInt(3)));
     assert_eq!(multiplicity.get(), 2);
-    assert!(Par::default()
-        .first::<Expr>()
-        .expect("empty lookup")
-        .is_none());
-
-    let mut occurrences = Vec::new();
-    value
-        .try_visit_occurrences::<Expr, std::convert::Infallible>(|expr| {
-            occurrences.push(expr.clone());
-            Ok(())
-        })
-        .expect("visit occurrences");
-    assert_eq!(occurrences.len(), 3);
-    assert_eq!(
-        occurrences
-            .iter()
-            .filter(|expr| expr.expr_instance == Some(ExprInstance::GInt(3)))
-            .count(),
-        2
-    );
+    assert_eq!(value.decode_occurrences::<Expr>().len(), 3);
 }
 
 #[test]
-fn scalar_and_tuple_extractors_do_not_depend_on_repeated_field_borrows() {
-    let cases = [
-        ExprInstance::GString("value".to_owned()),
-        ExprInstance::GInt(41),
-        ExprInstance::GBool(true),
-        ExprInstance::ETupleBody(ETuple {
-            ps: vec![GeneratedPar::default()],
-            ..ETuple::default()
-        }),
-    ];
-
-    for expr_instance in cases {
-        let generated = models::par_from_default! {
-            exprs: vec![Expr {
-                expr_instance: Some(expr_instance),
-            }],
-            ..GeneratedPar::default()
-        };
-        let pathmap = Par::import_generated(&generated).expect("import scalar Par");
-
-        assert_eq!(pathmap.get_g_string(), generated.get_g_string());
-        assert_eq!(pathmap.get_g_int(), generated.get_g_int());
-        assert_eq!(pathmap.get_g_bool(), generated.get_g_bool());
-        assert_eq!(pathmap.get_e_tuple_body(), generated.get_e_tuple_body());
-    }
-}
-
-#[test]
-fn protobuf_decode_dispatches_every_component_family_from_a_chunked_buffer() {
-    let source = valid_all_par_fields();
-
-    let expected = models::rust::rholang::protobuf_encoder::encode_to_vec(
-        &ParSortMatcher::sort_match(&source).term,
-    );
-    let split = expected.len() / 2;
-    let chunks = (&expected[..split]).chain(&expected[split..]);
-    let decoded = Par::decode(chunks).expect("decode every component family across chunks");
-    let imported = Par::import_generated(&source).expect("import every component family");
-
-    assert_eq!(decoded, imported);
-    assert_eq!(decoded.locally_free(), imported.locally_free());
-    assert_eq!(decoded.protobuf_bytes().expect("re-encode"), expected);
+fn chunked_protobuf_decode_dispatches_every_component_family() {
+    let source = valid_all_families();
+    let bytes = source.encode_to_vec();
+    let split = bytes.len() / 2;
+    let chunks = (&bytes[..split]).chain(&bytes[split..]);
+    assert_eq!(Par::decode(chunks).expect("chunked decode"), source);
 }
 
 #[test]
 fn protobuf_decode_rejects_truncated_component_bodies() {
-    let malformed = [0x0a, 0x05, 0x00];
-    assert!(Par::decode(malformed.as_slice()).is_err());
+    assert!(Par::decode([0x0a, 0x05, 0x00].as_slice()).is_err());
 }
 
 #[test]
-fn bincode_is_one_memoized_prefix_compressed_snapshot_plus_root_metadata() {
-    let source = models::par_from_default! {
-        exprs: vec![
-            Expr {
-                expr_instance: Some(ExprInstance::GInt(9)),
-            },
-            Expr {
-                expr_instance: Some(ExprInstance::GInt(3)),
-            },
-            Expr {
-                expr_instance: Some(ExprInstance::GInt(9)),
-            },
-        ],
-        locally_free: vec![0x05],
-        connective_used: true,
-        ..GeneratedPar::default()
-    };
-    let value = Par::import_generated(&source).expect("import");
+fn bincode_is_one_compact_snapshot_plus_root_metadata() {
+    let value = integer(9)
+        .parallel(integer(9))
+        .expect("finite multiplicity")
+        .with_locally_free(vec![0x05])
+        .with_connective_used(true);
     let snapshot = value.compact_snapshot();
-    let bincode = bincode::serialize(&value).expect("serialize direct Par image");
-    let driven = models::rust::rholang::bincode_encoder::encode(&value);
-
-    assert_eq!(bincode, driven);
+    let bytes = bincode::serialize(&value).expect("serialize");
     assert_eq!(
-        u64::from_le_bytes(bincode[..8].try_into().expect("snapshot length")),
+        bytes,
+        models::rust::rholang::bincode_encoder::encode(&value)
+    );
+    assert_eq!(
+        u64::from_le_bytes(bytes[..8].try_into().expect("snapshot length")),
         snapshot.len() as u64
     );
-    assert_eq!(&bincode[8..8 + snapshot.len()], snapshot);
-    assert_eq!(&bincode[8 + snapshot.len()..16 + snapshot.len()], &[0; 8]);
-    assert_eq!(bincode[16 + snapshot.len()], 1);
+    assert_eq!(&bytes[8..8 + snapshot.len()], snapshot);
+    assert_eq!(bincode::deserialize::<Par>(&bytes).expect("decode"), value);
+}
 
-    let decoded: Par = bincode::deserialize(&bincode).expect("decode direct Par image");
-    assert_eq!(decoded, value);
-    assert!(decoded.locally_free().is_empty());
-    assert!(decoded.connective_used());
-
+#[test]
+fn clone_is_cow_and_mutation_detaches() {
+    let value = integer(9);
     let mut shared = value.clone();
     assert_eq!(
         shared.compact_snapshot().as_ptr(),
-        value.compact_snapshot().as_ptr(),
-        "CoW clones must share the immutable compact image"
+        value.compact_snapshot().as_ptr()
     );
     let added = Expr {
         expr_instance: Some(ExprInstance::GInt(41)),
     };
     shared
         .insert_component(&added, Vec::new(), false)
-        .expect("mutate CoW clone");
-    assert_ne!(shared.compact_snapshot(), value.compact_snapshot());
+        .expect("mutate clone");
     assert!(!value.contains(&added));
     assert!(shared.contains(&added));
+    assert_ne!(shared.compact_snapshot(), value.compact_snapshot());
 }
 
 #[test]
-fn semantic_debug_matches_the_canonical_generated_surface_without_a_vec_shadow() {
-    let source = models::par_from_default! {
-        exprs: vec![
-            Expr {
-                expr_instance: Some(ExprInstance::GInt(9)),
-            },
-            Expr {
-                expr_instance: Some(ExprInstance::GInt(3)),
-            },
-            Expr {
-                expr_instance: Some(ExprInstance::GInt(9)),
-            },
-        ],
-        locally_free: vec![0x05],
-        connective_used: true,
-        ..GeneratedPar::default()
-    };
-    let canonical = ParSortMatcher::sort_match(&source).term;
-    let value = Par::import_generated(&source).expect("import");
-
-    assert_eq!(format!("{value:?}"), format!("{canonical:?}"));
-}
-
-#[test]
-fn equality_hashing_and_ordering_ignore_only_transient_root_locally_free() {
-    let base = models::par_from_default! {
-        exprs: vec![Expr {
-            expr_instance: Some(ExprInstance::GInt(7)),
-        }],
-        ..GeneratedPar::default()
-    };
-    let plain = Par::import_generated(&base).expect("plain");
-    let mut tagged_source = base.clone();
-    tagged_source.locally_free = vec![0xff];
-    let tagged = Par::import_generated(&tagged_source).expect("tagged");
-
+fn equality_hashing_and_ordering_ignore_only_root_locally_free() {
+    let plain = integer(7);
+    let tagged = plain.with_locally_free(vec![0xff]);
     assert_eq!(plain, tagged);
     assert_eq!(plain.cmp(&tagged), std::cmp::Ordering::Equal);
 
@@ -304,153 +203,61 @@ fn equality_hashing_and_ordering_ignore_only_transient_root_locally_free() {
 }
 
 #[test]
-fn parallel_composition_uses_bag_sum_and_metadata_join() {
-    let left_source = models::par_from_default! {
-        exprs: vec![Expr {
-            expr_instance: Some(ExprInstance::GInt(1)),
-        }],
-        locally_free: vec![0b0000_0001],
-        ..GeneratedPar::default()
-    };
-    let right_source = models::par_from_default! {
-        exprs: vec![Expr {
-            expr_instance: Some(ExprInstance::GInt(1)),
-        }],
-        locally_free: vec![0b0000_0010],
-        connective_used: true,
-        ..GeneratedPar::default()
-    };
-
-    let combined = Par::import_generated(&left_source)
-        .expect("left")
-        .parallel(Par::import_generated(&right_source).expect("right"))
-        .expect("checked bag sum");
-    assert_eq!(combined.components().distinct_len(), 1);
-    assert_eq!(combined.components().cardinality(), 2);
+fn bag_sum_scaling_and_metadata_join_are_checked() {
+    let left = integer(1).with_locally_free(vec![0b0000_0001]);
+    let right = integer(1)
+        .with_locally_free(vec![0b0000_0010])
+        .with_connective_used(true);
+    let combined = left.parallel(right).expect("bag sum");
+    assert_eq!(combined.distinct_len(), 1);
+    assert_eq!(combined.cardinality(), 2);
     assert_eq!(combined.locally_free(), [0b0000_0011]);
     assert!(combined.connective_used());
 
     let scaled = combined.clone().scale_occurrences(7).expect("scale");
-    assert_eq!(scaled.components().distinct_len(), 1);
-    assert_eq!(scaled.components().cardinality(), 14);
-    assert_eq!(scaled.locally_free(), combined.locally_free());
-    assert_eq!(scaled.connective_used(), combined.connective_used());
-
+    assert_eq!(scaled.cardinality(), 14);
     let zero = combined.scale_occurrences(0).expect("zero scale");
-    assert!(zero.components().is_empty());
+    assert!(zero.components_is_empty());
     assert!(zero.locally_free().is_empty());
     assert!(!zero.connective_used());
 }
 
 #[test]
-fn family_replacement_matches_every_generated_par_helper() {
-    let source = valid_all_par_fields();
-    let value = Par::import_generated(&source).expect("import all fields");
+fn replacement_and_prepend_cover_every_family_without_generated_imports() {
+    let source = valid_all_families();
+    let mut replaced = source.clone();
+    replaced.replace_sends(Vec::new());
+    replaced.replace_receives(Vec::new());
+    replaced.replace_news(Vec::new());
+    replaced.replace_exprs(Vec::new());
+    replaced.replace_matches(Vec::new());
+    replaced.replace_unforgeables(Vec::new());
+    replaced.replace_bundles(Vec::new());
+    replaced.replace_connectives(Vec::new());
+    replaced.replace_conditionals(Vec::new());
+    assert!(replaced.components_is_empty());
 
-    macro_rules! assert_replacement {
-        ($method:ident, $field:ident, $type:ty) => {{
-            let replacements: Vec<$type> = source.$field.iter().rev().cloned().collect();
-            assert_generated_equivalent(
-                &source.$method(replacements.clone()),
-                &value.$method(replacements),
-            );
-        }};
-    }
-
-    assert_replacement!(with_sends, sends, Send);
-    assert_replacement!(with_receives, receives, Receive);
-    assert_replacement!(with_news, news, New);
-    assert_replacement!(with_exprs, exprs, Expr);
-    assert_replacement!(with_matches, matches, Match);
-    assert_replacement!(with_unforgeables, unforgeables, GUnforgeable);
-    assert_replacement!(with_bundles, bundles, Bundle);
-    assert_replacement!(with_connectives, connectives, Connective);
-
-    let mut expected = source.clone();
-    expected.conditionals.clear();
-    assert_generated_equivalent(&expected, &value.with_conditionals(Vec::<If>::new()));
-    assert_generated_equivalent(
-        &source.with_locally_free(vec![0x44, 0x55]),
-        &value.with_locally_free(vec![0x44, 0x55]),
+    let send = source.first::<Send>().unwrap().unwrap().0;
+    assert_eq!(source.clone().prepend_send(send.clone()).count(&send), 2);
+    let receive = source.first::<Receive>().unwrap().unwrap().0;
+    assert_eq!(
+        source
+            .clone()
+            .prepend_receive(receive.clone())
+            .count(&receive),
+        2
     );
-    assert_generated_equivalent(
-        &source.with_connective_used(false),
-        &value.with_connective_used(false),
+    let matched = source.first::<Match>().unwrap().unwrap().0;
+    assert_eq!(
+        source
+            .clone()
+            .prepend_match(matched.clone())
+            .count(&matched),
+        2
     );
-}
-
-#[test]
-fn prepend_and_append_match_generated_parallel_composition() {
-    let source = valid_all_par_fields();
-    let value = Par::import_generated(&source).expect("import all fields");
-
-    let send = source.sends[0].clone();
-    let mut expected_source = source.clone();
-    let expected = expected_source.prepend_send(send.clone());
-    assert_generated_equivalent(&expected, &value.clone().prepend_send(send));
-
-    let receive = source.receives[0].clone();
-    let mut expected_source = source.clone();
-    let expected = expected_source.prepend_receive(receive.clone());
-    assert_generated_equivalent(&expected, &value.clone().prepend_receive(receive));
-
-    let match_node = source.matches[0].clone();
-    let mut expected_source = source.clone();
-    let expected = expected_source.prepend_match(match_node.clone());
-    assert_generated_equivalent(&expected, &value.clone().prepend_match(match_node));
-
-    let conditional = source.conditionals[0].clone();
-    let mut expected_source = source.clone();
-    let expected = expected_source.prepend_if(conditional.clone());
-    assert_generated_equivalent(&expected, &value.clone().prepend_if(conditional));
-
-    let other = models::par_from_default! {
-        exprs: vec![Expr {
-            expr_instance: Some(ExprInstance::GInt(41)),
-        }],
-        locally_free: vec![0x04],
-        ..GeneratedPar::default()
-    };
-    assert_generated_equivalent(
-        &source.append(other.clone()),
-        &value.append(Par::import_generated(&other).expect("import appended Par")),
+    let conditional = source.first::<If>().unwrap().unwrap().0;
+    assert_eq!(
+        source.prepend_if(conditional.clone()).count(&conditional),
+        2
     );
-}
-
-#[test]
-fn historical_par_predicates_match_ignored_family_contracts() {
-    let check = |source: GeneratedPar| {
-        let value = Par::import_generated(&source).expect("import predicate case");
-        assert_eq!(value.is_empty(), source.is_empty());
-        assert_eq!(value.is_nil(), source.is_nil());
-        assert_eq!(value.single_connective(), source.single_connective());
-        assert_eq!(value.single_bundle(), source.single_bundle());
-        assert_eq!(
-            value.components_is_empty(),
-            source == GeneratedPar::default()
-        );
-    };
-
-    check(GeneratedPar::default());
-
-    let corpus = valid_all_par_fields();
-    check(models::par_from_default! {
-        unforgeables: vec![corpus.unforgeables[0].clone()],
-        ..GeneratedPar::default()
-    });
-    check(models::par_from_default! {
-        conditionals: vec![corpus.conditionals[0].clone()],
-        ..GeneratedPar::default()
-    });
-    check(models::par_from_default! {
-        connectives: vec![corpus.connectives[0].clone()],
-        unforgeables: vec![corpus.unforgeables[0].clone()],
-        conditionals: vec![corpus.conditionals[0].clone()],
-        ..GeneratedPar::default()
-    });
-    check(models::par_from_default! {
-        bundles: vec![corpus.bundles[0].clone()],
-        conditionals: vec![corpus.conditionals[0].clone()],
-        ..GeneratedPar::default()
-    });
 }

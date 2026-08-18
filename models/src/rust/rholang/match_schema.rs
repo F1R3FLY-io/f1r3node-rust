@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use super::match_schema_tables::{ParCursor, ParSequenceCursor};
 use crate::rhoapi::Par;
+use crate::rust::par_bag::ParBag;
 use crate::rust::rhoapi_ext::EPathMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,6 +20,7 @@ pub enum RhoMatchFieldKind {
     MessageSequence(u16),
     StringMessageMap(u16),
     Oneof(&'static [RhoMatchOneofVariant]),
+    ParBag,
     PathMap,
 }
 
@@ -90,6 +92,7 @@ pub enum RhoMatchValue<'a> {
     MessageSequence(ParSequenceCursor<'a>),
     StringMessageMap(&'a BTreeMap<String, Par>),
     Oneof(Option<RhoOneofCursor<'a>>),
+    ParBag(&'a ParBag),
     PathMap(&'a EPathMap),
 }
 
@@ -111,6 +114,7 @@ pub enum RhoPathEvent<'a> {
     LeaveMap,
     EnterOneof(RhoOneofCursor<'a>),
     LeaveOneof,
+    ParBag(&'a ParBag),
     PathMap(&'a EPathMap),
 }
 
@@ -210,6 +214,7 @@ impl<'a> Iterator for RhoPathCursor<'a> {
                         return Some(RhoPathEvent::EnterOneof(cursor));
                     }
                     RhoMatchValue::Oneof(None) => return Some(RhoPathEvent::Absent),
+                    RhoMatchValue::ParBag(bag) => return Some(RhoPathEvent::ParBag(bag)),
                     RhoMatchValue::PathMap(map) => return Some(RhoPathEvent::PathMap(map)),
                 },
                 RhoPathStep::Sequence { cursor, index } => {

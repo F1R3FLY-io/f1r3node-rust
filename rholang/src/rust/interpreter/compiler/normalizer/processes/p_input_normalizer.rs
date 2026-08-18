@@ -598,7 +598,7 @@ pub(crate) fn combine_p_input<'ast>(
 
             // ★ Leg-1: shallow read, then MOVE. See
             // `collection_normalize_matcher::combine_collect`.
-            let pattern_locally_free = res.par.locally_free.clone();
+            let pattern_locally_free = res.par.locally_free().to_vec();
             k.group_pars.push(res.par);
             k.group_free = res.free_map;
             k.group_locally_free = union(
@@ -615,8 +615,8 @@ pub(crate) fn combine_p_input<'ast>(
         InputPhase::Sources { idx } => {
             let res = value.into_name();
             // ★ Leg-1: shallow reads, then MOVE.
-            let source_locally_free = res.par.locally_free.clone();
-            let source_connective_used = res.par.connective_used;
+            let source_locally_free = res.par.locally_free().to_vec();
+            let source_connective_used = res.par.connective_used();
             k.source_pars.push(res.par);
             k.source_free = res.free_map;
             k.source_locally_free = union(
@@ -649,7 +649,7 @@ pub(crate) fn combine_p_input<'ast>(
             let InputK {
                 persistent,
                 peek,
-                mut input,
+                input,
                 source_locally_free,
                 source_connective_used,
                 receive_binds,
@@ -663,15 +663,15 @@ pub(crate) fn combine_p_input<'ast>(
             // body cache is transferred to `Receive::locally_free`.
             let guard_locally_free = guard_out
                 .as_ref()
-                .map(|gr| gr.par.locally_free.clone())
+                .map(|gr| gr.par.locally_free().to_vec())
                 .unwrap_or_default();
             let guard_connective_used = guard_out
                 .as_ref()
-                .map(|gr| gr.par.connective_used)
+                .map(|gr| gr.par.connective_used())
                 .unwrap_or(false);
             let guard_par = guard_out.map(|gr| gr.par);
-            let body_locally_free = std::mem::take(&mut proc_visit_outputs.par.locally_free);
-            let body_connective_used = proc_visit_outputs.par.connective_used;
+            let body_locally_free = proc_visit_outputs.par.take_locally_free();
+            let body_connective_used = proc_visit_outputs.par.connective_used();
 
             Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
                 par: input.par.prepend_receive(Receive {
@@ -746,7 +746,7 @@ mod tests {
         use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
 
-        let (mut inputs_data, env) = (inputs_span(), HashMap::new());
+        let (inputs_data, env) = (inputs_span(), HashMap::new());
         let parser = rholang_parser::RholangParser::new();
 
         // Create bind: x, y <- @Nil
@@ -823,12 +823,10 @@ mod tests {
         );
         let normalized = result.unwrap();
 
-        assert!(
-            !normalized.receives.is_empty(),
-            "Should have at least one receive"
-        );
+        let receives = normalized.decode_occurrences::<Receive>();
+        assert!(!receives.is_empty(), "Should have at least one receive");
         assert_eq!(
-            normalized.receives[0].peek, true,
+            receives[0].peek, true,
             "Peek should be true for <<- operator"
         );
     }
@@ -842,7 +840,7 @@ mod tests {
         use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
 
-        let (mut inputs_data, env) = (inputs_span(), HashMap::new());
+        let (inputs_data, env) = (inputs_span(), HashMap::new());
         let parser = rholang_parser::RholangParser::new();
 
         // Create pattern: @[...a]
@@ -911,7 +909,7 @@ mod tests {
         use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
 
-        let (mut inputs_data, env) = (inputs_span(), HashMap::new());
+        let (inputs_data, env) = (inputs_span(), HashMap::new());
         let parser = rholang_parser::RholangParser::new();
 
         // Create first bind: x1, @y1 <- @Nil
@@ -1001,8 +999,7 @@ mod tests {
                 free_count: 2,
             }],
             body: Some({
-                let mut inner_par = Par::default();
-                inner_par.receives.push(Receive {
+                let mut inner_par = Par::default().with_receives(vec![Receive {
                     binds: vec![ReceiveBind {
                         patterns: vec![
                             new_freevar_par(0, Vec::new()),
@@ -1038,7 +1035,7 @@ mod tests {
                     locally_free: create_bit_vector(&vec![0, 1]),
                     connective_used: false,
                     condition: None,
-                });
+                }]);
                 inner_par.locally_free = create_bit_vector(&vec![0, 1]);
                 inner_par
             }),

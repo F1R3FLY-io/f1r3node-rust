@@ -1,6 +1,6 @@
 use std::result::Result;
 
-use models::rhoapi::{Bundle, Par};
+use models::rhoapi::{Bundle, Connective, Par};
 use models::rust::bundle_ops::BundleOps;
 use models::rust::rholang::par_children::dismantle;
 use rholang_parser::ast::{AnnProc, BundleType};
@@ -111,7 +111,7 @@ pub(crate) fn combine_p_bundle<'ast>(
         BundleType::BundleEquiv => (false, false),
     };
 
-    if !target_result.par.connectives.is_empty() {
+    if target_result.par.family_cardinality::<Connective>() != 0 {
         // ⚠ The rejected body is deep and `<Par as Drop>` is Θ(depth), so it is
         // torn down with an explicit worklist rather than left to fall out of
         // scope — otherwise a hostile bundle would overflow on the way OUT.

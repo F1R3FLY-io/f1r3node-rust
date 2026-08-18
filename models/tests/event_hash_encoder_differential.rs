@@ -269,7 +269,9 @@ fn generated_encoder_matches_legacy_for_epathmap_shapes() {
     // while covering nothing.
     let carries_map = |p: &Par| -> bool {
         matches!(
-            p.exprs.first().and_then(|e| e.expr_instance.as_ref()),
+            p.first::<Expr>()
+                .expect("fixture Expr endpoint decodes")
+                .and_then(|(expr, _)| expr.expr_instance),
             Some(ExprInstance::EPathmapBody(_)) | Some(ExprInstance::EZipperBody(_))
         )
     };

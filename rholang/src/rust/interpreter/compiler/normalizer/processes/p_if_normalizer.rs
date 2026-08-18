@@ -133,12 +133,12 @@ pub(crate) fn combine_p_if<'ast>(
             let false_case_body = result;
 
             // ★ Leg-1: three shallow reads, then three MOVES.
-            let cond_lf = target_result.par.locally_free.clone();
-            let true_lf = true_case_body.par.locally_free.clone();
-            let false_lf = false_case_body.par.locally_free.clone();
-            let connective_used = target_result.par.connective_used
-                || true_case_body.par.connective_used
-                || false_case_body.par.connective_used;
+            let cond_lf = target_result.par.locally_free().to_vec();
+            let true_lf = true_case_body.par.locally_free().to_vec();
+            let false_lf = false_case_body.par.locally_free().to_vec();
+            let connective_used = target_result.par.connective_used()
+                || true_case_body.par.connective_used()
+                || false_case_body.par.connective_used();
             let desugared_if = If {
                 condition: Some(target_result.par),
                 if_true: Some(true_case_body.par),

@@ -2,10 +2,10 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use chroma::embed::EmbeddingFunction;
+use rust_bert::RustBertError;
 use rust_bert::pipelines::sentence_embeddings::{
     SentenceEmbeddingsBuilder, SentenceEmbeddingsModel, SentenceEmbeddingsModelType,
 };
-use rust_bert::RustBertError;
 
 // Struct to store the model for embedding documents
 pub struct SBERTEmbeddings {

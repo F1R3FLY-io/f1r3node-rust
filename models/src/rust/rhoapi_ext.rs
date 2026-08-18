@@ -728,8 +728,8 @@ impl EntryTrie {
                     fold(CanonicalPathMetadata {
                         stable,
                         reducer_eval_identity: reducer_eval_identity_par(value, stable),
-                        locally_free: value.locally_free.clone(),
-                        connective_used: value.connective_used,
+                        locally_free: value.locally_free().to_vec(),
+                        connective_used: value.connective_used(),
                     });
                     len += 1;
                 }
@@ -916,10 +916,10 @@ impl EntryTrie {
     fn fold_par_metadata_with_stability(&mut self, par: &Par, stable: bool) {
         self.entries_stable &= stable;
         self.entries_reducer_eval_identity &= reducer_eval_identity_par(par, stable);
-        self.any_connective_used |= par.connective_used;
+        self.any_connective_used |= par.connective_used();
         self.union_locally_free = crate::rust::utils::union(
             std::mem::take(&mut self.union_locally_free),
-            par.locally_free.clone(),
+            par.locally_free().to_vec(),
         );
     }
 
@@ -1023,10 +1023,10 @@ impl EntryTrie {
         }
         self.entries_stable &= stable;
         self.entries_reducer_eval_identity &= reducer_eval_identity_par(&par, stable);
-        self.any_connective_used |= par.connective_used;
+        self.any_connective_used |= par.connective_used();
         self.union_locally_free = crate::rust::utils::union(
             std::mem::take(&mut self.union_locally_free),
-            par.locally_free.clone(),
+            par.locally_free().to_vec(),
         );
         if matches!(self.repr, EPathMapRepr::Empty) {
             self.repr = EPathMapRepr::Set(RholangSetPathMap::new());
@@ -2104,9 +2104,9 @@ impl EntryTrie {
                     let stable = eval_stable_par(&par);
                     entries_stable &= stable;
                     entries_reducer_eval_identity &= reducer_eval_identity_par(&par, stable);
-                    any_connective_used |= par.connective_used;
+                    any_connective_used |= par.connective_used();
                     union_locally_free =
-                        crate::rust::utils::union(union_locally_free, par.locally_free.clone());
+                        crate::rust::utils::union(union_locally_free, par.locally_free().to_vec());
                     crate::rust::rholang::par_children::dismantle(par);
                 }
             }
@@ -2118,9 +2118,11 @@ impl EntryTrie {
                         let stable = eval_stable_par(par);
                         entries_stable &= stable;
                         entries_reducer_eval_identity &= reducer_eval_identity_par(par, stable);
-                        any_connective_used |= par.connective_used;
-                        union_locally_free =
-                            crate::rust::utils::union(union_locally_free, par.locally_free.clone());
+                        any_connective_used |= par.connective_used();
+                        union_locally_free = crate::rust::utils::union(
+                            union_locally_free,
+                            par.locally_free().to_vec(),
+                        );
                     }
                     crate::rust::rholang::par_children::dismantle(key);
                 }
@@ -2180,9 +2182,9 @@ impl EntryTrie {
                 let stable = eval_stable_par(&par);
                 entries_stable &= stable;
                 entries_reducer_eval_identity &= reducer_eval_identity_par(&par, stable);
-                any_connective_used |= par.connective_used;
+                any_connective_used |= par.connective_used();
                 union_locally_free =
-                    crate::rust::utils::union(union_locally_free, par.locally_free.clone());
+                    crate::rust::utils::union(union_locally_free, par.locally_free().to_vec());
                 len += 1;
                 crate::rust::rholang::par_children::dismantle(par);
             }
@@ -3222,11 +3224,9 @@ mod pathmap_native_semantics_tests {
     use crate::rhoapi::Expr;
 
     fn int(value: i64) -> Par {
-        let mut par = Par::default();
-        par.exprs.push(Expr {
+        Par::default().with_exprs(vec![Expr {
             expr_instance: Some(ExprInstance::GInt(value)),
-        });
-        par
+        }])
     }
 
     fn hash_of(value: &EPathMap) -> u64 {
@@ -3242,11 +3242,9 @@ mod pathmap_native_semantics_tests {
     }
 
     fn epathmap_carrier(map: EPathMap) -> Par {
-        let mut par = Par::default();
-        par.exprs.push(Expr {
+        Par::default().with_exprs(vec![Expr {
             expr_instance: Some(ExprInstance::EPathmapBody(map)),
-        });
-        par
+        }])
     }
 
     #[test]
@@ -3341,7 +3339,13 @@ mod pathmap_native_semantics_tests {
     }
 
     #[test]
-    fn forcing_one_nested_map_snapshot_does_not_cache_every_suffix() {
+    fn forcing_one_nested_map_snapshot_does_not_force_the_decoded_child() {
+        // This is a cache-ownership test, not a depth gate. Nested `Par`
+        // values retain canonical component bytes, so deeper EPathMap cache
+        // cells do not exist until that component is explicitly decoded. A
+        // single decoded child is therefore the complete observable boundary;
+        // walking every suffix would repeatedly decode overlapping protobuf
+        // tails and turn the oracle itself quadratic.
         const DEPTH: usize = 1_024;
         let mut value = int(0);
         for _ in 1..DEPTH {
@@ -3359,24 +3363,21 @@ mod pathmap_native_semantics_tests {
         assert!(root.ps.snapshot_is_forced());
 
         let key = int(1);
-        let mut cursor = &root;
-        for level in 1..DEPTH {
-            let value = cursor
-                .get_map_value(&key)
-                .expect("the chain remains in map mode")
-                .expect("each chain map has one value");
-            let Some(ExprInstance::EPathmapBody(nested)) = value
-                .exprs
-                .first()
-                .and_then(|expr| expr.expr_instance.as_ref())
-            else {
-                panic!("map-value chain ended at level {level} of {DEPTH}")
-            };
-            assert!(
-                !nested.ps.snapshot_is_forced(),
-                "streaming the root must not retain the complete snapshot of nested level {level}"
-            );
-            cursor = nested;
-        }
+        let value = root
+            .get_map_value(&key)
+            .expect("the chain remains in map mode")
+            .expect("the root map has one value");
+        let expr = value
+            .first::<Expr>()
+            .expect("nested map Expr endpoint decodes")
+            .expect("map value has one Expr")
+            .0;
+        let Some(ExprInstance::EPathmapBody(nested)) = expr.expr_instance else {
+            panic!("map-value chain ended before its decoded child")
+        };
+        assert!(
+            !nested.ps.snapshot_is_forced(),
+            "streaming the root must not retain the decoded child's complete snapshot"
+        );
     }
 }

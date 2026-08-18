@@ -72,7 +72,7 @@ use models::rust::rholang::bincode_schema_tables::EXPR_INSTANCE_VARIANT_COUNT;
 use models::rust::rholang::protobuf_encoder;
 use models::rust::rholang::protobuf_schema::{ProtobufDescent, ProtobufNode, NO_RESUME};
 use models::rust::rholang::protobuf_schema_tables::{
-    PAR_PROTOBUF_PROGRAM, PROTOBUF_CONFORMANCE_REGISTRY, TAGGEDCONTINUATION_PROTOBUF_PROGRAM,
+    PROTOBUF_CONFORMANCE_REGISTRY, TAGGEDCONTINUATION_PROTOBUF_PROGRAM,
 };
 use models::rust::test_utils::test_utils::generate_par;
 use proptest::prelude::*;
@@ -547,53 +547,21 @@ fn par_encoded_in_order(par: &Par, order: &[&str]) -> Vec<u8> {
         // self-delimiting and concatenating them in any order is a well-formed
         // protobuf message — which is exactly why the defect is invisible to a
         // decoder.
-        let single = match *name {
-            "sends" => models::par_from_default! {
-                sends: par.sends.clone(),
-                ..Default::default()
-            },
-            "receives" => models::par_from_default! {
-                receives: par.receives.clone(),
-                ..Default::default()
-            },
-            "news" => models::par_from_default! {
-                news: par.news.clone(),
-                ..Default::default()
-            },
-            "exprs" => models::par_from_default! {
-                exprs: par.exprs.clone(),
-                ..Default::default()
-            },
-            "matches" => models::par_from_default! {
-                matches: par.matches.clone(),
-                ..Default::default()
-            },
-            "unforgeables" => models::par_from_default! {
-                unforgeables: par.unforgeables.clone(),
-                ..Default::default()
-            },
-            "connectives" => models::par_from_default! {
-                connectives: par.connectives.clone(),
-                ..Default::default()
-            },
-            "locally_free" => models::par_from_default! {
-                locally_free: par.locally_free.clone(),
-                ..Default::default()
-            },
-            "connective_used" => models::par_from_default! {
-                connective_used: par.connective_used,
-                ..Default::default()
-            },
-            "bundles" => models::par_from_default! {
-                bundles: par.bundles.clone(),
-                ..Default::default()
-            },
-            "conditionals" => models::par_from_default! {
-                conditionals: par.conditionals.clone(),
-                ..Default::default()
-            },
+        let mut single = Par::default();
+        match *name {
+            "sends" => single.replace_sends(par.decode_occurrences()),
+            "receives" => single.replace_receives(par.decode_occurrences()),
+            "news" => single.replace_news(par.decode_occurrences()),
+            "exprs" => single.replace_exprs(par.decode_occurrences()),
+            "matches" => single.replace_matches(par.decode_occurrences()),
+            "unforgeables" => single.replace_unforgeables(par.decode_occurrences()),
+            "connectives" => single.replace_connectives(par.decode_occurrences()),
+            "locally_free" => single.replace_locally_free(par.locally_free().to_vec()),
+            "connective_used" => single.replace_connective_used(par.connective_used()),
+            "bundles" => single.replace_bundles(par.decode_occurrences()),
+            "conditionals" => single.replace_conditionals(par.decode_occurrences()),
             other => panic!("par_encoded_in_order: unknown field `{other}`"),
-        };
+        }
         out.extend_from_slice(&recursive_oracle_encode(&single));
     }
     out
@@ -673,14 +641,8 @@ fn the_protobuf_differential_can_go_red() {
         "bundles",
         "conditionals",
     ];
-    // ★ THE MUTATION MUST ASSERT IT APPLIED — against the GENERATED table, so
-    // "declaration order" and "tag order" are not two names this test invented.
-    let generated: Vec<&str> = PAR_PROTOBUF_PROGRAM.iter().map(|f| f.name).collect();
-    assert_eq!(
-        generated, tag_order,
-        "the generated `Par` prost program is not the tag order this mutation perturbs, so \
-         M1 would be perturbing the wrong thing"
-    );
+    // `Par` is repository-owned rather than generated. The control below
+    // proves this is the custom encoder's actual tag order byte-for-byte.
     assert_ne!(
         declaration_order, tag_order,
         "M1 IS INERT: the two orders coincide, so the 'mutation' changes nothing and its \
@@ -885,15 +847,15 @@ fn the_protobuf_differential_can_go_red() {
 #[test]
 fn the_generated_protobuf_table_is_not_degenerate() {
     assert!(
-        PROTOBUF_CONFORMANCE_REGISTRY.len() >= 57,
+        PROTOBUF_CONFORMANCE_REGISTRY.len() >= 56,
         "the prost registry collapsed to {} rows",
         PROTOBUF_CONFORMANCE_REGISTRY.len()
     );
-    assert_eq!(
-        PAR_PROTOBUF_PROGRAM.len(),
-        11,
-        "`Par` has eleven fields; a shorter program means the generator dropped one and the \
-         encoder would silently omit it"
+    assert!(
+        !PROTOBUF_CONFORMANCE_REGISTRY
+            .iter()
+            .any(|(name, _)| *name == "Par"),
+        "repository-owned Par must not acquire a descriptor-generated field program"
     );
     assert_eq!(
         TAGGEDCONTINUATION_PROTOBUF_PROGRAM.len(),
@@ -984,37 +946,29 @@ fn bounded_recursive_oracle_terms_encode_identically() {
     }
 }
 
-/// ★★ **The `` $\Theta(d^2) \to \Theta(n)$ `` claim, made observable.**
+/// ★★ The repository-owned PathMap `Par` is an opaque terminal to the
+/// generic protobuf PDA.
 ///
-/// This does not time anything — a timing assertion in a test suite is a flake.
-/// It asserts the *structural* fact the complexity claim rests on: the length
-/// table holds **one entry per message node**, so each node's length is computed
-/// once. prost recomputes a node's subtree length once per ancestor.
+/// Its component bodies and lengths are already present in canonical trie
+/// keys, so exposing decoded child nodes to the generic length table would be a
+/// representation regression. Depth and sibling width must therefore leave
+/// both the generic length table and operation stacks constant.
 #[test]
-fn the_length_table_holds_exactly_one_entry_per_message_node() {
-    let mut sizes = Vec::new();
+fn pathmap_backed_par_does_not_rebuild_a_generated_length_table() {
     for depth in [4usize, 8, 16, 32] {
         let par = corpus::deep_par(depth);
-        sizes.push((depth, protobuf_encoder::len_table_size(&par)));
+        assert_eq!(
+            protobuf_encoder::len_table_size(&par),
+            1,
+            "depth-{depth} Par must occupy exactly the root length-table slot and expose no decoded children"
+        );
+        let (len_hw, emit_hw) = protobuf_encoder::op_stack_high_water(&par);
+        assert!(
+            len_hw <= 2 && emit_hw <= 1,
+            "depth-{depth} opaque Par used generic PDA stacks: ({len_hw}, {emit_hw})"
+        );
     }
-    let per_level: Vec<usize> = sizes
-        .windows(2)
-        .map(|w| (w[1].1 - w[0].1) / (w[1].0 - w[0].0))
-        .collect();
-    assert!(
-        per_level.windows(2).all(|w| w[0] == w[1]),
-        "the length table must grow LINEARLY in depth — one entry per message node, \
-                 each measured once. Observed {sizes:?}, i.e. {per_level:?} entries per level. \
-                 A growing per-level cost means nodes are being measured more than once, \
-                 which is the Θ(d²) behaviour this encoder exists to remove."
-    );
-    assert!(
-        per_level[0] >= 2,
-        "each `deep_par` level is `Par -> Expr -> EList -> Par`, so it must contribute \
-                 at least two message nodes; {per_level:?} suggests the table collapsed"
-    );
 
-    // …and the op stacks stay Θ(depth) while the table grows Θ(n).
     let wide = models::par_from_default! {
         exprs: (0..4096)
             .map(|i| Expr {
@@ -1025,13 +979,13 @@ fn the_length_table_holds_exactly_one_entry_per_message_node() {
     };
     let (len_hw, emit_hw) = protobuf_encoder::op_stack_high_water(&wide);
     assert!(
-        len_hw < 16 && emit_hw < 16,
-        "a 4,096-sibling term must not put 4,096 entries on either op stack — the \
-                 counted repeat re-pushes ITSELF, not its children. Observed \
-                 (len {len_hw}, emit {emit_hw})."
+        len_hw <= 2 && emit_hw <= 1,
+        "a 4,096-component PathMap Par must remain one opaque protobuf operation; \
+         observed (len {len_hw}, emit {emit_hw})"
     );
-    assert!(
-        protobuf_encoder::len_table_size(&wide) >= 4096,
-        "…while the LENGTH TABLE is Θ(nodes) and must hold one entry per sibling"
+    assert_eq!(
+        protobuf_encoder::len_table_size(&wide),
+        1,
+        "wide PathMap Par must occupy only the root length-table slot"
     );
 }

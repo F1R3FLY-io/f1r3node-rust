@@ -191,9 +191,11 @@ fn deep_and_wide_cursor_walks_fit_a_small_native_stack() {
             assert!(deep_nodes > 20_000);
 
             let mut wide = par_corpus::all_par_fields();
-            wide.exprs.reserve(20_000);
-            let seed = wide.exprs[0].clone();
-            wide.exprs.extend(std::iter::repeat_n(seed, 20_000));
+            let mut exprs = wide.decode_occurrences::<models::rhoapi::Expr>();
+            exprs.reserve(20_000);
+            let seed = exprs[0].clone();
+            exprs.extend(std::iter::repeat_n(seed, 20_000));
+            wide.replace_exprs(exprs);
             let wide_nodes = RhoPathCursor::par(&wide)
                 .filter(|event| matches!(event, RhoPathEvent::EnterNode { .. }))
                 .count();

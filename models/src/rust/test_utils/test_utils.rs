@@ -120,20 +120,7 @@ In this code, we chose a manual approach to generate recursive structures for te
 
 pub fn generate_par(depth: usize) -> BoxedStrategy<Par> {
     if depth == 0 {
-        return Just(Par {
-            sends: vec![],
-            receives: vec![],
-            news: vec![],
-            exprs: vec![],
-            matches: vec![],
-            bundles: vec![],
-            connectives: vec![],
-            conditionals: vec![],
-            locally_free: vec![],
-            connective_used: false,
-            unforgeables: vec![],
-        })
-        .boxed();
+        return Just(Par::default()).boxed();
     }
 
     (
@@ -158,18 +145,18 @@ pub fn generate_par(depth: usize) -> BoxedStrategy<Par> {
                 connectives,
                 locally_free,
                 connective_used,
-            )| Par {
-                sends,
-                receives,
-                news,
-                exprs,
-                matches,
-                bundles,
-                connectives,
-                conditionals: vec![],
-                locally_free,
-                connective_used,
-                unforgeables: vec![],
+            )| {
+                let mut par = Par::default();
+                par.replace_sends(sends);
+                par.replace_receives(receives);
+                par.replace_news(news);
+                par.replace_exprs(exprs);
+                par.replace_matches(matches);
+                par.replace_bundles(bundles);
+                par.replace_connectives(connectives);
+                par.replace_locally_free(locally_free);
+                par.replace_connective_used(connective_used);
+                par
             },
         )
         .boxed()
@@ -481,20 +468,30 @@ mod anti_vacuity {
             "a Par with at least one Expr",
             generate_par(3),
             DRAWS,
-            |p| !p.exprs.is_empty(),
+            |p| p.family_cardinality::<Expr>() != 0,
         );
     }
 
     #[test]
     fn generate_par_reaches_every_par_bearing_slot() {
         let slots: [(&str, fn(&Par) -> bool); 7] = [
-            ("a Par with a Send", |p| !p.sends.is_empty()),
-            ("a Par with a Receive", |p| !p.receives.is_empty()),
-            ("a Par with a New", |p| !p.news.is_empty()),
-            ("a Par with an Expr", |p| !p.exprs.is_empty()),
-            ("a Par with a Match", |p| !p.matches.is_empty()),
-            ("a Par with a Bundle", |p| !p.bundles.is_empty()),
-            ("a Par with a Connective", |p| !p.connectives.is_empty()),
+            ("a Par with a Send", |p| p.family_cardinality::<Send>() != 0),
+            ("a Par with a Receive", |p| {
+                p.family_cardinality::<Receive>() != 0
+            }),
+            ("a Par with a New", |p| p.family_cardinality::<New>() != 0),
+            ("a Par with an Expr", |p| {
+                p.family_cardinality::<Expr>() != 0
+            }),
+            ("a Par with a Match", |p| {
+                p.family_cardinality::<Match>() != 0
+            }),
+            ("a Par with a Bundle", |p| {
+                p.family_cardinality::<Bundle>() != 0
+            }),
+            ("a Par with a Connective", |p| {
+                p.family_cardinality::<Connective>() != 0
+            }),
         ];
         for (what, predicate) in slots {
             assert_generator_not_vacuous(what, generate_par(3), DRAWS, predicate);
@@ -511,10 +508,10 @@ mod anti_vacuity {
             DRAWS,
             |p| {
                 use crate::rust::rholang::par_children::par_child_pars;
-                let mut level1: Vec<&Par> = Vec::new();
+                let mut level1: Vec<Par> = Vec::new();
                 par_child_pars(p, &mut level1);
                 level1.iter().any(|c| {
-                    let mut level2: Vec<&Par> = Vec::new();
+                    let mut level2: Vec<Par> = Vec::new();
                     par_child_pars(c, &mut level2);
                     !level2.is_empty()
                 })

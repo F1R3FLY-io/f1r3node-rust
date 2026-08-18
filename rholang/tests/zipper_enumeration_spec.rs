@@ -84,9 +84,9 @@ async fn read_single_expr(runtime: &RhoRuntimeImpl, channel_name: &str) -> ExprI
         channel_name
     );
     pars[0]
-        .exprs
-        .first()
-        .and_then(|e| e.expr_instance.clone())
+        .first::<Expr>()
+        .expect("resident expression decodes")
+        .and_then(|(expr, _)| expr.expr_instance)
         .unwrap_or_else(|| panic!("no expr at @\"{}\"", channel_name))
 }
 
@@ -272,9 +272,9 @@ async fn counted_walk_collects_every_trace() {
         assert_eq!(data.len(), 1, "the walk must terminate and report once");
         let collected = &data[0].a.pars[0];
         match collected
-            .exprs
-            .first()
-            .and_then(|e| e.expr_instance.as_ref())
+            .first::<Expr>()
+            .expect("resident expression decodes")
+            .and_then(|(expr, _)| expr.expr_instance)
         {
             Some(ExprInstance::EListBody(list)) => assert_eq!(
                 list.ps.len(),
@@ -697,9 +697,9 @@ async fn bare_counted_walk_collects_every_entry() {
         assert_eq!(data.len(), 1, "the counted walk must report once");
         let collected = &data[0].a.pars[0];
         match collected
-            .exprs
-            .first()
-            .and_then(|e| e.expr_instance.as_ref())
+            .first::<Expr>()
+            .expect("resident expression decodes")
+            .and_then(|(expr, _)| expr.expr_instance)
         {
             Some(ExprInstance::EListBody(list)) => {
                 assert_eq!(list.ps.len(), 3, "three steps, as leafCount() bounds");

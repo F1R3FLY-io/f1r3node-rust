@@ -382,9 +382,9 @@ async fn today_path_has_expected_semantics_and_comm_accounting() {
 
     let discovery = single_observed_par(&observations[0], 0);
     match discovery
-        .exprs
-        .first()
-        .and_then(|expr| expr.expr_instance.as_ref())
+        .first::<Expr>()
+        .expect("resident expression decodes")
+        .and_then(|(expr, _)| expr.expr_instance)
     {
         Some(ExprInstance::EPathmapBody(map)) => {
             let entries = map.entry_trie().entries_owned();
@@ -404,9 +404,9 @@ async fn today_path_has_expected_semantics_and_comm_accounting() {
         let value = single_observed_par(observation, 0);
         assert_eq!(
             value
-                .exprs
-                .first()
-                .and_then(|expr| expr.expr_instance.clone()),
+                .first::<Expr>()
+                .expect("resident expression decodes")
+                .and_then(|(expr, _)| expr.expr_instance),
             Some(ExprInstance::GBool(true)),
             "{label} must hold"
         );

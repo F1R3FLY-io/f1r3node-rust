@@ -276,7 +276,8 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
         } else {
             // println!("\npassed guard in Par, Par");
 
-            let var_level: Option<i32> = pattern.exprs.iter().find_map(|expr| match expr {
+            let pattern_expressions = pattern.decode_occurrences::<Expr>();
+            let var_level: Option<i32> = pattern_expressions.iter().find_map(|expr| match expr {
                 Expr {
                     expr_instance:
                         Some(EVarBody(EVar {
@@ -291,8 +292,7 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
 
             // println!("var_level: {:?}", var_level);
 
-            let wildcard: bool = pattern
-                .exprs
+            let wildcard: bool = pattern_expressions
                 .iter()
                 .find_map(|expr| match expr {
                     Expr {
@@ -323,8 +323,8 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
             // println!("\nmin_rem: {:?}", min_rem);
             // println!("\nmax_rem: {:?}", max_rem);
 
-            let individual_bounds: Vec<(ParCount, ParCount)> = filtered_pattern
-                .connectives
+            let filtered_connectives = filtered_pattern.decode_occurrences::<Connective>();
+            let individual_bounds: Vec<(ParCount, ParCount)> = filtered_connectives
                 .iter()
                 .map(|con| pc.min_max_con(con.clone()))
                 .collect();
@@ -346,8 +346,7 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
                 &Connective,
                 &(ParCount, ParCount),
                 &(ParCount, ParCount),
-            )> = filtered_pattern
-                .connectives
+            )> = filtered_connectives
                 .iter()
                 .zip(individual_bounds.iter())
                 .zip(remainder_bounds.iter())
@@ -454,16 +453,16 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
             // println!("\nRemainder: {:?}", remainder);
 
             self.list_match_single_(
-                std::mem::take(&mut remainder.sends),
-                std::mem::take(&mut pattern.sends),
+                remainder.take_occurrences::<Send>(),
+                pattern.take_occurrences::<Send>(),
                 &|p, s| p.with_sends(s),
                 var_level,
                 wildcard,
             )
             .and_then(|_| {
                 self.list_match_single_(
-                    std::mem::take(&mut remainder.receives),
-                    std::mem::take(&mut pattern.receives),
+                    remainder.take_occurrences::<Receive>(),
+                    pattern.take_occurrences::<Receive>(),
                     &|p, s| p.with_receives(s),
                     var_level,
                     wildcard,
@@ -471,8 +470,8 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
             })
             .and_then(|_| {
                 self.list_match_single_(
-                    std::mem::take(&mut remainder.news),
-                    std::mem::take(&mut pattern.news),
+                    remainder.take_occurrences::<New>(),
+                    pattern.take_occurrences::<New>(),
                     &|p, s| p.with_news(s),
                     var_level,
                     wildcard,
@@ -480,8 +479,8 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
             })
             .and_then(|_| {
                 self.list_match_single_(
-                    std::mem::take(&mut remainder.exprs),
-                    no_frees_exprs(&pattern.exprs),
+                    remainder.take_occurrences::<Expr>(),
+                    no_frees_exprs(&pattern.take_occurrences::<Expr>()),
                     &|p, s| p.with_exprs(s),
                     var_level,
                     wildcard,
@@ -489,8 +488,8 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
             })
             .and_then(|_| {
                 self.list_match_single_(
-                    std::mem::take(&mut remainder.matches),
-                    std::mem::take(&mut pattern.matches),
+                    remainder.take_occurrences::<Match>(),
+                    pattern.take_occurrences::<Match>(),
                     &|p, s| p.with_matches(s),
                     var_level,
                     wildcard,
@@ -498,8 +497,8 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
             })
             .and_then(|_| {
                 self.list_match_single_(
-                    std::mem::take(&mut remainder.bundles),
-                    std::mem::take(&mut pattern.bundles),
+                    remainder.take_occurrences::<Bundle>(),
+                    pattern.take_occurrences::<Bundle>(),
                     &|p, s| p.with_bundles(s),
                     var_level,
                     wildcard,
@@ -507,8 +506,8 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
             })
             .and_then(|_| {
                 self.list_match_single_(
-                    std::mem::take(&mut remainder.unforgeables),
-                    std::mem::take(&mut pattern.unforgeables),
+                    remainder.take_occurrences::<GUnforgeable>(),
+                    pattern.take_occurrences::<GUnforgeable>(),
                     &|p, s| p.with_unforgeables(s),
                     var_level,
                     wildcard,

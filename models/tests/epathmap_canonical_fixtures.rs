@@ -46,7 +46,7 @@ use prost::Message;
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Pinned scalar constants (captured after the direct-EPM1 transition)
+// Pinned scalar constants (captured after direct EPM1 and the RPB3 ParBag key)
 // ─────────────────────────────────────────────────────────────────────────────
 
 mod pinned {
@@ -66,32 +66,32 @@ mod pinned {
     /// Blake2b256 of `bincode(channel)` for the E-6a index channel Par
     /// (`stable_hash_provider::hash`, the channel leg of every event hash).
     ///
-    /// ★ **UNMOVED by CBR-042** — the channel is a `GString`, not a map, so a
-    /// change to the pathmap wire cannot reach it. It is the second control:
-    /// paired with the two moved `PRODUCE_*` hashes it shows the movement is
-    /// confined to the leg that actually carries an `EPathMap`.
+    /// This was unchanged by the direct-EPM1 transition because the channel is
+    /// a `GString`. It intentionally moved under RPB3: every `Par`, including a
+    /// scalar channel, serializes its authoritative ParBag image, and RPB3 adds
+    /// the constant-time score-length trailer to each component key.
     pub const INDEX_CHANNEL_HASH_HEX: &str =
-        "5927a6b63fd2ee3b92b4bfd2b4166f4fa4e2f59f99a38fed853c8e1d5bba6301";
+        "23c948919f546cbe45b44692a42493b61356d9dd2552585c8d0da31a963982dd";
 
     /// `Produce::create(channel, ListParWithRandom{[index], rs1}, true).hash`.
     ///
-    /// MOVED by the direct-EPM1 transition because the datum embeds the map's
-    /// bincode representation. The channel hash remains unchanged: that leg is
-    /// a `GString` and contains no EPathMap.
+    /// Moved first with direct EPM1 and again with RPB3. The latter movement is
+    /// global to PathMap-backed `Par` serialization rather than confined to the
+    /// datum's EPathMap leg.
     pub const PRODUCE_INDEX_RS1_HASH_HEX: &str =
-        "f1e2257f554b6aa91a532bddef2711f714d7c35ed5cdb4fccb288f9e11ffa4b2";
+        "0ede311fb55387c92abc8fc10fc4f55c8fb4daa4ab70cf1f6a30dd7a7ddaf4b5";
 
     /// Same datum pars, `random_state` differing in ONE byte — the hash MUST
     /// differ (pins the per-produce random_state placement inside the datum).
     /// MOVED for the same direct-EPM1 reason as
     /// [`PRODUCE_INDEX_RS1_HASH_HEX`].
     pub const PRODUCE_INDEX_RS2_HASH_HEX: &str =
-        "94f84280fc5ecfd9f1d933a9cfd86f8e5e8f5b603019c2b907fc9cab14bd5fd8";
+        "5469bf870a4ef262c6c3c4d23dce7f9ab54d24c1c985d5aee47c3f309c711b28";
 
     /// `Consume::create([channel], [freevar bind], ParBody continuation,
     /// false).hash` — the discovery-receive shape.
     pub const CONSUME_DISCOVERY_HASH_HEX: &str =
-        "8f1c2de113d80b62535a19d4bdf6b7ee9cc9e5b8f653d39de724519c5e531c4c";
+        "f1a2b5adfc2290519cc2febb60531b2acbb80aab107096848d6d88d643fe96d7";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -261,7 +261,7 @@ fn clear_locally_free(map: &EPathMap) -> EPathMap {
         .iter()
         .map(|entry| {
             let mut cleared = entry.clone();
-            cleared.locally_free = Vec::new();
+            cleared.replace_locally_free(Vec::new());
             cleared
         })
         .collect();
@@ -454,7 +454,7 @@ fn event_hash_goldens_produce() {
     // the one place this assertion did not look. Both levels are tagged now,
     // and each is a separate `Produce` so a failure names which level moved.
     let mut map_tagged_par = epathmap_par(e6a_index_epathmap());
-    map_tagged_par.locally_free = create_bit_vector(&[0]);
+    map_tagged_par.replace_locally_free(create_bit_vector(&[0]));
     let produce_map_tagged = Produce::create(
         &channel,
         &ListParWithRandom {
@@ -485,7 +485,7 @@ fn event_hash_goldens_produce() {
         entries
             .first_mut()
             .expect("the e6a index fixture must have at least one entry")
-            .locally_free = create_bit_vector(&[3]);
+            .replace_locally_free(create_bit_vector(&[3]));
         EPathMap::new(entries, Vec::new(), false, None)
     };
     // The anti-vacuity control: the tag must really have changed the STORED key

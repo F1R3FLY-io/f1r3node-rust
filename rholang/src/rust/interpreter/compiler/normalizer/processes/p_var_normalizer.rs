@@ -80,7 +80,7 @@ pub fn normalize_p_var<'ast>(
                         new_wildcard_expr(),
                         input.bound_map_chain.depth() as i32,
                     );
-                    par.connective_used = true;
+                    par.replace_connective_used(true);
                     par
                 },
                 free_map: input.free_map.add_wildcard(wildcard_span),
@@ -92,6 +92,7 @@ pub fn normalize_p_var<'ast>(
 #[cfg(test)]
 mod tests {
     use models::create_bit_vector;
+    use models::rhoapi::Expr;
     use rholang_parser::ast::{Id, Var};
     use rholang_parser::{SourcePos, SourceSpan};
 
@@ -246,7 +247,7 @@ mod tests {
 
         let unwrap_result = result.unwrap();
         assert!(unwrap_result.par.connective_used);
-        assert!(!unwrap_result.par.exprs.is_empty());
+        assert!(unwrap_result.par.family_cardinality::<Expr>() != 0);
 
         assert_eq!(unwrap_result.free_map.wildcards.len(), 1);
     }

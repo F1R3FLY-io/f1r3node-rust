@@ -59,11 +59,10 @@
 /// Construct a [`rhoapi::Par`] by overriding named fields on one whole base
 /// value.
 ///
-/// The generated stack-safe `Drop` implementation makes Rust's struct-update
-/// syntax illegal for `Par`: that syntax moves the unspecified fields out of
-/// the base, while a type with `Drop` may only be moved as a whole. This macro
-/// is the allocation-neutral equivalent. It evaluates the base once, then
-/// assigns each explicitly named field once.
+/// This is the field-compatible construction surface for repository-owned,
+/// PathMap-backed `Par`, whose component families are private and authoritative
+/// in one compressed Bag. It evaluates the base once, then applies each named
+/// replacement once without materializing a generated `Vec` representation.
 #[macro_export]
 macro_rules! par_from_default {
     (@assign $par:ident sends $value:expr) => { $par.replace_sends($value) };
@@ -117,6 +116,7 @@ pub mod rhoapi {
     // snapshot/layout caches, and stack-safe Message impl) is re-exported so
     // every existing `crate::rhoapi::EPathMap` /
     // `models::rhoapi::EPathMap` path keeps resolving to the ONE type.
+    pub use crate::rust::par::Par;
     pub use crate::rust::rhoapi_ext::EPathMap;
 }
 

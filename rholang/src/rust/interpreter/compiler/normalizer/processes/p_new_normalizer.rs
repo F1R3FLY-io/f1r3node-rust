@@ -105,7 +105,7 @@ pub(crate) fn combine_p_new<'ast>(
 
     // Transfer the cache to `New::locally_free`, matching the recursive
     // implementation. The nested body must not retain a duplicate cache.
-    let body_locally_free = std::mem::take(&mut body_result.par.locally_free);
+    let body_locally_free = body_result.par.take_locally_free();
     let result_new = New {
         bind_count: new_count as i32,
         p: Some(body_result.par),
@@ -126,7 +126,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use models::create_bit_vector;
-    use models::rhoapi::{New, Par};
+    use models::rhoapi::{New, Par, Send as RhoSend};
     use models::rust::utils::{new_boundvar_par, new_gint_par, new_send};
 
     use crate::rust::interpreter::test_utils::utils::proc_visit_inputs_and_env;
@@ -394,11 +394,11 @@ mod tests {
 
         assert_eq!(result.clone().unwrap().par, expected_result);
         assert_eq!(
-            result.clone().unwrap().par.news[0]
+            result.clone().unwrap().par.decode_occurrences::<New>()[0]
                 .p
                 .clone()
                 .unwrap()
-                .sends
+                .decode_occurrences::<RhoSend>()
                 .iter()
                 .map(|x| x.locally_free.clone())
                 .collect::<Vec<Vec<u8>>>(),
@@ -414,7 +414,11 @@ mod tests {
         // adjusted for the five newly bound names. Individual sends retain
         // their own caches; the nested `Par` must not duplicate the aggregate.
         assert_eq!(
-            result.unwrap().par.news[0].p.clone().unwrap().locally_free,
+            result.unwrap().par.decode_occurrences::<New>()[0]
+                .p
+                .clone()
+                .unwrap()
+                .locally_free,
             Vec::<u8>::new()
         );
     }

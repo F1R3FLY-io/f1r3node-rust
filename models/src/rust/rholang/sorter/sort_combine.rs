@@ -423,77 +423,13 @@ pub struct ParParts {
 /// (`sort_by`, never `sort_unstable_by`). The comparator returns `Equal` for
 /// distinct terms with equal scores, so an unstable sort would be free to
 /// reorder them and fork the canonical form. See `score_tree.rs`.
-pub fn combine_par(par: &Par, parts: ParParts) -> ScoredTerm<Par> {
-    let ParParts {
-        mut sends,
-        mut receives,
-        mut exprs,
-        mut news,
-        mut matches,
-        mut bundles,
-        mut connectives,
-        mut unforgeables,
-        mut conditionals,
-    } = parts;
-
-    ScoredTerm::sort_vec(&mut sends);
-    ScoredTerm::sort_vec(&mut receives);
-    ScoredTerm::sort_vec(&mut exprs);
-    ScoredTerm::sort_vec(&mut news);
-    ScoredTerm::sort_vec(&mut matches);
-    ScoredTerm::sort_vec(&mut bundles);
-    ScoredTerm::sort_vec(&mut connectives);
-    ScoredTerm::sort_vec(&mut unforgeables);
-    ScoredTerm::sort_vec(&mut conditionals);
-
-    let (send_terms, send_scores) = split_scored_terms(sends);
-    let (receive_terms, receive_scores) = split_scored_terms(receives);
-    let (news_terms, news_scores) = split_scored_terms(news);
-    let (expr_terms, expr_scores) = split_scored_terms(exprs);
-    let (match_terms, match_scores) = split_scored_terms(matches);
-    let (bundle_terms, bundle_scores) = split_scored_terms(bundles);
-    let (connective_terms, connective_scores) = split_scored_terms(connectives);
-    let (unforgeable_terms, unforgeable_scores) = split_scored_terms(unforgeables);
-    let (conditional_terms, conditional_scores) = split_scored_terms(conditionals);
-
-    let sorted_par = Par {
-        sends: send_terms,
-        receives: receive_terms,
-        news: news_terms,
-        exprs: expr_terms,
-        matches: match_terms,
-        unforgeables: unforgeable_terms,
-        bundles: bundle_terms,
-        connectives: connective_terms,
-        conditionals: conditional_terms,
-        locally_free: par.locally_free.clone(),
-        connective_used: par.connective_used,
-    };
-
-    // ⚠ The score's child order is NOT the term's field order: it is
-    // send, receive, EXPR, news, match, bundle, connective, unforgeable,
-    // conditional — exactly as the pre-conversion matcher chained them.
-    let par_score = Tree::<ScoreAtom>::create_node_from_i32(
-        Score::PAR,
-        send_scores
-            .into_iter()
-            .chain(receive_scores)
-            .chain(expr_scores)
-            .chain(news_scores)
-            .chain(match_scores)
-            .chain(bundle_scores)
-            .chain(connective_scores)
-            .chain(unforgeable_scores)
-            .chain(conditional_scores)
-            .chain(std::iter::once(Tree::<ScoreAtom>::create_leaf_from_i64(
-                flag_score(par.connective_used),
-            )))
-            .collect(),
-    );
-
+pub fn combine_par(par: &Par, _parts: ParParts) -> ScoredTerm<Par> {
+    // ParBag insertion canonicalizes every typed component and stores its score
+    // key before the canonical protobuf body.  Re-running nine child sorters
+    // here would decode and rebuild a value that is already canonical.
     ScoredTerm {
-        term: sorted_par,
-        score: par_score,
+        term: par.clone(),
+        score: par.canonical_score(),
     }
 }
 

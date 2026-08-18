@@ -67,8 +67,8 @@ pub(crate) fn combine_p_send<'ast>(
         // ★ Leg-1: read the shallow fields, then MOVE. See
         // `collection_normalize_matcher::combine_collect`.
         let proc_match_result = value.into_proc();
-        let child_locally_free = proc_match_result.par.locally_free.clone();
-        let child_connective_used = proc_match_result.par.connective_used;
+        let child_locally_free = proc_match_result.par.locally_free().to_vec();
+        let child_connective_used = proc_match_result.par.connective_used();
         k.acc_pars.push(proc_match_result.par);
         k.free_map = proc_match_result.free_map;
         k.acc_locally_free = union(std::mem::take(&mut k.acc_locally_free), child_locally_free);
@@ -99,7 +99,7 @@ pub(crate) fn combine_p_send<'ast>(
         acc_connective_used,
         free_map,
         bound_map_chain,
-        mut input_par,
+        input_par,
         // ⚠ Retained on the frame but INERT here: the depth argument of
         // `<Par as HasLocallyFree<Par>>::locally_free` is `_depth` — the impl
         // returns the cached field and never consults it — so removing the
@@ -117,8 +117,8 @@ pub(crate) fn combine_p_send<'ast>(
     // signature forced `name_par.clone().locally_free(name_par.clone(), d)`:
     // two full Θ(depth) deep clones to read one cached bitset. The fields are
     // read directly instead, which is byte-identical by construction.
-    let name_locally_free = name_par.locally_free.clone();
-    let name_connective_used = name_par.connective_used;
+    let name_locally_free = name_par.locally_free().to_vec();
+    let name_connective_used = name_par.connective_used();
     let send = Send {
         chan: Some(name_par),
         data: acc_pars,
@@ -155,7 +155,7 @@ mod tests {
         use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
 
-        let (mut inputs, env) = proc_visit_inputs_and_env();
+        let (inputs, env) = proc_visit_inputs_and_env();
         let parser = rholang_parser::RholangParser::new();
 
         // Create channel: @Nil

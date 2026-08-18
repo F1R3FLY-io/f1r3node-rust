@@ -115,30 +115,49 @@ fn shifted(body: &[u8], bound_count: usize) -> Vec<u8> {
 // Navigation. Each step `expect`s by name.
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn outer_receive_body(par: &Par) -> &Par {
+fn outer_receive_body(par: &Par) -> Par {
     let receive = par
-        .receives
-        .first()
+        .first::<Receive>()
+        .expect("resident receive decodes")
+        .map(|(receive, _)| receive)
         .expect("the program's top level is a single `for`");
-    receive
-        .body
-        .as_ref()
-        .expect("the outer Receive must have a body")
+    receive.body.expect("the outer Receive must have a body")
 }
 
-fn only_new(par: &Par) -> &New {
-    assert_eq!(par.news.len(), 1, "exactly one `new` at this level");
-    &par.news[0]
+fn only_new(par: &Par) -> New {
+    assert_eq!(
+        par.family_cardinality::<New>(),
+        1,
+        "exactly one `new` at this level"
+    );
+    par.first::<New>()
+        .expect("resident new decodes")
+        .expect("one new")
+        .0
 }
 
-fn only_receive(par: &Par) -> &Receive {
-    assert_eq!(par.receives.len(), 1, "exactly one receive at this level");
-    &par.receives[0]
+fn only_receive(par: &Par) -> Receive {
+    assert_eq!(
+        par.family_cardinality::<Receive>(),
+        1,
+        "exactly one receive at this level"
+    );
+    par.first::<Receive>()
+        .expect("resident receive decodes")
+        .expect("one receive")
+        .0
 }
 
-fn only_match(par: &Par) -> &Match {
-    assert_eq!(par.matches.len(), 1, "exactly one `match` at this level");
-    &par.matches[0]
+fn only_match(par: &Par) -> Match {
+    assert_eq!(
+        par.family_cardinality::<Match>(),
+        1,
+        "exactly one `match` at this level"
+    );
+    par.first::<Match>()
+        .expect("resident match decodes")
+        .expect("one match")
+        .0
 }
 
 /// One checked row: the node's own bitset, its body's bitset, and its arity.
@@ -216,7 +235,7 @@ impl Row {
 fn new_row() -> Row {
     let par = compile(r#"for (@x <- @"c") { new y in { @"o"!(x) } } "#);
     let body = outer_receive_body(&par);
-    let node = only_new(body);
+    let node = only_new(&body);
     let inner = node.p.as_ref().expect("New.p");
     assert_eq!(node.bind_count, 1, "`new y in` declares one name");
     Row {
@@ -233,7 +252,7 @@ fn new_row() -> Row {
 fn for_row() -> Row {
     let par = compile(r#"for (@x <- @"c") { for (@y <- @"d") { @"o"!(x) } }"#);
     let body = outer_receive_body(&par);
-    let node = only_receive(body);
+    let node = only_receive(&body);
     let inner = node.body.as_ref().expect("Receive.body");
     assert_eq!(node.bind_count, 1, "`for (@y <- @\"d\")` binds one name");
     for bind in &node.binds {
@@ -267,7 +286,7 @@ fn for_row() -> Row {
 fn contract_row() -> Row {
     let par = compile(r#"for (@x <- @"c") { contract @"k"(@y) = { @"o"!(x) } }"#);
     let body = outer_receive_body(&par);
-    let node = only_receive(body);
+    let node = only_receive(&body);
     let inner = node.body.as_ref().expect("Receive.body");
     assert_eq!(node.bind_count, 1, "`contract @\"k\"(@y)` binds one name");
     for bind in &node.binds {
@@ -301,7 +320,7 @@ fn contract_row() -> Row {
 fn match_row() -> Row {
     let par = compile(r#"for (@x <- @"c") { match 10 { y => @"o"!(x) } }"#);
     let body = outer_receive_body(&par);
-    let node = only_match(body);
+    let node = only_match(&body);
     assert!(
         node.target
             .as_ref()
@@ -399,7 +418,12 @@ fn the_owning_binder_discharges_the_index() {
     ] {
         let par = compile(src);
         assert!(
-            par.receives[0].locally_free.is_empty(),
+            par.first::<Receive>()
+                .expect("resident receive decodes")
+                .expect("one outer receive")
+                .0
+                .locally_free
+                .is_empty(),
             "{src}: the outer `for` binds `x`, so IT is where the bit is discharged"
         );
         assert!(
@@ -423,20 +447,23 @@ fn the_owning_binder_discharges_the_index() {
 /// replaced by `replacement`. Nothing else moves.
 fn with_nested_receive_bitset(par: &Par, replacement: Vec<u8>) -> Par {
     let mut mutated = par.clone();
-    let outer = mutated
-        .receives
+    let mut outer_receives = mutated.take_occurrences::<Receive>();
+    let outer = outer_receives
         .first_mut()
         .expect("one outer `for`")
         .body
         .as_mut()
         .expect("outer Receive.body");
-    let inner = outer.receives.first_mut().expect("one inner `for`");
+    let mut inner_receives = outer.take_occurrences::<Receive>();
+    let inner = inner_receives.first_mut().expect("one inner `for`");
     assert_eq!(
         inner.locally_free,
         vec![1],
         "the nested Receive must be carrying the well-formed value before it is perturbed"
     );
     inner.locally_free = replacement;
+    outer.replace_receives(inner_receives);
+    mutated.replace_receives(outer_receives);
     mutated
 }
 

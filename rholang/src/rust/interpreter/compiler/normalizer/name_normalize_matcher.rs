@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use models::rhoapi::{expr, var, EVar, Expr, Par, Var as model_var};
-use models::rust::utils::union;
 use rholang_parser::ast::{Name, Names, Var};
 
 use crate::rust::interpreter::compiler::exports::{
@@ -195,15 +194,11 @@ pub fn normalize_names<'ast>(
     // Process each name in the names vector
     for name in &names.names {
         let name_result = normalize_name(name, current_input.clone(), env, parser)?;
-        let mut name_par = name_result.par;
+        let name_par = name_result.par;
 
-        // Accumulate results using prepend_expr for proper Par composition
-        accumulated_par.exprs.append(&mut name_par.exprs);
-        accumulated_par.locally_free = union(
-            std::mem::take(&mut accumulated_par.locally_free),
-            std::mem::take(&mut name_par.locally_free),
-        );
-        accumulated_par.connective_used |= name_par.connective_used;
+        // ParBag addition performs the same parallel composition directly on
+        // the authoritative prefix-compressed representation.
+        accumulated_par = accumulated_par.append(name_par);
 
         // Update free map for next iteration
         current_input.free_map = name_result.free_map;
@@ -498,8 +493,15 @@ mod tests {
         let result = normalize_name(&quote_name, bound_inputs.clone(), &env, &parser);
 
         let bound_var_expr = new_boundvar_par(0, create_bit_vector(&vec![0]), false);
-        let expected_result =
-            prepend_expr(bound_var_expr.clone(), bound_var_expr.exprs[0].clone(), 0);
+        let expected_result = prepend_expr(
+            bound_var_expr.clone(),
+            bound_var_expr
+                .first::<Expr>()
+                .expect("canonical ParBag endpoint")
+                .expect("bound-var Par carries one expression")
+                .0,
+            0,
+        );
 
         let unwrap_result = result.clone().unwrap();
         assert_eq!(unwrap_result.par, expected_result);
@@ -581,7 +583,7 @@ mod tests {
         assert!(result.is_ok());
 
         let unwrap_result = result.unwrap();
-        assert!(!unwrap_result.par.exprs.is_empty());
+        assert!(unwrap_result.par.family_cardinality::<Expr>() != 0);
         assert_eq!(unwrap_result.free_map.count(), input.free_map.count());
     }
 
@@ -620,7 +622,7 @@ mod tests {
         assert!(result.is_ok());
 
         let unwrap_result = result.unwrap();
-        assert!(!unwrap_result.par.exprs.is_empty());
+        assert!(unwrap_result.par.family_cardinality::<Expr>() != 0);
         assert!(unwrap_result.free_map.level_bindings.contains_key("rest"));
     }
 
@@ -653,7 +655,7 @@ mod tests {
         assert!(result.is_ok());
 
         let unwrap_result = result.unwrap();
-        assert!(!unwrap_result.par.exprs.is_empty());
+        assert!(unwrap_result.par.family_cardinality::<Expr>() != 0);
         assert!(!unwrap_result.free_map.wildcards.is_empty());
     }
 

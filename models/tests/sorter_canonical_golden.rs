@@ -688,43 +688,46 @@ fn var_corpus() -> Vec<(&'static str, Var)> {
 /// scores differ — the entry that catches a `Combine` popping category results
 /// in the wrong order.
 fn full_par() -> Par {
-    Par {
-        sends: vec![send(true), send(false)],
-        receives: vec![receive(true, false, false), receive(false, true, true)],
-        news: vec![new_node()],
-        exprs: vec![
-            Expr {
-                expr_instance: Some(ExprInstance::GInt(9)),
-            },
-            Expr {
-                expr_instance: Some(ExprInstance::GInt(3)),
-            },
-            Expr {
-                expr_instance: Some(ExprInstance::GString("e".to_string())),
-            },
-        ],
-        matches: vec![match_node()],
-        unforgeables: vec![
-            GUnforgeable {
-                unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![9] })),
-            },
-            GUnforgeable {
-                unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![3] })),
-            },
-        ],
-        bundles: vec![bundle(true, false), bundle(false, true)],
-        connectives: vec![
-            Connective {
-                connective_instance: Some(ConnectiveInstance::ConnBool(true)),
-            },
-            Connective {
-                connective_instance: Some(ConnectiveInstance::ConnInt(true)),
-            },
-        ],
-        conditionals: vec![if_node()],
-        locally_free: vec![1, 2, 3],
-        connective_used: true,
-    }
+    let mut par = Par::default();
+    par.replace_sends(vec![send(true), send(false)]);
+    par.replace_receives(vec![
+        receive(true, false, false),
+        receive(false, true, true),
+    ]);
+    par.replace_news(vec![new_node()]);
+    par.replace_exprs(vec![
+        Expr {
+            expr_instance: Some(ExprInstance::GInt(9)),
+        },
+        Expr {
+            expr_instance: Some(ExprInstance::GInt(3)),
+        },
+        Expr {
+            expr_instance: Some(ExprInstance::GString("e".to_string())),
+        },
+    ]);
+    par.replace_matches(vec![match_node()]);
+    par.replace_unforgeables(vec![
+        GUnforgeable {
+            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![9] })),
+        },
+        GUnforgeable {
+            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![3] })),
+        },
+    ]);
+    par.replace_bundles(vec![bundle(true, false), bundle(false, true)]);
+    par.replace_connectives(vec![
+        Connective {
+            connective_instance: Some(ConnectiveInstance::ConnBool(true)),
+        },
+        Connective {
+            connective_instance: Some(ConnectiveInstance::ConnInt(true)),
+        },
+    ]);
+    par.replace_conditionals(vec![if_node()]);
+    par.replace_locally_free(vec![1, 2, 3]);
+    par.replace_connective_used(true);
+    par
 }
 
 // ---------------------------------------------------------------------------
@@ -835,9 +838,15 @@ fn actual_lines() -> Vec<String> {
     // A Par whose `exprs` are a PERMUTATION of `par/full`'s: the canonical form
     // must be identical, which is the normalizer property the reducer relies on.
     let mut permuted = full_par();
-    permuted.exprs.reverse();
-    permuted.sends.reverse();
-    permuted.bundles.reverse();
+    let mut exprs = permuted.decode_occurrences::<Expr>();
+    exprs.reverse();
+    permuted.replace_exprs(exprs);
+    let mut sends = permuted.decode_occurrences::<Send>();
+    sends.reverse();
+    permuted.replace_sends(sends);
+    let mut bundles = permuted.decode_occurrences::<Bundle>();
+    bundles.reverse();
+    permuted.replace_bundles(bundles);
     out.push(line(
         "par/full-permuted",
         ParSortMatcher::sort_match(&permuted),

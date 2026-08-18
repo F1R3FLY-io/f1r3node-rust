@@ -231,6 +231,7 @@ use crate::rhoapi::{
     ListBindPatterns, ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom, Receive,
     ReceiveBind, Send, TaggedContinuation, Var, VarRef,
 };
+use crate::rust::par_bag::ParBag;
 use crate::rust::rhoapi_ext::EPathMap;
 use crate::rust::rholang::par_children::{
     dismantle_all, CONNECTIVE_INSTANCE_VARIANT_COUNT, EXPR_INSTANCE_VARIANT_COUNT,
@@ -553,15 +554,6 @@ impl<'a> Reader<'a> {
             unf_instance: Some(instance),
         })
     }
-
-    fn unforgeable_seq(&mut self) -> Res<Vec<GUnforgeable>> {
-        let n = self.len()?;
-        let mut out = Vec::with_capacity(cautious_capacity::<GUnforgeable>(n));
-        for _ in 0..n {
-            out.push(self.unforgeable()?);
-        }
-        Ok(out)
-    }
 }
 
 // ===========================================================================
@@ -572,16 +564,8 @@ impl<'a> Reader<'a> {
 #[derive(Clone, Copy, Debug)]
 enum Kind {
     Par,
-    Send,
-    Receive,
     Bind,
-    New,
-    Match,
     Case,
-    If,
-    Bundle,
-    Expr,
-    Connective,
     Kv,
     BindPattern,
 }
@@ -590,16 +574,8 @@ impl Kind {
     fn start(self) -> Op {
         match self {
             Kind::Par => Op::ParStart,
-            Kind::Send => Op::SendStart,
-            Kind::Receive => Op::ReceiveStart,
             Kind::Bind => Op::BindStart,
-            Kind::New => Op::NewStart,
-            Kind::Match => Op::MatchStart,
             Kind::Case => Op::CaseStart,
-            Kind::If => Op::IfStart,
-            Kind::Bundle => Op::BundleStart,
-            Kind::Expr => Op::ExprStart,
-            Kind::Connective => Op::ConnStart,
             Kind::Kv => Op::KvStart,
             Kind::BindPattern => Op::BindPatternStart,
         }
@@ -612,8 +588,8 @@ impl Kind {
 /// completed value onto that type's stack), and anything in between is a
 /// **resume point** — the state that has to survive a child's arbitrarily deep
 /// descent. Scalars read before a descent are carried in the op itself when
-/// they are small, and on a side stack when they are not (see [`ParFrame`],
-/// [`ReceiveTail`], [`NewFrame`], and [`Machine::method_names`]).
+/// they are small, and on a side stack when they are not (see [`ReceiveTail`],
+/// [`NewFrame`], and [`Machine::method_names`]).
 #[derive(Clone, Copy, Debug)]
 enum Op {
     /// The counted repeat. Never materialises `remaining` ops; see §3.
@@ -622,17 +598,9 @@ enum Op {
         remaining: usize,
     },
 
-    // ---- Par: sends, receives, news, exprs, matches, unforgeables,
-    //           bundles, connectives, conditionals, locally_free,
+    // ---- Par: compact PathMap<Multiplicity> image, locally_free,
     //           connective_used
     ParStart,
-    /// `field` indexes the eight repeated `Par`-bearing fields in declaration
-    /// order; `unforgeables` (a bounded leaf sequence) is read inline just
-    /// before field 5, which is where it sits in the stream.
-    ParField {
-        field: u8,
-    },
-    ParBuild,
 
     // ---- Send: chan, data, persistent, locally_free, connective_used
     SendStart,
@@ -846,16 +814,6 @@ enum Op {
 // §D  Side frames — state too large to ride in an `Op`
 // ===========================================================================
 
-/// `Par`'s eight repeated-child counts plus its `unforgeables` (read between
-/// `matches` and `bundles`, and therefore obliged to survive three more
-/// descents). Kept off the op stack because eight `usize`s in every `Op` would
-/// inflate the whole alphabet.
-#[derive(Default)]
-struct ParFrame {
-    counts: [usize; 8],
-    unforgeables: Vec<GUnforgeable>,
-}
-
 /// `Receive`'s five scalars, read between `body` and `condition` and therefore
 /// obliged to survive the `condition` descent.
 struct ReceiveTail {
@@ -903,7 +861,6 @@ struct Machine<'a> {
     tagged_continuations: Vec<TaggedContinuation>,
 
     // side frames
-    par_frames: Vec<ParFrame>,
     receive_tails: Vec<ReceiveTail>,
     new_frames: Vec<NewFrame>,
     method_names: Vec<String>,
@@ -968,7 +925,6 @@ impl<'a> Machine<'a> {
             par_with_randoms: Vec::new(),
             list_par_with_randoms: Vec::new(),
             tagged_continuations: Vec::new(),
-            par_frames: Vec::new(),
             receive_tails: Vec::new(),
             new_frames: Vec::new(),
             method_names: Vec::new(),
@@ -998,12 +954,6 @@ impl<'a> Machine<'a> {
         self.exprs.push(Expr {
             expr_instance: Some(instance),
         });
-    }
-
-    fn par_frame(&mut self) -> Res<&mut ParFrame> {
-        self.par_frames
-            .last_mut()
-            .ok_or(ColdStoreDecodeError::MachineInvariant("Par frame"))
     }
 
     fn new_frame(&mut self) -> Res<&mut NewFrame> {
@@ -1071,8 +1021,7 @@ impl<'a> Machine<'a> {
                 return Err(ColdStoreDecodeError::MachineInvariant(name));
             }
         }
-        if !self.par_frames.is_empty()
-            || !self.receive_tails.is_empty()
+        if !self.receive_tails.is_empty()
             || !self.new_frames.is_empty()
             || !self.method_names.is_empty()
             || !self.trie_snapshots.is_empty()
@@ -1104,68 +1053,17 @@ impl<'a> Machine<'a> {
             // Par
             // ---------------------------------------------------------------
             Op::ParStart => {
-                self.par_frames.push(ParFrame::default());
-                self.ops.push(Op::ParField { field: 0 });
-            }
-            Op::ParField { field } => {
-                // The eight repeated `Par`-bearing fields, in declaration
-                // order. `unforgeables` sits between indices 4 and 5 and is a
-                // bounded leaf, so it is read inline rather than scheduled.
-                const KINDS: [Kind; 8] = [
-                    Kind::Send,
-                    Kind::Receive,
-                    Kind::New,
-                    Kind::Expr,
-                    Kind::Match,
-                    Kind::Bundle,
-                    Kind::Connective,
-                    Kind::If,
-                ];
-                if field as usize == KINDS.len() {
-                    self.ops.push(Op::ParBuild);
-                    return Ok(());
-                }
-                if field == 5 {
-                    let unforgeables = self.r.unforgeable_seq()?;
-                    self.par_frame()?.unforgeables = unforgeables;
-                }
-                let n = self.r.len()?;
-                self.par_frame()?.counts[field as usize] = n;
-                self.ops.push(Op::ParField { field: field + 1 });
-                self.repeat(KINDS[field as usize], n);
-            }
-            Op::ParBuild => {
+                // The authoritative component Bag is already one canonical,
+                // prefix-compressed byte array. Validate and import it in place;
+                // never rebuild repeated component vectors merely to recreate
+                // the same trie.
+                let snapshot = self.r.byte_slice()?;
                 let locally_free = self.r.byte_seq()?;
                 let connective_used = self.r.bool()?;
-                let frame = self
-                    .par_frames
-                    .pop()
-                    .ok_or(ColdStoreDecodeError::MachineInvariant("Par frame"))?;
-                // Each of these lives on its OWN stack, so the drains are
-                // independent; the order below simply mirrors declaration
-                // order read backwards for legibility.
-                let conditionals = take_n(&mut self.ifs, frame.counts[7], "Par.conditionals")?;
-                let connectives =
-                    take_n(&mut self.connectives, frame.counts[6], "Par.connectives")?;
-                let bundles = take_n(&mut self.bundles, frame.counts[5], "Par.bundles")?;
-                let matches = take_n(&mut self.matches, frame.counts[4], "Par.matches")?;
-                let exprs = take_n(&mut self.exprs, frame.counts[3], "Par.exprs")?;
-                let news = take_n(&mut self.news, frame.counts[2], "Par.news")?;
-                let receives = take_n(&mut self.receives, frame.counts[1], "Par.receives")?;
-                let sends = take_n(&mut self.sends, frame.counts[0], "Par.sends")?;
-                self.pars.push(Par {
-                    sends,
-                    receives,
-                    news,
-                    exprs,
-                    matches,
-                    unforgeables: frame.unforgeables,
-                    bundles,
-                    connectives,
-                    conditionals,
-                    locally_free,
-                    connective_used,
-                });
+                let components = ParBag::from_compact_bytes(snapshot)
+                    .map_err(|error| ColdStoreDecodeError::Legacy(error.to_string()))?;
+                self.pars
+                    .push(Par::from_parts(components, locally_free, connective_used));
             }
 
             // ---------------------------------------------------------------
@@ -2085,14 +1983,14 @@ impl<'a> Machine<'a> {
         }
 
         let mut root = Par::default();
-        root.sends = mem::take(&mut self.sends);
-        root.receives = receives;
-        root.news = mem::take(&mut self.news);
-        root.exprs = exprs;
-        root.matches = matches;
-        root.bundles = mem::take(&mut self.bundles);
-        root.connectives = mem::take(&mut self.connectives);
-        root.conditionals = mem::take(&mut self.ifs);
+        root.replace_sends(mem::take(&mut self.sends));
+        root.replace_receives(receives);
+        root.replace_news(mem::take(&mut self.news));
+        root.replace_exprs(exprs);
+        root.replace_matches(matches);
+        root.replace_bundles(mem::take(&mut self.bundles));
+        root.replace_connectives(mem::take(&mut self.connectives));
+        root.replace_conditionals(mem::take(&mut self.ifs));
         loose.push(root);
 
         dismantle_all(loose);

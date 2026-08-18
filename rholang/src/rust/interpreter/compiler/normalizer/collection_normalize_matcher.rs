@@ -247,8 +247,8 @@ pub(crate) fn combine_collect<'ast>(
     // `locally_free` out of the original. Preserve that transfer while deleting
     // the deep clone: the enclosing collection owns the cache; the nested
     // child must not retain a duplicate.
-    let child_locally_free = std::mem::take(&mut result.par.locally_free);
-    let child_connective_used = result.par.connective_used;
+    let child_locally_free = result.par.take_locally_free();
+    let child_connective_used = result.par.connective_used();
     acc_pars.push(result.par);
     let result_known_free = result.free_map;
     let locally_free = union(locally_free, child_locally_free);
@@ -428,10 +428,10 @@ pub(crate) fn combine_collect_map<'ast>(
     // each child `Par` into the accumulator and then transferred
     // `locally_free` out of the originals. Preserve that transfer while
     // deleting the deep clones.
-    let key_locally_free = std::mem::take(&mut key.locally_free);
-    let key_connective_used = key.connective_used;
-    let value_locally_free = std::mem::take(&mut result.par.locally_free);
-    let value_connective_used = result.par.connective_used;
+    let key_locally_free = key.take_locally_free();
+    let key_connective_used = key.connective_used();
+    let value_locally_free = result.par.take_locally_free();
+    let value_connective_used = result.par.connective_used();
     acc_pairs.push((key, result.par));
     let result_known_free = result.free_map;
     let locally_free = union(locally_free, union(key_locally_free, value_locally_free));
@@ -477,7 +477,7 @@ pub(crate) fn combine_collect_map<'ast>(
 #[cfg(test)]
 mod tests {
     use models::create_bit_vector;
-    use models::rhoapi::{KeyValuePair, Par};
+    use models::rhoapi::{Expr, KeyValuePair, Par};
     use models::rust::utils::{
         new_boundvar_par, new_elist_expr, new_emap_expr, new_eplus_par, new_eset_expr,
         new_etuple_expr, new_freevar_expr, new_freevar_par, new_freevar_var, new_gint_par,
@@ -758,19 +758,19 @@ mod tests {
     #[test]
     fn pathmap_should_parse_empty() {
         let par = get_normalized_par("{||}");
-        assert!(par.exprs.len() == 1);
+        assert!(par.family_cardinality::<Expr>() == 1);
     }
 
     #[test]
     fn pathmap_should_parse_single_element() {
         let par = get_normalized_par("{| 42 |}");
-        assert!(par.exprs.len() == 1);
+        assert!(par.family_cardinality::<Expr>() == 1);
     }
 
     #[test]
     fn pathmap_should_parse_multiple_elements() {
         let par = get_normalized_par("{| 1, 2, 3 |}");
-        assert!(par.exprs.len() == 1);
+        assert!(par.family_cardinality::<Expr>() == 1);
     }
 
     #[test]

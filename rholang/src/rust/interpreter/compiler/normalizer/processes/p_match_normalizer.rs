@@ -71,7 +71,7 @@ fn next_case<'ast>(mut k: Box<MatchK<'ast>>) -> Result<Step<'ast>, InterpreterEr
     let Some(case) = k.cases.get(k.case_idx) else {
         // Every case is in — assemble.
         let MatchK {
-            mut input,
+            input,
             target,
             acc_cases,
             known_free,
@@ -84,9 +84,9 @@ fn next_case<'ast>(mut k: Box<MatchK<'ast>>) -> Result<Step<'ast>, InterpreterEr
 
         let cases: Vec<MatchCase> = acc_cases.into_iter().rev().collect();
         // ★ Leg-1: shallow reads, then MOVE the scrutinee into the `Match`.
-        let target_locally_free = target_result.par.locally_free.clone();
+        let target_locally_free = target_result.par.locally_free().to_vec();
         let locally_free = union(acc_locally_free, target_locally_free);
-        let connective_used = acc_connective_used || target_result.par.connective_used;
+        let connective_used = acc_connective_used || target_result.par.connective_used();
 
         let result_match = Match {
             target: Some(target_result.par),
@@ -147,7 +147,7 @@ pub(crate) fn combine_p_match<'ast>(
                 .absorb_free_span(&pattern_result.free_map);
             k.bound_count = pattern_result.free_map.count_no_wildcards();
             k.case_env = case_env;
-            k.pattern_locally_free = pattern_result.par.locally_free.clone();
+            k.pattern_locally_free = pattern_result.par.locally_free().to_vec();
             k.pattern_par = Some(pattern_result.par);
 
             let case = &k.cases[k.case_idx];
@@ -224,12 +224,14 @@ pub(crate) fn combine_p_match<'ast>(
 
             // ★ Leg-1: shallow reads, then MOVE both the case body and the
             // guard into the `MatchCase`.
-            let body_locally_free = case_body_result.par.locally_free.clone();
-            let body_connective_used = case_body_result.par.connective_used;
-            let guard_locally_free = guard_result.as_ref().map(|gr| gr.par.locally_free.clone());
+            let body_locally_free = case_body_result.par.locally_free().to_vec();
+            let body_connective_used = case_body_result.par.connective_used();
+            let guard_locally_free = guard_result
+                .as_ref()
+                .map(|gr| gr.par.locally_free().to_vec());
             let guard_connective_used = guard_result
                 .as_ref()
-                .map(|gr| gr.par.connective_used)
+                .map(|gr| gr.par.connective_used())
                 .unwrap_or(false);
             k.acc_cases.insert(0, MatchCase {
                 pattern: Some(pattern_par),
@@ -269,7 +271,7 @@ mod tests {
     use std::collections::HashMap;
 
     use models::create_bit_vector;
-    use models::rhoapi::{Match, MatchCase, Par, Receive, ReceiveBind};
+    use models::rhoapi::{Match, MatchCase, New, Par, Receive, ReceiveBind};
     use models::rust::utils::{
         new_boundvar_par, new_elist_par, new_freevar_expr, new_freevar_par, new_gint_par, new_send,
         new_wildcard_par,
@@ -425,7 +427,10 @@ mod tests {
         });
 
         assert_eq!(result.clone().unwrap().par, expected_result);
-        assert_eq!(result.unwrap().par.matches[0].cases[0].free_count, 1);
+        assert_eq!(
+            result.unwrap().par.decode_occurrences::<Match>()[0].cases[0].free_count,
+            1
+        );
     }
 
     #[test]
@@ -666,10 +671,12 @@ mod tests {
         // structural checks.
         // We pull the Match out via the Par.matches slot inside the New
         // body.
-        assert_eq!(par.news.len(), 1, "expected one New");
-        let body = par.news[0].p.as_ref().expect("New.p missing");
-        assert_eq!(body.matches.len(), 1, "expected one Match in New body");
-        let m = &body.matches[0];
+        let news = par.decode_occurrences::<New>();
+        assert_eq!(news.len(), 1, "expected one New");
+        let body = news[0].p.as_ref().expect("New.p missing");
+        let matches = body.decode_occurrences::<Match>();
+        assert_eq!(matches.len(), 1, "expected one Match in New body");
+        let m = &matches[0];
         assert_eq!(m.cases.len(), 2);
         assert!(
             m.cases[0].guard.is_some(),
@@ -683,8 +690,9 @@ mod tests {
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
 
         let par = ParBuilderUtil::mk_term("match 1 { 1 => Nil _ => Nil }").expect("compile failed");
-        assert_eq!(par.matches.len(), 1);
-        for case in &par.matches[0].cases {
+        let matches = par.decode_occurrences::<Match>();
+        assert_eq!(matches.len(), 1);
+        for case in &matches[0].cases {
             assert!(case.guard.is_none(), "no guard expected");
         }
     }
@@ -696,11 +704,13 @@ mod tests {
 
         let par = ParBuilderUtil::mk_term("new a in { for (@x <- a where x) { Nil } }")
             .expect("compile failed");
-        assert_eq!(par.news.len(), 1);
-        let body = par.news[0].p.as_ref().expect("New.p missing");
-        assert_eq!(body.receives.len(), 1);
+        let news = par.decode_occurrences::<New>();
+        assert_eq!(news.len(), 1);
+        let body = news[0].p.as_ref().expect("New.p missing");
+        let receives = body.decode_occurrences::<Receive>();
+        assert_eq!(receives.len(), 1);
         assert!(
-            body.receives[0].condition.is_some(),
+            receives[0].condition.is_some(),
             "Receive.condition should be populated by `where` clause"
         );
     }
@@ -711,9 +721,10 @@ mod tests {
 
         let par =
             ParBuilderUtil::mk_term("new a in { for (@x <- a) { Nil } }").expect("compile failed");
-        assert_eq!(par.news.len(), 1);
-        let body = par.news[0].p.as_ref().expect("New.p missing");
-        assert!(body.receives[0].condition.is_none());
+        let news = par.decode_occurrences::<New>();
+        assert_eq!(news.len(), 1);
+        let body = news[0].p.as_ref().expect("New.p missing");
+        assert!(body.decode_occurrences::<Receive>()[0].condition.is_none());
     }
 
     #[test]
@@ -724,11 +735,13 @@ mod tests {
         let par =
             ParBuilderUtil::mk_term("new a, b in { for (@x <- a & @y <- b where x) { Nil } }")
                 .expect("compile failed");
-        let body = par.news[0].p.as_ref().expect("New.p missing");
-        assert_eq!(body.receives.len(), 1);
-        assert_eq!(body.receives[0].binds.len(), 2, "two &-joined binds");
+        let news = par.decode_occurrences::<New>();
+        let body = news[0].p.as_ref().expect("New.p missing");
+        let receives = body.decode_occurrences::<Receive>();
+        assert_eq!(receives.len(), 1);
+        assert_eq!(receives[0].binds.len(), 2, "two &-joined binds");
         assert!(
-            body.receives[0].condition.is_some(),
+            receives[0].condition.is_some(),
             "the guard attaches to the receipt as a whole"
         );
     }
@@ -745,14 +758,17 @@ mod tests {
             "new a, b in { for (@x <- a where x; @y <- b where y) { Nil } }",
         )
         .expect("compile failed");
-        let body = par.news[0].p.as_ref().expect("New.p missing");
-        assert_eq!(body.receives.len(), 1, "outer receive");
-        let outer = &body.receives[0];
+        let news = par.decode_occurrences::<New>();
+        let body = news[0].p.as_ref().expect("New.p missing");
+        let receives = body.decode_occurrences::<Receive>();
+        assert_eq!(receives.len(), 1, "outer receive");
+        let outer = &receives[0];
         assert!(outer.condition.is_some(), "outer guard");
 
         let inner_par = outer.body.as_ref().expect("outer body");
-        assert_eq!(inner_par.receives.len(), 1, "inner receive (nested)");
-        assert!(inner_par.receives[0].condition.is_some(), "inner guard");
+        let inner_receives = inner_par.decode_occurrences::<Receive>();
+        assert_eq!(inner_receives.len(), 1, "inner receive (nested)");
+        assert!(inner_receives[0].condition.is_some(), "inner guard");
     }
 
     // Match-case `where` guards stay on process-level Match.
@@ -766,8 +782,9 @@ mod tests {
 
         let par = ParBuilderUtil::mk_term("match 5 { n where n > 0 => true _ => false }")
             .expect("compile failed");
-        assert_eq!(par.matches.len(), 1, "expected one process-level Match");
-        let m = &par.matches[0];
+        let matches = par.decode_occurrences::<Match>();
+        assert_eq!(matches.len(), 1, "expected one process-level Match");
+        let m = &matches[0];
         assert_eq!(m.cases.len(), 2);
         assert!(m.cases[0].guard.is_some(), "first case guard");
         assert!(m.cases[1].guard.is_none(), "wildcard case has no guard");

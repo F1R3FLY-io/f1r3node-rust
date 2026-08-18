@@ -372,31 +372,33 @@ fn read_uv(bytes: &[u8], cursor: &mut usize, limit: usize) -> Result<u64, CodecE
 pub fn takes_split_arm(par: &Par) -> bool { split_carrier_list(par).is_some() }
 
 /// The `EList` of a split-arm carrier, or `None`. See [`takes_split_arm`].
-pub(crate) fn split_carrier_list(par: &Par) -> Option<&EList> {
-    if !par.sends.is_empty()
-        || !par.receives.is_empty()
-        || !par.news.is_empty()
-        || !par.matches.is_empty()
-        || !par.bundles.is_empty()
-        || !par.connectives.is_empty()
-        || !par.conditionals.is_empty()
-        || !par.unforgeables.is_empty()
-        || !par.locally_free.is_empty()
-        || par.connective_used
+pub(crate) fn split_carrier_list(par: &Par) -> Option<EList> {
+    if par.family_cardinality::<crate::rhoapi::Send>() != 0
+        || par.family_cardinality::<crate::rhoapi::Receive>() != 0
+        || par.family_cardinality::<crate::rhoapi::New>() != 0
+        || par.family_cardinality::<crate::rhoapi::Match>() != 0
+        || par.family_cardinality::<crate::rhoapi::Bundle>() != 0
+        || par.family_cardinality::<crate::rhoapi::Connective>() != 0
+        || par.family_cardinality::<crate::rhoapi::If>() != 0
+        || par.family_cardinality::<GUnforgeable>() != 0
+        || !par.locally_free().is_empty()
+        || par.connective_used()
+        || par.family_cardinality::<Expr>() != 1
     {
         return None;
     }
-    match par.exprs.as_slice() {
-        [expr] => match &expr.expr_instance {
-            Some(ExprInstance::EListBody(list))
-                if list.remainder.is_none()
-                    && list.locally_free.is_empty()
-                    && !list.connective_used =>
-            {
-                Some(list)
-            }
-            _ => None,
-        },
+    let (expr, multiplicity) = par.first::<Expr>().ok()??;
+    if multiplicity.get() != 1 {
+        return None;
+    }
+    match expr.expr_instance {
+        Some(ExprInstance::EListBody(list))
+            if list.remainder.is_none()
+                && list.locally_free.is_empty()
+                && !list.connective_used =>
+        {
+            Some(list)
+        }
         _ => None,
     }
 }
@@ -404,19 +406,15 @@ pub(crate) fn split_carrier_list(par: &Par) -> Option<&EList> {
 /// Ground Par builders shared by the decoder (the decode side of the
 /// carrier bijection: ExprInstance-or-GPrivate ↔ ground Par, §1.1).
 fn expr_carrier(instance: ExprInstance) -> Par {
-    let mut out = Par::default();
-    out.exprs.push(Expr {
+    Par::default().with_exprs(vec![Expr {
         expr_instance: Some(instance),
-    });
-    out
+    }])
 }
 
 fn gprivate_carrier(id: Vec<u8>) -> Par {
-    let mut out = Par::default();
-    out.unforgeables.push(GUnforgeable {
+    Par::default().with_unforgeables(vec![GUnforgeable {
         unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id })),
-    });
-    out
+    }])
 }
 
 fn ground_elist_carrier(elements: Vec<Par>) -> Par {
@@ -454,12 +452,26 @@ enum EncCtx {
     Region(Vec<Vec<u8>>),
 }
 
+enum EncPar<'p> {
+    Borrowed(&'p Par),
+    Owned(Par),
+}
+
+impl EncPar<'_> {
+    fn as_par(&self) -> &Par {
+        match self {
+            Self::Borrowed(par) => par,
+            Self::Owned(par) => par,
+        }
+    }
+}
+
 enum EncOp<'p> {
     /// Emit one segment for `par`. `known_stable` short-circuits the domain
     /// walk inside proven-stable subtrees; `top_level` marks a top-level
     /// segment position (the only place the trie escape may appear).
     Segment {
-        par: &'p Par,
+        par: EncPar<'p>,
         known_stable: Option<bool>,
         top_level: bool,
     },
@@ -522,12 +534,13 @@ impl<'p> EncMachine<'p> {
     /// top-level segment position takes the `0x0F` escape arm.
     fn push_path_ops(
         &mut self,
-        par: &'p Par,
+        par: EncPar<'p>,
         known_stable: Option<bool>,
     ) -> Result<(), CodecError> {
+        let par_ref = par.as_par();
         let stable = match known_stable {
             Some(stable) => stable,
-            None => self.classify_stability(par)?,
+            None => self.classify_stability(par_ref)?,
         };
         // ★ Record the TOP-LEVEL verdict so callers can have the bit the codec already
         // computed, instead of running `eval_stable_par` a second time over the same term.
@@ -536,13 +549,13 @@ impl<'p> EncMachine<'p> {
         if self.top_level_stable.is_none() {
             self.top_level_stable = Some(stable);
         }
-        if let Some(list) = split_carrier_list(par) {
+        if let Some(list) = split_carrier_list(par_ref) {
             // Split form: per-element segments + the terminator. LIFO push:
             // terminator first so it emits LAST.
             self.ops.push(EncOp::EmitTerminator);
-            for element in list.ps.iter().rev() {
+            for element in list.ps.into_iter().rev() {
                 self.ops.push(EncOp::Segment {
-                    par: element,
+                    par: EncPar::Owned(element),
                     known_stable: stable.then_some(true),
                     top_level: true,
                 });
@@ -610,17 +623,18 @@ impl<'p> EncMachine<'p> {
     /// child ops instead of recursing.
     fn encode_segment(
         &mut self,
-        par: &'p Par,
+        par: EncPar<'p>,
         known_stable: Option<bool>,
         top_level: bool,
     ) -> Result<(), CodecError> {
+        let par_ref = par.as_par();
         let stable = match known_stable {
             Some(stable) => stable,
-            None => self.classify_stability(par)?,
+            None => self.classify_stability(par_ref)?,
         };
         if !stable {
             #[cfg(feature = "phase7-depth-histograms")]
-            crate::rust::rholang::phase7_depth_histogram::record_par("escape_arm", par);
+            crate::rust::rholang::phase7_depth_histogram::record_par("escape_arm", par_ref);
             // The trie escape arm (`0x0F`) is legal ONLY at top-level segment
             // positions (hereditary rule): nested positions are inside stable
             // subtrees where `stable` always holds.
@@ -650,22 +664,35 @@ impl<'p> EncMachine<'p> {
             // has three arms of which only one is a field walk), so the native
             // stack is not bounded THROUGH that one shape. Byte-identical, not
             // depth-independent; the two are separate statements.
-            let protobuf_bytes = crate::rust::rholang::protobuf_encoder::encode_to_vec(par);
+            let protobuf_bytes = crate::rust::rholang::protobuf_encoder::encode_to_vec(par_ref);
             self.emit_byte(tag::ESCAPE)?;
             self.emit_uv(protobuf_bytes.len() as u64)?;
             return self.emit(&protobuf_bytes);
         }
-        match (par.exprs.as_slice(), par.unforgeables.as_slice()) {
-            ([], [unforgeable]) => {
-                let Some(UnfInstance::GPrivateBody(private)) = &unforgeable.unf_instance else {
+        match (
+            par_ref.family_cardinality::<Expr>(),
+            par_ref.family_cardinality::<GUnforgeable>(),
+        ) {
+            (0, 1) => {
+                let (unforgeable, multiplicity) = par_ref
+                    .first::<GUnforgeable>()
+                    .expect("resident GUnforgeable key decodes")
+                    .expect("stable GPrivate carrier has one unforgeable");
+                debug_assert_eq!(multiplicity.get(), 1);
+                let Some(UnfInstance::GPrivateBody(private)) = unforgeable.unf_instance else {
                     unreachable!("eval_stable unforgeable leaf must be GPrivate")
                 };
                 self.emit_byte(tag::GPRIVATE)?;
                 self.emit_uv(private.id.len() as u64)?;
                 self.emit(&private.id)
             }
-            ([expr], []) => {
-                let Some(instance) = &expr.expr_instance else {
+            (1, 0) => {
+                let (expr, multiplicity) = par_ref
+                    .first::<Expr>()
+                    .expect("resident Expr key decodes")
+                    .expect("stable Expr carrier has one expression");
+                debug_assert_eq!(multiplicity.get(), 1);
+                let Some(instance) = expr.expr_instance else {
                     unreachable!("eval_stable expr carrier must hold an instance")
                 };
                 match instance {
@@ -673,7 +700,7 @@ impl<'p> EncMachine<'p> {
                     ExprInstance::GBool(true) => self.emit_byte(tag::GBOOL_TRUE),
                     ExprInstance::GInt(value) => {
                         self.emit_byte(tag::GINT)?;
-                        self.emit_uv(zigzag64(*value))
+                        self.emit_uv(zigzag64(value))
                     }
                     ExprInstance::GString(text) => {
                         self.emit_byte(tag::GSTRING)?;
@@ -688,7 +715,7 @@ impl<'p> EncMachine<'p> {
                     ExprInstance::GByteArray(bytes) => {
                         self.emit_byte(tag::GBYTE_ARRAY)?;
                         self.emit_uv(bytes.len() as u64)?;
-                        self.emit(bytes)
+                        self.emit(&bytes)
                     }
                     ExprInstance::GDouble(bits) => {
                         self.emit_byte(tag::GDOUBLE)?;
@@ -697,7 +724,7 @@ impl<'p> EncMachine<'p> {
                     ExprInstance::GBigInt(bytes) => {
                         self.emit_byte(tag::GBIG_INT)?;
                         self.emit_uv(bytes.len() as u64)?;
-                        self.emit(bytes)
+                        self.emit(&bytes)
                     }
                     ExprInstance::GBigRat(rational) => {
                         self.emit_byte(tag::GBIG_RAT)?;
@@ -715,9 +742,9 @@ impl<'p> EncMachine<'p> {
                     ExprInstance::EListBody(list) => {
                         self.emit_byte(tag::ELIST)?;
                         self.emit_uv(list.ps.len() as u64)?;
-                        for child in list.ps.iter().rev() {
+                        for child in list.ps.into_iter().rev() {
                             self.ops.push(EncOp::Segment {
-                                par: child,
+                                par: EncPar::Owned(child),
                                 known_stable: Some(true),
                                 top_level: false,
                             });
@@ -727,9 +754,9 @@ impl<'p> EncMachine<'p> {
                     ExprInstance::ETupleBody(tuple) => {
                         self.emit_byte(tag::ETUPLE)?;
                         self.emit_uv(tuple.ps.len() as u64)?;
-                        for child in tuple.ps.iter().rev() {
+                        for child in tuple.ps.into_iter().rev() {
                             self.ops.push(EncOp::Segment {
-                                par: child,
+                                par: EncPar::Owned(child),
                                 known_stable: Some(true),
                                 top_level: false,
                             });
@@ -831,7 +858,7 @@ pub fn encode_trie_path(par: &Par) -> Vec<u8> { encode_trie_path_with_stability(
 pub fn encode_trie_path_with_stability(par: &Par) -> (Vec<u8>, bool) {
     let mut machine = EncMachine::new();
     machine
-        .push_path_ops(par, None)
+        .push_path_ops(EncPar::Borrowed(par), None)
         .expect("trie path scheduling is total");
     machine.run().expect("trie path encoding is total");
     let stable = machine
@@ -845,7 +872,7 @@ pub fn encode_trie_path_with_stability(par: &Par) -> (Vec<u8>, bool) {
 pub fn encode_trie_segment(par: &Par) -> Vec<u8> {
     let mut machine = EncMachine::new();
     machine.ops.push(EncOp::Segment {
-        par,
+        par: EncPar::Borrowed(par),
         known_stable: None,
         top_level: true,
     });
@@ -1250,12 +1277,35 @@ impl<'b> DecMachine<'b> {
                 let len = self.read_uv()?;
                 let len = usize::try_from(len).map_err(|_| CodecError::Truncated)?;
                 let payload = self.take(len)?;
+                if self.mode == DecMode::Validate
+                    && crate::rust::par_bag::is_canonical_singleton_eset_unary_elist_par(payload)
+                {
+                    // The byte recognizer proves an encoder-canonical,
+                    // metadata-free, non-stable ESet with no EPathMap anywhere
+                    // in its unary EList child. Validation needs only those
+                    // facts; constructing the depth-N semantic graph here and
+                    // dismantling it below would reproduce all N encoded
+                    // suffixes for no additional evidence.
+                    return self.deliver(expr_carrier(ExprInstance::ESetBody(
+                        crate::rhoapi::ESet::default(),
+                    )));
+                }
                 // Decode the escape payload with the generated heap-stack machine.  Calling
                 // `Par::decode` here would re-enter Prost's recursive `merge_field` chain and
                 // make EPathMap tag-8 decoding stack-dependent precisely for the non-ground
                 // keys the escape arm exists to carry.
                 let par = crate::rust::rholang::protobuf_decoder::decode_par_deferred_epathmap_validation(payload)
                     .map_err(|_| CodecError::EscapePayloadInvalid)?;
+                if self.mode == DecMode::Semantic {
+                    // `decode_trie_path_after_validation` is reached only
+                    // after the global canonical validator has checked this
+                    // payload and every nested EPathMap key/value body. Repeat
+                    // validation here was hereditary: decoding a resident
+                    // depth-N escape re-encoded and revalidated every suffix
+                    // again. Semantic materialization only needs the already
+                    // certified bytes decoded into their typed form.
+                    return self.deliver(par);
+                }
                 // Canonicality of the payload (decode-accepts ≡ image): the
                 // encoder writes canonical prost bytes of ¬eval_stable Pars
                 // only.
@@ -1509,8 +1559,8 @@ pub(crate) fn validate_canonical_path(path: &[u8]) -> Result<CanonicalPathMetada
                     root_metadata = Some(CanonicalPathMetadata {
                         stable,
                         reducer_eval_identity: reducer_eval_identity_par(&validation.par, stable),
-                        locally_free: validation.par.locally_free.clone(),
-                        connective_used: validation.par.connective_used,
+                        locally_free: validation.par.locally_free().to_vec(),
+                        connective_used: validation.par.connective_used(),
                     });
                 }
 
@@ -2041,38 +2091,50 @@ pub(crate) fn declared_canonical_path_metadata(
 }
 
 fn eval_stable_par_declared_keys(root: &Par) -> Result<bool, CodecError> {
-    let mut current = Some(root);
-    let mut deferred = Vec::<&Par>::new();
+    let mut current = Some(root.clone());
+    let mut deferred = Vec::<Par>::new();
 
     loop {
         let Some(par) = current.take().or_else(|| deferred.pop()) else {
             return Ok(true);
         };
 
-        if !par.sends.is_empty()
-            || !par.receives.is_empty()
-            || !par.news.is_empty()
-            || !par.matches.is_empty()
-            || !par.bundles.is_empty()
-            || !par.connectives.is_empty()
-            || !par.conditionals.is_empty()
-            || !par.locally_free.is_empty()
-            || par.connective_used
+        if par.family_cardinality::<crate::rhoapi::Send>() != 0
+            || par.family_cardinality::<crate::rhoapi::Receive>() != 0
+            || par.family_cardinality::<crate::rhoapi::New>() != 0
+            || par.family_cardinality::<crate::rhoapi::Match>() != 0
+            || par.family_cardinality::<crate::rhoapi::Bundle>() != 0
+            || par.family_cardinality::<crate::rhoapi::Connective>() != 0
+            || par.family_cardinality::<crate::rhoapi::If>() != 0
+            || !par.locally_free().is_empty()
+            || par.connective_used()
         {
             return Ok(false);
         }
 
-        let expr = match (par.exprs.as_slice(), par.unforgeables.as_slice()) {
-            ([], [unforgeable])
-                if matches!(unforgeable.unf_instance, Some(UnfInstance::GPrivateBody(_))) =>
-            {
+        let expr_count = par.family_cardinality::<Expr>();
+        let unforgeable_count = par.family_cardinality::<GUnforgeable>();
+        if expr_count == 0 && unforgeable_count == 1 {
+            let unforgeable = par
+                .first::<GUnforgeable>()
+                .map_err(|_| CodecError::CanonicalFormMismatch)?
+                .expect("cardinality proved one unforgeable")
+                .0;
+            if matches!(unforgeable.unf_instance, Some(UnfInstance::GPrivateBody(_))) {
                 continue;
             }
-            ([expr], []) => expr,
-            _ => return Ok(false),
-        };
+            return Ok(false);
+        }
+        if expr_count != 1 || unforgeable_count != 0 {
+            return Ok(false);
+        }
+        let expr = par
+            .first::<Expr>()
+            .map_err(|_| CodecError::CanonicalFormMismatch)?
+            .expect("cardinality proved one expression")
+            .0;
 
-        let children = match &expr.expr_instance {
+        let children = match expr.expr_instance {
             Some(
                 ExprInstance::GBool(_)
                 | ExprInstance::GInt(_)
@@ -2089,12 +2151,12 @@ fn eval_stable_par_declared_keys(root: &Par) -> Result<bool, CodecError> {
                     && list.locally_free.is_empty()
                     && !list.connective_used =>
             {
-                list.ps.as_slice()
+                list.ps
             }
             Some(ExprInstance::ETupleBody(tuple))
                 if tuple.locally_free.is_empty() && !tuple.connective_used =>
             {
-                tuple.ps.as_slice()
+                tuple.ps
             }
             Some(ExprInstance::EPathmapBody(pathmap))
                 if pathmap.remainder.is_none()
@@ -2115,7 +2177,7 @@ fn eval_stable_par_declared_keys(root: &Par) -> Result<bool, CodecError> {
                             if !path_declares_stable(&key)? {
                                 return Ok(false);
                             }
-                            deferred.push(value);
+                            deferred.push(value.clone());
                         }
                     }
                 }
@@ -2124,8 +2186,9 @@ fn eval_stable_par_declared_keys(root: &Par) -> Result<bool, CodecError> {
             _ => return Ok(false),
         };
 
-        if let Some((first, siblings)) = children.split_first() {
-            deferred.extend(siblings.iter().rev());
+        let mut children = children.into_iter();
+        if let Some(first) = children.next() {
+            deferred.extend(children.rev());
             current = Some(first);
         }
     }
@@ -2342,19 +2405,19 @@ mod tests {
     }
     fn gprivate_plus_expr_par() -> Par {
         let mut par = gprivate(b"mix");
-        par.exprs = vec![Expr {
+        par.replace_exprs(vec![Expr {
             expr_instance: Some(ExprInstance::GInt(3)),
-        }];
+        }]);
         par
     }
     fn connective_tagged_par() -> Par {
         let mut par = gint(9);
-        par.connective_used = true;
+        par.replace_connective_used(true);
         par
     }
     fn locally_free_tagged_par() -> Par {
         let mut par = gint(9);
-        par.locally_free = vec![1];
+        par.replace_locally_free(vec![1]);
         par
     }
 
@@ -2648,16 +2711,19 @@ mod tests {
     // the corpus below rather than deleted, so a regression that reinstated the
     // cap fails at the first depth past it and says which depth.
 
-    /// The last-accepting depth, SEARCHED. A transcribed constant cannot tell
-    /// "total" from "capped very high"; a search can.
+    /// Representative depths on both sides of the retired boundary, including
+    /// a final rung eight times higher.  Rebuilding every prefix depth became
+    /// a cubic test oracle once `Par` began canonicalizing each nested
+    /// component into its PathMap key: constructing depth `d` is already
+    /// quadratic when all `d` immutable prefixes are retained transiently, so
+    /// summing every `d` in `1..=256` measures the fixture rather than the
+    /// reader.  The geometric ladder retains the boundary and totality
+    /// discriminators without that accidental extra factor.
     #[test]
     fn the_trie_reader_is_total_in_depth() {
-        /// Twelve times the retired cap. Finding this as the answer means no
-        /// limit was reached inside the probe range.
-        const PROBE_CEILING: u32 = 384;
+        const PROBE_DEPTHS: &[u32] = &[1, 2, 16, 31, 32, 33, 34, 64, 128, 256];
 
-        let mut last_accepting = 0u32;
-        for wrappers in 1..=PROBE_CEILING {
+        for &wrappers in PROBE_DEPTHS {
             let bytes = encode_trie_path(&deep_tuple(wrappers));
             assert!(
                 !bytes.is_empty(),
@@ -2672,11 +2738,10 @@ mod tests {
                         "depth {wrappers} decoded but is not a byte-level fixed point — a level \
                          was lost, which is worse than a refusal"
                     );
-                    last_accepting = wrappers;
                 }
                 Err(error) => panic!(
                     "★ the trie reader refused depth {wrappers} with {error:?}. It accepts \
-                     {last_accepting}. The WRITER is total at this depth (it produced {} bytes), \
+                     every earlier probe rung. The WRITER is total at this depth (it produced {} bytes), \
                      so a bound here means this node emits trie keys — and, through canonical \
                      EPM1 field 9 (or legacy field 8), byte strings on a consensus wire — that it will not \
                      read back. The retired cap was `COLLECTION_DEPTH_LIMIT = 32`; if this \
@@ -2685,7 +2750,6 @@ mod tests {
                 ),
             }
         }
-        assert_eq!(last_accepting, PROBE_CEILING);
     }
 
     /// The two other deep shapes, at and well past the retired boundary. Lists
@@ -3155,13 +3219,13 @@ mod tests {
         use crate::rust::pathmap_integration::{par_to_path, CursorKind};
 
         let mut carrier = glist(vec![gint(1)]);
-        carrier.sends = vec![Send {
+        carrier.replace_sends(vec![Send {
             chan: Some(gint(0)),
             data: vec![],
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
-        }];
+        }]);
 
         assert!(
             !takes_split_arm(&carrier),

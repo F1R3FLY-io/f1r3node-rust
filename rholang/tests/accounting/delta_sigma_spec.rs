@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
-use models::rhoapi::Par;
+use models::rhoapi::{Bundle, Expr, If, Match, New, Par, Receive, Send};
 use models::rust::utils::new_send;
 use prost::Message;
 use rholang::rust::interpreter::accounting::costs::Cost;
@@ -95,7 +95,7 @@ fn normalized_par(contract: &str) -> Par {
 /// runtime's additional metering of `new` nodes.
 fn comm_node_count(par: &Par) -> usize {
     let mut n = 0;
-    for send in &par.sends {
+    for send in par.decode_occurrences::<Send>() {
         n += 1;
         if let Some(chan) = &send.chan {
             n += comm_node_count(chan);
@@ -104,7 +104,7 @@ fn comm_node_count(par: &Par) -> usize {
             n += comm_node_count(datum);
         }
     }
-    for receive in &par.receives {
+    for receive in par.decode_occurrences::<Receive>() {
         n += 1;
         for bind in &receive.binds {
             if let Some(source) = &bind.source {
@@ -118,12 +118,12 @@ fn comm_node_count(par: &Par) -> usize {
             n += comm_node_count(body);
         }
     }
-    for new in &par.news {
+    for new in par.decode_occurrences::<New>() {
         if let Some(body) = &new.p {
             n += comm_node_count(body);
         }
     }
-    for mat in &par.matches {
+    for mat in par.decode_occurrences::<Match>() {
         if let Some(target) = &mat.target {
             n += comm_node_count(target);
         }
@@ -133,7 +133,7 @@ fn comm_node_count(par: &Par) -> usize {
             }
         }
     }
-    for conditional in &par.conditionals {
+    for conditional in par.decode_occurrences::<If>() {
         if let Some(condition) = &conditional.condition {
             n += comm_node_count(condition);
         }
@@ -144,7 +144,7 @@ fn comm_node_count(par: &Par) -> usize {
             n += comm_node_count(if_false);
         }
     }
-    for bundle in &par.bundles {
+    for bundle in par.decode_occurrences::<Bundle>() {
         if let Some(body) = &bundle.body {
             n += comm_node_count(body);
         }
@@ -239,22 +239,26 @@ const SEC_7_4_SUGARED: &str = r#"new d, c in {
 /// its send+reply under a fresh `new ret`) and receive bodies.
 fn sync_reply_receive_count(par: &Par) -> usize {
     let mut n = 0;
-    for receive in &par.receives {
+    for receive in par.decode_occurrences::<Receive>() {
         // The hallmark of a sync-send reply receive: exactly one bind whose sole
         // pattern is a lone `Var::Wildcard` (`for(_ <- ret){…}`).
         let lone_wildcard = receive.binds.len() == 1 && receive.binds[0].patterns.len() == 1 && {
             let p = &receive.binds[0].patterns[0];
-            p.sends.is_empty()
-                && p.receives.is_empty()
-                && p.news.is_empty()
-                && p.matches.is_empty()
-                && p.bundles.is_empty()
-                && p.exprs.len() == 1
+            p.family_cardinality::<Send>() == 0
+                && p.family_cardinality::<Receive>() == 0
+                && p.family_cardinality::<New>() == 0
+                && p.family_cardinality::<Match>() == 0
+                && p.family_cardinality::<Bundle>() == 0
+                && p.family_cardinality::<Expr>() == 1
                 && matches!(
-                    &p.exprs[0].expr_instance,
+                    p.first::<Expr>()
+                        .expect("resident expression decodes")
+                        .expect("wildcard pattern carries one expression")
+                        .0
+                        .expr_instance,
                     Some(ExprInstance::EVarBody(ev))
                         if matches!(
-                            ev.v.as_ref().and_then(|v| v.var_instance.as_ref()),
+                            ev.v.and_then(|v| v.var_instance),
                             Some(VarInstance::Wildcard(_))
                         )
                 )
@@ -266,7 +270,7 @@ fn sync_reply_receive_count(par: &Par) -> usize {
             n += sync_reply_receive_count(body);
         }
     }
-    for new in &par.news {
+    for new in par.decode_occurrences::<New>() {
         if let Some(body) = &new.p {
             n += sync_reply_receive_count(body);
         }
@@ -667,17 +671,11 @@ fn multi_lane_demand_static_equals_runtime() {
     };
 
     // STATIC: a Par with 3 sends on Σ⟦s₀⟧, 2 on Σ⟦s₁⟧, 1 on a data channel.
-    let mut par = Par::default();
-    for _ in 0..3 {
-        par.sends
-            .push(new_send(chan0.clone(), vec![], false, vec![], false));
-    }
-    for _ in 0..2 {
-        par.sends
-            .push(new_send(chan1.clone(), vec![], false, vec![], false));
-    }
-    par.sends
-        .push(new_send(data_chan.clone(), vec![], false, vec![], false));
+    let mut sends = Vec::with_capacity(6);
+    sends.extend((0..3).map(|_| new_send(chan0.clone(), vec![], false, vec![], false)));
+    sends.extend((0..2).map(|_| new_send(chan1.clone(), vec![], false, vec![], false)));
+    sends.push(new_send(data_chan.clone(), vec![], false, vec![], false));
+    let par = Par::default().with_sends(sends);
     let by_sig = demand_by_sig(&par, env_key, &region);
 
     // RUNTIME: charge the SAME 6 COMMs (scalar, to the envelope) and record the
@@ -750,17 +748,11 @@ fn multi_lane_demand_entries_satisfy_oslf_funding_laws_per_lane() {
         let signer_channels = signer_channels.clone();
         move |channel: &Par| match_channel_to_lane(channel, &signer_channels)
     };
-    let mut par = Par::default();
-    for _ in 0..3 {
-        par.sends
-            .push(new_send(leaves[0].0.clone(), vec![], false, vec![], false));
-    }
-    for _ in 0..2 {
-        par.sends
-            .push(new_send(leaves[1].0.clone(), vec![], false, vec![], false));
-    }
-    par.sends
-        .push(new_send(Par::default(), vec![], false, vec![], false));
+    let mut sends = Vec::with_capacity(6);
+    sends.extend((0..3).map(|_| new_send(leaves[0].0.clone(), vec![], false, vec![], false)));
+    sends.extend((0..2).map(|_| new_send(leaves[1].0.clone(), vec![], false, vec![], false)));
+    sends.push(new_send(Par::default(), vec![], false, vec![], false));
+    let par = Par::default().with_sends(sends);
     let by_sig = demand_by_sig(&par, env_key, &region);
 
     // The fixture's lanes are all RESOLVABLE (the data join has no `*x` drop), so

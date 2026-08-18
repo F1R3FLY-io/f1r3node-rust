@@ -89,9 +89,11 @@ fn deep_and_wide_structural_encoding_fits_a_small_native_stack() {
             assert!(deep.len() > 20_000);
 
             let mut wide = par_corpus::all_par_fields();
-            wide.exprs.reserve(20_000);
-            let seed = wide.exprs[0].clone();
-            wide.exprs.extend(std::iter::repeat_n(seed, 20_000));
+            let mut exprs = wide.decode_occurrences::<models::rhoapi::Expr>();
+            exprs.reserve(20_000);
+            let seed = exprs[0].clone();
+            exprs.extend(std::iter::repeat_n(seed, 20_000));
+            wide.replace_exprs(exprs);
             let wide = encode_par_match_path(&wide);
             assert!(wide.len() > 20_000);
         })
@@ -104,9 +106,7 @@ fn wrap(map: EPathMap) -> Par {
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::Expr;
 
-    let mut par = Par::default();
-    par.exprs.push(Expr {
+    Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::EPathmapBody(map)),
-    });
-    par
+    }])
 }

@@ -6,7 +6,9 @@ use std::time::Instant;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::expr::ExprInstance::{EMapBody, GByteArray};
 use models::rhoapi::tagged_continuation::TaggedCont;
-use models::rhoapi::{BindPattern, Bundle, Expr, ListParWithRandom, Par, TaggedContinuation, Var};
+use models::rhoapi::{
+    BindPattern, Bundle, Expr, GUnforgeable, ListParWithRandom, Par, TaggedContinuation, Var,
+};
 use models::rust::block_hash::BlockHash;
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
@@ -1180,9 +1182,9 @@ where
             tracing::info!(
                 target: "f1r3fly.merge.tag_check",
                 "URI binding inserted: rho:system:bitmaskMergeableTag -> Par(unforgeables={}, exprs={}, bundles={})",
-                tag_par.unforgeables.len(),
-                tag_par.exprs.len(),
-                tag_par.bundles.len(),
+                tag_par.family_cardinality::<GUnforgeable>(),
+                tag_par.family_cardinality::<Expr>(),
+                tag_par.family_cardinality::<Bundle>(),
             );
             urn_map.insert(
                 "rho:system:bitmaskMergeableTag".to_string(),

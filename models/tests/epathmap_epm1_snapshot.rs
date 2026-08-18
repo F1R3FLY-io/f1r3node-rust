@@ -8,19 +8,15 @@ use prost::Message;
 use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
 
 fn gint(value: i64) -> Par {
-    let mut par = Par::default();
-    par.exprs.push(Expr {
+    Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::GInt(value)),
-    });
-    par
+    }])
 }
 
 fn gstring(value: &str) -> Par {
-    let mut par = Par::default();
-    par.exprs.push(Expr {
+    Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::GString(value.to_owned())),
-    });
-    par
+    }])
 }
 
 fn epathmap_carrier(map: EPathMap) -> Par {
@@ -134,10 +130,9 @@ fn bincode_copies_the_same_epm1_snapshot_and_both_readers_agree() {
     let derived_round: EPathMap = bincode::deserialize(&generated).unwrap();
     assert_eq!(derived_round, map);
 
-    let mut root = Par::default();
-    root.exprs.push(Expr {
+    let root = Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::EPathmapBody(map.clone())),
-    });
+    }]);
     let root_bytes = bincode_encoder::encode(&root);
     assert_eq!(Par::cold_decode(&root_bytes).unwrap(), root);
 }
@@ -237,10 +232,9 @@ fn neutral_empty_selects_once_and_mixed_membership_is_rejected() {
 #[test]
 fn value_bearing_map_is_a_lossless_nested_canonical_path_segment() {
     let nested = EPathMap::new_map(vec![(gstring("key"), gint(7))], Vec::new(), false, None);
-    let mut carrier = Par::default();
-    carrier.exprs.push(Expr {
+    let carrier = Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::EPathmapBody(nested)),
-    });
+    }]);
 
     let key = encode_trie_path(&carrier);
     assert_eq!(key[0], models::rust::canonical_path::tag::EPATHMAP_MAP);
@@ -251,10 +245,13 @@ fn value_bearing_map_is_a_lossless_nested_canonical_path_segment() {
         .unwrap_or_else(|error| panic!("{error}; snapshot={snapshot:02x?}; key={key:02x?}"));
     assert_eq!(decoded_snapshot.mode(), EPathMapMode::Map);
     let decoded = decode_trie_path(&key).unwrap();
-    let ExprInstance::EPathmapBody(decoded_map) = decoded.exprs[0]
-        .expr_instance
-        .as_ref()
+    let ExprInstance::EPathmapBody(decoded_map) = decoded
+        .first::<Expr>()
+        .expect("carrier Expr endpoint decodes")
         .expect("carrier has an expression")
+        .0
+        .expr_instance
+        .expect("carrier expression has an instance")
     else {
         panic!("canonical path changed the nested map carrier")
     };

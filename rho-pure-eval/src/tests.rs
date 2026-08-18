@@ -315,13 +315,15 @@ fn process_level_par_content_is_preserved() {
 
     let result = eval(&par, &env).unwrap();
 
-    assert_eq!(result.exprs.len(), 1);
+    let expressions = result.decode_occurrences::<Expr>();
+    let sends = result.decode_occurrences::<Send>();
+    assert_eq!(expressions.len(), 1);
     assert!(matches!(
-        result.exprs[0].expr_instance,
+        expressions[0].expr_instance,
         Some(ExprInstance::GBool(true))
     ));
-    assert_eq!(result.sends.len(), 1);
-    assert_eq!(result.sends[0].data, vec![gint(5)]);
+    assert_eq!(sends.len(), 1);
+    assert_eq!(sends[0].data, vec![gint(5)]);
 }
 
 #[test]
@@ -1320,13 +1322,13 @@ fn the_gate_does_not_walk_process_level_fields() {
     // evaluator carries them through inert. A method inside a receive
     // BODY is a piece of the program, not a piece of the predicate.
     let mut guard = par_of(ExprInstance::GBool(true));
-    guard.sends = vec![models::rhoapi::Send {
+    guard.replace_sends(vec![models::rhoapi::Send {
         chan: Some(gstr("c")),
         data: vec![method("nth", elist(vec![gint(1)]))],
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
-    }];
+    }]);
     assert!(
         undecidable_nodes(&guard, SpatialSupport::Available).is_empty(),
         "process-level fields are not part of the decided expression"

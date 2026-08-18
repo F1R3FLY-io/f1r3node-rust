@@ -1596,7 +1596,7 @@ mod differential_eval_with {
         let mut exprs = Vec::with_capacity(width);
         for i in 0..width {
             let mut operator = eplus(gint(i as i64), gint(1));
-            exprs.append(&mut operator.exprs);
+            exprs.append(&mut operator.take_occurrences::<Expr>());
         }
         models::par_from_default! { exprs, ..Par::default() }
     }
@@ -1656,7 +1656,7 @@ mod differential_eval_with {
         let mut wide_deep = Vec::with_capacity(w);
         for i in 0..w {
             let mut branch = deep_left(d, gint(i as i64), gint(1));
-            wide_deep.append(&mut branch.exprs);
+            wide_deep.append(&mut branch.take_occurrences::<Expr>());
         }
         out.push(models::par_from_default! { exprs: wide_deep, ..Par::default() });
 

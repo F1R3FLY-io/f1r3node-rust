@@ -881,14 +881,14 @@ impl PrettyPrinter {
     // [`drive`]; keeping a second production copy would be a dual path.
     //
     pub(super) fn is_empty_par(&self, p: &Par) -> bool {
-        p.sends.is_empty()
-            && p.receives.is_empty()
-            && p.news.is_empty()
-            && p.exprs.is_empty()
-            && p.matches.is_empty()
-            && p.unforgeables.is_empty()
-            && p.bundles.is_empty()
-            && p.connectives.is_empty()
+        p.family_cardinality::<models::rhoapi::Send>() == 0
+            && p.family_cardinality::<Receive>() == 0
+            && p.family_cardinality::<New>() == 0
+            && p.family_cardinality::<Expr>() == 0
+            && p.family_cardinality::<Match>() == 0
+            && p.family_cardinality::<GUnforgeable>() == 0
+            && p.family_cardinality::<Bundle>() == 0
+            && p.family_cardinality::<Connective>() == 0
     }
 
     /// Does the variable at de Bruijn `level` name something a `New` bound?
@@ -1882,10 +1882,38 @@ mod drive {
     /// from every render.
     const STACK_HINT: usize = 64;
 
+    /// One decoded authoritative ParBag endpoint retained for one printer
+    /// drive. This heterogeneous arena keeps component borrows stable without
+    /// reinstalling generated repeated-field shadows on `Par`.
+    enum OwnedPpNode {
+        Send(models::rhoapi::Send),
+        Receive(Receive),
+        Bundle(Bundle),
+        New(New),
+        Expr(Expr),
+        Match(Match),
+        Unforgeable(GUnforgeable),
+        Connective(Connective),
+    }
+
+    impl OwnedPpNode {
+        fn as_node(&self) -> PpNode<'_> {
+            match self {
+                Self::Send(value) => PpNode::Send(value),
+                Self::Receive(value) => PpNode::Receive(value),
+                Self::Bundle(value) => PpNode::Bundle(value),
+                Self::New(value) => PpNode::New(value),
+                Self::Expr(value) => PpNode::Expr(value),
+                Self::Match(value) => PpNode::Match(value),
+                Self::Unforgeable(value) => PpNode::Unforgeable(value),
+                Self::Connective(value) => PpNode::Connective(value),
+            }
+        }
+    }
+
     #[derive(Default)]
     struct CanonicalCollections {
         collections: HashSet<*const ()>,
-        visited_pars: HashSet<*const Par>,
     }
 
     impl CanonicalCollections {
@@ -1895,27 +1923,15 @@ mod drive {
             self.collections.contains(&Self::collection_id(value))
         }
 
-        fn mark_from(&mut self, root: &Par) {
-            let mut pending = vec![root];
-            let mut children = Vec::new();
-            while let Some(par) = pending.pop() {
-                if !self.visited_pars.insert(std::ptr::from_ref(par)) {
-                    continue;
+        fn mark_expr(&mut self, expr: &Expr) {
+            match expr.expr_instance.as_ref() {
+                Some(ExprInstance::ESetBody(set)) => {
+                    self.collections.insert(Self::collection_id(set));
                 }
-                for expr in &par.exprs {
-                    match expr.expr_instance.as_ref() {
-                        Some(ExprInstance::ESetBody(set)) => {
-                            self.collections.insert(Self::collection_id(set));
-                        }
-                        Some(ExprInstance::EMapBody(map)) => {
-                            self.collections.insert(Self::collection_id(map));
-                        }
-                        _ => {}
-                    }
+                Some(ExprInstance::EMapBody(map)) => {
+                    self.collections.insert(Self::collection_id(map));
                 }
-                children.clear();
-                models::rust::rholang::par_children::par_child_pars(par, &mut children);
-                pending.extend(children.iter().copied());
+                _ => {}
             }
         }
     }
@@ -1923,13 +1939,15 @@ mod drive {
     /// The single LIFO loop.
     fn run<'root>(pp: &mut PrettyPrinter, seed: PpWork<'root>) -> Result<String, InterpreterError> {
         let decoded_entries = Arena::new();
-        run_with_arena(pp, seed, &decoded_entries)
+        let decoded_components = Arena::new();
+        run_with_arena(pp, seed, &decoded_entries, &decoded_components)
     }
 
     fn run_with_arena<'a>(
         pp: &mut PrettyPrinter,
         seed: PpWork<'a>,
         decoded_entries: &'a Arena<Par>,
+        decoded_components: &'a Arena<OwnedPpNode>,
     ) -> Result<String, InterpreterError> {
         let mut work: Vec<PpWork<'a>> = Vec::with_capacity(STACK_HINT);
         let mut vals: Vec<String> = Vec::with_capacity(STACK_HINT);
@@ -1942,6 +1960,7 @@ mod drive {
                 pp,
                 item,
                 decoded_entries,
+                decoded_components,
                 &mut canonical_collections,
                 &mut work,
                 &mut vals,
@@ -1985,6 +2004,7 @@ mod drive {
         pp: &mut PrettyPrinter,
         item: PpWork<'a>,
         decoded_entries: &'a Arena<Par>,
+        decoded_components: &'a Arena<OwnedPpNode>,
         canonical_collections: &mut CanonicalCollections,
         work: &mut Vec<PpWork<'a>>,
         vals: &mut Vec<String>,
@@ -1993,11 +2013,25 @@ mod drive {
         match item {
             PpWork::Literal(value) => vals.push(value),
 
-            PpWork::Node(node, indent) => descend_node(pp, node, indent, work, vals)?,
+            PpWork::Node(node, indent) => descend_node(
+                pp,
+                node,
+                indent,
+                decoded_components,
+                canonical_collections,
+                work,
+                vals,
+            )?,
 
-            PpWork::ExprBody(e) => {
-                descend_expr(pp, e, decoded_entries, canonical_collections, work, vals)?
-            }
+            PpWork::ExprBody(e) => descend_expr(
+                pp,
+                e,
+                decoded_entries,
+                decoded_components,
+                canonical_collections,
+                work,
+                vals,
+            )?,
 
             PpWork::Channel(p, indent) => {
                 // ⚠ Set, never reset. See the module documentation.
@@ -2229,6 +2263,8 @@ mod drive {
         pp: &mut PrettyPrinter,
         node: PpNode<'a>,
         indent: usize,
+        decoded_components: &'a Arena<OwnedPpNode>,
+        canonical_collections: &mut CanonicalCollections,
         work: &mut Vec<PpWork<'a>>,
         vals: &mut Vec<String>,
     ) -> Result<(), InterpreterError> {
@@ -2236,7 +2272,7 @@ mod drive {
             PpNode::Var(v) => vals.push(pp.build_string_from_var(v)),
 
             PpNode::Unprintable(msg) => {
-                return Err(InterpreterError::BugFoundError(msg.to_string()))
+                return Err(InterpreterError::BugFoundError(msg.to_string()));
             }
 
             PpNode::Send(s) => {
@@ -2466,38 +2502,60 @@ mod drive {
                     // The eight categories, in the order the recursive form
                     // walks them, pushed in REVERSE so they pop in order. All
                     // non-catching, all at the SAME indent.
-                    for c in p.connectives.iter().rev() {
-                        work.push(PpWork::Node(PpNode::Connective(c), indent));
+                    for value in p.decode_occurrences::<Connective>().into_iter().rev() {
+                        let value = decoded_components.alloc(OwnedPpNode::Connective(value));
+                        work.push(PpWork::Node(value.as_node(), indent));
                     }
-                    for u in p.unforgeables.iter().rev() {
-                        work.push(PpWork::Node(PpNode::Unforgeable(u), indent));
+                    for value in p.decode_occurrences::<GUnforgeable>().into_iter().rev() {
+                        let value = decoded_components.alloc(OwnedPpNode::Unforgeable(value));
+                        work.push(PpWork::Node(value.as_node(), indent));
                     }
-                    for m in p.matches.iter().rev() {
-                        work.push(PpWork::Node(PpNode::Match(m), indent));
+                    for value in p.decode_occurrences::<Match>().into_iter().rev() {
+                        let value = decoded_components.alloc(OwnedPpNode::Match(value));
+                        work.push(PpWork::Node(value.as_node(), indent));
                     }
+                    let expressions = p.decode_occurrences::<Expr>();
                     match mutating(DriveMutation::ParPushesExprsUnreversed) {
                         true => {
-                            for e in p.exprs.iter() {
-                                work.push(PpWork::Node(PpNode::Expr(e), indent));
+                            for expression in expressions {
+                                let value = decoded_components.alloc(OwnedPpNode::Expr(expression));
+                                let PpNode::Expr(expression) = value.as_node() else {
+                                    unreachable!()
+                                };
+                                canonical_collections.mark_expr(expression);
+                                work.push(PpWork::Node(PpNode::Expr(expression), indent));
                             }
                         }
                         false => {
-                            for e in p.exprs.iter().rev() {
-                                work.push(PpWork::Node(PpNode::Expr(e), indent));
+                            for expression in expressions.into_iter().rev() {
+                                let value = decoded_components.alloc(OwnedPpNode::Expr(expression));
+                                let PpNode::Expr(expression) = value.as_node() else {
+                                    unreachable!()
+                                };
+                                canonical_collections.mark_expr(expression);
+                                work.push(PpWork::Node(PpNode::Expr(expression), indent));
                             }
                         }
                     }
-                    for n in p.news.iter().rev() {
-                        work.push(PpWork::Node(PpNode::New(n), indent));
+                    for value in p.decode_occurrences::<New>().into_iter().rev() {
+                        let value = decoded_components.alloc(OwnedPpNode::New(value));
+                        work.push(PpWork::Node(value.as_node(), indent));
                     }
-                    for r in p.receives.iter().rev() {
-                        work.push(PpWork::Node(PpNode::Receive(r), indent));
+                    for value in p.decode_occurrences::<Receive>().into_iter().rev() {
+                        let value = decoded_components.alloc(OwnedPpNode::Receive(value));
+                        work.push(PpWork::Node(value.as_node(), indent));
                     }
-                    for s in p.sends.iter().rev() {
-                        work.push(PpWork::Node(PpNode::Send(s), indent));
+                    for value in p
+                        .decode_occurrences::<models::rhoapi::Send>()
+                        .into_iter()
+                        .rev()
+                    {
+                        let value = decoded_components.alloc(OwnedPpNode::Send(value));
+                        work.push(PpWork::Node(value.as_node(), indent));
                     }
-                    for b in p.bundles.iter().rev() {
-                        work.push(PpWork::Node(PpNode::Bundle(b), indent));
+                    for value in p.decode_occurrences::<Bundle>().into_iter().rev() {
+                        let value = decoded_components.alloc(OwnedPpNode::Bundle(value));
+                        work.push(PpWork::Node(value.as_node(), indent));
                     }
                 }
             }
@@ -2734,6 +2792,7 @@ mod drive {
         pp: &mut PrettyPrinter,
         e: &'a Expr,
         decoded_entries: &'a Arena<Par>,
+        decoded_components: &'a Arena<OwnedPpNode>,
         canonical_collections: &mut CanonicalCollections,
         work: &mut Vec<PpWork<'a>>,
         vals: &mut Vec<String>,
@@ -2852,7 +2911,6 @@ mod drive {
                 }));
                 for par in sorted.into_iter().rev() {
                     let par = decoded_entries.alloc(par);
-                    canonical_collections.mark_from(par);
                     push_catch(work, CatchKind::Message, PpWork::Node(PpNode::Par(par), 0));
                 }
             }
@@ -2884,14 +2942,12 @@ mod drive {
                 }));
                 for (key, value) in sorted.into_iter().rev() {
                     let value = decoded_entries.alloc(value);
-                    canonical_collections.mark_from(value);
                     push_catch(
                         work,
                         CatchKind::Message,
                         PpWork::Node(PpNode::Par(value), 0),
                     );
                     let key = decoded_entries.alloc(key);
-                    canonical_collections.mark_from(key);
                     push_catch(work, CatchKind::Message, PpWork::Node(PpNode::Par(key), 0));
                 }
             }
@@ -2907,8 +2963,15 @@ mod drive {
                     let mut framed = segment.clone();
                     framed.push(tag::TERM);
                     let channel = decode_trie_path(&framed).ok().and_then(|par| {
-                        let par = decoded_entries.alloc(par);
-                        match par.exprs.first().and_then(|ex| ex.expr_instance.as_ref()) {
+                        let (expression, multiplicity) = par.first::<Expr>().ok()??;
+                        if multiplicity.get() != 1 {
+                            return None;
+                        }
+                        let value = decoded_components.alloc(OwnedPpNode::Expr(expression));
+                        let PpNode::Expr(expression) = value.as_node() else {
+                            unreachable!()
+                        };
+                        match expression.expr_instance.as_ref() {
                             Some(ExprInstance::EListBody(list)) if !list.ps.is_empty() => {
                                 Some(&list.ps[0])
                             }
@@ -3219,15 +3282,19 @@ mod drive {
                 // body line for line, and because it is the form that stays
                 // correct if a category ever gets its own separator.
                 let lengths = [
-                    par.bundles.len(),
-                    par.sends.len(),
-                    par.receives.len(),
-                    par.news.len(),
-                    par.exprs.len(),
-                    par.matches.len(),
-                    par.unforgeables.len(),
-                    par.connectives.len(),
+                    par.family_cardinality::<Bundle>(),
+                    par.family_cardinality::<models::rhoapi::Send>(),
+                    par.family_cardinality::<Receive>(),
+                    par.family_cardinality::<New>(),
+                    par.family_cardinality::<Expr>(),
+                    par.family_cardinality::<Match>(),
+                    par.family_cardinality::<GUnforgeable>(),
+                    par.family_cardinality::<Connective>(),
                 ];
+                let lengths = lengths.map(|length| {
+                    usize::try_from(length)
+                        .expect("Par family cardinality exceeds the addressable printer range")
+                });
                 let children = take(vals, lengths.iter().sum());
                 let separator = format!(" |\n{}", pp.indent_string().repeat(indent));
                 vals.push(render_par_categories(&children, lengths, &separator));
@@ -3434,8 +3501,15 @@ mod drive {
         news_shift_indices: &[NewBindRange],
         bound_shift: i32,
     ) -> String {
-        let is_bound_new = match p.exprs.as_slice() {
-            [x] => match &x.expr_instance {
+        let expression = if p.family_cardinality::<Expr>() == 1 {
+            p.first::<Expr>()
+                .expect("canonical resident ParBag endpoints decode")
+                .map(|(expression, _)| expression)
+        } else {
+            None
+        };
+        let is_bound_new = match expression.as_ref() {
+            Some(x) => match &x.expr_instance {
                 Some(instance) => match instance {
                     ExprInstance::EVarBody(EVar { v }) => match v {
                         Some(v) => match &v.var_instance {
@@ -3456,7 +3530,7 @@ mod drive {
                 },
                 None => false,
             },
-            _ => false,
+            None => false,
         };
 
         if is_bound_new {
@@ -3602,7 +3676,8 @@ mod differential {
             }
         }
 
-        for send in &mut par.sends {
+        let mut sends = par.take_occurrences::<Send>();
+        for send in &mut sends {
             if let Some(chan) = &mut send.chan {
                 tame(chan);
             }
@@ -3610,7 +3685,9 @@ mod differential {
                 tame(d);
             }
         }
-        for receive in &mut par.receives {
+        par.replace_sends(sends);
+        let mut receives = par.take_occurrences::<Receive>();
+        for receive in &mut receives {
             receive.bind_count = receive.bind_count.rem_euclid(4);
             for bind in &mut receive.binds {
                 bind.free_count = bind.free_count.rem_euclid(4);
@@ -3626,7 +3703,9 @@ mod differential {
                 tame(body);
             }
         }
-        for new in &mut par.news {
+        par.replace_receives(receives);
+        let mut news = par.take_occurrences::<New>();
+        for new in &mut news {
             new.bind_count = new.bind_count.rem_euclid(4);
             if let Some(p) = &mut new.p {
                 tame(p);
@@ -3635,10 +3714,14 @@ mod differential {
                 tame(injected);
             }
         }
-        for e in &mut par.exprs {
+        par.replace_news(news);
+        let mut expressions = par.take_occurrences::<Expr>();
+        for e in &mut expressions {
             expr(e);
         }
-        for m in &mut par.matches {
+        par.replace_exprs(expressions);
+        let mut matches = par.take_occurrences::<Match>();
+        for m in &mut matches {
             if let Some(target) = &mut m.target {
                 tame(target);
             }
@@ -3652,14 +3735,19 @@ mod differential {
                 }
             }
         }
-        for bundle in &mut par.bundles {
+        par.replace_matches(matches);
+        let mut bundles = par.take_occurrences::<Bundle>();
+        for bundle in &mut bundles {
             if let Some(body) = &mut bundle.body {
                 tame(body);
             }
         }
-        for c in &mut par.connectives {
+        par.replace_bundles(bundles);
+        let mut connectives = par.take_occurrences::<Connective>();
+        for c in &mut connectives {
             connective(c);
         }
+        par.replace_connectives(connectives);
     }
 
     // ⚠ RETIRED, NOT DELETED — `bound_new_bind_counts`, below, is commented out
@@ -3760,29 +3848,33 @@ mod differential {
     /// in `generate_par` fails loudly here instead of silently emptying the
     /// corpus.
     fn reaches_a_receive_with_binds(p: &Par) -> bool {
-        p.receives.iter().any(|r| !r.binds.is_empty())
-            || p.sends.iter().any(|s| {
+        p.decode_occurrences::<Receive>()
+            .iter()
+            .any(|r| !r.binds.is_empty())
+            || p.decode_occurrences::<Send>().iter().any(|s| {
                 s.data.iter().any(reaches_a_receive_with_binds)
                     || s.chan.as_ref().is_some_and(reaches_a_receive_with_binds)
             })
-            || p.news
+            || p.decode_occurrences::<New>()
                 .iter()
                 .any(|n| n.p.as_ref().is_some_and(reaches_a_receive_with_binds))
-            || p.bundles
+            || p.decode_occurrences::<Bundle>()
                 .iter()
                 .any(|b| b.body.as_ref().is_some_and(reaches_a_receive_with_binds))
     }
 
     fn reaches_a_match_with_cases(p: &Par) -> bool {
-        p.matches.iter().any(|m| !m.cases.is_empty())
-            || p.sends.iter().any(|s| {
+        p.decode_occurrences::<Match>()
+            .iter()
+            .any(|m| !m.cases.is_empty())
+            || p.decode_occurrences::<Send>().iter().any(|s| {
                 s.data.iter().any(reaches_a_match_with_cases)
                     || s.chan.as_ref().is_some_and(reaches_a_match_with_cases)
             })
-            || p.news
+            || p.decode_occurrences::<New>()
                 .iter()
                 .any(|n| n.p.as_ref().is_some_and(reaches_a_match_with_cases))
-            || p.bundles
+            || p.decode_occurrences::<Bundle>()
                 .iter()
                 .any(|b| b.body.as_ref().is_some_and(reaches_a_match_with_cases))
     }
@@ -3805,7 +3897,7 @@ mod differential {
             "a `New` (the build_variables-then-mutate site)",
             tamed_par(4),
             256,
-            |p: &Par| !p.news.is_empty(),
+            |p: &Par| p.family_cardinality::<New>() != 0,
         );
     }
 
@@ -4273,14 +4365,14 @@ mod differential {
 
         // ANTI-VACUITY: the fixture really does carry all eight categories.
         assert!(
-            !term.bundles.is_empty()
-                && !term.sends.is_empty()
-                && !term.receives.is_empty()
-                && !term.news.is_empty()
-                && !term.exprs.is_empty()
-                && !term.matches.is_empty()
-                && !term.unforgeables.is_empty()
-                && !term.connectives.is_empty(),
+            term.family_cardinality::<Bundle>() != 0
+                && term.family_cardinality::<Send>() != 0
+                && term.family_cardinality::<Receive>() != 0
+                && term.family_cardinality::<New>() != 0
+                && term.family_cardinality::<Expr>() != 0
+                && term.family_cardinality::<Match>() != 0
+                && term.family_cardinality::<GUnforgeable>() != 0
+                && term.family_cardinality::<Connective>() != 0,
             "the every_node_kind fixture lost a category"
         );
         agree("every_node_kind", &term);
@@ -4753,7 +4845,10 @@ mod differential {
         );
         // ANTI-VACUITY (c): a `New` really is inside bind 0's pattern.
         assert!(
-            receive.binds[0].patterns.iter().any(|p| !p.news.is_empty()),
+            receive.binds[0]
+                .patterns
+                .iter()
+                .any(|p| p.family_cardinality::<New>() != 0),
             "no `New` inside the first bind's pattern — `bound_shift` would not move \
              mid-fold and the fixture would be vacuous"
         );
@@ -4934,10 +5029,14 @@ mod differential {
         // with the reducer about what the term means — and every unguarded
         // receive's bytes would move, which is the opposite of confining them.
         let mut empty_guard = term.clone();
-        empty_guard.receives[0].condition = Some(Par::default());
+        let mut empty_guard_receives = empty_guard.take_occurrences::<Receive>();
+        empty_guard_receives[0].condition = Some(Par::default());
+        empty_guard.replace_receives(empty_guard_receives);
         let printed_empty = PrettyPrinter::new().build_string_from_message(&empty_guard);
         let mut no_guard = term.clone();
-        no_guard.receives[0].condition = None;
+        let mut no_guard_receives = no_guard.take_occurrences::<Receive>();
+        no_guard_receives[0].condition = None;
+        no_guard.replace_receives(no_guard_receives);
         assert_eq!(
             printed_empty,
             PrettyPrinter::new().build_string_from_message(&no_guard),
@@ -4960,12 +5059,14 @@ mod differential {
         // pushes `String::new()`), so that is what reaches it. It is a separate
         // line of code and was separately capable of dropping the clause.
         let mut empty_body = term.clone();
-        empty_body.receives[0].body = Some(models::par_from_default! {
+        let mut empty_body_receives = empty_body.take_occurrences::<Receive>();
+        empty_body_receives[0].body = Some(models::par_from_default! {
             connectives: vec![Connective {
                 connective_instance: None,
             }],
             ..Default::default()
         });
+        empty_body.replace_receives(empty_body_receives);
         let printed_empty_body = PrettyPrinter::new().build_string_from_message(&empty_body);
         assert!(
             printed_empty_body.ends_with(" ) {}"),
@@ -5605,7 +5706,11 @@ mod differential {
         // different `match` head — otherwise `contains("match 2 {")` above would
         // pass for a printer that hard-coded it.
         let mut other = term.clone();
-        other.sends[0].data[1].matches[0].target = Some(gstring("a different target"));
+        let mut sends = other.take_occurrences::<Send>();
+        let mut matches = sends[0].data[1].take_occurrences::<Match>();
+        matches[0].target = Some(gstring("a different target"));
+        sends[0].data[1].replace_matches(matches);
+        other.replace_sends(sends);
         let other_printed = PrettyPrinter::new().build_string_from_message(&other);
         assert!(
             other_printed.contains("match \"a different target\" {"),
@@ -6069,7 +6174,7 @@ mod differential {
             // its place in the straddle. The fallback side moved to the splice
             // probe below.
             ("a match beside a long sibling", models::par_from_default! {
-                exprs: long.exprs.clone(),
+                exprs: long.decode_occurrences::<Expr>(),
                 matches: vec![Match {
                     target: Some(gint(1)),
                     cases: vec![],
@@ -6266,12 +6371,9 @@ mod differential {
         // Iterative teardown: `<Par as Drop>` is still recursive.
         let mut peel = term;
         loop {
-            let next = match peel
-                .exprs
-                .first_mut()
-                .and_then(|e| e.expr_instance.as_mut())
-            {
-                Some(ExprInstance::EListBody(list)) if !list.ps.is_empty() => list.ps.remove(0),
+            let expression = peel.take_occurrences::<Expr>().into_iter().next();
+            let next = match expression.and_then(|e| e.expr_instance) {
+                Some(ExprInstance::EListBody(mut list)) if !list.ps.is_empty() => list.ps.remove(0),
                 _ => break,
             };
             peel = next;
@@ -6901,7 +7003,10 @@ mod drive_mutations {
                 news: vec![New {
                     bind_count: 2,
                     p: Some(models::par_from_default! {
-                        exprs: vec![bound_var(0).exprs[0].clone(), bound_var(1).exprs[0].clone()],
+                        exprs: vec![
+                            bound_var(0).first::<Expr>().unwrap().unwrap().0,
+                            bound_var(1).first::<Expr>().unwrap().unwrap().0,
+                        ],
                         ..Default::default()
                     }),
                     uri: vec![],
@@ -7153,7 +7258,9 @@ mod drive_mutations {
     /// Does this term contain a `New` anywhere the drive will visit?
     fn reaches_a_new(term: &Par) -> bool {
         use models::rust::rholang::par_children::reachable_pars;
-        reachable_pars(term).iter().any(|p| !p.news.is_empty())
+        reachable_pars(term)
+            .iter()
+            .any(|p| p.family_cardinality::<New>() != 0)
     }
 }
 

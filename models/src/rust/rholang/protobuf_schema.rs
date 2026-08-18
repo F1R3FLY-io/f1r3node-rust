@@ -73,10 +73,14 @@
 //! same reason: a generator that restated a byte format is a second opinion
 //! about consensus, and the two opinions drift.
 //!
-//! ## §D  `EPathMap` has a hand-written field program
+//! ## §D  external PathMap-backed nodes have hand-written programs
 //!
-//! `EPathMap` is `extern_path`'d from Prost generation, so the descriptor emitter
-//! cannot write its implementation. Its current encoding is nevertheless one
+//! `Par` and `EPathMap` are `extern_path`'d from Prost generation, so the
+//! descriptor emitter cannot write their implementations.  `Par` is an opaque,
+//! non-descending node to this driver: every canonical component protobuf body
+//! is already stored in its PathMap key, so one zipper/prefix walk copies those
+//! bodies directly to the caller's buffer without decoding or recursion.
+//! `EPathMap`'s current encoding is nevertheless one
 //! deterministic ascending-tag walk: metadata at tags 3/4/5 and the trie's byte
 //! representation at tag 9. The hand-written program below mirrors that walk.
 //! The tag-9 payload is emitted by a dedicated descent so `PathMap<Par>` values
@@ -326,8 +330,42 @@ impl<T: ProtobufNode> ProtobufSeq for Vec<T> {
 }
 
 // ===========================================================================
-// §3  `EPathMap` — the hand-written external program
+// §3  `Par` and `EPathMap` — hand-written external programs
 // ===========================================================================
+
+/// The PathMap-backed `Par` is one opaque bounded operation to the generic
+/// protobuf driver. Its own implementation streams the descriptor-ordered
+/// component families and root metadata directly from the authoritative trie.
+/// There is intentionally no synthetic per-field program: exposing one would
+/// imply that the generic driver descends into decoded component values, which
+/// is precisely the representation regression this external cutover avoids.
+pub static PAR_PROTOBUF_PROGRAM: &[ProtobufField] = &[];
+
+impl ProtobufNode for Par {
+    #[inline]
+    fn protobuf_program(&self) -> &'static [ProtobufField] { PAR_PROTOBUF_PROGRAM }
+
+    fn protobuf_len_step(&self, from: usize) -> (u64, ProtobufDescent<'_>) {
+        if from != 0 {
+            return (0, ProtobufDescent::Done);
+        }
+        let length = self
+            .protobuf_encoded_len()
+            .expect("PathMap-backed Par protobuf length must be representable");
+        (
+            u64::try_from(length).expect("usize always fits u64 on supported Rust targets"),
+            ProtobufDescent::Done,
+        )
+    }
+
+    fn protobuf_emit(&self, from: usize, out: &mut dyn BufMut) -> ProtobufDescent<'_> {
+        if from == 0 {
+            self.encode_protobuf(&mut &mut *out)
+                .expect("PathMap-backed Par protobuf length must be representable");
+        }
+        ProtobufDescent::Done
+    }
+}
 
 pub static EPATHMAP_PROTOBUF_PROGRAM: &[ProtobufField] = &[
     ProtobufField {

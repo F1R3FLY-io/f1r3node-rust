@@ -13,15 +13,17 @@
 //! well-formed inputs; `models/tests/bincode_decoder_malformed.rs` proves the `Err`
 //! half, which is the consensus-visible one.
 //!
-//! ## Why the oracle is the DERIVE itself
+//! ## Why generated roots retain the derive oracle, while external Par does not
 //!
-//! `Deserialize` is still derived on every `rhoapi` type — the production path
-//! simply no longer calls it. That makes the oracle **compiler-generated**,
-//! so it cannot drift from what production used to do: there is no
-//! hand-maintained twin to fall out of step. (The `Serialize`/`Deserialize`
-//! twins in `rspace++/src/rspace/serializers/serializers.rs` are the precedent
-//! for the pattern; this conversion is in a strictly better position than that
-//! one was, because there is nothing to maintain.)
+//! `Deserialize` remains derived for generated rhoapi roots, so their outer
+//! field programs retain a compiler-generated oracle. Repository-owned `Par`
+//! is different: its hand-written serde decoder and the cold decoder both call
+//! the same `ParBag` compact-image validator. Comparing those paths would run
+//! semantic ACT/key validation twice while treating shared code as independent.
+//! Whole-`Par` cases therefore use the independently constructed typed source
+//! Bag as their oracle and compare its canonical snapshot, root metadata, and
+//! exact consumed extent. Malformed-image tests independently mutate bytes and
+//! compare both rejection paths.
 //!
 //! ## ⚠ Why `decode(encode(x)) == x` is NOT the top-level property
 //!
@@ -121,6 +123,30 @@ where T: ColdStoreDecode + serde::Serialize + for<'de> Deserialize<'de> + Partia
     );
 }
 
+/// Compare a cold-decoded external `Par` with the independently constructed
+/// typed source image. Serde intentionally blanks `locally_free`; components
+/// and `connective_used` remain byte-for-byte authoritative.
+fn agree_pathmap_par(label: &str, value: &Par) {
+    let bytes = bincode::serialize(value).expect("serialize PathMap-backed Par");
+    let (machine, consumed) = Par::cold_decode_prefix(&bytes)
+        .unwrap_or_else(|error| panic!("{label}: machine rejected canonical Par: {error}"));
+    assert_eq!(
+        machine.compact_snapshot(),
+        value.compact_snapshot(),
+        "{label}: decoded component Bag differs from the typed source image"
+    );
+    assert!(
+        machine.locally_free().is_empty(),
+        "{label}: bincode must preserve the legacy locally_free blanking contract"
+    );
+    assert_eq!(
+        machine.connective_used(),
+        value.connective_used(),
+        "{label}: connective_used differs"
+    );
+    assert_eq!(consumed, bytes.len(), "{label}: wrong prefix extent");
+}
+
 /// Every authoritative ParBag member category is a direct root of the same
 /// iterative machine used for whole-`Par` decoding. Exercise every populated
 /// component in the exhaustive corpus so this proves both the root plumbing
@@ -130,32 +156,40 @@ where T: ColdStoreDecode + serde::Serialize + for<'de> Deserialize<'de> + Partia
 fn every_parbag_component_root_agrees_with_the_derived_oracle() {
     let par = corpus::all_par_fields();
 
-    for (index, value) in par.sends.iter().enumerate() {
-        agree::<Send>(&format!("Send[{index}]"), value);
+    for (index, value) in par.decode_occurrences::<Send>().into_iter().enumerate() {
+        agree::<Send>(&format!("Send[{index}]"), &value);
     }
-    for (index, value) in par.receives.iter().enumerate() {
-        agree::<Receive>(&format!("Receive[{index}]"), value);
+    for (index, value) in par.decode_occurrences::<Receive>().into_iter().enumerate() {
+        agree::<Receive>(&format!("Receive[{index}]"), &value);
     }
-    for (index, value) in par.news.iter().enumerate() {
-        agree::<New>(&format!("New[{index}]"), value);
+    for (index, value) in par.decode_occurrences::<New>().into_iter().enumerate() {
+        agree::<New>(&format!("New[{index}]"), &value);
     }
-    for (index, value) in par.exprs.iter().enumerate() {
-        agree::<Expr>(&format!("Expr[{index}]"), value);
+    for (index, value) in par.decode_occurrences::<Expr>().into_iter().enumerate() {
+        agree::<Expr>(&format!("Expr[{index}]"), &value);
     }
-    for (index, value) in par.matches.iter().enumerate() {
-        agree::<Match>(&format!("Match[{index}]"), value);
+    for (index, value) in par.decode_occurrences::<Match>().into_iter().enumerate() {
+        agree::<Match>(&format!("Match[{index}]"), &value);
     }
-    for (index, value) in par.unforgeables.iter().enumerate() {
-        agree::<GUnforgeable>(&format!("GUnforgeable[{index}]"), value);
+    for (index, value) in par
+        .decode_occurrences::<GUnforgeable>()
+        .into_iter()
+        .enumerate()
+    {
+        agree::<GUnforgeable>(&format!("GUnforgeable[{index}]"), &value);
     }
-    for (index, value) in par.bundles.iter().enumerate() {
-        agree::<Bundle>(&format!("Bundle[{index}]"), value);
+    for (index, value) in par.decode_occurrences::<Bundle>().into_iter().enumerate() {
+        agree::<Bundle>(&format!("Bundle[{index}]"), &value);
     }
-    for (index, value) in par.connectives.iter().enumerate() {
-        agree::<Connective>(&format!("Connective[{index}]"), value);
+    for (index, value) in par
+        .decode_occurrences::<Connective>()
+        .into_iter()
+        .enumerate()
+    {
+        agree::<Connective>(&format!("Connective[{index}]"), &value);
     }
-    for (index, value) in par.conditionals.iter().enumerate() {
-        agree::<If>(&format!("If[{index}]"), value);
+    for (index, value) in par.decode_occurrences::<If>().into_iter().enumerate() {
+        agree::<If>(&format!("If[{index}]"), &value);
     }
 }
 
@@ -166,15 +200,18 @@ fn every_parbag_component_root_agrees_with_the_derived_oracle() {
 #[test]
 fn every_parbag_component_root_preserves_trailing_bytes() {
     let par = corpus::all_par_fields();
-    agree_with_trailing::<Send>("Send", &par.sends[0]);
-    agree_with_trailing::<Receive>("Receive", &par.receives[0]);
-    agree_with_trailing::<New>("New", &par.news[0]);
-    agree_with_trailing::<Expr>("Expr", &par.exprs[0]);
-    agree_with_trailing::<Match>("Match", &par.matches[0]);
-    agree_with_trailing::<GUnforgeable>("GUnforgeable", &par.unforgeables[0]);
-    agree_with_trailing::<Bundle>("Bundle", &par.bundles[0]);
-    agree_with_trailing::<Connective>("Connective", &par.connectives[0]);
-    agree_with_trailing::<If>("If", &par.conditionals[0]);
+    agree_with_trailing::<Send>("Send", &par.first::<Send>().unwrap().unwrap().0);
+    agree_with_trailing::<Receive>("Receive", &par.first::<Receive>().unwrap().unwrap().0);
+    agree_with_trailing::<New>("New", &par.first::<New>().unwrap().unwrap().0);
+    agree_with_trailing::<Expr>("Expr", &par.first::<Expr>().unwrap().unwrap().0);
+    agree_with_trailing::<Match>("Match", &par.first::<Match>().unwrap().unwrap().0);
+    agree_with_trailing::<GUnforgeable>(
+        "GUnforgeable",
+        &par.first::<GUnforgeable>().unwrap().unwrap().0,
+    );
+    agree_with_trailing::<Bundle>("Bundle", &par.first::<Bundle>().unwrap().unwrap().0);
+    agree_with_trailing::<Connective>("Connective", &par.first::<Connective>().unwrap().unwrap().0);
+    agree_with_trailing::<If>("If", &par.first::<If>().unwrap().unwrap().0);
 }
 
 // ===========================================================================
@@ -311,7 +348,7 @@ fn tagged_continuation_pars(v: &TaggedContinuation) -> Vec<&Par> {
 // ===========================================================================
 
 #[test]
-fn par_corpus_agrees_with_the_derived_oracle() {
+fn par_corpus_agrees_with_the_canonical_typed_source_oracle() {
     let cases = corpus::par_corpus();
     assert!(
         cases.len() >= 60,
@@ -319,20 +356,57 @@ fn par_corpus_agrees_with_the_derived_oracle() {
          representative of every ExprInstance and ConnectiveInstance arm",
         cases.len()
     );
-    // …and the cardinality floor above is not what makes that true. This is.
-    assert_alphabet_complete("par_corpus", cases.iter().map(|(_, par)| par));
+    // The builder itself is the independent enumeration: every schema arm has
+    // a stable label. This proves inclusion without decoding every nested trie
+    // endpoint a second time before the codec test does so below.
+    let labels: BTreeSet<&str> = cases.iter().map(|(label, _)| label.as_str()).collect();
+    for (name, _) in corpus::every_expr_instance() {
+        assert!(
+            labels.contains(format!("expr::{name}").as_str()),
+            "missing Expr arm {name}"
+        );
+    }
+    for (name, _) in corpus::every_connective_instance() {
+        assert!(
+            labels.contains(format!("connective::{name}").as_str()),
+            "missing Connective arm {name}"
+        );
+    }
     for (label, par) in cases {
-        agree(&label, &par);
+        agree_pathmap_par(&label, &par);
     }
 }
 
 #[test]
-fn par_corpus_accepts_trailing_bytes_exactly_as_the_oracle_does() {
-    let cases = corpus::par_corpus();
-    assert_alphabet_complete("par_corpus+trailing", cases.iter().map(|(_, par)| par));
-    for (label, par) in cases {
-        agree_with_trailing(&label, &par);
+fn external_par_prefix_decoder_and_serde_accept_trailing_bytes() {
+    // Trailing-byte acceptance is a property of the shared bincode
+    // configuration and of `cold_decode_prefix` returning its cursor; neither
+    // branches on term shape. One alphabet-complete value is therefore the
+    // non-vacuous representative, while `par_corpus_agrees...` covers every
+    // component shape and exact extent.
+    let value = corpus::all_par_fields();
+    let mut bytes = bincode::serialize(&value).expect("serialize PathMap-backed Par");
+    let exact_len = bytes.len();
+    bytes.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+
+    let oracle: Par =
+        bincode::deserialize(&bytes).expect("configured serde decoder must accept trailing bytes");
+    let (machine, consumed) = Par::cold_decode_prefix(&bytes)
+        .expect("PathMap-backed prefix decoder must accept trailing bytes");
+    for (label, decoded) in [("serde", &oracle), ("machine", &machine)] {
+        assert_eq!(
+            decoded.compact_snapshot(),
+            value.compact_snapshot(),
+            "{label}"
+        );
+        assert!(decoded.locally_free().is_empty(), "{label}");
+        assert_eq!(
+            decoded.connective_used(),
+            value.connective_used(),
+            "{label}"
+        );
     }
+    assert_eq!(consumed, exact_len);
 }
 
 #[test]
@@ -443,12 +517,14 @@ fn decode_with_an_etuple_field_drift(bytes: &[u8]) -> (Par, usize) {
     use models::rhoapi::expr::ExprInstance;
 
     let (mut par, consumed) = Par::cold_decode_prefix(bytes).expect("drifted decoder: machine");
-    for expr in par.exprs.iter_mut() {
+    let mut exprs = par.decode_occurrences::<Expr>();
+    for expr in &mut exprs {
         if let Some(ExprInstance::ETupleBody(tuple)) = expr.expr_instance.as_mut() {
             tuple.connective_used = !tuple.connective_used;
             tuple.ps.pop();
         }
     }
+    par.replace_exprs(exprs);
     (par, consumed)
 }
 
@@ -675,12 +751,10 @@ fn the_generator_corpus_cannot_reach_the_arm_the_constructed_one_can() {
     // …and the constructed corpus does reach it, so the gap is a gap and not a
     // property of the walker. This is the whole justification for keeping a
     // constructed corpus alongside the random one.
-    let (corpus_exprs, corpus_connectives) = arms_reached(
-        corpus::par_corpus()
-            .iter()
-            .map(|(_, par)| par)
-            .collect::<Vec<_>>(),
-    );
+    let exhaustive = corpus::all_par_fields();
+    let (corpus_exprs, corpus_connectives) = arms_reached(std::iter::once(&exhaustive));
+    alphabet_verdict("all_par_fields", &corpus_exprs, &corpus_connectives)
+        .expect("the constructed exhaustive representative must cover both alphabets");
     assert!(
         corpus_exprs.contains(&etuple_index),
         "the constructed corpus must reach the arm the generator cannot, or there is no \
@@ -852,13 +926,13 @@ fn decoded_epathmaps_reconstruct_the_canonical_trie_snapshot() {
         }],
         ..Default::default()
     };
-    let expected_snapshot = match source.exprs[0].expr_instance.as_ref() {
+    let expected_snapshot = match source.first::<Expr>().unwrap().unwrap().0.expr_instance {
         Some(ExprInstance::EPathmapBody(map)) => map.trie_snapshot().to_vec(),
         _ => unreachable!("fixture is an EPathMap"),
     };
     let bytes = bincode::serialize(&source).expect("serialize");
     let decoded = Par::cold_decode(&bytes).expect("machine");
-    match decoded.exprs[0].expr_instance.as_ref() {
+    match decoded.first::<Expr>().unwrap().unwrap().0.expr_instance {
         Some(ExprInstance::EPathmapBody(map)) => {
             assert_eq!(map.trie_snapshot(), expected_snapshot.as_slice());
         }

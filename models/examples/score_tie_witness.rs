@@ -110,15 +110,11 @@ fn main() {
 fn permutation_check() {
     let a = map1(3, 30);
     let b = map1(3, 90);
+    let a_expr = a.first::<Expr>().unwrap().unwrap().0;
+    let b_expr = b.first::<Expr>().unwrap().unwrap().0;
 
-    let ab = Par::default().with_exprs(vec![
-        a.exprs.first().expect("a has an expr").clone(),
-        b.exprs.first().expect("b has an expr").clone(),
-    ]);
-    let ba = Par::default().with_exprs(vec![
-        b.exprs.first().expect("b has an expr").clone(),
-        a.exprs.first().expect("a has an expr").clone(),
-    ]);
+    let ab = Par::default().with_exprs(vec![a_expr.clone(), b_expr.clone()]);
+    let ba = Par::default().with_exprs(vec![b_expr, a_expr]);
 
     let sab = ParSortMatcher::sort_match(&ab).term.encode_to_vec();
     let sba = ParSortMatcher::sort_match(&ba).term.encode_to_vec();

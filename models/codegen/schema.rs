@@ -164,7 +164,7 @@ use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorSet};
 /// oneof payload, must behave byte-identically to its `Serialize`). Listing a
 /// type here is a deliberate, reviewed act — the generator refuses to silently
 /// skip anything.
-pub const EXTERN_OVERRIDES: &[&str] = &["EPathMap"];
+pub const EXTERN_OVERRIDES: &[&str] = &["EPathMap", "Par"];
 
 /// The proto package the table covers.
 const PACKAGE: &str = "rhoapi";
@@ -262,6 +262,9 @@ pub enum Disposition {
     /// artifact, or a constructor that fills defaults without descending.
     /// The string says WHY, because "it does not recurse" is a claim.
     NotATraversal(&'static str),
+    /// A genuine field traversal whose native depth is bounded by the acyclic
+    /// generated child graph and audited O(1) external endpoints.
+    Bounded(&'static str),
     /// A recursive walk that an explicit-worklist driver has already replaced.
     /// The string names the driver.
     Converted(&'static str),
@@ -275,6 +278,7 @@ impl Disposition {
     fn as_source(self) -> String {
         match self {
             Disposition::NotATraversal(why) => format!("Disposition::NotATraversal({why:?})"),
+            Disposition::Bounded(why) => format!("Disposition::Bounded({why:?})"),
             Disposition::Converted(driver) => format!("Disposition::Converted({driver:?})"),
             Disposition::FollowsFrom(driver) => format!("Disposition::FollowsFrom({driver:?})"),
         }
@@ -331,68 +335,102 @@ fn refine_disposition(surface: &str, uniform: Disposition, facts: &ItemFacts<'_>
                  the `Copy` reproduction in §4b or the feedback-vertex-set search.",
                 facts.rust_name
             );
-            match (facts.is_copy, facts.in_clone_cut_set) {
-                (true, _) => Disposition::NotATraversal(
+            match (
+                facts.is_copy,
+                facts.in_clone_cut_set,
+                facts.reaches_clone_cut_set,
+            ) {
+                (true, _, _) => Disposition::NotATraversal(
                     "prost derives `Copy` for this item (every field is a non-repeated scalar), so \
                  rustc's `Clone` is `*self` — a bitwise copy with no descent. `models/build.rs` \
                  therefore LEAVES the `Clone` token on its derive line; there is no walk to \
                  convert, and an emitted `impl Clone` would conflict with the derive",
                 ),
-                (false, true) => Disposition::Converted(
+                (false, true, _) => Disposition::Converted(
                     "term_ops::clone — `impl Clone` over `drive_with` on pooled stacks. This item is \
                  in the CLONE CUT SET (a feedback vertex set of the child relation), so it is \
                  where the recursion is actually broken. Gate subject `clone`, in \
                  `CONVERTED_DEPTH`",
                 ),
-                (false, false) => Disposition::FollowsFrom(
+                (false, false, true) => Disposition::FollowsFrom(
                     "term_ops::clone — this item's `Clone` is GENERATED FIELD-WISE (byte-for-byte \
                  what the stripped derive emitted) and is FLAT: every cycle in the child \
                  relation passes through the cut set, so it reaches a driven clone within \
                  CLONE_RESIDUAL_HEIGHT native frames. It needs no driver of its own",
                 ),
+                (false, false, false) => Disposition::Bounded(
+                    "the generator emits a field-wise `Clone`; the generated child graph below \
+                     this item is acyclic and has height at most CLONE_RESIDUAL_HEIGHT, while \
+                     external `Par` and `EPathMap` clones are O(1) CoW root clones",
+                ),
             }
         }
-        "Ord::cmp" => match (facts.is_copy, facts.in_clone_cut_set) {
-            (true, _) => Disposition::NotATraversal(
+        "Ord::cmp" => match (
+            facts.is_copy,
+            facts.in_clone_cut_set,
+            facts.reaches_clone_cut_set,
+        ) {
+            (true, _, _) => Disposition::NotATraversal(
                 "prost derives `Copy` for this scalar-only item, so its derived ordering has no \
                  recursive child relation",
             ),
-            (false, true) => Disposition::Converted(
+            (false, true, _) => Disposition::Converted(
                 "term_ops::ord_compare — descriptor-generated explicit-worklist lexicographic \
                  comparator at the schema feedback vertex set; gate subject `ord`",
             ),
-            (false, false) => Disposition::FollowsFrom(
+            (false, false, true) => Disposition::FollowsFrom(
                 "term_ops::ord_compare — this item retains field-wise derived ordering, whose \
                  native depth is bounded by CLONE_RESIDUAL_HEIGHT before it reaches the driven \
                  schema cut set",
             ),
+            (false, false, false) => Disposition::Bounded(
+                "the generated lexicographic field walk is bounded by \
+                 CLONE_RESIDUAL_HEIGHT and terminates at audited external `Par`/`EPathMap` \
+                 ordering implementations",
+            ),
         },
-        "PartialOrd::partial_cmp" => match (facts.is_copy, facts.in_clone_cut_set) {
-            (true, _) => Disposition::NotATraversal(
+        "PartialOrd::partial_cmp" => match (
+            facts.is_copy,
+            facts.in_clone_cut_set,
+            facts.reaches_clone_cut_set,
+        ) {
+            (true, _, _) => Disposition::NotATraversal(
                 "prost derives `Copy` for this scalar-only item, so partial ordering has no \
                  recursive child relation",
             ),
-            (false, true) => Disposition::FollowsFrom(
+            (false, true, _) => Disposition::FollowsFrom(
                 "term_ops::ord_compare — the generated cut-set `PartialOrd` returns \
                  `Some(Ord::cmp(self, other))`",
             ),
-            (false, false) => Disposition::FollowsFrom(
+            (false, false, true) => Disposition::FollowsFrom(
                 "term_ops::ord_compare — the residual derived walk reaches the driven ordering \
                  cut set within CLONE_RESIDUAL_HEIGHT frames",
             ),
+            (false, false, false) => Disposition::Bounded(
+                "delegates to a generated ordering walk bounded by the acyclic child graph and \
+                 audited external `Par`/`EPathMap` endpoints",
+            ),
         },
-        "Debug::fmt" => match (facts.is_copy, facts.in_clone_cut_set) {
-            (true, _) => Disposition::NotATraversal(
+        "Debug::fmt" => match (
+            facts.is_copy,
+            facts.in_clone_cut_set,
+            facts.reaches_clone_cut_set,
+        ) {
+            (true, _, _) => Disposition::NotATraversal(
                 "prost derives `Copy` only for scalar-only items, so this formatter has no \
                  recursive child relation",
             ),
-            (false, true) => Disposition::Converted(
+            (false, true, _) => Disposition::Converted(
                 "term_ops::debug_format — descriptor-generated explicit-worklist formatter at \
                  the schema feedback vertex set; gate subject `debug`",
             ),
-            (false, false) => Disposition::FollowsFrom(
+            (false, false, true) => Disposition::FollowsFrom(
                 "term_ops::debug_format — the residual prost-derived formatter reaches the \
                  driven schema cut set within CLONE_RESIDUAL_HEIGHT frames",
+            ),
+            (false, false, false) => Disposition::Bounded(
+                "the generated declaration-order formatter is bounded by \
+                 CLONE_RESIDUAL_HEIGHT and audited external `Par`/`EPathMap` formatters",
             ),
         },
         "Message::encode_raw" => match (
@@ -407,9 +445,9 @@ fn refine_disposition(surface: &str, uniform: Disposition, facts: &ItemFacts<'_>
                 "the retained Prost-derived field walk reaches the generated stack-safe Message \
                  feedback vertex within CLONE_RESIDUAL_HEIGHT frames",
             ),
-            (false, false) => Disposition::NotATraversal(
-                "this message cannot reach the recursive schema feedback vertex, so its generated \
-                 field walk is bounded by the acyclic schema graph rather than term depth",
+            (false, false) => Disposition::Bounded(
+                "the generated protobuf field walk is bounded by the acyclic generated schema; \
+                 recursive term payloads terminate at the external stack-safe `Par` codec",
             ),
         },
         "Message::encoded_len" => match (
@@ -424,9 +462,9 @@ fn refine_disposition(surface: &str, uniform: Disposition, facts: &ItemFacts<'_>
                 "the retained Prost-derived length walk reaches the generated stack-safe Message \
                  feedback vertex within CLONE_RESIDUAL_HEIGHT frames",
             ),
-            (false, false) => Disposition::NotATraversal(
-                "this message cannot reach the recursive schema feedback vertex, so its length \
-                 walk is bounded by the acyclic schema graph",
+            (false, false) => Disposition::Bounded(
+                "the generated length walk is bounded by the acyclic generated schema; external \
+                 `Par` computes its PathMap-backed length with an explicit-worklist codec",
             ),
         },
         "Message::merge_field" => match (
@@ -442,9 +480,9 @@ fn refine_disposition(surface: &str, uniform: Disposition, facts: &ItemFacts<'_>
                  feedback vertex within CLONE_RESIDUAL_HEIGHT frames; DecodeContext consumption \
                  is therefore schema-bounded, not term-depth-bounded",
             ),
-            (false, false) => Disposition::NotATraversal(
-                "this message cannot reach the recursive schema feedback vertex, so its merge \
-                 walk is bounded by the acyclic schema graph",
+            (false, false) => Disposition::Bounded(
+                "the generated merge walk is bounded by the acyclic generated schema and \
+                 delegates recursive term payloads to the external stack-safe `Par` decoder",
             ),
         },
         "Message::clear" => match (
@@ -459,9 +497,9 @@ fn refine_disposition(surface: &str, uniform: Disposition, facts: &ItemFacts<'_>
                 "the retained Prost-derived clear walk reaches the generated stack-safe Message \
                  feedback vertex within CLONE_RESIDUAL_HEIGHT frames",
             ),
-            (false, false) => Disposition::NotATraversal(
-                "this message cannot reach the recursive schema feedback vertex, so clearing is \
-                 bounded by the acyclic schema graph",
+            (false, false) => Disposition::Bounded(
+                "clearing descends only through the acyclic generated schema and drops external \
+                 `Par`/`EPathMap` CoW roots without input-depth native recursion",
             ),
         },
         "Oneof::encode" | "Oneof::encoded_len" | "Oneof::merge" => {
@@ -471,9 +509,9 @@ fn refine_disposition(surface: &str, uniform: Disposition, facts: &ItemFacts<'_>
                      the generated stack-safe Message feedback vertex within CLONE_RESIDUAL_HEIGHT frames",
                 )
             } else {
-                Disposition::NotATraversal(
-                    "no arm can reach the recursive schema feedback vertex, so the active-arm \
-                     operation is bounded by the acyclic schema graph",
+                Disposition::Bounded(
+                    "the active-arm operation is bounded by the acyclic generated schema and \
+                     terminates at audited external `Par`/`EPathMap` endpoints",
                 )
             }
         }
@@ -522,12 +560,11 @@ pub enum Applies {
 ///
 /// ⚠★ `PartialEq` and `Hash` are deliberately NOT here. `models/build.rs`
 /// STRIPS them from prost's output (`line.replace("PartialEq, Eq, Hash,", "")`)
-/// and `models/src/lib.rs` writes them BY HAND — `<Par as PartialEq>::eq`
-/// ignores `locally_free`, which no derive would do. They are recursive walks
-/// all the same, so this table is a LOWER BOUND on the driver list and
-/// `HAND_WRITTEN_TRAVERSALS` carries the remainder. A campaign that read its
-/// driver list off a `#[derive]` scan alone would miss exactly the two surfaces
-/// a hand-picked list of four already missed once.
+/// and `models/src/lib.rs` writes them BY HAND for generated types. External
+/// PathMap-backed `Par` owns its equality and hashing separately; both terminate
+/// at the compressed-trie boundary and are not recursive generated-schema walks.
+/// `HAND_WRITTEN_TRAVERSALS` remains the closed inventory for any future
+/// repository-owned operation that does recurse over this graph.
 pub const DERIVE_DISPOSITIONS: &[DeriveTrait] = &[
     DeriveTrait {
         token: "serde::Serialize",
@@ -1079,7 +1116,23 @@ pub fn generate(fds: &FileDescriptorSet) -> Generated {
     // schema-independent; the heterogeneous PDA is generated from the same
     // resolved descriptor walk as every other recursive driver. There is no
     // hand-maintained message/oneof list to drift from prost-build's derive.
-    let protobuf_decoder = emit_protobuf_decoder_source(&messages, &resolved, &oneofs, &extern_set);
+    let par_message = messages
+        .iter()
+        .find(|message| message.leaf_name() == "Par")
+        .expect("schema: rhoapi.Par must exist for the external decoder cutover");
+    let (par_decoder_fields, par_decoder_oneofs, _) =
+        resolve_message(par_message, &known, &extern_set, &programs, &map_entries);
+    assert!(
+        par_decoder_oneofs.is_empty(),
+        "schema: external Par gained a oneof; widen its explicit iterative decoder"
+    );
+    let protobuf_decoder = emit_protobuf_decoder_source(
+        &messages,
+        &resolved,
+        &oneofs,
+        &extern_set,
+        &par_decoder_fields,
+    );
     let match_schema = emit_match_schema_source(&messages, &resolved, &oneofs, &extern_set);
 
     // ★ THE NON-VACUITY FLOOR, at the generator rather than only at the consumer.
@@ -1787,18 +1840,15 @@ fn tarjan_scc(adjacency: &[Vec<usize>]) -> Vec<Vec<usize>> {
 /// Cut-set members for which an ITERATIVE teardown exists.
 ///
 /// ★ A **typed exception table**, not a list somebody keeps in step. If a panic
-/// unwinds out of the driver, the pooled value stack still owns cloned terms, and
-/// releasing them with `Vec::clear` would run `drop_in_place::<Par>` — itself
-/// Θ(depth), the one destructor this campaign measured and deliberately did NOT
-/// convert (`rholang/tests/stack_depth_gate.rs`, subject `par_drop`; `impl Drop
-/// for Par` produces 353 diagnostics across 61 unique lines in `models` alone).
-/// So every cut-set member must name a teardown that is iterative.
+/// unwinds out of the driver, the pooled value stack still owns cloned terms.
+/// Every generated cut-set member must therefore name an iterative teardown.
+/// External PathMap-backed `Par` is not a generated cut-set member: dropping it
+/// releases a CoW trie root.
 ///
 /// [`ClonePlan::build`] **panics** if the derived cut set acquires a member with
 /// no entry here, naming the member and what it needs. A `_ =>` arm in the
 /// generated teardown would have been the silent alternative.
-const ITERATIVE_TEARDOWN: &[(&str, &str)] =
-    &[("Par", "crate::rust::rholang::par_children::dismantle")];
+const ITERATIVE_TEARDOWN: &[(&str, &str)] = &[];
 
 /// The protobuf scalar types whose Rust rendering is `Copy`.
 ///
@@ -2004,13 +2054,21 @@ impl ClonePlan {
             .iter()
             .map(|&i| graph.names[i].clone())
             .collect();
-        assert!(
-            !cut.is_empty(),
-            "schema: the CLONE CUT SET is EMPTY. The `rhoapi` child relation is cyclic by \
-             construction — `Par` contains `Send` which contains `Par` — so an empty cut set \
-             means the graph this pass read is not the schema's. A vacuous cut set would emit no \
-             driver at all and every `Clone` would silently stay Θ(depth)."
-        );
+        if cut.is_empty() {
+            assert!(
+                extern_set.contains("Par"),
+                "schema: the CLONE CUT SET is empty while generated `Par` remains in the \
+                 child graph. That graph is cyclic by construction, so an empty cut set would \
+                 make the generated Clone driver vacuous."
+            );
+            assert!(
+                graph.recursive.is_empty(),
+                "schema: external `Par` removed the historical Par/Send cycle, but generated \
+                 recursive SCC members remain: {:?}. Every such SCC requires a non-empty Clone \
+                 cut set rather than falling back to derived native recursion.",
+                graph.recursive
+            );
+        }
         for name in &cut {
             let rust = rust_type_name(name);
             assert!(
@@ -3811,10 +3869,17 @@ fn emit_term_ops_source(
         .collect();
 
     let mut src = String::with_capacity(160 * 1024);
-    term_ops_header(&mut src, plan, graph);
-    emit_clone_alphabet(&mut src, plan);
-    emit_clone_pool(&mut src, plan);
-    emit_clone_traversal(&mut src, plan);
+    term_ops_header(&mut src, plan, graph, extern_set);
+    if !plan.cut.is_empty() {
+        emit_clone_alphabet(&mut src, plan);
+        emit_clone_pool(&mut src, plan);
+        emit_clone_traversal(&mut src, plan);
+    } else {
+        src.push_str(
+            "// External Par breaks every generated recursive SCC. Generated messages keep\n\
+             // finite-height field-wise Clone implementations; no Clone PDA alphabet exists.\n\n",
+        );
+    }
 
     // ── §D  the families, over the ENTERED set, in DESCRIPTOR order ──
     src.push_str(
@@ -3875,13 +3940,23 @@ fn emit_term_ops_source(
         emit_clone_family_oneof(&mut src, oneof, plan);
         families += 1;
     }
-    assert!(
-        families > 0,
-        "schema: the clone emitter produced NO family. The driver would then have nothing \
-         to walk, every `Clone` would fall back to a whole-value copy, and the file would \
-         compile — which is precisely the silent-vacuity failure the non-vacuity floors in \
-         `models/build.rs` exist to refuse. Check `ClonePlan::entered`."
-    );
+    if plan.cut.is_empty() {
+        assert_eq!(families, 0);
+        assert!(
+            plan.entered.is_empty() && plan.oneof_entered.is_empty(),
+            "schema: the Clone cut set is empty but entered families remain: messages={:?}, \
+             oneofs={:?}",
+            plan.entered,
+            plan.oneof_entered
+        );
+    } else {
+        assert!(
+            families > 0,
+            "schema: the clone emitter produced NO family despite a non-empty cut set. The \
+             driver would have nothing to walk and the non-vacuity gate would be false. Check \
+             `ClonePlan::entered`."
+        );
+    }
 
     // ── §E  the `impl Clone`s ──
     let clone_items = plan.clone_items(messages, oneofs, extern_set);
@@ -3908,25 +3983,29 @@ fn emit_term_ops_source(
     // with a formatter PDA; residual generated impls remain bounded.
     emit_debug_driver(&mut src, &driver_schema);
 
-    emit_par_message_impl(
-        &mut src,
-        fields_of
-            .get("Par")
-            .copied()
-            .expect("schema: Par must have resolved fields"),
-    );
+    if !extern_set.contains("Par") {
+        emit_par_message_impl(
+            &mut src,
+            fields_of
+                .get("Par")
+                .copied()
+                .expect("schema: generated Par must have resolved fields"),
+        );
+    }
 
     // ── §F  the retained oracle ──
-    emit_clone_oracle(
-        &mut src,
-        messages,
-        oneofs,
-        extern_set,
-        plan,
-        &oneof_by_field,
-        &fields_of,
-        &path_of,
-    );
+    if !extern_set.contains("Par") {
+        emit_clone_oracle(
+            &mut src,
+            messages,
+            oneofs,
+            extern_set,
+            plan,
+            &oneof_by_field,
+            &fields_of,
+            &path_of,
+        );
+    }
 
     // ── §G  the join tables ──
     emit_clone_join_tables(&mut src, messages, oneofs, extern_set, plan, &clone_items);
@@ -3986,7 +4065,12 @@ fn emit_par_message_impl(src: &mut String, fields: &[Field]) {
     src.push_str("    }\n}\n\n");
 }
 
-fn term_ops_header(src: &mut String, plan: &ClonePlan, graph: &SchemaGraph) {
+fn term_ops_header(
+    src: &mut String,
+    plan: &ClonePlan,
+    graph: &SchemaGraph,
+    extern_set: &BTreeSet<&str>,
+) {
     let cut = plan
         .cut
         .iter()
@@ -4036,9 +4120,7 @@ fn term_ops_header(src: &mut String, plan: &ClonePlan, graph: &SchemaGraph) {
     .expect("write");
     src.push_str(
         "\n\
-         use std::cell::RefCell;\n\
          use std::collections::BTreeMap;\n\
-         use std::convert::Infallible;\n\
          use std::hash::Hash;\n\
          \n\
          use pathmap::zipper::{ZipperMoving, ZipperReadOnlyIteration};\n\
@@ -4049,18 +4131,27 @@ fn term_ops_header(src: &mut String, plan: &ClonePlan, graph: &SchemaGraph) {
          use crate::rhoapi::g_unforgeable::UnfInstance;\n\
          use crate::rhoapi::tagged_continuation::TaggedCont;\n\
          use crate::rhoapi::var::VarInstance;\n\
-         use crate::rust::rhoapi_ext::EPathMap;\n\
-         use crate::rust::rholang::drive::{drive_with, Outcome, Step, Traversal};\n\
-         \n\
-         /// Stack-safe destructor for the recursive schema cut set.\n\
-         impl Drop for Par {\n\
-             #[inline]\n\
-             fn drop(&mut self) {\n\
-                 crate::rust::rholang::par_children::dismantle_in_place(self);\n\
-             }\n\
-         }\n\
-         \n",
+         use crate::rust::rhoapi_ext::EPathMap;\n",
     );
+    if !plan.cut.is_empty() {
+        src.push_str(
+            "use std::cell::RefCell;\n\
+             use std::convert::Infallible;\n\
+             use crate::rust::rholang::drive::{drive_with, Outcome, Step, Traversal};\n",
+        );
+    }
+    if !extern_set.contains("Par") {
+        src.push_str(
+            "\n/// Stack-safe destructor for the recursive schema cut set.\n\
+             impl Drop for Par {\n\
+                 #[inline]\n\
+                 fn drop(&mut self) {\n\
+                     crate::rust::rholang::par_children::dismantle_in_place(self);\n\
+                 }\n\
+             }\n",
+        );
+    }
+    src.push('\n');
 }
 
 /// §A — the alphabet: one arm per cut-set member, in three enums.
@@ -5293,6 +5384,18 @@ fn ord_oneof_expr(oneof: &Oneof, value: &str) -> String {
 }
 
 fn emit_debug_driver(src: &mut String, schema: &TermDriverSchema<'_, '_>) {
+    // Once Par is repository-owned, every generated recursive Debug edge is
+    // cut at that external terminal.  There is no generated Debug impl to
+    // drive, so emitting empty lifetime-parametric enums would be both dead
+    // code and ill-formed Rust (E0392).
+    if schema.plan.cut.is_empty() {
+        assert!(
+            schema.extern_set.contains("Par"),
+            "schema: an empty generated Debug cut requires external Par"
+        );
+        return;
+    }
+
     let messages = schema.messages;
     let resolved = schema.resolved;
     let oneofs = schema.oneofs;
@@ -5758,6 +5861,13 @@ fn emit_debug_oracle(
     reachable_oneofs: &BTreeSet<&str>,
     path_of: &BTreeMap<&str, String>,
 ) {
+    if extern_set.contains("Par") {
+        assert!(
+            plan.cut.is_empty(),
+            "schema: external Par must eliminate the generated Debug recursion cut"
+        );
+        return;
+    }
     src.push_str(
         "#[cfg(test)]\n\
          struct OracleDebug<'a>(DebugNode<'a>);\n\n\
@@ -6109,6 +6219,9 @@ fn emit_ord_driver(src: &mut String, schema: &TermDriverSchema<'_, '_>) {
         )
         .expect("write");
     }
+    if extern_set.contains("Par") {
+        src.push_str("    MPar(&'a Par),\n");
+    }
     src.push_str(
         "    EPathMap(&'a crate::rust::rhoapi_ext::EPathMap),\n\
          \x20   EPathMapRepr(&'a crate::rust::epathmap_trie_codec::EPathMapRepr<Par>),\n\
@@ -6128,6 +6241,10 @@ fn emit_ord_driver(src: &mut String, schema: &TermDriverSchema<'_, '_>) {
     if has_external_sequence {
         src.push_str("    EPathMap(&'a [crate::rust::rhoapi_ext::EPathMap]),\n");
     }
+    let no_sequence_variants = sequence_leaves.is_empty() && !has_external_sequence;
+    if no_sequence_variants {
+        src.push_str("    #[allow(dead_code)]\n    Never(&'a std::convert::Infallible),\n");
+    }
     src.push_str(
         "}\n\n\
          impl<'a> TermSlice<'a> {\n\
@@ -6146,11 +6263,14 @@ fn emit_ord_driver(src: &mut String, schema: &TermDriverSchema<'_, '_>) {
     if has_external_sequence {
         src.push_str("            TermSlice::EPathMap(values) => values.len(),\n");
     }
+    if no_sequence_variants {
+        src.push_str("            TermSlice::Never(never) => match *never {},\n");
+    }
     src.push_str(
         "        }\n\
              }\n\n\
              #[inline]\n\
-             fn get(self, index: usize) -> TermRef<'a> {\n\
+             fn get(self, #[allow(unused_variables)] index: usize) -> TermRef<'a> {\n\
                  match self {\n",
     );
     for leaf in &sequence_leaves {
@@ -6167,13 +6287,18 @@ fn emit_ord_driver(src: &mut String, schema: &TermDriverSchema<'_, '_>) {
             "            TermSlice::EPathMap(values) => TermRef::EPathMap(&values[index]),\n",
         );
     }
+    if no_sequence_variants {
+        src.push_str("            TermSlice::Never(never) => match *never {},\n");
+    }
     src.push_str(
         "        }\n\
              }\n\
          }\n\n\
          enum OrdOp<'a> {\n\
              Node { left: TermRef<'a>, right: TermRef<'a>, from: u16 },\n\
+             #[allow(dead_code)]\n\
              Seq { left: TermSlice<'a>, right: TermSlice<'a>, index: usize },\n\
+             #[allow(dead_code)]\n\
              Map,\n\
              EPathMapEntries,\n\
          }\n\n\
@@ -6263,7 +6388,7 @@ fn emit_ord_driver(src: &mut String, schema: &TermDriverSchema<'_, '_>) {
              right: TermRef<'a>,\n\
              from: u16,\n\
              ops: &mut Vec<OrdOp<'a>>,\n\
-             maps: &mut Vec<(OrdMapIter<'a>, OrdMapIter<'a>)>,\n\
+             #[allow(unused_variables)] maps: &mut Vec<(OrdMapIter<'a>, OrdMapIter<'a>)>,\n\
              epathmaps: &mut Vec<OrdEPathMapIter<'a>>,\n\
          ) -> Option<std::cmp::Ordering> {\n\
              match (left, right) {\n",
@@ -6294,6 +6419,14 @@ fn emit_ord_driver(src: &mut String, schema: &TermDriverSchema<'_, '_>) {
              ord_step_oneof_{stem}(left, right, ops),"
         )
         .expect("write");
+    }
+    if extern_set.contains("Par") {
+        src.push_str(
+            "        (TermRef::MPar(left), TermRef::MPar(right)) => {\n\
+             \x20           let ordering = left.cmp(right);\n\
+             \x20           (ordering != std::cmp::Ordering::Equal).then_some(ordering)\n\
+             \x20       },\n",
+        );
     }
     src.push_str(
         "        (TermRef::EPathMap(left), TermRef::EPathMap(right)) =>\n\
@@ -6817,7 +6950,9 @@ fn emit_eq_driver(
          // ===========================================================================\n\
          enum EqOp<'a> {\n\
          \x20   Node { left: TermRef<'a>, right: TermRef<'a>, from: u16 },\n\
+         \x20   #[allow(dead_code)]\n\
          \x20   Seq { left: TermSlice<'a>, right: TermSlice<'a>, index: usize },\n\
+         \x20   #[allow(dead_code)]\n\
          \x20   Map,\n\
          \x20   EPathMapEntries,\n\
          }\n\n\
@@ -6876,7 +7011,7 @@ fn emit_eq_driver(
          fn eq_step<'a>(\n\
          \x20   left: TermRef<'a>, right: TermRef<'a>, from: u16,\n\
          \x20   ops: &mut Vec<EqOp<'a>>,\n\
-         \x20   maps: &mut Vec<(EqMapIter<'a>, EqMapIter<'a>)>,\n\
+         \x20   #[allow(unused_variables)] maps: &mut Vec<(EqMapIter<'a>, EqMapIter<'a>)>,\n\
          \x20   epathmaps: &mut Vec<EqEPathMapIter<'a>>,\n\
          ) -> bool {\n\
          \x20   match (left, right) {\n",
@@ -6905,6 +7040,9 @@ fn emit_eq_driver(
             stem = oneof.rust_ident.to_snake_case()
         )
         .expect("write");
+    }
+    if extern_set.contains("Par") {
+        src.push_str("        (TermRef::MPar(left), TermRef::MPar(right)) => left == right,\n");
     }
     src.push_str(
         "        (TermRef::EPathMap(left), TermRef::EPathMap(right)) => eq_step_epath_map(left, right, from, ops),\n\
@@ -7226,6 +7364,13 @@ fn emit_eq_oracle(
     reachable_oneofs: &BTreeSet<&str>,
     path_of: &BTreeMap<&str, String>,
 ) {
+    if extern_set.contains("Par") {
+        assert!(
+            plan.cut.is_empty(),
+            "schema: external Par must eliminate the generated Eq recursion cut"
+        );
+        return;
+    }
     src.push_str(
         "#[cfg(test)]\nfn oracle_eq_epath_map(left: &EPathMap, right: &EPathMap) -> bool {\n\
          \x20   use crate::rust::epathmap_trie_codec::EPathMapRepr;\n\
@@ -7438,7 +7583,9 @@ fn emit_hash_driver(
          // ===========================================================================\n\
          enum HashOp<'a> {\n\
          \x20   Node { node: TermRef<'a>, from: u16 },\n\
+         \x20   #[allow(dead_code)]\n\
          \x20   Seq { values: TermSlice<'a>, index: usize },\n\
+         \x20   #[allow(dead_code)]\n\
          \x20   Map,\n\
          \x20   EPathMapEntries,\n\
          }\n\n\
@@ -7485,7 +7632,7 @@ fn emit_hash_driver(
          }\n\n\
          fn hash_step<'a, H: std::hash::Hasher>(\n\
          \x20   node: TermRef<'a>, from: u16, state: &mut H,\n\
-         \x20   ops: &mut Vec<HashOp<'a>>, maps: &mut Vec<HashMapIter<'a>>,\n\
+         \x20   ops: &mut Vec<HashOp<'a>>, #[allow(unused_variables)] maps: &mut Vec<HashMapIter<'a>>,\n\
          \x20   epathmaps: &mut Vec<HashEPathMapIter<'a>>,\n\
          ) {\n\
          \x20   match node {\n",
@@ -7514,6 +7661,9 @@ fn emit_hash_driver(
             stem = oneof.rust_ident.to_snake_case()
         )
         .expect("write");
+    }
+    if extern_set.contains("Par") {
+        src.push_str("        TermRef::MPar(value) => std::hash::Hash::hash(value, state),\n");
     }
     src.push_str(
         "        TermRef::EPathMap(value) => hash_step_epath_map(value, from, state, ops),\n\
@@ -7770,6 +7920,13 @@ fn emit_hash_oracle(
     reachable_oneofs: &BTreeSet<&str>,
     path_of: &BTreeMap<&str, String>,
 ) {
+    if extern_set.contains("Par") {
+        assert!(
+            plan.cut.is_empty(),
+            "schema: external Par must eliminate the generated Hash recursion cut"
+        );
+        return;
+    }
     src.push_str(
         "#[cfg(test)]\nfn oracle_hash_epath_map<H: std::hash::Hasher>(value: &EPathMap, state: &mut H) {\n\
          \x20   use crate::rust::epathmap_trie_codec::EPathMapRepr;\n\
@@ -7962,6 +8119,13 @@ fn emit_ord_oracle(
     reachable_oneofs: &BTreeSet<&str>,
     path_of: &BTreeMap<&str, String>,
 ) {
+    if extern_set.contains("Par") {
+        assert!(
+            plan.cut.is_empty(),
+            "schema: external Par must eliminate the generated Ord recursion cut"
+        );
+        return;
+    }
     src.push_str(
         "#[cfg(test)]\n\
          fn oracle_ord_epath_map(left: &EPathMap, right: &EPathMap) -> std::cmp::Ordering {\n\
@@ -8616,26 +8780,45 @@ fn emit_match_schema_source(
             message.program_ident().trim_end_matches("_PROGRAM")
         );
         if extern_set.contains(leaf) {
-            assert_eq!(
-                leaf, "EPathMap",
-                "schema: matching cursor has no native program for external `{leaf}`"
-            );
-            let var_type_id = type_ids["Var"];
-            writeln!(
-                src,
-                "pub static {fields_ident}: &[RhoMatchField] = &[\n\
-                 \x20   RhoMatchField {{ tag: 3, name: \"locally_free\", kind: RhoMatchFieldKind::Bytes }},\n\
-                 \x20   RhoMatchField {{ tag: 4, name: \"connective_used\", kind: RhoMatchFieldKind::Bool }},\n\
-                 \x20   RhoMatchField {{ tag: 5, name: \"remainder\", kind: RhoMatchFieldKind::OptionalMessage({var_type_id}) }},\n\
-                 \x20   RhoMatchField {{ tag: 9, name: \"entries\", kind: RhoMatchFieldKind::PathMap }},\n\
-                 ];\n\
-                 pub static {program_ident}: RhoMatchProgram = RhoMatchProgram {{\n\
-                 \x20   type_id: {type_id},\n\
-                 \x20   type_name: \"EPathMap\",\n\
-                 \x20   fields: {fields_ident},\n\
-                 }};\n"
-            )
-            .expect("write");
+            match leaf {
+                "EPathMap" => {
+                    let var_type_id = type_ids["Var"];
+                    writeln!(
+                        src,
+                        "pub static {fields_ident}: &[RhoMatchField] = &[\n\
+                         \x20   RhoMatchField {{ tag: 3, name: \"locally_free\", kind: RhoMatchFieldKind::Bytes }},\n\
+                         \x20   RhoMatchField {{ tag: 4, name: \"connective_used\", kind: RhoMatchFieldKind::Bool }},\n\
+                         \x20   RhoMatchField {{ tag: 5, name: \"remainder\", kind: RhoMatchFieldKind::OptionalMessage({var_type_id}) }},\n\
+                         \x20   RhoMatchField {{ tag: 9, name: \"entries\", kind: RhoMatchFieldKind::PathMap }},\n\
+                         ];\n\
+                         pub static {program_ident}: RhoMatchProgram = RhoMatchProgram {{\n\
+                         \x20   type_id: {type_id},\n\
+                         \x20   type_name: \"EPathMap\",\n\
+                         \x20   fields: {fields_ident},\n\
+                         }};\n"
+                    )
+                    .expect("write external EPathMap match program");
+                }
+                "Par" => {
+                    writeln!(
+                        src,
+                        "pub static {fields_ident}: &[RhoMatchField] = &[\n\
+                         \x20   RhoMatchField {{ tag: 0, name: \"components\", kind: RhoMatchFieldKind::ParBag }},\n\
+                         \x20   RhoMatchField {{ tag: 9, name: \"locally_free\", kind: RhoMatchFieldKind::Bytes }},\n\
+                         \x20   RhoMatchField {{ tag: 10, name: \"connective_used\", kind: RhoMatchFieldKind::Bool }},\n\
+                         ];\n\
+                         pub static {program_ident}: RhoMatchProgram = RhoMatchProgram {{\n\
+                         \x20   type_id: {type_id},\n\
+                         \x20   type_name: \"Par\",\n\
+                         \x20   fields: {fields_ident},\n\
+                         }};\n"
+                    )
+                    .expect("write external Par match program");
+                }
+                other => {
+                    panic!("schema: matching cursor has no native program for external `{other}`")
+                }
+            }
             continue;
         }
         let fields = fields_by_message[leaf];
@@ -8751,12 +8934,22 @@ fn emit_match_schema_source(
         )
         .expect("write");
         if extern_set.contains(leaf) {
-            src.push_str(
-                "        0 => Some(RhoMatchValue::Scalar(RhoScalarRef::Bytes(&value.locally_free))),\n\
-                 \x20       1 => Some(RhoMatchValue::Scalar(RhoScalarRef::Bool(value.connective_used))),\n\
-                 \x20       2 => Some(RhoMatchValue::OptionalMessage(value.remainder.as_ref().map(ParCursor::Var))),\n\
-                 \x20       3 => Some(RhoMatchValue::PathMap(value)),\n",
-            );
+            match leaf {
+                "EPathMap" => src.push_str(
+                    "        0 => Some(RhoMatchValue::Scalar(RhoScalarRef::Bytes(&value.locally_free))),\n\
+                     \x20       1 => Some(RhoMatchValue::Scalar(RhoScalarRef::Bool(value.connective_used))),\n\
+                     \x20       2 => Some(RhoMatchValue::OptionalMessage(value.remainder.as_ref().map(ParCursor::Var))),\n\
+                     \x20       3 => Some(RhoMatchValue::PathMap(value)),\n",
+                ),
+                "Par" => src.push_str(
+                    "        0 => Some(RhoMatchValue::ParBag(value.components())),\n\
+                     \x20       1 => Some(RhoMatchValue::Scalar(RhoScalarRef::Bytes(value.locally_free()))),\n\
+                     \x20       2 => Some(RhoMatchValue::Scalar(RhoScalarRef::Bool(value.connective_used()))),\n",
+                ),
+                other => panic!(
+                    "schema: matching cursor has no native accessor for external `{other}`"
+                ),
+            }
         } else {
             let fields = fields_by_message[leaf];
             let mut order = (0..fields.len()).collect::<Vec<_>>();
@@ -9208,24 +9401,14 @@ fn emit_schema_meta_source(
     }
     src.push_str("];\n\n");
 
-    // ── the traits that are NOT derives ──
+    // ── recursive traversal surfaces that are NOT derives ──
     src.push_str(
-        "/// The recursive walks over this schema that are NOT derive surfaces.\n\
-         ///\n\
-         /// ⚠★ `models/build.rs` strips `PartialEq`, `Eq` and `Hash` from prost's output\n\
-         /// (`line.replace(\"PartialEq, Eq, Hash,\", \"\")`) and `models/src/lib.rs` writes\n\
-         /// them BY HAND — `<Par as PartialEq>::eq` deliberately ignores `locally_free`,\n\
-         /// which no derive would do. They are therefore invisible to a textual\n\
-         /// `#[derive]` scan, and a driver list read off that scan alone would miss them.\n\
-         ///\n\
-         /// That is not hypothetical: a hand-picked list of four missed `Hash`, and `Hash`\n\
-         /// is here. First measured by `rholang/tests/stack_depth_gate.rs`'s\n\
-         /// `four_quadrant_s0_baseline`.\n\
-         pub static HAND_WRITTEN_TRAVERSALS: &[(&str, &str)] = &[\n\
-         \x20   (\"PartialEq::eq\", \"models/src/lib.rs — ignores `locally_free`\"),\n\
-         \x20   (\"Hash::hash\", \"models/src/lib.rs — mirrors `PartialEq`'s field set\"),\n\
-         \x20   (\"Drop::drop\", \"generated `impl Drop for Par` delegates to `par_children::dismantle_in_place`\"),\n\
-         ];\n\n",
+        "/// Repository-owned recursive walks over the generated schema that are not derive\n\
+         /// surfaces. External PathMap-backed `Par` equality, hashing, clone, and drop all\n\
+         /// terminate at the compressed-trie boundary, so none is a recursive rhoapi walk.\n\
+         /// A future hand-written recursive surface must be added here and supplied with\n\
+         /// formal and executable equivalence evidence.\n\
+         pub static HAND_WRITTEN_TRAVERSALS: &[(&str, &str)] = &[];\n\n",
     );
 
     let disposition_traits = DERIVE_DISPOSITIONS
@@ -9274,6 +9457,7 @@ fn emit_protobuf_decoder_source(
     resolved: &[(usize, Vec<Field>)],
     oneofs: &[Oneof],
     extern_set: &BTreeSet<&str>,
+    par_fields: &[Field],
 ) -> String {
     let mut src = String::from(
         r##"// @generated by models/codegen/schema.rs (§8). DO NOT EDIT.
@@ -9546,7 +9730,7 @@ fn unexpected_end_group_tag() -> DecodeError {
 "##,
     );
 
-    emit_protobuf_decoder_pda(&mut src, messages, resolved, oneofs, extern_set);
+    emit_protobuf_decoder_pda(&mut src, messages, resolved, oneofs, extern_set, par_fields);
 
     // ★ THE NON-VACUITY FLOOR, at the emitter. `models/build.rs` refuses a
     // zero-byte output; this refuses an output that is present but does not
@@ -9578,11 +9762,12 @@ fn emit_protobuf_decoder_pda(
     resolved: &[(usize, Vec<Field>)],
     oneofs: &[Oneof],
     extern_set: &BTreeSet<&str>,
+    par_fields: &[Field],
 ) {
     let rows = walk_messages(messages, resolved, extern_set);
     assert_eq!(
         extern_set.iter().copied().collect::<Vec<_>>(),
-        vec!["EPathMap"],
+        vec!["EPathMap", "Par"],
         "protobuf decoder: every extern message needs an explicit iterative node and teardown"
     );
 
@@ -9605,7 +9790,6 @@ use prost::encoding;
 use crate::rhoapi::Par;
 use crate::rust::epathmap_trie_codec::OwnedPendingEpmDecode;
 use crate::rust::rhoapi_ext::EPathMap;
-use crate::rust::rholang::par_children::dismantle_all;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DecodeStats {
@@ -9629,7 +9813,8 @@ enum Node {
         .expect("write protobuf decoder Node");
     }
     src.push_str(
-        "    EPathMap { value: EPathMap, limit: usize },\n\
+        "    Par { value: Par, limit: usize },\n\
+             EPathMap { value: EPathMap, limit: usize },\n\
              MapStringPar { key: String, value: Par, limit: usize },\n\
          }\n\n\
          enum Value {\n",
@@ -9643,7 +9828,8 @@ enum Node {
         writeln!(src, "    {variant}(crate::rhoapi::{ty}),").expect("write protobuf decoder Value");
     }
     src.push_str(
-        "    EPathMap(EPathMap),\n\
+        "    Par(Par),\n\
+             EPathMap(EPathMap),\n\
              MapStringPar(String, Par),\n\
          }\n\n\
          enum Attach {\n",
@@ -9689,6 +9875,20 @@ enum Node {
             }
         }
     }
+    for field in par_fields {
+        match &field.shape {
+            Shape::RepeatedMessage { .. } => {
+                let name = decoder_attach_name("Par", &field.rust_name, None);
+                writeln!(src, "    {name} {{ parent: Par, limit: usize }},")
+                    .expect("write external Par decoder Attach");
+            }
+            Shape::Scalar(_) | Shape::EmptyBytes => {}
+            other => panic!(
+                "schema: external Par field `{}` has unsupported iterative decoder shape {other:?}",
+                field.rust_name
+            ),
+        }
+    }
     src.push_str(
         "    EPathMapPs { parent: EPathMap, limit: usize },\n\
              EPathMapRemainder { parent: EPathMap, limit: usize },\n\
@@ -9709,10 +9909,10 @@ enum Node {
     );
 
     emit_protobuf_decoder_node_impl(src, &rows);
-    emit_protobuf_decoder_attach_impl(src, messages, oneofs, &rows);
-    emit_protobuf_decoder_machine(src, messages, oneofs, &rows);
+    emit_protobuf_decoder_attach_impl(src, messages, oneofs, &rows, par_fields);
+    emit_protobuf_decoder_machine(src, messages, oneofs, &rows, par_fields);
     emit_protobuf_decoder_salvage(src, messages, oneofs, &rows);
-    emit_protobuf_decoder_entries(src, &rows);
+    emit_protobuf_decoder_entries(src, &rows, par_fields);
 
     let generated_count = rows.iter().filter(|(_, fields)| fields.is_some()).count();
     writeln!(
@@ -9775,7 +9975,8 @@ fn emit_protobuf_decoder_node_impl(src: &mut String, rows: &[(&Message<'_>, Opti
         .expect("write Node::into_value");
     }
     src.push_str(
-        "            Node::EPathMap { value, limit: _ } => Value::EPathMap(value),\n\
+        "            Node::Par { value, limit: _ } => Value::Par(value),\n\
+                     Node::EPathMap { value, limit: _ } => Value::EPathMap(value),\n\
                      Node::MapStringPar { key, value, limit: _ } => \
                             Value::MapStringPar(key, value),\n\
                  }\n\
@@ -9794,7 +9995,8 @@ fn emit_protobuf_decoder_node_impl(src: &mut String, rows: &[(&Message<'_>, Opti
             .expect("write Value::kind_name");
     }
     src.push_str(
-        "            Value::EPathMap(_) => \"EPathMap\",\n\
+        "            Value::Par(_) => \"Par\",\n\
+                     Value::EPathMap(_) => \"EPathMap\",\n\
                      Value::MapStringPar(_, _) => \"MapStringPar\",\n\
                  }\n\
              }\n\
@@ -9807,6 +10009,7 @@ fn emit_protobuf_decoder_attach_impl(
     messages: &[Message<'_>],
     oneofs: &[Oneof],
     rows: &[(&Message<'_>, Option<&[Field]>)],
+    par_fields: &[Field],
 ) {
     src.push_str(
         "impl Attach {\n\
@@ -9856,6 +10059,20 @@ fn emit_protobuf_decoder_attach_impl(
                 | Shape::RepeatedString
                 | Shape::RepeatedBytes => {}
             }
+        }
+    }
+    for field in par_fields {
+        if matches!(field.shape, Shape::RepeatedMessage { .. }) {
+            let attach = decoder_attach_name("Par", &field.rust_name, None);
+            let field_name = field
+                .rust_name
+                .strip_prefix("r#")
+                .unwrap_or(&field.rust_name);
+            writeln!(
+                src,
+                "            Attach::{attach} {{ .. }} => Some((\"Par\", {field_name:?})),"
+            )
+            .expect("write external Par Attach::location");
         }
     }
     src.push_str(
@@ -9909,6 +10126,16 @@ fn emit_protobuf_decoder_attach_impl(
             }
         }
     }
+    for field in par_fields {
+        if matches!(field.shape, Shape::RepeatedMessage { .. }) {
+            let attach = decoder_attach_name("Par", &field.rust_name, None);
+            writeln!(
+                src,
+                "            Attach::{attach} {{ parent, limit: _ }} => Some(Value::Par(parent)),"
+            )
+            .expect("write external Par Attach::into_parent_value");
+        }
+    }
     src.push_str(
         "            Attach::EPathMapPs { parent, limit: _ }\n\
                      | Attach::EPathMapRemainder { parent, limit: _ } => \
@@ -9928,6 +10155,7 @@ fn emit_protobuf_decoder_machine(
     messages: &[Message<'_>],
     oneofs: &[Oneof],
     rows: &[(&Message<'_>, Option<&[Field]>)],
+    par_fields: &[Field],
 ) {
     src.push_str(
         r#"enum DecoderInput<B> {
@@ -10083,7 +10311,8 @@ impl<B: Buf> Machine<B> {
         .expect("write thin protobuf node dispatch");
     }
     src.push_str(
-        "            Node::EPathMap { value, limit } => self.step_epath_map(value, limit),\n\
+        "            Node::Par { value, limit } => self.step_par(value, limit),\n\
+                     Node::EPathMap { value, limit } => self.step_epath_map(value, limit),\n\
                      Node::MapStringPar { key, value, limit } => \
                          self.step_map_string_par(key, value, limit),\n\
                  }\n\
@@ -10095,9 +10324,10 @@ impl<B: Buf> Machine<B> {
         let Some(fields) = fields else { continue };
         emit_protobuf_decoder_message_step(src, messages, oneofs, msg, fields);
     }
+    emit_protobuf_decoder_par_step(src, par_fields);
     emit_protobuf_decoder_epathmap_step(src);
     emit_protobuf_decoder_map_step(src);
-    emit_protobuf_decoder_attach_arms(src, messages, oneofs, rows);
+    emit_protobuf_decoder_attach_arms(src, messages, oneofs, rows, par_fields);
     src.push_str("}\n\n");
 }
 
@@ -10378,6 +10608,86 @@ fn emit_protobuf_decoder_oneof_steps(
     }
 }
 
+fn emit_protobuf_decoder_par_step(src: &mut String, fields: &[Field]) {
+    src.push_str(
+        "    #[inline(never)]\n\
+             fn step_par(\n\
+                 &mut self,\n\
+                 mut value: Par,\n\
+                 limit: usize,\n\
+             ) -> Result<(), DecodeError> {\n\
+                 match self.buf.remaining().cmp(&limit) {\n\
+                     std::cmp::Ordering::Equal => {\n\
+                         self.values.push(Value::Par(value));\n\
+                         return Ok(());\n\
+                     }\n\
+                     std::cmp::Ordering::Less => return Err(delimited_length_exceeded()),\n\
+                     std::cmp::Ordering::Greater => {}\n\
+                 }\n\
+                 let (tag, protobuf_wire_type) = decode_key(&mut self.buf)?;\n\
+                 match tag {\n",
+    );
+    for field in protobuf_order(fields) {
+        let tag = field.min_tag();
+        let name = &field.rust_name;
+        let display_name = name.strip_prefix("r#").unwrap_or(name);
+        match &field.shape {
+            Shape::RepeatedMessage { leaf } => {
+                let child = rust_type_name(leaf);
+                let attach = decoder_attach_name("Par", name, None);
+                writeln!(
+                    src,
+                    "            {tag}u32 => {{\n\
+                                 let child_limit = self.message_limit(protobuf_wire_type)\n\
+                                     .map_err(|mut error| {{ error.push(\"Par\", {display_name:?}); error }})?;\n\
+                                 self.frames.push(Frame::Attach(Attach::{attach} {{ parent: value, limit }}));\n\
+                                 self.frames.push(Frame::Node(Node::{child} {{ value: Default::default(), limit: child_limit }}));\n\
+                             }}"
+                )
+                .expect("write external Par repeated-message decoder arm");
+            }
+            Shape::Scalar(Type::Bytes) | Shape::EmptyBytes => {
+                assert_eq!(name, "locally_free");
+                writeln!(
+                    src,
+                    "            {tag}u32 => {{\n\
+                                 value.merge_protobuf_locally_free(\n\
+                                     protobuf_wire_type, &mut self.buf, DecodeContext::default(),\n\
+                                 ).map_err(|mut error| {{ error.push(\"Par\", {display_name:?}); error }})?;\n\
+                                 self.frames.push(Frame::Node(Node::Par {{ value, limit }}));\n\
+                             }}"
+                )
+                .expect("write external Par locally_free decoder arm");
+            }
+            Shape::Scalar(Type::Bool) => {
+                assert_eq!(name, "connective_used");
+                writeln!(
+                    src,
+                    "            {tag}u32 => {{\n\
+                                 value.merge_protobuf_connective_used(\n\
+                                     protobuf_wire_type, &mut self.buf, DecodeContext::default(),\n\
+                                 ).map_err(|mut error| {{ error.push(\"Par\", {display_name:?}); error }})?;\n\
+                                 self.frames.push(Frame::Node(Node::Par {{ value, limit }}));\n\
+                             }}"
+                )
+                .expect("write external Par connective_used decoder arm");
+            }
+            other => panic!(
+                "schema: external Par field `{name}` has unsupported iterative decoder shape {other:?}"
+            ),
+        }
+    }
+    src.push_str(
+        "            _ => {\n\
+                         skip_unknown_field(protobuf_wire_type, tag, &mut self.buf)?;\n\
+                         self.frames.push(Frame::Node(Node::Par { value, limit }));\n\
+                     }\n\
+                 }\n\
+                 Ok(())\n\
+             }\n\n",
+    );
+}
+
 fn emit_protobuf_decoder_epathmap_step(src: &mut String) {
     src.push_str(
         r#"    #[inline(never)]
@@ -10503,6 +10813,17 @@ fn emit_protobuf_decoder_epathmap_step(src: &mut String) {
             error
         })?;
         if let Some(body) = next {
+            if let Some(value) =
+                crate::rust::par_bag::import_canonical_parbag_fast_path(body.as_ref())
+            {
+                frame.pending.push_value(value).map_err(|error| {
+                    let mut error: DecodeError = error.into();
+                    error.push("EPathMap", "trie_snapshot");
+                    error
+                })?;
+                self.frames.push(Frame::Epm(frame));
+                return Ok(());
+            }
             self.enter_input(body);
             self.frames.push(Frame::Attach(Attach::EPathMapSnapshotValue { frame }));
             self.frames.push(Frame::Node(Node::Par {
@@ -10604,6 +10925,7 @@ fn emit_protobuf_decoder_attach_arms(
     messages: &[Message<'_>],
     oneofs: &[Oneof],
     rows: &[(&Message<'_>, Option<&[Field]>)],
+    par_fields: &[Field],
 ) {
     let mut routes = String::new();
     let mut methods = String::new();
@@ -10726,6 +11048,36 @@ fn emit_protobuf_decoder_attach_arms(
                 | Shape::RepeatedBytes => {}
             }
         }
+    }
+
+    for field in par_fields {
+        let Shape::RepeatedMessage { leaf } = &field.shape else {
+            continue;
+        };
+        let child = rust_type_name(leaf);
+        let name = &field.rust_name;
+        let display_name = name.strip_prefix("r#").unwrap_or(name);
+        let attach = decoder_attach_name("Par", name, None);
+        let method = format!("attach_{}", attach.to_snake_case());
+        writeln!(
+            routes,
+            "            Attach::{attach} {{ parent, limit }} => self.{method}(parent, limit),"
+        )
+        .expect("write external Par attach route");
+        let success = format!(
+            "                parent.merge_protobuf_component(&child)\n\
+                     .map_err(|mut error| {{ error.push(\"Par\", {display_name:?}); error }})?;\n\
+                 self.frames.push(Frame::Node(Node::Par {{ value: parent, limit }}));"
+        );
+        emit_protobuf_decoder_attach_method(
+            &mut methods,
+            &method,
+            "mut parent: Par, limit: usize",
+            &format!("Value::{child}(child)"),
+            &success,
+            &format!("Par.{display_name}"),
+            "Some(Value::Par(parent))",
+        );
     }
 
     routes.push_str(
@@ -10928,7 +11280,6 @@ impl<B> Machine<B> {
             }
         }
 
-        let mut pars = Vec::new();
         while let Some(value) = work.pop() {
             match value {
 "#,
@@ -10936,10 +11287,6 @@ impl<B> Machine<B> {
     for (msg, fields) in rows {
         let Some(fields) = fields else { continue };
         let owner = rust_type_name(msg.leaf_name());
-        if msg.leaf_name() == "Par" {
-            src.push_str("                Value::Par(value) => pars.push(value),\n");
-            continue;
-        }
         let ty = msg.rust_path();
         writeln!(
             src,
@@ -11009,17 +11356,10 @@ impl<B> Machine<B> {
         src.push_str("                }\n");
     }
     src.push_str(
-        r#"                Value::EPathMap(mut value) => {
-                    if let Some(remainder) = value.remainder.take() {
-                        work.push(Value::Var(remainder));
-                    }
-                    value.drain_owned_pars(&mut pars);
-                }
-                Value::MapStringPar(_key, value) => pars.push(value),
+        r#"                Value::Par(_value) => {}
+                Value::EPathMap(_value) => {}
+                Value::MapStringPar(_key, _value) => {},
             }
-        }
-        if !pars.is_empty() {
-            dismantle_all(pars);
         }
     }
 }
@@ -11050,21 +11390,55 @@ fn delimited_length_exceeded() -> DecodeError {
     );
 }
 
-fn emit_protobuf_decoder_entries(src: &mut String, rows: &[(&Message<'_>, Option<&[Field]>)]) {
+fn emit_protobuf_decoder_entries(
+    src: &mut String,
+    rows: &[(&Message<'_>, Option<&[Field]>)],
+    _par_fields: &[Field],
+) {
     for (msg, fields) in rows {
         if fields.is_none() || msg.leaf_name() == "Par" {
             continue;
         }
         let variant = rust_type_name(msg.leaf_name());
         let function = format!("decode_{}", msg.leaf_name().to_snake_case());
+        let helper = format!("{function}_with_epathmap_validation");
+        let deferred = format!("{function}_deferred_epathmap_validation");
         let ty = msg.rust_path();
+        let is_par_bag_component = matches!(
+            msg.leaf_name(),
+            "Send"
+                | "Receive"
+                | "New"
+                | "Expr"
+                | "Match"
+                | "GUnforgeable"
+                | "Connective"
+                | "Bundle"
+                | "If"
+        );
         writeln!(
             src,
             "pub fn {function}<B: Buf>(buf: B) -> Result<crate::rhoapi::{ty}, DecodeError> {{\n\
+                 {helper}(buf, true)\n\
+             }}\n"
+        )
+        .expect("write public protobuf decoder entry");
+        if is_par_bag_component {
+            writeln!(
+                src,
+                "pub(crate) fn {deferred}<B: Buf>(buf: B) -> Result<crate::rhoapi::{ty}, DecodeError> {{\n\
+                     {helper}(buf, false)\n\
+                 }}\n"
+            )
+            .expect("write deferred-EPathMap protobuf decoder entry");
+        }
+        writeln!(
+            src,
+            "fn {helper}<B: Buf>(buf: B, validate_epathmaps: bool) -> Result<crate::rhoapi::{ty}, DecodeError> {{\n\
                  let mut machine = Machine::new(\n\
                      buf,\n\
                      Node::{variant} {{ value: Default::default(), limit: 0 }},\n\
-                     true,\n\
+                     validate_epathmaps,\n\
                  );\n\
                  machine.run()?;\n\
                  if machine.values.len() != 1 {{\n\
@@ -11080,7 +11454,7 @@ fn emit_protobuf_decoder_entries(src: &mut String, rows: &[(&Message<'_>, Option
                  }}\n\
              }}\n"
         )
-        .expect("write protobuf decoder entry");
+        .expect("write protobuf decoder implementation");
     }
 
     src.push_str(
@@ -11132,6 +11506,27 @@ fn decode_par_with_epathmap_validation<B: Buf>(
     buf: B,
     validate_epathmaps: bool,
 ) -> Result<(Par, DecodeStats), DecodeError> {
+    // Exact canonical recursive shapes with a byte-native proof can be
+    // imported directly as one authoritative ParBag endpoint. Reconstructing
+    // every nested Par would copy, hash, and discard all encoded suffixes,
+    // producing quadratic work at EPathMap boundaries. The recognizers consume
+    // nothing; every other byte shape continues through the complete generated
+    // machine below.
+    if buf.chunk().len() == buf.remaining() {
+        if let Some(value) =
+            crate::rust::par_bag::import_canonical_parbag_fast_path(buf.chunk())
+        {
+            #[cfg(feature = "phase7-depth-histograms")]
+            crate::rust::rholang::phase7_depth_histogram::record_par("protobuf_decoder", &value);
+            return Ok((
+                value,
+                DecodeStats {
+                    max_frames: 1,
+                    max_values: 1,
+                },
+            ));
+        }
+    }
     let mut machine = Machine::new(
         buf,
         Node::Par {
@@ -11167,81 +11562,5 @@ fn decode_par_with_epathmap_validation<B: Buf>(
 }
 
 "#,
-    );
-
-    let par_fields = rows
-        .iter()
-        .find_map(|(message, fields)| (message.leaf_name() == "Par").then_some(*fields))
-        .flatten()
-        .expect("schema: the generated Par message must have resolved fields");
-    emit_protobuf_decoder_merge_par_field(src, par_fields);
-}
-
-fn emit_protobuf_decoder_merge_par_field(src: &mut String, fields: &[Field]) {
-    src.push_str(
-        "pub fn merge_par_field<B: Buf>(\n\
-         \x20   value: &mut Par,\n\
-         \x20   tag: u32,\n\
-         \x20   protobuf_wire_type: WireType,\n\
-         \x20   buf: &mut B,\n\
-         \x20   ctx: DecodeContext,\n\
-         ) -> Result<(), DecodeError> {\n\
-         \x20   match tag {\n",
-    );
-    for field in protobuf_order(fields) {
-        let tag = field.min_tag();
-        let name = &field.rust_name;
-        let location = name.strip_prefix("r#").unwrap_or(name);
-        match &field.shape {
-            Shape::RepeatedMessage { leaf } => {
-                let decode = format!("decode_{}", leaf.to_snake_case());
-                writeln!(
-                    src,
-                    "        {tag}u32 => {{\n\
-                     \x20           encoding::check_wire_type(WireType::LengthDelimited, protobuf_wire_type)\n\
-                     \x20               .map_err(|mut error| {{ error.push(\"Par\", {location:?}); error }})?;\n\
-                     \x20           let len = decode_varint(buf)\n\
-                     \x20               .map_err(|mut error| {{ error.push(\"Par\", {location:?}); error }})?;\n\
-                     \x20           if len > buf.remaining() as u64 {{\n\
-                     \x20               let mut error = buffer_underflow();\n\
-                     \x20               error.push(\"Par\", {location:?});\n\
-                     \x20               return Err(error);\n\
-                     \x20           }}\n\
-                     \x20           let mut child_buf = (&mut *buf).take(len as usize);\n\
-                     \x20           let child = {decode}(&mut child_buf)\n\
-                     \x20               .map_err(|mut error| {{ error.push(\"Par\", {location:?}); error }})?;\n\
-                     \x20           debug_assert_eq!(child_buf.remaining(), 0);\n\
-                     \x20           value.{name}.push(child);\n\
-                     \x20           Ok(())\n\
-                     \x20       }}"
-                )
-                .expect("write Par repeated-message merge arm");
-            }
-            Shape::Scalar(_) | Shape::EmptyBytes => {
-                let ty = match &field.shape {
-                    Shape::Scalar(ty) => *ty,
-                    Shape::EmptyBytes => Type::Bytes,
-                    _ => unreachable!(),
-                };
-                let (module, _) = protobuf_scalar_module_and_default(ty);
-                writeln!(
-                    src,
-                    "        {tag}u32 => encoding::{module}::merge(\n\
-                     \x20           protobuf_wire_type, &mut value.{name}, buf, ctx,\n\
-                     \x20       )\n\
-                     \x20       .map_err(|mut error| {{ error.push(\"Par\", {location:?}); error }}),"
-                )
-                .expect("write Par scalar merge arm");
-            }
-            other => panic!(
-                "schema: Par field `{name}` has unsupported manual Message merge shape \
-                 {other:?}; widen `merge_par_field` before changing the recursive cut-set type"
-            ),
-        }
-    }
-    src.push_str(
-        "        _ => skip_unknown_field(protobuf_wire_type, tag, buf),\n\
-         \x20   }\n\
-         }\n",
     );
 }

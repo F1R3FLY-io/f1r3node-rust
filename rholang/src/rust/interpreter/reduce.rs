@@ -14,10 +14,11 @@ use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    BindPattern, Bundle, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMethod,
-    EMinus, EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ESet,
-    ETuple, EVar, EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, ListParWithRandom,
-    Match, MatchCase, New, Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
+    BindPattern, Bundle, Connective, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMap, EMatches,
+    EMethod, EMinus, EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus,
+    EPlusPlus, ESet, ETuple, EVar, EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair,
+    ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom, Receive, ReceiveBind, Send,
+    TaggedContinuation, Var,
 };
 use models::rust::canonical_path::{decode_trie_path, encode_trie_path};
 use models::rust::epathmap_trie_codec::EPathMapMode;
@@ -736,11 +737,11 @@ enum EvKont<'e> {
         pair_count: usize,
     },
     FusedAfterA {
-        state: FusedEval<'e>,
+        state: FusedEval,
         output: FusedOutput,
     },
     FusedAfterB {
-        state: FusedEval<'e>,
+        state: FusedEval,
         output: FusedOutput,
     },
     // ---- eval_expr_to_expr (method) ----
@@ -947,31 +948,31 @@ impl DebruijnInterpreter {
         path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
         let terms: Vec<GeneratedMessage> = vec![
-            std::mem::take(&mut par.sends)
+            par.take_occurrences::<Send>()
                 .into_iter()
                 .map(GeneratedMessage::Send)
                 .collect::<Vec<_>>(),
-            std::mem::take(&mut par.receives)
+            par.take_occurrences::<Receive>()
                 .into_iter()
                 .map(GeneratedMessage::Receive)
                 .collect(),
-            std::mem::take(&mut par.news)
+            par.take_occurrences::<New>()
                 .into_iter()
                 .map(GeneratedMessage::New)
                 .collect(),
-            std::mem::take(&mut par.matches)
+            par.take_occurrences::<Match>()
                 .into_iter()
                 .map(GeneratedMessage::Match)
                 .collect(),
-            std::mem::take(&mut par.conditionals)
+            par.take_occurrences::<If>()
                 .into_iter()
                 .map(GeneratedMessage::If)
                 .collect(),
-            std::mem::take(&mut par.bundles)
+            par.take_occurrences::<Bundle>()
                 .into_iter()
                 .map(GeneratedMessage::Bundle)
                 .collect(),
-            std::mem::take(&mut par.exprs)
+            par.take_occurrences::<Expr>()
                 .into_iter()
                 .filter(|expr| match &expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
@@ -1700,7 +1701,8 @@ impl DebruijnInterpreter {
         metrics::counter!("is-mergeable-channel.calls", "source" => "f1r3fly.rholang.reduce")
             .increment(1);
 
-        let head: Option<&Par> = chan.exprs.iter().find_map(|y| match &y.expr_instance {
+        let expressions = chan.decode_occurrences::<Expr>();
+        let head: Option<&Par> = expressions.iter().find_map(|y| match &y.expr_instance {
             Some(ExprInstance::ETupleBody(etuple)) => etuple.ps.first(),
             _ => None,
         });
@@ -2514,8 +2516,15 @@ impl DebruijnInterpreter {
         env: &'root Env<Par>,
     ) -> Result<EvVal, InterpreterError> {
         let decoded_entries = Arena::new();
+        let decoded_exprs = Arena::new();
         let method_invocations = Arena::new();
-        self.eval_drive_with_arena(root, env, &decoded_entries, &method_invocations)
+        self.eval_drive_with_arena(
+            root,
+            env,
+            &decoded_entries,
+            &decoded_exprs,
+            &method_invocations,
+        )
     }
 
     /// Execute one evaluator PDA while retaining any set-mode EPathMap entries
@@ -2527,6 +2536,7 @@ impl DebruijnInterpreter {
         root: EvWork<'e>,
         env: &'e Env<Par>,
         decoded_entries: &'e Arena<Par>,
+        decoded_exprs: &'e Arena<Expr>,
         method_invocations: &'e Arena<MethodInvocation>,
     ) -> Result<EvVal, InterpreterError> {
         let mut work: Vec<EvWork<'e>> = Vec::with_capacity(64);
@@ -2534,24 +2544,29 @@ impl DebruijnInterpreter {
         work.push(root);
         while let Some(w) = work.pop() {
             match w {
-                EvWork::EEval(p) => self.descend_eval(p, env, &mut work, &mut vals)?,
+                EvWork::EEval(p) => {
+                    self.descend_eval(p, env, decoded_exprs, &mut work, &mut vals)?
+                }
                 EvWork::EToPar(e) => {
                     self.descend_to_par(e, env, decoded_entries, &mut work, &mut vals)?
                 }
                 EvWork::EToExpr(e) => {
                     self.descend_to_expr(e, env, decoded_entries, &mut work, &mut vals)?
                 }
-                EvWork::ESingle(p) => self.descend_single(p, env, &mut work, &mut vals)?,
+                EvWork::ESingle(p) => {
+                    self.descend_single(p, env, decoded_exprs, &mut work, &mut vals)?
+                }
                 EvWork::EBool(p) => {
-                    self.descend_bool(p, env, decoded_entries, &mut work, &mut vals)?
+                    self.descend_bool(p, env, decoded_entries, decoded_exprs, &mut work, &mut vals)?
                 }
                 EvWork::EI64(p) => {
-                    self.descend_i64(p, env, decoded_entries, &mut work, &mut vals)?
+                    self.descend_i64(p, env, decoded_entries, decoded_exprs, &mut work, &mut vals)?
                 }
                 EvWork::Combine(k) => self.combine(
                     k,
                     env,
                     decoded_entries,
+                    decoded_exprs,
                     method_invocations,
                     &mut work,
                     &mut vals,
@@ -2618,19 +2633,9 @@ impl DebruijnInterpreter {
     /// on a D-deep spine that is a D-deep recursive clone (a second SO source and
     /// O(D^2) waste). This produces the identical value without touching `exprs`.
     fn ev_par_shell(par: &Par) -> Par {
-        Par {
-            exprs: Vec::new(),
-            sends: par.sends.clone(),
-            receives: par.receives.clone(),
-            news: par.news.clone(),
-            matches: par.matches.clone(),
-            unforgeables: par.unforgeables.clone(),
-            bundles: par.bundles.clone(),
-            connectives: par.connectives.clone(),
-            conditionals: par.conditionals.clone(),
-            locally_free: par.locally_free.clone(),
-            connective_used: par.connective_used,
-        }
+        let mut shell = par.clone();
+        shell.replace_exprs(Vec::new());
+        shell
     }
 
     // =======================================================================
@@ -2644,14 +2649,16 @@ impl DebruijnInterpreter {
         &self,
         par: &'e Par,
         _env: &Env<Par>,
+        decoded_exprs: &'e Arena<Expr>,
         work: &mut Vec<EvWork<'e>>,
         _vals: &mut Vec<EvVal>,
     ) -> Result<(), InterpreterError> {
+        let expressions = decoded_exprs.alloc_extend(par.decode_occurrences::<Expr>());
         work.push(EvWork::Combine(EvKont::Join {
             par,
-            n: par.exprs.len(),
+            n: expressions.len(),
         }));
-        for expr in par.exprs.iter().rev() {
+        for expr in expressions.iter().rev() {
             work.push(EvWork::EToPar(expr));
         }
         Ok(())
@@ -2722,21 +2729,23 @@ impl DebruijnInterpreter {
         &self,
         p: &'e Par,
         _env: &Env<Par>,
+        decoded_exprs: &'e Arena<Expr>,
         work: &mut Vec<EvWork<'e>>,
         _vals: &mut Vec<EvVal>,
     ) -> Result<(), InterpreterError> {
-        if !p.sends.is_empty()
-            || !p.receives.is_empty()
-            || !p.news.is_empty()
-            || !p.matches.is_empty()
-            || !p.unforgeables.is_empty()
-            || !p.bundles.is_empty()
+        if p.family_cardinality::<Send>() != 0
+            || p.family_cardinality::<Receive>() != 0
+            || p.family_cardinality::<New>() != 0
+            || p.family_cardinality::<Match>() != 0
+            || p.family_cardinality::<GUnforgeable>() != 0
+            || p.family_cardinality::<Bundle>() != 0
         {
             return Err(InterpreterError::ReduceError(String::from(
                 "Error: parallel or non expression found where expression expected.",
             )));
         }
-        match p.exprs.as_slice() {
+        let expressions = decoded_exprs.alloc_extend(p.decode_occurrences::<Expr>());
+        match expressions {
             [e] => {
                 // The EToExpr value IS the eval_single_expr result (identity).
                 work.push(EvWork::EToExpr(e));
@@ -2834,6 +2843,7 @@ impl DebruijnInterpreter {
         output: MethodOutput,
         env: &Env<Par>,
         decoded_entries: &'e Arena<Par>,
+        _decoded_exprs: &'e Arena<Expr>,
         method_invocations: &'e Arena<MethodInvocation>,
         work: &mut Vec<EvWork<'e>>,
         vals: &mut Vec<EvVal>,
@@ -2880,21 +2890,23 @@ impl DebruijnInterpreter {
         p: &'e Par,
         env: &Env<Par>,
         decoded_entries: &'e Arena<Par>,
+        decoded_exprs: &'e Arena<Expr>,
         work: &mut Vec<EvWork<'e>>,
         vals: &mut Vec<EvVal>,
     ) -> Result<(), InterpreterError> {
-        if !p.sends.is_empty()
-            && !p.receives.is_empty()
-            && !p.news.is_empty()
-            && !p.matches.is_empty()
-            && !p.unforgeables.is_empty()
-            && !p.bundles.is_empty()
+        if p.family_cardinality::<Send>() != 0
+            && p.family_cardinality::<Receive>() != 0
+            && p.family_cardinality::<New>() != 0
+            && p.family_cardinality::<Match>() != 0
+            && p.family_cardinality::<GUnforgeable>() != 0
+            && p.family_cardinality::<Bundle>() != 0
         {
             return Err(InterpreterError::ReduceError(String::from(
                 "Error: parallel or non expression found where expression expected.",
             )));
         }
-        match p.exprs.as_slice() {
+        let expressions = decoded_exprs.alloc_extend(p.decode_occurrences::<Expr>());
+        match expressions {
             [Expr {
                 expr_instance: Some(ExprInstance::GBool(b)),
             }] => {
@@ -2925,21 +2937,23 @@ impl DebruijnInterpreter {
         p: &'e Par,
         env: &Env<Par>,
         decoded_entries: &'e Arena<Par>,
+        decoded_exprs: &'e Arena<Expr>,
         work: &mut Vec<EvWork<'e>>,
         vals: &mut Vec<EvVal>,
     ) -> Result<(), InterpreterError> {
-        if !p.sends.is_empty()
-            && !p.receives.is_empty()
-            && !p.news.is_empty()
-            && !p.matches.is_empty()
-            && !p.unforgeables.is_empty()
-            && !p.bundles.is_empty()
+        if p.family_cardinality::<Send>() != 0
+            && p.family_cardinality::<Receive>() != 0
+            && p.family_cardinality::<New>() != 0
+            && p.family_cardinality::<Match>() != 0
+            && p.family_cardinality::<GUnforgeable>() != 0
+            && p.family_cardinality::<Bundle>() != 0
         {
             return Err(InterpreterError::ReduceError(String::from(
                 "Error: parallel or non expression found where expression expected.",
             )));
         }
-        match p.exprs.as_slice() {
+        let expressions = decoded_exprs.alloc_extend(p.decode_occurrences::<Expr>());
+        match expressions {
             [Expr {
                 expr_instance: Some(ExprInstance::GInt(v)),
             }] => {
@@ -3334,6 +3348,7 @@ impl DebruijnInterpreter {
         k: EvKont<'e>,
         env: &Env<Par>,
         decoded_entries: &'e Arena<Par>,
+        decoded_exprs: &'e Arena<Expr>,
         method_invocations: &'e Arena<MethodInvocation>,
         work: &mut Vec<EvWork<'e>>,
         vals: &mut Vec<EvVal>,
@@ -3364,6 +3379,7 @@ impl DebruijnInterpreter {
                     MethodOutput::Par,
                     env,
                     decoded_entries,
+                    decoded_exprs,
                     method_invocations,
                     work,
                     vals,
@@ -3576,6 +3592,7 @@ impl DebruijnInterpreter {
                     MethodOutput::Expr,
                     env,
                     decoded_entries,
+                    decoded_exprs,
                     method_invocations,
                     work,
                     vals,
@@ -3612,7 +3629,7 @@ impl DebruijnInterpreter {
     }
 
     fn continue_fused_action<'e>(
-        action: FusedAction<'e>,
+        action: FusedAction,
         output: FusedOutput,
         decoded_entries: &'e Arena<Par>,
         work: &mut Vec<EvWork<'e>>,
@@ -3621,7 +3638,7 @@ impl DebruijnInterpreter {
         match action {
             FusedAction::EvalPositionA { state, arg } => {
                 work.push(EvWork::Combine(EvKont::FusedAfterA { state, output }));
-                work.push(EvWork::EEval(arg));
+                work.push(EvWork::EEval(decoded_entries.alloc(arg)));
             }
             FusedAction::EvalPositionB { state, arg } => {
                 work.push(EvWork::Combine(EvKont::FusedAfterB { state, output }));
@@ -6296,13 +6313,12 @@ impl DebruijnInterpreter {
                 base_expr: &Expr,
                 source_par: &Par,
             ) -> Result<Expr, InterpreterError> {
-                match (
-                    base_expr.expr_instance.clone().unwrap(),
-                    source_par
-                        .exprs
-                        .first()
-                        .and_then(|e| e.expr_instance.clone()),
-                ) {
+                let source_expr = source_par
+                    .first::<Expr>()
+                    .expect("resident Par Expr endpoints are canonical")
+                    .and_then(|(expr, multiplicity)| (multiplicity.get() == 1).then_some(expr))
+                    .and_then(|expr| expr.expr_instance);
+                match (base_expr.expr_instance.clone().unwrap(), source_expr) {
                     // Only works on write zippers
                     (
                         ExprInstance::EZipperBody(zipper),
@@ -7060,11 +7076,14 @@ impl DebruijnInterpreter {
             fn ascend(&self, base_expr: &Expr, steps_par: &Par) -> Result<Par, InterpreterError> {
                 // Extract integer from Par
                 let steps = match steps_par
-                    .exprs
-                    .first()
-                    .and_then(|e| e.expr_instance.as_ref())
+                    .first::<Expr>()
+                    .expect("resident Par Expr endpoints are canonical")
+                    .and_then(|(expr, multiplicity)| {
+                        (multiplicity.get() == 1).then_some(expr.expr_instance)
+                    })
+                    .flatten()
                 {
-                    Some(ExprInstance::GInt(n)) => *n,
+                    Some(ExprInstance::GInt(n)) => n,
                     _ => {
                         return Err(InterpreterError::MethodNotDefined {
                             method: String::from("ascend (requires integer argument)"),
@@ -7276,8 +7295,15 @@ impl DebruijnInterpreter {
                 idx_par: &Par,
             ) -> Result<Par, InterpreterError> {
                 // Extract integer index
-                let idx = match idx_par.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
-                    Some(ExprInstance::GInt(n)) => *n,
+                let idx = match idx_par
+                    .first::<Expr>()
+                    .expect("resident Par Expr endpoints are canonical")
+                    .and_then(|(expr, multiplicity)| {
+                        (multiplicity.get() == 1).then_some(expr.expr_instance)
+                    })
+                    .flatten()
+                {
+                    Some(ExprInstance::GInt(n)) => n,
                     _ => {
                         return Err(InterpreterError::MethodNotDefined {
                             method: String::from(
@@ -7819,8 +7845,8 @@ impl DebruijnInterpreter {
 
         impl<'a> AddMethod<'a> {
             fn add(&self, base_expr: Expr, mut par: Par) -> Result<Expr, InterpreterError> {
-                let par_connective_used = par.connective_used;
-                let par_locally_free = std::mem::take(&mut par.locally_free);
+                let par_connective_used = par.connective_used();
+                let par_locally_free = par.take_locally_free();
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
                         ExprInstance::ESetBody(eset) => {
@@ -7889,8 +7915,8 @@ impl DebruijnInterpreter {
 
         impl<'a> DeleteMethod<'a> {
             fn delete(&self, base_expr: Expr, mut par: Par) -> Result<Expr, InterpreterError> {
-                let par_connective_used = par.connective_used;
-                let par_locally_free = std::mem::take(&mut par.locally_free);
+                let par_connective_used = par.connective_used();
+                let par_locally_free = par.take_locally_free();
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
                         ExprInstance::ESetBody(eset) => {
@@ -8998,7 +9024,7 @@ impl DebruijnInterpreter {
                     })
                 } else {
                     let un = self.outer.eval_single_unforgeable(p)?;
-                    let result = self.to_string(un)?;
+                    let result = self.to_string(&un)?;
                     Ok(result)
                 }
             }
@@ -9075,28 +9101,24 @@ impl DebruijnInterpreter {
 
     // (eval_single_expr moved: now a thin wrapper over eval_drive, above.)
 
-    fn eval_single_unforgeable<'a>(
-        &self,
-        p: &'a Par,
-    ) -> Result<&'a GUnforgeable, InterpreterError> {
-        if !p.sends.is_empty()
-            || !p.receives.is_empty()
-            || !p.news.is_empty()
-            || !p.matches.is_empty()
-            || !p.exprs.is_empty()
-            || !p.bundles.is_empty()
+    fn eval_single_unforgeable(&self, p: &Par) -> Result<GUnforgeable, InterpreterError> {
+        if p.family_cardinality::<Send>() != 0
+            || p.family_cardinality::<Receive>() != 0
+            || p.family_cardinality::<New>() != 0
+            || p.family_cardinality::<Match>() != 0
+            || p.family_cardinality::<Expr>() != 0
+            || p.family_cardinality::<Bundle>() != 0
         {
             Err(InterpreterError::ReduceError(String::from(
                 "Error: non unforgeable found where unforgeable expected.",
             )))
         } else {
-            match p.unforgeables.as_slice() {
-                [e] => Ok(e),
-
-                _ => Err(InterpreterError::ReduceError(
-                    "Error: Multiple unforgeables given.".to_string(),
-                )),
-            }
+            p.first::<GUnforgeable>()
+                .expect("resident Par unforgeable endpoints are canonical")
+                .and_then(|(value, multiplicity)| (multiplicity.get() == 1).then_some(value))
+                .ok_or_else(|| {
+                    InterpreterError::ReduceError("Error: Multiple unforgeables given.".to_string())
+                })
         }
     }
 
@@ -9109,7 +9131,7 @@ impl DebruijnInterpreter {
 
         locally_free = union(
             locally_free,
-            par.sends
+            par.decode_occurrences::<Send>()
                 .iter()
                 .flat_map(|send| send.locally_free.clone())
                 .collect(),
@@ -9117,7 +9139,7 @@ impl DebruijnInterpreter {
 
         locally_free = union(
             locally_free,
-            par.receives
+            par.decode_occurrences::<Receive>()
                 .iter()
                 .flat_map(|receive| receive.locally_free.clone())
                 .collect(),
@@ -9125,7 +9147,7 @@ impl DebruijnInterpreter {
 
         locally_free = union(
             locally_free,
-            par.news
+            par.decode_occurrences::<New>()
                 .iter()
                 .flat_map(|new_proc| new_proc.locally_free.clone())
                 .collect(),
@@ -9133,7 +9155,7 @@ impl DebruijnInterpreter {
 
         locally_free = union(
             locally_free,
-            par.exprs
+            par.decode_occurrences::<Expr>()
                 .iter()
                 .flat_map(|expr| expr_locally_free_ref(expr))
                 .collect(),
@@ -9141,7 +9163,7 @@ impl DebruijnInterpreter {
 
         locally_free = union(
             locally_free,
-            par.matches
+            par.decode_occurrences::<Match>()
                 .iter()
                 .flat_map(|match_proc| match_proc.locally_free.clone())
                 .collect(),
@@ -9149,13 +9171,20 @@ impl DebruijnInterpreter {
 
         locally_free = union(
             locally_free,
-            par.bundles
+            par.decode_occurrences::<Bundle>()
                 .iter()
-                .flat_map(|bundle_proc| bundle_proc.body.clone().unwrap().locally_free.clone())
+                .flat_map(|bundle_proc| {
+                    bundle_proc
+                        .body
+                        .as_ref()
+                        .expect("Bundle.body")
+                        .locally_free()
+                        .to_vec()
+                })
                 .collect(),
         );
 
-        par.locally_free = locally_free;
+        par.replace_locally_free(locally_free);
         par
     }
 
@@ -9163,7 +9192,7 @@ impl DebruijnInterpreter {
         elist.locally_free = elist
             .ps
             .iter()
-            .map(|p| p.locally_free.clone())
+            .map(|p| p.locally_free().to_vec())
             .fold(Vec::new(), |acc, locally_free| union(acc, locally_free));
 
         elist
@@ -9173,7 +9202,7 @@ impl DebruijnInterpreter {
         etuple.locally_free = etuple
             .ps
             .iter()
-            .map(|p| p.locally_free.clone())
+            .map(|p| p.locally_free().to_vec())
             .fold(Vec::new(), |acc, locally_free| union(acc, locally_free));
 
         etuple
@@ -9287,17 +9316,19 @@ fn get_unforgeable_type(inf_instance: &UnfInstance) -> String {
 }
 
 fn par_contains_nan_double(par: &Par) -> bool {
-    par.exprs.iter().any(|e| match &e.expr_instance {
-        Some(ExprInstance::GDouble(bits)) => f64::from_bits(*bits).is_nan(),
-        Some(ExprInstance::EListBody(list)) => list.ps.iter().any(par_contains_nan_double),
-        Some(ExprInstance::ETupleBody(tuple)) => tuple.ps.iter().any(par_contains_nan_double),
-        Some(ExprInstance::ESetBody(set)) => set.ps.iter().any(par_contains_nan_double),
-        Some(ExprInstance::EMapBody(map)) => map.kvs.iter().any(|kv| {
-            kv.key.as_ref().is_some_and(par_contains_nan_double)
-                || kv.value.as_ref().is_some_and(par_contains_nan_double)
-        }),
-        _ => false,
-    })
+    par.decode_occurrences::<Expr>()
+        .iter()
+        .any(|e| match &e.expr_instance {
+            Some(ExprInstance::GDouble(bits)) => f64::from_bits(*bits).is_nan(),
+            Some(ExprInstance::EListBody(list)) => list.ps.iter().any(par_contains_nan_double),
+            Some(ExprInstance::ETupleBody(tuple)) => tuple.ps.iter().any(par_contains_nan_double),
+            Some(ExprInstance::ESetBody(set)) => set.ps.iter().any(par_contains_nan_double),
+            Some(ExprInstance::EMapBody(map)) => map.kvs.iter().any(|kv| {
+                kv.key.as_ref().is_some_and(par_contains_nan_double)
+                    || kv.value.as_ref().is_some_and(par_contains_nan_double)
+            }),
+            _ => false,
+        })
 }
 
 fn bytes_to_bigint(bytes: &[u8]) -> num_bigint::BigInt {
@@ -9499,36 +9530,43 @@ fn divide_fixed_points(
 /// Returns `Some(b)` iff `par` represents the bool value `b` —
 /// exactly one Expr (a `GBool`) and nothing else of substance.
 fn extract_bool(par: &Par) -> Option<bool> {
-    if !par.sends.is_empty()
-        || !par.receives.is_empty()
-        || !par.news.is_empty()
-        || !par.matches.is_empty()
-        || !par.bundles.is_empty()
-        || !par.unforgeables.is_empty()
-        || !par.connectives.is_empty()
-        || !par.conditionals.is_empty()
-        || par.exprs.len() != 1
+    if par.family_cardinality::<Send>() != 0
+        || par.family_cardinality::<Receive>() != 0
+        || par.family_cardinality::<New>() != 0
+        || par.family_cardinality::<Match>() != 0
+        || par.family_cardinality::<Bundle>() != 0
+        || par.family_cardinality::<GUnforgeable>() != 0
+        || par.family_cardinality::<Connective>() != 0
+        || par.family_cardinality::<If>() != 0
+        || par.family_cardinality::<Expr>() != 1
     {
         return None;
     }
-    match par.exprs[0].expr_instance.as_ref()? {
-        ExprInstance::GBool(b) => Some(*b),
+    match par.first::<Expr>().ok()??.0.expr_instance? {
+        ExprInstance::GBool(b) => Some(b),
         _ => None,
     }
 }
 
 fn describe_par_type(par: &Par) -> String {
-    if par.exprs.len() == 1
-        && par.sends.is_empty()
-        && par.receives.is_empty()
-        && par.news.is_empty()
-        && par.matches.is_empty()
-        && par.bundles.is_empty()
-        && par.unforgeables.is_empty()
-        && par.connectives.is_empty()
-        && par.conditionals.is_empty()
+    if par.family_cardinality::<Expr>() == 1
+        && par.family_cardinality::<Send>() == 0
+        && par.family_cardinality::<Receive>() == 0
+        && par.family_cardinality::<New>() == 0
+        && par.family_cardinality::<Match>() == 0
+        && par.family_cardinality::<Bundle>() == 0
+        && par.family_cardinality::<GUnforgeable>() == 0
+        && par.family_cardinality::<Connective>() == 0
+        && par.family_cardinality::<If>() == 0
     {
-        match par.exprs[0].expr_instance.as_ref() {
+        match par
+            .first::<Expr>()
+            .expect("resident Par Expr endpoints are canonical")
+            .and_then(|(expr, multiplicity)| {
+                (multiplicity.get() == 1).then_some(expr.expr_instance)
+            })
+            .flatten()
+        {
             Some(ExprInstance::GBool(_)) => "Bool".to_string(),
             Some(ExprInstance::GInt(_)) => "Int".to_string(),
             Some(ExprInstance::GBigInt(_)) => "BigInt".to_string(),
@@ -9704,11 +9742,7 @@ mod differential_trampoline {
         }
         value
     }
-    fn reflected_send() -> Par {
-        let mut par = Par::default();
-        par.sends.push(Send::default());
-        par
-    }
+    fn reflected_send() -> Par { Par::default().with_sends(vec![Send::default()]) }
 
     /// The observable trace of one evaluation path: result bytes (or Err string)
     /// + the ordered charge tokens + the aggregate cost.

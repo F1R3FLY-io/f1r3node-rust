@@ -500,17 +500,17 @@ impl Substitute {
 // ---------------------------------------------------------------------------
 
 fn descend_par(mut term: Par, ctx: SubCtx, view: EnvView<'_>, work: &mut Vec<SubWork>) {
-    let sends = std::mem::take(&mut term.sends);
-    let receives = std::mem::take(&mut term.receives);
-    let news = std::mem::take(&mut term.news);
-    let exprs = std::mem::take(&mut term.exprs);
-    let matches = std::mem::take(&mut term.matches);
-    let unforgeables = std::mem::take(&mut term.unforgeables);
-    let bundles = std::mem::take(&mut term.bundles);
-    let connectives = std::mem::take(&mut term.connectives);
-    let conditionals = std::mem::take(&mut term.conditionals);
-    let locally_free = std::mem::take(&mut term.locally_free);
-    let connective_used = term.connective_used;
+    let sends = term.take_occurrences::<Send>();
+    let receives = term.take_occurrences::<Receive>();
+    let news = term.take_occurrences::<New>();
+    let exprs = term.take_occurrences::<Expr>();
+    let matches = term.take_occurrences::<Match>();
+    let unforgeables = term.take_occurrences::<GUnforgeable>();
+    let bundles = term.take_occurrences::<Bundle>();
+    let connectives = term.take_occurrences::<Connective>();
+    let conditionals = term.take_occurrences::<If>();
+    let locally_free = term.take_locally_free();
+    let connective_used = term.connective_used();
 
     work.push(SubWork::Combine(SubKont::ParK {
         unforgeables,

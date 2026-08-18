@@ -29,7 +29,7 @@ pub fn normalize_simple_type<'ast>(
                 connective,
                 input.bound_map_chain.depth() as i32,
             );
-            updated_par.connective_used = true;
+            updated_par.replace_connective_used(true);
             updated_par
         },
         free_map: input.free_map,
@@ -42,6 +42,7 @@ mod tests {
     use models::rhoapi::connective::ConnectiveInstance::{
         ConnBool, ConnByteArray, ConnInt, ConnString, ConnUri,
     };
+    use models::rhoapi::Connective;
     use pretty_assertions::assert_eq;
     use rholang_parser::ast::SimpleType;
 
@@ -62,45 +63,50 @@ mod tests {
         // Verify Bool
         assert!(result_bool.is_ok());
         let bool_par = result_bool.unwrap().par;
-        assert!(bool_par.connective_used);
-        assert!(!bool_par.connectives.is_empty());
-        if let Some(conn) = bool_par.connectives.first() {
+        assert!(bool_par.connective_used());
+        let bool_connectives = bool_par.decode_occurrences::<Connective>();
+        assert!(!bool_connectives.is_empty());
+        if let Some(conn) = bool_connectives.first() {
             assert_eq!(conn.connective_instance, Some(ConnBool(true)));
         }
 
         // Verify Int
         assert!(result_int.is_ok());
         let int_par = result_int.unwrap().par;
-        assert!(int_par.connective_used);
-        assert!(!int_par.connectives.is_empty());
-        if let Some(conn) = int_par.connectives.first() {
+        assert!(int_par.connective_used());
+        let int_connectives = int_par.decode_occurrences::<Connective>();
+        assert!(!int_connectives.is_empty());
+        if let Some(conn) = int_connectives.first() {
             assert_eq!(conn.connective_instance, Some(ConnInt(true)));
         }
 
         // Verify String
         assert!(result_string.is_ok());
         let string_par = result_string.unwrap().par;
-        assert!(string_par.connective_used);
-        assert!(!string_par.connectives.is_empty());
-        if let Some(conn) = string_par.connectives.first() {
+        assert!(string_par.connective_used());
+        let string_connectives = string_par.decode_occurrences::<Connective>();
+        assert!(!string_connectives.is_empty());
+        if let Some(conn) = string_connectives.first() {
             assert_eq!(conn.connective_instance, Some(ConnString(true)));
         }
 
         // Verify Uri
         assert!(result_uri.is_ok());
         let uri_par = result_uri.unwrap().par;
-        assert!(uri_par.connective_used);
-        assert!(!uri_par.connectives.is_empty());
-        if let Some(conn) = uri_par.connectives.first() {
+        assert!(uri_par.connective_used());
+        let uri_connectives = uri_par.decode_occurrences::<Connective>();
+        assert!(!uri_connectives.is_empty());
+        if let Some(conn) = uri_connectives.first() {
             assert_eq!(conn.connective_instance, Some(ConnUri(true)));
         }
 
         // Verify ByteArray
         assert!(result_byte_array.is_ok());
         let byte_array_par = result_byte_array.unwrap().par;
-        assert!(byte_array_par.connective_used);
-        assert!(!byte_array_par.connectives.is_empty());
-        if let Some(conn) = byte_array_par.connectives.first() {
+        assert!(byte_array_par.connective_used());
+        let byte_array_connectives = byte_array_par.decode_occurrences::<Connective>();
+        assert!(!byte_array_connectives.is_empty());
+        if let Some(conn) = byte_array_connectives.first() {
             assert_eq!(conn.connective_instance, Some(ConnByteArray(true)));
         }
     }

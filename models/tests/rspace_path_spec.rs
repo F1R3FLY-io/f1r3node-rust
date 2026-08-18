@@ -6,11 +6,9 @@ use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::rho_path::{RhoPathEncode, RhoPathV1};
 
 fn integer(value: i64) -> Par {
-    let mut par = Par::default();
-    par.exprs.push(Expr {
+    Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::GInt(value)),
-    });
-    par
+    }])
 }
 
 #[test]

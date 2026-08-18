@@ -19,15 +19,17 @@ pub(super) use rspace_plus_plus::rspace::rho_path::{
     RHO_MATCH_MAP_END as MAP_END, RHO_MATCH_MAP_KEY as MAP_KEY, RHO_MATCH_MAP_START as MAP_START,
     RHO_MATCH_NODE_END as NODE_END, RHO_MATCH_NODE_START as NODE_START,
     RHO_MATCH_ONEOF_END as ONEOF_END, RHO_MATCH_ONEOF_START as ONEOF_START,
-    RHO_MATCH_PATHMAP as PATHMAP, RHO_MATCH_SEQUENCE_END as SEQUENCE_END,
-    RHO_MATCH_SEQUENCE_START as SEQUENCE_START, RHO_MATCH_STRING as STRING,
-    RHO_MATCH_STRING_SEQUENCE as STRING_SEQUENCE, RHO_MATCH_U32 as U32, RHO_MATCH_U64 as U64,
+    RHO_MATCH_PAR_BAG as PAR_BAG, RHO_MATCH_PATHMAP as PATHMAP,
+    RHO_MATCH_SEQUENCE_END as SEQUENCE_END, RHO_MATCH_SEQUENCE_START as SEQUENCE_START,
+    RHO_MATCH_STRING as STRING, RHO_MATCH_STRING_SEQUENCE as STRING_SEQUENCE, RHO_MATCH_U32 as U32,
+    RHO_MATCH_U64 as U64,
 };
 
 use super::match_schema::{RhoPathCursor, RhoPathEvent, RhoScalarRef};
 use super::match_schema_tables::ParCursor;
 use crate::rhoapi::Par;
 use crate::rust::epathmap_trie_codec::EPathMapRepr;
+use crate::rust::par_bag::ParBag;
 use crate::rust::rhoapi_ext::EPathMap;
 
 /// Encode one `Par` as a complete-schema structural RSpace search path.
@@ -80,8 +82,22 @@ pub fn append_match_path_event(output: &mut Vec<u8>, event: RhoPathEvent<'_>) {
             output.extend_from_slice(&oneof.protobuf_tag.to_be_bytes());
         }
         RhoPathEvent::LeaveOneof => output.push(ONEOF_END),
+        RhoPathEvent::ParBag(bag) => append_par_bag(output, bag),
         RhoPathEvent::PathMap(map) => append_pathmap(output, map),
     }
+}
+
+fn append_par_bag(output: &mut Vec<u8>, bag: &ParBag) {
+    const DOMAIN: &[u8] = b"RhoMatchPath/ParBag/compact/v1";
+
+    output.push(PAR_BAG);
+    append_len(output, bag.distinct_len());
+    output.extend_from_slice(&bag.cardinality().to_be_bytes());
+    let digest = Blake2b256::hash_stream(|feed| {
+        feed(DOMAIN);
+        feed(bag.compact_snapshot());
+    });
+    output.extend_from_slice(&digest);
 }
 
 fn append_scalar(output: &mut Vec<u8>, value: RhoScalarRef<'_>) {

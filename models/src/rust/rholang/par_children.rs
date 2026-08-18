@@ -52,7 +52,7 @@ use std::collections::BTreeMap;
 
 use crate::rhoapi::connective::ConnectiveInstance;
 use crate::rhoapi::expr::ExprInstance;
-use crate::rhoapi::{Connective, Expr, Par};
+use crate::rhoapi::{Bundle, Connective, Expr, If, Match, New, Par, Receive, Send};
 /// The number of variants `connective.ConnectiveInstance` has.
 /// ★ GENERATED, never a literal. See [`EXPR_INSTANCE_VARIANT_COUNT`].
 pub use crate::rust::rholang::bincode_schema_tables::CONNECTIVE_INSTANCE_VARIANT_COUNT;
@@ -227,86 +227,115 @@ pub fn connective_instance_child_pars<'a>(c: &'a ConnectiveInstance, out: &mut V
 /// connectives, sends, bundles, receives, news, matches, conditionals.
 /// `unforgeables` carries no `Par` (`GUnforgeable`'s four variants are all
 /// byte arrays), which is why it is absent rather than forgotten.
-fn par_child_pars_with<'a>(
-    p: &'a Par,
-    out: &mut Vec<&'a Par>,
-    visit_epathmap: &mut impl FnMut(&'a crate::rhoapi::EPathMap, &mut Vec<&'a Par>),
+fn decoded_par_child_pars_with(
+    p: &Par,
+    out: &mut Vec<Par>,
+    drain_epathmap: &mut impl FnMut(crate::rhoapi::EPathMap, &mut Vec<Par>),
 ) {
-    for e in &p.exprs {
-        if let Some(instance) = &e.expr_instance {
-            expr_instance_child_pars_with(instance, out, visit_epathmap);
+    p.try_visit_occurrences::<Expr, std::convert::Infallible>(|expr| {
+        if let Some(instance) = expr.clone().expr_instance {
+            take_expr_instance_child_pars_with(instance, out, drain_epathmap);
         }
-    }
-    for c in &p.connectives {
-        if let Some(instance) = &c.connective_instance {
-            connective_instance_child_pars(instance, out);
+        Ok(())
+    })
+    .expect("resident Expr components decode");
+    p.try_visit_occurrences::<Connective, std::convert::Infallible>(|connective| {
+        if let Some(instance) = connective.clone().connective_instance {
+            take_connective_instance_child_pars(instance, out);
         }
-    }
-    for s in &p.sends {
-        out.extend(s.chan.iter());
-        out.extend(s.data.iter());
-    }
-    for b in &p.bundles {
-        out.extend(b.body.iter());
-    }
-    for r in &p.receives {
-        for bind in &r.binds {
-            out.extend(bind.source.iter());
-            out.extend(bind.patterns.iter());
+        Ok(())
+    })
+    .expect("resident Connective components decode");
+    p.try_visit_occurrences::<Send, std::convert::Infallible>(|send| {
+        let mut s = send.clone();
+        out.extend(s.chan.take());
+        out.append(&mut s.data);
+        Ok(())
+    })
+    .expect("resident Send components decode");
+    p.try_visit_occurrences::<Bundle, std::convert::Infallible>(|bundle| {
+        out.extend(bundle.clone().body);
+        Ok(())
+    })
+    .expect("resident Bundle components decode");
+    p.try_visit_occurrences::<Receive, std::convert::Infallible>(|receive| {
+        let mut r = receive.clone();
+        for mut bind in std::mem::take(&mut r.binds) {
+            out.extend(bind.source.take());
+            out.append(&mut bind.patterns);
         }
-        out.extend(r.body.iter());
-        out.extend(r.condition.iter());
-    }
-    for n in &p.news {
-        out.extend(n.p.iter());
-        out.extend(n.injections.values());
-    }
-    for m in &p.matches {
-        out.extend(m.target.iter());
-        for case in &m.cases {
-            out.extend(case.pattern.iter());
-            out.extend(case.source.iter());
-            out.extend(case.guard.iter());
+        out.extend(r.body.take());
+        out.extend(r.condition.take());
+        Ok(())
+    })
+    .expect("resident Receive components decode");
+    p.try_visit_occurrences::<New, std::convert::Infallible>(|new| {
+        let mut n = new.clone();
+        out.extend(n.p.take());
+        out.extend(std::mem::take(&mut n.injections).into_values());
+        Ok(())
+    })
+    .expect("resident New components decode");
+    p.try_visit_occurrences::<Match, std::convert::Infallible>(|matched| {
+        let mut m = matched.clone();
+        out.extend(m.target.take());
+        for mut case in std::mem::take(&mut m.cases) {
+            out.extend(case.pattern.take());
+            out.extend(case.source.take());
+            out.extend(case.guard.take());
         }
-    }
-    for i in &p.conditionals {
-        out.extend(i.condition.iter());
-        out.extend(i.if_true.iter());
-        out.extend(i.if_false.iter());
-    }
+        Ok(())
+    })
+    .expect("resident Match components decode");
+    p.try_visit_occurrences::<If, std::convert::Infallible>(|conditional| {
+        let mut i = conditional.clone();
+        out.extend(i.condition.take());
+        out.extend(i.if_true.take());
+        out.extend(i.if_false.take());
+        Ok(())
+    })
+    .expect("resident If components decode");
 }
 
-pub fn par_child_pars<'a>(p: &'a Par, out: &mut Vec<&'a Par>) {
-    par_child_pars_with(p, out, &mut |pathmap, pars| {
-        pathmap.entry_trie().extend_owned_par_refs(pars);
+pub fn par_child_pars(p: &Par, out: &mut Vec<Par>) {
+    decoded_par_child_pars_with(p, out, &mut |pathmap, pars| {
+        pathmap.drain_owned_pars(pars);
     });
 }
 
 /// Every `Par` reachable from `root`, `root` included, collected **without
 /// recursion**. A recursive collector would itself be Θ(depth) and would
 /// therefore overflow before the traversal it is meant to inspect.
-pub fn reachable_pars(root: &Par) -> Vec<&Par> {
-    let mut seen: Vec<&Par> = Vec::new();
-    let mut work: Vec<&Par> = vec![root];
-    let mut buf: Vec<&Par> = Vec::new();
+pub fn reachable_pars(root: &Par) -> Vec<Par> {
+    let mut seen = Vec::new();
+    let mut work = vec![root.clone()];
+    let mut buf = Vec::new();
     while let Some(p) = work.pop() {
-        seen.push(p);
         buf.clear();
-        par_child_pars(p, &mut buf);
-        work.extend(buf.iter().copied());
+        par_child_pars(&p, &mut buf);
+        work.append(&mut buf);
+        seen.push(p);
     }
     seen
 }
 
 /// Every `Expr` and every `Connective` reachable from `root`, by reference,
 /// collected without recursion.
-pub fn reachable_exprs_and_connectives(root: &Par) -> (Vec<&Expr>, Vec<&Connective>) {
+pub fn reachable_exprs_and_connectives(root: &Par) -> (Vec<Expr>, Vec<Connective>) {
     let pars = reachable_pars(root);
-    let mut exprs: Vec<&Expr> = Vec::new();
-    let mut conns: Vec<&Connective> = Vec::new();
+    let mut exprs = Vec::new();
+    let mut conns = Vec::new();
     for p in pars {
-        exprs.extend(p.exprs.iter());
-        conns.extend(p.connectives.iter());
+        p.try_visit_occurrences::<Expr, std::convert::Infallible>(|expr| {
+            exprs.push(expr.clone());
+            Ok(())
+        })
+        .expect("resident Expr components decode");
+        p.try_visit_occurrences::<Connective, std::convert::Infallible>(|connective| {
+            conns.push(connective.clone());
+            Ok(())
+        })
+        .expect("resident Connective components decode");
     }
     (exprs, conns)
 }
@@ -456,101 +485,26 @@ fn take_par_child_pars_with(
     out: &mut Vec<Par>,
     drain_epathmap: &mut impl FnMut(crate::rhoapi::EPathMap, &mut Vec<Par>),
 ) {
-    for e in std::mem::take(&mut p.exprs) {
-        if let Some(instance) = e.expr_instance {
-            take_expr_instance_child_pars_with(instance, out, drain_epathmap);
-        }
-    }
-    for c in std::mem::take(&mut p.connectives) {
-        if let Some(instance) = c.connective_instance {
-            take_connective_instance_child_pars(instance, out);
-        }
-    }
-    for mut s in std::mem::take(&mut p.sends) {
-        out.extend(s.chan.take());
-        out.append(&mut s.data);
-    }
-    for mut b in std::mem::take(&mut p.bundles) {
-        out.extend(b.body.take());
-    }
-    for mut r in std::mem::take(&mut p.receives) {
-        for mut bind in std::mem::take(&mut r.binds) {
-            out.extend(bind.source.take());
-            out.append(&mut bind.patterns);
-        }
-        out.extend(r.body.take());
-        out.extend(r.condition.take());
-    }
-    for mut n in std::mem::take(&mut p.news) {
-        out.extend(n.p.take());
-        out.extend(std::mem::take(&mut n.injections).into_values());
-    }
-    for mut m in std::mem::take(&mut p.matches) {
-        out.extend(m.target.take());
-        for mut case in std::mem::take(&mut m.cases) {
-            out.extend(case.pattern.take());
-            out.extend(case.source.take());
-            out.extend(case.guard.take());
-        }
-    }
-    for mut i in std::mem::take(&mut p.conditionals) {
-        out.extend(i.condition.take());
-        out.extend(i.if_true.take());
-        out.extend(i.if_false.take());
-    }
-}
-
-fn take_par_child_pars(p: &mut Par, out: &mut Vec<Par>) {
-    take_par_child_pars_with(p, out, &mut |pathmap, pars| {
-        pathmap.drain_owned_pars(pars);
-    });
-}
-
-enum BorrowedEPathMapEntries<'a> {
-    Empty,
-    Set(pathmap::zipper::ReadZipperUntracked<'a, 'static, ()>),
-    Map(pathmap::zipper::ReadZipperUntracked<'a, 'static, Par>),
+    decoded_par_child_pars_with(p, out, drain_epathmap);
+    *p = Par::default();
 }
 
 enum CanonicalParTask<'a> {
     BorrowedPar(&'a Par),
     OwnedPar(Par),
-    BorrowedEPathMapEntries(BorrowedEPathMapEntries<'a>),
     OwnedEPathMapEntries(crate::rust::rhoapi_ext::OwnedEPathMapEntries),
-}
-
-fn borrowed_epathmap_entries(pathmap: &crate::rhoapi::EPathMap) -> BorrowedEPathMapEntries<'_> {
-    use crate::rust::epathmap_trie_codec::EPathMapMode;
-
-    match pathmap.mode() {
-        EPathMapMode::Empty => BorrowedEPathMapEntries::Empty,
-        EPathMapMode::Set => {
-            BorrowedEPathMapEntries::Set(pathmap.entry_trie().set_trie().read_zipper())
-        }
-        EPathMapMode::Map => BorrowedEPathMapEntries::Map(
-            pathmap
-                .entry_trie()
-                .map_trie()
-                .expect("map-mode EPathMap must own PathMap<Par>")
-                .read_zipper(),
-        ),
-    }
 }
 
 fn drive_canonical_par_tree<'a>(
     root: CanonicalParTask<'a>,
     visit: &mut impl FnMut(&Par),
 ) -> Result<(), crate::rust::canonical_path::CodecError> {
-    use pathmap::zipper::{ZipperMoving, ZipperReadOnlyIteration};
-
     use crate::rust::canonical_path::decode_trie_path;
     use crate::rust::rhoapi_ext::OwnedEPathMapEntry;
 
     let mut work = vec![root];
     let mut owned_children = Vec::<Par>::new();
-    let mut borrowed_children = Vec::<&'a Par>::new();
     let mut owned_tries = Vec::<(usize, crate::rust::rhoapi_ext::OwnedEPathMapEntries)>::new();
-    let mut borrowed_tries = Vec::<(usize, &'a crate::rhoapi::EPathMap)>::new();
     let mut ordered_children = Vec::<CanonicalParTask<'a>>::new();
     let mut first_error = None;
 
@@ -586,35 +540,10 @@ fn drive_canonical_par_tree<'a>(
                 work.append(&mut ordered_children);
             }
             CanonicalParTask::BorrowedPar(par) => {
-                visit(par);
-                borrowed_children.clear();
-                borrowed_tries.clear();
-                par_child_pars_with(par, &mut borrowed_children, &mut |pathmap, pars| {
-                    borrowed_tries.push((pars.len(), pathmap));
-                });
-
-                ordered_children.clear();
-                let child_count = borrowed_children.len();
-                {
-                    let mut pars = borrowed_children.drain(..);
-                    let mut tries = borrowed_tries.drain(..).peekable();
-                    for position in 0..=child_count {
-                        while tries.peek().is_some_and(|(index, _)| *index == position) {
-                            let (_, pathmap) = tries
-                                .next()
-                                .expect("peeked borrowed EPathMap cursor must still exist");
-                            ordered_children.push(CanonicalParTask::BorrowedEPathMapEntries(
-                                borrowed_epathmap_entries(pathmap),
-                            ));
-                        }
-                        if let Some(child) = pars.next() {
-                            ordered_children.push(CanonicalParTask::BorrowedPar(child));
-                        }
-                    }
-                    debug_assert!(tries.next().is_none());
-                }
-                ordered_children.reverse();
-                work.append(&mut ordered_children);
+                // A Par clone shares its immutable PathMap root. Component
+                // bodies become owned only one endpoint at a time in the same
+                // iterative driver, so no borrowed reference escapes a decode.
+                work.push(CanonicalParTask::OwnedPar(par.clone()));
             }
             CanonicalParTask::OwnedEPathMapEntries(mut entries) => {
                 let Some(entry) = entries.next() else {
@@ -634,40 +563,6 @@ fn drive_canonical_par_tree<'a>(
                 }
                 if first_error.is_none() {
                     match decode_trie_path(&key) {
-                        Ok(decoded_key) => work.push(CanonicalParTask::OwnedPar(decoded_key)),
-                        Err(error) => first_error = Some(error),
-                    }
-                }
-            }
-            CanonicalParTask::BorrowedEPathMapEntries(mut entries) => {
-                let (advanced, decoded_key, value) = match &mut entries {
-                    BorrowedEPathMapEntries::Empty => (false, None, None),
-                    BorrowedEPathMapEntries::Set(zipper) => {
-                        let advanced = zipper.to_next_get_val().is_some();
-                        let decoded = (advanced && first_error.is_none())
-                            .then(|| decode_trie_path(zipper.path()));
-                        (advanced, decoded, None)
-                    }
-                    BorrowedEPathMapEntries::Map(zipper) => {
-                        let value = zipper.to_next_get_val();
-                        let decoded = (value.is_some() && first_error.is_none())
-                            .then(|| decode_trie_path(zipper.path()));
-                        (value.is_some(), decoded, value)
-                    }
-                };
-                if !advanced {
-                    continue;
-                }
-
-                // The read zipper itself is the suspended continuation. No key
-                // byte vector, decoded-key collection, or map-value pointer
-                // projection is materialized.
-                work.push(CanonicalParTask::BorrowedEPathMapEntries(entries));
-                if let Some(value) = value {
-                    work.push(CanonicalParTask::BorrowedPar(value));
-                }
-                if let Some(decoded_key) = decoded_key {
-                    match decoded_key {
                         Ok(decoded_key) => work.push(CanonicalParTask::OwnedPar(decoded_key)),
                         Err(error) => first_error = Some(error),
                     }
@@ -749,40 +644,18 @@ pub(crate) fn dismantle_collecting_epathmap_keys(root: Par, keys: &mut Vec<Vec<u
 /// children before the (now child-free) shell falls out of scope, so native
 /// stack is `O(1)` in both nesting depth and sibling width.
 pub fn dismantle(root: Par) {
-    let mut work: Vec<Par> = vec![root];
-    while let Some(mut p) = work.pop() {
-        take_par_child_pars(&mut p, &mut work);
-        // `p` now owns no `Par`, so dropping it here is O(1).
-    }
+    // `Par` owns one PathMap root and scalar metadata, not a recursively
+    // decoded object graph. PathMap's own destruction is stack-safe.
+    drop(root);
 }
 
 /// [`dismantle`] for anything that can hand back its `Par`s — used by callers
 /// holding a `Vec<Par>`, a `BTreeMap<String, Par>` or an `Option<Par>`.
-pub fn dismantle_all<I: IntoIterator<Item = Par>>(pars: I) {
-    let mut work: Vec<Par> = pars.into_iter().collect();
-    while let Some(mut p) = work.pop() {
-        take_par_child_pars(&mut p, &mut work);
-    }
-}
+pub fn dismantle_all<I: IntoIterator<Item = Par>>(pars: I) { drop(pars.into_iter()); }
 
 /// [`dismantle_all`] over an injection map.
 pub fn dismantle_injections(injections: BTreeMap<String, Par>) {
     dismantle_all(injections.into_values());
-}
-
-/// Detach and release every recursive child of an already borrowed [`Par`].
-///
-/// This is the implementation primitive for the generated `Drop for Par`.
-/// `Drop::drop` cannot move `self`, so the root is emptied in place and all
-/// detached children are processed on one explicit heap worklist. Each child
-/// shell reaches its own generated `Drop` only after its recursive fields have
-/// been taken, making that nested call constant-depth and allocation-free.
-pub(crate) fn dismantle_in_place(root: &mut Par) {
-    let mut work = Vec::new();
-    take_par_child_pars(root, &mut work);
-    while let Some(mut child) = work.pop() {
-        take_par_child_pars(&mut child, &mut work);
-    }
 }
 
 // ===========================================================================
@@ -1042,10 +915,16 @@ mod tests {
     };
     use crate::rust::rhoapi_ext::EPathMap;
 
-    /// A `Par` with a distinguishing `locally_free` tag, so a table that
-    /// returned the WRONG child (rather than none) is still caught.
+    /// A semantically non-empty `Par` with a distinguishing `locally_free` tag,
+    /// so a table that returned the wrong child (rather than none) is still
+    /// caught. The ground expression is essential: canonical Receive/Match
+    /// sorting intentionally collapses `Some(empty Par)` guards, and root
+    /// `locally_free` alone does not make a Par semantically non-empty.
     fn tagged(tag: u8) -> Par {
         par_from_default! {
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::GInt(i64::from(tag))),
+            }],
             locally_free: vec![tag],
             ..Default::default()
         }
@@ -1243,7 +1122,13 @@ mod tests {
 
     fn tags(pars: &[&Par]) -> Vec<u8> {
         pars.iter()
-            .map(|p| *p.locally_free.first().unwrap_or(&0))
+            .map(|p| *p.locally_free().first().unwrap_or(&0))
+            .collect()
+    }
+
+    fn owned_tags(pars: &[Par]) -> Vec<u8> {
+        pars.iter()
+            .map(|p| *p.locally_free().first().unwrap_or(&0))
             .collect()
     }
 
@@ -1417,7 +1302,7 @@ mod tests {
             });
             let actual: Vec<u8> = moved
                 .iter()
-                .map(|p| *p.locally_free.first().unwrap_or(&0))
+                .map(|p| *p.locally_free().first().unwrap_or(&0))
                 .collect();
 
             assert_containment_with_counted_allowance(
@@ -1437,7 +1322,7 @@ mod tests {
             take_connective_instance_child_pars(instance, &mut moved);
             let actual: Vec<u8> = moved
                 .iter()
-                .map(|p| *p.locally_free.first().unwrap_or(&0))
+                .map(|p| *p.locally_free().first().unwrap_or(&0))
                 .collect();
 
             // No `ConnectiveInstance` arm holds an `EPathMap`, so every child has exactly one
@@ -1484,12 +1369,16 @@ mod tests {
         };
 
         let mut borrowed_preorder = Vec::new();
-        visit_canonical_par_tree(&root, |par| borrowed_preorder.push(par.receives.len()))
-            .expect("constructor-produced EPathMap keys are canonical");
+        visit_canonical_par_tree(&root, |par| {
+            borrowed_preorder.push(par.family_cardinality::<Receive>())
+        })
+        .expect("constructor-produced EPathMap keys are canonical");
 
         let mut owned_preorder = Vec::new();
-        consume_canonical_par_tree(root, |par| owned_preorder.push(par.receives.len()))
-            .expect("constructor-produced EPathMap keys are canonical");
+        consume_canonical_par_tree(root, |par| {
+            owned_preorder.push(par.family_cardinality::<Receive>())
+        })
+        .expect("constructor-produced EPathMap keys are canonical");
         assert_eq!(borrowed_preorder, vec![1, 2, 3, 4]);
         assert_eq!(owned_preorder, borrowed_preorder);
     }
@@ -1554,9 +1443,9 @@ mod tests {
             ..Default::default()
         };
 
-        let mut out: Vec<&Par> = Vec::new();
+        let mut out: Vec<Par> = Vec::new();
         par_child_pars(&p, &mut out);
-        assert_eq!(tags(&out), (1u8..=18).collect::<Vec<u8>>());
+        assert_eq!(owned_tags(&out), (1u8..=18).collect::<Vec<u8>>());
     }
 
     /// `dismantle` must reach every node — otherwise the shells it drops still

@@ -79,8 +79,8 @@ pub(crate) fn combine_p_method<'ast>(
     } else {
         // Argument `idx - 1` (in reverse source order) has just finished.
         // ★ Leg-1: shallow fields first, then MOVE.
-        let child_locally_free = result.par.locally_free.clone();
-        let child_connective_used = result.par.connective_used;
+        let child_locally_free = result.par.locally_free().to_vec();
+        let child_connective_used = result.par.connective_used();
         k.acc_args.insert(0, result.par);
         k.free_map = result.free_map;
         k.acc_locally_free = union(std::mem::take(&mut k.acc_locally_free), child_locally_free);
@@ -117,8 +117,8 @@ pub(crate) fn combine_p_method<'ast>(
     let target = target.expect("combine_p_method: the receiver slot is filled before any argument");
 
     // ★ Leg-1 at the reader — see `p_send_normalizer`.
-    let target_locally_free = target.locally_free.clone();
-    let target_connective_used = target.connective_used;
+    let target_locally_free = target.locally_free().to_vec();
+    let target_connective_used = target.connective_used();
     let method = EMethod {
         method_name,
         target: Some(target),

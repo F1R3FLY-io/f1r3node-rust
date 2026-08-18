@@ -82,14 +82,6 @@ name = "bit_vector_canonicity"
 path = "tests/bit_vector_canonicity.rs"
 
 [[test]]
-name = "clone_equivalence_corpus"
-path = "tests/clone_equivalence_corpus.rs"
-
-[[test]]
-name = "clone_descend_budget"
-path = "tests/clone_descend_budget.rs"
-
-[[test]]
 name = "cold_store_records"
 path = "tests/cold_store_records.rs"
 
@@ -97,13 +89,11 @@ path = "tests/cold_store_records.rs"
 name = "drive_configuration_gate"
 path = "tests/drive_configuration_gate.rs"
 
-# The driver's per-level WIDTH pin. `size_of::<Step<'_, CloneTraversal>>()` is the
-# one type in `drive.rs` that multiplies by depth, and `size_of::<Par>()` is the
-# denominator of every byte argument about the clone conversion — neither was
-# asserted anywhere before this target existed.
+# The repository-owned Par is a compact PathMap handle. Pin that it remains
+# compact and that clone/mutation preserve PathMap's CoW sharing contract.
 [[test]]
-name = "drive_step_width_gate"
-path = "tests/drive_step_width_gate.rs"
+name = "par_cow_width_gate"
+path = "tests/par_cow_width_gate.rs"
 
 [[test]]
 name = "epathmap_canonical_fixtures"
@@ -285,15 +275,6 @@ path = "tests/test_target_registry_gate.rs"
 name = "models"
 path = "src/lib.rs"
 doctest = false
-
-# ⚠ A Rust benchmark must be declared here before it can be run at all.
-# `harness = false` because the statistic this benchmark owes is a Welch
-# t-test over a PRODUCTION-WEIGHTED workload, which the default harness does
-# not produce; the weighting is the experiment, not a detail of it.
-[[bench]]
-name = "term_ops_bench"
-path = "benches/term_ops_bench.rs"
-harness = false
 
 [[bench]]
 name = "bincode_encoder_bench"

@@ -132,7 +132,7 @@ fn to_sends(data: &Vec<Datum<ListParWithRandom>>, channels: &Vec<Par>) -> Par {
 
     sends
         .into_iter()
-        .fold(Par::default(), |mut acc, send| acc.prepend_send(send))
+        .fold(Par::default(), |acc, send| acc.prepend_send(send))
 }
 
 /// A resting continuation, back in the language it was written in.
@@ -217,7 +217,5 @@ fn to_receives(
 
     receives
         .into_iter()
-        .fold(Par::default(), |mut acc, receive| {
-            acc.prepend_receive(receive)
-        })
+        .fold(Par::default(), |acc, receive| acc.prepend_receive(receive))
 }

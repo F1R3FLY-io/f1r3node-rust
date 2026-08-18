@@ -151,14 +151,14 @@ use rspace_plus_plus::rspace::trace::event::{Event, IOEvent, Produce};
 ///   the meter is used for any verdict.
 fn max_par_nesting(root: &Par) -> usize {
     let mut deepest = 0usize;
-    let mut work: Vec<(&Par, usize)> = vec![(root, 0)];
-    let mut children: Vec<&Par> = Vec::new();
+    let mut work: Vec<(Par, usize)> = vec![(root.clone(), 0)];
+    let mut children: Vec<Par> = Vec::new();
     while let Some((par, depth)) = work.pop() {
         if depth > deepest {
             deepest = depth;
         }
         children.clear();
-        par_child_pars(par, &mut children);
+        par_child_pars(&par, &mut children);
         work.reserve(children.len());
         for child in children.drain(..) {
             work.push((child, depth + 1));

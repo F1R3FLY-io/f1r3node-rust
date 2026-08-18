@@ -49,6 +49,22 @@ pub(crate) fn reducer_eval_identity_par(par: &Par, codec_stable: bool) -> bool {
     codec_stable || par.family_cardinality::<crate::rhoapi::Expr>() == 0
 }
 
+/// Read the first protobuf field number without decoding its payload.
+/// Resident ParBag bodies are already canonical protobuf, so an absent or
+/// malformed key is an internal invariant failure rather than an alternate
+/// accepted shape.
+fn first_protobuf_tag(payload: &[u8]) -> Option<u32> {
+    let mut key = 0u64;
+    for (shift, byte) in (0u32..=63).step_by(7).zip(payload.iter().copied()) {
+        key |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            let tag = key >> 3;
+            return (tag != 0).then(|| u32::try_from(tag).ok()).flatten();
+        }
+    }
+    None
+}
+
 /// Classify a `Par` as ground normal form: either a single-expr carrier over
 /// the stable expression alphabet, or the reflect `GPrivate` leaf. Every other
 /// `Par` field must be empty and `locally_free`/`connective_used` must have their
@@ -85,6 +101,20 @@ pub(crate) fn reducer_eval_identity_par(par: &Par, codec_stable: bool) -> bool {
 /// threshold. The predicate is a side-effect-free conjunction, so this
 /// depth-first evaluation returns the same boolean as the recursive definition.
 pub(crate) fn eval_stable_par(root: &Par) -> bool {
+    if !root.locally_free().is_empty() || root.connective_used() {
+        return false;
+    }
+    if let Some(stable) = root.components().cached_canonical_path_stability() {
+        return stable;
+    }
+
+    let stable = eval_stable_par_uncached(root);
+    root.components()
+        .cache_canonical_path_stability(stable);
+    stable
+}
+
+fn eval_stable_par_uncached(root: &Par) -> bool {
     // The production PathMap-backed `Par` clone shares one immutable trie root.
     // Each decoded collection component then moves its owned children onto this
     // explicit worklist, so neither a repeated-field projection nor recursive
@@ -110,6 +140,13 @@ pub(crate) fn eval_stable_par(root: &Par) -> bool {
             return false;
         }
 
+        if let Some(stable) = par.components().cached_canonical_path_stability() {
+            if stable {
+                continue;
+            }
+            return false;
+        }
+
         let expr_count = par.family_cardinality::<crate::rhoapi::Expr>();
         let unforgeable_count = par.family_cardinality::<crate::rhoapi::GUnforgeable>();
         if expr_count == 0 && unforgeable_count == 1 {
@@ -126,9 +163,31 @@ pub(crate) fn eval_stable_par(root: &Par) -> bool {
         if expr_count != 1 || unforgeable_count != 0 {
             return false;
         }
+        // Most Expr variants are outside the stable canonical-path alphabet.
+        // Reject those from the encoded oneof tag before decoding their child
+        // graph. This matters for an EMap containing a nested EPathMap: eagerly
+        // decoding merely to learn "not stable" reconstructs the entire suffix
+        // and turns nested insertion into a doubling recurrence.
+        let mut expr_tag = None;
+        par.visit_encoded::<crate::rhoapi::Expr>(|entry| {
+            debug_assert_eq!(entry.multiplicity().get(), 1);
+            expr_tag = first_protobuf_tag(entry.payload());
+        });
+        let Some(expr_tag) = expr_tag else {
+            return false;
+        };
+        match expr_tag {
+            // Stable scalar oneof arms need no semantic decode.
+            1 | 2 | 3 | 4 | 25 | 34 | 35 | 36 | 37 => continue,
+            // The collection/pathmap arms need their children or maintained
+            // EntryTrie fold below.
+            20 | 21 | 32 => {}
+            _ => return false,
+        }
+
         let expr = par
             .first::<crate::rhoapi::Expr>()
-            .expect("generated and PathMap Par family cursors are infallible")
+            .expect("resident PathMap Par family cursor is infallible")
             .expect("the cardinality check proved one expression")
             .0;
 

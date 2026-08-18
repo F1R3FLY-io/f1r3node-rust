@@ -20,11 +20,13 @@ fn carrier(pathmap: EPathMap, connective_used: bool) -> Par {
     }])
 }
 
-fn bound_pathmap(par: &Par) -> &EPathMap {
-    match par.exprs.as_slice() {
-        [Expr {
-            expr_instance: Some(ExprInstance::EPathmapBody(pathmap)),
-        }] => pathmap,
+fn bound_pathmap(par: &Par) -> EPathMap {
+    match par
+        .first::<Expr>()
+        .expect("resident expression decodes")
+        .map(|(expr, _)| expr.expr_instance)
+    {
+        Some(Some(ExprInstance::EPathmapBody(pathmap))) => pathmap,
         other => panic!("expected one bound EPathMap expression, got {other:?}"),
     }
 }

@@ -732,9 +732,9 @@ mod native_query_runtime_tests {
             channel_name
         );
         pars[0]
-            .exprs
-            .first()
-            .and_then(|e| e.expr_instance.clone())
+            .first::<Expr>()
+            .expect("resident expression decodes")
+            .and_then(|(expr, _)| expr.expr_instance)
             .unwrap_or_else(|| panic!("no expr at @\"{}\"", channel_name))
     }
 

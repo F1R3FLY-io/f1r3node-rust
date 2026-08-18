@@ -405,6 +405,7 @@ pub fn normalize_p_let<'ast>(
 //rholang/src/test/scala/coop/rchain/rholang/interpreter/LetSpec.scala
 #[cfg(test)]
 mod tests {
+    use models::rhoapi::{Match, New, Send as RhoSend};
     use rholang_parser::SourcePos;
 
     use crate::rust::interpreter::test_utils::utils::proc_visit_inputs_and_env;
@@ -452,7 +453,7 @@ mod tests {
 
         // Should transform into a match process
         let normalized = result.unwrap();
-        assert!(normalized.par.matches.len() > 0);
+        assert!(normalized.par.family_cardinality::<Match>() > 0);
     }
 
     #[test]
@@ -497,7 +498,7 @@ mod tests {
 
         // Should transform into a new process with sends and receives
         let normalized = result.unwrap();
-        assert!(normalized.par.news.len() > 0); // Should have new declarations
+        assert!(normalized.par.family_cardinality::<New>() > 0); // Should have new declarations
     }
 
     #[test]
@@ -552,7 +553,7 @@ mod tests {
 
         // Should transform into a match process with list pattern
         let normalized = result.unwrap();
-        assert!(normalized.par.matches.len() > 0);
+        assert!(normalized.par.family_cardinality::<Match>() > 0);
     }
 
     #[test]
@@ -591,7 +592,7 @@ mod tests {
 
         // Should just normalize the body directly
         let normalized = result.unwrap();
-        assert!(normalized.par.sends.len() > 0);
+        assert!(normalized.par.family_cardinality::<RhoSend>() > 0);
     }
 
     #[test]
@@ -657,6 +658,6 @@ mod tests {
 
         // Should transform into nested match processes
         let normalized = result.unwrap();
-        assert!(normalized.par.matches.len() > 0);
+        assert!(normalized.par.family_cardinality::<Match>() > 0);
     }
 }

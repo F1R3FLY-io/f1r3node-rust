@@ -120,7 +120,8 @@ fn main() {
             std::mem::forget(term);
             for _ in 0..8 {
                 let decoded = Par::cold_decode(&bytes).expect("decode");
-                sink += decoded.exprs.len();
+                sink += usize::try_from(decoded.family_cardinality::<Expr>())
+                    .expect("benchmark fixture Expr cardinality fits usize");
                 std::mem::forget(decoded);
             }
         }

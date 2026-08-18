@@ -246,15 +246,25 @@ mod tests {
 
         // Must be exactly one EList expr, with one Par element holding the
         // primary GDeployerId.
-        assert_eq!(cosigners_par.exprs.len(), 1);
-        let elist = match &cosigners_par.exprs[0].expr_instance {
+        assert_eq!(cosigners_par.family_cardinality::<Expr>(), 1);
+        let expr = cosigners_par
+            .first::<Expr>()
+            .expect("cosigners Expr endpoint decodes")
+            .expect("cosigners has one Expr")
+            .0;
+        let elist = match expr.expr_instance {
             Some(ExprInstance::EListBody(elist)) => elist,
             other => panic!("expected EList expr_instance, got {:?}", other),
         };
         assert_eq!(elist.ps.len(), 1);
         let inner_par = &elist.ps[0];
-        assert_eq!(inner_par.unforgeables.len(), 1);
-        let deployer_id = match &inner_par.unforgeables[0].unf_instance {
+        assert_eq!(inner_par.family_cardinality::<GUnforgeable>(), 1);
+        let unforgeable = inner_par
+            .first::<GUnforgeable>()
+            .expect("deployer-id endpoint decodes")
+            .expect("inner Par has one unforgeable")
+            .0;
+        let deployer_id = match unforgeable.unf_instance {
             Some(UnfInstance::GDeployerIdBody(d)) => d,
             other => panic!("expected GDeployerIdBody, got {:?}", other),
         };
@@ -299,7 +309,12 @@ mod tests {
         let cosigners_par = env
             .get(SYSTEM_COSIGNERS_URI)
             .expect("Missing rho:system:cosigners");
-        let elist = match &cosigners_par.exprs[0].expr_instance {
+        let expr = cosigners_par
+            .first::<Expr>()
+            .expect("cosigners Expr endpoint decodes")
+            .expect("cosigners has one Expr")
+            .0;
+        let elist = match expr.expr_instance {
             Some(ExprInstance::EListBody(elist)) => elist,
             other => panic!("expected EList, got {:?}", other),
         };
@@ -310,9 +325,16 @@ mod tests {
         let recovered_pks: Vec<Vec<u8>> = elist
             .ps
             .iter()
-            .map(|p| match &p.unforgeables[0].unf_instance {
-                Some(UnfInstance::GDeployerIdBody(d)) => d.public_key.clone(),
-                _ => panic!("expected GDeployerIdBody"),
+            .map(|p| {
+                let unforgeable = p
+                    .first::<GUnforgeable>()
+                    .expect("cosigner endpoint decodes")
+                    .expect("cosigner has one unforgeable")
+                    .0;
+                match unforgeable.unf_instance {
+                    Some(UnfInstance::GDeployerIdBody(d)) => d.public_key.clone(),
+                    _ => panic!("expected GDeployerIdBody"),
+                }
             })
             .collect();
         let expected_order: Vec<Vec<u8>> = cosigned
@@ -326,7 +348,12 @@ mod tests {
         let system_deployer_id = env
             .get(SYSTEM_DEPLOYER_ID_URI)
             .expect("Missing rho:system:deployerId");
-        let primary_pk_in_env = match &system_deployer_id.unforgeables[0].unf_instance {
+        let primary = system_deployer_id
+            .first::<GUnforgeable>()
+            .expect("primary deployer endpoint decodes")
+            .expect("primary deployer has one unforgeable")
+            .0;
+        let primary_pk_in_env = match primary.unf_instance {
             Some(UnfInstance::GDeployerIdBody(d)) => d.public_key.clone(),
             _ => panic!("expected GDeployerIdBody"),
         };

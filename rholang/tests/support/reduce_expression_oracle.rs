@@ -54,8 +54,8 @@ macro_rules! reducer_expression_oracle_methods {
             par: &Par,
             env: &Env<Par>,
         ) -> Result<Par, InterpreterError> {
-            let evaled_exprs = par
-                .exprs
+            let expressions = par.decode_occurrences::<Expr>();
+            let evaled_exprs = expressions
                 .iter()
                 .map(|expr| self.eval_expr_to_par_recursive(expr, env))
                 .collect::<Result<Vec<_>, InterpreterError>>()?;
@@ -415,19 +415,20 @@ macro_rules! reducer_expression_oracle_methods {
             p: &Par,
             env: &Env<Par>,
         ) -> Result<Expr, InterpreterError> {
-            if !p.sends.is_empty()
-                || !p.receives.is_empty()
-                || !p.news.is_empty()
-                || !p.matches.is_empty()
-                || !p.unforgeables.is_empty()
-                || !p.bundles.is_empty()
+            if p.family_cardinality::<Send>() != 0
+                || p.family_cardinality::<Receive>() != 0
+                || p.family_cardinality::<New>() != 0
+                || p.family_cardinality::<Match>() != 0
+                || p.family_cardinality::<GUnforgeable>() != 0
+                || p.family_cardinality::<Bundle>() != 0
             {
                 Err(InterpreterError::ReduceError(String::from(
                     "Error: parallel or non expression found where expression expected.",
                 )))
             } else {
-                match p.exprs.as_slice() {
-                    [e] => Ok(self.eval_expr_to_expr_recursive(e, env)?),
+                let expressions = p.decode_occurrences::<Expr>();
+                match expressions.as_slice() {
+                    [e] => self.eval_expr_to_expr_recursive(e, env),
                     _ => Err(InterpreterError::ReduceError(
                         "Error: Multiple expressions given.".to_string(),
                     )),
@@ -437,18 +438,19 @@ macro_rules! reducer_expression_oracle_methods {
 
         #[cfg(test)]
         fn eval_to_i64_recursive(&self, p: &Par, env: &Env<Par>) -> Result<i64, InterpreterError> {
-            if !p.sends.is_empty()
-                && !p.receives.is_empty()
-                && !p.news.is_empty()
-                && !p.matches.is_empty()
-                && !p.unforgeables.is_empty()
-                && !p.bundles.is_empty()
+            if p.family_cardinality::<Send>() != 0
+                && p.family_cardinality::<Receive>() != 0
+                && p.family_cardinality::<New>() != 0
+                && p.family_cardinality::<Match>() != 0
+                && p.family_cardinality::<GUnforgeable>() != 0
+                && p.family_cardinality::<Bundle>() != 0
             {
                 Err(InterpreterError::ReduceError(String::from(
                     "Error: parallel or non expression found where expression expected.",
                 )))
             } else {
-                match p.exprs.as_slice() {
+                let expressions = p.decode_occurrences::<Expr>();
+                match expressions.as_slice() {
                     [Expr {
                         expr_instance: Some(ExprInstance::GInt(v)),
                     }] => Ok(*v),
@@ -475,18 +477,19 @@ macro_rules! reducer_expression_oracle_methods {
             p: &Par,
             env: &Env<Par>,
         ) -> Result<bool, InterpreterError> {
-            if !p.sends.is_empty()
-                && !p.receives.is_empty()
-                && !p.news.is_empty()
-                && !p.matches.is_empty()
-                && !p.unforgeables.is_empty()
-                && !p.bundles.is_empty()
+            if p.family_cardinality::<Send>() != 0
+                && p.family_cardinality::<Receive>() != 0
+                && p.family_cardinality::<New>() != 0
+                && p.family_cardinality::<Match>() != 0
+                && p.family_cardinality::<GUnforgeable>() != 0
+                && p.family_cardinality::<Bundle>() != 0
             {
                 Err(InterpreterError::ReduceError(String::from(
                     "Error: parallel or non expression found where expression expected.",
                 )))
             } else {
-                match p.exprs.as_slice() {
+                let expressions = p.decode_occurrences::<Expr>();
+                match expressions.as_slice() {
                     [Expr {
                         expr_instance: Some(ExprInstance::GBool(b)),
                     }] => Ok(*b),

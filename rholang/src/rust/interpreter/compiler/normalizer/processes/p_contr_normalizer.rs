@@ -73,7 +73,7 @@ pub(crate) fn combine_p_contr<'ast>(
         // ★ Leg-1 at the reader AND the accumulator: `HasLocallyFree<Par>` is a
         // by-value field read, so the recursive form paid TWO deep clones per
         // formal to obtain one cached bitset.
-        let formal_locally_free = result.par.locally_free.clone();
+        let formal_locally_free = result.par.locally_free().to_vec();
         k.acc_patterns.insert(0, result.par);
         k.acc_free = result.free_map;
         k.acc_locally_free = union(std::mem::take(&mut k.acc_locally_free), formal_locally_free);
@@ -86,7 +86,7 @@ pub(crate) fn combine_p_contr<'ast>(
             acc_locally_free,
             remainder,
             bound_count,
-            mut input,
+            input,
             ..
         } = *k;
         let name_match_result =
@@ -94,10 +94,10 @@ pub(crate) fn combine_p_contr<'ast>(
 
         // The source-name cache is copied in the recursive implementation;
         // the body cache is transferred to `Receive::locally_free`.
-        let name_locally_free = name_match_result.par.locally_free.clone();
-        let name_connective_used = name_match_result.par.connective_used;
-        let body_locally_free = std::mem::take(&mut body_result.par.locally_free);
-        let body_connective_used = body_result.par.connective_used;
+        let name_locally_free = name_match_result.par.locally_free().to_vec();
+        let name_connective_used = name_match_result.par.connective_used();
+        let body_locally_free = body_result.par.take_locally_free();
+        let body_connective_used = body_result.par.connective_used();
         let receive = Receive {
             binds: vec![ReceiveBind {
                 patterns: acc_patterns.into_iter().rev().collect(),

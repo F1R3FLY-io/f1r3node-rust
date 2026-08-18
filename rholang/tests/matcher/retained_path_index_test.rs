@@ -21,11 +21,9 @@ use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
 fn integer(value: i64) -> Par {
-    let mut par = Par::default();
-    par.exprs.push(Expr {
+    Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::GInt(value)),
-    });
-    par
+    }])
 }
 
 fn datum(par: Par) -> ListParWithRandom {

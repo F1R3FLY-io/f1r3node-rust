@@ -899,21 +899,21 @@ fn a_method_pattern_refuses_a_different_arity() {
 fn a_matches_pattern_compares_its_right_hand_side_by_equality() {
     let int_connective = || {
         let mut par = Par::default();
-        par.connectives = vec![models::rhoapi::Connective {
+        par.replace_connectives(vec![models::rhoapi::Connective {
             connective_instance: Some(models::rhoapi::connective::ConnectiveInstance::ConnInt(
                 true,
             )),
-        }];
+        }]);
         par.connective_used = true;
         par
     };
     let string_connective = || {
         let mut par = Par::default();
-        par.connectives = vec![models::rhoapi::Connective {
+        par.replace_connectives(vec![models::rhoapi::Connective {
             connective_instance: Some(models::rhoapi::connective::ConnectiveInstance::ConnString(
                 true,
             )),
-        }];
+        }]);
         par.connective_used = true;
         par
     };
@@ -1417,9 +1417,12 @@ fn strip_first_optional_child(instance: ExprInstance) -> Option<ExprInstance> {
              the shape axis is closed at the decoder and these dispositions are stale."
         )
     });
-    let stripped = decoded.exprs[0]
+    let stripped = decoded
+        .first::<Expr>()
+        .expect("resident expression decodes")
+        .expect("the stripped Par keeps one Expr")
+        .0
         .expr_instance
-        .clone()
         .expect("the stripped Par keeps its expr_instance");
     let mut children_after: Vec<&Par> = Vec::new();
     expr_instance_child_pars(&stripped, &mut children_after);

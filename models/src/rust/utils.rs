@@ -1,12 +1,8 @@
 use std::collections::BTreeMap;
 
 use expr::ExprInstance;
-use rspace_plus_plus::rspace::bag::Multiplicity;
 use serde::{Deserialize, Serialize};
 
-use super::par_bag::{
-    BagError, ParBagCodecError, ParBagComponent, ParBagVisitError, ParComponentItem,
-};
 use super::par_map::ParMap;
 use super::par_map_type_mapper::ParMapTypeMapper;
 use super::par_set::ParSet;
@@ -24,484 +20,6 @@ use crate::rust::utils::var::WildcardMsg;
 pub struct OptionResult<A, K> {
     pub continuation: K,
     pub data: A,
-}
-
-/// Transitional component-family projection implemented only by Prost's
-/// generated `Par`. Production callers use the representation-independent
-/// methods below; this projection disappears when `.rhoapi.Par` is extern-
-/// pathed to the repository-owned PathMap representation.
-#[doc(hidden)]
-pub trait GeneratedParComponent: ParBagComponent + Clone {
-    fn generated_family(par: &Par) -> &[Self];
-    fn take_generated_family(par: &mut Par) -> Vec<Self>;
-}
-
-macro_rules! generated_par_component {
-    ($component:ty, $field:ident) => {
-        impl GeneratedParComponent for $component {
-            fn generated_family(par: &Par) -> &[Self] { &par.$field }
-            fn take_generated_family(par: &mut Par) -> Vec<Self> { std::mem::take(&mut par.$field) }
-        }
-    };
-}
-
-generated_par_component!(Send, sends);
-generated_par_component!(Receive, receives);
-generated_par_component!(New, news);
-generated_par_component!(Expr, exprs);
-generated_par_component!(Match, matches);
-generated_par_component!(GUnforgeable, unforgeables);
-generated_par_component!(Bundle, bundles);
-generated_par_component!(Connective, connectives);
-generated_par_component!(If, conditionals);
-
-fn scale_generated_family<T: Clone>(values: Vec<T>, factor: u64) -> Result<Vec<T>, BagError> {
-    match factor {
-        0 => return Ok(Vec::new()),
-        1 => return Ok(values),
-        _ => {}
-    }
-    let current = u64::try_from(values.len()).expect("a generated family length fits u64");
-    let factor_usize = usize::try_from(factor)
-        .map_err(|_| BagError::MultiplicityProductOverflow { current, factor })?;
-    let capacity = values
-        .len()
-        .checked_mul(factor_usize)
-        .ok_or(BagError::MultiplicityProductOverflow { current, factor })?;
-    let mut scaled = Vec::with_capacity(capacity);
-    for _ in 1..factor {
-        scaled.extend(values.iter().cloned());
-    }
-    scaled.extend(values);
-    Ok(scaled)
-}
-
-// Adding helper functions 'with_*' to protobuf message 'Par'
-impl Par {
-    pub fn locally_free(&self) -> &[u8] { &self.locally_free }
-
-    pub const fn connective_used(&self) -> bool { self.connective_used }
-
-    pub fn components_is_empty(&self) -> bool {
-        self.sends.is_empty()
-            && self.receives.is_empty()
-            && self.news.is_empty()
-            && self.exprs.is_empty()
-            && self.matches.is_empty()
-            && self.unforgeables.is_empty()
-            && self.bundles.is_empty()
-            && self.connectives.is_empty()
-            && self.conditionals.is_empty()
-    }
-
-    pub fn cardinality(&self) -> u64 {
-        [
-            self.sends.len(),
-            self.receives.len(),
-            self.news.len(),
-            self.exprs.len(),
-            self.matches.len(),
-            self.unforgeables.len(),
-            self.bundles.len(),
-            self.connectives.len(),
-            self.conditionals.len(),
-        ]
-        .into_iter()
-        .map(|length| u64::try_from(length).expect("a generated family length fits u64"))
-        .fold(0, u64::saturating_add)
-    }
-
-    pub fn cardinality_is_saturated(&self) -> bool {
-        let mut total = 0u64;
-        for length in [
-            self.sends.len(),
-            self.receives.len(),
-            self.news.len(),
-            self.exprs.len(),
-            self.matches.len(),
-            self.unforgeables.len(),
-            self.bundles.len(),
-            self.connectives.len(),
-            self.conditionals.len(),
-        ] {
-            let length = u64::try_from(length).expect("a generated family length fits u64");
-            let Some(next) = total.checked_add(length) else {
-                return true;
-            };
-            total = next;
-        }
-        false
-    }
-
-    /// Visit each semantic occurrence without exposing the generated repeated
-    /// field. This has the same call surface as the PathMap-backed `Par` and is
-    /// removed with the generated representation at the final extern cutover.
-    pub fn try_visit_occurrences<T, E>(
-        &self,
-        mut visitor: impl FnMut(&T) -> Result<(), E>,
-    ) -> Result<(), ParBagVisitError<E>>
-    where
-        T: GeneratedParComponent,
-    {
-        for value in T::generated_family(self) {
-            visitor(value).map_err(ParBagVisitError::Visitor)?;
-        }
-        Ok(())
-    }
-
-    pub fn try_visit_decoded<T, E>(
-        &self,
-        mut visitor: impl FnMut(T, Multiplicity) -> Result<(), E>,
-    ) -> Result<(), ParBagVisitError<E>>
-    where
-        T: GeneratedParComponent,
-    {
-        for value in T::generated_family(self) {
-            visitor(value.clone(), Multiplicity::ONE).map_err(ParBagVisitError::Visitor)?;
-        }
-        Ok(())
-    }
-
-    /// Transitional zero-clone worklist feed. Generated `Par` lends its
-    /// existing repeated-field elements; PathMap `Par` yields owned values
-    /// decoded once per distinct endpoint through the same call surface.
-    pub fn try_visit_components<'a, T, E>(
-        &'a self,
-        mut visitor: impl FnMut(ParComponentItem<'a, T>, Multiplicity) -> Result<(), E>,
-    ) -> Result<(), ParBagVisitError<E>>
-    where
-        T: GeneratedParComponent,
-    {
-        for value in T::generated_family(self) {
-            visitor(ParComponentItem::Borrowed(value), Multiplicity::ONE)
-                .map_err(ParBagVisitError::Visitor)?;
-        }
-        Ok(())
-    }
-
-    /// Consuming counterpart for an owned worklist node. Values move out of
-    /// the generated repeated field instead of cloning its recursive subtree.
-    pub fn try_into_components<T, E>(
-        mut self,
-        mut visitor: impl FnMut(T, Multiplicity) -> Result<(), E>,
-    ) -> Result<(), ParBagVisitError<E>>
-    where
-        T: GeneratedParComponent,
-    {
-        for value in T::take_generated_family(&mut self) {
-            visitor(value, Multiplicity::ONE).map_err(ParBagVisitError::Visitor)?;
-        }
-        Ok(())
-    }
-
-    pub fn first<T>(&self) -> Result<Option<(T, Multiplicity)>, ParBagCodecError>
-    where T: GeneratedParComponent {
-        Ok(T::generated_family(self)
-            .first()
-            .cloned()
-            .map(|value| (value, Multiplicity::ONE)))
-    }
-
-    pub fn family_cardinality<T>(&self) -> u64
-    where T: GeneratedParComponent {
-        u64::try_from(T::generated_family(self).len())
-            .expect("a generated Par family length fits u64")
-    }
-
-    pub fn family_cardinality_is_saturated<T>(&self) -> bool
-    where T: GeneratedParComponent {
-        false
-    }
-
-    /// Transitional count of values emitted by [`Self::try_visit_decoded`].
-    /// The generated representation stores every occurrence separately, so
-    /// this equals cardinality. The PathMap-backed representation returns the
-    /// number of distinct trie endpoints instead.
-    pub fn family_distinct_len<T>(&self) -> usize
-    where T: GeneratedParComponent {
-        T::generated_family(self).len()
-    }
-
-    pub fn replace_sends(&mut self, values: Vec<Send>) { self.sends = values }
-
-    pub fn replace_receives(&mut self, values: Vec<Receive>) { self.receives = values }
-
-    pub fn replace_news(&mut self, values: Vec<New>) { self.news = values }
-
-    pub fn replace_exprs(&mut self, values: Vec<Expr>) { self.exprs = values }
-
-    pub fn replace_matches(&mut self, values: Vec<Match>) { self.matches = values }
-
-    pub fn replace_unforgeables(&mut self, values: Vec<GUnforgeable>) {
-        self.unforgeables = values;
-    }
-
-    pub fn replace_bundles(&mut self, values: Vec<Bundle>) { self.bundles = values }
-
-    pub fn replace_connectives(&mut self, values: Vec<Connective>) { self.connectives = values }
-
-    pub fn replace_conditionals(&mut self, values: Vec<If>) { self.conditionals = values }
-
-    pub fn replace_locally_free(&mut self, locally_free: Vec<u8>) {
-        self.locally_free = locally_free;
-    }
-
-    pub const fn replace_connective_used(&mut self, connective_used: bool) {
-        self.connective_used = connective_used;
-    }
-
-    pub fn parallel(mut self, mut other: Self) -> Result<Self, BagError> {
-        self.sends.append(&mut other.sends);
-        self.receives.append(&mut other.receives);
-        self.news.append(&mut other.news);
-        self.exprs.append(&mut other.exprs);
-        self.matches.append(&mut other.matches);
-        self.unforgeables.append(&mut other.unforgeables);
-        self.bundles.append(&mut other.bundles);
-        self.connectives.append(&mut other.connectives);
-        self.conditionals.append(&mut other.conditionals);
-        self.locally_free = union(
-            std::mem::take(&mut self.locally_free),
-            std::mem::take(&mut other.locally_free),
-        );
-        self.connective_used |= other.connective_used;
-        Ok(self)
-    }
-
-    pub fn scale_occurrences(mut self, factor: u64) -> Result<Self, BagError> {
-        match factor {
-            0 => return Ok(Self::default()),
-            1 => return Ok(self),
-            _ => {}
-        }
-        Ok(Self {
-            sends: scale_generated_family(std::mem::take(&mut self.sends), factor)?,
-            receives: scale_generated_family(std::mem::take(&mut self.receives), factor)?,
-            news: scale_generated_family(std::mem::take(&mut self.news), factor)?,
-            exprs: scale_generated_family(std::mem::take(&mut self.exprs), factor)?,
-            matches: scale_generated_family(std::mem::take(&mut self.matches), factor)?,
-            unforgeables: scale_generated_family(std::mem::take(&mut self.unforgeables), factor)?,
-            bundles: scale_generated_family(std::mem::take(&mut self.bundles), factor)?,
-            connectives: scale_generated_family(std::mem::take(&mut self.connectives), factor)?,
-            conditionals: scale_generated_family(std::mem::take(&mut self.conditionals), factor)?,
-            locally_free: std::mem::take(&mut self.locally_free),
-            connective_used: self.connective_used,
-        })
-    }
-
-    pub fn with_sends(&self, new_sends: Vec<Send>) -> Par {
-        let mut out = self.clone();
-        out.sends = new_sends;
-        out
-    }
-
-    pub fn with_receives(&self, new_receives: Vec<Receive>) -> Par {
-        let mut out = self.clone();
-        out.receives = new_receives;
-        out
-    }
-
-    pub fn with_news(&self, new_news: Vec<New>) -> Par {
-        let mut out = self.clone();
-        out.news = new_news;
-        out
-    }
-
-    pub fn with_exprs(&self, new_exprs: Vec<Expr>) -> Par {
-        // Do not clone the family that is being replaced.  In particular,
-        // evaluator reassembly calls this once per nesting level; cloning the
-        // old recursive expression subtree here and immediately discarding it
-        // turns an otherwise-linear PDA traversal into quadratic work.
-        Par {
-            sends: self.sends.clone(),
-            receives: self.receives.clone(),
-            news: self.news.clone(),
-            exprs: new_exprs,
-            matches: self.matches.clone(),
-            unforgeables: self.unforgeables.clone(),
-            bundles: self.bundles.clone(),
-            connectives: self.connectives.clone(),
-            conditionals: self.conditionals.clone(),
-            locally_free: self.locally_free.clone(),
-            connective_used: self.connective_used,
-        }
-    }
-
-    pub fn with_matches(&self, new_matches: Vec<Match>) -> Par {
-        let mut out = self.clone();
-        out.matches = new_matches;
-        out
-    }
-
-    pub fn with_bundles(&self, new_bundles: Vec<Bundle>) -> Par {
-        let mut out = self.clone();
-        out.bundles = new_bundles;
-        out
-    }
-
-    pub fn with_unforgeables(&self, new_unforgeables: Vec<GUnforgeable>) -> Par {
-        let mut out = self.clone();
-        out.unforgeables = new_unforgeables;
-        out
-    }
-
-    pub fn with_connectives(&self, new_connectives: Vec<Connective>) -> Par {
-        let mut out = self.clone();
-        out.connectives = new_connectives;
-        out
-    }
-
-    pub fn with_locally_free(&self, new_locally_free: Vec<u8>) -> Par {
-        let mut out = self.clone();
-        out.locally_free = new_locally_free;
-        out
-    }
-
-    pub fn with_connective_used(&self, new_connective_used: bool) -> Par {
-        let mut out = self.clone();
-        out.connective_used = new_connective_used;
-        out
-    }
-
-    // See models/src/main/scala/coop/rchain/models/rholang/implicits.scala - prepend
-    pub fn prepend_send(&mut self, s: Send) -> Par {
-        // LEG-1: `s` is OWNED by this function, so it is MOVED into the vector
-        // rather than deep-cloned. `<Send as Clone>::clone` recurses through the
-        // whole `Par` subtree — a Theta(depth) NATIVE-STACK traversal (2.78
-        // KiB/level release) paid once per prepend. Its two cached fields are read
-        // BEFORE the move. See docs/design/audits/theta-depth-traversals-2026-07-26.md.
-        let locally_free = union(self.locally_free.clone(), s.locally_free.clone());
-        let connective_used = self.connective_used || s.connective_used;
-
-        let mut new_sends = Vec::with_capacity(self.sends.len() + 1);
-        new_sends.push(s);
-        new_sends.append(&mut self.sends);
-
-        let mut out = self.clone();
-        out.sends = new_sends;
-        out.locally_free = locally_free;
-        out.connective_used = connective_used;
-        out
-    }
-
-    pub fn prepend_receive(&mut self, r: Receive) -> Par {
-        // LEG-1: `r` is OWNED by this function, so it is MOVED into the vector
-        // rather than deep-cloned. `<Receive as Clone>::clone` recurses through the
-        // whole `Par` subtree — a Theta(depth) NATIVE-STACK traversal (2.78
-        // KiB/level release) paid once per prepend. Its two cached fields are read
-        // BEFORE the move. See docs/design/audits/theta-depth-traversals-2026-07-26.md.
-        let locally_free = union(self.locally_free.clone(), r.locally_free.clone());
-        let connective_used = self.connective_used || r.connective_used;
-
-        let mut new_receives = Vec::with_capacity(self.receives.len() + 1);
-        new_receives.push(r);
-        new_receives.append(&mut self.receives);
-
-        let mut out = self.clone();
-        out.receives = new_receives;
-        out.locally_free = locally_free;
-        out.connective_used = connective_used;
-        out
-    }
-
-    pub fn prepend_match(&mut self, m: Match) -> Par {
-        // LEG-1: `m` is OWNED by this function, so it is MOVED into the vector
-        // rather than deep-cloned. `<Match as Clone>::clone` recurses through the
-        // whole `Par` subtree — a Theta(depth) NATIVE-STACK traversal (2.78
-        // KiB/level release) paid once per prepend. Its two cached fields are read
-        // BEFORE the move. See docs/design/audits/theta-depth-traversals-2026-07-26.md.
-        let locally_free = union(self.locally_free.clone(), m.locally_free.clone());
-        let connective_used = self.connective_used || m.connective_used;
-
-        let mut new_matches = Vec::with_capacity(self.matches.len() + 1);
-        new_matches.push(m);
-        new_matches.append(&mut self.matches);
-
-        let mut out = self.clone();
-        out.matches = new_matches;
-        out.locally_free = locally_free;
-        out.connective_used = connective_used;
-        out
-    }
-
-    pub fn prepend_if(&mut self, i: If) -> Par {
-        // LEG-1: `i` is OWNED by this function, so it is MOVED into the vector
-        // rather than deep-cloned. `<If as Clone>::clone` recurses through the
-        // whole `Par` subtree — a Theta(depth) NATIVE-STACK traversal (2.78
-        // KiB/level release) paid once per prepend. Its two cached fields are read
-        // BEFORE the move. See docs/design/audits/theta-depth-traversals-2026-07-26.md.
-        let locally_free = union(self.locally_free.clone(), i.locally_free.clone());
-        let connective_used = self.connective_used || i.connective_used;
-
-        let mut new_conditionals = Vec::with_capacity(self.conditionals.len() + 1);
-        new_conditionals.push(i);
-        new_conditionals.append(&mut self.conditionals);
-
-        let mut out = self.clone();
-        out.conditionals = new_conditionals;
-        out.locally_free = locally_free;
-        out.connective_used = connective_used;
-        out
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.sends.is_empty()
-            && self.receives.is_empty()
-            && self.news.is_empty()
-            && self.matches.is_empty()
-            && self.bundles.is_empty()
-            && self.exprs.is_empty()
-    }
-
-    pub fn is_nil(&self) -> bool {
-        self.sends.is_empty()
-            && self.receives.is_empty()
-            && self.news.is_empty()
-            && self.matches.is_empty()
-            && self.bundles.is_empty()
-            && self.unforgeables.is_empty()
-            && self.connectives.is_empty()
-            && self.exprs.is_empty()
-    }
-
-    pub fn single_connective(&self) -> Option<Connective> {
-        if self.sends.is_empty()
-            && self.receives.is_empty()
-            && self.news.is_empty()
-            && self.exprs.is_empty()
-            && self.matches.is_empty()
-            && self.bundles.is_empty()
-            && self.connectives.len() == 1
-        {
-            Some(self.connectives[0].clone())
-        } else {
-            None
-        }
-    }
-
-    pub fn single_bundle(&self) -> Option<Bundle> {
-        if self.sends.is_empty()
-            && self.receives.is_empty()
-            && self.news.is_empty()
-            && self.exprs.is_empty()
-            && self.matches.is_empty()
-            && self.unforgeables.is_empty()
-            && self.connectives.is_empty()
-        {
-            match self.bundles.as_slice() {
-                [single] => Some(single.clone()),
-                _ => None,
-            }
-        } else {
-            None
-        }
-    }
-
-    pub fn append(&self, other: Par) -> Par {
-        self.clone()
-            .parallel(other)
-            .expect("generated Par composition cannot overflow a compact multiplicity")
-    }
 }
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/package.scala - FreeMap
@@ -765,7 +283,24 @@ pub fn union(bitset1: Vec<u8>, bitset2: Vec<u8>) -> Vec<u8> {
 }
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/ParSpatialMatcherUtils.scala - noFrees[Par]
-pub fn no_frees(par: &Par) -> Par { par.with_exprs(no_frees_exprs(&par.exprs)) }
+pub fn no_frees(par: &Par) -> Par {
+    let mut exprs = Vec::with_capacity(par.family_cardinality::<Expr>() as usize);
+    par.try_visit_occurrences::<Expr, std::convert::Infallible>(|expr| {
+        if !matches!(
+            &expr.expr_instance,
+            Some(EVarBody(EVar {
+                v: Some(Var {
+                    var_instance: Some(FreeVar(_) | Wildcard(_)),
+                }),
+            }))
+        ) {
+            exprs.push(expr.clone());
+        }
+        Ok(())
+    })
+    .expect("canonical resident Expr components decode");
+    par.with_exprs(exprs)
+}
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/ParSpatialMatcherUtils.scala - noFrees[Seq[Expr]]
 pub fn no_frees_exprs(exprs: &[Expr]) -> Vec<Expr> {
@@ -1203,10 +738,10 @@ pub fn new_eplus_par_gint(
 
 pub fn new_eplus_par(lhs_value: Par, rhs_value: Par) -> Par {
     let locally_free = union(
-        lhs_value.locally_free.clone(),
-        rhs_value.locally_free.clone(),
+        lhs_value.locally_free().to_vec(),
+        rhs_value.locally_free().to_vec(),
     );
-    let connective_used = lhs_value.connective_used || rhs_value.connective_used;
+    let connective_used = lhs_value.connective_used() || rhs_value.connective_used();
 
     Par::default()
         .with_exprs(vec![Expr {
@@ -1481,31 +1016,27 @@ pub fn new_par_from_par_set(
 ) -> Par {
     let par_set = ParSet::new(elements, connective_used, locally_free, remainder);
 
-    let mut out = Par::default();
-    out.exprs.push(Expr {
+    Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ESetBody(ParSetTypeMapper::par_set_to_eset(par_set))),
-    });
-    out
+    }])
 }
 
 pub fn new_gbytearray_par(bytes: Vec<u8>, locally_free: Vec<u8>, connective_used: bool) -> Par {
-    let mut out = Par::default();
-    out.exprs.push(Expr {
-        expr_instance: Some(GByteArray(bytes)),
-    });
-    out.locally_free = locally_free;
-    out.connective_used = connective_used;
-    out
+    Par::default()
+        .with_exprs(vec![Expr {
+            expr_instance: Some(GByteArray(bytes)),
+        }])
+        .with_locally_free(locally_free)
+        .with_connective_used(connective_used)
 }
 
 pub fn new_gsys_auth_token_par(locally_free: Vec<u8>, connective_used: bool) -> Par {
-    let mut out = Par::default();
-    out.unforgeables.push(GUnforgeable {
-        unf_instance: Some(UnfInstance::GSysAuthTokenBody(GSysAuthToken {})),
-    });
-    out.locally_free = locally_free;
-    out.connective_used = connective_used;
-    out
+    Par::default()
+        .with_unforgeables(vec![GUnforgeable {
+            unf_instance: Some(UnfInstance::GSysAuthTokenBody(GSysAuthToken {})),
+        }])
+        .with_locally_free(locally_free)
+        .with_connective_used(connective_used)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

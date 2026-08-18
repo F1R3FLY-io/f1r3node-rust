@@ -6,8 +6,8 @@ use std::hash::{Hash, Hasher};
 
 use super::match_path::{
     ABSENT, BOOL, BYTES, BYTES_SEQUENCE, FIELD_END, FIELD_START, I32, I64, MAP_END, MAP_KEY,
-    MAP_START, NODE_END, NODE_START, ONEOF_END, ONEOF_START, PATHMAP, RHO_MATCH_PATH_VERSION,
-    SEQUENCE_END, SEQUENCE_START, STRING, STRING_SEQUENCE, U32, U64,
+    MAP_START, NODE_END, NODE_START, ONEOF_END, ONEOF_START, PAR_BAG, PATHMAP,
+    RHO_MATCH_PATH_VERSION, SEQUENCE_END, SEQUENCE_START, STRING, STRING_SEQUENCE, U32, U64,
 };
 use super::match_schema::{
     RhoMatchField, RhoMatchFieldKind, RhoMatchOneofVariant, RhoMatchPayloadKind, RhoMatchProgram,
@@ -24,6 +24,10 @@ pub enum RhoMatchPathErrorKind {
     InvalidBool(u8),
     InvalidPathMapMode(u8),
     NeutralPathMapHasEntries(u64),
+    InvalidParBagCardinality {
+        distinct: u64,
+        cardinality: u64,
+    },
     UnknownToken(u8),
     UnknownTypeId(u16),
     UnexpectedTypeId {
@@ -77,6 +81,13 @@ impl fmt::Display for RhoMatchPathError {
             RhoMatchPathErrorKind::NeutralPathMapHasEntries(len) => {
                 write!(f, "neutral EPathMap carries {len} entries")
             }
+            RhoMatchPathErrorKind::InvalidParBagCardinality {
+                distinct,
+                cardinality,
+            } => write!(
+                f,
+                "ParBag cardinality {cardinality} cannot represent {distinct} distinct endpoints"
+            ),
             RhoMatchPathErrorKind::UnknownToken(token) => {
                 write!(f, "unknown token {token:#04x}")
             }
@@ -158,6 +169,11 @@ pub enum RhoMatchPathToken<'a> {
         len: u64,
         digest: &'a [u8; 32],
     },
+    ParBag {
+        distinct: u64,
+        cardinality: u64,
+        digest: &'a [u8; 32],
+    },
 }
 
 impl RhoMatchPathToken<'_> {
@@ -177,6 +193,7 @@ impl RhoMatchPathToken<'_> {
             Self::OneofStart(_) => "oneof",
             Self::OneofEnd => "oneof end",
             Self::PathMap { .. } => "PathMap",
+            Self::ParBag { .. } => "ParBag",
         }
     }
 }
@@ -320,6 +337,25 @@ impl<'a> EncodedRhoMatchPathCursor<'a> {
                 }
                 let digest = self.take_array()?;
                 RhoMatchPathToken::PathMap { mode, len, digest }
+            }
+            PAR_BAG => {
+                let distinct = self.take_u64()?;
+                let cardinality = self.take_u64()?;
+                if cardinality < distinct || (distinct == 0) != (cardinality == 0) {
+                    return Err(self.error_at(
+                        start,
+                        RhoMatchPathErrorKind::InvalidParBagCardinality {
+                            distinct,
+                            cardinality,
+                        },
+                    ));
+                }
+                let digest = self.take_array()?;
+                RhoMatchPathToken::ParBag {
+                    distinct,
+                    cardinality,
+                    digest,
+                }
             }
             token => {
                 return Err(self.error_at(start, RhoMatchPathErrorKind::UnknownToken(token)));
@@ -522,6 +558,16 @@ fn append_canonical_token(output: &mut Vec<u8>, token: RhoMatchPathToken<'_>) {
             output.push(PATHMAP);
             output.push(mode as u8);
             output.extend_from_slice(&len.to_be_bytes());
+            output.extend_from_slice(digest);
+        }
+        RhoMatchPathToken::ParBag {
+            distinct,
+            cardinality,
+            digest,
+        } => {
+            output.push(PAR_BAG);
+            output.extend_from_slice(&distinct.to_be_bytes());
+            output.extend_from_slice(&cardinality.to_be_bytes());
             output.extend_from_slice(digest);
         }
     }
@@ -788,6 +834,10 @@ pub fn validate_match_path(bytes: &[u8]) -> Result<ValidatedRhoMatchPath<'_>, Rh
                 start_value(&mut frames, ValueKind::PathMap, span.start)?;
                 complete_value(&mut frames, span.start)?;
             }
+            RhoMatchPathToken::ParBag { .. } => {
+                start_value(&mut frames, ValueKind::ParBag, span.start)?;
+                complete_value(&mut frames, span.start)?;
+            }
         }
     }
 
@@ -863,6 +913,7 @@ enum ValueKind {
     Map,
     Oneof,
     PathMap,
+    ParBag,
 }
 
 fn scalar_kind(value: RhoMatchPathScalar<'_>) -> ValueKind {
@@ -1042,6 +1093,7 @@ fn field_accepts(expected: RhoMatchFieldKind, actual: ValueKind) -> bool {
         RhoMatchFieldKind::StringMessageMap(_) => actual == ValueKind::Map,
         RhoMatchFieldKind::Oneof(_) => matches!(actual, ValueKind::Absent | ValueKind::Oneof),
         RhoMatchFieldKind::PathMap => actual == ValueKind::PathMap,
+        RhoMatchFieldKind::ParBag => actual == ValueKind::ParBag,
     }
 }
 
@@ -1077,6 +1129,7 @@ fn frame_value_expectation(frame: &ValidationFrame) -> &'static str {
             RhoMatchFieldKind::StringMessageMap(_) => "string/message map",
             RhoMatchFieldKind::Oneof(_) => "oneof or absent value",
             RhoMatchFieldKind::PathMap => "PathMap",
+            RhoMatchFieldKind::ParBag => "ParBag",
         },
         ValidationFrame::Sequence { .. } => "sequence element or sequence end",
         ValidationFrame::Map { state, .. } => match state {
@@ -1115,6 +1168,7 @@ fn value_kind_name(kind: ValueKind) -> &'static str {
         ValueKind::Map => "map",
         ValueKind::Oneof => "oneof",
         ValueKind::PathMap => "PathMap",
+        ValueKind::ParBag => "ParBag",
     }
 }
 
@@ -1147,7 +1201,8 @@ fn value_end(
         RhoMatchPathToken::OneofStart(_) => Some(ONEOF_END),
         RhoMatchPathToken::Scalar(_)
         | RhoMatchPathToken::Absent
-        | RhoMatchPathToken::PathMap { .. } => return Ok(first.end),
+        | RhoMatchPathToken::PathMap { .. }
+        | RhoMatchPathToken::ParBag { .. } => return Ok(first.end),
         _ => return Err(unexpected(first.start, "value", first.token.name())),
     };
     let mut closers = vec![expected.expect("compound value has a closer")];

@@ -67,7 +67,7 @@ use std::collections::BTreeMap;
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
-use models::rhoapi::Par;
+use models::rhoapi::{Bundle, Expr, If, Match, New, Par, Receive, Send};
 use prost::Message;
 
 use super::Sig;
@@ -228,24 +228,24 @@ pub fn demand(desugared: &Par, deploy_sig: &Sig) -> DemandEntry {
 /// channel `Par`) must NOT trigger the `unknown` over-approximation: it is a name
 /// reference, not a process dequotation. Only an `EVar(bound_var|free_var)`
 /// appearing as a top-level PROCESS member is a `*x` drop.
-enum DemandWalkEvent<'a> {
-    Comm(Option<&'a Par>),
+enum DemandWalkEvent {
+    Comm(Option<Par>),
     Unknown,
 }
 
-enum DemandWalkTask<'a> {
-    Visit(&'a Par),
-    Comm(Option<&'a Par>),
-    ScanUnknown(&'a Par),
+enum DemandWalkTask {
+    Visit(Par),
+    Comm(Option<Par>),
+    ScanUnknown(Par),
 }
 
-fn walk_demand_events<'a>(root: &'a Par, mut visit: impl FnMut(DemandWalkEvent<'a>)) {
-    let mut tasks = vec![DemandWalkTask::Visit(root)];
+fn walk_demand_events(root: &Par, mut visit: impl FnMut(DemandWalkEvent)) {
+    let mut tasks = vec![DemandWalkTask::Visit(root.clone())];
     while let Some(task) = tasks.pop() {
         match task {
             DemandWalkTask::Comm(channel) => visit(DemandWalkEvent::Comm(channel)),
             DemandWalkTask::ScanUnknown(par) => {
-                for expr in &par.exprs {
+                for expr in par.decode_occurrences::<Expr>() {
                     if let Some(ExprInstance::EVarBody(evar)) = &expr.expr_instance {
                         if let Some(var) = &evar.v {
                             if matches!(
@@ -258,43 +258,47 @@ fn walk_demand_events<'a>(root: &'a Par, mut visit: impl FnMut(DemandWalkEvent<'
                     }
                 }
             }
-            DemandWalkTask::Visit(par) => {
-                tasks.push(DemandWalkTask::ScanUnknown(par));
+            DemandWalkTask::Visit(mut par) => {
+                tasks.push(DemandWalkTask::ScanUnknown(par.clone()));
 
-                for bundle in par.bundles.iter().rev() {
-                    if let Some(body) = &bundle.body {
+                for bundle in par.take_occurrences::<Bundle>().into_iter().rev() {
+                    if let Some(body) = bundle.body {
                         tasks.push(DemandWalkTask::Visit(body));
                     }
                 }
-                for conditional in par.conditionals.iter().rev() {
-                    if let Some(if_false) = &conditional.if_false {
+                for conditional in par.take_occurrences::<If>().into_iter().rev() {
+                    if let Some(if_false) = conditional.if_false {
                         tasks.push(DemandWalkTask::Visit(if_false));
                     }
-                    if let Some(if_true) = &conditional.if_true {
+                    if let Some(if_true) = conditional.if_true {
                         tasks.push(DemandWalkTask::Visit(if_true));
                     }
                 }
-                for mat in par.matches.iter().rev() {
-                    for case in mat.cases.iter().rev() {
-                        if let Some(source) = &case.source {
+                for mat in par.take_occurrences::<Match>().into_iter().rev() {
+                    for case in mat.cases.into_iter().rev() {
+                        if let Some(source) = case.source {
                             tasks.push(DemandWalkTask::Visit(source));
                         }
                     }
                 }
-                for new in par.news.iter().rev() {
-                    if let Some(body) = &new.p {
+                for new in par.take_occurrences::<New>().into_iter().rev() {
+                    if let Some(body) = new.p {
                         tasks.push(DemandWalkTask::Visit(body));
                     }
                 }
-                for receive in par.receives.iter().rev() {
-                    if let Some(body) = &receive.body {
+                for receive in par.take_occurrences::<Receive>().into_iter().rev() {
+                    if let Some(body) = receive.body {
                         tasks.push(DemandWalkTask::Visit(body));
                     }
-                    let channel = receive.binds.first().and_then(|bind| bind.source.as_ref());
+                    let channel = receive
+                        .binds
+                        .into_iter()
+                        .next()
+                        .and_then(|bind| bind.source);
                     tasks.push(DemandWalkTask::Comm(channel));
                 }
-                for send in par.sends.iter().rev() {
-                    tasks.push(DemandWalkTask::Comm(send.chan.as_ref()));
+                for send in par.take_occurrences::<Send>().into_iter().rev() {
+                    tasks.push(DemandWalkTask::Comm(send.chan));
                 }
             }
         }
@@ -352,7 +356,10 @@ fn demand_by_sig_into(
 ) {
     walk_demand_events(par, |event| match event {
         DemandWalkEvent::Comm(channel) => {
-            let lane = channel.and_then(region_sig).unwrap_or(envelope_key);
+            let lane = channel
+                .as_ref()
+                .and_then(region_sig)
+                .unwrap_or(envelope_key);
             bump_lane(acc, lane, DemandEntry::ZERO.plus_one());
         }
         DemandWalkEvent::Unknown => bump_lane(acc, envelope_key, DemandEntry {
@@ -581,11 +588,7 @@ mod tests {
     }
 
     fn par_with_sends(n: usize) -> Par {
-        let mut par = Par::default();
-        for _ in 0..n {
-            par.sends.push(send_on(empty_par()));
-        }
-        par
+        Par::default().with_sends((0..n).map(|_| send_on(empty_par())).collect())
     }
 
     // ── demand: structural counting ────────────────────────────────────────
@@ -607,9 +610,7 @@ mod tests {
     #[test]
     fn receive_counts_self_plus_body() {
         // for(_ <- chan){ chan2!() | chan3!() }  ⇒ 1 (receive) + 2 (body sends).
-        let mut body = Par::default();
-        body.sends.push(send_on(empty_par()));
-        body.sends.push(send_on(empty_par()));
+        let body = Par::default().with_sends(vec![send_on(empty_par()), send_on(empty_par())]);
         let receive = Receive {
             binds: vec![ReceiveBind {
                 patterns: Vec::new(),
@@ -625,8 +626,7 @@ mod tests {
             connective_used: false,
             condition: None,
         };
-        let mut par = Par::default();
-        par.receives.push(receive);
+        let par = Par::default().with_receives(vec![receive]);
         let entry = demand(&par, &atom(1));
         assert_eq!(entry.known_lower_bound, 3);
         assert!(!entry.unknown);
@@ -645,8 +645,7 @@ mod tests {
             injections: Default::default(),
             locally_free: Vec::new(),
         };
-        let mut par = Par::default();
-        par.news.push(new);
+        let par = Par::default().with_news(vec![new]);
         let entry = demand(&par, &atom(1));
         assert_eq!(entry.known_lower_bound, 2);
         assert!(!entry.unknown);
@@ -662,8 +661,7 @@ mod tests {
         // `delta_sigma_spec.rs`).
         let mut send = send_on(empty_par());
         send.data.push(par_with_sends(1));
-        let mut par = Par::default();
-        par.sends.push(send);
+        let par = Par::default().with_sends(vec![send]);
         let entry = demand(&par, &atom(1));
         assert_eq!(entry.known_lower_bound, 1);
         assert!(!entry.unknown);
@@ -691,8 +689,7 @@ mod tests {
             connective_used: false,
             condition: None,
         };
-        let mut par = Par::default();
-        par.receives.push(receive);
+        let par = Par::default().with_receives(vec![receive]);
         let entry = demand(&par, &atom(1));
         assert_eq!(entry.known_lower_bound, 1);
         assert!(
@@ -706,15 +703,13 @@ mod tests {
     fn eval_of_bound_var(level: i32) -> Par {
         // `*x` where x is a bound name → an un-inlined EVar(bound_var) in
         // process position.
-        let mut par = Par::default();
-        par.exprs.push(Expr {
+        Par::default().with_exprs(vec![Expr {
             expr_instance: Some(ExprInstance::EVarBody(EVar {
                 v: Some(Var {
                     var_instance: Some(VarInstance::BoundVar(level)),
                 }),
             })),
-        });
-        par
+        }])
     }
 
     #[test]
@@ -731,7 +726,7 @@ mod tests {
         // send | *x  ⇒ known 1 send, unknown true.
         let mut par = par_with_sends(1);
         let mut eval = eval_of_bound_var(0);
-        par.exprs = std::mem::take(&mut eval.exprs);
+        par.replace_exprs(eval.take_occurrences::<Expr>());
         let entry = demand(&par, &atom(1));
         assert_eq!(entry.known_lower_bound, 1);
         assert!(entry.unknown);

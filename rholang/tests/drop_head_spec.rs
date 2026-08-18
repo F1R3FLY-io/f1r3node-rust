@@ -55,7 +55,7 @@
 //! `pathmap_integration::path_elements`.
 
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{EList, EPathMap, Expr, Par};
+use models::rhoapi::{EList, EPathMap, Expr, Par, Send};
 use models::rust::canonical_path::encode_trie_path;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::test_utils::resources::with_runtime;
@@ -105,7 +105,11 @@ async fn out_pathmap(prefix: &str, program: &str) -> EPathMap {
         assert_eq!(data.len(), 1, "expected exactly one datum at @\"out\"");
         let pars = &data[0].a.pars;
         assert_eq!(pars.len(), 1, "expected a single Par at @\"out\"");
-        match pars[0].exprs.first().and_then(|e| e.expr_instance.clone()) {
+        match pars[0]
+            .first::<Expr>()
+            .expect("resident expression decodes")
+            .and_then(|(expr, _)| expr.expr_instance)
+        {
             Some(ExprInstance::EPathmapBody(map)) => map,
             other => panic!("@\"out\" expected an EPathMap, got {other:?}"),
         }
@@ -246,11 +250,14 @@ async fn an_escape_arm_entry_survives_drop_head_zero_unchanged() {
     let entries = map.entry_trie().entries_owned();
     let escaped = entries
         .iter()
-        .find(|par| !par.sends.is_empty())
+        .find(|par| par.family_cardinality::<Send>() != 0)
         .expect("the escape-arm entry survives");
     assert_eq!(
-        escaped.exprs.first().and_then(|e| e.expr_instance.as_ref()),
-        Some(&ExprInstance::EListBody(EList {
+        escaped
+            .first::<Expr>()
+            .expect("resident expression decodes")
+            .and_then(|(expr, _)| expr.expr_instance),
+        Some(ExprInstance::EListBody(EList {
             ps: vec![gint(1), gint(2)],
             locally_free: Vec::new(),
             connective_used: false,

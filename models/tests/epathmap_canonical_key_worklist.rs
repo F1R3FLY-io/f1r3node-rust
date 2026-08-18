@@ -153,8 +153,8 @@ fn canonical_map_key_worklist_preserves_bounded_reference_values() {
 #[test]
 fn deferred_validation_preserves_all_entry_folds_for_escape_form_maps() {
     let mut key = Par::default();
-    key.locally_free = vec![0b0000_0101];
-    key.connective_used = true;
+    key.replace_locally_free(vec![0b0000_0101]);
+    key.replace_connective_used(true);
     let value = models::par_from_default! {
         exprs: vec![
             Expr { expr_instance: Some(ExprInstance::GInt(1)) },
@@ -189,10 +189,13 @@ fn deferred_validation_preserves_all_entry_folds_for_escape_form_maps() {
     let root = epathmap_carrier(map);
     let bytes = encode_trie_path(&root);
     let actual = decode_trie_path(&bytes).expect("the canonical escape-form map must decode");
-    let ExprInstance::EPathmapBody(actual_map) = actual.exprs[0]
-        .expr_instance
-        .as_ref()
+    let ExprInstance::EPathmapBody(actual_map) = actual
+        .first::<Expr>()
+        .expect("carrier Expr endpoint decodes")
         .expect("the carrier has one expression")
+        .0
+        .expr_instance
+        .expect("the carrier expression has an instance")
     else {
         panic!("the decoded carrier is not an EPathMap")
     };

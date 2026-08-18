@@ -48,7 +48,7 @@
 //! of the tuplespace (`shared/tests/panic_expectation_gate.rs`).
 
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::Par;
+use models::rhoapi::{Expr, Par};
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::test_utils::resources::with_runtime;
 
@@ -78,9 +78,9 @@ async fn out_expr(prefix: &str, program: &str) -> ExprInstance {
         let pars = &data[0].a.pars;
         assert_eq!(pars.len(), 1, "expected a single Par at @\"out\"");
         pars[0]
-            .exprs
-            .first()
-            .and_then(|e| e.expr_instance.clone())
+            .first::<Expr>()
+            .expect("resident expression decodes")
+            .and_then(|(expr, _)| expr.expr_instance)
             .expect("@\"out\" carries an expression")
     })
     .await

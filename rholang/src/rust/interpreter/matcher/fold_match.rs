@@ -95,7 +95,7 @@ impl FoldMatch<Par, Par> for SpatialMatcherContext {
             // `p.locally_free` (has_locally_free.rs:49-53) —
             // read the precomputed field instead of cloning the whole Par
             // to feed the consuming signature. Byte-identical semantics.
-            if item.locally_free.is_empty() {
+            if item.locally_free().is_empty() {
                 acc.push(item.clone());
             } else {
                 // The recursive form returned `None` from the first offending

@@ -1,5 +1,4 @@
 use models::rhoapi::{Bundle, Connective, Expr, If, Match, New, Par, Receive, Send};
-use models::rust::utils::union;
 
 use super::matcher::has_locally_free::{
     connective_connective_used_ref, connective_locally_free_ref, expr_connective_used_ref,
@@ -59,32 +58,17 @@ pub enum GeneratedMessage {
 // See models/src/main/scala/coop/rchain/models/rholang/implicits.scala - prepend
 pub fn prepend_connective(mut p: Par, c: Connective, depth: i32) -> Par {
     let locally_free = connective_locally_free_ref(&c, depth);
-    let connective_used = p.connective_used || connective_connective_used_ref(&c);
-
-    let mut new_connectives = Vec::with_capacity(p.connectives.len() + 1);
-    new_connectives.push(c);
-    new_connectives.append(&mut p.connectives);
-
-    p.connectives = new_connectives;
-    p.locally_free = locally_free;
-    p.connective_used = connective_used;
+    let connective_used = connective_connective_used_ref(&c);
+    p.insert_component(&c, locally_free, connective_used)
+        .expect("one Connective insertion cannot overflow Par multiplicity");
     p
 }
 
 pub fn prepend_expr(mut p: Par, e: Expr, depth: i32) -> Par {
-    let locally_free = union(
-        std::mem::take(&mut p.locally_free),
-        expr_locally_free_ref(&e, depth),
-    );
-    let connective_used = p.connective_used || expr_connective_used_ref(&e);
-
-    let mut new_exprs = Vec::with_capacity(p.exprs.len() + 1);
-    new_exprs.push(e);
-    new_exprs.append(&mut p.exprs);
-
-    p.exprs = new_exprs;
-    p.locally_free = locally_free;
-    p.connective_used = connective_used;
+    let locally_free = expr_locally_free_ref(&e, depth);
+    let connective_used = expr_connective_used_ref(&e);
+    p.insert_component(&e, locally_free, connective_used)
+        .expect("one Expr insertion cannot overflow Par multiplicity");
     p
 }
 
@@ -92,39 +76,25 @@ pub fn prepend_new(mut p: Par, n: New) -> Par {
     // `<New as HasLocallyFree<New>>::connective_used` reads `n.p.connective_used`
     // (a cached field on the immediate child), so it is O(1) once `n` is not
     // cloned; `locally_free` is `n`'s own cached bitset.
-    let locally_free = union(std::mem::take(&mut p.locally_free), n.locally_free.clone());
-    let connective_used = p.connective_used
-        || n.p
-            .as_ref()
+    let locally_free = n.locally_free.clone();
+    let connective_used =
+        n.p.as_ref()
             .expect("prepend_new: New with no body")
-            .connective_used;
-
-    let mut new_news = Vec::with_capacity(p.news.len() + 1);
-    new_news.push(n);
-    new_news.append(&mut p.news);
-
-    p.news = new_news;
-    p.locally_free = locally_free;
-    p.connective_used = connective_used;
+            .connective_used();
+    p.insert_component(&n, locally_free, connective_used)
+        .expect("one New insertion cannot overflow Par multiplicity");
     p
 }
 
 pub fn prepend_bundle(mut p: Par, b: Bundle) -> Par {
-    let locally_free = union(
-        std::mem::take(&mut p.locally_free),
-        b.body
-            .as_ref()
-            .expect("prepend_bundle: Bundle with no body")
-            .locally_free
-            .clone(),
-    );
-
-    let mut new_bundles = Vec::with_capacity(p.bundles.len() + 1);
-    new_bundles.push(b);
-    new_bundles.append(&mut p.bundles);
-
-    p.bundles = new_bundles;
-    p.locally_free = locally_free;
+    let locally_free = b
+        .body
+        .as_ref()
+        .expect("prepend_bundle: Bundle with no body")
+        .locally_free()
+        .to_vec();
+    p.insert_component(&b, locally_free, false)
+        .expect("one Bundle insertion cannot overflow Par multiplicity");
     p
 }
 

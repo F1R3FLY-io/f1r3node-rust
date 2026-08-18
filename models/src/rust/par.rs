@@ -16,7 +16,7 @@ use prost::encoding::wire_type::WireType;
 use prost::encoding::{self, DecodeContext};
 use prost::{DecodeError, Message};
 use rspace_plus_plus::rspace::bag::{BagError, Multiplicity};
-use serde::ser::SerializeStruct;
+use serde::ser::{SerializeSeq, SerializeStruct};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::par_bag::{
@@ -24,6 +24,7 @@ use super::par_bag::{
     ParComponentItem,
 };
 use crate::rhoapi::{Bundle, Connective, Expr, GUnforgeable, If, Match, New, Receive, Send};
+use crate::rust::rholang::sorter::score_tree::{Score, ScoreAtom, Tree};
 
 #[derive(Debug)]
 pub enum ParProtobufError {
@@ -56,11 +57,18 @@ impl From<ParBagProtobufError> for ParProtobufError {
 }
 
 #[repr(C)]
-#[derive(Clone, Default)]
+#[derive(Clone, Default, utoipa::ToSchema)]
 pub struct Par {
+    #[schema(value_type = Vec<u8>)]
     components: ParBag,
-    locally_free: Vec<u8>,
-    connective_used: bool,
+    /// Wire-authoritative cached root summary. This remains public for source
+    /// compatibility with the generated protobuf `Par`; unlike component
+    /// families, exposing it does not create a decoded shadow of the Bag.
+    pub locally_free: Vec<u8>,
+    /// Wire-authoritative cached root summary. Callers may construct
+    /// non-canonical protobuf messages, so this retains the generated API's
+    /// public mutability while component storage remains encapsulated.
+    pub connective_used: bool,
 }
 
 impl Par {
@@ -70,14 +78,6 @@ impl Par {
             locally_free,
             connective_used,
         }
-    }
-
-    pub fn import_generated(value: &crate::rhoapi::Par) -> Result<Self, BagError> {
-        Ok(Self::from_parts(
-            ParBag::import_legacy(value)?,
-            value.locally_free.clone(),
-            value.connective_used,
-        ))
     }
 
     pub const fn components(&self) -> &ParBag { &self.components }
@@ -91,6 +91,35 @@ impl Par {
     pub fn locally_free(&self) -> &[u8] { &self.locally_free }
 
     pub const fn connective_used(&self) -> bool { self.connective_used }
+
+    /// Merge one already-decoded protobuf component into the authoritative
+    /// component Bag without re-deriving root metadata.  This deliberately
+    /// preserves Prost's wire contract: tags 9 and 10 remain the authority for
+    /// the serialized root summaries, including on non-canonical input.
+    pub(crate) fn merge_protobuf_component<T: ParBagComponent>(
+        &mut self,
+        value: &T,
+    ) -> Result<(), DecodeError> {
+        insert_component(&mut self.components, value)
+    }
+
+    pub(crate) fn merge_protobuf_locally_free<B: Buf>(
+        &mut self,
+        wire_type: WireType,
+        buf: &mut B,
+        ctx: DecodeContext,
+    ) -> Result<(), DecodeError> {
+        encoding::bytes::merge(wire_type, &mut self.locally_free, buf, ctx)
+    }
+
+    pub(crate) fn merge_protobuf_connective_used<B: Buf>(
+        &mut self,
+        wire_type: WireType,
+        buf: &mut B,
+        ctx: DecodeContext,
+    ) -> Result<(), DecodeError> {
+        encoding::bool::merge(wire_type, &mut self.connective_used, buf, ctx)
+    }
 
     /// Whether the complete authoritative component Bag has no endpoints.
     /// This is distinct from historical [`Self::is_empty`], whose Rholang
@@ -177,6 +206,40 @@ impl Par {
     {
         self.components.try_visit_occurrences(visitor)
     }
+
+    /// Materialize one typed family for a semantic consumer that genuinely
+    /// needs owned decoded values (principally compatibility boundaries and
+    /// independent test oracles). This is an explicit projection, never a
+    /// resident shadow of the authoritative prefix-compressed Bag.
+    pub fn decode_occurrences<T: ParBagComponent + Clone>(&self) -> Vec<T> {
+        let mut values = Vec::new();
+        self.try_visit_occurrences::<T, std::convert::Infallible>(|value| {
+            values.push(value.clone());
+            Ok(())
+        })
+        .expect("canonical resident ParBag endpoints decode");
+        values
+    }
+
+    /// Remove and materialize one typed component family.
+    ///
+    /// This is the PathMap-backed equivalent of `mem::take` on one of the
+    /// historical generated `Vec<T>` fields.  It is deliberately an explicit
+    /// compatibility/ownership boundary: resident `Par` values retain no
+    /// decoded shadow, while worklist machines that need owned children decode
+    /// every distinct trie endpoint once and expand only its multiplicity.
+    pub fn take_occurrences<T: ParBagComponent + Clone>(&mut self) -> Vec<T> {
+        let values = self.decode_occurrences::<T>();
+        self.components.remove_family::<T>();
+        values
+    }
+
+    /// Move the root locally-free summary out without exposing mutable access
+    /// to the authoritative representation.
+    pub fn take_locally_free(&mut self) -> Vec<u8> { std::mem::take(&mut self.locally_free) }
+
+    /// Move the root connective summary out, leaving the neutral value.
+    pub fn take_connective_used(&mut self) -> bool { std::mem::take(&mut self.connective_used) }
 
     pub fn first<T: ParBagComponent>(
         &self,
@@ -442,6 +505,31 @@ impl Par {
         self.encode_protobuf(&mut output)?;
         Ok(output)
     }
+
+    /// Reconstruct the canonical sorter score directly from the score prefixes
+    /// embedded in the authoritative component trie keys.  Component bodies
+    /// remain opaque canonical protobuf bytes; the term itself is already in
+    /// canonical Bag form and therefore needs only an O(1) CoW clone.
+    pub(crate) fn canonical_score(&self) -> Tree<ScoreAtom> {
+        let mut children = Vec::new();
+        self.components.append_family_scores::<Send>(&mut children);
+        self.components
+            .append_family_scores::<Receive>(&mut children);
+        self.components.append_family_scores::<Expr>(&mut children);
+        self.components.append_family_scores::<New>(&mut children);
+        self.components.append_family_scores::<Match>(&mut children);
+        self.components
+            .append_family_scores::<Bundle>(&mut children);
+        self.components
+            .append_family_scores::<Connective>(&mut children);
+        self.components
+            .append_family_scores::<GUnforgeable>(&mut children);
+        self.components.append_family_scores::<If>(&mut children);
+        children.push(Tree::<ScoreAtom>::create_leaf_from_i64(i64::from(
+            self.connective_used,
+        )));
+        Tree::<ScoreAtom>::create_node_from_i32(Score::PAR, children)
+    }
 }
 
 impl PartialEq for Par {
@@ -540,9 +628,80 @@ impl Serialize for BorrowedBytes<'_> {
     }
 }
 
+/// Human-readable compatibility view of one component family. JSON and other
+/// diagnostic formats retain the established structured Rholang schema, but
+/// the authoritative Bag remains compressed and no repeated-field shadow is
+/// kept resident. Each distinct endpoint is decoded once and emitted for its
+/// stored multiplicity directly into the serializer.
+struct HumanReadableFamily<'a, T> {
+    components: &'a ParBag,
+    marker: PhantomData<T>,
+}
+
+impl<'a, T> HumanReadableFamily<'a, T> {
+    const fn new(components: &'a ParBag) -> Self {
+        Self {
+            components,
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<T> Serialize for HumanReadableFamily<'_, T>
+where T: ParBagComponent + Serialize
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where S: Serializer {
+        let length = usize::try_from(self.components.family_cardinality::<T>()).ok();
+        let mut sequence = serializer.serialize_seq(length)?;
+        match self
+            .components
+            .try_visit_occurrences::<T, S::Error>(|value| sequence.serialize_element(value))
+        {
+            Ok(()) => sequence.end(),
+            Err(ParBagVisitError::Codec(error)) => Err(serde::ser::Error::custom(error)),
+            Err(ParBagVisitError::Visitor(error)) => Err(error),
+        }
+    }
+}
+
 impl Serialize for Par {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where S: Serializer {
+        if serializer.is_human_readable() {
+            let mut state = serializer.serialize_struct("Par", 11)?;
+            state.serialize_field("sends", &HumanReadableFamily::<Send>::new(&self.components))?;
+            state.serialize_field(
+                "receives",
+                &HumanReadableFamily::<Receive>::new(&self.components),
+            )?;
+            state.serialize_field("news", &HumanReadableFamily::<New>::new(&self.components))?;
+            state.serialize_field("exprs", &HumanReadableFamily::<Expr>::new(&self.components))?;
+            state.serialize_field(
+                "matches",
+                &HumanReadableFamily::<Match>::new(&self.components),
+            )?;
+            state.serialize_field(
+                "unforgeables",
+                &HumanReadableFamily::<GUnforgeable>::new(&self.components),
+            )?;
+            state.serialize_field(
+                "bundles",
+                &HumanReadableFamily::<Bundle>::new(&self.components),
+            )?;
+            state.serialize_field(
+                "connectives",
+                &HumanReadableFamily::<Connective>::new(&self.components),
+            )?;
+            state.serialize_field(
+                "conditionals",
+                &HumanReadableFamily::<If>::new(&self.components),
+            )?;
+            state.serialize_field("locally_free", &self.locally_free)?;
+            state.serialize_field("connective_used", &self.connective_used)?;
+            return state.end();
+        }
+
         let mut state = serializer.serialize_struct("Par", 3)?;
         state.serialize_field("components", &BorrowedBytes(self.compact_snapshot()))?;
         state.serialize_field("locally_free", &BorrowedBytes(&[]))?;
@@ -558,9 +717,67 @@ struct ParImage {
     connective_used: bool,
 }
 
+#[derive(Deserialize)]
+struct HumanReadableParImage {
+    #[serde(default)]
+    sends: Vec<Send>,
+    #[serde(default)]
+    receives: Vec<Receive>,
+    #[serde(default)]
+    news: Vec<New>,
+    #[serde(default)]
+    exprs: Vec<Expr>,
+    #[serde(default)]
+    matches: Vec<Match>,
+    #[serde(default)]
+    unforgeables: Vec<GUnforgeable>,
+    #[serde(default)]
+    bundles: Vec<Bundle>,
+    #[serde(default)]
+    connectives: Vec<Connective>,
+    #[serde(default)]
+    conditionals: Vec<If>,
+    #[serde(default)]
+    locally_free: Vec<u8>,
+    #[serde(default)]
+    connective_used: bool,
+}
+
+impl HumanReadableParImage {
+    fn into_par(self) -> Result<Par, BagError> {
+        let mut components = ParBag::new();
+        macro_rules! insert_family {
+            ($values:expr) => {
+                for value in &$values {
+                    components.insert(value)?;
+                }
+            };
+        }
+        insert_family!(self.sends);
+        insert_family!(self.receives);
+        insert_family!(self.news);
+        insert_family!(self.exprs);
+        insert_family!(self.matches);
+        insert_family!(self.unforgeables);
+        insert_family!(self.bundles);
+        insert_family!(self.connectives);
+        insert_family!(self.conditionals);
+        Ok(Par::from_parts(
+            components,
+            self.locally_free,
+            self.connective_used,
+        ))
+    }
+}
+
 impl<'de> Deserialize<'de> for Par {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where D: Deserializer<'de> {
+        if deserializer.is_human_readable() {
+            return HumanReadableParImage::deserialize(deserializer)?
+                .into_par()
+                .map_err(serde::de::Error::custom);
+        }
         let image = ParImage::deserialize(deserializer)?;
         Ok(Self::from_parts(
             image.components,
@@ -621,7 +838,7 @@ impl Message for Par {
             ($component:ty, $decode:path) => {{
                 let body = take_length_delimited_component(wire_type, buf)?;
                 let value: $component = $decode(body)?;
-                insert_component(&mut self.components, &value)
+                self.merge_protobuf_component(&value)
             }};
         }
 
@@ -642,8 +859,8 @@ impl Message for Par {
                 Connective,
                 crate::rust::rholang::protobuf_decoder::decode_connective
             ),
-            9 => encoding::bytes::merge(wire_type, &mut self.locally_free, buf, ctx),
-            10 => encoding::bool::merge(wire_type, &mut self.connective_used, buf, ctx),
+            9 => self.merge_protobuf_locally_free(wire_type, buf, ctx),
+            10 => self.merge_protobuf_connective_used(wire_type, buf, ctx),
             11 => merge_component!(
                 Bundle,
                 crate::rust::rholang::protobuf_decoder::decode_bundle

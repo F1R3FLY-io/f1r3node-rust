@@ -413,8 +413,14 @@ fn every_trie_this_crate_builds_uses_canonical_member_keys() {
 fn path_elements(par: &Par) -> Vec<Par> {
     use models::rust::canonical_path::takes_split_arm;
     match takes_split_arm(par) {
-        true => match par.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
-            Some(ExprInstance::EListBody(list)) => list.ps.clone(),
+        true => match par
+            .first::<models::rhoapi::Expr>()
+            .unwrap()
+            .unwrap()
+            .0
+            .expr_instance
+        {
+            Some(ExprInstance::EListBody(list)) => list.ps,
             _ => unreachable!("a split-arm carrier is an EList carrier"),
         },
         false => vec![par.clone()],
@@ -797,7 +803,7 @@ fn entry_count_survives_conversion_and_reinsertion_on_every_subset() {
 #[test]
 fn test_pathmap_connective_used() {
     let mut par = make_list_par(vec!["a", "b"]);
-    par.connective_used = true;
+    par.replace_connective_used(true);
 
     let result = create_set_pathmap_from_elements(&[par], None);
     assert!(result.connective_used);
@@ -806,7 +812,7 @@ fn test_pathmap_connective_used() {
 #[test]
 fn test_pathmap_locally_free() {
     let mut par = make_list_par(vec!["a", "b"]);
-    par.locally_free = vec![1, 2, 3];
+    par.replace_locally_free(vec![1, 2, 3]);
 
     let result = create_set_pathmap_from_elements(&[par], None);
     assert_eq!(result.locally_free, vec![1, 2, 3]);
@@ -1455,17 +1461,21 @@ fn perform_drophead(elements: Vec<Par>, n: usize) -> Vec<Par> {
 }
 
 fn extract_list_from_par(par: &Par) -> Option<Vec<String>> {
-    if let Some(ExprInstance::EListBody(list)) =
-        par.exprs.first().and_then(|e| e.expr_instance.as_ref())
+    if let Some(ExprInstance::EListBody(list)) = par
+        .first::<models::rhoapi::Expr>()
+        .expect("Expr endpoint decodes")
+        .and_then(|(expr, _)| expr.expr_instance)
     {
         let strings: Vec<String> = list
             .ps
             .iter()
             .filter_map(|p| {
-                if let Some(ExprInstance::GString(s)) =
-                    p.exprs.first().and_then(|e| e.expr_instance.as_ref())
+                if let Some(ExprInstance::GString(s)) = p
+                    .first::<models::rhoapi::Expr>()
+                    .expect("nested Expr endpoint decodes")
+                    .and_then(|(expr, _)| expr.expr_instance)
                 {
-                    Some(s.clone())
+                    Some(s)
                 } else {
                     None
                 }
@@ -1814,9 +1824,9 @@ fn the_metadata_folds_agree_with_a_fold_over_the_entries() {
         let entries = map.entry_trie().entries_owned();
 
         // The oracle: recompute both folds from the entries, by definition.
-        let expected_connective = entries.iter().any(|p| p.connective_used);
+        let expected_connective = entries.iter().any(Par::connective_used);
         let expected_free = entries.iter().fold(Vec::new(), |acc, p| {
-            models::rust::utils::union(acc, p.locally_free.clone())
+            models::rust::utils::union(acc, p.locally_free().to_vec())
         });
 
         assert_eq!(

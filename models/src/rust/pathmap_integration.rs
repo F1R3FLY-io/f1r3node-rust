@@ -228,10 +228,10 @@ pub fn par_to_path(par: &Par) -> Vec<Vec<u8>> {
 /// (it is one escaped segment). Every such disagreement is a wrong answer about
 /// a path. This is the same divergence that cost `setSubtrie` its bare source
 /// entries and `dropHead` its non-list entries.
-pub fn path_elements(par: &Par) -> &[Par] {
+pub fn path_elements(par: &Par) -> Vec<Par> {
     match split_carrier_list(par) {
-        Some(list) => &list.ps,
-        None => std::slice::from_ref(par),
+        Some(list) => list.ps,
+        None => vec![par.clone()],
     }
 }
 
@@ -521,10 +521,10 @@ pub fn create_set_pathmap_from_elements(
 
     for par in elements {
         // Update connective metadata
-        if par.connective_used {
+        if par.connective_used() {
             connective_used = true;
         }
-        locally_free = crate::rust::utils::union(locally_free.clone(), par.locally_free.clone());
+        locally_free = crate::rust::utils::union(locally_free.clone(), par.locally_free().to_vec());
 
         // The codec trie key (capless, injective, prefix-free). No separator
         // — the path is self-delimiting.

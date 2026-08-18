@@ -61,16 +61,13 @@ fn nested_list(depth: usize) -> Par {
 
 fn par_depth(par: &Par) -> usize {
     let mut depth = 0usize;
-    let mut cursor = par;
+    let mut cursor = par.clone();
     loop {
-        match cursor
-            .exprs
-            .first()
-            .and_then(|expr| expr.expr_instance.as_ref())
-        {
+        let expr = cursor.first::<Expr>().expect("Expr endpoint decodes");
+        match expr.and_then(|(expr, _)| expr.expr_instance) {
             Some(ExprInstance::EListBody(list)) if !list.ps.is_empty() => {
                 depth += 1;
-                cursor = &list.ps[0];
+                cursor = list.ps.into_iter().next().expect("checked nonempty");
             }
             _ => return depth,
         }
@@ -224,22 +221,14 @@ fn message_clear_tears_down_a_deep_term_iteratively() {
 #[test]
 fn message_clear_matches_protobuf_default_semantics() {
     let mut term = nested_list(64);
-    term.locally_free = vec![0xA5, 0x5A];
-    term.connective_used = true;
+    term.replace_locally_free(vec![0xA5, 0x5A]);
+    term.replace_connective_used(true);
 
     Message::clear(&mut term);
 
-    assert!(term.sends.is_empty());
-    assert!(term.receives.is_empty());
-    assert!(term.news.is_empty());
-    assert!(term.exprs.is_empty());
-    assert!(term.matches.is_empty());
-    assert!(term.unforgeables.is_empty());
-    assert!(term.bundles.is_empty());
-    assert!(term.connectives.is_empty());
-    assert!(term.conditionals.is_empty());
-    assert!(term.locally_free.is_empty());
-    assert!(!term.connective_used);
+    assert!(term.components_is_empty());
+    assert!(term.locally_free().is_empty());
+    assert!(!term.connective_used());
     assert_eq!(term.encode_to_vec(), Par::default().encode_to_vec());
 }
 

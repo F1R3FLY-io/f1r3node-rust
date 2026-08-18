@@ -54,7 +54,7 @@ impl SpatialMatcherContext {
     /// owned PDA, where the target copy is also the value a successful free
     /// variable capture retains.
     pub fn spatial_match_par_ref(&mut self, target: &Par, pattern: &Par) -> Option<()> {
-        if !pattern.connective_used {
+        if !pattern.connective_used() {
             guard(match_pars(target, pattern))
         } else {
             let clone_start = std::time::Instant::now();

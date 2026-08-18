@@ -203,7 +203,7 @@ fn nested_list_expr(depth: usize, leaf: i64) -> Expr {
     for _ in 0..depth {
         p = elist(vec![p]);
     }
-    p.exprs
+    p.take_occurrences::<Expr>()
         .pop()
         .expect("stack_depth_probe: nested_list_expr built a Par with no exprs")
 }
@@ -217,7 +217,7 @@ fn wide_list_expr(width: usize) -> Expr {
         ps.push(new_gint_par(i as i64, vec![], false));
     }
     elist(ps)
-        .exprs
+        .take_occurrences::<Expr>()
         .pop()
         .expect("stack_depth_probe: wide_list_expr built a Par with no exprs")
 }
@@ -603,13 +603,13 @@ fn run_probe(what: &str, depth: usize) {
         // ---- the locally-free reader ----
         "locally_free" => {
             let t = nested_list(depth);
-            let lf = t.locally_free(t.clone(), 0);
+            let lf = HasLocallyFree::locally_free(&t, t.clone(), 0);
             std::mem::forget(lf);
             std::mem::forget(t);
         }
         "connective_used" => {
             let t = nested_list(depth);
-            let cu = t.connective_used(t.clone());
+            let cu = HasLocallyFree::connective_used(&t, t.clone());
             assert!(!cu);
             std::mem::forget(t);
         }
@@ -863,20 +863,22 @@ fn run_probe(what: &str, depth: usize) {
             // the result population to exactly one subset: choose all `N`
             // expressions, with minimum == maximum == N.
             let mut par = Par::default();
-            par.exprs = (0..depth)
-                .map(|i| {
-                    new_gint_par(i as i64, Vec::new(), false)
-                        .exprs
-                        .pop()
-                        .expect("a GInt Par carries one Expr")
-                })
-                .collect();
+            par.replace_exprs(
+                (0..depth)
+                    .map(|i| {
+                        new_gint_par(i as i64, Vec::new(), false)
+                            .take_occurrences::<Expr>()
+                            .pop()
+                            .expect("a GInt Par carries one Expr")
+                    })
+                    .collect(),
+            );
             let zero = ParCount::new(&Par::default());
             let mut exact = zero.clone();
-            exact.exprs = depth;
+            exact.exprs = u64::try_from(depth).expect("probe depth fits the multiplicity domain");
             let subsets = sub_pars(&par, &exact, &exact, &zero, &zero).collect::<Vec<_>>();
             assert_eq!(subsets.len(), 1, "the exact-width subset is unique");
-            assert_eq!(subsets[0].0.exprs.len(), depth);
+            assert_eq!(subsets[0].0.family_cardinality::<Expr>(), exact.exprs);
             std::mem::forget(subsets);
             std::mem::forget(par);
         }
@@ -978,12 +980,20 @@ fn run_probe(what: &str, depth: usize) {
 /// actually has the nesting the probe claims (see the `decode` arm).
 fn par_depth(p: &Par) -> usize {
     let mut n = 0usize;
-    let mut cur = p;
+    let mut cur = p.clone();
     loop {
-        match cur.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
-            Some(ExprInstance::EListBody(l)) if !l.ps.is_empty() => {
+        match cur
+            .first::<Expr>()
+            .expect("resident expression decodes")
+            .and_then(|(expr, _)| expr.expr_instance)
+        {
+            Some(ExprInstance::EListBody(list)) if !list.ps.is_empty() => {
                 n += 1;
-                cur = &l.ps[0];
+                cur = list
+                    .ps
+                    .into_iter()
+                    .next()
+                    .expect("non-empty list has a first child");
             }
             _ => return n,
         }

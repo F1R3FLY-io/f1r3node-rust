@@ -49,15 +49,13 @@ impl ParSet {
             && self.connective_used == other.connective_used
     }
 
-    fn connective_used(vec: &Vec<Par>) -> bool { vec.iter().any(|p| p.connective_used) }
+    fn connective_used(vec: &Vec<Par>) -> bool { vec.iter().any(Par::connective_used) }
 
     fn update_locally_free(ps: &SortedParHashSet) -> Vec<u8> {
         ps.sorted_pars
             .clone()
             .into_iter()
-            .fold(Vec::new(), |acc, mut p| {
-                union(acc, std::mem::take(&mut p.locally_free))
-            })
+            .fold(Vec::new(), |acc, p| union(acc, p.locally_free().to_vec()))
     }
 }
 

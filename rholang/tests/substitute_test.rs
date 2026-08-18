@@ -105,7 +105,10 @@ fn substitute_should_retain_all_non_empty_par_ed_connectives() {
 
         let substitution = substitute_instance().substitute(par.clone(), DEPTH, &env());
         assert!(substitution.is_ok());
-        assert_eq!(substitution.unwrap().connectives, par.connectives);
+        assert_eq!(
+            substitution.unwrap().decode_occurrences::<Connective>(),
+            par.decode_occurrences::<Connective>()
+        );
     }
 }
 
@@ -671,8 +674,9 @@ fn var_ref_should_be_replaced_at_a_higher_depth_inside_a_pattern() {
 /// bookkeeping.
 fn ematches_slots(par: &Par) -> (Par, Par) {
     let expr = par
-        .exprs
-        .first()
+        .first::<Expr>()
+        .expect("resident expression decodes")
+        .map(|(expr, _)| expr)
         .expect("the substituted Par must carry exactly one Expr");
     match expr
         .expr_instance

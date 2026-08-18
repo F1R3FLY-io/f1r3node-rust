@@ -129,7 +129,10 @@
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
-use models::rhoapi::{EMethod, EPathMap, EZipper, Expr, Par};
+use models::rhoapi::{
+    Bundle, EMethod, EPathMap, EZipper, Expr, GUnforgeable, Match, New, Par, Receive,
+    Send as RhoSend,
+};
 use models::rust::pathmap_integration::{
     composed_cursor_kind, par_to_path, segments_to_key, CursorKind,
 };
@@ -291,29 +294,29 @@ impl LinkKind {
 
 /// How the chain's base was found (drives the `var_eval_cost` replay and the
 /// initial view mode).
-enum FusedBase<'a> {
+enum FusedBase {
     /// `EVarBody` base bound to a single-expr `EPathmapBody` Par — charges
     /// `var_eval_cost`, starts in map mode.
     VarMap,
     /// `EVarBody` base bound to a single-expr `EZipperBody` Par — charges
     /// `var_eval_cost`, starts in zipper mode at the zipper's focus.
-    VarZipper(&'a EZipper),
+    VarZipper(EZipper),
     /// Literal `EPathmapBody` base — no base charge, map mode.
     LitMap,
     /// Literal `EZipperBody` base — no base charge, zipper mode.
-    LitZipper(&'a EZipper),
+    LitZipper(EZipper),
 }
 
 /// A fully recognized, GATED fusable chain. Once this exists, the replay's
 /// result (value or error) is FINAL — there is no post-reservation fallback,
 /// because falling back after replay began would duplicate diagnostics.
-struct FusedChain<'a> {
+struct FusedChain {
     /// Walk order: `links[0]` = OUTERMOST (applied last, the terminal link);
     /// `links[n-1]` = innermost (applied first).
-    links: Vec<&'a EMethod>,
+    links: Vec<EMethod>,
     /// `kinds[i]` classifies `links[i]`.
     kinds: Vec<LinkKind>,
-    base: FusedBase<'a>,
+    base: FusedBase,
     // ⛔ The `interned: Arc<InternedEPathMap>` field is GONE.
     //
     // It cached four things, and every one of them is an O(1) read off `source_map`
@@ -335,10 +338,10 @@ struct FusedChain<'a> {
     /// every re-evaluated copy today's path constructs, so it is THE message
     /// to embed when a zipper materializes and THE message `getSubtrie`'s
     /// map-mode arm returns.
-    source_map: &'a EPathMap,
+    source_map: EPathMap,
 }
 
-impl FusedChain<'_> {
+impl FusedChain {
     /// Shape key for the test-only fusion-hit counters:
     /// `{base}:{innermost.…​.outermost}` — e.g.
     /// `var-map:readZipperAt.getSubtrie`.
@@ -370,30 +373,29 @@ impl FusedChain<'_> {
 /// (`eval_expr` preserves them into the evaluated wrapper, `eval_single_expr`
 /// never looks, and every link result is rebuilt fresh), so they cannot
 /// affect parity.
-fn pure_single_expr(par: &Par) -> Option<&ExprInstance> {
-    if !par.sends.is_empty()
-        || !par.receives.is_empty()
-        || !par.news.is_empty()
-        || !par.matches.is_empty()
-        || !par.unforgeables.is_empty()
-        || !par.bundles.is_empty()
+fn pure_single_expr(par: &Par) -> Option<ExprInstance> {
+    if par.family_cardinality::<RhoSend>() != 0
+        || par.family_cardinality::<Receive>() != 0
+        || par.family_cardinality::<New>() != 0
+        || par.family_cardinality::<Match>() != 0
+        || par.family_cardinality::<GUnforgeable>() != 0
+        || par.family_cardinality::<Bundle>() != 0
     {
         return None;
     }
-    match par.exprs.as_slice() {
-        [expr] => expr.expr_instance.as_ref(),
-        _ => None,
-    }
+    (par.family_cardinality::<Expr>() == 1)
+        .then(|| par.first::<Expr>().ok().flatten()?.0.expr_instance)
+        .flatten()
 }
 
 /// Recognize the maximal fusable spine rooted at `emethod` and gate it.
 /// `None` ⇒ the caller must run today's per-link path unchanged.
-fn recognize_chain<'a>(emethod: &'a EMethod, env: &'a Env<Par>) -> Option<FusedChain<'a>> {
-    let mut links: Vec<&'a EMethod> = Vec::new();
+fn recognize_chain(emethod: &EMethod, env: &Env<Par>) -> Option<FusedChain> {
+    let mut links: Vec<EMethod> = Vec::new();
     let mut kinds: Vec<LinkKind> = Vec::new();
-    let mut cursor: &'a EMethod = emethod;
+    let mut cursor = emethod.clone();
 
-    let base_par: &'a Par = loop {
+    let base_par = loop {
         let kind = LinkKind::from_name(&cursor.method_name)?;
         if cursor.arguments.len() != kind.exact_arity() {
             // Wrong arity ⇒ fallback; today's `apply` raises the identical
@@ -405,23 +407,24 @@ fn recognize_chain<'a>(emethod: &'a EMethod, env: &'a Env<Par>) -> Option<FusedC
             // domain (its result is an arbitrary stored Par) — fallback.
             return None;
         }
-        links.push(cursor);
+        links.push(cursor.clone());
         kinds.push(kind);
 
         let target = cursor.target.as_ref()?;
         match pure_single_expr(target) {
             Some(ExprInstance::EMethodBody(next)) => cursor = next,
-            _ => break target,
+            _ => break target.clone(),
         }
     };
 
-    let (base, source_map): (FusedBase<'a>, &'a EPathMap) = match pure_single_expr(base_par)? {
+    let (base, source_map) = match pure_single_expr(&base_par)? {
         ExprInstance::EPathmapBody(map) => (FusedBase::LitMap, map),
         // A zipper whose embedded map is `None` would make today's methods
         // panic on their `.expect("zipper pathmap was None")` — fall back so
         // the behavior (panic included) stays today's.
         ExprInstance::EZipperBody(zipper) => {
-            (FusedBase::LitZipper(zipper), zipper.pathmap.as_ref()?)
+            let source_map = zipper.pathmap.clone()?;
+            (FusedBase::LitZipper(zipper), source_map)
         }
         ExprInstance::EVarBody(evar) => {
             let var = evar.v.as_ref()?;
@@ -431,11 +434,12 @@ fn recognize_chain<'a>(emethod: &'a EMethod, env: &'a Env<Par>) -> Option<FusedC
                     // unbound level falls back: today charges var_eval then
                     // raises the "Unbound variable" ReduceError, and the
                     // fallback reproduces exactly that.
-                    let bound: &'a Par = env.get_ref(level)?;
+                    let bound = env.get_ref(level)?;
                     match pure_single_expr(bound)? {
                         ExprInstance::EPathmapBody(map) => (FusedBase::VarMap, map),
                         ExprInstance::EZipperBody(zipper) => {
-                            (FusedBase::VarZipper(zipper), zipper.pathmap.as_ref()?)
+                            let source_map = zipper.pathmap.clone()?;
+                            (FusedBase::VarZipper(zipper), source_map)
                         }
                         _ => return None,
                     }
@@ -450,7 +454,7 @@ fn recognize_chain<'a>(emethod: &'a EMethod, env: &'a Env<Par>) -> Option<FusedC
     // THE GATE: fusion skips today's ground re-evaluation, which is only
     // byte-invisible when `eval_stable_epathmap` certifies the map. The
     // classifier is read directly; no intern-store rendezvous exists.
-    if !models::rust::pathmap_crate_type_mapper::eval_stable_epathmap(source_map) {
+    if !models::rust::pathmap_crate_type_mapper::eval_stable_epathmap(&source_map) {
         return None;
     }
 
@@ -496,15 +500,15 @@ enum ViewMode {
     Nil,
 }
 
-pub(crate) struct FusedEval<'a> {
-    chain: FusedChain<'a>,
+pub(crate) struct FusedEval {
+    chain: FusedChain,
     mode: ViewMode,
     next_index: usize,
 }
 
-pub(crate) enum FusedAction<'a> {
-    EvalPositionA { state: FusedEval<'a>, arg: &'a Par },
-    EvalPositionB { state: FusedEval<'a>, arg: Par },
+pub(crate) enum FusedAction {
+    EvalPositionA { state: FusedEval, arg: Par },
+    EvalPositionB { state: FusedEval, arg: Par },
     Complete(Par),
 }
 
@@ -544,11 +548,11 @@ fn single_expr_par(expr_instance: ExprInstance) -> Par {
 }
 
 impl DebruijnInterpreter {
-    pub(crate) fn begin_fused_method_chain<'a>(
+    pub(crate) fn begin_fused_method_chain(
         &self,
-        emethod: &'a EMethod,
-        env: &'a Env<Par>,
-    ) -> Result<Option<FusedAction<'a>>, InterpreterError> {
+        emethod: &EMethod,
+        env: &Env<Par>,
+    ) -> Result<Option<FusedAction>, InterpreterError> {
         #[cfg(any(test, feature = "epathmap-fusion-differential"))]
         {
             if fusion_test_support::force_disabled() {
@@ -601,11 +605,11 @@ impl DebruijnInterpreter {
         self.advance_fused(state).map(Some)
     }
 
-    pub(crate) fn continue_fused_after_position_a<'a>(
+    pub(crate) fn continue_fused_after_position_a(
         &self,
-        state: FusedEval<'a>,
+        state: FusedEval,
         arg: Par,
-    ) -> Result<FusedAction<'a>, InterpreterError> {
+    ) -> Result<FusedAction, InterpreterError> {
         debug_assert_eq!(state.chain.kinds[state.next_index].exact_arity(), 1);
         if matches!(state.mode, ViewMode::Nil) {
             return Err(InterpreterError::ReduceError(
@@ -615,29 +619,26 @@ impl DebruijnInterpreter {
         Ok(FusedAction::EvalPositionB { state, arg })
     }
 
-    pub(crate) fn continue_fused_after_position_b<'a>(
+    pub(crate) fn continue_fused_after_position_b(
         &self,
-        mut state: FusedEval<'a>,
+        mut state: FusedEval,
         arg: Par,
-    ) -> Result<FusedAction<'a>, InterpreterError> {
+    ) -> Result<FusedAction, InterpreterError> {
         let kind = state.chain.kinds[state.next_index];
         debug_assert_eq!(kind.exact_arity(), 1);
         let terminal = self.apply_fused_link(&mut state, kind, Some(arg))?;
         self.finish_fused_link(state, terminal)
     }
 
-    fn advance_fused<'a>(
-        &self,
-        mut state: FusedEval<'a>,
-    ) -> Result<FusedAction<'a>, InterpreterError> {
+    fn advance_fused(&self, mut state: FusedEval) -> Result<FusedAction, InterpreterError> {
         loop {
             let kind = state.chain.kinds[state.next_index];
             if kind.exact_arity() == 1 {
-                let link: &'a EMethod = state.chain.links[state.next_index];
-                let arg: &'a Par = link
+                let arg = state.chain.links[state.next_index]
                     .arguments
                     .first()
-                    .expect("an arity-one fused link has one argument");
+                    .expect("an arity-one fused link has one argument")
+                    .clone();
                 return Ok(FusedAction::EvalPositionA { state, arg });
             }
             if matches!(state.mode, ViewMode::Nil) {
@@ -659,11 +660,11 @@ impl DebruijnInterpreter {
         }
     }
 
-    fn finish_fused_link<'a>(
+    fn finish_fused_link(
         &self,
-        mut state: FusedEval<'a>,
+        mut state: FusedEval,
         terminal: Option<Par>,
-    ) -> Result<FusedAction<'a>, InterpreterError> {
+    ) -> Result<FusedAction, InterpreterError> {
         if let Some(par) = terminal {
             return Ok(FusedAction::Complete(par));
         }
@@ -678,10 +679,10 @@ impl DebruijnInterpreter {
     }
 
     #[cfg(test)]
-    pub(crate) fn try_eval_fused_method_chain<'a>(
+    pub(crate) fn try_eval_fused_method_chain(
         &self,
-        emethod: &'a EMethod,
-        env: &'a Env<Par>,
+        emethod: &EMethod,
+        env: &Env<Par>,
     ) -> Result<Option<Par>, InterpreterError> {
         let mut action = match self.begin_fused_method_chain(emethod, env)? {
             Some(action) => action,
@@ -690,7 +691,7 @@ impl DebruijnInterpreter {
         loop {
             action = match action {
                 FusedAction::EvalPositionA { state, arg } => {
-                    let arg = self.eval_expr_recursive(arg, env)?;
+                    let arg = self.eval_expr_recursive(&arg, env)?;
                     self.continue_fused_after_position_a(state, arg)?
                 }
                 FusedAction::EvalPositionB { state, arg } => {
@@ -704,7 +705,7 @@ impl DebruijnInterpreter {
 
     fn apply_fused_link(
         &self,
-        state: &mut FusedEval<'_>,
+        state: &mut FusedEval,
         kind: LinkKind,
         arg_b: Option<Par>,
     ) -> Result<Option<Par>, InterpreterError> {
@@ -832,8 +833,8 @@ impl DebruijnInterpreter {
                     .expect("arity-1 link must have a Position-B argument");
                 // :5584-5594 — the integer extraction precedes the base
                 // match…
-                let idx = match idx_par.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
-                    Some(ExprInstance::GInt(n)) => *n,
+                let idx = match pure_single_expr(idx_par) {
+                    Some(ExprInstance::GInt(n)) => n,
                     _ => {
                         return Err(InterpreterError::MethodNotDefined {
                             method: String::from(
@@ -889,12 +890,8 @@ impl DebruijnInterpreter {
                     .as_ref()
                     .expect("arity-1 link must have a Position-B argument");
                 // :5343-5355 — extraction precedes the base match.
-                let steps = match steps_par
-                    .exprs
-                    .first()
-                    .and_then(|e| e.expr_instance.as_ref())
-                {
-                    Some(ExprInstance::GInt(n)) => *n,
+                let steps = match pure_single_expr(steps_par) {
+                    Some(ExprInstance::GInt(n)) => n,
                     _ => {
                         return Err(InterpreterError::MethodNotDefined {
                             method: String::from("ascend (requires integer argument)"),
@@ -1159,7 +1156,7 @@ impl DebruijnInterpreter {
         Ok(None)
     }
 
-    fn materialize_fused(chain: &FusedChain<'_>, mode: ViewMode) -> Par {
+    fn materialize_fused(chain: &FusedChain, mode: ViewMode) -> Par {
         match mode {
             ViewMode::Nil => Par::default(),
             ViewMode::Zipper { focus, kind, meta } => {
@@ -1306,7 +1303,7 @@ mod stack_safety_tests {
                     let result = reducer
                         .eval_expr(&chain, &Env::new())
                         .expect("the fused PathMap chain must evaluate");
-                    assert_eq!(result.exprs.len(), 1);
+                    assert_eq!(result.family_cardinality::<Expr>(), 1);
                     models::rust::rholang::par_children::dismantle(chain);
                     models::rust::rholang::par_children::dismantle(result);
                 });
@@ -1346,7 +1343,7 @@ mod stack_safety_tests {
                     let result = reducer
                         .eval_expr(&chain, &Env::new())
                         .expect("the fused arity-one PathMap chain must evaluate");
-                    assert_eq!(result.exprs.len(), 1);
+                    assert_eq!(result.family_cardinality::<Expr>(), 1);
                     models::rust::rholang::par_children::dismantle(chain);
                     models::rust::rholang::par_children::dismantle(result);
                 });

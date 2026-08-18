@@ -66,7 +66,11 @@ async fn out_pathmap(prefix: &str, program: &str) -> EPathMap {
         assert_eq!(data.len(), 1, "expected exactly one datum at @\"out\"");
         let pars = &data[0].a.pars;
         assert_eq!(pars.len(), 1, "expected a single Par at @\"out\"");
-        match pars[0].exprs.first().and_then(|e| e.expr_instance.clone()) {
+        match pars[0]
+            .first::<Expr>()
+            .expect("resident expression decodes")
+            .and_then(|(expr, _)| expr.expr_instance)
+        {
             Some(ExprInstance::EPathmapBody(map)) => map,
             other => panic!("@\"out\" expected an EPathMap, got {other:?}"),
         }

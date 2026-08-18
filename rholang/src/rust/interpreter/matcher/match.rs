@@ -1,5 +1,6 @@
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance::{FreeVar, Wildcard};
+use models::rhoapi::If;
 use models::rust::rholang::implicits::vector_par;
 use models::rust::rholang::match_path::{
     append_match_path_event, encode_match_path, encode_par_match_path, RHO_MATCH_PATH_VERSION,
@@ -79,7 +80,7 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
             || pattern
                 .patterns
                 .iter()
-                .any(|par| par.connective_used || !par.locally_free.is_empty())
+                .any(|par| par.connective_used() || !par.locally_free().is_empty())
         {
             return None;
         }
@@ -144,7 +145,7 @@ pub(super) fn rho_path_query_atom(
 ) -> Option<RhoPathQueryAtom> {
     rho_path_query_cursor_atom(
         ParCursor::from(pattern),
-        !pattern.connective_used && pattern.locally_free.is_empty(),
+        !pattern.connective_used() && pattern.locally_free().is_empty(),
         captures,
     )
 }
@@ -198,7 +199,7 @@ fn compile_ordered_nested_query(
         if !single_expr_carrier(pattern) {
             return None;
         }
-        pattern.exprs[0].expr_instance.as_ref()?;
+        pattern.first::<Expr>().ok()??.0.expr_instance?;
     }
 
     let mut parts = Vec::new();
@@ -294,15 +295,11 @@ fn rho_match_hole(pattern: &Par) -> Option<RhoMatchQueryPart> {
     if !single_expr_carrier(pattern) {
         return None;
     }
-    let ExprInstance::EVarBody(variable) = pattern.exprs[0].expr_instance.as_ref()? else {
+    let ExprInstance::EVarBody(variable) = pattern.first::<Expr>().ok()??.0.expr_instance? else {
         return None;
     };
-    match variable
-        .v
-        .as_ref()
-        .and_then(|variable| variable.var_instance.as_ref())
-    {
-        Some(FreeVar(level)) => u32::try_from(*level)
+    match variable.v.and_then(|variable| variable.var_instance) {
+        Some(FreeVar(level)) => u32::try_from(level)
             .ok()
             .map(RhoPathCaptureId::new)
             .map(RhoMatchQueryPart::Capture),
@@ -312,15 +309,15 @@ fn rho_match_hole(pattern: &Par) -> Option<RhoMatchQueryPart> {
 }
 
 fn single_expr_carrier(pattern: &Par) -> bool {
-    pattern.sends.is_empty()
-        && pattern.receives.is_empty()
-        && pattern.news.is_empty()
-        && pattern.exprs.len() == 1
-        && pattern.matches.is_empty()
-        && pattern.unforgeables.is_empty()
-        && pattern.bundles.is_empty()
-        && pattern.connectives.is_empty()
-        && pattern.conditionals.is_empty()
+    pattern.family_cardinality::<Send>() == 0
+        && pattern.family_cardinality::<Receive>() == 0
+        && pattern.family_cardinality::<New>() == 0
+        && pattern.family_cardinality::<Expr>() == 1
+        && pattern.family_cardinality::<models::rhoapi::Match>() == 0
+        && pattern.family_cardinality::<GUnforgeable>() == 0
+        && pattern.family_cardinality::<Bundle>() == 0
+        && pattern.family_cardinality::<Connective>() == 0
+        && pattern.family_cardinality::<If>() == 0
 }
 
 fn is_empty_par(par: &Par) -> bool { par == &Par::default() }
@@ -499,20 +496,20 @@ fn guard_passes(condition: &Par, bound_pars: &[Par]) -> bool {
 }
 
 fn extract_bool(par: &Par) -> Option<bool> {
-    if !par.sends.is_empty()
-        || !par.receives.is_empty()
-        || !par.news.is_empty()
-        || !par.matches.is_empty()
-        || !par.bundles.is_empty()
-        || !par.unforgeables.is_empty()
-        || !par.connectives.is_empty()
-        || !par.conditionals.is_empty()
-        || par.exprs.len() != 1
+    if par.family_cardinality::<Send>() != 0
+        || par.family_cardinality::<Receive>() != 0
+        || par.family_cardinality::<New>() != 0
+        || par.family_cardinality::<models::rhoapi::Match>() != 0
+        || par.family_cardinality::<Bundle>() != 0
+        || par.family_cardinality::<GUnforgeable>() != 0
+        || par.family_cardinality::<Connective>() != 0
+        || par.family_cardinality::<If>() != 0
+        || par.family_cardinality::<Expr>() != 1
     {
         return None;
     }
-    match par.exprs[0].expr_instance.as_ref()? {
-        ExprInstance::GBool(b) => Some(*b),
+    match par.first::<Expr>().ok()??.0.expr_instance? {
+        ExprInstance::GBool(b) => Some(b),
         _ => None,
     }
 }

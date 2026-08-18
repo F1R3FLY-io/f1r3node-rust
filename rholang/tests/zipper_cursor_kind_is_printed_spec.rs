@@ -87,7 +87,9 @@ fn a_bare_cursor_and_a_split_cursor_over_the_same_segments_print_differently() {
     let bare = zipper_at_five(CursorKind::Bare.to_wire());
 
     // The mutation is exactly one field.
-    match (&split.exprs[0].expr_instance, &bare.exprs[0].expr_instance) {
+    let split_exprs = split.decode_occurrences::<Expr>();
+    let bare_exprs = bare.decode_occurrences::<Expr>();
+    match (&split_exprs[0].expr_instance, &bare_exprs[0].expr_instance) {
         (Some(ExprInstance::EZipperBody(l)), Some(ExprInstance::EZipperBody(r))) => {
             assert_eq!(
                 l.current_path, r.current_path,

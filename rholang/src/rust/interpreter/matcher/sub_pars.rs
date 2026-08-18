@@ -1,5 +1,5 @@
 use itertools::Itertools;
-use models::rhoapi::Par;
+use models::rhoapi::{Bundle, Expr, GUnforgeable, Match, New, Par, Receive, Send};
 
 use super::par_count::ParCount;
 
@@ -35,49 +35,55 @@ pub fn sub_pars(
     }
 
     let (send_min, send_max) = feasible_range(
-        par.sends.len(),
+        usize::try_from(par.family_cardinality::<Send>())
+            .expect("a resident Send family fits usize"),
         min.sends,
         max.sends,
         min_prune.sends,
         max_prune.sends,
     );
     let (receive_min, receive_max) = feasible_range(
-        par.receives.len(),
+        usize::try_from(par.family_cardinality::<Receive>())
+            .expect("a resident Receive family fits usize"),
         min.receives,
         max.receives,
         min_prune.receives,
         max_prune.receives,
     );
     let (new_min, new_max) = feasible_range(
-        par.news.len(),
+        usize::try_from(par.family_cardinality::<New>()).expect("a resident New family fits usize"),
         min.news,
         max.news,
         min_prune.news,
         max_prune.news,
     );
     let (expr_min, expr_max) = feasible_range(
-        par.exprs.len(),
+        usize::try_from(par.family_cardinality::<Expr>())
+            .expect("a resident Expr family fits usize"),
         min.exprs,
         max.exprs,
         min_prune.exprs,
         max_prune.exprs,
     );
     let (match_min, match_max) = feasible_range(
-        par.matches.len(),
+        usize::try_from(par.family_cardinality::<Match>())
+            .expect("a resident Match family fits usize"),
         min.matches,
         max.matches,
         min_prune.matches,
         max_prune.matches,
     );
     let (unf_min, unf_max) = feasible_range(
-        par.unforgeables.len(),
+        usize::try_from(par.family_cardinality::<GUnforgeable>())
+            .expect("a resident unforgeable family fits usize"),
         min.unforgeables,
         max.unforgeables,
         min_prune.unforgeables,
         max_prune.unforgeables,
     );
     let (bundle_min, bundle_max) = feasible_range(
-        par.bundles.len(),
+        usize::try_from(par.family_cardinality::<Bundle>())
+            .expect("a resident Bundle family fits usize"),
         min.bundles,
         max.bundles,
         min_prune.bundles,
@@ -218,46 +224,57 @@ pub fn sub_pars(
             .collect()
     }
 
-    min_max_subsets(&par.sends, send_min, send_max)
+    let sends = par.decode_occurrences::<Send>();
+    let receives = par.decode_occurrences::<Receive>();
+    let news = par.decode_occurrences::<New>();
+    let exprs = par.decode_occurrences::<Expr>();
+    let matches = par.decode_occurrences::<Match>();
+    let unforgeables = par.decode_occurrences::<GUnforgeable>();
+    let bundles = par.decode_occurrences::<Bundle>();
+
+    min_max_subsets(&sends, send_min, send_max)
         .into_iter()
-        .cartesian_product(min_max_subsets(&par.receives, receive_min, receive_max).into_iter())
-        .cartesian_product(min_max_subsets(&par.news, new_min, new_max).into_iter())
-        .cartesian_product(min_max_subsets(&par.exprs, expr_min, expr_max).into_iter())
-        .cartesian_product(min_max_subsets(&par.matches, match_min, match_max).into_iter())
-        .cartesian_product(min_max_subsets(&par.unforgeables, unf_min, unf_max).into_iter())
-        .cartesian_product(min_max_subsets(&par.bundles, bundle_min, bundle_max).into_iter())
+        .cartesian_product(min_max_subsets(&receives, receive_min, receive_max).into_iter())
+        .cartesian_product(min_max_subsets(&news, new_min, new_max).into_iter())
+        .cartesian_product(min_max_subsets(&exprs, expr_min, expr_max).into_iter())
+        .cartesian_product(min_max_subsets(&matches, match_min, match_max).into_iter())
+        .cartesian_product(min_max_subsets(&unforgeables, unf_min, unf_max).into_iter())
+        .cartesian_product(min_max_subsets(&bundles, bundle_min, bundle_max).into_iter())
         .map(
             |(
                 (((((sub_sends, sub_receives), sub_news), sub_exprs), sub_matches), sub_unfs),
                 sub_bundles,
             )| {
+                let build = |sends, receives, news, exprs, matches, unforgeables, bundles| {
+                    let mut par = Par::default();
+                    par.replace_sends(sends);
+                    par.replace_receives(receives);
+                    par.replace_news(news);
+                    par.replace_exprs(exprs);
+                    par.replace_matches(matches);
+                    par.replace_unforgeables(unforgeables);
+                    par.replace_bundles(bundles);
+                    par
+                };
                 (
-                    Par {
-                        sends: sub_sends.0,
-                        receives: sub_receives.0,
-                        news: sub_news.0,
-                        exprs: sub_exprs.0,
-                        matches: sub_matches.0,
-                        unforgeables: sub_unfs.0,
-                        bundles: sub_bundles.0,
-                        connectives: Vec::default(),
-                        conditionals: Vec::default(),
-                        locally_free: Vec::default(),
-                        connective_used: false,
-                    },
-                    Par {
-                        sends: sub_sends.1,
-                        receives: sub_receives.1,
-                        news: sub_news.1,
-                        exprs: sub_exprs.1,
-                        matches: sub_matches.1,
-                        unforgeables: sub_unfs.1,
-                        bundles: sub_bundles.1,
-                        connectives: Vec::default(),
-                        conditionals: Vec::default(),
-                        locally_free: Vec::default(),
-                        connective_used: false,
-                    },
+                    build(
+                        sub_sends.0,
+                        sub_receives.0,
+                        sub_news.0,
+                        sub_exprs.0,
+                        sub_matches.0,
+                        sub_unfs.0,
+                        sub_bundles.0,
+                    ),
+                    build(
+                        sub_sends.1,
+                        sub_receives.1,
+                        sub_news.1,
+                        sub_exprs.1,
+                        sub_matches.1,
+                        sub_unfs.1,
+                        sub_bundles.1,
+                    ),
                 )
             },
         )

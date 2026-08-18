@@ -46,7 +46,8 @@ use super::sort_combine::{
     empty_par, expr_child_pars, sort_unforgeable, ParParts,
 };
 use crate::rhoapi::{
-    Bundle, Connective, EPathMap, Expr, If, Match, MatchCase, New, Par, Receive, ReceiveBind, Send,
+    Bundle, Connective, EPathMap, Expr, GUnforgeable, If, Match, MatchCase, New, Par, Receive,
+    ReceiveBind, Send,
 };
 use crate::rust::canonical_path::decode_trie_path;
 use crate::rust::epathmap_trie_codec::EPathMapMode;
@@ -59,19 +60,51 @@ use crate::rust::epathmap_trie_codec::EPathMapMode;
 /// purpose**: it is the reference, not the production path.
 pub fn sort_par_recursive(par: &Par) -> ScoredTerm<Par> {
     let parts = ParParts {
-        sends: par.sends.iter().map(sort_send_recursive).collect(),
-        receives: par.receives.iter().map(sort_receive_recursive).collect(),
-        exprs: par.exprs.iter().map(sort_expr_recursive).collect(),
-        news: par.news.iter().map(sort_new_recursive).collect(),
-        matches: par.matches.iter().map(sort_match_recursive).collect(),
-        bundles: par.bundles.iter().map(sort_bundle_recursive).collect(),
+        sends: par
+            .decode_occurrences::<Send>()
+            .iter()
+            .map(sort_send_recursive)
+            .collect(),
+        receives: par
+            .decode_occurrences::<Receive>()
+            .iter()
+            .map(sort_receive_recursive)
+            .collect(),
+        exprs: par
+            .decode_occurrences::<Expr>()
+            .iter()
+            .map(sort_expr_recursive)
+            .collect(),
+        news: par
+            .decode_occurrences::<New>()
+            .iter()
+            .map(sort_new_recursive)
+            .collect(),
+        matches: par
+            .decode_occurrences::<Match>()
+            .iter()
+            .map(sort_match_recursive)
+            .collect(),
+        bundles: par
+            .decode_occurrences::<Bundle>()
+            .iter()
+            .map(sort_bundle_recursive)
+            .collect(),
         connectives: par
-            .connectives
+            .decode_occurrences::<Connective>()
             .iter()
             .map(sort_connective_recursive)
             .collect(),
-        unforgeables: par.unforgeables.iter().map(sort_unforgeable).collect(),
-        conditionals: par.conditionals.iter().map(sort_if_recursive).collect(),
+        unforgeables: par
+            .decode_occurrences::<GUnforgeable>()
+            .iter()
+            .map(sort_unforgeable)
+            .collect(),
+        conditionals: par
+            .decode_occurrences::<If>()
+            .iter()
+            .map(sort_if_recursive)
+            .collect(),
     };
     combine_par(par, parts)
 }
@@ -507,54 +540,58 @@ mod differential_sorter {
     /// A `Par` with **every** category populated and several members in each,
     /// which is what makes an out-of-order `Combine` observable.
     fn full_par() -> Par {
-        Par {
-            sends: vec![send(true), send(false)],
-            receives: vec![receive(true), receive(false)],
-            news: vec![new_node()],
-            exprs: vec![
-                Expr {
-                    expr_instance: Some(ExprInstance::GInt(9)),
-                },
-                Expr {
-                    expr_instance: Some(ExprInstance::GString("e".to_string())),
-                },
-                Expr {
-                    expr_instance: Some(ExprInstance::GInt(3)),
-                },
-            ],
-            matches: vec![match_node()],
-            unforgeables: vec![
-                GUnforgeable {
-                    unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![9] })),
-                },
-                GUnforgeable {
-                    unf_instance: Some(UnfInstance::GDeployerIdBody(GDeployerId {
-                        public_key: vec![1],
-                    })),
-                },
-                GUnforgeable {
-                    unf_instance: Some(UnfInstance::GDeployIdBody(GDeployId { sig: vec![2] })),
-                },
-                GUnforgeable {
-                    unf_instance: Some(UnfInstance::GSysAuthTokenBody(GSysAuthToken {})),
-                },
-            ],
-            bundles: vec![bundle(true, false), bundle(false, true), bundle(true, true)],
-            connectives: vec![
-                Connective {
-                    connective_instance: Some(ConnectiveInstance::ConnBool(true)),
-                },
-                Connective {
-                    connective_instance: Some(ConnectiveInstance::ConnInt(true)),
-                },
-                Connective {
-                    connective_instance: Some(ConnectiveInstance::ConnString(true)),
-                },
-            ],
-            conditionals: vec![if_node()],
-            locally_free: vec![1, 2, 3],
-            connective_used: true,
-        }
+        let mut par = Par::default();
+        par.replace_sends(vec![send(true), send(false)]);
+        par.replace_receives(vec![receive(true), receive(false)]);
+        par.replace_news(vec![new_node()]);
+        par.replace_exprs(vec![
+            Expr {
+                expr_instance: Some(ExprInstance::GInt(9)),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::GString("e".to_string())),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::GInt(3)),
+            },
+        ]);
+        par.replace_matches(vec![match_node()]);
+        par.replace_unforgeables(vec![
+            GUnforgeable {
+                unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![9] })),
+            },
+            GUnforgeable {
+                unf_instance: Some(UnfInstance::GDeployerIdBody(GDeployerId {
+                    public_key: vec![1],
+                })),
+            },
+            GUnforgeable {
+                unf_instance: Some(UnfInstance::GDeployIdBody(GDeployId { sig: vec![2] })),
+            },
+            GUnforgeable {
+                unf_instance: Some(UnfInstance::GSysAuthTokenBody(GSysAuthToken {})),
+            },
+        ]);
+        par.replace_bundles(vec![
+            bundle(true, false),
+            bundle(false, true),
+            bundle(true, true),
+        ]);
+        par.replace_connectives(vec![
+            Connective {
+                connective_instance: Some(ConnectiveInstance::ConnBool(true)),
+            },
+            Connective {
+                connective_instance: Some(ConnectiveInstance::ConnInt(true)),
+            },
+            Connective {
+                connective_instance: Some(ConnectiveInstance::ConnString(true)),
+            },
+        ]);
+        par.replace_conditionals(vec![if_node()]);
+        par.replace_locally_free(vec![1, 2, 3]);
+        par.replace_connective_used(true);
+        par
     }
 
     /// `[[[…]]]` with a distinct sibling at every level, so the descent order
@@ -788,12 +825,13 @@ mod differential_sorter {
             remainder: None,
         }));
         let sorted = ParSortMatcher::sort_match(&list).term;
-        let got = match sorted.exprs[0]
-            .expr_instance
-            .as_ref()
+        let sorted_expr = sorted
+            .first::<Expr>()
+            .expect("sorted Expr endpoint decodes")
             .expect("EList survived sorting")
-        {
-            ExprInstance::EListBody(l) => l.ps.clone(),
+            .0;
+        let got = match sorted_expr.expr_instance.expect("EList survived sorting") {
+            ExprInstance::EListBody(l) => l.ps,
             other => panic!("EList became {:?}", other),
         };
         assert_eq!(
@@ -865,32 +903,22 @@ mod differential_sorter {
         );
     }
 
-    /// The driver must not need the native stack that the oracle does. 20,000
-    /// levels is far past what the pre-conversion sorter survived on any
-    /// ordinary thread (78,579 B/level debug ⇒ ~1.5 GiB).
+    /// Constructing each outer collection canonicalizes its component before
+    /// PathMap insertion. This exercises those component sorter PDAs on a tiny
+    /// native stack; top-level `ParSortMatcher` is intentionally absent because
+    /// repository-owned `Par` is already canonical and clones its trie by CoW.
     #[test]
-    fn the_driver_survives_a_depth_the_oracle_could_not() {
-        let deep = nested(20_000);
-        let sorted = ParSortMatcher::sort_match(&deep);
-        assert!(
-            !sorted.term.exprs.is_empty(),
-            "the driver produced an empty Par for a 20,000-deep chain"
-        );
-        // Teardown is `drop_in_place`, which is still recursive (audit row 7 —
-        // the irreducible member), so the terms are dismantled iteratively.
-        crate::rust::rholang::par_children::dismantle(sorted.term);
-        crate::rust::rholang::par_children::dismantle(deep);
-    }
-
-    #[test]
-    fn nested_set_and_map_sorting_are_stack_safe_on_a_256_kib_stack() {
+    fn nested_set_and_map_construction_is_stack_safe_on_a_256_kib_stack() {
         std::thread::Builder::new()
             .stack_size(256 * 1024)
             .spawn(|| {
-                for deep in [nested_set(4_096), nested_map(4_096)] {
-                    let sorted = ParSortMatcher::sort_match(&deep);
-                    assert_eq!(sorted.term.exprs.len(), 1);
-                    crate::rust::rholang::par_children::dismantle(sorted.term);
+                // Depth 1,024 already distinguishes an explicit PDA from a
+                // recursive collection sorter on 256 KiB.  The 4,096-level
+                // protobuf/bincode gates cover the higher rung without making
+                // this debug-only construction test rebuild every encoded
+                // prefix four times as deeply (roughly sixteen times the work).
+                for deep in [nested_set(1_024), nested_map(1_024)] {
+                    assert_eq!(deep.family_cardinality::<Expr>(), 1);
                     crate::rust::rholang::par_children::dismantle(deep);
                 }
             })

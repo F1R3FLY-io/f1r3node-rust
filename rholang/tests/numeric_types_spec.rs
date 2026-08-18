@@ -180,7 +180,7 @@ macro_rules! setup {
 macro_rules! assert_ok_expr {
     ($reducer:expr, $env:expr, $input:expr, $expected:expr) => {{
         let result = $reducer.eval_expr(&$input, &$env).unwrap();
-        assert_eq!(result.exprs, vec![$expected]);
+        assert_eq!(result.decode_occurrences::<Expr>(), vec![$expected]);
     }};
 }
 
@@ -257,8 +257,14 @@ async fn float_division_by_zero_produces_ieee754() {
     let nan_result = r
         .eval_expr(&binop_expr!(div, gdouble_par(0.0), gdouble_par(0.0)), &e)
         .unwrap();
-    match &nan_result.exprs[0].expr_instance {
-        Some(ExprInstance::GDouble(bits)) => assert!(f64::from_bits(*bits).is_nan()),
+    match nan_result
+        .first::<Expr>()
+        .expect("resident expression decodes")
+        .expect("numeric evaluation returns one expression")
+        .0
+        .expr_instance
+    {
+        Some(ExprInstance::GDouble(bits)) => assert!(f64::from_bits(bits).is_nan()),
         other => panic!("Expected GDouble(NaN), got {:?}", other),
     }
 }
@@ -359,8 +365,14 @@ async fn float_ieee754_special_values() {
             &e,
         )
         .unwrap();
-    match &result.exprs[0].expr_instance {
-        Some(ExprInstance::GDouble(bits)) => assert!(f64::from_bits(*bits).is_nan()),
+    match result
+        .first::<Expr>()
+        .expect("resident expression decodes")
+        .expect("numeric evaluation returns one expression")
+        .0
+        .expr_instance
+    {
+        Some(ExprInstance::GDouble(bits)) => assert!(f64::from_bits(bits).is_nan()),
         other => panic!("Expected GDouble(NaN), got {:?}", other),
     }
 

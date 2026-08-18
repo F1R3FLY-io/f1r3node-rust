@@ -33,6 +33,9 @@ pub const RHO_MATCH_MAP_END: u8 = 0x25;
 pub const RHO_MATCH_ONEOF_START: u8 = 0x26;
 pub const RHO_MATCH_ONEOF_END: u8 = 0x27;
 pub const RHO_MATCH_PATHMAP: u8 = 0x28;
+/// Repository-owned `ParBag` summary: distinct endpoints, total cardinality,
+/// and the domain-separated digest of its canonical PathMap image.
+pub const RHO_MATCH_PAR_BAG: u8 = 0x29;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
@@ -483,6 +486,10 @@ fn skip_rmp_value(frame: &[u8], cursor: &mut usize, escape_layers: u8) -> Result
             RHO_MATCH_ABSENT => true,
             RHO_MATCH_PATHMAP => {
                 skip_logical_bytes(frame, cursor, 1 + 8 + 32, escape_layers)?;
+                true
+            }
+            RHO_MATCH_PAR_BAG => {
+                skip_logical_bytes(frame, cursor, 8 + 8 + 32, escape_layers)?;
                 true
             }
             _ => return Err(()),

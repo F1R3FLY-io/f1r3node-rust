@@ -99,16 +99,20 @@ fn nested_list(depth: usize) -> Par {
 
 fn par_depth(par: &Par) -> usize {
     let mut depth = 0usize;
-    let mut cursor = par;
+    let mut cursor = par.clone();
     loop {
         match cursor
-            .exprs
-            .first()
-            .and_then(|expr| expr.expr_instance.as_ref())
+            .first::<Expr>()
+            .expect("resident expression decodes")
+            .and_then(|(expr, _)| expr.expr_instance)
         {
             Some(ExprInstance::EListBody(list)) if !list.ps.is_empty() => {
                 depth += 1;
-                cursor = &list.ps[0];
+                cursor = list
+                    .ps
+                    .into_iter()
+                    .next()
+                    .expect("non-empty list has a first child");
             }
             _ => return depth,
         }

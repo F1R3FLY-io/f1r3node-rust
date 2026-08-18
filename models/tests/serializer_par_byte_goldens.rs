@@ -121,209 +121,209 @@ fn ground_pathmap() -> EPathMap {
 /// wire shapes present, and every `locally_free` deliberately NON-empty so the
 /// serialize-only blanking (shape 2) is observable in the pinned length.
 fn odd_shapes_par() -> Par {
-    Par {
-        sends: vec![Send {
-            chan: Some(gint(1)),
-            data: vec![gint(2), gint(3)],
-            persistent: true,
-            // shape 2 — blanked on serialize
-            locally_free: vec![0x11, 0x12, 0x13],
-            connective_used: true,
-        }],
-        receives: vec![Receive {
-            binds: vec![ReceiveBind {
-                patterns: vec![gint(4)],
-                source: Some(gint(5)),
-                remainder: Some(Var {
-                    var_instance: Some(VarInstance::Wildcard(models::rhoapi::var::WildcardMsg {})),
-                }),
-                free_count: -7,
-            }],
-            body: Some(gint(6)),
-            persistent: true,
-            peek: true,
-            bind_count: 3,
-            // shape 2
-            locally_free: vec![0x21],
-            connective_used: true,
-            condition: Some(gint(7)),
-        }],
-        news: vec![New {
-            bind_count: 2,
-            p: Some(gint(8)),
-            uri: vec![
-                "rho:io:stdout".to_string(),
-                "rho:registry:lookup".to_string(),
-            ],
-            // shape 1 — the ONLY BTreeMap<String, Par> on the wire
-            injections: {
-                let mut m = BTreeMap::new();
-                m.insert("alpha".to_string(), gint(9));
-                m.insert("beta".to_string(), gint(10));
-                m
-            },
-            // shape 2
-            locally_free: vec![0x31, 0x32],
-        }],
-        exprs: vec![
-            // shape 4 — a HIGH oneof index (35 of 36); a decoder that read the
-            // index as a single byte, or that mis-ordered tag vs index, cannot
-            // reproduce this.
-            Expr {
-                expr_instance: Some(ExprInstance::GFixedPoint(GFixedPoint {
-                    unscaled: vec![0x01, 0x02, 0x03],
-                    scale: 4,
-                })),
-            },
-            // shape 3, arm A
-            Expr {
-                expr_instance: Some(ExprInstance::EPathmapBody(nonground_pathmap())),
-            },
-            // shape 3, arm B — reached through EZipper, whose `pathmap` field
-            // is an `Option<EPathMap>` (tag byte, then the 4-field struct).
-            Expr {
-                expr_instance: Some(ExprInstance::EZipperBody(EZipper {
-                    pathmap: Some(ground_pathmap()),
-                    current_path: vec![vec![0x03, 0x02], vec![], vec![0xFF]],
-                    is_write_zipper: true,
-                    // shape 2
-                    locally_free: vec![0x41],
-                    connective_used: true,
-                    cursor_kind: 2,
-                })),
-            },
-            // the collection arms — each with a NON-empty locally_free (shape 2)
-            Expr {
-                expr_instance: Some(ExprInstance::EListBody(EList {
-                    ps: vec![gint(13), gint(14)],
-                    locally_free: vec![0x51],
-                    connective_used: true,
-                    remainder: Some(Var {
-                        var_instance: Some(VarInstance::BoundVar(6)),
-                    }),
-                })),
-            },
-            Expr {
-                expr_instance: Some(ExprInstance::ETupleBody(ETuple {
-                    ps: vec![gint(15)],
-                    locally_free: vec![0x61, 0x62],
-                    connective_used: false,
-                })),
-            },
-            Expr {
-                expr_instance: Some(ExprInstance::ESetBody(ESet {
-                    ps: vec![gint(16)],
-                    locally_free: vec![0x71],
-                    connective_used: true,
-                    remainder: None,
-                })),
-            },
-            Expr {
-                expr_instance: Some(ExprInstance::EMapBody(EMap {
-                    kvs: vec![KeyValuePair {
-                        key: Some(gint(17)),
-                        value: Some(gint(18)),
-                    }],
-                    locally_free: vec![0x81],
-                    connective_used: false,
-                    remainder: Some(Var {
-                        var_instance: Some(VarInstance::FreeVar(1)),
-                    }),
-                })),
-            },
-            Expr {
-                expr_instance: Some(ExprInstance::EMethodBody(EMethod {
-                    method_name: "nth".to_string(),
-                    target: Some(gint(19)),
-                    arguments: vec![gint(20), gint(21)],
-                    locally_free: vec![0x91],
-                    connective_used: true,
-                })),
-            },
-            // a unary and a binary arm, and the variable arm
-            Expr {
-                expr_instance: Some(ExprInstance::ENotBody(ENot { p: Some(gint(22)) })),
-            },
-            Expr {
-                expr_instance: Some(ExprInstance::EVarBody(EVar {
-                    v: Some(Var {
-                        var_instance: Some(VarInstance::BoundVar(-2)),
-                    }),
-                })),
-            },
-            // a UTF-8 string with a multi-byte code point: the decoder must
-            // reject invalid UTF-8 exactly where the derive does.
-            Expr {
-                expr_instance: Some(ExprInstance::GString("λ→∀ ok".to_string())),
-            },
-            // an EMPTY oneof slot: `Option<ExprInstance>` = None (tag 0, no index)
-            Expr {
-                expr_instance: None,
-            },
-        ],
-        matches: vec![Match {
-            target: Some(gint(23)),
-            cases: vec![MatchCase {
-                pattern: Some(gint(24)),
-                source: Some(gint(25)),
-                free_count: 1,
-                guard: Some(gint(26)),
-            }],
-            // shape 2
-            locally_free: vec![0xA1],
-            connective_used: true,
-        }],
-        unforgeables: vec![
-            GUnforgeable {
-                unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
-                    id: vec![0xB1, 0xB2],
-                })),
-            },
-            GUnforgeable {
-                unf_instance: Some(UnfInstance::GDeployIdBody(GDeployId { sig: vec![0xC1] })),
-            },
-            GUnforgeable { unf_instance: None },
-        ],
-        bundles: vec![Bundle {
-            body: Some(gint(27)),
-            write_flag: true,
-            read_flag: false,
-        }],
-        connectives: vec![
-            // shape 4 — the LAST ConnectiveInstance index (8 of 9)
-            Connective {
-                connective_instance: Some(ConnectiveInstance::ConnByteArray(true)),
-            },
-            Connective {
-                connective_instance: Some(ConnectiveInstance::ConnAndBody(ConnectiveBody {
-                    ps: vec![gint(28), gint(29)],
-                })),
-            },
-            Connective {
-                connective_instance: Some(ConnectiveInstance::ConnNotBody(gint(30))),
-            },
-            Connective {
-                connective_instance: Some(ConnectiveInstance::VarRefBody(VarRef {
-                    index: 5,
-                    depth: -1,
-                })),
-            },
-            Connective {
-                connective_instance: None,
-            },
-        ],
-        conditionals: vec![If {
-            condition: Some(gint(31)),
-            if_true: Some(gint(32)),
-            if_false: None,
-            // shape 2
-            locally_free: vec![0xD1],
-            connective_used: true,
-        }],
-        // shape 2 — the outermost blanked field
-        locally_free: vec![0xE1, 0xE2, 0xE3],
+    let mut par = Par::default();
+    par.replace_sends(vec![Send {
+        chan: Some(gint(1)),
+        data: vec![gint(2), gint(3)],
+        persistent: true,
+        // shape 2 — blanked on serialize
+        locally_free: vec![0x11, 0x12, 0x13],
         connective_used: true,
-    }
+    }]);
+    par.replace_receives(vec![Receive {
+        binds: vec![ReceiveBind {
+            patterns: vec![gint(4)],
+            source: Some(gint(5)),
+            remainder: Some(Var {
+                var_instance: Some(VarInstance::Wildcard(models::rhoapi::var::WildcardMsg {})),
+            }),
+            free_count: -7,
+        }],
+        body: Some(gint(6)),
+        persistent: true,
+        peek: true,
+        bind_count: 3,
+        // shape 2
+        locally_free: vec![0x21],
+        connective_used: true,
+        condition: Some(gint(7)),
+    }]);
+    par.replace_news(vec![New {
+        bind_count: 2,
+        p: Some(gint(8)),
+        uri: vec![
+            "rho:io:stdout".to_string(),
+            "rho:registry:lookup".to_string(),
+        ],
+        // shape 1 — the ONLY BTreeMap<String, Par> on the wire
+        injections: {
+            let mut m = BTreeMap::new();
+            m.insert("alpha".to_string(), gint(9));
+            m.insert("beta".to_string(), gint(10));
+            m
+        },
+        // shape 2
+        locally_free: vec![0x31, 0x32],
+    }]);
+    par.replace_exprs(vec![
+        // shape 4 — a HIGH oneof index (35 of 36); a decoder that read the
+        // index as a single byte, or that mis-ordered tag vs index, cannot
+        // reproduce this.
+        Expr {
+            expr_instance: Some(ExprInstance::GFixedPoint(GFixedPoint {
+                unscaled: vec![0x01, 0x02, 0x03],
+                scale: 4,
+            })),
+        },
+        // shape 3, arm A
+        Expr {
+            expr_instance: Some(ExprInstance::EPathmapBody(nonground_pathmap())),
+        },
+        // shape 3, arm B — reached through EZipper, whose `pathmap` field
+        // is an `Option<EPathMap>` (tag byte, then the 4-field struct).
+        Expr {
+            expr_instance: Some(ExprInstance::EZipperBody(EZipper {
+                pathmap: Some(ground_pathmap()),
+                current_path: vec![vec![0x03, 0x02], vec![], vec![0xFF]],
+                is_write_zipper: true,
+                // shape 2
+                locally_free: vec![0x41],
+                connective_used: true,
+                cursor_kind: 2,
+            })),
+        },
+        // the collection arms — each with a NON-empty locally_free (shape 2)
+        Expr {
+            expr_instance: Some(ExprInstance::EListBody(EList {
+                ps: vec![gint(13), gint(14)],
+                locally_free: vec![0x51],
+                connective_used: true,
+                remainder: Some(Var {
+                    var_instance: Some(VarInstance::BoundVar(6)),
+                }),
+            })),
+        },
+        Expr {
+            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                ps: vec![gint(15)],
+                locally_free: vec![0x61, 0x62],
+                connective_used: false,
+            })),
+        },
+        Expr {
+            expr_instance: Some(ExprInstance::ESetBody(ESet {
+                ps: vec![gint(16)],
+                locally_free: vec![0x71],
+                connective_used: true,
+                remainder: None,
+            })),
+        },
+        Expr {
+            expr_instance: Some(ExprInstance::EMapBody(EMap {
+                kvs: vec![KeyValuePair {
+                    key: Some(gint(17)),
+                    value: Some(gint(18)),
+                }],
+                locally_free: vec![0x81],
+                connective_used: false,
+                remainder: Some(Var {
+                    var_instance: Some(VarInstance::FreeVar(1)),
+                }),
+            })),
+        },
+        Expr {
+            expr_instance: Some(ExprInstance::EMethodBody(EMethod {
+                method_name: "nth".to_string(),
+                target: Some(gint(19)),
+                arguments: vec![gint(20), gint(21)],
+                locally_free: vec![0x91],
+                connective_used: true,
+            })),
+        },
+        // a unary and a binary arm, and the variable arm
+        Expr {
+            expr_instance: Some(ExprInstance::ENotBody(ENot { p: Some(gint(22)) })),
+        },
+        Expr {
+            expr_instance: Some(ExprInstance::EVarBody(EVar {
+                v: Some(Var {
+                    var_instance: Some(VarInstance::BoundVar(-2)),
+                }),
+            })),
+        },
+        // a UTF-8 string with a multi-byte code point: the decoder must
+        // reject invalid UTF-8 exactly where the derive does.
+        Expr {
+            expr_instance: Some(ExprInstance::GString("λ→∀ ok".to_string())),
+        },
+        // an EMPTY oneof slot: `Option<ExprInstance>` = None (tag 0, no index)
+        Expr {
+            expr_instance: None,
+        },
+    ]);
+    par.replace_matches(vec![Match {
+        target: Some(gint(23)),
+        cases: vec![MatchCase {
+            pattern: Some(gint(24)),
+            source: Some(gint(25)),
+            free_count: 1,
+            guard: Some(gint(26)),
+        }],
+        // shape 2
+        locally_free: vec![0xA1],
+        connective_used: true,
+    }]);
+    par.replace_unforgeables(vec![
+        GUnforgeable {
+            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
+                id: vec![0xB1, 0xB2],
+            })),
+        },
+        GUnforgeable {
+            unf_instance: Some(UnfInstance::GDeployIdBody(GDeployId { sig: vec![0xC1] })),
+        },
+        GUnforgeable { unf_instance: None },
+    ]);
+    par.replace_bundles(vec![Bundle {
+        body: Some(gint(27)),
+        write_flag: true,
+        read_flag: false,
+    }]);
+    par.replace_connectives(vec![
+        // shape 4 — the LAST ConnectiveInstance index (8 of 9)
+        Connective {
+            connective_instance: Some(ConnectiveInstance::ConnByteArray(true)),
+        },
+        Connective {
+            connective_instance: Some(ConnectiveInstance::ConnAndBody(ConnectiveBody {
+                ps: vec![gint(28), gint(29)],
+            })),
+        },
+        Connective {
+            connective_instance: Some(ConnectiveInstance::ConnNotBody(gint(30))),
+        },
+        Connective {
+            connective_instance: Some(ConnectiveInstance::VarRefBody(VarRef {
+                index: 5,
+                depth: -1,
+            })),
+        },
+        Connective {
+            connective_instance: None,
+        },
+    ]);
+    par.replace_conditionals(vec![If {
+        condition: Some(gint(31)),
+        if_true: Some(gint(32)),
+        if_false: None,
+        // shape 2
+        locally_free: vec![0xD1],
+        connective_used: true,
+    }]);
+    // shape 2 — the outermost blanked field
+    par.replace_locally_free(vec![0xE1, 0xE2, 0xE3]);
+    par.replace_connective_used(true);
+    par
 }
 
 fn fixture_datum() -> Datum<ListParWithRandom> {
@@ -542,7 +542,8 @@ fn par_continuations_encoding_pinned() {
 #[test]
 fn fixture_carries_shape_1_a_non_empty_injection_map() {
     let p = odd_shapes_par();
-    let injections = &p.news[0].injections;
+    let news = p.decode_occurrences::<New>();
+    let injections = &news[0].injections;
     assert_eq!(
         injections.len(),
         2,
@@ -557,25 +558,25 @@ fn fixture_carries_shape_2_every_blanked_locally_free_site() {
     // `rhoapi.rs`, each with NON-empty content so the blanking is observable.
     let p = odd_shapes_par();
     let mut nonempty: Vec<&str> = Vec::with_capacity(12);
-    if !p.locally_free.is_empty() {
+    if !p.locally_free().is_empty() {
         nonempty.push("Par");
     }
-    if !p.sends[0].locally_free.is_empty() {
+    if !p.decode_occurrences::<Send>()[0].locally_free.is_empty() {
         nonempty.push("Send");
     }
-    if !p.receives[0].locally_free.is_empty() {
+    if !p.decode_occurrences::<Receive>()[0].locally_free.is_empty() {
         nonempty.push("Receive");
     }
-    if !p.news[0].locally_free.is_empty() {
+    if !p.decode_occurrences::<New>()[0].locally_free.is_empty() {
         nonempty.push("New");
     }
-    if !p.matches[0].locally_free.is_empty() {
+    if !p.decode_occurrences::<Match>()[0].locally_free.is_empty() {
         nonempty.push("Match");
     }
-    if !p.conditionals[0].locally_free.is_empty() {
+    if !p.decode_occurrences::<If>()[0].locally_free.is_empty() {
         nonempty.push("If");
     }
-    for e in &p.exprs {
+    for e in p.decode_occurrences::<Expr>() {
         match e.expr_instance.as_ref() {
             Some(ExprInstance::EListBody(x)) if !x.locally_free.is_empty() => {
                 nonempty.push("EList")
@@ -608,7 +609,7 @@ fn fixture_carries_shape_3_both_epathmap_serialize_arms() {
     let p = odd_shapes_par();
     let mut saw_nonground = false;
     let mut saw_ground = false;
-    for e in &p.exprs {
+    for e in p.decode_occurrences::<Expr>() {
         match e.expr_instance.as_ref() {
             Some(ExprInstance::EPathmapBody(m)) => {
                 assert!(!m.is_empty() && !m.locally_free.is_empty() && m.connective_used);
@@ -638,7 +639,7 @@ fn fixture_carries_shape_4_all_three_oneofs_including_high_indices() {
     // ExprInstance: a high index (GFixedPoint = 35 of 36) and an absent oneof.
     let mut saw_high_expr = false;
     let mut saw_absent_expr = false;
-    for e in &p.exprs {
+    for e in p.decode_occurrences::<Expr>() {
         match e.expr_instance.as_ref() {
             Some(ExprInstance::GFixedPoint(_)) => saw_high_expr = true,
             None => saw_absent_expr = true,
@@ -657,7 +658,7 @@ fn fixture_carries_shape_4_all_three_oneofs_including_high_indices() {
     // ConnectiveInstance: the last index (ConnByteArray = 8 of 9) and absent.
     let mut saw_high_conn = false;
     let mut saw_absent_conn = false;
-    for c in &p.connectives {
+    for c in p.decode_occurrences::<Connective>() {
         match c.connective_instance.as_ref() {
             Some(ConnectiveInstance::ConnByteArray(_)) => saw_high_conn = true,
             None => saw_absent_conn = true,
@@ -684,9 +685,9 @@ fn fixture_carries_shape_4_all_three_oneofs_including_high_indices() {
     ));
 
     // UnfInstance and VarInstance oneofs are present too.
-    assert!(p.unforgeables.iter().any(|u| u.unf_instance.is_none()));
-    assert!(p
-        .unforgeables
+    let unforgeables = p.decode_occurrences::<GUnforgeable>();
+    assert!(unforgeables.iter().any(|u| u.unf_instance.is_none()));
+    assert!(unforgeables
         .iter()
         .any(|u| matches!(u.unf_instance, Some(UnfInstance::GDeployIdBody(_)))));
 }

@@ -695,22 +695,17 @@ pub(crate) fn rebuild_par(
     connective_used: bool,
     shift: i32,
 ) -> Par {
-    concatenate_pars(
-        exprs_par,
-        concatenate_pars(connectives_par, Par {
-            sends,
-            receives,
-            news,
-            exprs: Vec::new(),
-            matches,
-            unforgeables,
-            bundles,
-            connectives: Vec::new(),
-            conditionals,
-            locally_free: set_bits_until(locally_free, shift),
-            connective_used,
-        }),
-    )
+    let mut shell = Par::default();
+    shell.replace_sends(sends);
+    shell.replace_receives(receives);
+    shell.replace_news(news);
+    shell.replace_matches(matches);
+    shell.replace_unforgeables(unforgeables);
+    shell.replace_bundles(bundles);
+    shell.replace_conditionals(conditionals);
+    shell.replace_locally_free(set_bits_until(locally_free, shift));
+    shell.replace_connective_used(connective_used);
+    concatenate_pars(exprs_par, concatenate_pars(connectives_par, shell))
 }
 
 // ---------------------------------------------------------------------------

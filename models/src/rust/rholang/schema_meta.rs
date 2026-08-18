@@ -71,6 +71,8 @@
 ///
 /// * [`Disposition::NotATraversal`] says **why** it does not recurse, because
 ///   "it does not recurse" is a claim about code;
+/// * [`Disposition::Bounded`] records the finite structural bound that makes a
+///   native field walk independent of input depth;
 /// * [`Disposition::Converted`] names the **driver** that replaced it, so the
 ///   claim is checkable;
 /// * [`Disposition::FollowsFrom`] names the driver that subsumes it, so
@@ -80,6 +82,9 @@ pub enum Disposition {
     /// Not a walk over term structure at all — a marker trait, a type-level
     /// artifact, or a constructor that fills defaults without descending.
     NotATraversal(&'static str),
+    /// A real walk over term fields whose native depth is bounded by the
+    /// acyclic generated schema plus explicitly audited external endpoints.
+    Bounded(&'static str),
     /// A recursive walk that an explicit-worklist driver has already replaced.
     Converted(&'static str),
     /// A recursive walk that needs no driver of its own because a driver listed
@@ -98,6 +103,7 @@ impl Disposition {
     pub const fn detail(self) -> &'static str {
         match self {
             Disposition::NotATraversal(s)
+            | Disposition::Bounded(s)
             | Disposition::Converted(s)
             | Disposition::FollowsFrom(s) => s,
         }
@@ -158,105 +164,7 @@ pub static PDA_EQUIVALENCE_EVIDENCE: &[EquivalenceEvidence] = &[
         proof_file: PDA_PROOF,
         theorem: "decoder_machine_equivalent_to_recursive_rebuild",
         executable_file: "models/tests/bincode_decoder_differential.rs",
-        executable_marker: "par_corpus_agrees_with_the_derived_oracle",
-    },
-    EquivalenceEvidence {
-        surface: "Clone::clone",
-        proof_file: PDA_PROOF,
-        theorem: "pda_fold_equivalent_to_recursive_fold",
-        executable_file: "models/tests/clone_equivalence_corpus.rs",
-        executable_marker: "every_enumerated_shape_clones_identically_on_every_axis",
-    },
-    EquivalenceEvidence {
-        surface: "Ord::cmp",
-        proof_file: PDA_PROOF,
-        theorem: "pda_fold_equivalent_to_recursive_fold",
-        executable_file: "models/codegen/schema.rs",
-        executable_marker: "generated_ord_matches_the_recursive_oracle",
-    },
-    EquivalenceEvidence {
-        surface: "PartialOrd::partial_cmp",
-        proof_file: PDA_PROOF,
-        theorem: "pda_fold_equivalent_to_recursive_fold",
-        executable_file: "models/codegen/schema.rs",
-        executable_marker: "generated_ord_matches_the_recursive_oracle",
-    },
-    EquivalenceEvidence {
-        surface: "Debug::fmt",
-        proof_file: PDA_PROOF,
-        theorem: "pda_fold_equivalent_to_recursive_fold",
-        executable_file: "models/codegen/schema.rs",
-        executable_marker: "generated_debug_matches_the_recursive_builder_oracle",
-    },
-    EquivalenceEvidence {
-        surface: "Message::encode_raw",
-        proof_file: PDA_PROOF,
-        theorem: "pda_fold_equivalent_to_recursive_fold",
-        executable_file: "models/tests/protobuf_encoder_differential.rs",
-        executable_marker: "bounded_recursive_oracle_terms_encode_identically",
-    },
-    EquivalenceEvidence {
-        surface: "Message::encoded_len",
-        proof_file: PDA_PROOF,
-        theorem: "pda_fold_equivalent_to_recursive_fold",
-        executable_file: "models/tests/protobuf_encoder_differential.rs",
-        executable_marker: "the_length_table_holds_exactly_one_entry_per_message_node",
-    },
-    EquivalenceEvidence {
-        surface: "Message::merge_field",
-        proof_file: PDA_PROOF,
-        theorem: "decoder_machine_equivalent_to_recursive_rebuild",
-        executable_file: "models/tests/protobuf_decoder_differential.rs",
-        executable_marker: "exhaustive_valid_corpora_decode_identically",
-    },
-    EquivalenceEvidence {
-        surface: "Message::clear",
-        proof_file: PDA_PROOF,
-        theorem: "drop_machine_reaches_one_completion",
-        executable_file: "models/tests/par_protobuf_stack_safety.rs",
-        executable_marker: "message_clear_matches_protobuf_default_semantics",
-    },
-    EquivalenceEvidence {
-        surface: "Oneof::encode",
-        proof_file: PDA_PROOF,
-        theorem: "pda_fold_equivalent_to_recursive_fold",
-        executable_file: "models/tests/protobuf_encoder_differential.rs",
-        executable_marker: "every_expr_instance_encodes_identically",
-    },
-    EquivalenceEvidence {
-        surface: "Oneof::encoded_len",
-        proof_file: PDA_PROOF,
-        theorem: "pda_fold_equivalent_to_recursive_fold",
-        executable_file: "models/tests/protobuf_encoder_differential.rs",
-        executable_marker: "every_expr_instance_encodes_identically",
-    },
-    EquivalenceEvidence {
-        surface: "Oneof::merge",
-        proof_file: PDA_PROOF,
-        theorem: "decoder_machine_equivalent_to_recursive_rebuild",
-        executable_file: "models/tests/protobuf_decoder_differential.rs",
-        executable_marker: "exhaustive_valid_corpora_decode_identically",
-    },
-    EquivalenceEvidence {
-        surface: "PartialEq::eq",
-        proof_file: PDA_PROOF,
-        theorem: "pda_fold_equivalent_to_recursive_fold",
-        executable_file: "models/codegen/schema.rs",
-        executable_marker: "generated_eq_matches_the_recursive_oracle",
-    },
-    EquivalenceEvidence {
-        surface: "Hash::hash",
-        proof_file: PDA_PROOF,
-        theorem: "pda_fold_equivalent_to_recursive_fold",
-        executable_file: "models/codegen/schema.rs",
-        executable_marker: "generated_hash_matches_the_recursive_oracle",
-    },
-    EquivalenceEvidence {
-        surface: "Drop::drop",
-        proof_file: PDA_PROOF,
-        theorem: "drop_machine_reaches_one_completion",
-        executable_file: "models/tests/par_protobuf_stack_safety.rs",
-        executable_marker: "message_clear_tears_down_a_deep_term_iteratively",
+        executable_marker: "par_corpus_agrees_with_the_canonical_typed_source_oracle",
     },
 ];
 

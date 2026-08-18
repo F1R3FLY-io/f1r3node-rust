@@ -20,7 +20,6 @@
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, Expr, Par, Send};
-use models::rust::par::Par as PathMapPar;
 use models::rust::rholang::bincode_encoder::{
     encode, encode_into, op_size, op_stack_high_water, program_address, with_encoded,
 };
@@ -523,14 +522,13 @@ fn program_addresses_do_not_identify_a_type() {
          SIGSEGV'd the differential on its first run"
     );
     assert!(
-        (&PathMapPar::default() as &dyn BincodeNode)
+        (&Par::default() as &dyn BincodeNode)
             .bincode_snapshot()
             .is_some(),
         "the repository-owned Par must expose its canonical Bag image"
     );
     for node in [
-        &Par::default() as &dyn BincodeNode,
-        &Send::default(),
+        &Send::default() as &dyn BincodeNode,
         &Expr::default(),
         &models::rhoapi::ESet::default(),
         &models::rhoapi::EMap::default(),
@@ -568,88 +566,26 @@ fn program_addresses_do_not_identify_a_type() {
 // §4  ★★ Zero per-CLONE allocation — and the RED that makes it a measurement
 // ===========================================================================
 
-/// ★★ The clone half of the acceptance criterion, which had no executed guard.
-///
-/// The generated `<Par as Clone>::clone` routes through `drive_with` on
-/// **thread-local pooled** stacks, so its steady state must be **0 allocations**
-/// for the driver — exactly the criterion §2 already asserts for the encoder. The
-/// clone's *output* is owned, so it allocates for the term it produces; the
-/// statement being pinned is therefore a **relation**, not a zero: the driven
-/// clone must allocate no more than the derived oracle it is byte-identical to.
-///
-/// ## ⚠ Why the RED is the OWNING `drive` and not a mutilated visitor
-///
-/// `drive` and `drive_with` differ in exactly one respect — `drive` performs
-/// `Vec::with_capacity` twice per call, `drive_with` takes both stacks by `&mut`.
-/// That difference is the entire reason `drive_with` exists, and its justification
-/// is a measured one: 95.43% of production terms are at depth 2, where a `Par`
-/// clone touches ~6 nodes and two mallocs are a double-digit regression.
-///
-/// So the RED here is **the owning entry point, called on the same term**. If the
-/// pooled path's advantage is real, the owning path allocates strictly more; if it
-/// is not, this test cannot tell them apart and says so. ★ That is a sharper RED
-/// than a deliberately-broken visitor would be, because it is a control that
-/// *ships* — somebody could reasonably reach for `drive` on this path, and this
-/// test is what tells them what it costs.
+/// A PathMap-backed `Par` clone shares the immutable trie root. For values with
+/// empty root metadata, cloning therefore performs no allocation at all; there
+/// is no recursive clone PDA or driver stack to warm.
 #[test]
-fn the_clone_steady_state_allocates_nothing_for_the_driver_itself() {
-    use models::rust::rholang::drive::{drive, Step};
-    use models::rust::rholang::term_ops::{oracle_clone_par, CloneNode, CloneTraversal, CloneVal};
-
+fn pathmap_par_clone_is_allocation_free_with_empty_root_metadata() {
     for (name, par) in [
         ("gint", corpus::gint(1)),
         ("wide(64)", wide(64)),
         ("deep(16)", deep(16)),
     ] {
-        // Warm the thread-local stack pool: the criterion is the STEADY state.
-        for _ in 0..8 {
-            let warmed = par.clone();
-            models::rust::rholang::par_children::dismantle(warmed);
-        }
-
-        let (pooled_allocs, oracle_allocs, owning_allocs) = {
-            let (c, pooled_allocs, pooled_bytes) = counting_alloc::measure(|| par.clone());
-            models::rust::rholang::par_children::dismantle(c);
-            let (o, oracle_allocs, oracle_bytes) =
-                counting_alloc::measure(|| oracle_clone_par(&par));
-            models::rust::rholang::par_children::dismantle(o);
-            // ⚠ THE RED: the OWNING entry point, same visitor, same term.
-            let (w, owning_allocs, owning_bytes) = counting_alloc::measure(|| {
-                match drive(
-                    &mut CloneTraversal,
-                    &mut (),
-                    Step::Descend(CloneNode::Par(&par)),
-                )
-                .expect("the clone traversal is infallible")
-                {
-                    CloneVal::Par(p) => p,
-                }
-            });
-            models::rust::rholang::par_children::dismantle(w);
-            println!(
-                "  {name:20} pooled {pooled_allocs:3} allocs {pooled_bytes:8} B \
-                 | derived {oracle_allocs:3} allocs {oracle_bytes:8} B \
-                 | OWNING drive {owning_allocs:3} allocs {owning_bytes:8} B"
-            );
-            (pooled_allocs, oracle_allocs, owning_allocs)
-        };
-
         assert!(
-            pooled_allocs <= oracle_allocs,
-            "`{name}`: the driven clone made {pooled_allocs} allocations against the derived \
-             oracle's {oracle_allocs}. The two produce BYTE-IDENTICAL terms \
-             (`models/tests/clone_equivalence_corpus.rs`, eight axes), so every allocation \
-             beyond the oracle's is the DRIVER's and the thread-local pool has stopped \
-             holding. `drive_with` exists for exactly this number."
+            par.locally_free().is_empty(),
+            "{name}: fixture precondition"
         );
-        assert!(
-            owning_allocs > pooled_allocs,
-            "★ THE RED IS INERT. The owning `drive` made {owning_allocs} allocations and the \
-             pooled `drive_with` path made {pooled_allocs} — the owning path must cost \
-             STRICTLY MORE, because it performs two `Vec::with_capacity` calls per clone \
-             where the pooled path performs none. If they are equal, this test cannot \
-             distinguish a pooled driver from an allocating one, the assertion above is \
-             vacuous, and `drive_with`'s entire justification is unmeasured."
+        let (clone, allocations, bytes) = counting_alloc::measure(|| par.clone());
+        assert_eq!(
+            allocations, 0,
+            "{name}: clone allocated {allocations} times"
         );
+        assert_eq!(bytes, 0, "{name}: clone allocated {bytes} bytes");
+        assert_eq!(clone, par);
     }
 }

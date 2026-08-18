@@ -53,7 +53,7 @@ fn int_channel(n: i64) -> ExprInstance { ExprInstance::GInt(n) }
 
 fn has_par_with_bool(data: &HashSet<Par>, expected: bool) -> bool {
     data.iter().any(|p| {
-        p.exprs
+        p.decode_occurrences::<Expr>()
             .iter()
             .any(|e| e.expr_instance == Some(ExprInstance::GBool(expected)))
     })
@@ -62,7 +62,7 @@ fn has_par_with_bool(data: &HashSet<Par>, expected: bool) -> bool {
 fn has_par_with_double(data: &HashSet<Par>, expected: f64) -> bool {
     let bits = expected.to_bits();
     data.iter().any(|p| {
-        p.exprs
+        p.decode_occurrences::<Expr>()
             .iter()
             .any(|e| e.expr_instance == Some(ExprInstance::GDouble(bits)))
     })
@@ -70,7 +70,7 @@ fn has_par_with_double(data: &HashSet<Par>, expected: f64) -> bool {
 
 fn has_par_with_string(data: &HashSet<Par>, expected: &str) -> bool {
     data.iter().any(|p| {
-        p.exprs
+        p.decode_occurrences::<Expr>()
             .iter()
             .any(|e| e.expr_instance == Some(ExprInstance::GString(expected.to_string())))
     })
@@ -145,7 +145,7 @@ async fn float_division_by_zero_produces_ieee754_values() {
         eval_ok(&mut runtime, r#"@2!(0.0f64 / 0.0f64)"#).await;
         let ch2 = channel_data(&runtime, int_channel(2)).await;
         let has_nan = ch2.iter().any(|p| {
-            p.exprs.iter().any(|e| {
+            p.decode_occurrences::<Expr>().iter().any(|e| {
                 matches!(&e.expr_instance, Some(ExprInstance::GDouble(bits)) if f64::from_bits(*bits).is_nan())
             })
         });
@@ -522,21 +522,21 @@ async fn int_addition_and_subtraction_refuse_an_unrepresentable_result() {
             .await
             .iter()
             .any(|p| p
-                .exprs
+                .decode_occurrences::<Expr>()
                 .iter()
                 .any(|e| e.expr_instance == Some(ExprInstance::GInt(15)))));
         assert!(channel_data(&runtime, int_channel(3))
             .await
             .iter()
             .any(|p| p
-                .exprs
+                .decode_occurrences::<Expr>()
                 .iter()
                 .any(|e| e.expr_instance == Some(ExprInstance::GInt(7)))));
         assert!(channel_data(&runtime, int_channel(4))
             .await
             .iter()
             .any(|p| p
-                .exprs
+                .decode_occurrences::<Expr>()
                 .iter()
                 .any(|e| e.expr_instance == Some(ExprInstance::GInt(9223372036854775806)))));
     })
@@ -629,7 +629,7 @@ async fn the_wrap_detect_overflow_idiom_now_raises_and_its_total_replacement_doe
                 .await
                 .iter()
                 .any(|p| p
-                    .exprs
+                    .decode_occurrences::<Expr>()
                     .iter()
                     .any(|e| e.expr_instance == Some(ExprInstance::GInt(42)))),
             "★ THE CONTROL: the total guard must not reject a sum that fits",
@@ -672,7 +672,7 @@ async fn int_on(runtime: &RhoRuntimeImpl, channel: &str) -> Vec<i64> {
     let mut found: Vec<i64> = channel_data(runtime, string_channel(channel))
         .await
         .iter()
-        .flat_map(|p| p.exprs.iter())
+        .flat_map(|p| p.decode_occurrences::<Expr>().into_iter())
         .filter_map(|e| match e.expr_instance {
             Some(ExprInstance::GInt(n)) => Some(n),
             _ => None,
@@ -686,7 +686,7 @@ async fn bools_on(runtime: &RhoRuntimeImpl, channel: &str) -> Vec<bool> {
     let mut found: Vec<bool> = channel_data(runtime, string_channel(channel))
         .await
         .iter()
-        .flat_map(|p| p.exprs.iter())
+        .flat_map(|p| p.decode_occurrences::<Expr>().into_iter())
         .filter_map(|e| match e.expr_instance {
             Some(ExprInstance::GBool(b)) => Some(b),
             _ => None,

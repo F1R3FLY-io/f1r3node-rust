@@ -738,7 +738,7 @@ mod tests {
 
         let expected_result = {
             let mut par = inputs.par.clone();
-            par.connectives.push(models::rhoapi::Connective {
+            par.replace_connectives(vec![models::rhoapi::Connective {
                 connective_instance: Some(
                     models::rhoapi::connective::ConnectiveInstance::ConnNotBody(models::par_from_default! {
                         exprs: vec![Expr {
@@ -747,8 +747,8 @@ mod tests {
                         ..Par::default()
                     }),
                 ),
-            });
-            par.connective_used = true;
+            }]);
+            par.replace_connective_used(true);
             par
         };
 

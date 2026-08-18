@@ -33,7 +33,7 @@
 //! message joins this test automatically. A hand-written list would omit
 //! precisely the type nobody remembered.
 
-use models::rust::rholang::bincode_schema::FieldKind;
+use models::rust::rholang::bincode_schema::{FieldKind, PAR_PROGRAM};
 use models::rust::rholang::bincode_schema_tables::CONFORMANCE_REGISTRY;
 use serde::{Serialize, Serializer};
 
@@ -88,6 +88,11 @@ impl Serializer for Probe {
     type SerializeMap = serde::ser::Impossible<Observation, ProbeError>;
     type SerializeStruct = StructProbe;
     type SerializeStructVariant = serde::ser::Impossible<Observation, ProbeError>;
+
+    /// This is a bincode-schema probe. Repository-owned types may deliberately
+    /// expose a richer diagnostic/JSON view while retaining a compact binary
+    /// image, so the serializer must select the non-human-readable contract.
+    fn is_human_readable(&self) -> bool { false }
 
     fn serialize_struct(
         self,
@@ -284,7 +289,6 @@ fn every_generated_type_matches_serdes_own_field_order() {
     use models::rhoapi::*;
 
     let observed = probe_all!(
-        Par,
         TaggedContinuation,
         ParWithRandom,
         PCost,
@@ -374,6 +378,25 @@ fn every_generated_type_matches_serdes_own_field_order() {
             panic!("{why}");
         }
     }
+}
+
+/// `Par` remains in the protobuf descriptor but is repository-owned: its
+/// PathMap-backed bincode image is deliberately absent from the generated
+/// conformance registry. Keep the same serde-order proof against its
+/// hand-written program so moving it across the ownership boundary cannot
+/// silently remove coverage.
+#[test]
+fn repository_owned_par_matches_its_handwritten_program() {
+    let observed = models::rhoapi::Par::default()
+        .serialize(Probe)
+        .expect("repository-owned Par serializes as a struct");
+    conformance_verdict(
+        "Par",
+        PAR_PROGRAM,
+        &["components", "locally_free", "connective_used"],
+        &observed,
+    )
+    .unwrap_or_else(|why| panic!("{why}"));
 }
 
 /// ★★ ANTI-VACUITY. The verdict must REJECT a wrong table row, and must still

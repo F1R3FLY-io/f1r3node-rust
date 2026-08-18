@@ -24,42 +24,30 @@ pub fn ast() -> Par {
 fn bootstrap(channel: Par) -> New {
     New {
         bind_count: 1,
-        p: Some(Par {
-            sends: Vec::new(),
-            // for (x <- channel) { x!(channel) }
-            receives: vec![Receive {
-                // for (x <- channel)
-                binds: vec![ReceiveBind {
-                    patterns: vec![new_freevar_par(0, Vec::new())],
-                    source: Some(channel.clone()),
-                    remainder: None,
-                    free_count: 1,
-                }],
-                // x!(channel)
-                body: Some(Par::default().with_sends(vec![Send {
-                    chan: Some(new_boundvar_par(0, Vec::new(), false)),
-                    data: vec![channel],
-                    persistent: false,
-                    locally_free: Vec::new(),
-                    connective_used: false,
-                }])),
+        // for (x <- channel) { x!(channel) }
+        p: Some(Par::default().with_receives(vec![Receive {
+            // for (x <- channel)
+            binds: vec![ReceiveBind {
+                patterns: vec![new_freevar_par(0, Vec::new())],
+                source: Some(channel.clone()),
+                remainder: None,
+                free_count: 1,
+            }],
+            // x!(channel)
+            body: Some(Par::default().with_sends(vec![Send {
+                chan: Some(new_boundvar_par(0, Vec::new(), false)),
+                data: vec![channel],
                 persistent: false,
-                peek: false,
-                bind_count: 1,
                 locally_free: Vec::new(),
                 connective_used: false,
-                condition: None,
-            }],
-            news: Vec::new(),
-            exprs: Vec::new(),
-            matches: Vec::new(),
-            unforgeables: Vec::new(),
-            bundles: Vec::new(),
-            connectives: Vec::new(),
-            conditionals: Vec::new(),
+            }])),
+            persistent: false,
+            peek: false,
+            bind_count: 1,
             locally_free: Vec::new(),
             connective_used: false,
-        }),
+            condition: None,
+        }])),
         uri: Vec::new(),
         injections: BTreeMap::default(),
         locally_free: Vec::new(),

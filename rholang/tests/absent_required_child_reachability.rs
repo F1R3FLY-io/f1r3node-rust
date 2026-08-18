@@ -178,14 +178,20 @@ fn m0_has_locally_free_panics_before_the_matcher_is_reached() {
             p1: Some(new_gint_par(1, Vec::new(), false)),
             p2: Some(new_gint_par(2, Vec::new(), false)),
         }));
-        println!("M0_CHILD_CONTROL_BUILT=true exprs={}", control.exprs.len());
+        println!(
+            "M0_CHILD_CONTROL_BUILT=true exprs={}",
+            control.family_cardinality::<Expr>()
+        );
 
         // ★ THE SUBJECT.
         let built = par_of(ExprInstance::EMinusBody(EMinus {
             p1: None,
             p2: Some(new_gint_par(2, Vec::new(), false)),
         }));
-        println!("M0_CHILD_SURVIVED=true exprs={}", built.exprs.len());
+        println!(
+            "M0_CHILD_SURVIVED=true exprs={}",
+            built.family_cardinality::<Expr>()
+        );
         return;
     }
 
@@ -256,7 +262,13 @@ fn m1_protobuf_accepts_an_absent_required_child() {
     );
 
     // The decoded value REALLY has None.
-    let inner = match &decoded_a.exprs[0].expr_instance {
+    let inner = match decoded_a
+        .first::<Expr>()
+        .expect("resident expression decodes")
+        .expect("decoded witness retains one Expr")
+        .0
+        .expr_instance
+    {
         Some(ExprInstance::EMinusBody(e)) => e,
         other => panic!("M1: decoded to the wrong variant: {other:?}"),
     };

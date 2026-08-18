@@ -546,19 +546,19 @@ fn the_wire_ingress_residual_is_real() {
     let back = Par::decode(&bytes[..]).expect("a Par carrying locally_free = [0] decodes");
 
     assert_eq!(
-        back.locally_free,
-        vec![0u8],
+        back.locally_free(),
+        [0u8],
         "the decoder must reproduce the bytes it was given"
     );
     assert!(
-        !back.locally_free.is_empty(),
+        !back.locally_free().is_empty(),
         "★ THE RESIDUAL: a peer-supplied [0] survives ingress, so `is_empty()` answers `false` \
          for a term whose free-variable set is empty. Agreement-preserving (every node decoding \
          these bytes agrees), and therefore not a fork — but it is the reason the producer law \
          is a floor and not a totality claim."
     );
     assert!(
-        members(&back.locally_free).is_empty(),
+        members(back.locally_free()).is_empty(),
         "control: the decoded value still DENOTES the empty set"
     );
 }

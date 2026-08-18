@@ -138,14 +138,13 @@ fn accounting_demand_and_decomposition_are_stack_safe() {
         .stack_size(SMALL_STACK)
         .name("accounting-demand-depth-gate".to_string())
         .spawn(|| {
-            let mut par = Par::default();
-            par.sends.push(Send {
+            let mut par = Par::default().with_sends(vec![Send {
                 chan: Some(Par::default()),
                 data: Vec::new(),
                 persistent: false,
                 locally_free: Vec::new(),
                 connective_used: false,
-            });
+            }]);
             for _ in 0..PAR_DEPTH {
                 par = models::par_from_default! {
                     news: vec![New {
@@ -346,9 +345,9 @@ fn wide_pathmap_map_match(width: usize) -> (Par, Par) {
 
 fn outer_epathmap_len(par: &Par) -> usize {
     match par
-        .exprs
-        .first()
-        .and_then(|expr| expr.expr_instance.as_ref())
+        .first::<Expr>()
+        .expect("resident expression decodes")
+        .and_then(|(expr, _)| expr.expr_instance)
     {
         Some(ExprInstance::EPathmapBody(map)) => map.len(),
         _ => 0,
@@ -384,7 +383,7 @@ fn wide_list(width: usize) -> Par {
 
 fn wide_list_expr(width: usize) -> Expr {
     wide_list(width)
-        .exprs
+        .take_occurrences::<Expr>()
         .pop()
         .expect("stack_depth_gate: wide_list_expr built a Par with no exprs")
 }
@@ -809,10 +808,6 @@ fn subject(name: &str) -> fn(usize) {
         // bounded treatment of `EPathMap` rests on. See their bodies.
         "clone_send_chain" => clone_send_chain_body,
         "clone_pathmap_chain" => clone_pathmap_chain_body,
-        // ★★ The DERIVED CONTROL for `clone`, in the `bincode_ser_derived` idiom
-        // — and the instrument that makes the conversion's "before" leg a
-        // MEASUREMENT rather than a manual revert. See `clone_oracle_body`.
-        "clone_oracle" => clone_oracle_body,
         // ★ The TEARDOWN control that decides whether `clone_pathmap_chain`'s
         // reading is the CLONE's or the fixture's `Drop`. See its body.
         "pathmap_chain_drop" => pathmap_chain_drop_body,
@@ -2636,39 +2631,6 @@ fn clone_pathmap_chain_body(depth: usize) {
     dismantle(term);
 }
 
-/// ★★ **The DERIVED CONTROL for [`clone_body`]** — `term_ops::oracle_clone_par`,
-/// which is the `#[derive(Clone)]` expansion `models/build.rs` stripped, re-emitted
-/// by the same generator from the same resolved-field vector.
-///
-/// ## Why this exists rather than a manual revert
-///
-/// The "before" leg of a conversion's bisection evidence is normally taken by
-/// reverting the change and re-measuring. For a converted TRAIT IMPL that is both
-/// awkward and dangerous: the revert has to be un-reverted, and this workspace has
-/// already frozen a deliberately-broken probe form into history once by
-/// committing mid-measurement.
-///
-/// `models/codegen/schema.rs` §F therefore retains the derive's own body as a
-/// free function, and `models/tests/clone_equivalence_corpus.rs` proves it
-/// byte-identical to the driven form on eight axes over 67 enumerated shapes. So
-/// the control and the subject live in the SAME binary, run on the SAME ladder, in
-/// the SAME invocation — and the "before" figure stops being a number somebody
-/// has to reproduce and becomes a number this file measures.
-///
-/// ⚠ It is deliberately in NEITHER [`CONVERTED_DEPTH`] nor [`TRIPWIRE_DEPTH`],
-/// exactly as `bincode_ser_derived` is: it is a Θ(depth) control, not a claim.
-/// Adding it to the tripwire list would require an [`assert_slope_below`] call
-/// pinning a ceiling on code that exists only to be sloped.
-fn clone_oracle_body(depth: usize) {
-    use models::rust::rholang::term_ops::oracle_clone_par;
-    let term = nested_list(depth);
-    assert_carries("the clone_oracle input's nesting", par_depth(&term), depth);
-    let c = oracle_clone_par(&term);
-    assert_carries("the ORACLE CLONE's nesting", par_depth(&c), depth);
-    dismantle(c);
-    dismantle(term);
-}
-
 /// ★ The **TEARDOWN control** for [`clone_pathmap_chain_body`]: build the same
 /// ladder and release it, with **no clone at all**.
 ///
@@ -2803,9 +2765,13 @@ fn nested_send_chain(depth: usize) -> Par {
 /// probe)`.
 fn send_chain_depth(p: &Par) -> usize {
     let mut n = 0usize;
-    let mut cur = p;
+    let mut cur = p.clone();
     loop {
-        match cur.sends.first().and_then(|s| s.chan.as_ref()) {
+        match cur
+            .first::<Send>()
+            .expect("resident send decodes")
+            .and_then(|(send, _)| send.chan)
+        {
             Some(inner) => {
                 n += 1;
                 cur = inner;
@@ -2847,13 +2813,17 @@ fn nested_pathmap_chain_leaf(depth: usize, leaf: i64) -> Par {
 /// The measured nesting of a [`nested_pathmap_chain`] term.
 fn pathmap_chain_depth(p: &Par) -> usize {
     let mut n = 0usize;
-    let mut cur = p;
+    let mut cur = p.clone();
     loop {
-        let next = match cur.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+        let next = match cur
+            .first::<Expr>()
+            .expect("resident expression decodes")
+            .and_then(|(expr, _)| expr.expr_instance)
+        {
             Some(ExprInstance::EPathmapBody(pm)) if !pm.is_empty() => pm
                 .entry_trie()
                 .map_trie()
-                .and_then(|map| map.iter().next().map(|(_, value)| value)),
+                .and_then(|map| map.iter().next().map(|(_, value)| value.clone())),
             _ => None,
         };
         let Some(next) = next else {
@@ -3189,12 +3159,16 @@ fn assert_carries(what: &str, actual: usize, claimed: usize) {
 /// Count `[[…[x]…]]` nesting levels ITERATIVELY.
 fn par_depth(p: &Par) -> usize {
     let mut n = 0usize;
-    let mut cur = p;
+    let mut cur = p.clone();
     loop {
-        match cur.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
-            Some(ExprInstance::EListBody(l)) if !l.ps.is_empty() => {
+        match cur
+            .first::<Expr>()
+            .expect("resident expression decodes")
+            .and_then(|(expr, _)| expr.expr_instance)
+        {
+            Some(ExprInstance::EListBody(list)) if !list.ps.is_empty() => {
                 n += 1;
-                cur = &l.ps[0];
+                cur = list.ps.into_iter().next().expect("non-empty list");
             }
             _ => return n,
         }
@@ -3203,7 +3177,11 @@ fn par_depth(p: &Par) -> usize {
 
 /// Sibling count of the outermost `EList`.
 fn par_width(p: &Par) -> usize {
-    match p.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+    match p
+        .first::<Expr>()
+        .expect("resident expression decodes")
+        .and_then(|(expr, _)| expr.expr_instance)
+    {
         Some(ExprInstance::EListBody(l)) => l.ps.len(),
         _ => 0,
     }
@@ -3212,10 +3190,14 @@ fn par_width(p: &Par) -> usize {
 /// Count `!(!(…))` nesting levels ITERATIVELY.
 fn enot_depth(p: &Par) -> usize {
     let mut n = 0usize;
-    let mut cur = p;
+    let mut cur = p.clone();
     loop {
-        match cur.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
-            Some(ExprInstance::ENotBody(not)) => match not.p.as_ref() {
+        match cur
+            .first::<Expr>()
+            .expect("resident expression decodes")
+            .and_then(|(expr, _)| expr.expr_instance)
+        {
+            Some(ExprInstance::ENotBody(not)) => match not.p {
                 Some(inner) => {
                     n += 1;
                     cur = inner;
@@ -3230,12 +3212,16 @@ fn enot_depth(p: &Par) -> usize {
 /// Count `{{…{x}…}}` nesting levels (the `ESet` shape) ITERATIVELY.
 fn eset_depth(p: &Par) -> usize {
     let mut n = 0usize;
-    let mut cur = p;
+    let mut cur = p.clone();
     loop {
-        match cur.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+        match cur
+            .first::<Expr>()
+            .expect("resident expression decodes")
+            .and_then(|(expr, _)| expr.expr_instance)
+        {
             Some(ExprInstance::ESetBody(set)) if !set.ps.is_empty() => {
                 n += 1;
-                cur = &set.ps[0];
+                cur = set.ps.into_iter().next().expect("non-empty set");
             }
             _ => return n,
         }
@@ -3245,11 +3231,15 @@ fn eset_depth(p: &Par) -> usize {
 /// Count nested `EMap` levels ITERATIVELY, following the KEY.
 fn emap_depth(p: &Par) -> usize {
     let mut n = 0usize;
-    let mut cur = p;
+    let mut cur = p.clone();
     loop {
-        match cur.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+        match cur
+            .first::<Expr>()
+            .expect("resident expression decodes")
+            .and_then(|(expr, _)| expr.expr_instance)
+        {
             Some(ExprInstance::EMapBody(map)) if !map.kvs.is_empty() => {
-                match map.kvs[0].key.as_ref() {
+                match map.kvs.into_iter().next().and_then(|pair| pair.key) {
                     Some(k) => {
                         n += 1;
                         cur = k;
@@ -3265,18 +3255,18 @@ fn emap_depth(p: &Par) -> usize {
 /// Count `new … in { for (…) { … } }` binder scopes ITERATIVELY.
 fn binder_depth(p: &Par) -> usize {
     let mut n = 0usize;
-    let mut cur = p;
+    let mut cur = p.clone();
     loop {
-        let Some(new) = cur.news.first() else {
+        let Some((new, _)) = cur.first::<New>().expect("resident new decodes") else {
             return n;
         };
-        let Some(inner) = new.p.as_ref() else {
+        let Some(inner) = new.p else {
             return n;
         };
-        let Some(recv) = inner.receives.first() else {
+        let Some((recv, _)) = inner.first::<Receive>().expect("resident receive decodes") else {
             return n;
         };
-        match recv.body.as_ref() {
+        match recv.body {
             Some(body) => {
                 n += 1;
                 cur = body;
@@ -3583,8 +3573,10 @@ fn eval_with_nots_body(depth: usize) {
     // An even number of negations of `true` is `true`; an odd number `false`.
     let expected = depth % 2 == 0;
     assert_eq!(
-        out.exprs.first().and_then(|e| e.expr_instance.as_ref()),
-        Some(&ExprInstance::GBool(expected)),
+        out.first::<Expr>()
+            .expect("resident expression decodes")
+            .and_then(|(expr, _)| expr.expr_instance),
+        Some(ExprInstance::GBool(expected)),
         "stack_depth_gate: {} negations of `true` should be {}",
         depth,
         expected
@@ -4417,21 +4409,14 @@ fn s0_binding_ladder(rung: &S0Ladder) -> Ladder {
 /// ```
 #[test]
 #[ignore = "eight bisections; drive explicitly per profile"]
-fn the_clone_conversion_is_visible_against_its_own_derived_control() {
+fn pathmap_backed_par_clone_is_flat_across_recursive_carriers() {
     // The ladder `clone` was tripwired on before the conversion, so the numbers
     // are comparable to the ones on record.
     const LO: usize = 16;
     const HI: usize = 128;
 
-    let control = measure_ladder("clone_oracle", LO, HI);
     let subject = measure_ladder("clone", LO, HI);
 
-    println!(
-        "  clone_oracle (the DERIVE): {} KiB @ {LO} -> {} KiB @ {HI} = {} B/level",
-        control.lo_stack,
-        control.hi_stack,
-        control.per_step_of_control("control")
-    );
     println!(
         "  clone        (the DRIVER): {} KiB @ {LO} -> {} KiB @ {HI} = {} B/level",
         subject.lo_stack,
@@ -4439,49 +4424,22 @@ fn the_clone_conversion_is_visible_against_its_own_derived_control() {
         show(subject.per_step())
     );
 
-    // ── LEG 1: the control is sloped, by an order of magnitude. ──
-    assert!(
-        clears_tolerance_by_an_order_of_magnitude(control),
-        "the DERIVED control `clone_oracle` grew only {} B across depth {LO} -> {HI} ({} \
-         B/level). It is `term_ops::oracle_clone_par`, the `#[derive(Clone)]` body this stage \
-         replaced, and it was measured at 16,493 B/level debug / 3,254 release before the \
-         conversion. A flat control means the oracle is not the traversal it claims to be — most \
-         likely it has started routing through the DRIVEN `<Par as Clone>::clone` instead of \
-         recursing into its own family — and every comparison below would be vacuous.",
-        control.growth_of_control("control"),
-        control.per_step_of_control("control")
-    );
-
-    // ── LEG 2: the subject is flat. ──
+    // The PathMap-backed Par clone itself is flat.
     if let Err(why) = zero_slope_verdict("clone", "depth", subject) {
         panic!("{why}");
     }
 
-    // ── LEG 3: the control does not survive the subject's stack. ──
-    //
-    // The sharpest statement of the difference, and it needs no verdict function:
-    // on the stack that suffices for the DRIVEN clone at depth `HI`, the DERIVED
-    // one does not run.
-    assert!(
-        !runs_within(
-            subject.hi_stack.bytes_upper_bound("subject"),
-            HI,
-            "clone_oracle"
-        ),
-        "★ the DERIVED control survived the {} KiB the DRIVEN clone needs at depth {HI}, so the \
-         two are not separable on this ladder and the conversion is not visible. Either the \
-         ladder is too short (raise HI) or the oracle is no longer the derive.",
-        subject.hi_stack
-    );
-
-    // ── LEG 4: the Vec-nested ladders, which `clone` alone cannot cover. ──
+    // The recursive carrier ladders must be flat too.
     //
     // ★★ `clone` descends `Par.exprs -> Expr -> EList.ps -> Par`: two of `Par`'s
     // nine recursive collections. The sibling `mettail-rust` generator's eight
     // Θ(depth) "iterative" drivers all escaped through the SAME boundary —
     // `Category -> Vec<Elem> -> Elem` — and a single-collection ladder is exactly
     // how that hid. These two nest through different fields.
-    for (name, lo, hi) in [("clone_send_chain", LO, HI)] {
+    for (name, lo, hi) in [
+        ("clone_send_chain", LO, HI),
+        ("clone_pathmap_chain", LO, HI),
+    ] {
         let l = measure_ladder(name, lo, hi);
         println!(
             "  {name}: {} KiB @ {lo} -> {} KiB @ {hi} = {} B/level",

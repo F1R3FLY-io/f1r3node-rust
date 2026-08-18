@@ -48,10 +48,12 @@ fn set_values(entries: &models::rust::rhoapi_ext::EntryTrie) -> Vec<i64> {
     entries
         .entries_owned()
         .into_iter()
-        .map(|par| match &par.exprs[0].expr_instance {
-            Some(ExprInstance::GInt(value)) => *value,
-            other => panic!("expected integer set member, got {other:?}"),
-        })
+        .map(
+            |par| match par.first::<Expr>().unwrap().unwrap().0.expr_instance {
+                Some(ExprInstance::GInt(value)) => value,
+                other => panic!("expected integer set member, got {other:?}"),
+            },
+        )
         .collect()
 }
 
@@ -59,10 +61,12 @@ fn assert_map_value(entries: &models::rust::rhoapi_ext::EntryTrie, key: i64, val
     let actual = entries
         .get_map_value(&gint(key))
         .expect("result remains map-mode")
-        .map(|par| match &par.exprs[0].expr_instance {
-            Some(ExprInstance::GInt(value)) => *value,
-            other => panic!("expected integer map value, got {other:?}"),
-        });
+        .map(
+            |par| match par.first::<Expr>().unwrap().unwrap().0.expr_instance {
+                Some(ExprInstance::GInt(value)) => value,
+                other => panic!("expected integer map value, got {other:?}"),
+            },
+        );
     assert_eq!(actual, value);
 }
 

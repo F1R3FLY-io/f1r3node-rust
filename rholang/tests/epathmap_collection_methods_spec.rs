@@ -45,14 +45,15 @@ fn method(target: Par, name: &str, arguments: Vec<Par>) -> Par {
     }])
 }
 
-fn native_pathmap(value: &Par) -> &EPathMap {
-    let [Expr {
-        expr_instance: Some(ExprInstance::EPathmapBody(pathmap)),
-    }] = value.exprs.as_slice()
-    else {
-        panic!("generic EPathMap method changed the carrier: {value:?}");
-    };
-    pathmap
+fn native_pathmap(value: &Par) -> EPathMap {
+    match value
+        .first::<Expr>()
+        .expect("resident expression decodes")
+        .map(|(expr, _)| expr.expr_instance)
+    {
+        Some(Some(ExprInstance::EPathmapBody(pathmap))) => pathmap,
+        _ => panic!("generic EPathMap method changed the carrier: {value:?}"),
+    }
 }
 
 async fn reducer() -> Arc<DebruijnInterpreter> {
