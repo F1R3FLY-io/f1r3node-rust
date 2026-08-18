@@ -18,7 +18,7 @@
 //! | [`young_staging_with_an_unlocked_lock_file_is_never_reaped`] | ★ the staging window itself — a real, observed production failure |
 //! | [`concurrent_acquisition_and_reaping_never_collide`] | a live process's own directories survive its own reaper, under load |
 //! | [`the_staging_guard_goes_red_when_the_incoming_rule_is_reverted`] | ★ that the staging guard above **can fail** — the reversion, executed |
-//! | [`the_concurrent_stress_case_also_detects_the_reverted_staging_rule`] | ★ the same reversion through the stress harness — 17/20 reverted vs 0/20 production |
+//! | [`the_concurrent_stress_case_characterizes_the_reverted_staging_rule`] | scheduler-dependent smoke measurement of the same reversion; production remains a hard zero-collision gate |
 //! | [`lockless_leftovers_are_spared_while_young_and_reaped_when_old`] | the age gate on pre-fix leftovers |
 //! | [`age_never_overrides_a_held_lock`] | an mtime is not evidence about a process; a lock is |
 //!
@@ -63,6 +63,10 @@ const CHILD_PREFIX_ENV: &str = "F1R3FLY_SCRATCH_TEST_CHILD_PREFIX";
 
 /// Line prefix the child writes its acquired path on, for the parent to parse.
 const CHILD_PATH_MARKER: &str = "SCRATCH_PATH=";
+
+/// Marker emitted by a resource-isolated stress child: `1` means the reverted
+/// staging rule collided, `0` means the storm completed without a collision.
+const CHILD_STRESS_COLLISION_MARKER: &str = "SCRATCH_STRESS_COLLISION=";
 
 /// libtest name of the single test the child is asked to run. Kept in one place so a rename
 /// cannot silently break the cross-process cases into no-ops.
@@ -429,6 +433,41 @@ fn eager_layer_removes_scratch_dir_on_normal_exit() {
 /// back door.
 fn run_child_role(role: &str) {
     let prefix = std::env::var(CHILD_PREFIX_ENV).expect("child prefix");
+    if matches!(role, "stress-production" | "stress-reverted") {
+        let base = std::env::var_os(SCRATCH_BASE_DIR_ENV)
+            .map(PathBuf::from)
+            .expect("stress child base directory");
+        let reaper = if role == "stress-production" {
+            reap_orphans_in
+        } else {
+            reap_orphans_in_without_staging_rule
+        };
+        let collision = match run_acquisition_stress(reaper, &base, &prefix) {
+            Err(why) => {
+                assert_eq!(
+                    role, "stress-reverted",
+                    "production reaper collision: {why}"
+                );
+                assert!(
+                    why.contains("cannot take the owner lock") || why.contains("cannot rename"),
+                    "a reverted-arm collision must be one of the staging window's two shapes; \
+                     got: {why}"
+                );
+                true
+            }
+            Ok(outcome) => {
+                stress_verdict(&outcome)
+                    .expect("a stress child must complete a real storm with all owners live");
+                false
+            }
+        };
+        println!(
+            "\n{CHILD_STRESS_COLLISION_MARKER}{}",
+            usize::from(collision)
+        );
+        return;
+    }
+
     let scratch = acquire(&prefix);
 
     // Announce, then flush: the parent is blocked reading this line. The leading newline
@@ -655,7 +694,7 @@ fn the_staging_guard_goes_red_when_the_incoming_rule_is_reverted() {
 /// thread."* Nothing re-ran it. Run through
 /// [`reap_orphans_in_without_staging_rule`] on 2026-07-27 it is false, and not marginally:
 /// **17 of 20 storms collided with the rule reverted, and 0 of 20 with it in place**
-/// ([`the_concurrent_stress_case_also_detects_the_reverted_staging_rule`] now runs that
+/// ([`the_concurrent_stress_case_characterizes_the_reverted_staging_rule`] now measures that
 /// differential).
 ///
 /// The premise was wrong for a diagnosable reason, and it is worth stating because the same
@@ -708,21 +747,23 @@ struct StressOutcome {
 fn run_acquisition_stress(
     reaper: Reaper,
     base: &Path,
-    prefix: &'static str,
+    prefix: &str,
 ) -> Result<StressOutcome, String> {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
     let base_path = base.to_path_buf();
+    let prefix: Arc<str> = Arc::from(prefix);
     let reaping = Arc::new(AtomicBool::new(true));
 
     let reaper_thread = {
         let base_path = base_path.clone();
+        let prefix = Arc::clone(&prefix);
         let reaping = Arc::clone(&reaping);
         std::thread::spawn(move || {
             let mut scans = 0usize;
             while reaping.load(Ordering::Relaxed) {
-                reaper(&base_path, prefix);
+                reaper(&base_path, &prefix);
                 scans += 1;
             }
             scans
@@ -732,10 +773,11 @@ fn run_acquisition_stress(
     let acquirers: Vec<_> = (0..STRESS_ACQUIRERS)
         .map(|_| {
             let base_path = base_path.clone();
+            let prefix = Arc::clone(&prefix);
             std::thread::spawn(move || {
                 for _ in 0..STRESS_ACQUISITIONS_EACH {
                     // Panics if the reaper removed this directory mid-creation.
-                    let scratch = shared::rust::test_scratch::acquire_in(&base_path, prefix);
+                    let scratch = shared::rust::test_scratch::acquire_in(&base_path, &prefix);
                     assert!(
                         scratch.path().is_dir(),
                         "acquired directory vanished: {}",
@@ -751,7 +793,7 @@ fn run_acquisition_stress(
         if let Err(payload) = acquirer.join() {
             // Keep the panic message: it names WHICH manifestation of the defect was hit, and
             // the two are not the same event. See
-            // `the_concurrent_stress_case_also_detects_the_reverted_staging_rule`.
+            // `the_concurrent_stress_case_characterizes_the_reverted_staging_rule`.
             let message = match payload.downcast_ref::<String>() {
                 Some(owned) => owned.clone(),
                 None => match payload.downcast_ref::<&str>() {
@@ -771,7 +813,7 @@ fn run_acquisition_stress(
             let survivors = fs::read_dir(base)
                 .expect("read base")
                 .filter_map(Result::ok)
-                .filter(|entry| entry.file_name().to_string_lossy().starts_with(prefix))
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with(&*prefix))
                 .count();
             Ok(StressOutcome { scans, survivors })
         }
@@ -794,14 +836,12 @@ fn stress_verdict(o: &StressOutcome) -> Result<(), String> {
     Ok(())
 }
 
-/// Independent storms per arm. At a measured per-storm detection rate of 17/20 the
-/// probability that the reverted arm collides in NONE of them is `0.15^10 ≈ 6e-9`, so the
-/// assertion below is not a coin flip. Each storm is ~200 acquisitions against a reaper
-/// spinning in a tight loop; 20 storms took 0.41 s when the rate was measured.
+/// Independent storms per arm. Each storm runs in a fresh child process because every acquired
+/// directory deliberately retains an owner-lock descriptor until process exit. Keeping all
+/// storms in this parent would test `RLIMIT_NOFILE`, not the staging race.
 const REVERSION_STRESS_ATTEMPTS: usize = 10;
 
-/// ★ **The executed leg for the note on [`concurrent_acquisition_and_reaping_never_collide`],
-/// and the leg that REFUTED it.**
+/// ★ **The scheduler-dependent measurement complementing the deterministic staging guard.**
 ///
 /// The note recorded that the stress case "still passes" with the `.incoming` rule reverted,
 /// and drew a real conclusion from it: that the stress case must not be trusted as the
@@ -813,15 +853,15 @@ const REVERSION_STRESS_ATTEMPTS: usize = 10;
 /// A differential over the SAME harness, the SAME base-directory discipline and the SAME
 /// verdict, with only the reaper swapped:
 ///
-/// | arm                                       | storms | must collide |
-/// |-------------------------------------------|--------|--------------|
-/// | [`reap_orphans_in`] (production)          | 10     | **never**    |
-/// | [`reap_orphans_in_without_staging_rule`]  | 10     | at least once|
+/// | arm                                       | storms | interpretation |
+/// |-------------------------------------------|--------|----------------|
+/// | [`reap_orphans_in`] (production)          | 10     | **zero collisions is mandatory** |
+/// | [`reap_orphans_in_without_staging_rule`]  | 10     | observed collision rate only; scheduler-dependent |
 ///
-/// Both directions are required and each kills a different degenerate checker: an arm that
-/// never collides whatever the reaper does would fail the reverted half, and a harness that
-/// collided on anything at all would fail the production half. Measured 2026-07-27: 17/20
-/// reverted, 0/20 production.
+/// The production direction is a hard gate: it must never collide. The reverted direction is
+/// deliberately observational because thread scheduling is not evidence; the deterministic
+/// [`the_staging_guard_goes_red_when_the_incoming_rule_is_reverted`] test is the hard gate that
+/// proves the removed rule is unsafe. Measured 2026-07-27: 17/20 reverted, 0/20 production.
 ///
 /// # Which manifestation, and why the original measurement was wrong
 ///
@@ -849,69 +889,54 @@ const REVERSION_STRESS_ATTEMPTS: usize = 10;
 ///
 /// ⚠ Under `--nocapture` the reverted arm prints acquirer panics. Those ARE the detection.
 #[test]
-fn the_concurrent_stress_case_also_detects_the_reverted_staging_rule() {
-    // ── Reverted arm: the reaper with the `.incoming` rule removed. ──
-    let mut collisions: Vec<String> = Vec::with_capacity(REVERSION_STRESS_ATTEMPTS);
-    let mut tolerated = 0usize;
-    for _ in 0..REVERSION_STRESS_ATTEMPTS {
-        let base = tempfile::tempdir().expect("private base");
-        match run_acquisition_stress(
-            reap_orphans_in_without_staging_rule,
-            base.path(),
-            "guard-reverted-",
-        ) {
-            Err(why) => collisions.push(why),
-            Ok(outcome) => {
-                // A storm that did not storm must not be counted either way. Without this, a
-                // run that spawned no scans would read as "the reversion was tolerated".
-                stress_verdict(&outcome).unwrap_or_else(|why| {
-                    panic!("a reverted-arm storm did not actually exercise the harness: {why}")
-                });
-                tolerated += 1;
-            }
+fn the_concurrent_stress_case_characterizes_the_reverted_staging_rule() {
+    fn run_isolated_storm(role: &str, base: &Path, prefix: &str) -> bool {
+        let child = spawn_child(role, base, prefix);
+        let output = child
+            .wait_with_output()
+            .expect("wait for resource-isolated stress child");
+        assert!(
+            output.status.success(),
+            "stress child {role:?} failed: status={:?}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).expect("stress child stdout is UTF-8");
+        if stdout.contains(&format!("{CHILD_STRESS_COLLISION_MARKER}1")) {
+            true
+        } else if stdout.contains(&format!("{CHILD_STRESS_COLLISION_MARKER}0")) {
+            false
+        } else {
+            panic!("stress child {role:?} emitted no collision marker:\n{stdout}");
         }
     }
 
-    assert!(
-        !collisions.is_empty(),
-        "the reverted `.incoming` rule was tolerated by all {REVERSION_STRESS_ATTEMPTS} storms. \
-         Measured 2026-07-27 the reverted reaper collided in 17 of 20, so either the reaper no \
-         longer reaches `ownership_of` for staging names — in which case \
-         `reap_orphans_in_without_staging_rule` has stopped being a reversion and this whole \
-         differential is inert — or the harness stopped racing."
-    );
-
-    // WHICH manifestation. A collision reported for some third reason would mean the arms
-    // differ for a reason other than the staging rule, and the differential would be measuring
-    // the wrong thing.
-    for why in &collisions {
-        assert!(
-            why.contains("cannot take the owner lock") || why.contains("cannot rename"),
-            "a reverted-arm collision must be one of the staging window's two shapes — the \
-             reaper holding the lock `acquire_in` just created, or the `ENOENT` on the rename \
-             after the tree was removed. Got: {why}"
-        );
+    // ── Reverted arm: the reaper with the `.incoming` rule removed. ──
+    let mut collisions = 0usize;
+    let mut tolerated = 0usize;
+    for _ in 0..REVERSION_STRESS_ATTEMPTS {
+        let base = tempfile::tempdir().expect("private base");
+        if run_isolated_storm("stress-reverted", base.path(), "guard-reverted-") {
+            collisions += 1;
+        } else {
+            tolerated += 1;
+        }
     }
 
     // ── Production arm: the same harness, the same number of storms, the rule in place. ──
     for attempt in 0..REVERSION_STRESS_ATTEMPTS {
         let base = tempfile::tempdir().expect("private base");
-        let outcome = run_acquisition_stress(reap_orphans_in, base.path(), "guard-control-")
-            .unwrap_or_else(|why| {
-                panic!(
-                    "★ REGRESSION — the PRODUCTION reaper collided with an acquisition on \
-                     storm {attempt}: {why}\nThe `.incoming` rule exists precisely so this \
-                     cannot happen; the reverted arm above shows what its absence looks like."
-                )
-            });
-        stress_verdict(&outcome)
-            .expect("a live process's own directories must survive its own reaper");
+        assert!(
+            !run_isolated_storm("stress-production", base.path(), "guard-control-"),
+            "★ REGRESSION — the production reaper collided on storm {attempt}"
+        );
     }
 
     println!(
         "  staging-rule differential: reverted collided {}/{REVERSION_STRESS_ATTEMPTS} \
          (tolerated {tolerated}), production collided 0/{REVERSION_STRESS_ATTEMPTS}",
-        collisions.len()
+        collisions
     );
 }
 
