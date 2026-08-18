@@ -537,7 +537,6 @@ jobs:
             --deselect integration-tests/test/tests/custom/test_user_contract_concurrency.py \
             --deselect integration-tests/test/tests/custom/test_active_validator_cap.py \
             --deselect integration-tests/test/tests/custom/test_cold_start_readiness.py \
-            --deselect integration-tests/test/tests/custom/test_concurrent_bridge_locks.py \
             --deselect integration-tests/test/tests/custom/test_finality_stall_recovery.py \
             --deselect integration-tests/test/tests/custom/test_slow_peer_notification.py \
             --provider=${{ matrix.provider }} \
