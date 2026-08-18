@@ -123,6 +123,9 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
     estimator: Arc<Mutex<Option<Estimator>>>,
     /// Shared reference to heartbeat signal for triggering immediate wake on deploy
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
+    /// Handed through to Running: routes incoming `StoreItemsMessage`s to the
+    /// runtime state requester once this node is past its restore.
+    state_items_tx: Option<mpsc::Sender<StoreItemsMessage>>,
 }
 
 impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
@@ -165,6 +168,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         runtime_manager: Arc<RuntimeManager>,
         estimator: Estimator,
         heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
+        state_items_tx: Option<mpsc::Sender<StoreItemsMessage>>,
     ) -> Self {
         let state = Self {
             transport_layer,
@@ -202,6 +206,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             runtime_manager,
             estimator: Arc::new(Mutex::new(Some(estimator))),
             heartbeat_signal_ref,
+            state_items_tx,
         };
         metrics::gauge!(
             INIT_BLOCK_MESSAGE_QUEUE_PENDING_METRIC,
@@ -1408,6 +1413,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             }),
             &self.engine_cell,
             &self.event_publisher,
+            self.state_items_tx.clone(),
         )
         .await?;
 

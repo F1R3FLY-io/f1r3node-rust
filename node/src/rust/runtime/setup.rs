@@ -333,6 +333,23 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         .read()
         .map_err(|e| CasperError::Other(format!("Failed to read RPConf: {}", e)))?;
 
+    // Runtime state requester: fetches rspace roots named as missing while the
+    // node runs — the state a settled-history admission arrives without, and
+    // the state a deferred replay is waiting on. The processor names roots on
+    // `fetch_tx`; Running routes incoming StoreItemsMessage chunks to
+    // `items_tx`.
+    let state_requester_handles = {
+        let has_root_rm = runtime_manager.clone();
+        let has_root: casper::rust::engine::lfs_horizon_requester::HasRootFn =
+            Arc::new(move |root| has_root_rm.has_root(root));
+        casper::rust::engine::runtime_state_requester::spawn(
+            transport_layer.clone(),
+            rp_conf.clone(),
+            rspace_state_manager.importer.clone(),
+            has_root,
+        )
+    };
+
     // Block processor
     let block_processor = casper::rust::blocks::block_processor::new_block_processor(
         block_store.clone(),
@@ -342,6 +359,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         transport_layer.clone(),
         rp_connections.clone(),
         rp_conf.clone(),
+        Some(state_requester_handles.fetch_tx.clone()),
     );
 
     // Proposer instance
@@ -525,6 +543,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             conf.protocol_server.disable_state_exporter,
             heartbeat_signal_ref.clone(),
             conf.standalone,
+            Some(state_requester_handles.items_tx.clone()),
         )) as Arc<dyn CasperLaunch>
     };
     info!("CasperLaunch initialized");

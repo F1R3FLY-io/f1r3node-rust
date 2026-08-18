@@ -35,6 +35,12 @@ pub enum BlockError {
     /// node's sync anchor and was admitted hash-checked and unjudged — the
     /// same door LFS restore used. See `block_processor::admit_as_settled`.
     AdmittedSettled,
+    /// Validation could not reach a verdict: replay needed the named state
+    /// root and this node does not hold it. The state twin of
+    /// [`BlockError::Undecidable`] — a statement about this node's sync,
+    /// never about the block — and the response is the same: fetch the
+    /// artifact (via the state requester) and try again.
+    AwaitingState(rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash),
     BlockException(CasperError),
     Invalid(InvalidBlock),
 }
@@ -47,8 +53,17 @@ impl BlockError {
     /// block's proposer. A block this node does not hold says nothing about the
     /// proposer and must stay distinguishable.
     pub fn from_validation_error(error: CasperError) -> Self {
+        use rholang::rust::interpreter::errors::InterpreterError;
+        use rspace_plus_plus::rspace::errors::{HistoryError, RSpaceError, RootError};
+
         match error {
             CasperError::BlockNotHeld(hash) => BlockError::Undecidable(hash),
+            // The state twin: a replay that needed a root this node never
+            // fetched. The chain is fully typed from rspace up, so absence
+            // keeps its name without a string search.
+            CasperError::InterpreterError(InterpreterError::RSpaceError(
+                RSpaceError::HistoryError(HistoryError::RootError(RootError::RootNotFound(root))),
+            )) => BlockError::AwaitingState(root),
             other => BlockError::BlockException(other),
         }
     }
@@ -320,6 +335,50 @@ mod tests {
             matches!(broken, BlockError::BlockException(_)),
             "every other failure is still an exception; this must not become a \
              catch-all that swallows real storage faults"
+        );
+    }
+
+    /// State absence is the second artifact class, and it must classify like
+    /// the first. A replay that needs a root this node never fetched is a
+    /// statement about this node's sync, not about the block: the block's
+    /// parent was admitted as settled history with its bytes but not its
+    /// state, every other node replays the same block cleanly, and the verdict
+    /// this used to produce — InvalidTransaction, slashable — seeded a
+    /// NeglectedInvalidBlock cascade that condemned ninety-one honest blocks
+    /// from four false seeds. The chain arrives fully typed from rspace, so
+    /// the classification is a match, not a string search.
+    #[test]
+    fn a_missing_state_root_is_awaiting_state_not_a_verdict() {
+        use rholang::rust::interpreter::errors::InterpreterError;
+        use rspace_plus_plus::rspace::errors::{HistoryError, RSpaceError, RootError};
+        use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+        let root = Blake2b256Hash::from_bytes(vec![0xAB; 32]);
+        let chain = CasperError::InterpreterError(InterpreterError::RSpaceError(
+            RSpaceError::HistoryError(HistoryError::RootError(RootError::RootNotFound(
+                root.clone(),
+            ))),
+        ));
+
+        assert_eq!(
+            BlockError::from_validation_error(chain),
+            BlockError::AwaitingState(root),
+            "a root this node does not hold must classify as the absence of a verdict, \
+             naming the root so the state requester can fetch it"
+        );
+
+        let prose = CasperError::InterpreterError(InterpreterError::RSpaceError(
+            RSpaceError::HistoryError(HistoryError::RootError(RootError::UnknownRootError(
+                "no root found".to_string(),
+            ))),
+        ));
+        assert!(
+            matches!(
+                BlockError::from_validation_error(prose),
+                BlockError::BlockException(_)
+            ),
+            "the prose variant reports storewide conditions, not a fetchable root, and \
+             stays in the exception class"
         );
     }
 }

@@ -632,6 +632,12 @@ async fn replay_block(
                     );
                     return Ok(Either::Left(match replay_error {
                         CasperError::ReplayFailure(replay_failure) => replay_failure,
+                        // Availability is not a replay failure. Stringifying it
+                        // here is what laundered "I do not hold that root" into
+                        // an InternalError, then a RuntimeError, then a
+                        // slashable verdict. Surface it typed; the caller's
+                        // classifier turns it into a deferral.
+                        other if other.is_availability() => return Err(other),
                         other => ReplayFailure::internal_error(other.to_string()),
                     }));
                 } else {

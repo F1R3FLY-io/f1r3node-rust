@@ -1050,6 +1050,7 @@ impl TestNode {
             tle.clone(),
             connections_cell.clone(),
             rp_conf.clone(),
+            None,
         );
 
         let block_processor = BlockProcessor::new(bp_dependencies);
@@ -1180,6 +1181,7 @@ impl TestNode {
                 casper_shard_conf: casper.casper_shard_conf.clone(),
                 heartbeat_signal_ref: casper.heartbeat_signal_ref.clone(),
             }),
+            None,
         );
         engine_cell.set(Arc::new(running_engine)).await;
 

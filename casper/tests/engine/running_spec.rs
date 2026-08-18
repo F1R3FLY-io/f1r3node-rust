@@ -423,6 +423,7 @@ mod tests {
                 casper_shard_conf: fixture.casper_shard_conf.clone(),
                 heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             }),
+            None,
         );
         engine_cell.set(Arc::new(running)).await;
 
@@ -530,6 +531,7 @@ mod tests {
                 casper_shard_conf: fixture.casper_shard_conf.clone(),
                 heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             }),
+            None,
         );
         engine_cell.set(Arc::new(running)).await;
 

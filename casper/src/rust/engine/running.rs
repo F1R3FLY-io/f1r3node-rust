@@ -312,6 +312,19 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                     Ok(())
                 }
             }
+            // Chunks answering the runtime state requester's root fetches.
+            // Without a requester wired these fall through as they always did.
+            CasperMessage::StoreItemsMessage(items) => {
+                if let Some(tx) = &self.state_items_tx {
+                    if tx.try_send(items).is_err() {
+                        tracing::warn!(
+                            "state requester items queue full or closed; dropping chunk \
+                             (the resend tick re-requests it)"
+                        );
+                    }
+                }
+                Ok(())
+            }
             CasperMessage::MergeableEntryRequest(req) => {
                 if self.disable_state_exporter {
                     tracing::debug!(
@@ -365,6 +378,10 @@ pub struct Running<T: TransportLayer + Send + Sync> {
     /// partitioned — it is failing to PROPOSE, and ejecting it into an
     /// approved-block state rejoin destroys its custody duties.
     last_peer_block_arrival_ms: Arc<std::sync::atomic::AtomicI64>,
+    /// Routes incoming [`casper_message::StoreItemsMessage`]s to the runtime
+    /// state requester. `None` on a node that cannot need one (genesis
+    /// ceremony); without it those messages are dropped, as they always were.
+    state_items_tx: Option<mpsc::Sender<casper_message::StoreItemsMessage>>,
 }
 
 #[derive(Clone)]
@@ -488,6 +505,7 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         conf: RPConf,
         block_retriever: BlockRetriever<T>,
         recovery_context: Option<RunningRecoveryContext>,
+        state_items_tx: Option<mpsc::Sender<casper_message::StoreItemsMessage>>,
     ) -> Self {
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -506,6 +524,7 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             block_retriever,
             recovery_context,
             last_peer_block_arrival_ms: Arc::new(std::sync::atomic::AtomicI64::new(now_ms)),
+            state_items_tx,
         }
     }
 
@@ -597,6 +616,7 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             &recovery_context.runtime_manager,
             &recovery_context.estimator,
             &recovery_context.heartbeat_signal_ref,
+            self.state_items_tx.clone(),
         )
         .await?;
 

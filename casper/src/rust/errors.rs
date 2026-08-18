@@ -62,6 +62,26 @@ impl fmt::Display for CasperError {
     }
 }
 
+impl CasperError {
+    /// True for errors that state an ABSENCE on this node — a block or a state
+    /// root it does not hold — rather than a fault or a fact about a block.
+    /// These must reach `BlockError::from_validation_error` typed: any path
+    /// that stringifies one launders "I don't have it" into a slashable
+    /// verdict against whoever proposed the block being judged.
+    pub fn is_availability(&self) -> bool {
+        use rholang::rust::interpreter::errors::InterpreterError;
+        use rspace_plus_plus::rspace::errors::{HistoryError, RSpaceError, RootError};
+
+        matches!(
+            self,
+            CasperError::BlockNotHeld(_)
+                | CasperError::InterpreterError(InterpreterError::RSpaceError(
+                    RSpaceError::HistoryError(HistoryError::RootError(RootError::RootNotFound(_))),
+                ))
+        )
+    }
+}
+
 impl From<SlashAuthError> for CasperError {
     fn from(error: SlashAuthError) -> Self { CasperError::SlashAuth(error) }
 }

@@ -26,8 +26,10 @@ use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, CasperMessage};
 use prost::Message;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
 use shared::rust::env;
+use tokio::sync::mpsc;
 
 use crate::rust::block_status::{BlockError, InvalidBlock};
 use crate::rust::casper::{Casper, CasperSnapshot};
@@ -58,6 +60,11 @@ pub(crate) enum PostValidation {
     /// hold. Keep it buffered against the named dependency and fetch that, or
     /// the block is dropped un-judged and the gap it needs is never requested.
     AwaitingBlock(BlockHash),
+    /// The block was NOT judged: replay needed a state root this node does
+    /// not hold. Keep it buffered as a pendant — the pendant scan retries it
+    /// after each processed block, throttled by the missing-dependency
+    /// attempts machinery — and hand the root to the state requester.
+    AwaitingState(rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash),
 }
 
 /// Withdraw the deferral if this node has no hole in its history.
@@ -80,6 +87,16 @@ pub(crate) fn guard_deferral(
     match status {
         Either::Left(BlockError::Undecidable(hash)) if approved_block_number == 0 => {
             Either::Left(BlockError::BlockException(CasperError::BlockNotHeld(hash)))
+        }
+        // Same rule for the state artifact: a genesis-rooted node computed or
+        // imported every root it ever needed, so a missing one is corruption
+        // and must be judged — deferring would hand a crafted block a
+        // permanent non-verdict on any full node.
+        Either::Left(BlockError::AwaitingState(root)) if approved_block_number == 0 => {
+            Either::Left(BlockError::BlockException(CasperError::Other(format!(
+                "state root {} missing on a genesis-rooted node — local corruption, not sync",
+                root
+            ))))
         }
         other => other,
     }
@@ -119,6 +136,9 @@ pub(crate) fn post_validation(status: &ValidBlockProcessing) -> PostValidation {
     match status {
         Either::Left(BlockError::Undecidable(missing)) => {
             PostValidation::AwaitingBlock(missing.clone())
+        }
+        Either::Left(BlockError::AwaitingState(root)) => {
+            PostValidation::AwaitingState(root.clone())
         }
         _ => PostValidation::Settled,
     }
@@ -547,6 +567,30 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
                     .await?;
                 self.dependencies.ack_processed(block).await?;
             }
+            PostValidation::AwaitingState(root) => {
+                tracing::warn!(
+                    block = %PrettyPrinter::build_string_bytes(&block.block_hash),
+                    %root,
+                    "Block could not be judged: this node does not hold the state root its \
+                     replay starts from. Keeping it buffered and fetching the root."
+                );
+                // The pendant scan retries this block after every processed
+                // block; the attempts machinery throttles a block whose root
+                // never arrives, exactly as it throttles one whose missing
+                // BLOCK never arrives.
+                if self
+                    .dependencies
+                    .register_missing_dependency_attempt(&block.block_hash)?
+                {
+                    self.dependencies
+                        .clear_missing_dependency_attempts(&block.block_hash)?;
+                    self.dependencies
+                        .mark_missing_dependency_quarantine(&block.block_hash)?;
+                }
+                self.dependencies.commit_to_buffer(block, None).await?;
+                self.dependencies.request_state_root(&root);
+                self.dependencies.ack_processed(block).await?;
+            }
         }
         maybe_trim_allocator_after_block();
 
@@ -601,6 +645,10 @@ pub struct BlockProcessorDependencies<T: TransportLayer + Send + Sync> {
     /// Blocks admitted as settled history since start; compared against
     /// [`SETTLED_ADMISSION_BUDGET`].
     settled_admissions: Arc<AtomicU64>,
+    /// Names missing state roots to the runtime state requester. `None` only
+    /// in test constructions; without it a missing root still defers safely,
+    /// it just never heals.
+    state_root_fetch_tx: Option<mpsc::Sender<Blake2b256Hash>>,
 }
 
 impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
@@ -612,6 +660,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         transport: Arc<T>,
         connections_cell: ConnectionsCell,
         conf: RPConf,
+        state_root_fetch_tx: Option<mpsc::Sender<Blake2b256Hash>>,
     ) -> Self {
         Self {
             block_store,
@@ -626,6 +675,27 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
             missing_dependency_quarantine_until: Arc::new(Mutex::new(HashMap::new())),
             settled_solicitations: Arc::new(Mutex::new(HashSet::new())),
             settled_admissions: Arc::new(AtomicU64::new(0)),
+            state_root_fetch_tx,
+        }
+    }
+
+    /// Name a missing root to the state requester, if one is wired.
+    fn request_state_root(&self, root: &Blake2b256Hash) {
+        match &self.state_root_fetch_tx {
+            Some(tx) => {
+                if tx.try_send(root.clone()).is_err() {
+                    tracing::warn!(
+                        %root,
+                        "state requester queue full or closed; the root stays absent and \
+                         its dependents keep deferring"
+                    );
+                }
+            }
+            None => tracing::warn!(
+                %root,
+                "no state requester wired; the root stays absent and its dependents \
+                 keep deferring"
+            ),
         }
     }
 
@@ -1146,6 +1216,16 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
             admitted,
             "Admitted solicited block as settled history (below this node's sync anchor)"
         );
+        // An admitted block is a legal parent, and a parent's state is read by
+        // its children's replay. Fetch its declared roots now, eagerly: a child
+        // validating before they land defers on AwaitingState and retries —
+        // the fetch is already in flight either way.
+        self.request_state_root(&Blake2b256Hash::from_bytes_prost(
+            &block.body.state.post_state_hash,
+        ));
+        self.request_state_root(&Blake2b256Hash::from_bytes_prost(
+            &block.body.state.pre_state_hash,
+        ));
         self.remove_from_buffer(block).await?;
         self.ack_processed(block).await?;
         Ok(true)
@@ -1272,6 +1352,7 @@ pub fn new_block_processor<T: TransportLayer + Send + Sync>(
     transport: Arc<T>,
     connections_cell: ConnectionsCell,
     conf: RPConf,
+    state_root_fetch_tx: Option<mpsc::Sender<Blake2b256Hash>>,
 ) -> BlockProcessor<T> {
     let dependencies = BlockProcessorDependencies::new(
         block_store,
@@ -1281,6 +1362,7 @@ pub fn new_block_processor<T: TransportLayer + Send + Sync>(
         transport,
         connections_cell,
         conf,
+        state_root_fetch_tx,
     );
 
     BlockProcessor::new(dependencies)

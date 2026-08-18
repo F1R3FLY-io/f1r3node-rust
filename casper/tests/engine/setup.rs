@@ -487,6 +487,7 @@ impl TestFixture {
             rp_conf.clone(),
             block_retriever.clone(),
             None,
+            None,
         );
 
         Self {

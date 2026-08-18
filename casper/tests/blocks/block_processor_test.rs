@@ -114,6 +114,7 @@ impl TestFixture {
             transport_layer,
             connections_cell,
             rp_conf,
+            None,
         );
 
         Self {

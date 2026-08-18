@@ -425,6 +425,7 @@ async fn create_initializing_engine(
         fixture.runtime_manager.clone(),
         fixture.estimator.clone(),
         casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
+        None,
     )))
 }
 
@@ -631,6 +632,7 @@ fn transition_to_initializing_invokes_init_immediately() {
                     &fixture.runtime_manager,
                     &fixture.estimator,
                     &heartbeat_signal_ref,
+                    None,
                 )
                 .await
                 .expect("transition_to_initializing should succeed");

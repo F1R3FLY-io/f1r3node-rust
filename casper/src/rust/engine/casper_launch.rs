@@ -77,6 +77,11 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
     disable_state_exporter: bool,
     /// Shared reference to heartbeat signal for triggering immediate wake on deploy
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
+    state_items_tx: Option<
+        tokio::sync::mpsc::Sender<
+            models::rust::casper::protocol::casper_message::StoreItemsMessage,
+        >,
+    >,
 }
 
 const MAX_BLOCKS_IN_PROCESSING: usize = 2_048;
@@ -141,6 +146,11 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         disable_state_exporter: bool,
         heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
         standalone: bool,
+        state_items_tx: Option<
+            tokio::sync::mpsc::Sender<
+                models::rust::casper::protocol::casper_message::StoreItemsMessage,
+            >,
+        >,
     ) -> Self {
         // Scala equivalent: val casperShardConf = CasperShardConf(...)
         let casper_shard_conf = CasperShardConf {
@@ -216,6 +226,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             trim_state,
             disable_state_exporter,
             heartbeat_signal_ref,
+            state_items_tx,
         }
     }
 
@@ -448,6 +459,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             }),
             &self.engine_cell,
             &self.event_publisher,
+            self.state_items_tx.clone(),
         )
         .await?;
 
@@ -561,6 +573,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.runtime_manager.clone(),
             self.estimator.clone(),
             self.heartbeat_signal_ref.clone(),
+            self.state_items_tx.clone(),
         );
 
         self.engine_cell.set(Arc::new(genesis_validator)).await;
@@ -751,6 +764,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             &self.runtime_manager,
             &self.estimator,
             &self.heartbeat_signal_ref,
+            self.state_items_tx.clone(),
         )
         .await?;
 
