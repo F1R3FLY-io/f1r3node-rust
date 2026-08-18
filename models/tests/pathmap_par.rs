@@ -1,5 +1,8 @@
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{ETuple, Expr, Par as GeneratedPar};
+use models::rhoapi::{
+    Bundle, Connective, ETuple, Expr, GUnforgeable, If, Match, New, Par as GeneratedPar, Receive,
+    Send,
+};
 use models::rust::par::Par;
 use models::rust::par_ext::ParExt;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
@@ -8,6 +11,38 @@ use prost::bytes::Buf;
 use prost::Message;
 
 mod par_corpus;
+
+fn valid_all_par_fields() -> GeneratedPar {
+    let mut source = par_corpus::all_par_fields();
+    source.sends.retain(|send| send.chan.is_some());
+    for receive in &mut source.receives {
+        receive.binds.retain(|bind| bind.source.is_some());
+    }
+    source.news.retain(|new_node| new_node.p.is_some());
+    source.exprs.truncate(1);
+    for match_node in &mut source.matches {
+        match_node
+            .cases
+            .retain(|case| case.pattern.is_some() && case.source.is_some());
+    }
+    source.bundles.retain(|bundle| bundle.body.is_some());
+    for conditional in &mut source.conditionals {
+        conditional
+            .if_false
+            .get_or_insert_with(GeneratedPar::default);
+    }
+    source
+}
+
+fn assert_generated_equivalent(expected: &GeneratedPar, actual: &Par) {
+    let canonical = ParSortMatcher::sort_match(expected).term;
+    assert_eq!(
+        actual.protobuf_bytes().expect("encode PathMap-backed Par"),
+        models::rust::rholang::protobuf_encoder::encode_to_vec(&canonical),
+    );
+    assert_eq!(actual.locally_free(), expected.locally_free);
+    assert_eq!(actual.connective_used(), expected.connective_used);
+}
 
 #[test]
 fn pathmap_par_streams_the_exact_canonical_protobuf_surface() {
@@ -143,24 +178,7 @@ fn scalar_and_tuple_extractors_do_not_depend_on_repeated_field_borrows() {
 
 #[test]
 fn protobuf_decode_dispatches_every_component_family_from_a_chunked_buffer() {
-    let mut source = par_corpus::all_par_fields();
-    source.sends.retain(|send| send.chan.is_some());
-    for receive in &mut source.receives {
-        receive.binds.retain(|bind| bind.source.is_some());
-    }
-    source.news.retain(|new_node| new_node.p.is_some());
-    source.exprs.truncate(1);
-    for match_node in &mut source.matches {
-        match_node
-            .cases
-            .retain(|case| case.pattern.is_some() && case.source.is_some());
-    }
-    source.bundles.retain(|bundle| bundle.body.is_some());
-    for conditional in &mut source.conditionals {
-        conditional
-            .if_false
-            .get_or_insert_with(GeneratedPar::default);
-    }
+    let source = valid_all_par_fields();
 
     let expected = models::rust::rholang::protobuf_encoder::encode_to_vec(
         &ParSortMatcher::sort_match(&source).term,
@@ -311,4 +329,117 @@ fn parallel_composition_uses_bag_sum_and_metadata_join() {
     assert_eq!(combined.components().cardinality(), 2);
     assert_eq!(combined.locally_free(), [0b0000_0011]);
     assert!(combined.connective_used());
+}
+
+#[test]
+fn family_replacement_matches_every_generated_par_helper() {
+    let source = valid_all_par_fields();
+    let value = Par::import_generated(&source).expect("import all fields");
+
+    macro_rules! assert_replacement {
+        ($method:ident, $field:ident, $type:ty) => {{
+            let replacements: Vec<$type> = source.$field.iter().rev().cloned().collect();
+            assert_generated_equivalent(
+                &source.$method(replacements.clone()),
+                &value.$method(replacements),
+            );
+        }};
+    }
+
+    assert_replacement!(with_sends, sends, Send);
+    assert_replacement!(with_receives, receives, Receive);
+    assert_replacement!(with_news, news, New);
+    assert_replacement!(with_exprs, exprs, Expr);
+    assert_replacement!(with_matches, matches, Match);
+    assert_replacement!(with_unforgeables, unforgeables, GUnforgeable);
+    assert_replacement!(with_bundles, bundles, Bundle);
+    assert_replacement!(with_connectives, connectives, Connective);
+
+    let mut expected = source.clone();
+    expected.conditionals.clear();
+    assert_generated_equivalent(&expected, &value.with_conditionals(Vec::<If>::new()));
+    assert_generated_equivalent(
+        &source.with_locally_free(vec![0x44, 0x55]),
+        &value.with_locally_free(vec![0x44, 0x55]),
+    );
+    assert_generated_equivalent(
+        &source.with_connective_used(false),
+        &value.with_connective_used(false),
+    );
+}
+
+#[test]
+fn prepend_and_append_match_generated_parallel_composition() {
+    let source = valid_all_par_fields();
+    let value = Par::import_generated(&source).expect("import all fields");
+
+    let send = source.sends[0].clone();
+    let mut expected_source = source.clone();
+    let expected = expected_source.prepend_send(send.clone());
+    assert_generated_equivalent(&expected, &value.clone().prepend_send(send));
+
+    let receive = source.receives[0].clone();
+    let mut expected_source = source.clone();
+    let expected = expected_source.prepend_receive(receive.clone());
+    assert_generated_equivalent(&expected, &value.clone().prepend_receive(receive));
+
+    let match_node = source.matches[0].clone();
+    let mut expected_source = source.clone();
+    let expected = expected_source.prepend_match(match_node.clone());
+    assert_generated_equivalent(&expected, &value.clone().prepend_match(match_node));
+
+    let conditional = source.conditionals[0].clone();
+    let mut expected_source = source.clone();
+    let expected = expected_source.prepend_if(conditional.clone());
+    assert_generated_equivalent(&expected, &value.clone().prepend_if(conditional));
+
+    let other = models::par_from_default! {
+        exprs: vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(41)),
+        }],
+        locally_free: vec![0x04],
+        ..GeneratedPar::default()
+    };
+    assert_generated_equivalent(
+        &source.append(other.clone()),
+        &value.append(Par::import_generated(&other).expect("import appended Par")),
+    );
+}
+
+#[test]
+fn historical_par_predicates_match_ignored_family_contracts() {
+    let check = |source: GeneratedPar| {
+        let value = Par::import_generated(&source).expect("import predicate case");
+        assert_eq!(value.is_empty(), source.is_empty());
+        assert_eq!(value.is_nil(), source.is_nil());
+        assert_eq!(value.single_connective(), source.single_connective());
+        assert_eq!(value.single_bundle(), source.single_bundle());
+        assert_eq!(
+            value.components_is_empty(),
+            source == GeneratedPar::default()
+        );
+    };
+
+    check(GeneratedPar::default());
+
+    let corpus = valid_all_par_fields();
+    check(models::par_from_default! {
+        unforgeables: vec![corpus.unforgeables[0].clone()],
+        ..GeneratedPar::default()
+    });
+    check(models::par_from_default! {
+        conditionals: vec![corpus.conditionals[0].clone()],
+        ..GeneratedPar::default()
+    });
+    check(models::par_from_default! {
+        connectives: vec![corpus.connectives[0].clone()],
+        unforgeables: vec![corpus.unforgeables[0].clone()],
+        conditionals: vec![corpus.conditionals[0].clone()],
+        ..GeneratedPar::default()
+    });
+    check(models::par_from_default! {
+        bundles: vec![corpus.bundles[0].clone()],
+        conditionals: vec![corpus.conditionals[0].clone()],
+        ..GeneratedPar::default()
+    });
 }

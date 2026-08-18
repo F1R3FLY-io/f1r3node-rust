@@ -91,7 +91,10 @@ impl Par {
 
     pub const fn connective_used(&self) -> bool { self.connective_used }
 
-    pub fn is_empty(&self) -> bool { self.components.is_empty() }
+    /// Whether the complete authoritative component Bag has no endpoints.
+    /// This is distinct from historical [`Self::is_empty`], whose Rholang
+    /// contract intentionally examines only process-form families.
+    pub fn components_is_empty(&self) -> bool { self.components.is_empty() }
 
     pub const fn distinct_len(&self) -> usize { self.components.distinct_len() }
 
@@ -181,6 +184,147 @@ impl Par {
             locally_free: super::utils::union(self.locally_free, other.locally_free),
             connective_used: self.connective_used || other.connective_used,
         })
+    }
+
+    fn replacing_family<T: ParBagComponent>(mut self, values: Vec<T>) -> Self {
+        self.components.remove_family::<T>();
+        for value in values {
+            self.components
+                .insert(&value)
+                .expect("a finite component vector cannot overflow u64 multiplicity");
+        }
+        self
+    }
+
+    pub fn with_sends(&self, values: Vec<Send>) -> Self { self.clone().replacing_family(values) }
+
+    pub fn with_receives(&self, values: Vec<Receive>) -> Self {
+        self.clone().replacing_family(values)
+    }
+
+    pub fn with_news(&self, values: Vec<New>) -> Self { self.clone().replacing_family(values) }
+
+    pub fn with_exprs(&self, values: Vec<Expr>) -> Self { self.clone().replacing_family(values) }
+
+    pub fn with_matches(&self, values: Vec<Match>) -> Self { self.clone().replacing_family(values) }
+
+    pub fn with_unforgeables(&self, values: Vec<GUnforgeable>) -> Self {
+        self.clone().replacing_family(values)
+    }
+
+    pub fn with_bundles(&self, values: Vec<Bundle>) -> Self {
+        self.clone().replacing_family(values)
+    }
+
+    pub fn with_connectives(&self, values: Vec<Connective>) -> Self {
+        self.clone().replacing_family(values)
+    }
+
+    pub fn with_conditionals(&self, values: Vec<If>) -> Self {
+        self.clone().replacing_family(values)
+    }
+
+    pub fn with_locally_free(&self, locally_free: Vec<u8>) -> Self {
+        let mut result = self.clone();
+        result.locally_free = locally_free;
+        result
+    }
+
+    pub fn with_connective_used(&self, connective_used: bool) -> Self {
+        let mut result = self.clone();
+        result.connective_used = connective_used;
+        result
+    }
+
+    pub fn prepend_send(mut self, value: Send) -> Self {
+        let locally_free = value.locally_free.clone();
+        let connective_used = value.connective_used;
+        self.insert_component(&value, locally_free, connective_used)
+            .expect("one owned Send cannot overflow u64 multiplicity");
+        self
+    }
+
+    pub fn prepend_receive(mut self, value: Receive) -> Self {
+        let locally_free = value.locally_free.clone();
+        let connective_used = value.connective_used;
+        self.insert_component(&value, locally_free, connective_used)
+            .expect("one owned Receive cannot overflow u64 multiplicity");
+        self
+    }
+
+    pub fn prepend_match(mut self, value: Match) -> Self {
+        let locally_free = value.locally_free.clone();
+        let connective_used = value.connective_used;
+        self.insert_component(&value, locally_free, connective_used)
+            .expect("one owned Match cannot overflow u64 multiplicity");
+        self
+    }
+
+    pub fn prepend_if(mut self, value: If) -> Self {
+        let locally_free = value.locally_free.clone();
+        let connective_used = value.connective_used;
+        self.insert_component(&value, locally_free, connective_used)
+            .expect("one owned If cannot overflow u64 multiplicity");
+        self
+    }
+
+    /// Historical Rholang process-emptiness predicate. Unforgeables,
+    /// connectives, and conditionals are deliberately outside this contract.
+    pub fn is_empty(&self) -> bool {
+        self.family_cardinality::<Send>() == 0
+            && self.family_cardinality::<Receive>() == 0
+            && self.family_cardinality::<New>() == 0
+            && self.family_cardinality::<Match>() == 0
+            && self.family_cardinality::<Bundle>() == 0
+            && self.family_cardinality::<Expr>() == 0
+    }
+
+    pub fn is_nil(&self) -> bool {
+        self.family_cardinality::<Send>() == 0
+            && self.family_cardinality::<Receive>() == 0
+            && self.family_cardinality::<New>() == 0
+            && self.family_cardinality::<Match>() == 0
+            && self.family_cardinality::<Bundle>() == 0
+            && self.family_cardinality::<GUnforgeable>() == 0
+            && self.family_cardinality::<Connective>() == 0
+            && self.family_cardinality::<Expr>() == 0
+    }
+
+    pub fn single_connective(&self) -> Option<Connective> {
+        let other_families_are_empty = self.family_cardinality::<Send>() == 0
+            && self.family_cardinality::<Receive>() == 0
+            && self.family_cardinality::<New>() == 0
+            && self.family_cardinality::<Expr>() == 0
+            && self.family_cardinality::<Match>() == 0
+            && self.family_cardinality::<Bundle>() == 0;
+        (other_families_are_empty && self.family_cardinality::<Connective>() == 1).then(|| {
+            self.first::<Connective>()
+                .expect("Par invariant: stored Connective keys are canonical")
+                .expect("the cardinality check proved one Connective")
+                .0
+        })
+    }
+
+    pub fn single_bundle(&self) -> Option<Bundle> {
+        let other_families_are_empty = self.family_cardinality::<Send>() == 0
+            && self.family_cardinality::<Receive>() == 0
+            && self.family_cardinality::<New>() == 0
+            && self.family_cardinality::<Expr>() == 0
+            && self.family_cardinality::<Match>() == 0
+            && self.family_cardinality::<GUnforgeable>() == 0
+            && self.family_cardinality::<Connective>() == 0;
+        (other_families_are_empty && self.family_cardinality::<Bundle>() == 1).then(|| {
+            self.first::<Bundle>()
+                .expect("Par invariant: stored Bundle keys are canonical")
+                .expect("the cardinality check proved one Bundle")
+                .0
+        })
+    }
+
+    pub fn append(&self, other: Self) -> Self {
+        self.clone()
+            .parallel(other)
+            .expect("two finite Par values cannot overflow u64 multiplicity")
     }
 
     pub fn protobuf_encoded_len(&self) -> Result<usize, ParProtobufError> {
