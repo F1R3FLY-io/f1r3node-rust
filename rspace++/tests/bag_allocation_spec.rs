@@ -90,7 +90,8 @@ fn logical_cardinality_never_materializes_occurrence_sized_storage() {
     assert_eq!(one.iter().count(), 1);
     assert_eq!(maximum.iter().count(), 1);
     assert_eq!(one.cardinality(), 1);
-    assert_eq!(maximum.cardinality(), u128::from(u64::MAX));
+    assert_eq!(maximum.cardinality(), u64::MAX);
+    assert!(!maximum.cardinality_is_saturated());
 
     let (one_image, one_image_allocations, one_image_bytes) = measure(|| one.compact_bytes());
     let (maximum_image, maximum_image_allocations, maximum_image_bytes) =

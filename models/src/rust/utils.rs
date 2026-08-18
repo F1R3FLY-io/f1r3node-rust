@@ -128,9 +128,15 @@ impl Par {
             .map(|value| (value, Multiplicity::ONE)))
     }
 
-    pub fn family_cardinality<T>(&self) -> u128
+    pub fn family_cardinality<T>(&self) -> u64
     where T: GeneratedParComponent {
-        T::generated_family(self).len() as u128
+        u64::try_from(T::generated_family(self).len())
+            .expect("a generated Par family length fits u64")
+    }
+
+    pub fn family_cardinality_is_saturated<T>(&self) -> bool
+    where T: GeneratedParComponent {
+        false
     }
 
     /// Transitional count of values emitted by [`Self::try_visit_decoded`].

@@ -46,6 +46,37 @@ fn multiplicity_rejects_zero_and_detects_overflow() {
 }
 
 #[test]
+fn cardinality_uses_the_multiplicity_domain_without_breaking_bag_closure() {
+    let maximum = Multiplicity::new(u64::MAX).unwrap();
+    let mut value = bag(&[(b"alpha", u64::MAX)]);
+    assert_eq!(value.cardinality(), u64::MAX);
+    assert!(!value.cardinality_is_saturated());
+
+    value.insert(b"beta").unwrap();
+    assert_eq!(value.cardinality(), u64::MAX);
+    assert!(value.cardinality_is_saturated());
+    assert_eq!(value.count(b"alpha"), u64::MAX);
+    assert_eq!(value.count(b"beta"), 1);
+
+    let round_trip = Bag::from_compact_bytes(&value.compact_bytes()).unwrap();
+    assert_eq!(round_trip, value);
+    assert_eq!(round_trip.cardinality(), u64::MAX);
+    assert!(round_trip.cardinality_is_saturated());
+
+    value.remove(b"beta");
+    assert_eq!(value.cardinality(), u64::MAX);
+    assert!(!value.cardinality_is_saturated());
+
+    let left = bag(&[(b"alpha", u64::MAX)]);
+    let right = bag(&[(b"beta", u64::MAX)]);
+    let joined = left.join(&right);
+    assert_eq!(joined.count(b"alpha"), maximum.get());
+    assert_eq!(joined.count(b"beta"), maximum.get());
+    assert_eq!(joined.cardinality(), u64::MAX);
+    assert!(joined.cardinality_is_saturated());
+}
+
+#[test]
 fn multiplicity_bincode_rejects_zero() {
     let encoded_zero = bincode::serialize(&0u64).unwrap();
     assert!(bincode::deserialize::<Multiplicity>(&encoded_zero).is_err());
@@ -513,7 +544,11 @@ proptest! {
                     }
                     prop_assert_eq!(
                         value.remove_prefix(&prefix),
-                        (expected_distinct, expected_cardinality as u128),
+                        (
+                            expected_distinct,
+                            u64::try_from(expected_cardinality)
+                                .expect("generated cardinality fits u64"),
+                        ),
                     );
                 }
             }
@@ -522,7 +557,10 @@ proptest! {
             let expected = from_oracle(&snapshot);
             prop_assert_eq!(&value, &expected);
             prop_assert_eq!(value.distinct_len(), snapshot.len());
-            prop_assert_eq!(value.cardinality(), legacy.len() as u128);
+            prop_assert_eq!(
+                value.cardinality(),
+                u64::try_from(legacy.len()).expect("generated cardinality fits u64")
+            );
         }
     }
 

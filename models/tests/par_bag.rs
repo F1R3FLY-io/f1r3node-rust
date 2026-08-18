@@ -67,7 +67,10 @@ fn empty_par_is_one_unambiguous_empty_trie() {
 fn legacy_import_preserves_every_typed_occurrence() {
     let par = canonical_par_corpus();
     let bag = ParBag::import_legacy(&par).expect("import");
-    assert_eq!(bag.cardinality(), occurrence_count(&par) as u128);
+    assert_eq!(
+        bag.cardinality(),
+        u64::try_from(occurrence_count(&par)).expect("fixture cardinality fits u64")
+    );
 
     for value in &par.sends {
         assert!(bag.contains(value));
@@ -180,11 +183,8 @@ fn typed_prefix_cursor_decodes_only_the_requested_family() {
 
     assert_eq!(decoded.len(), bag.family_distinct_len::<Expr>());
     assert_eq!(
-        decoded
-            .iter()
-            .map(|(_, count)| u128::from(*count))
-            .sum::<u128>(),
-        par.exprs.len() as u128
+        decoded.iter().map(|(_, count)| *count).sum::<u64>(),
+        u64::try_from(par.exprs.len()).expect("fixture cardinality fits u64")
     );
 }
 
@@ -220,7 +220,7 @@ fn clone_is_copy_on_write_and_family_removal_is_prefix_native() {
     assert_eq!(changed.family_cardinality::<Expr>(), 0);
     assert_eq!(
         original.family_cardinality::<Expr>(),
-        par.exprs.len() as u128
+        u64::try_from(par.exprs.len()).expect("fixture cardinality fits u64")
     );
 }
 
@@ -279,7 +279,7 @@ fn family_metrics_track_every_mutation_and_compact_round_trip() {
 }
 
 #[test]
-fn endpoint_u64_overflow_is_atomic_while_family_aggregates_remain_closed() {
+fn endpoint_overflow_is_atomic_while_bag_lattice_remains_closed() {
     let first = Expr {
         expr_instance: Some(ExprInstance::GInt(1)),
     };
@@ -298,13 +298,17 @@ fn endpoint_u64_overflow_is_atomic_while_family_aggregates_remain_closed() {
             added: 1
         })
     ));
-    assert_eq!(bag.family_cardinality::<Expr>(), u128::from(u64::MAX));
+    assert_eq!(bag.family_cardinality::<Expr>(), u64::MAX);
+    assert!(!bag.family_cardinality_is_saturated::<Expr>());
     assert_eq!(bag.family_distinct_len::<Expr>(), 1);
     assert_eq!(bag.compact_snapshot().as_ptr(), snapshot_ptr);
 
     bag.insert(&second)
         .expect("a distinct endpoint preserves the u64 value domain");
-    assert_eq!(bag.family_cardinality::<Expr>(), u128::from(u64::MAX) + 1);
+    assert_eq!(bag.family_cardinality::<Expr>(), u64::MAX);
+    assert!(bag.family_cardinality_is_saturated::<Expr>());
+    assert_eq!(bag.cardinality(), u64::MAX);
+    assert!(bag.cardinality_is_saturated());
     assert_eq!(bag.family_distinct_len::<Expr>(), 2);
 
     let mut raw = Bag::new();
@@ -315,10 +319,9 @@ fn endpoint_u64_overflow_is_atomic_while_family_aggregates_remain_closed() {
         raw.insert(key).expect("raw second endpoint");
     });
     let decoded = ParBag::from_compact_bytes(&raw.compact_bytes()).expect("valid ACT family");
-    assert_eq!(
-        decoded.family_cardinality::<Expr>(),
-        u128::from(u64::MAX) + 1
-    );
+    assert_eq!(decoded.family_cardinality::<Expr>(), u64::MAX);
+    assert!(decoded.family_cardinality_is_saturated::<Expr>());
+    assert!(decoded.cardinality_is_saturated());
     assert_eq!(decoded.family_distinct_len::<Expr>(), 2);
 }
 

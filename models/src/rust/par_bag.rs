@@ -62,6 +62,14 @@ pub const PAR_BAG_KEY_DOMAIN: [u8; 4] = *b"RPB\x02";
 const PAR_BAG_KEY_HEADER_LEN: usize = PAR_BAG_KEY_DOMAIN.len() + 1;
 const PAR_COMPONENT_FAMILY_COUNT: usize = 9;
 
+const fn project_cardinality(exact: u128) -> u64 {
+    if exact > u64::MAX as u128 {
+        u64::MAX
+    } else {
+        exact as u64
+    }
+}
+
 /// Constructor-family tags, chosen to match the corresponding `Par` protobuf
 /// field numbers. Numeric trie order is consequently schema order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -686,7 +694,7 @@ impl<T: ParBagComponent> fmt::Debug for CanonicalParBagKey<T> {
 /// component category. Empty `Par` is exactly an empty `ParBag`.
 #[derive(Clone, Copy, Default)]
 struct ParFamilyMetrics {
-    cardinalities: [u128; PAR_COMPONENT_FAMILY_COUNT],
+    exact_cardinalities: [u128; PAR_COMPONENT_FAMILY_COUNT],
     distinct_lengths: [usize; PAR_COMPONENT_FAMILY_COUNT],
 }
 
@@ -697,7 +705,7 @@ impl ParFamilyMetrics {
         multiplicity: Multiplicity,
     ) -> Result<(), ParBagCodecError> {
         let index = tag.index();
-        self.cardinalities[index] = self.cardinalities[index]
+        self.exact_cardinalities[index] = self.exact_cardinalities[index]
             .checked_add(u128::from(multiplicity.get()))
             .ok_or(ParBagCodecError::FamilyCardinalityOverflow { tag })?;
         self.distinct_lengths[index] = self.distinct_lengths[index]
@@ -782,7 +790,14 @@ impl fmt::Debug for ParBag {
         formatter
             .debug_struct("ParBag")
             .field("components", &self.components)
-            .field("family_cardinalities", &self.aux.metrics.cardinalities)
+            .field(
+                "family_cardinalities",
+                &self
+                    .aux
+                    .metrics
+                    .exact_cardinalities
+                    .map(project_cardinality),
+            )
             .finish()
     }
 }
@@ -804,7 +819,7 @@ impl ParBag {
     fn record_insert(&mut self, tag: ParComponentTag, amount: Multiplicity, distinct_added: bool) {
         let metrics = &mut self.aux_for_mutation().metrics;
         let index = tag.index();
-        metrics.cardinalities[index] = metrics.cardinalities[index]
+        metrics.exact_cardinalities[index] = metrics.exact_cardinalities[index]
             .checked_add(u128::from(amount.get()))
             .expect("a resident Bag family cardinality fits u128");
         if distinct_added {
@@ -818,7 +833,7 @@ impl ParBag {
     fn record_remove(&mut self, tag: ParComponentTag, removed: u64, distinct_removed: bool) {
         let metrics = &mut self.aux_for_mutation().metrics;
         let index = tag.index();
-        metrics.cardinalities[index] -= u128::from(removed);
+        metrics.exact_cardinalities[index] -= u128::from(removed);
         if distinct_removed {
             metrics.distinct_lengths[index] -= 1;
         }
@@ -916,7 +931,11 @@ impl ParBag {
 
     pub const fn distinct_len(&self) -> usize { self.components.distinct_len() }
 
-    pub const fn cardinality(&self) -> u128 { self.components.cardinality() }
+    pub const fn cardinality(&self) -> u64 { self.components.cardinality() }
+
+    pub const fn cardinality_is_saturated(&self) -> bool {
+        self.components.cardinality_is_saturated()
+    }
 
     pub fn is_empty(&self) -> bool { self.components.is_empty() }
 
@@ -1019,17 +1038,17 @@ impl ParBag {
     }
 
     /// Remove one entire constructor family with one prefix operation.
-    pub fn remove_family<T: ParBagComponent>(&mut self) -> (usize, u128) {
+    pub fn remove_family<T: ParBagComponent>(&mut self) -> (usize, u64) {
         let index = T::TAG.index();
         let expected_distinct = self.aux.metrics.distinct_lengths[index];
-        let expected_cardinality = self.aux.metrics.cardinalities[index];
+        let expected_cardinality = self.aux.metrics.exact_cardinalities[index];
         let removed = self.components.remove_prefix(&component_prefix(T::TAG));
         if removed.0 != 0 {
             debug_assert_eq!(removed.0, expected_distinct);
-            debug_assert_eq!(removed.1, expected_cardinality);
+            debug_assert_eq!(removed.1, project_cardinality(expected_cardinality));
             let metrics = &mut self.aux_for_mutation().metrics;
             metrics.distinct_lengths[index] = 0;
-            metrics.cardinalities[index] = 0;
+            metrics.exact_cardinalities[index] = 0;
         }
         removed
     }
@@ -1038,8 +1057,12 @@ impl ParBag {
         self.aux.metrics.distinct_lengths[T::TAG.index()]
     }
 
-    pub fn family_cardinality<T: ParBagComponent>(&self) -> u128 {
-        self.aux.metrics.cardinalities[T::TAG.index()]
+    pub fn family_cardinality<T: ParBagComponent>(&self) -> u64 {
+        project_cardinality(self.aux.metrics.exact_cardinalities[T::TAG.index()])
+    }
+
+    pub fn family_cardinality_is_saturated<T: ParBagComponent>(&self) -> bool {
+        self.aux.metrics.exact_cardinalities[T::TAG.index()] > u64::MAX as u128
     }
 
     /// Visit one constructor family without decoding its payloads.

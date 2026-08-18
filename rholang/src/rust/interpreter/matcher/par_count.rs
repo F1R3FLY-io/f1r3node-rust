@@ -17,13 +17,13 @@ pub struct ParCount {
 impl ParCount {
     pub fn new(par: &Par) -> Self {
         ParCount {
-            sends: matching_bound(par.family_cardinality::<Send>()),
-            receives: matching_bound(par.family_cardinality::<Receive>()),
-            news: matching_bound(par.family_cardinality::<New>()),
-            exprs: matching_bound(par.family_cardinality::<Expr>()),
-            matches: matching_bound(par.family_cardinality::<Match>()),
-            unforgeables: matching_bound(par.family_cardinality::<GUnforgeable>()),
-            bundles: matching_bound(par.family_cardinality::<Bundle>()),
+            sends: par.family_cardinality::<Send>(),
+            receives: par.family_cardinality::<Receive>(),
+            news: par.family_cardinality::<New>(),
+            exprs: par.family_cardinality::<Expr>(),
+            matches: par.family_cardinality::<Match>(),
+            unforgeables: par.family_cardinality::<GUnforgeable>(),
+            bundles: par.family_cardinality::<Bundle>(),
         }
     }
 
@@ -134,15 +134,15 @@ impl ParCount {
         })
         .expect("Par invariant: expression endpoints are canonical");
         let wildcard = free_exprs != 0;
-        let exprs = matching_bound(par.family_cardinality::<Expr>());
+        let exprs = par.family_cardinality::<Expr>();
         let pc = ParCount {
-            sends: matching_bound(par.family_cardinality::<Send>()),
-            receives: matching_bound(par.family_cardinality::<Receive>()),
-            news: matching_bound(par.family_cardinality::<New>()),
+            sends: par.family_cardinality::<Send>(),
+            receives: par.family_cardinality::<Receive>(),
+            news: par.family_cardinality::<New>(),
             exprs: exprs.saturating_sub(free_exprs),
-            matches: matching_bound(par.family_cardinality::<Match>()),
-            unforgeables: matching_bound(par.family_cardinality::<GUnforgeable>()),
-            bundles: matching_bound(par.family_cardinality::<Bundle>()),
+            matches: par.family_cardinality::<Match>(),
+            unforgeables: par.family_cardinality::<GUnforgeable>(),
+            bundles: par.family_cardinality::<Bundle>(),
         };
         let base = (pc.clone(), if wildcard { self._max() } else { pc });
         (par.family_distinct_len::<Connective>(), base)
@@ -297,12 +297,6 @@ impl ParCount {
         result
     }
 }
-
-/// Project an exact trie-family cardinality into the matcher's compact,
-/// saturating abstract domain. A resident repeated-field subset cannot contain
-/// more than `u64::MAX` occurrences; saturation therefore preserves
-/// conservative pruning without widening every hot `ParCount` frame to u128.
-fn matching_bound(value: u128) -> u64 { u64::try_from(value).unwrap_or(u64::MAX) }
 
 enum CountNode<'a> {
     Par(&'a Par),

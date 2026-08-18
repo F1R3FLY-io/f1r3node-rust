@@ -99,7 +99,11 @@ impl Par {
 
     pub const fn distinct_len(&self) -> usize { self.components.distinct_len() }
 
-    pub const fn cardinality(&self) -> u128 { self.components.cardinality() }
+    pub const fn cardinality(&self) -> u64 { self.components.cardinality() }
+
+    pub const fn cardinality_is_saturated(&self) -> bool {
+        self.components.cardinality_is_saturated()
+    }
 
     pub fn contains<T: ParBagComponent>(&self, value: &T) -> bool {
         self.components.contains(value)
@@ -111,8 +115,12 @@ impl Par {
         self.components.family_distinct_len::<T>()
     }
 
-    pub fn family_cardinality<T: ParBagComponent>(&self) -> u128 {
+    pub fn family_cardinality<T: ParBagComponent>(&self) -> u64 {
         self.components.family_cardinality::<T>()
+    }
+
+    pub fn family_cardinality_is_saturated<T: ParBagComponent>(&self) -> bool {
+        self.components.family_cardinality_is_saturated::<T>()
     }
 
     pub fn visit_encoded<T: ParBagComponent>(

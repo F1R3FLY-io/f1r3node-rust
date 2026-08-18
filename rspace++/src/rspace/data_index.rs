@@ -633,11 +633,11 @@ impl RSpaceDataIndex {
 
     pub fn distinct_len(&self) -> usize { self.bag.distinct_len() }
 
-    pub fn cardinality(&self) -> u128 { self.bag.cardinality() }
+    pub fn cardinality(&self) -> u64 { self.bag.cardinality() }
 
     pub fn is_empty(&self) -> bool { self.bag.is_empty() }
 
-    pub fn clear_channel<C: RhoPathEncode>(&mut self, channel: &C) -> (usize, u128) {
+    pub fn clear_channel<C: RhoPathEncode>(&mut self, channel: &C) -> (usize, u64) {
         self.bag.remove_prefix(&RhoPathV1::datum_prefix(channel))
     }
 
@@ -843,7 +843,7 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
 
     pub fn distinct_len(&self) -> usize { self.index.distinct_len() }
 
-    pub fn cardinality(&self) -> u128 { self.index.cardinality() }
+    pub fn cardinality(&self) -> u64 { self.index.cardinality() }
 
     pub fn is_empty(&self) -> bool { self.loaded_channel_count == 0 }
 

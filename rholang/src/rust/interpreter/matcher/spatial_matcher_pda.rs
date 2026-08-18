@@ -183,7 +183,7 @@ pub(super) fn match_send_list_with_remainder_stats(
 }
 
 #[cfg(test)]
-pub(super) fn send_target_index_shape(targets: Vec<Send>) -> (u128, usize) {
+pub(super) fn send_target_index_shape(targets: Vec<Send>) -> (u64, usize) {
     let targets = targets
         .into_iter()
         .map(MatchValue::Send)
@@ -1833,7 +1833,10 @@ impl ListTargetIndex {
             position_groups.push(id);
             previous = Some((target, id));
         }
-        debug_assert_eq!(bag.cardinality(), targets.len() as u128);
+        debug_assert_eq!(
+            bag.cardinality(),
+            u64::try_from(targets.len()).expect("target count fits u64")
+        );
         debug_assert_eq!(bag.distinct_len(), groups.len());
         Some(Self {
             bag,

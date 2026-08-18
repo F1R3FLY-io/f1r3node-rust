@@ -159,10 +159,22 @@ impl DistributiveLattice for Multiplicity {
 pub struct Bag {
     entries: PathMap<Multiplicity>,
     distinct_len: usize,
-    cardinality: u128,
+    /// Exact internal sum used to keep the pointwise Bag lattice closed even
+    /// when several valid `u64` endpoint multiplicities sum past `u64::MAX`.
+    /// The public cardinality domain remains the `u64` domain of
+    /// `Multiplicity` and projects this value conservatively by saturation.
+    exact_cardinality: u128,
 }
 
 impl Bag {
+    const fn project_cardinality(exact: u128) -> u64 {
+        if exact > u64::MAX as u128 {
+            u64::MAX
+        } else {
+            exact as u64
+        }
+    }
+
     pub fn new() -> Self { Self::default() }
 
     pub fn from_pathmap(entries: PathMap<Multiplicity>) -> Self {
@@ -175,7 +187,7 @@ impl Bag {
         Self {
             entries,
             distinct_len,
-            cardinality,
+            exact_cardinality: cardinality,
         }
     }
 
@@ -187,7 +199,7 @@ impl Bag {
         Self {
             entries,
             distinct_len,
-            cardinality,
+            exact_cardinality: cardinality,
         }
     }
 
@@ -197,7 +209,17 @@ impl Bag {
 
     pub const fn distinct_len(&self) -> usize { self.distinct_len }
 
-    pub const fn cardinality(&self) -> u128 { self.cardinality }
+    /// Cardinality in the `u64` scalar domain used by `Multiplicity`.
+    ///
+    /// A Bag remains algebraically closed when distinct endpoint counts sum
+    /// beyond that domain. Such an otherwise-valid Bag reports `u64::MAX`
+    /// rather than truncating or wrapping; callers can distinguish that rare
+    /// case with [`Self::cardinality_is_saturated`].
+    pub const fn cardinality(&self) -> u64 { Self::project_cardinality(self.exact_cardinality) }
+
+    pub const fn cardinality_is_saturated(&self) -> bool {
+        self.exact_cardinality > u64::MAX as u128
+    }
 
     pub fn is_empty(&self) -> bool { self.distinct_len == 0 }
 
@@ -224,7 +246,7 @@ impl Bag {
             }
         };
         self.entries.insert(path, next);
-        self.cardinality += u128::from(amount.get());
+        self.exact_cardinality += u128::from(amount.get());
         Ok(next)
     }
 
@@ -235,7 +257,7 @@ impl Bag {
     pub fn remove_many(&mut self, path: &[u8], amount: Multiplicity) -> Option<Multiplicity> {
         let current = self.entries.get(path).copied()?;
         let removed = current.get().min(amount.get());
-        self.cardinality -= u128::from(removed);
+        self.exact_cardinality -= u128::from(removed);
         if removed == current.get() {
             self.entries.remove(path);
             self.distinct_len -= 1;
@@ -263,7 +285,7 @@ impl Bag {
                     requested: amount.get(),
                 })?;
         let next = current.checked_sub(amount)?;
-        self.cardinality -= u128::from(amount.get());
+        self.exact_cardinality -= u128::from(amount.get());
         match next {
             Some(next) => {
                 self.entries.insert(path, next);
@@ -277,7 +299,7 @@ impl Bag {
         }
     }
 
-    pub fn remove_prefix(&mut self, prefix: &[u8]) -> (usize, u128) {
+    pub fn remove_prefix(&mut self, prefix: &[u8]) -> (usize, u64) {
         let mut removed_distinct = 0usize;
         let mut removed_cardinality = 0u128;
         self.visit_prefix(prefix, |_path, multiplicity| {
@@ -288,9 +310,9 @@ impl Bag {
             self.entries.remove_branches_at(prefix, true);
             self.entries.remove_val_at(prefix, true);
             self.distinct_len -= removed_distinct;
-            self.cardinality -= removed_cardinality;
+            self.exact_cardinality -= removed_cardinality;
         }
-        (removed_distinct, removed_cardinality)
+        (removed_distinct, Self::project_cardinality(removed_cardinality))
     }
 
     pub fn set_count(&mut self, path: &[u8], count: Option<Multiplicity>) {
@@ -300,17 +322,17 @@ impl Bag {
             (None, Some(next)) => {
                 self.entries.insert(path, next);
                 self.distinct_len += 1;
-                self.cardinality += u128::from(next.get());
+                self.exact_cardinality += u128::from(next.get());
             }
             (Some(current), None) => {
                 self.entries.remove(path);
                 self.distinct_len -= 1;
-                self.cardinality -= u128::from(current.get());
+                self.exact_cardinality -= u128::from(current.get());
             }
             (Some(current), Some(next)) => {
                 self.entries.insert(path, next);
-                self.cardinality =
-                    self.cardinality - u128::from(current.get()) + u128::from(next.get());
+                self.exact_cardinality =
+                    self.exact_cardinality - u128::from(current.get()) + u128::from(next.get());
             }
         }
     }
@@ -449,7 +471,7 @@ impl Bag {
         Ok(Self {
             entries,
             distinct_len,
-            cardinality,
+            exact_cardinality: cardinality,
         })
     }
 
@@ -605,7 +627,7 @@ impl BagDelta {
         // byte-for-byte unchanged.
         let mut entries = target.entries.clone();
         let mut distinct_len = target.distinct_len;
-        let mut cardinality = target.cardinality;
+        let mut exact_cardinality = target.exact_cardinality;
         {
             let mut cursor = entries.write_zipper();
             for (path, amount) in removals.iter() {
@@ -627,7 +649,7 @@ impl BagDelta {
                         distinct_len -= 1;
                     }
                 }
-                cardinality -= u128::from(amount.get());
+                exact_cardinality -= u128::from(amount.get());
             }
             for (path, amount) in additions.iter() {
                 cursor.move_to_path(&path);
@@ -639,10 +661,10 @@ impl BagDelta {
                     }
                 };
                 cursor.set_val(next);
-                cardinality += u128::from(amount.get());
+                exact_cardinality += u128::from(amount.get());
             }
         }
-        *target = Bag::from_pathmap_with_metrics(entries, distinct_len, cardinality);
+        *target = Bag::from_pathmap_with_metrics(entries, distinct_len, exact_cardinality);
         Ok(())
     }
 }
@@ -650,7 +672,7 @@ impl BagDelta {
 impl PartialEq for Bag {
     fn eq(&self, other: &Self) -> bool {
         self.distinct_len == other.distinct_len &&
-            self.cardinality == other.cardinality &&
+            self.exact_cardinality == other.exact_cardinality &&
             self.iter().all(|(path, multiplicity)| {
                 other.entries.get(&path).copied() == Some(multiplicity)
             })
@@ -670,7 +692,7 @@ impl Ord for Bag {
 impl Hash for Bag {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.distinct_len.hash(state);
-        self.cardinality.hash(state);
+        self.exact_cardinality.hash(state);
         for entry in self.iter() {
             entry.hash(state);
         }
@@ -689,7 +711,8 @@ impl fmt::Debug for Bag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Bag")
             .field("distinct_len", &self.distinct_len)
-            .field("cardinality", &self.cardinality)
+            .field("cardinality", &self.cardinality())
+            .field("cardinality_is_saturated", &self.cardinality_is_saturated())
             .field("entries", &DebugEntries(self))
             .finish()
     }
