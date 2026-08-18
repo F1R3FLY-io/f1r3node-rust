@@ -572,6 +572,74 @@ fn dag_storage_should_advance_latest_message_to_invalid_block_from_same_sender()
     );
 }
 
+/// Inserting an OLDER block by a sender must not move that sender's latest
+/// message backward. Settled-history admission inserts old blocks at runtime
+/// — a straggler a joiner's restore missed, arriving while the sender's real
+/// latest message is a hundred blocks ahead — so the sequence-monotone guard
+/// on the latest-message update is what keeps admission from rewriting any
+/// validator's position. (Insertion ORDER is an optimization, not what this
+/// depends on.)
+#[test]
+fn dag_storage_keeps_latest_message_when_an_older_block_arrives() {
+    let genesis = genesis_block();
+    let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
+
+    let newer = get_random_block(
+        Some(5),
+        Some(5),
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    dag_storage
+        .insert(
+            &newer,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
+
+    let older = get_random_block(
+        Some(2),
+        Some(2),
+        None,
+        None,
+        Some(newer.sender.clone()),
+        None,
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    dag_storage
+        .insert(
+            &older,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
+
+    let dag = dag_storage
+        .get_representation()
+        .expect("dag representation");
+    assert_eq!(
+        dag.latest_message_hash(&newer.sender),
+        Some(newer.block_hash.clone()),
+        "an old block arriving late must not regress its sender's latest message"
+    );
+}
+
 /// Every deploy in a VALID inserted body resolves to its carrier; invalid
 /// bodies are not canonical history and resolve to nothing.
 #[test]

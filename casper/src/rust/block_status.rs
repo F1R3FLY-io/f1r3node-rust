@@ -31,6 +31,10 @@ pub enum BlockError {
     /// from a sync anchor legitimately lacks history its peers have, and the
     /// only correct response is to fetch the named block and try again.
     Undecidable(BlockHash),
+    /// Flow signal, not a verdict: the block is settled history below this
+    /// node's sync anchor and was admitted hash-checked and unjudged — the
+    /// same door LFS restore used. See `block_processor::admit_as_settled`.
+    AdmittedSettled,
     BlockException(CasperError),
     Invalid(InvalidBlock),
 }

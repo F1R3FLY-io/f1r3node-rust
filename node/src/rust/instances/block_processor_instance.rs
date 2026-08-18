@@ -502,6 +502,40 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
     // Step 3: Log started
     tracing::info!("Block {} processing started.", block_str);
 
+    // Settled-history door: a signature-checked block at-or-below this node's
+    // sync anchor, solicited by a bonded validator's block, enters the DAG the
+    // way LFS restore admitted its neighbours — hash-checked, unjudged. Judging
+    // it instead runs tip-state validation checks against settled history,
+    // which is how a restored joiner recorded verdicts against honest
+    // validators. The outer loop's pendant scan then re-enqueues whatever was
+    // deferred waiting on this block.
+    match block_processor
+        .try_admit_settled(casper.clone(), &block)
+        .await
+    {
+        Ok(true) => {
+            return Ok((
+                block,
+                rspace_plus_plus::rspace::history::Either::Left(
+                    casper::rust::block_status::BlockError::AdmittedSettled,
+                ),
+            ));
+        }
+        Ok(false) => {}
+        Err(err) => {
+            block_processor
+                .ack_processed(&block)
+                .await
+                .map_err(|ack_err| {
+                    CasperError::RuntimeError(format!(
+                        "try_admit_settled failed for {}, and cleanup failed: {}",
+                        block_str, ack_err
+                    ))
+                })?;
+            return Err(err);
+        }
+    }
+
     // Step 4: Check dependencies with effects
     // Equivalent to: blockProcessor.checkDependenciesWithEffects(c, b)
     let has_dependencies = match block_processor

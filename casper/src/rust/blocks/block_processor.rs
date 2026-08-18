@@ -85,6 +85,30 @@ pub(crate) fn guard_deferral(
     }
 }
 
+/// Whether an arriving block is settled history to be admitted unjudged —
+/// the LFS door, opened at runtime.
+///
+/// A restored node's own restore inserted hundreds of blocks hash-checked and
+/// unexecuted; a straggler from the same settled region — cited by gossip the
+/// restore could not have known about — is the same kind of block and gets the
+/// same treatment. Judging it instead is what broke: the node-state validation
+/// checks assume dependency-ordered insertion, which the restore itself
+/// bypassed, so the verdicts they produce on old blocks are statements about
+/// this node's restore, not about the block.
+///
+/// Each condition closes a distinct attack; see the truth-table test.
+pub(crate) fn admit_as_settled(
+    block_number: i64,
+    approved_block_number: i64,
+    solicited_by_bonded: bool,
+    budget_remaining: bool,
+) -> bool {
+    approved_block_number > 0
+        && block_number <= approved_block_number
+        && solicited_by_bonded
+        && budget_remaining
+}
+
 /// Classify a validation outcome for post-processing.
 ///
 /// Everything except `Undecidable` is a verdict and is settled. `Undecidable`
@@ -99,6 +123,12 @@ pub(crate) fn post_validation(status: &ValidBlockProcessing) -> PostValidation {
         _ => PostValidation::Settled,
     }
 }
+
+/// Lifetime cap on settled-history admissions. Legitimate joins need single
+/// digits (the gaps LFS's closure missed); the cap prices the worst case — a
+/// BONDED attacker citing self-signed junk below the anchor — at bounded,
+/// alarmed storage. Past it the node degrades to today's deferral, loudly.
+const SETTLED_ADMISSION_BUDGET: u64 = 512;
 
 const CASPER_BUFFER_PRUNE_INTERVAL_MS: u64 = 5_000;
 const CASPER_BUFFER_STALE_TTL_MS: u64 = 180_000;
@@ -326,8 +356,10 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
 
         let (is_ready, deps_to_fetch, deps_in_buffer) = self
             .dependencies
-            .get_non_validated_dependencies(casper, block)
+            .get_non_validated_dependencies(casper.clone(), block)
             .await?;
+        self.dependencies
+            .record_settled_solicitations(&casper, block, &deps_to_fetch);
 
         if is_ready {
             self.dependencies
@@ -418,6 +450,8 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
                     );
                     let deps = HashSet::from([missing.clone()]);
                     self.dependencies
+                        .record_settled_solicitations(&casper, block, &deps);
+                    self.dependencies
                         .commit_to_buffer(block, Some(deps.clone()))
                         .await?;
                     self.dependencies
@@ -450,7 +484,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
                 metrics::counter!(BLOCK_VALIDATION_SUCCESS_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
                     .increment(1);
                 self.dependencies
-                    .effects_for_valid_block(casper, block)
+                    .effects_for_valid_block(casper.clone(), block)
                     .await
             }
             Either::Left(invalid_block) => {
@@ -461,7 +495,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
                 match invalid_block {
                     BlockError::Invalid(i) => {
                         self.dependencies
-                            .effects_for_invalid_block(casper, block, i, &snapshot)
+                            .effects_for_invalid_block(casper.clone(), block, i, &snapshot)
                             .await
                     }
                     // BlockException → InvalidTransaction is safe: validation_dispatcher.rs:548
@@ -477,7 +511,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
                         );
                         self.dependencies
                             .effects_for_invalid_block(
-                                casper,
+                                casper.clone(),
                                 block,
                                 &InvalidBlock::InvalidTransaction,
                                 &snapshot,
@@ -504,6 +538,8 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
                 );
                 let deps = HashSet::from([missing]);
                 self.dependencies
+                    .record_settled_solicitations(&casper, block, &deps);
+                self.dependencies
                     .commit_to_buffer(block, Some(deps.clone()))
                     .await?;
                 self.dependencies
@@ -520,6 +556,15 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
     /// Equivalent to Scala's: ackProcessed = (b: BlockMessage) => BlockRetriever[F].ackInCasper(b.blockHash)
     pub async fn ack_processed(&self, block: &BlockMessage) -> Result<(), CasperError> {
         self.dependencies.ack_processed(block).await
+    }
+
+    /// See [`BlockProcessorDependencies::try_admit_settled`].
+    pub async fn try_admit_settled(
+        &self,
+        casper: Arc<dyn Casper + Send + Sync + 'static>,
+        block: &BlockMessage,
+    ) -> Result<bool, CasperError> {
+        self.dependencies.try_admit_settled(casper, block).await
     }
 
     /// Remove block hash from CasperBuffer dependency graph.
@@ -548,6 +593,14 @@ pub struct BlockProcessorDependencies<T: TransportLayer + Send + Sync> {
     casper_buffer_last_prune_ms: Arc<AtomicU64>,
     missing_dependency_attempts: Arc<Mutex<HashMap<BlockHash, u32>>>,
     missing_dependency_quarantine_until: Arc<Mutex<HashMap<BlockHash, u64>>>,
+    /// Hashes solicited as dependencies by a block whose sender is bonded in
+    /// this node's anchor. Membership is the third condition of
+    /// [`admit_as_settled`]; entries are removed when the block arrives, and
+    /// the set is capped so no-shows cannot grow it unboundedly.
+    settled_solicitations: Arc<Mutex<HashSet<BlockHash>>>,
+    /// Blocks admitted as settled history since start; compared against
+    /// [`SETTLED_ADMISSION_BUDGET`].
+    settled_admissions: Arc<AtomicU64>,
 }
 
 impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
@@ -571,7 +624,61 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
             casper_buffer_last_prune_ms: Arc::new(AtomicU64::new(0)),
             missing_dependency_attempts: Arc::new(Mutex::new(HashMap::new())),
             missing_dependency_quarantine_until: Arc::new(Mutex::new(HashMap::new())),
+            settled_solicitations: Arc::new(Mutex::new(HashSet::new())),
+            settled_admissions: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Record which solicited hashes were cited by a bonded validator's block,
+    /// making them candidates for settled-history admission when they arrive.
+    ///
+    /// Bondedness is judged against the ANCHOR's bond set: the anchor is the
+    /// one block a restored node trusts unconditionally, and a validator bonded
+    /// there has stake to lose — its blocks are signature-checked before this
+    /// runs, so an attacker cannot borrow the status. A citer bonded only after
+    /// the anchor does not qualify; its solicitations take the ordinary path,
+    /// which fails toward deferral, never toward admission.
+    fn record_settled_solicitations(
+        &self,
+        casper: &Arc<dyn Casper + Send + Sync + 'static>,
+        citer: &BlockMessage,
+        deps: &HashSet<BlockHash>,
+    ) {
+        const SETTLED_SOLICITATIONS_CAP: usize = 4_096;
+
+        let Ok(anchor) = casper.get_approved_block() else {
+            return;
+        };
+        let citer_is_bonded = anchor
+            .body
+            .state
+            .bonds
+            .iter()
+            .any(|bond| bond.validator == citer.sender);
+        if !citer_is_bonded {
+            return;
+        }
+        let Ok(mut solicitations) = self.settled_solicitations.lock() else {
+            return;
+        };
+        if solicitations.len() + deps.len() > SETTLED_SOLICITATIONS_CAP {
+            tracing::warn!(
+                tracked = solicitations.len(),
+                incoming = deps.len(),
+                "Settled-solicitation set at capacity; new dependencies take the \
+                 deferral path instead of the admission door"
+            );
+            return;
+        }
+        solicitations.extend(deps.iter().cloned());
+    }
+
+    /// Take (and thereby consume) the settled-solicitation marker for a hash.
+    fn take_settled_solicitation(&self, hash: &BlockHash) -> bool {
+        self.settled_solicitations
+            .lock()
+            .map(|mut set| set.remove(hash))
+            .unwrap_or(false)
     }
 
     // Public getters for tests
@@ -988,6 +1095,62 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         self.block_retriever.was_requested_as_dependency(hash)
     }
 
+    /// Admit an arriving block as settled history if [`admit_as_settled`]'s
+    /// conditions hold: inserted into the DAG hash-checked and unjudged, the
+    /// same treatment LFS restore gave every block it downloaded. Returns
+    /// whether the block was admitted; a `false` sends it down the ordinary
+    /// judged path.
+    ///
+    /// Insertion cannot regress consensus state: the DAG's latest-message
+    /// update is sequence-monotone, so an old block never moves a validator's
+    /// latest message backward, and every verdict channel is untouched because
+    /// the block never enters validation.
+    pub async fn try_admit_settled(
+        &self,
+        casper: Arc<dyn Casper + Send + Sync + 'static>,
+        block: &BlockMessage,
+    ) -> Result<bool, CasperError> {
+        if !self.take_settled_solicitation(&block.block_hash) {
+            return Ok(false);
+        }
+        let approved_block_number = casper
+            .get_approved_block()
+            .map(|approved| proto_util::block_number(approved))?;
+        let admitted_so_far = self.settled_admissions.load(Ordering::Relaxed);
+        if !admit_as_settled(
+            proto_util::block_number(block),
+            approved_block_number,
+            true,
+            admitted_so_far < SETTLED_ADMISSION_BUDGET,
+        ) {
+            return Ok(false);
+        }
+
+        self.block_dag_storage.insert(
+            block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )?;
+        let admitted = self.settled_admissions.fetch_add(1, Ordering::Relaxed) + 1;
+        if admitted == SETTLED_ADMISSION_BUDGET / 2 {
+            tracing::warn!(
+                admitted,
+                budget = SETTLED_ADMISSION_BUDGET,
+                "Settled-history admissions at half budget; a healthy join needs single \
+                 digits — investigate what keeps citing unheld settled blocks"
+            );
+        }
+        tracing::info!(
+            block = %PrettyPrinter::build_string_bytes(&block.block_hash),
+            block_number = proto_util::block_number(block),
+            anchor_number = approved_block_number,
+            admitted,
+            "Admitted solicited block as settled history (below this node's sync anchor)"
+        );
+        self.remove_from_buffer(block).await?;
+        self.ack_processed(block).await?;
+        Ok(true)
+    }
+
     /// Equivalent to Scala's: requestMissingDependencies = (deps: Set[BlockHash]) => { ... }
     pub async fn request_missing_dependencies(
         &self,
@@ -1173,6 +1336,49 @@ mod tests {
             ),
             "a genesis-rooted node has the whole spine, so a missing block is corruption \
              and must be judged — deferring here is an escape hatch for crafted blocks"
+        );
+    }
+
+    /// Settled-history admission is the LFS door opened at runtime. A restored
+    /// node judges old blocks with checks that assume dependency-ordered
+    /// insertion — an assumption its own restore already broke for 298 blocks —
+    /// so a straggler from the same settled region must come through the same
+    /// door those 298 did: hash-checked, inserted, never judged. Each condition
+    /// closes a distinct attack:
+    ///
+    ///   - only a truncated node (a genesis-rooted node judges everything, so
+    ///     no crafted block can buy an unjudged admission there);
+    ///   - only at-or-below the anchor (live consensus is always judged);
+    ///   - only when solicited by a bonded validator's signature-checked block
+    ///     (an unbonded attacker's citations open nothing);
+    ///   - only within budget (a staked attacker buys bounded, alarmed storage,
+    ///     never unbounded growth — past the budget the node degrades to
+    ///     today's deferral, loudly).
+    #[test]
+    fn settled_history_admission_has_four_conditions() {
+        assert!(
+            admit_as_settled(9, 87, true, true),
+            "a below-anchor block solicited by a bonded citer on a truncated node is settled history"
+        );
+        assert!(
+            admit_as_settled(87, 87, true, true),
+            "the anchor's own height is inside the settled cut"
+        );
+        assert!(
+            !admit_as_settled(88, 87, true, true),
+            "above the anchor is live consensus and must be judged"
+        );
+        assert!(
+            !admit_as_settled(9, 0, true, true),
+            "a genesis-rooted node judges everything — same discriminator as guard_deferral"
+        );
+        assert!(
+            !admit_as_settled(9, 87, false, true),
+            "a citation from an unbonded sender opens no door"
+        );
+        assert!(
+            !admit_as_settled(9, 87, true, false),
+            "budget exhausted falls back to deferral, never silent growth"
         );
     }
 
