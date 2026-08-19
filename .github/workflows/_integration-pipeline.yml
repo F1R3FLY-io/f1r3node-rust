@@ -383,10 +383,7 @@ jobs:
     name: Integration Tests (${{ matrix.arch }}-${{ matrix.provider }})
     needs: [build_docker_image, launch_ephemeral_runners]
     runs-on: ${{ matrix.runner }}
-    # 90 leaves headroom for the ucc suite's wall-clock-dominated
-    # convergence rounds, which serialize onto one xdist worker via
-    # --dist=loadgroup. Must stay well under the 6-hour OCI reaper horizon.
-    timeout-minutes: 90
+    timeout-minutes: 60
     permissions:
       contents: read
     strategy:
@@ -554,6 +551,124 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: integration-logs-${{ matrix.arch }}-${{ matrix.provider }}-run${{ github.run_id }}-attempt${{ github.run_attempt }}
+          path: system-integration/integration-tests/
+          retention-days: 7
+
+  # The user-contract-concurrency suite runs as its own job: its tests share
+  # one xdist group, so inside integration_tests they would serialize onto a
+  # single worker and put ~30-40 wall-clock minutes of convergence rounds on
+  # that job's critical path. Two diagonal legs (amd64-docker,
+  # arm64-subprocess) cover both arches and both providers with two runners,
+  # respecting the OCI daily instance-creation quota. The job name keeps the
+  # "Integration Tests (arch-" prefix so the per-arch aggregators in ci.yml /
+  # ci-fork-pr.yml count these legs without modification.
+  ucc_tests:
+    name: Integration Tests (${{ matrix.arch }}-${{ matrix.provider }}, ucc)
+    needs: [build_docker_image, launch_ephemeral_runners]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {
+              arch: amd64,
+              provider: docker,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  x64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: arm64,
+              provider: subprocess,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  arm64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+    steps:
+      - name: Clone Repository
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
+          ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
+          persist-credentials: false
+          # Same fork-PR opt-in as integration_tests; the invariants script
+          # asserts the gating premises. Do not add secrets to this job.
+          allow-unsafe-pr-checkout: true
+
+      - name: Clone system-integration
+        uses: actions/checkout@v5
+        with:
+          repository: F1R3FLY-io/system-integration
+          ref: ${{ env.SYSTEM_INTEGRATION_REF }}
+          path: system-integration
+          persist-credentials: false
+
+      - name: Load Docker Image (from build_docker_image artifact)
+        uses: actions/download-artifact@v4
+        with:
+          name: artifacts-docker-${{ matrix.arch }}
+          path: /tmp
+
+      - name: Import Docker Image
+        shell: bash -ex {0}
+        run: |
+          zcat /tmp/rust-node-docker.tar.gz | docker image load
+          docker tag ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }} ${{ env.DOCKER_IMAGE_NAME }}:latest
+
+      - name: Extract rnode binary from image (subprocess provider only)
+        if: matrix.provider == 'subprocess'
+        shell: bash -ex {0}
+        run: |
+          docker create --name extract-rnode ${{ env.DOCKER_IMAGE_NAME }}:latest
+          docker cp extract-rnode:/opt/docker/bin/node /tmp/rnode
+          chmod +x /tmp/rnode
+          docker rm extract-rnode
+          /tmp/rnode --version 2>/dev/null || true
+          ldd /tmp/rnode
+
+      - name: Install system-integration dependencies
+        shell: bash -ex {0}
+        run: |
+          cd system-integration
+          poetry lock --no-update
+          poetry install --with integration
+
+      - name: Run UCC Suite (${{ matrix.provider }} provider)
+        shell: bash -ex {0}
+        env:
+          F1R3FLY_NODE_IMAGE: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          F1R3FLY_NODE_BINARY: /tmp/rnode
+          F1R3FLY_NODE_DEFAULTS_CONF: ${{ github.workspace }}/node/src/main/resources/defaults.conf
+        run: |
+          cd system-integration
+          SCALE_FLAG=""
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            SCALE_FLAG="--timeout-scale=1.5"
+          fi
+          poetry run pytest \
+            integration-tests/test/tests/custom/test_user_contract_concurrency.py \
+            --provider=${{ matrix.provider }} \
+            --rss-ceiling-mb 10000 \
+            -v --tb=short --instafail --timeout=1200 $SCALE_FLAG
+
+      - name: Upload UCC Test Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ucc-logs-${{ matrix.arch }}-${{ matrix.provider }}-run${{ github.run_id }}-attempt${{ github.run_attempt }}
           path: system-integration/integration-tests/
           retention-days: 7
 
