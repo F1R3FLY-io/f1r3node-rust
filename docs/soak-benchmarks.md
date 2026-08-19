@@ -12,7 +12,9 @@ separate identifier migration:
 | Process name | Legacy series key | Legacy profile value |
 |---|---|---|
 | 60h stability soak | `weekend` | `weekend-60h` |
-| Dev integration soak | `daily` | — | Design history and decisions:
+| Dev integration soak | `daily` | — |
+
+Design history and decisions:
 [work log](work-logs/task-EPIC-010-2026-07-15T20-57Z.md), story US-004 in
 [UserStories.md](UserStories.md).
 
