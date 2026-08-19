@@ -179,8 +179,8 @@ async fn cost_accounted_user_deploy_report_starts_with_precharge_batch() {
 
     let reporter = reporting_casper::rho_reporter(
         &rspace_store,
-        &node.block_store,
         &node.block_dag_storage,
+        node.runtime_manager.replay_lock(),
         ExternalServices::noop(),
     );
 
