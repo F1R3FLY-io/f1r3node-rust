@@ -19,10 +19,13 @@
 #     public. The OCIR canary path is deferred to Phase 3.
 #
 # Idempotency and identity (release invariants 2 and 4): the identity
-# gate runs BEFORE any registry or repository mutation. When the canary
-# tag already exists, the gate requires the matching prerelease and its
-# evidence asset, verifies the tag target and the binary checksums
-# against the current candidate, and turns the run into a verified
+# gate runs BEFORE any registry or repository mutation. A fresh
+# publication requires the candidate registry tags to be absent. When
+# the canary tag already exists, the gate requires the matching
+# prerelease, verifies the evidence against its sha256 asset and
+# schema, compares every candidate identity field, hashes the
+# published binaries, and confirms the recorded image index still
+# references the recorded digests — then turns the run into a verified
 # no-op. Any mismatch or partial prior publication fails closed for
 # maintainer investigation; nothing is ever replaced.
 name: Canary Publish
@@ -196,9 +199,27 @@ jobs:
         shell: bash -euo pipefail {0}
         run: |
           evidence="$RUNNER_TEMP/release-evidence/release-evidence.json"
+          registry_tag_absent() {
+            local out
+            if out="$(docker buildx imagetools inspect "docker.io/${DOCKER_IMAGE_NAME}:$1" 2>&1)"; then
+              return 1
+            fi
+            grep -qiE 'not found|manifest unknown|no such manifest|404' <<<"$out" && return 0
+            echo "::error::registry inspection for docker.io/${DOCKER_IMAGE_NAME}:$1 failed: $out"
+            exit 1
+          }
           if ! ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${CANDIDATE_TAG}" 2>/dev/null)"; then
+            # Fresh publication requires the registry to be clean too: a prior
+            # attempt that pushed images and died before the Git tag must not
+            # be silently overwritten.
+            for t in "$CANDIDATE_TAG" "${CANDIDATE_TAG}-amd64" "${CANDIDATE_TAG}-arm64"; do
+              registry_tag_absent "$t" || {
+                echo "::error::registry tag docker.io/${DOCKER_IMAGE_NAME}:${t} already exists without the Git tag ${CANDIDATE_TAG}. A prior publication is partial; investigate before rerunning."
+                exit 1
+              }
+            done
             echo "publish=true" >> "$GITHUB_OUTPUT"
-            echo "Tag ${CANDIDATE_TAG} does not exist; fresh publication."
+            echo "Tag ${CANDIDATE_TAG} does not exist and the registry is clean; fresh publication."
             exit 0
           fi
           object_sha="$(jq -r '.object.sha' <<<"$ref_json")"
@@ -227,11 +248,37 @@ jobs:
             exit 1
           }
           existing="$RUNNER_TEMP/existing-release/release-evidence.json"
+          gh release download "$CANDIDATE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'release-evidence.json.sha256' \
+            --pattern 'f1r3node-linux-*' \
+            --dir "$RUNNER_TEMP/existing-release" || {
+            echo "::error::Release ${CANDIDATE_TAG} is missing its checksum or binary assets; investigate before rerunning."
+            exit 1
+          }
+          (cd "$RUNNER_TEMP/existing-release" && \
+            awk '{print $1 "  release-evidence.json"}' release-evidence.json.sha256 | sha256sum -c -) || {
+            echo "::error::release-evidence.json does not match its published sha256 asset"
+            exit 1
+          }
+          ci-control/.github/scripts/release-evidence.sh validate "$existing"
+          jq -e '.publication_mode == "canary"' "$existing" >/dev/null || {
+            echo "::error::Existing evidence for ${CANDIDATE_TAG} is not in canary publication mode"
+            exit 1
+          }
           for probe in \
             '.source_sha' \
             '.candidate_tag' \
+            '.system_integration_sha' \
+            '.ci.run_id' \
+            '.ci.run_number' \
+            '.ci.run_attempt' \
             '.artifacts.linux_amd64.binary_sha256' \
-            '.artifacts.linux_arm64.binary_sha256'; do
+            '.artifacts.linux_arm64.binary_sha256' \
+            '.artifacts.linux_amd64.docker_archive_sha256' \
+            '.artifacts.linux_arm64.docker_archive_sha256' \
+            '.artifacts.linux_amd64.github_artifact_digest' \
+            '.artifacts.linux_arm64.github_artifact_digest'; do
             want="$(jq -r "$probe" "$evidence")"
             have="$(jq -r "$probe" "$existing")"
             if [ "$want" != "$have" ]; then
@@ -239,11 +286,35 @@ jobs:
               exit 1
             fi
           done
+          # The published binaries themselves must hash to the recorded values;
+          # a matching evidence document does not prove matching assets.
+          for arch in amd64 arm64; do
+            recorded="$(jq -r ".artifacts.linux_${arch}.binary_sha256" "$existing")"
+            actual="$(sha256sum "$RUNNER_TEMP/existing-release/f1r3node-linux-${arch}" | awk '{print $1}')"
+            if [ "$recorded" != "$actual" ]; then
+              echo "::error::Published binary f1r3node-linux-${arch} hashes to ${actual}, evidence records ${recorded}"
+              exit 1
+            fi
+          done
+          # The recorded image index must still resolve and reference the
+          # recorded architecture digests.
+          index_ref="$(jq -r '.images.docker_hub' "$existing")"
+          docker buildx imagetools inspect "$index_ref" --raw > "$RUNNER_TEMP/existing-index.json" || {
+            echo "::error::Recorded image index ${index_ref} does not resolve"
+            exit 1
+          }
+          for arch in amd64 arm64; do
+            d="$(jq -r ".images.linux_${arch}_digest" "$existing")"
+            jq -e --arg d "$d" '[.manifests[].digest] | index($d) != null' "$RUNNER_TEMP/existing-index.json" >/dev/null || {
+              echo "::error::Recorded index ${index_ref} does not reference the ${arch} digest ${d}"
+              exit 1
+            }
+          done
           echo "publish=false" >> "$GITHUB_OUTPUT"
           {
             echo "### Canary rerun verified"
             echo
-            echo "Tag, prerelease, and evidence for ${CANDIDATE_TAG} already exist and match this candidate. Nothing was replaced."
+            echo "Tag, prerelease, evidence, binary hashes, and image digests for ${CANDIDATE_TAG} already exist and match this candidate. Nothing was replaced."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Log in to Docker Hub

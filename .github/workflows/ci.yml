@@ -247,7 +247,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Link Checker
-        uses: lycheeverse/lychee-action@v2
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8
         with:
           # Scope: local file links plus repository-hosting URLs only.
           # The broad exclude drops every http(s) URL; the includes add

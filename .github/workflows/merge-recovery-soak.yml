@@ -731,18 +731,23 @@ jobs:
     if: needs.schedule_gate.outputs.should_run == 'true' && needs.schedule_gate.outputs.kind == 'weekend'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Advisory at the job level too: an infrastructure failure inside this
+    # job (checkout, jq, artifact upload) must not turn the workflow
+    # conclusion red. The soak email treats a missing result artifact as
+    # "sweep did not run", never as a soak failure.
+    continue-on-error: true
     permissions:
       contents: read
     steps:
       - name: Checkout soak target
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           ref: ${{ needs.schedule_gate.outputs.target_sha }}
           persist-credentials: false
 
       - name: Sweep external documentation links
         id: sweep
-        uses: lycheeverse/lychee-action@v2
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8
         with:
           args: >-
             --no-progress
@@ -780,7 +785,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload sweep artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: docs-link-sweep
           path: |
@@ -1798,7 +1803,7 @@ jobs:
       - name: Fetch docs link sweep result (advisory)
         if: always() && needs.schedule_gate.outputs.kind == 'weekend'
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: docs-link-sweep
           path: /tmp/merge-recovery-soak/link-sweep
