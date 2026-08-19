@@ -197,7 +197,7 @@ pub fn new(
             history_repository.clone(),
             block_hash.clone(),
             block_number,
-            &deploy_windows,
+            deploy_windows.clone(),
         )
         .map_err(|e| CasperError::HistoryError(e))?;
         deploy_chain_indices.push(chain_index);

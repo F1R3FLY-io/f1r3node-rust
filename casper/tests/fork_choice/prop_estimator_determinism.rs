@@ -105,6 +105,7 @@ fn create_test_block(
         None,
         None,
         invalid,
+        None,
     )
 }
 

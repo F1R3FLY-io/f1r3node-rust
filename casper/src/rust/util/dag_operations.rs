@@ -1,7 +1,7 @@
 // See casper/src/main/scala/coop/rchain/casper/util/DagOperations.scala
 
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use models::rust::block_hash::BlockHash;
@@ -9,23 +9,6 @@ use models::rust::block_metadata::BlockMetadata;
 use shared::rust::store::key_value_store::KvStoreError;
 
 pub struct DagOperations;
-
-// Wrapper for BlockMetadata to implement ordering for BinaryHeap
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct OrderedBlockMetadata(BlockMetadata);
-
-impl PartialOrd for OrderedBlockMetadata {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
-}
-
-impl Ord for OrderedBlockMetadata {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // BinaryHeap in Rust is a max-heap and we want highest block_number first (like Scala PriorityQueue)
-        // Scala uses BlockMetadata.orderingByNum, which orders by block_number, then by block_hash
-        // Since BinaryHeap is max-heap and we want max block_number first, use direct ordering
-        BlockMetadata::ordering_by_num(&self.0, &other.0)
-    }
-}
 
 // Wrapper for BlockMetadata with reverse ordering for BTreeSet
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,106 +41,18 @@ impl DagOperations {
         Ok(metadata)
     }
 
-    /// Determines the ancestors to a set of blocks which are not common to all
-    /// blocks in the set. Each starting block is assigned an index (hence the
-    /// usage of slice with indices) and this is used to refer to that block in the result.
-    /// A block B is an ancestor of a starting block with index i if the BitSet for
-    /// B contains i.
-    ///
-    /// The `blocks` parameter is a slice of blocks to determine uncommon ancestors of.
-    /// The `dag` parameter provides the DAG representation for traversing parent relationships.
-    ///
-    /// Returns a map from uncommon ancestor blocks to BitSets, where a block B is
-    /// an ancestor of starting block with index i if B's BitSet contains i.
-    pub async fn uncommon_ancestors(
-        blocks: &[BlockMetadata],
-        dag: &KeyValueDagRepresentation,
-    ) -> Result<HashMap<BlockMetadata, HashSet<u8>>, KvStoreError> {
-        let common_set: HashSet<u8> = (0..blocks.len()).map(|i| i as u8).collect();
-
-        async fn parents(
-            b: &BlockMetadata,
-            dag: &KeyValueDagRepresentation,
-        ) -> Result<Vec<BlockMetadata>, KvStoreError> {
-            b.parents
-                .iter()
-                .map(|b| dag.lookup_unsafe(b))
-                .collect::<Result<Vec<_>, _>>()
-        }
-
-        fn is_common(set: &HashSet<u8>, common_set: &HashSet<u8>) -> bool { set == common_set }
-
-        let init_map: HashMap<BlockMetadata, HashSet<u8>> = blocks
-            .iter()
-            .enumerate()
-            .map(|(i, b)| {
-                let mut set = HashSet::new();
-                set.insert(i as u8);
-                (b.clone(), set)
-            })
-            .collect();
-
-        let mut q = BinaryHeap::new();
-        for block in blocks {
-            q.push(OrderedBlockMetadata(block.clone()));
-        }
-
-        let mut curr_map = init_map;
-        let mut enqueued: HashSet<BlockMetadata> = HashSet::new();
-        let mut uncommon_enqueued: HashSet<BlockMetadata> = blocks.iter().cloned().collect();
-
-        while !uncommon_enqueued.is_empty() {
-            let curr_block = q.pop().ok_or_else(|| {
-                KvStoreError::InvalidArgument(
-                    "Priority queue became empty during uncommon ancestor traversal".to_string(),
-                )
-            })?;
-            let curr_block = curr_block.0;
-
-            // Note: Instead of BitSet in Rust and union function from models/util.rs,
-            // We have used HashSets<u8> and extend function which provides the correct set semantic that match the original Scala BitSet behavior,
-            // while the current BitSet implementation and union functions in the Rust side is designed for different use cases (bitwise operations, not set operations).
-            let curr_set = curr_map.get(&curr_block).cloned().unwrap_or_default();
-            let curr_parents = parents(&curr_block, dag).await?;
-
-            enqueued.remove(&curr_block);
-            uncommon_enqueued.remove(&curr_block);
-
-            for p in curr_parents {
-                if !enqueued.contains(&p) {
-                    q.push(OrderedBlockMetadata(p.clone()));
-                }
-
-                let mut p_set = curr_map.get(&p).cloned().unwrap_or_default();
-                p_set.extend(curr_set.iter().copied());
-
-                if is_common(&p_set, &common_set) {
-                    uncommon_enqueued.remove(&p);
-                } else {
-                    uncommon_enqueued.insert(p.clone());
-                }
-
-                curr_map.insert(p.clone(), p_set);
-                enqueued.insert(p);
-            }
-
-            if is_common(&curr_set, &common_set) {
-                curr_map.remove(&curr_block);
-            }
-        }
-
-        Ok(curr_map
-            .into_iter()
-            .filter(|(_, set)| !is_common(set, &common_set))
-            .collect())
-    }
-
     /// Conceptually, the LUCA is the lowest point at which the histories of b1 and b2 diverge.
     /// We compute by finding the first block that is the "lowest" (has highest blocknum) block common
     /// for both blocks' ancestors.
+    /// `floor` is the oldest block the DAG is guaranteed to hold — the node's
+    /// approved block. A DAG restored from LFS is truncated below it, so a
+    /// walk that descends past it asks for parents that were never downloaded.
+    /// Nothing below the approved block can be an answer anyway: it is
+    /// finalized, so no fork under it is live.
     pub async fn lowest_universal_common_ancestor_many(
         blocks: &[BlockMetadata],
         dag: &KeyValueDagRepresentation,
+        floor: &BlockMetadata,
     ) -> Result<BlockMetadata, KvStoreError> {
         if blocks.is_empty() {
             return Err(KvStoreError::InvalidArgument(
@@ -192,6 +87,18 @@ impl DagOperations {
                 current.iter().skip(1).cloned(),
             );
 
+            // The head is the highest remaining block, so once it is down to the
+            // floor everything else is too and no further descent can raise the
+            // answer. Checked BEFORE expanding, so a parent below the floor is
+            // never read — that is the parent a truncated DAG does not hold.
+            // The floor need not be an ancestor of an input that was itself below
+            // it: such an input is under finality and carries no fork-choice
+            // weight, and callers use this result as the bound of the region they
+            // score, not as a proven ancestor.
+            if head.block_number <= floor.block_number {
+                return Ok(floor.clone());
+            }
+
             let mut next: BTreeSet<ReverseOrderedBlockMetadata> = tail.collect();
 
             for parent_hash in &head.parents {
@@ -215,11 +122,12 @@ impl DagOperations {
         b1: &BlockMetadata,
         b2: &BlockMetadata,
         dag: &KeyValueDagRepresentation,
+        floor: &BlockMetadata,
     ) -> Result<BlockMetadata, KvStoreError> {
         if b1 == b2 {
             return Ok(b1.clone());
         }
 
-        Self::lowest_universal_common_ancestor_many(&[b1.clone(), b2.clone()], dag).await
+        Self::lowest_universal_common_ancestor_many(&[b1.clone(), b2.clone()], dag, floor).await
     }
 }

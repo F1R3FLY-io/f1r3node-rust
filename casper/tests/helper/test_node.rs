@@ -1050,6 +1050,7 @@ impl TestNode {
             tle.clone(),
             connections_cell.clone(),
             rp_conf.clone(),
+            None,
         );
 
         let block_processor = BlockProcessor::new(bp_dependencies);
@@ -1074,6 +1075,7 @@ impl TestNode {
                 block: genesis.clone(),
                 required_sigs: 0,
             },
+            floor_seed: None,
             sigs: vec![],
         };
         let last_approved_block = Arc::new(Mutex::new(Some(_approved_block.clone())));
@@ -1118,6 +1120,9 @@ impl TestNode {
             block_dag_storage: block_dag_storage.clone(),
             deploy_storage: deploy_storage.clone(),
             rejected_deploy_buffer: rejected_deploy_buffer.clone(),
+            deploy_lifecycle: Arc::new(
+                casper::rust::finality::deploy_lifecycle::DeployLifecycle::default(),
+            ),
             casper_buffer_storage: casper_buffer_storage.clone(),
             validator_id: validator_id_opt.clone(),
             casper_shard_conf: shard_conf,
@@ -1176,6 +1181,7 @@ impl TestNode {
                 casper_shard_conf: casper.casper_shard_conf.clone(),
                 heartbeat_signal_ref: casper.heartbeat_signal_ref.clone(),
             }),
+            None,
         );
         engine_cell.set(Arc::new(running_engine)).await;
 

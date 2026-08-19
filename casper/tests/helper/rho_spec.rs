@@ -313,73 +313,91 @@ pub async fn get_results(
     genesis_parameters: GenesisParameters,
     test_result_collector: Arc<TestResultCollector>,
 ) -> Result<TestResult, InterpreterError> {
-    let mut genesis_builder = GenesisBuilder::new();
-    let genesis = genesis_builder
-        .build_genesis_with_parameters(Some(genesis_parameters))
-        .await
-        .map_err(|e| {
-            InterpreterError::BugFoundError(format!("Failed to build genesis: {:?}", e))
-        })?;
+    // The WHOLE pipeline runs under the execution bound, with a live phase
+    // label folded into the timeout error. The bound must cover genesis
+    // build and runtime setup, not just the test-source eval: a wedge in an
+    // untimed phase is an unbounded hang, and the observed intermittent
+    // wedge (all workers parked, zero runnable tasks — see the flake-hunt
+    // wedge samples) must always surface as a bounded, phase-named failure.
+    let phase = Arc::new(std::sync::Mutex::new("genesis-build"));
+    let phase_in_body = phase.clone();
+    let set_phase = move |name: &'static str| {
+        *phase_in_body
+            .lock()
+            .expect("phase label mutex is never poisoned") = name;
+    };
 
-    // Run the suite against the GENESIS post-state (registry, ListOps, PoS, vaults, …), not a
-    // fresh empty scope. Otherwise the RhoSpec framework — whose `testSuite` contracts are gated
-    // on `rho:lang:listOps` (RhoSpecContract.rho) — never installs, no assertions are collected,
-    // and every genesis spec passes VACUOUSLY. Open the same shared RSpace scope genesis was
-    // written into and reset the runtime to the genesis root below.
-    let mut kvs_manager = mk_test_rnode_store_manager_shared(genesis.rspace_scope_id.clone());
-    let r_store = kvs_manager.r_space_stores().await.map_err(|e| {
-        InterpreterError::BugFoundError(format!("Failed to create RSpaceStore: {}", e))
-    })?;
+    let body =
+        async {
+            let mut genesis_builder = GenesisBuilder::new();
+            let genesis = genesis_builder
+                .build_genesis_with_parameters(Some(genesis_parameters))
+                .await
+                .map_err(|e| {
+                    InterpreterError::BugFoundError(format!("Failed to build genesis: {:?}", e))
+                })?;
 
-    // NOTE: In Scala, RSpacePlusPlus_RhoTypes.create() calls Rust via JNA, where Matcher
-    // is created automatically (see rspace++/libs/rspace_rhotypes/src/lib.rs).
-    // In pure Rust code (without JNA), we must create the Matcher explicitly here,
-    // as RSpace::create(stores, matcher) requires it as a parameter.
-    let matcher =
-        Arc::new(Box::new(Matcher)
-            as Box<
-                dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>,
-            >);
+            // Run the suite against the GENESIS post-state (registry, ListOps, PoS, vaults, …), not a
+            // fresh empty scope. Otherwise the RhoSpec framework — whose `testSuite` contracts are gated
+            // on `rho:lang:listOps` (RhoSpecContract.rho) — never installs, no assertions are collected,
+            // and every genesis spec passes VACUOUSLY. Open the same shared RSpace scope genesis was
+            // written into and reset the runtime to the genesis root below.
+            set_phase("store-open");
+            let mut kvs_manager =
+                mk_test_rnode_store_manager_shared(genesis.rspace_scope_id.clone());
+            let r_store = kvs_manager.r_space_stores().await.map_err(|e| {
+                InterpreterError::BugFoundError(format!("Failed to create RSpaceStore: {}", e))
+            })?;
 
-    let mut additional_system_processes = test_framework_contracts(test_result_collector.clone());
+            // NOTE: In Scala, RSpacePlusPlus_RhoTypes.create() calls Rust via JNA, where Matcher
+            // is created automatically (see rspace++/libs/rspace_rhotypes/src/lib.rs).
+            // In pure Rust code (without JNA), we must create the Matcher explicitly here,
+            // as RSpace::create(stores, matcher) requires it as a parameter.
+            let matcher = Arc::new(Box::new(Matcher)
+                as Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>);
 
-    let mut runtime = create_runtime_from_kv_store(
-        r_store,
-        std::sync::Arc::new(Genesis::default_mergeable_tags()),
-        true,
-        &mut additional_system_processes,
-        matcher,
-        rholang::rust::interpreter::external_services::ExternalServices::noop(),
-    )
-    .await;
+            let mut additional_system_processes =
+                test_framework_contracts(test_result_collector.clone());
 
-    // Position the runtime at the genesis post-state so the standard library / registry
-    // (rho:lang:listOps, rho:system:pos, rho:vault:*, …) resolve for the test suite.
-    runtime
-        .reset(&Blake2b256Hash::from_bytes_prost(
-            &genesis.genesis_block.body.state.post_state_hash,
-        ))
-        .await?;
+            set_phase("runtime-create");
+            let mut runtime = create_runtime_from_kv_store(
+                r_store,
+                std::sync::Arc::new(Genesis::default_mergeable_tags()),
+                true,
+                &mut additional_system_processes,
+                matcher,
+                rholang::rust::interpreter::external_services::ExternalServices::noop(),
+            )
+            .await;
 
-    println!("Starting tests from {}", test_object.path);
+            // Position the runtime at the genesis post-state so the standard library / registry
+            // (rho:lang:listOps, rho:system:pos, rho:vault:*, …) resolve for the test suite.
+            set_phase("genesis-reset");
+            runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(
+                    &genesis.genesis_block.body.state.post_state_hash,
+                ))
+                .await?;
 
-    let runtime = setup_runtime(runtime, other_libs).await?;
+            println!("Starting tests from {}", test_object.path);
 
-    let rand = Blake2b512Random::create_from_length(128).split_short(1);
+            set_phase("rhospec-install");
+            let runtime = setup_runtime(runtime, other_libs).await?;
 
-    // Note: tokio::time::timeout similar to Scala's `monix.eval.Task.timeout()`.
-    // If test execution takes longer than `execution_timeout`, it returns a timeout error.
-    match tokio::time::timeout(
-        execution_timeout,
-        TestUtil::eval_source(test_object, &runtime, rand),
-    )
-    .await
-    {
+            let rand = Blake2b512Random::create_from_length(128).split_short(1);
+
+            set_phase("eval-test-source");
+            TestUtil::eval_source(test_object, &runtime, rand).await
+        };
+
+    match tokio::time::timeout(execution_timeout, body).await {
         Ok(result) => result?,
         Err(_) => {
             return Err(InterpreterError::BugFoundError(format!(
-                "Timeout of {:?} expired while executing test from {}",
-                execution_timeout, test_object.path
+                "Timeout of {:?} expired in phase '{}' while executing test from {}",
+                execution_timeout,
+                phase.lock().expect("phase label mutex is never poisoned"),
+                test_object.path
             )))
         }
     }

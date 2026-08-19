@@ -354,9 +354,46 @@ impl Validate {
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-validation");
+        // Fill the floor slot here — the first consumer (the retry gate
+        // reads the block's frozen floor). Only deploy-carrying blocks pay
+        // the derivation; a derivation failure surfaces at this step as the
+        // same BlockException class every step's storage failure uses.
+        if floor_ctx_slot.is_none()
+            && !block.body.deploys.is_empty()
+            && !block.header.parents_hash_list.is_empty()
+        {
+            let latest_messages: BTreeMap<Validator, BlockHash> = block
+                .justifications
+                .iter()
+                .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+                .collect();
+            match crate::rust::finality::floor_context::FloorContext::derive(
+                &s.dag,
+                block_store,
+                &block.header.parents_hash_list,
+                &latest_messages,
+                crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                    s.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
+                ),
+            )
+            .await
+            {
+                Ok(ctx) => *floor_ctx_slot = Some(ctx),
+                // A derivation that needed history this node lacks is not a
+                // verdict on the block; `from_validation_error` keeps it out of
+                // the exception class that becomes a slashable InvalidTransaction.
+                Err(ex) => return Either::Left(BlockError::from_validation_error(ex)),
+            }
+        }
         match __step!(
             BLOCK_VALIDATION_REPEAT_DEPLOY_TIME_METRIC,
-            Self::repeat_deploy(block, s, block_store, expiration_threshold)
+            Self::repeat_deploy(
+                block,
+                s,
+                block_store,
+                expiration_threshold,
+                floor_ctx_slot.as_ref()
+            )
         ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
@@ -405,7 +442,9 @@ impl Validate {
                     Ok(Some(parent_block)) => parent_block,
                     Ok(None) => return Either::Left(BlockError::MissingBlocks),
                     Err(err) => {
-                        return Either::Left(BlockError::BlockException(CasperError::from(err)));
+                        return Either::Left(BlockError::from_validation_error(CasperError::from(
+                            err,
+                        )));
                     }
                 };
                 for bond in &parent_block.body.state.bonds {
@@ -471,7 +510,7 @@ impl Validate {
             {
                 Ok(ctx) => *floor_ctx_slot = Some(ctx),
                 Err(ex) => {
-                    return Either::Left(BlockError::from_floor_context_error(ex));
+                    return Either::Left(BlockError::from_validation_error(ex));
                 }
             }
         }
@@ -541,21 +580,24 @@ impl Validate {
     /// Validate no deploy with the same sig has been produced in the chain
     /// Agnostic of non-parent justifications.
     ///
-    /// Recovery exemption: a sig whose LATEST canonical disposition within
-    /// the BLOCK'S OWN parent scope is a merge rejection is a legitimate
-    /// recovery re-inclusion — the rejected-deploy buffer pipeline
-    /// re-proposes such deploys so their effects can land in canonical
-    /// state. Without this exemption, every recovery-path block would fail
-    /// `InvalidRepeatDeploy`.
+    /// Recovery exemption, GATED on the block's frozen floor: a sig whose
+    /// LATEST canonical disposition within the BLOCK'S OWN parent scope is
+    /// a merge rejection is a legitimate recovery re-inclusion — but only
+    /// once the retry gate opens (`FloorContext::retry_gate_open`: the
+    /// latest kept rejection is settled in the block's floor closure).
+    /// Re-inclusion against a live contest is `PrematureDeployRetry` —
+    /// non-slashable, never admitted — because ungated re-proposal
+    /// regenerated same-sig sibling copies faster than merges could
+    /// adjudicate them and livelocked the shard under sustained contention.
     ///
-    /// The exemption is a PURE FUNCTION OF THE BLOCK (its parents and the
-    /// disposition records in their ancestry), never of the validating
-    /// node's live view. An earlier version gated it on the sig's LOCAL
-    /// finalization status (`deploy_finalization_status::resolve`) and the
-    /// validator's own `rejected_in_scope` snapshot set — both node-local:
-    /// two honest validators whose finalization progress differed by one
-    /// step returned opposite verdicts for the same block, forking the
-    /// network (the roaming `InvalidRepeatDeploy` Heavy Pipeline failures).
+    /// The exemption is a PURE FUNCTION OF THE BLOCK (its parents, the
+    /// disposition records in their ancestry, and its justification-derived
+    /// floor), never of the validating node's live view. An earlier version
+    /// gated it on the sig's LOCAL finalization status and the validator's
+    /// own `rejected_in_scope` snapshot set — both node-local: two honest
+    /// validators whose finalization progress differed by one step returned
+    /// opposite verdicts for the same block, forking the network (the
+    /// roaming `InvalidRepeatDeploy` Heavy Pipeline failures).
     ///
     /// The double-execution defense is preserved deterministically: if a
     /// re-inclusion already WON above the rejection in the block's parent
@@ -565,48 +607,19 @@ impl Validate {
     /// scope must NOT poison this block: judged in its own context the
     /// re-inclusion is legal recovery, and the eventual merge's keep-one
     /// dedup reconciles the duplicate.
+    ///
+    /// `floor_ctx` is the operation's derivation context; `None` (the
+    /// parentless shape, where no records are visible and no floor is
+    /// derivable) grants no exemption at all — every sig goes through the
+    /// ancestor scan unchanged.
     pub fn repeat_deploy(
         block: &BlockMessage,
         s: &mut CasperSnapshot,
         block_store: &KeyValueBlockStore,
         expiration_threshold: i32,
+        floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
     ) -> ValidBlockProcessing {
         if block.body.deploys.is_empty() {
-            return Either::Right(ValidBlock::Valid);
-        }
-
-        // Fast path on the persistent deploy index. `insert_internal` writes
-        // every deploy sig of every inserted block (valid, invalid and
-        // approved alike) into `deploy_index` before any child of that block
-        // can be validated, so a sig with no index entry has no prior
-        // inclusion anywhere — on any fork, inside or outside the expiration
-        // window — and cannot carry a canonical rejection either (rejected
-        // deploys were themselves carried by an inserted block). When none of
-        // this block's sigs are indexed, the parent-scope scan and the
-        // ancestor traversal below have nothing to find and are skipped —
-        // that traversal's cost grows with the in-window DAG (4ms -> 124ms
-        // per block within one soak iteration, run 31563121791), and fresh
-        // deploys are the overwhelmingly common case. Any hit falls through
-        // to the exact logic below, which stays the sole authority on
-        // whether a prior inclusion is canonical for THIS block's parent
-        // scope: the index is last-write-wins and single-valued, so it can
-        // never answer that question, only prove absence. An index read
-        // error also falls through — the fast path is an optimization,
-        // never a second opinion.
-        let any_sig_indexed = block.body.deploys.iter().any(|pd| {
-            match s.dag.lookup_by_deploy_id(&pd.deploy.sig.to_vec()) {
-                Ok(hit) => hit.is_some(),
-                Err(e) => {
-                    tracing::warn!(
-                        target: "f1r3fly.casper",
-                        "repeat-deploy fast path: deploy index lookup failed ({}); falling back to ancestor scan",
-                        e
-                    );
-                    true
-                }
-            }
-        });
-        if !any_sig_indexed {
             return Either::Right(ValidBlock::Valid);
         }
 
@@ -615,7 +628,7 @@ impl Validate {
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-get-parents");
         let init_parents = match proto_util::get_parents_metadata(&s.dag, &block_metadata) {
             Ok(parents) => parents,
-            Err(e) => return Either::Left(BlockError::BlockException(CasperError::from(e))),
+            Err(e) => return Either::Left(BlockError::from_validation_error(e)),
         };
 
         // Calculate max block number and earliest acceptable block number
@@ -623,25 +636,53 @@ impl Validate {
         let earliest_block_number = max_block_number + 1 - expiration_threshold as i64;
 
         // Latest canonical dispositions within the block's parent scope,
-        // over the same expiration window the ancestor scan uses. This is
-        // exactly the record the proposer's admission logic consults
-        // (`canonical_won_sigs` from its parents), so proposer and every
-        // validator evaluate the same predicate on the same inputs.
-        let canonical_rejected =
-            match crate::rust::util::rholang::interpreter_util::canonical_rejected_sigs(
-                block_store,
-                &block.header.parents_hash_list,
-                earliest_block_number,
-            ) {
+        // over the same expiration window the ancestor scan uses, from the
+        // operation's ONE record walk. The proposer's admission logic reads
+        // the same walk on its side, so proposer and every validator
+        // evaluate the same predicate on the same inputs.
+        let mut exempt: HashSet<Bytes> = HashSet::new();
+        if let Some(ctx) = floor_ctx {
+            let rejected = match ctx.rejected_sigs(block_store, earliest_block_number) {
                 Ok(sigs) => sigs,
-                Err(e) => return Either::Left(BlockError::BlockException(e)),
+                Err(e) => return Either::Left(BlockError::from_validation_error(e)),
             };
+            for pd in &block.body.deploys {
+                let sig = &pd.deploy.sig;
+                if !rejected.contains(sig) {
+                    continue;
+                }
+                match ctx.retry_gate_open(&s.dag, block_store, earliest_block_number, sig) {
+                    Ok(true) => {
+                        exempt.insert(sig.clone());
+                    }
+                    Ok(false) => {
+                        tracing::warn!(
+                            "{}",
+                            Self::ignore(
+                                block,
+                                &format!(
+                                    "deploy {} re-includes a rejected sig whose latest kept \
+                                     rejection is not settled in the block's floor (#{}) — \
+                                     premature retry",
+                                    hex::encode(&sig[..8.min(sig.len())]),
+                                    ctx.floor.block_number,
+                                )
+                            )
+                        );
+                        return Either::Left(BlockError::Invalid(
+                            InvalidBlock::PrematureDeployRetry,
+                        ));
+                    }
+                    Err(e) => return Either::Left(BlockError::from_validation_error(e)),
+                }
+            }
+        }
 
         let deploy_key_set: HashSet<Vec<u8>> = block
             .body
             .deploys
             .iter()
-            .filter(|pd| !canonical_rejected.contains(&pd.deploy.sig))
+            .filter(|pd| !exempt.contains(&pd.deploy.sig))
             .map(|pd| pd.deploy.sig.to_vec())
             .collect();
         if deploy_key_set.is_empty() {
@@ -649,7 +690,10 @@ impl Validate {
         }
 
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block");
-        let maybe_duplicated_block_metadata = dag_ops::bf_traverse_find(
+        // A failed expansion is not an empty one: swallowing it ends the scan
+        // early, and "found no duplicate" is then a statement about what could
+        // be read, not about the chain. That verdict admits the repeat.
+        let maybe_duplicated_block_metadata = match dag_ops::try_bf_traverse_find(
             init_parents,
             |block_metadata| {
                 proto_util::get_parent_metadatas_above_block_number(
@@ -657,12 +701,16 @@ impl Validate {
                     earliest_block_number,
                     &s.dag,
                 )
-                .unwrap_or_default()
             },
             |block_metadata| {
-                block_store.has_any_deploy_sig_unsafe(&block_metadata.block_hash, &deploy_key_set)
+                block_store
+                    .has_any_deploy_sig_strict(&block_metadata.block_hash, &deploy_key_set)
+                    .map_err(CasperError::from)
             },
-        );
+        ) {
+            Ok(found) => found,
+            Err(e) => return Either::Left(BlockError::from_validation_error(e)),
+        };
 
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block-log");
         let maybe_error = maybe_duplicated_block_metadata.map(|duplicated_block_metadata| {
@@ -690,7 +738,7 @@ impl Validate {
             block_hash_string,
             current_block_hash_string
           );
-          return BlockError::BlockException(CasperError::RuntimeError(format!(
+          return BlockError::from_validation_error(CasperError::RuntimeError(format!(
             "InvalidRepeatDeploy duplicate-deploy invariant violated: block {} indexed as duplicate-deploy carrier for current block {} contains no matching deploy",
             block_hash_string,
             current_block_hash_string,
@@ -729,7 +777,7 @@ impl Validate {
         let current_time = match SystemTime::now().duration_since(UNIX_EPOCH) {
             Ok(d) => d.as_millis() as i64,
             Err(e) => {
-                return Either::Left(BlockError::BlockException(CasperError::from(e)));
+                return Either::Left(BlockError::from_validation_error(CasperError::from(e)));
             }
         };
 
@@ -787,7 +835,7 @@ impl Validate {
             .collect::<Result<Vec<BlockMetadata>, KvStoreError>>()
         {
             Ok(parents) => parents,
-            Err(e) => return Either::Left(BlockError::BlockException(CasperError::from(e))),
+            Err(e) => return Either::Left(BlockError::from_validation_error(CasperError::from(e))),
         };
 
         let max_block_number = parents
@@ -921,7 +969,7 @@ impl Validate {
                 Some(justification) => match s.dag.lookup(&justification.latest_block_hash) {
                     Ok(Some(block_metadata)) => block_metadata.sequence_number as i64,
                     Ok(None) => {
-                        return Either::Left(BlockError::BlockException(CasperError::from(
+                        return Either::Left(BlockError::from_validation_error(CasperError::from(
                             KvStoreError::KeyNotFound(format!(
                                 "Latest block hash {} is missing from block dag store.",
                                 PrettyPrinter::build_string_bytes(&justification.latest_block_hash)
@@ -929,7 +977,9 @@ impl Validate {
                         )));
                     }
                     Err(e) => {
-                        return Either::Left(BlockError::BlockException(CasperError::from(e)));
+                        return Either::Left(BlockError::from_validation_error(CasperError::from(
+                            e,
+                        )));
                     }
                 },
                 None => -1,
@@ -1161,7 +1211,7 @@ impl Validate {
                 let prev_block_meta = match s.dag.lookup(&prev_block_hash) {
                     Ok(Some(meta)) => meta,
                     Ok(None) => {
-                        return Either::Left(BlockError::BlockException(CasperError::from(
+                        return Either::Left(BlockError::from_validation_error(CasperError::from(
                             KvStoreError::KeyNotFound(format!(
                                 "Previous block {} not found in DAG",
                                 PrettyPrinter::build_string_bytes(&prev_block_hash)
@@ -1169,7 +1219,9 @@ impl Validate {
                         )));
                     }
                     Err(e) => {
-                        return Either::Left(BlockError::BlockException(CasperError::from(e)));
+                        return Either::Left(BlockError::from_validation_error(CasperError::from(
+                            e,
+                        )));
                     }
                 };
 
@@ -1342,7 +1394,7 @@ impl Validate {
     ///   per `block_status::is_slashable` and the T-9.3 catch-all dispatcher.
     /// * any other `CasperError` (storage I/O, runtime, history) — the local
     ///   node experienced an infrastructure failure unrelated to the block
-    ///   author's behavior. Propagate as `BlockError::BlockException(e)`;
+    ///   author's behavior. Propagate as `BlockError::from_validation_error(e)`;
     ///   do NOT slash the block sender for a fault attributable to local
     ///   infrastructure. Bug-fix rationale: see
     ///   docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14.
@@ -1381,7 +1433,7 @@ impl Validate {
                     PrettyPrinter::build_string_bytes(&block.block_hash),
                     infra_err
                 );
-                Either::Left(BlockError::BlockException(infra_err))
+                Either::Left(BlockError::from_validation_error(infra_err))
             }
         }
     }
@@ -1457,13 +1509,17 @@ impl Validate {
                     let new_justification = match s.dag.lookup_unsafe(new_justification_hash) {
                         Ok(metadata) => metadata,
                         Err(e) => {
-                            return Either::Left(BlockError::BlockException(CasperError::from(e)))
+                            return Either::Left(BlockError::from_validation_error(
+                                CasperError::from(e),
+                            ))
                         }
                     };
                     let cur_justification = match s.dag.lookup_unsafe(cur_justification_hash) {
                         Ok(metadata) => metadata,
                         Err(e) => {
-                            return Either::Left(BlockError::BlockException(CasperError::from(e)))
+                            return Either::Left(BlockError::from_validation_error(
+                                CasperError::from(e),
+                            ))
                         }
                     };
 
@@ -1479,7 +1535,7 @@ impl Validate {
 
                 Either::Right(ValidBlock::Valid)
             }
-            Err(e) => Either::Left(BlockError::BlockException(CasperError::from(e))),
+            Err(e) => Either::Left(BlockError::from_validation_error(CasperError::from(e))),
         }
     }
 
@@ -1494,7 +1550,7 @@ impl Validate {
             match epoch_for_block_number(block.body.state.block_number, epoch_length) {
                 Ok(epoch) => epoch,
                 Err(error) => {
-                    return Either::Left(BlockError::BlockException(CasperError::from(
+                    return Either::Left(BlockError::from_validation_error(CasperError::from(
                         SlashAuthError::from(error),
                     )))
                 }
@@ -1527,7 +1583,9 @@ impl Validate {
                 Ok(Some(metadata)) => metadata,
                 Ok(None) => continue,
                 Err(error) => {
-                    return Either::Left(BlockError::BlockException(CasperError::from(error)))
+                    return Either::Left(BlockError::from_validation_error(CasperError::from(
+                        error,
+                    )))
                 }
             };
             let target_activation_epoch = (*target_activation_epoch).into();
@@ -1545,7 +1603,7 @@ impl Validate {
             ) {
                 Ok(authorized) => authorized,
                 Err(error) => {
-                    return Either::Left(BlockError::BlockException(CasperError::from(
+                    return Either::Left(BlockError::from_validation_error(CasperError::from(
                         SlashAuthError::from(error),
                     )))
                 }
@@ -1560,7 +1618,9 @@ impl Validate {
                 Ok(Some(metadata)) => metadata,
                 Ok(None) => continue,
                 Err(error) => {
-                    return Either::Left(BlockError::BlockException(CasperError::from(error)))
+                    return Either::Left(BlockError::from_validation_error(CasperError::from(
+                        error,
+                    )))
                 }
             };
             if !metadata.invalid {
@@ -1582,7 +1642,7 @@ impl Validate {
             ) {
                 Ok(required) => required,
                 Err(error) => {
-                    return Either::Left(BlockError::BlockException(CasperError::from(
+                    return Either::Left(BlockError::from_validation_error(CasperError::from(
                         SlashAuthError::from(error),
                     )))
                 }
@@ -1619,6 +1679,7 @@ impl Validate {
                     .collect();
                 let floor = match crate::rust::finality::floor::finalized_floor(
                     &snapshot.dag,
+                    block_store,
                     &parent_hashes,
                     &latest_messages,
                     crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
@@ -1633,7 +1694,7 @@ impl Validate {
                     Ok(floor) => floor,
                     Err(ex) => {
                         tracing::warn!("Failed to derive finalized floor for bonds cache: {}", ex);
-                        return Either::Left(BlockError::BlockException(ex));
+                        return Either::Left(BlockError::from_validation_error(ex));
                     }
                 };
                 let floor_block = match block_store.get(&floor.hash) {
@@ -1644,14 +1705,14 @@ impl Validate {
                             PrettyPrinter::build_string_bytes(&floor.hash)
                         ));
                         tracing::warn!("{}", err);
-                        return Either::Left(BlockError::BlockException(err));
+                        return Either::Left(BlockError::from_validation_error(err));
                     }
                     Err(ex) => {
                         tracing::warn!(
                             "Failed to read finalized-floor block for bonds cache: {}",
                             ex
                         );
-                        return Either::Left(BlockError::BlockException(ex.into()));
+                        return Either::Left(BlockError::from_validation_error(ex.into()));
                     }
                 };
                 proto_util::post_state_hash(&floor_block)
@@ -1683,7 +1744,7 @@ impl Validate {
             }
             Err(ex) => {
                 tracing::warn!("Failed to compute bonds from finalized-floor state: {}", ex);
-                Either::Left(BlockError::BlockException(ex))
+                Either::Left(BlockError::from_validation_error(ex))
             }
         }
     }
@@ -1717,7 +1778,7 @@ impl Validate {
             }
             Err(ex) => {
                 tracing::warn!("Failed to compute bonds from tuplespace hash: {}", ex);
-                Either::Left(BlockError::BlockException(ex))
+                Either::Left(BlockError::from_validation_error(ex))
             }
         }
     }
@@ -1776,6 +1837,7 @@ mod merge_recovery_validation_tests {
                 directly_finalized: false,
                 finalized: false,
                 fault_tolerance_value: 0.0,
+                merge_base: Bytes::new(),
             })
             .expect("metadata inserted");
     }
@@ -1815,6 +1877,8 @@ mod merge_recovery_validation_tests {
                 rejected_deploys: Vec::new(),
                 system_deploys,
                 extra_bytes: Bytes::new(),
+                applied_from_scope: Vec::new(),
+                merge_base: Bytes::new(),
             },
             justifications: vec![Justification {
                 validator: offender,

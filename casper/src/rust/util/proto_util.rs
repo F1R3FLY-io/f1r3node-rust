@@ -17,10 +17,11 @@ use models::rust::casper::protocol::casper_message::{
     ProcessedSystemDeploy, RejectedDeploy,
 };
 use models::rust::validator::Validator;
-use prost::bytes::Bytes;
 use rholang::rust::interpreter::deploy_parameters::DeployParameters;
 use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::ByteString;
+
+use crate::rust::errors::CasperError;
 
 pub fn get_main_chain_until_depth(
     block_store: &KeyValueBlockStore,
@@ -240,14 +241,26 @@ pub fn get_parents(block_store: &KeyValueBlockStore, block: &BlockMessage) -> Ve
         .collect()
 }
 
+/// The metadata of every parent, or [`CasperError::BlockNotHeld`] naming the
+/// first parent this node does not have.
+///
+/// A node restored from a sync anchor holds no history below it, so the walks
+/// that call this can legitimately reach a parent it will never have. That is a
+/// fact about the node, not about the block being validated, and it must stay
+/// distinguishable from a storage fault: the caller turns the latter into a
+/// slashable verdict against the block's proposer.
 pub fn get_parents_metadata(
     dag: &KeyValueDagRepresentation,
     block: &BlockMetadata,
-) -> Result<Vec<BlockMetadata>, KvStoreError> {
+) -> Result<Vec<BlockMetadata>, CasperError> {
     block
         .parents
         .iter()
-        .map(|parent| dag.lookup_unsafe(parent))
+        .map(|parent| {
+            dag.lookup(parent)
+                .map_err(CasperError::from)?
+                .ok_or_else(|| CasperError::BlockNotHeld(parent.clone()))
+        })
         .collect()
 }
 
@@ -255,7 +268,7 @@ pub fn get_parent_metadatas_above_block_number(
     block: &BlockMetadata,
     block_number: i64,
     dag: &KeyValueDagRepresentation,
-) -> Result<Vec<BlockMetadata>, KvStoreError> {
+) -> Result<Vec<BlockMetadata>, CasperError> {
     get_parents_metadata(dag, block).map(|parents| {
         parents
             .into_iter()
@@ -277,17 +290,6 @@ pub fn kept_rejected_records(block: &BlockMessage) -> impl Iterator<Item = &Reje
         .rejected_deploys
         .iter()
         .filter(|record| !record.duplicate)
-}
-
-pub fn mark_processed_rejections_duplicate(
-    rejected_deploys: &mut [RejectedDeploy],
-    processed_deploy_sigs: &HashSet<Bytes>,
-) {
-    for record in rejected_deploys {
-        if processed_deploy_sigs.contains(&record.sig) {
-            record.duplicate = true;
-        }
-    }
 }
 
 pub fn system_deploys(block: &BlockMessage) -> Vec<ProcessedSystemDeploy> {
@@ -657,6 +659,7 @@ mod fork_choice_b1_repro_tests {
             directly_finalized: false,
             finalized: false,
             fault_tolerance_value: 0.0,
+            merge_base: Bytes::new(),
         }
     }
 
@@ -688,11 +691,12 @@ mod fork_choice_b1_repro_tests {
             last_finalized_block_hash: Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index: Arc::new(PlRwLock::new(bms)),
-            deploy_index: Arc::new(PlRwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
-                InMemoryKeyValueStore::new(),
-            )))),
             floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            lifecycle: Arc::new(parking_lot::RwLock::new(
+                block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(
+                ),
+            )),
         }
     }
 

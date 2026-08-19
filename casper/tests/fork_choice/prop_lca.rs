@@ -131,6 +131,7 @@ async fn build_random_dag(
             None,
             None,
             None,
+            None,
         );
         hashes.push(block.block_hash.clone());
     }
@@ -171,6 +172,7 @@ async fn build_random_tree(
             block_dag_storage,
             vec![hashes[parent].clone()],
             &genesis,
+            None,
             None,
             None,
             None,
@@ -242,8 +244,9 @@ proptest! {
                 .map(|&i| dag.lookup_unsafe(&hashes[i]).expect("query metadata"))
                 .collect();
 
+            let genesis_meta = dag.lookup_unsafe(&hashes[0]).expect("genesis metadata");
             let luca_res =
-                DagOperations::lowest_universal_common_ancestor_many(&query_metas, &dag).await;
+                DagOperations::lowest_universal_common_ancestor_many(&query_metas, &dag, &genesis_meta).await;
             prop_assert!(
                 luca_res.is_ok(),
                 "LUCA fold must return cleanly on a well-formed non-empty query"
@@ -271,7 +274,8 @@ proptest! {
                 .map(|&i| dag.lookup_unsafe(&hashes[i]).expect("query metadata"))
                 .collect();
 
-            let luca = DagOperations::lowest_universal_common_ancestor_many(&query_metas, &dag)
+            let genesis_meta = dag.lookup_unsafe(&hashes[0]).expect("genesis metadata");
+            let luca = DagOperations::lowest_universal_common_ancestor_many(&query_metas, &dag, &genesis_meta)
                 .await
                 .expect("luca");
 
@@ -310,7 +314,8 @@ proptest! {
                 .map(|&i| dag.lookup_unsafe(&hashes[i]).expect("query metadata"))
                 .collect();
 
-            let luca = DagOperations::lowest_universal_common_ancestor_many(&query_metas, &dag)
+            let genesis_meta = dag.lookup_unsafe(&hashes[0]).expect("genesis metadata");
+            let luca = DagOperations::lowest_universal_common_ancestor_many(&query_metas, &dag, &genesis_meta)
                 .await
                 .expect("luca");
 
@@ -361,6 +366,7 @@ async fn lca_single_and_genesis_boundary() {
         let single = DagOperations::lowest_universal_common_ancestor_many(
             std::slice::from_ref(&genesis_meta),
             &dag,
+            &genesis_meta,
         )
         .await
         .expect("single luca");
@@ -370,16 +376,22 @@ async fn lca_single_and_genesis_boundary() {
         );
 
         // empty input => typed Err (the documented boundary of the fold).
-        let empty = DagOperations::lowest_universal_common_ancestor_many(&[], &dag).await;
+        let empty =
+            DagOperations::lowest_universal_common_ancestor_many(&[], &dag, &genesis_meta).await;
         assert!(
             empty.is_err(),
             "empty input must be a typed Err, not a panic"
         );
 
         // reflexive pairwise: lca(b, b) == b.
-        let reflexive = DagOperations::lowest_universal_common_ancestor(&b1_meta, &b1_meta, &dag)
-            .await
-            .expect("reflexive luca");
+        let reflexive = DagOperations::lowest_universal_common_ancestor(
+            &b1_meta,
+            &b1_meta,
+            &dag,
+            &genesis_meta,
+        )
+        .await
+        .expect("reflexive luca");
         assert_eq!(reflexive, b1_meta, "lca(b, b) must be b");
 
         // genesis is a universal ancestor (descends_from_root): ancestor of every node.

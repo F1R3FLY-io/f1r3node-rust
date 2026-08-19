@@ -45,7 +45,7 @@ env:
   # MUST be kept identical to .github/oci-validation.env (the Full OCI
   # Validation workflow sources that file) — bump both in the same commit,
   # via `just repin-system-integration <sha>`.
-  SYSTEM_INTEGRATION_REF: 22121713d8874ac84f94f4b3ddb30dda78fa7f88
+  SYSTEM_INTEGRATION_REF: fc56ecd3ea2c3d529870b6c1b001ae10f877fc61
   # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
   # install.sh checksum fails closed if the tag is ever moved; OCI_CLI_VERSION
   # pins what the installer pulls from PyPI (without it the installer floats to
@@ -332,7 +332,7 @@ jobs:
           private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
           permission-administration: write
 
-      - name: Launch 2 amd64 + 2 arm64 ephemeral runners
+      - name: Launch 4 amd64 + 2 arm64 ephemeral runners
         shell: bash -ex {0}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -343,13 +343,15 @@ jobs:
           cd system-integration/ci/oci-runners
           # Launch in parallel; each script exits as soon as the OCI launch
           # API call returns (the VM continues booting in the background and
-          # registers itself via cloud-init). 2 amd64 + 2 arm64 feeds the
-          # 4-job dual-provider matrix ({docker,subprocess} × {amd64,arm64}).
-          # Kept to one VM per matrix job: OCI daily instance-creation quota
-          # is shared tenancy-wide, and the previous 20-VM layout (5 identical
-          # slots per arch×provider) exhausted it under normal PR traffic.
+          # registers itself via cloud-init). Ephemeral runners serve exactly
+          # one job, so the count must equal the job count: 4 integration
+          # matrix jobs ({docker,subprocess} × {amd64,arm64}) plus the two
+          # amd64 ucc legs = 4 amd64 + 2 arm64. Kept to one VM per job: OCI
+          # daily instance-creation quota is shared tenancy-wide, and the
+          # previous 20-VM layout (5 identical slots per arch×provider)
+          # exhausted it under normal PR traffic.
           pids=()
-          for _ in $(seq 1 2); do ./launch-runner.sh amd64 & pids+=($!); done
+          for _ in $(seq 1 4); do ./launch-runner.sh amd64 & pids+=($!); done
           for _ in $(seq 1 2); do ./launch-runner.sh arm64 & pids+=($!); done
           failed=0
           for pid in "${pids[@]}"; do
@@ -361,7 +363,7 @@ jobs:
             echo "At least one OCI runner launch failed."
             exit 1
           fi
-          echo "All 4 ephemeral runner VMs submitted."
+          echo "All 6 ephemeral runner VMs submitted."
 
       - name: Remove OCI credentials
         if: always()
@@ -383,7 +385,7 @@ jobs:
     name: Integration Tests (${{ matrix.arch }}-${{ matrix.provider }})
     needs: [build_docker_image, launch_ephemeral_runners]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       contents: read
     strategy:
@@ -551,6 +553,120 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: integration-logs-${{ matrix.arch }}-${{ matrix.provider }}-run${{ github.run_id }}-attempt${{ github.run_attempt }}
+          path: system-integration/integration-tests/
+          retention-days: 7
+
+  # The user-contract-concurrency suite runs as its own job: its tests share
+  # one xdist group, so inside integration_tests they would serialize onto a
+  # single worker and put ~30-40 wall-clock minutes of convergence rounds on
+  # that job's critical path. Both legs run on amd64 — the faster runners for
+  # a wall-clock-bound suite — covering both providers with two runners,
+  # respecting the OCI daily instance-creation quota. The job name keeps the
+  # "Integration Tests (arch-" prefix so the per-arch aggregators in ci.yml /
+  # ci-fork-pr.yml count these legs without modification.
+  ucc_tests:
+    name: Integration Tests (${{ matrix.arch }}-${{ matrix.provider }}, ucc)
+    needs: [build_docker_image, launch_ephemeral_runners]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {
+              arch: amd64,
+              provider: docker,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  x64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: amd64,
+              provider: subprocess,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  x64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+    steps:
+      - name: Clone Repository
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
+          ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
+          persist-credentials: false
+          # Same fork-PR opt-in as integration_tests; the invariants script
+          # asserts the gating premises. Do not add secrets to this job.
+          allow-unsafe-pr-checkout: true
+
+      - name: Clone system-integration
+        uses: actions/checkout@v5
+        with:
+          repository: F1R3FLY-io/system-integration
+          ref: ${{ env.SYSTEM_INTEGRATION_REF }}
+          path: system-integration
+          persist-credentials: false
+
+      - name: Load Docker Image (from build_docker_image artifact)
+        uses: actions/download-artifact@v4
+        with:
+          name: artifacts-docker-${{ matrix.arch }}
+          path: /tmp
+
+      - name: Import Docker Image
+        shell: bash -ex {0}
+        run: |
+          zcat /tmp/rust-node-docker.tar.gz | docker image load
+          docker tag ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }} ${{ env.DOCKER_IMAGE_NAME }}:latest
+
+      - name: Extract rnode binary from image (subprocess provider only)
+        if: matrix.provider == 'subprocess'
+        shell: bash -ex {0}
+        run: |
+          docker create --name extract-rnode ${{ env.DOCKER_IMAGE_NAME }}:latest
+          docker cp extract-rnode:/opt/docker/bin/node /tmp/rnode
+          chmod +x /tmp/rnode
+          docker rm extract-rnode
+          /tmp/rnode --version 2>/dev/null || true
+          ldd /tmp/rnode
+
+      - name: Install system-integration dependencies
+        shell: bash -ex {0}
+        run: |
+          cd system-integration
+          poetry lock --no-update
+          poetry install --with integration
+
+      - name: Run UCC Suite (${{ matrix.provider }} provider)
+        shell: bash -ex {0}
+        env:
+          F1R3FLY_NODE_IMAGE: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          F1R3FLY_NODE_BINARY: /tmp/rnode
+          F1R3FLY_NODE_DEFAULTS_CONF: ${{ github.workspace }}/node/src/main/resources/defaults.conf
+        run: |
+          cd system-integration
+          poetry run pytest \
+            integration-tests/test/tests/custom/test_user_contract_concurrency.py \
+            --provider=${{ matrix.provider }} \
+            --rss-ceiling-mb 10000 \
+            -v --tb=short --instafail --timeout=1200
+
+      - name: Upload UCC Test Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ucc-logs-${{ matrix.arch }}-${{ matrix.provider }}-run${{ github.run_id }}-attempt${{ github.run_attempt }}
           path: system-integration/integration-tests/
           retention-days: 7
 

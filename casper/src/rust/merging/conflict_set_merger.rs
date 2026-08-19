@@ -126,6 +126,17 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
         HashMap<HashableSet<R>, HashableSet<HashableSet<R>>>,
         HistoryError,
     >,
+    // Chains whose effects are ALREADY in the state of the block being built
+    // on — its main parent's committed state. A merge may never adjudicate
+    // them away: dropping content the main parent already holds makes the
+    // block's state fail to contain its own spine ancestor's, which is exactly
+    // how a finalized candidate ends up with no live state holding it. Empty
+    // means "nothing pinned" and the selection is unconstrained.
+    //
+    // Both production call sites pass empty — the merge bases on the main
+    // parent, so its chains never enter the conflict set to begin with. This
+    // is exercised only by unit tests.
+    pinned: &HashSet<R>,
 ) -> Result<ResolvedConflicts<R>, HistoryError> {
     tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.ENTER",
         n_actual = actual_seq.len(), n_late = late_seq.len());
@@ -258,6 +269,65 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
             n_options = rejection_options_with_overflow.0.len(),
             option_branch_counts = ?option_branch_counts);
     }
+
+    // Drop any option that would adjudicate away pinned content BEFORE cost
+    // selection: cost is a phlo sum with no notion of provenance, so a main
+    // parent's chain is rejected whenever it happens to be the cheaper side of
+    // a conflict — which is how a block ends up with a state that omits
+    // content its own spine ancestor holds.
+    //
+    // This is a PREFERENCE, not a veto. Where a pinned-disjoint option exists
+    // it is taken; where none does, the merge still completes on the
+    // unconstrained selection (see below). Guaranteeing the invariant instead
+    // would mean refusing to build the block, and a certain propose wedge is
+    // the worse failure of the two.
+    //
+    // UNREACHABLE in production, including its error path: `pinned` is empty
+    // on both production call sites because the merge now bases on the main
+    // parent, which puts its chains in the base instead of the conflict set.
+    // A zero count of the `merge.incoherence` line THIS block emits is
+    // therefore vacuous. (The same target also carries `explain_merge_failure`,
+    // which IS live — read the message, not just the target.) The block is
+    // retained pending the decision to remove it; the tests below are its only
+    // remaining exercise.
+    let rejection_options_with_overflow = if pinned.is_empty() {
+        rejection_options_with_overflow
+    } else {
+        let admissible: HashSet<HashableSet<HashableSet<R>>> = rejection_options_with_overflow
+            .0
+            .iter()
+            .filter(|option| {
+                !option
+                    .0
+                    .iter()
+                    .any(|branch| branch.0.iter().any(|item| pinned.contains(item)))
+            })
+            .cloned()
+            .collect();
+        if admissible.is_empty() && !rejection_options_with_overflow.0.is_empty() {
+            // Two chains the main parent applied SEQUENTIALLY can read as
+            // conflicting when this merge re-applies them side by side from the
+            // floor — `conflicts` check #2 pairs a surviving produce with a
+            // surviving consume on the same channel without examining patterns,
+            // so a pair that never COMM'd in the main parent's own history
+            // still registers. Refusing the merge here would turn that into a
+            // propose wedge, which is a worse failure than the one pinning
+            // prevents. Fall back to the unconstrained selection and say so:
+            // the residual is a merge whose state may omit main-parent content,
+            // which the floor's containment guard still catches loudly.
+            tracing::error!(
+                target: "f1r3fly.merge.incoherence",
+                n_pinned = pinned.len(),
+                n_options = rejection_options_with_overflow.0.len(),
+                "no rejection option preserves every main-parent chain; falling back \
+                 to cost-optimal selection. Re-applying the main parent's chains from \
+                 the floor made them conflict with each other"
+            );
+            rejection_options_with_overflow
+        } else {
+            HashableSet(admissible)
+        }
+    };
 
     // Compute optimal rejection using cost function
     let optimal_rejection = get_optimal_rejection(rejection_options_with_overflow, |branch| {
@@ -697,6 +767,12 @@ pub fn merge<
         &get_data,
         &compute_branches,
         &compute_conflict_map,
+        // This wrapper has no main parent to speak of — it merges a bare chain
+        // set with no block context — so nothing is pinned. The node's merge
+        // path (`dag_merger::merge`) calls `resolve_conflicts` directly and
+        // passes an empty set too, for its own reason: its base IS the main
+        // parent, so that parent's chains are never candidates for rejection.
+        &HashSet::new(),
     )?;
     let new_state = compute_merged_state(
         &resolved,

@@ -224,6 +224,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
         HashMap::new(),
         None,
         None,
+        None,
     )
     .await
     .expect("compute R0 checkpoint");
@@ -277,6 +278,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
         HashMap::new(),
         None,
         None,
+        None,
     )
     .await
     .expect("compute R1 checkpoint");
@@ -326,6 +328,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
         &latest_messages,
         None,
         Some(&rejected_deploy_buffer),
+        None,
         None,
     )
     .await
