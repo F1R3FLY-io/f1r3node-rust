@@ -226,7 +226,7 @@ fn is_safe_to_delete(
     }
 
     for main_chain in main_chains {
-        if &main_chain.latest == block_hash {
+        if main_chain.latest == *block_hash {
             // Validator's latest is still this block
             return Ok(false);
         }
