@@ -281,11 +281,7 @@ async fn history_repository_should_not_allow_switching_to_a_not_existing_root() 
     // than a verdict.
     match repo.reset(&zeros_blake()) {
         Err(HistoryError::RootError(RootError::RootNotFound(root))) => {
-            assert_eq!(
-                root,
-                zeros_blake(),
-                "the error must name the exact root that was not found"
-            )
+            assert_eq!(root, zeros_blake(), "the error must name the exact root that was not found")
         }
         Ok(_) => assert!(false, "Expected a failure"),
         Err(other) => assert!(false, "Wrong error thrown: {:?}", other),
