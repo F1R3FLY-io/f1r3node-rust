@@ -50,7 +50,6 @@ use crate::rust::rholang::runtime::RuntimeOps;
 use crate::rust::util::rholang::replay_cache::{
     InMemoryReplayCache, ReplayCache, ReplayCacheEntry, ReplayCacheKey,
 };
-use crate::rust::util::rholang::state_hash_cache::StateHashCache;
 
 type MergeableStore = KeyValueTypedStoreImpl<ByteVector, Vec<DeployMergeableData>>;
 
@@ -214,7 +213,6 @@ pub struct RuntimeManager {
     /// Optional replay cache for delta replay optimization
     pub replay_cache: Option<Arc<InMemoryReplayCache>>,
     /// Optional state hash cache for skipping known replays
-    pub state_hash_cache: Option<Arc<StateHashCache>>,
     replay_lock: Arc<ReplayLock>,
     exploratory_deploy_semaphore: Arc<Semaphore>,
     exploratory_deploy_phlo_limit: i64,
@@ -278,7 +276,6 @@ impl RuntimeManager {
     const MAX_REPLAY_CACHE_ENTRIES: usize = 192;
     const MAX_REPLAY_CACHE_BYTES: usize = 32 * 1024 * 1024;
     const MAX_REPLAY_CACHE_EVENT_LOG_ENTRIES: usize = 1_536;
-    const MAX_STATE_HASH_CACHE_ENTRIES: usize = 0;
 
     fn collect_replay_logs(
         usr_processed: &[ProcessedDeploy],
@@ -401,8 +398,6 @@ impl RuntimeManager {
             .set(stats.1 as f64);
         stats
     }
-
-    fn max_state_hash_cache_entries() -> usize { Self::MAX_STATE_HASH_CACHE_ENTRIES }
 
     fn try_acquire_exploratory_deploy_permit_with(
         semaphore: Arc<Semaphore>,
@@ -572,12 +567,6 @@ impl RuntimeManager {
             }
         }
 
-        // Cache state hash mapping for skip-replay optimization
-        if let Some(ref cache) = self.state_hash_cache {
-            cache.put(start_hash.clone(), state_hash.clone());
-            tracing::debug!("[CACHE] Stored state hash mapping");
-        }
-
         Ok((state_hash, usr_processed, sys_processed))
     }
 
@@ -682,11 +671,6 @@ impl RuntimeManager {
             }
         }
 
-        // Cache state hash mapping for skip-replay optimization
-        if let Some(ref cache) = self.state_hash_cache {
-            cache.put(start_hash.clone(), state_hash.clone());
-            tracing::debug!("[CACHE] Stored state hash mapping");
-        }
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_cache_updates", rss_kb);
         }
@@ -747,73 +731,7 @@ impl RuntimeManager {
         let seq_num = block_data.seq_num;
         let replay_payload_hash = Self::replay_payload_hash(&terms, &system_deploys, is_genesis);
 
-        // Step 1: Check state-hash cache.
-        //
-        // IMPORTANT:
-        // `StateHashCache` is keyed only by pre-state, while mergeable channels are keyed by
-        // (post-state, creator, seq-num). Returning early here can skip writing mergeable data
-        // for a distinct block that shares the same pre-state, which later breaks
-        // parent-post-state/index reconstruction with "Missing mergeable entry ...".
-        //
-        // We only fast-return on cache hit if mergeable entry already exists for this block key.
-        // For empty blocks we can safely synthesize and persist an empty mergeable entry.
-        // Otherwise, fall through to full replay to materialize mergeable data.
-        if let Some(ref cache) = self.state_hash_cache {
-            if let Some(cached_post) = cache.get(start_hash) {
-                let mergeable_key = MergeableKey {
-                    state_hash: StateHashSerde(cached_post.clone()),
-                    creator: sender.bytes.clone(),
-                    seq_num,
-                };
-                let mergeable_key_encoded = bincode::serialize(&mergeable_key).map_err(|e| {
-                    CasperError::KvStoreError(KvStoreError::SerializationError(e.to_string()))
-                })?;
-
-                if self
-                    .mergeable_store
-                    .contains_key(mergeable_key_encoded.clone())?
-                {
-                    tracing::info!(
-                        "[CACHE] StateHashCache hit: mergeable entry present, skipping full replay"
-                    );
-                    return Ok(cached_post);
-                }
-
-                let no_user_deploys = terms.is_empty();
-                let no_system_deploys = system_deploys.is_empty();
-                if no_user_deploys && no_system_deploys {
-                    if cached_post != *start_hash {
-                        tracing::warn!(
-                            "[CACHE] StateHashCache hit mismatch for empty block (seq={}): pre_state != cached_post, forcing full replay",
-                            seq_num
-                        );
-                        // Continue to full replay path for validation.
-                    } else {
-                        let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);
-                        let post_state_hash = Blake2b256Hash::from_bytes_prost(&cached_post);
-                        self.save_mergeable_channels(
-                            post_state_hash,
-                            sender.bytes.clone(),
-                            seq_num,
-                            Vec::new(),
-                            &pre_state_hash,
-                        )?;
-                        tracing::warn!(
-                            "[CACHE] StateHashCache hit without mergeable entry for empty block (seq={}); synthesized empty mergeable metadata",
-                            seq_num
-                        );
-                        return Ok(cached_post);
-                    }
-                }
-
-                tracing::warn!(
-                    "[CACHE] StateHashCache hit without mergeable entry for seq={}; falling back to full replay",
-                    seq_num
-                );
-            }
-        }
-
-        // Step 2: Check replay cache (deterministic replay delta)
+        // Step 1: Check replay cache (deterministic replay delta)
         let replay_cache_key = ReplayCacheKey::new(
             start_hash.clone(),
             sender.bytes.to_vec(),
@@ -862,7 +780,7 @@ impl RuntimeManager {
             }
         }
 
-        // Step 3: Full replay (cache miss)
+        // Step 2: Full replay (cache miss)
         let _replay_permit = self
             .replay_lock
             .acquire_consensus()
@@ -904,11 +822,6 @@ impl RuntimeManager {
         .map_err(|e| {
             CasperError::RuntimeError(format!("Failed to save mergeable channels: {:?}", e))
         })?;
-
-        // Cache the result for future replays
-        if let Some(ref cache) = self.state_hash_cache {
-            cache.put(start_hash.clone(), post_state.clone());
-        }
 
         Ok(post_state)
     }
@@ -1478,7 +1391,6 @@ impl RuntimeManager {
         exploratory_deploy_config: ExploratoryDeployConfig,
     ) -> RuntimeManager {
         let replay_cache_size = Self::max_replay_cache_entries();
-        let state_hash_cache_size = Self::max_state_hash_cache_entries();
 
         RuntimeManager {
             space: rspace,
@@ -1500,8 +1412,6 @@ impl RuntimeManager {
                     Self::max_replay_cache_bytes(),
                 ))
             }),
-            state_hash_cache: (state_hash_cache_size > 0)
-                .then(|| Arc::new(StateHashCache::new(state_hash_cache_size))),
             replay_lock: Arc::new(ReplayLock::new()),
             exploratory_deploy_semaphore: Arc::new(Semaphore::new(
                 exploratory_deploy_config.max_concurrent,
