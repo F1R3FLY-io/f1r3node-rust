@@ -65,17 +65,33 @@ A Deployment Train is an independent release path that starts from a reviewed pu
 
 **Preferred usage.** Use this term for the complete independent release path. *Distinguish from* a CI job, workflow run, or branch.
 
+### 60h stability soak
+
+The 60h stability soak is the fixed 60-hour pre-promotion soak of one release candidate on a multi-validator shard. A passing run is a mandatory gate for [stable release](#stable-release) promotion.
+
+**Preferred usage.** Use this term for the pre-promotion release gate. *Avoid*: weekend soak. Machine identifiers keep the legacy values `weekend` and `weekend-60h` until a separate identifier migration. *Distinguish from* the [Dev integration soak](#dev-integration-soak): release gate versus integration monitoring.
+
+### Dev integration soak
+
+The dev integration soak is the scheduled variable-length soak of the `dev` integration branch. It publishes regression data and does not gate a release.
+
+**Preferred usage.** Use this term for the scheduled integration-branch soak. *Avoid*: daily soak. The machine series key keeps the legacy value `daily` until a separate identifier migration. *Distinguish from* the [60h stability soak](#60h-stability-soak): integration monitoring versus a release gate.
+
+### Shard soak-in
+
+A Shard soak-in is the post-promotion period in which a weekly [stable release](#stable-release) runs in a long-running quorum of shards. The Shard soak-in measures node behavior with the current quorum members, catches compatibility issues, and confirms that the new nodes stay up. Enrollment is scheduled for each stable release tag. The trigger is a stable release publication, which has passed the [60h stability soak](#60h-stability-soak) gate.
+
+**Preferred usage.** Use this term for post-promotion quorum trials. *Avoid*: Soak-in, without the Shard qualifier, in new prose. *Distinguish from* the [60h stability soak](#60h-stability-soak), which is a pre-promotion release gate on one candidate.
+
 ### Soak-in
 
-A Soak-in is the post-promotion period in which a weekly [stable release](#stable-release) runs in a long-running quorum of shards. The Soak-in measures node behavior with the current quorum members, catches compatibility issues, and confirms that the new nodes stay up.
-
-**Preferred usage.** Use this term for post-promotion quorum trials. *Distinguish from* the weekend soak, which is a pre-promotion release gate on one candidate.
+Deprecated name for the [Shard soak-in](#shard-soak-in).
 
 ### Anchor
 
-An Anchor is a node that completed its [Soak-in](#soak-in) period and holds full membership in the quorum of shards.
+An Anchor is a node that completed its [Shard soak-in](#shard-soak-in) period and holds full membership in the quorum of shards.
 
-**Preferred usage.** Use this term only after a completed Soak-in. *Distinguish from* a soaking node, which runs inside or adjacent to the quorum without the Anchor role.
+**Preferred usage.** Use this term only after a completed Shard soak-in. *Distinguish from* a soaking node, which runs inside or adjacent to the quorum without the Anchor role.
 
 ### Peak node RSS
 

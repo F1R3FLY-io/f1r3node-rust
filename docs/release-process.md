@@ -48,7 +48,7 @@ flowchart LR
     D --> E[Full OCI validation]
     D --> F[Slashing test suite]
     D --> G[Feature-specific gates]
-    D --> H[Weekend 60-hour soak]
+    D --> H[60h stability soak]
     E --> I{All exact-SHA gates pass}
     F --> I
     G --> I
@@ -62,7 +62,7 @@ flowchart LR
 
 A full CI run creates a canary only when the source version is release-eligible. Section 5 defines release eligibility.
 
-The 60-hour soak is the final stable-release gate. A successful soak starts automatic promotion when all other gates pass.
+The 60h stability soak is the final stable-release gate. A successful soak starts automatic promotion when all other gates pass.
 
 If another gate is incomplete, promotion enters a held state. Promotion resumes automatically after the missing gate passes.
 
@@ -217,8 +217,8 @@ The promotion controller evaluates gates against `source_sha` from the candidate
 | Slashing tests | Slashing workflow run | The exact-SHA required suite succeeds |
 | Full OCI validation | OCI validation evidence | The exact candidate image digest passes |
 | Integration preflight | Soak preflight status | The exact SHA succeeds |
-| Weekend soak | Soak artifact and workflow run | The exact candidate completes the full 60-hour profile |
-| Regression verdict | `verdict.json` | The weekend verdict is `pass` |
+| 60h stability soak | Soak artifact and workflow run | The exact candidate completes the full 60-hour profile |
+| Regression verdict | `verdict.json` | The `weekend`-series verdict is `pass` |
 | Feature gates | Train gate evidence | Every manifest gate succeeds |
 
 Optional and nightly slashing jobs do not block a release. The required slashing job catalog remains version-controlled.
@@ -242,9 +242,9 @@ OCI evidence records these values:
 - Trusted system-integration SHA
 - Required job conclusions
 
-## 10. Weekend soak
+## 10. 60h stability soak
 
-A release soak uses the existing `weekend-60h` profile.
+The 60h stability soak is the pre-promotion release soak. It uses the existing `weekend-60h` profile. Machine identifiers keep the legacy `weekend` values until a separate identifier migration.
 
 The release dispatch supplies these immutable values:
 
@@ -272,7 +272,7 @@ A dashboard latest verdict does not satisfy this gate. Promotion reads the exact
 
 ## 11. Stable promotion
 
-The promotion controller runs after a completed weekend soak. It can also run after another missing gate completes.
+The promotion controller runs after a completed 60h stability soak. It can also run after another missing gate completes.
 
 The controller performs these actions:
 
@@ -295,13 +295,15 @@ Promotion must not run `cargo build` or `docker build`.
 
 The stable release remains valid when `master` advances during the soak. Evidence follows the candidate SHA, not the branch tip.
 
-## 12. Soak-in shards
+## 12. Shard soak-in
 
-A Soak-in adds each weekly stable candidate to a long-running quorum of shards. "Soak-in" is the SRE-style term that already means "run it long enough to trust it."
+A Shard soak-in adds each weekly stable release to a long-running quorum of shards. "Soak-in" is the SRE-style term that already means "run it long enough to trust it."
 
 New stable nodes enter a soak period inside or adjacent to the quorum. The Soak-in measures how the new nodes behave with the current quorum members. The Soak-in catches compatibility issues and confirms that the new nodes stay up.
 
 A node becomes a true Anchor only after it completes the soak period. Until that point, the node holds no Anchor role in the quorum.
+
+Enrollment has its own schedule. Automation schedules one Shard soak-in for each stable release tag. The trigger is a stable release publication, which has passed the 60h stability soak gate.
 
 **Follow-on:** a future change will separate the Casper consensus into its own repository. The Soak-in quorum will then consume consensus releases from that repository.
 
@@ -445,7 +447,7 @@ Implementation adds or changes these components.
 | `.github/workflows/oci-validation.yml` | Add trusted exact-candidate dispatch mode |
 | `.github/workflows/reusable-oci-validation.yml` | Consume a candidate image digest without rebuilding |
 | `.github/workflows/deployment-train.yml` | Validate manifests and start independent trains |
-| `.github/workflows/soak-in.yml` | Enroll stable releases into the Soak-in quorum |
+| `.github/workflows/soak-in.yml` | Schedule and enroll stable releases into the Shard soak-in quorum |
 | `.github/scripts/release-evidence.sh` | Build and validate evidence documents |
 | `.github/scripts/release-gates.sh` | Validate exact-SHA gate runs |
 | `.github/scripts/promote-release.sh` | Perform idempotent artifact promotion |
@@ -476,7 +478,7 @@ Phase 1 disables automatic stable publication. A manual workflow generates evide
 ### Phase 3: Artifact-based validation
 
 1. Run Full OCI Validation from the canary digest.
-2. Run the weekend soak from the canary digest.
+2. Run the 60h stability soak from the canary digest.
 3. Publish exact commit checks and evidence.
 4. Compare artifact-based results with current workflows.
 
@@ -494,12 +496,12 @@ Phase 1 disables automatic stable publication. A manual workflow generates evide
 3. Run the cost-accounting train as the first publishing train.
 4. Document the completed train evidence.
 
-### Phase 6: Soak-in quorum
+### Phase 6: Shard soak-in quorum
 
 1. Stand up the long-running quorum of shards.
-2. Enroll each weekly stable release into the Soak-in.
+2. Schedule a Shard soak-in for each stable release tag after its publication.
 3. Promote soaked nodes to the Anchor role after the soak period.
-4. Document the Soak-in enrollment and Anchor promotion evidence.
+4. Document the Shard soak-in enrollment and Anchor promotion evidence.
 
 ## 19. Ratification checklist
 
@@ -517,4 +519,4 @@ Maintainers must ratify these decisions before stable automation is enabled.
 - [ ] Merge, squash, and rebase rules
 - [ ] Version reservation and ordering rules
 - [ ] First Deployment Train selection
-- [ ] Soak-in shard and Anchor promotion policy
+- [ ] Shard soak-in and Anchor promotion policy

@@ -1,9 +1,18 @@
 # Soak Benchmarks (EPIC-010)
 
-The 60-hour weekend merge-recovery soak (Friday 19:30 Pacific → Monday 07:30
-Pacific) produces week-over-week benchmark metrics instead of pass/fail only.
-The Mon–Thu 22h soaks run the same suite against `dev` but are not benchmark
-runs — see [Weekend vs daily](#weekend-vs-daily). Design history and decisions:
+The 60h stability soak (Friday 19:30 Pacific → Monday 07:30 Pacific) is the
+60-hour merge-recovery soak. It produces week-over-week benchmark metrics
+instead of pass/fail only. The Mon–Thu 22h dev integration soaks run the same
+suite against `dev` but are not benchmark runs — see
+[60h stability vs dev integration](#60h-stability-vs-dev-integration).
+
+Process names map to legacy machine identifiers, which stay unchanged until a
+separate identifier migration:
+
+| Process name | Legacy series key | Legacy profile value |
+|---|---|---|
+| 60h stability soak | `weekend` | `weekend-60h` |
+| Dev integration soak | `daily` | — | Design history and decisions:
 [work log](work-logs/task-EPIC-010-2026-07-15T20-57Z.md), story US-004 in
 [UserStories.md](UserStories.md).
 
@@ -15,7 +24,7 @@ distinct scopes:
 
 | Term | Meaning |
 |---|---|
-| **Run** | One scheduled or manually dispatched soak against one pinned node commit. Daily runs target `dev`. Weekend runs target `master`. The node image is built once and reused throughout the run. |
+| **Run** | One scheduled or manually dispatched soak against one pinned node commit. Dev integration runs target `dev`. 60h stability runs target `master`. The node image is built once and reused throughout the run. |
 | **Segment** | A wall-clock slice of the same run, used to publish checkpoints. Segments share state, output, counters, and iteration numbering. A new segment does not create a new run. |
 | **Iteration** | One invocation of the integration load test using a newly created six-node shard. It covers shard creation, health readiness, every load phase, finalization and convergence checks, telemetry collection, and teardown. |
 | **Phase** | One load level inside an iteration. All five phases run in order against the same shard. |
@@ -48,7 +57,7 @@ flowchart TD
     R -- "No" --> T["Count failure<br/>preserve logs and monitor evidence"]
     S --> U["Check signal, deadline,<br/>target movement and host guard"]
     T --> U
-    U --> V{"Weekend benchmark due?"}
+    U --> V{"Stability-soak benchmark due?"}
     V -- "No" --> B
     V -- "Yes" --> W["Run controlled-rate benchmark<br/>on a separate fresh local shard"]
     W --> B
@@ -110,7 +119,7 @@ these signals do not interrupt an active lifecycle. A segment deadline can stop
 an active pytest process. The driver records `deadline.txt` and exit code 124
 instead of a normal test failure.
 
-On weekend runs only, every fourth iteration is followed by a separate active
+On 60h stability runs only, every fourth iteration is followed by a separate active
 benchmark segment. This benchmark creates another fresh local shard and applies
 a fixed-rate workload. It records latency, throughput, finalization, and RSS
 measurements before it removes the shard. The benchmark is separate from the
@@ -132,8 +141,8 @@ in the system-integration repository.
 ## Where to look
 
 - **Trend dashboard** (charts, per-provider split, run links):
-  [Weekend](https://f1r3fly-io.github.io/f1r3node-rust/?series=weekend) and
-  [Daily](https://f1r3fly-io.github.io/f1r3node-rust/?series=daily) — each tab
+  [60h stability](https://f1r3fly-io.github.io/f1r3node-rust/?series=weekend) and
+  [Dev integration](https://f1r3fly-io.github.io/f1r3node-rust/?series=daily) — each tab
   shows its own verdict, and every chart title and image is directly linkable.
 - **Weekly email alert**: plain-text summary with the verdict and dashboard
   links, sent via OCI Notifications when the soak concludes.
@@ -167,8 +176,8 @@ in the system-integration repository.
 Both series publish to Pages, into separate files — `history.json` and
 `history-daily.json`, each with its own `latest-summary`, `latest-verdict`,
 `latest-report` and `badge-soak`. They are kept apart so the week-over-week
-regression gate never compares a variable-length daily against the fixed 60h
-weekend baseline. A Pages deploy replaces the whole site, so whichever soak
+regression gate never compares a variable-length dev integration run against
+the fixed 60h stability baseline. A Pages deploy replaces the whole site, so whichever soak
 publishes carries the other series forward untouched; a transient fetch failure
 aborts the deploy rather than publishing a site with a series missing.
 
@@ -243,9 +252,9 @@ the Docker LABEL and image tag, so a dashboard row can be matched to a pulled
 image. Runs that predate version recording show a dash; history is never
 backfilled.
 
-## Weekend vs daily
+## 60h stability vs dev integration
 
-| | Weekend | Daily |
+| | 60h stability soak | Dev integration soak |
 |---|---|---|
 | Window | Fri 19:30 → Mon 07:30 Pacific | Mon–Thu 19:30 Pacific |
 | Duration | 60h, fixed | up to 22h, variable |
@@ -257,30 +266,31 @@ backfilled.
 | Regression verdict | fails the run | published, warns only |
 | Restart on infrastructure failure | within the window, once | within the window, once |
 
-A daily regression is published and shown on the dashboard's Daily tab but does
-not fail the workflow. Daily spans vary — they stop early once `dev` advances —
+A dev integration regression is published and shown on the dashboard's dev
+integration (`daily`) tab but does not fail the workflow. Dev integration spans
+vary — they stop early once `dev` advances —
 so a run-over-run delta can reflect a shorter run rather than a real regression,
 and failing on that would train people to ignore a red soak.
 
-The weekend soak is exempt from the skip and the early exit because its numbers
-are the week-over-week baseline, and those are only comparable if every run
-covers an identical span. The dailies trade that comparability for catching
-regressions sooner.
+The 60h stability soak is exempt from the skip and the early exit because its
+numbers are the week-over-week baseline, and those are only comparable if every
+run covers an identical span. The dev integration runs trade that comparability
+for catching regressions sooner.
 
 ## Mid-run checkpoints
 
-A soak publishes when it finishes, which for a 22h nightly means no visibility
-until the following afternoon, and for a 60h weekend means two and a half days
-of silence. Both series therefore publish **checkpoints** at **07:30 and 13:00
+A soak publishes when it finishes, which for a 22h dev integration run means no
+visibility until the following afternoon, and for a 60h stability run means two
+and a half days of silence. Both series therefore publish **checkpoints** at **07:30 and 13:00
 Pacific** for every such instant inside the run:
 
 | Run | Checkpoints | Segments |
 |---|---|---|
-| Daily (Mon 19:30 + 22h) | Tue 07:30, Tue 13:00 | 3 |
-| Weekend (Fri 19:30 + 60h) | Sat and Sun, 07:30 and 13:00 | 5 |
-| Weekend crossing spring-forward | the above plus Mon 07:30 | 6 |
+| Dev integration (Mon 19:30 + 22h) | Tue 07:30, Tue 13:00 | 3 |
+| 60h stability (Fri 19:30 + 60h) | Sat and Sun, 07:30 and 13:00 | 5 |
+| 60h stability crossing spring-forward | the above plus Mon 07:30 | 6 |
 
-The extra weekend checkpoint is not a rounding artefact: 60h from Friday 19:30
+The extra stability-soak checkpoint is not a rounding artefact: 60h from Friday 19:30
 lands at Monday 08:30 rather than 07:30 once the clocks jump, which brings the
 Monday-morning instant inside the run.
 
@@ -513,8 +523,9 @@ oci ons subscription delete --subscription-id <subscription-ocid>
 
 ## Operational notes
 
-- Benchmarks run **only** in the 60h weekend soak (`duration_seconds ==
-  216000`); see [Weekend vs daily](#weekend-vs-daily) for the full split.
+- Benchmarks run **only** in the 60h stability soak (`duration_seconds ==
+  216000`); see [60h stability vs dev integration](#60h-stability-vs-dev-integration)
+  for the full split.
 - The dashboard site deploys from the soak workflow via GitHub Pages
   (Settings → Pages → source "GitHub Actions" must be enabled once). A separate
   workflow, `soak-dashboard-pages.yml`, redeploys the page shell when
