@@ -1,6 +1,6 @@
 # Release Process and Deployment Train Strategy
 
-**Status:** Proposed for maintainer ratification  
+**Status:** Ratified 2026-08-19 (all Section 19 items; two items carry recorded amendments)  
 **Last updated:** 2026-08-19
 
 ## 1. Purpose
@@ -218,10 +218,12 @@ The promotion controller evaluates gates against `source_sha` from the candidate
 | Full OCI validation | OCI validation evidence | The exact candidate image digest passes |
 | Integration preflight | Soak preflight status | The exact SHA succeeds |
 | 60h stability soak | Soak artifact and workflow run | The exact candidate completes the full 60-hour profile |
-| Regression verdict | `verdict.json` | The `weekend`-series verdict is `pass` |
+| Regression verdict (advisory) | `verdict.json` | A `pass` verdict satisfies the gate directly. A `regress` verdict requires documented maintainer review before promotion |
 | Feature gates | Train gate evidence | Every manifest gate succeeds |
 
 Optional and nightly slashing jobs do not block a release. The required slashing job catalog remains version-controlled.
+
+The regression verdict is advisory because it is a relative week-over-week measure. A `regress` verdict on a release-eligible run publishes an alert through the existing OCI Notifications topic, to the same subscriber list as the soak reports. Promotion then waits for documented maintainer review instead of failing outright.
 
 The promotion controller validates workflow identity through the GitHub API. A commit status alone is not sufficient evidence.
 
@@ -265,8 +267,8 @@ Stable promotion requires all these conditions:
 4. The integration preflight passed.
 5. The soak used the recorded candidate digest.
 6. The report identifies the candidate source SHA.
-7. The regression verdict is `pass`.
-8. The run completed without a shortened retry window.
+7. The regression verdict is `pass`, or a maintainer reviewed and accepted a `regress` verdict.
+8. The run completed without a shortened retry window. One restart after an infrastructure failure is permitted when the run preserves the full 60-hour coverage.
 
 A dashboard latest verdict does not satisfy this gate. Promotion reads the exact run artifact and validates its source SHA.
 
@@ -304,6 +306,10 @@ New stable nodes enter a soak period inside or adjacent to the quorum. The Soak-
 A node becomes a true Anchor only after it completes the soak period. Until that point, the node holds no Anchor role in the quorum.
 
 Enrollment has its own schedule. Automation schedules one Shard soak-in for each stable release tag. The trigger is a stable release publication, which has passed the 60h stability soak gate.
+
+Three parameters are deferred to Phase 6, when the quorum exists and real behavior can inform them: the soak-in period length, the measurable Anchor promotion criteria, and the quorum composition. The scheduling rule, the trigger, and the soaking-node versus Anchor distinction are binding now.
+
+The quorum itself is a set of continuously running shards, unlike the per-iteration shards that the soaks create. EPIC-014 in `docs/ToDos.md` plans that standing quorum: long-lived OCI instances run stable releases, reuse the existing fleet tooling, and also serve as a test network for select partners and customers. A follow-on branch carries that work; this document only requires that the quorum exists before Phase 6 completes.
 
 **Follow-on:** a future change will separate the Casper consensus into its own repository. The Soak-in quorum will then consume consensus releases from that repository.
 
@@ -370,7 +376,7 @@ Multiple trains can run at the same time. Workflow concurrency keys include the 
 
 The train pull request must merge before stable publication.
 
-The promotion controller verifies that `head_sha` is reachable from `master`. A normal merge preserves this relationship.
+The promotion controller verifies that `head_sha` is reachable from `master`. A normal merge preserves this relationship. Train pull requests must therefore use a true merge commit in practice: a squash or rebase costs a full re-candidacy, including a new 60h stability soak.
 
 A squash or rebase creates a different release commit. The controller rejects the old evidence and requires a new candidate.
 
@@ -410,6 +416,7 @@ The first planned use is the cost-accounting train from pull request #216.
 | OCI validation fails | Hold promotion and fix the candidate |
 | Slashing tests fail | Hold promotion and fix the candidate |
 | Soak fails | Do not promote |
+| Regression verdict is `regress` | Alert the soak-report OCI Notifications list and hold promotion for documented maintainer review |
 | Soak uses a different digest | Reject the soak evidence |
 | `master` advances | Continue with the immutable candidate |
 | Train head changes | Cancel the candidate and run setup again |
@@ -531,18 +538,18 @@ Phase 1 disables automatic stable publication. A manual workflow generates evide
 
 ## 19. Ratification checklist
 
-Maintainers must ratify these decisions before stable automation is enabled.
+Maintainers must ratify these decisions before stable automation is enabled. All items were ratified on 2026-08-19; amendments are recorded inline and in the affected sections.
 
-- [ ] Canary tag formats
-- [ ] Source version lifecycle
-- [ ] Exact-SHA gate catalog
-- [ ] Full OCI candidate mode
-- [ ] Uninterrupted 60-hour soak requirement
-- [ ] Artifact and image digest reuse
-- [ ] Stable tag placement on the soaked commit
-- [ ] Mutable channel alias policy
-- [ ] Deployment Train manifest schema
-- [ ] Merge, squash, and rebase rules
-- [ ] Version reservation and ordering rules
-- [ ] First Deployment Train selection
-- [ ] Shard soak-in and Anchor promotion policy
+- [x] Canary tag formats — ratified 2026-08-19
+- [x] Source version lifecycle — ratified 2026-08-19
+- [x] Exact-SHA gate catalog — ratified 2026-08-19 as amended: regression verdict advisory with maintainer review and OCI Notifications alert
+- [x] Full OCI candidate mode — ratified 2026-08-19
+- [x] Uninterrupted 60-hour soak requirement — ratified 2026-08-19 with the one-infra-restart reading
+- [x] Artifact and image digest reuse — ratified 2026-08-19
+- [x] Stable tag placement on the soaked commit — ratified 2026-08-19
+- [x] Mutable channel alias policy — ratified 2026-08-19
+- [x] Deployment Train manifest schema — ratified 2026-08-19
+- [x] Merge, squash, and rebase rules — ratified 2026-08-19 with the merge-commit-only operational note
+- [x] Version reservation and ordering rules — ratified 2026-08-19
+- [x] First Deployment Train selection — ratified 2026-08-19: cost-accounting (PR #216), after the Phase 5 non-publishing rehearsal
+- [x] Shard soak-in and Anchor promotion policy — ratified 2026-08-19 as a skeleton: period length, Anchor criteria, and quorum composition deferred to Phase 6

@@ -1,7 +1,7 @@
 ---
 doc_type: todos
 version: "1.1"
-last_updated: 2026-08-13
+last_updated: 2026-08-19
 mr_status:
   ready: false
   target_branch: master
@@ -66,6 +66,102 @@ mr_status:
 ## Active Epics
 
 <!-- Epics are ordered by priority. Work on the highest priority epic first. -->
+
+---
+
+### EPIC-013: Release Process and Deployment Trains
+
+```yaml
+---
+epic_id: EPIC-013
+title: "Release Process and Deployment Trains"
+status: in_progress
+priority: p1
+user_story: null
+blocked_by: []
+created_at: 2026-08-19
+claimed_by: claude-session-838e6241
+claimed_at: 2026-08-19T00:00:00Z
+tasks:
+  - id: TASK-013-1
+    title: "Specify and ratify the release process (docs/release-process.md)"
+    status: complete
+    completed_at: 2026-08-19T00:00:00Z
+    branch: feature/release-process-implementation
+    notes:
+      - "All 13 Section 19 items ratified 2026-08-19. Two amendments: the regression verdict is advisory with maintainer review plus an OCI Notifications alert, and one infra-failure restart is permitted when 60h coverage is preserved."
+      - "Includes the soak terminology rename (60h stability soak, dev integration soak, Shard soak-in), the Section 17.1 trigger and duration table, and glossary entries."
+  - id: TASK-013-2
+    title: "Phase 1: evidence-only release automation"
+    status: complete
+    completed_at: 2026-08-19T00:00:00Z
+    branch: feature/release-process-implementation
+    notes:
+      - "release-evidence.yml generates exact-run evidence; release.yml and soak-in.yml are held-state stubs; release-evidence.sh plus unit tests and the test-release-workflows.sh contract guard are in place."
+  - id: TASK-013-3
+    title: "Phase 2: canary publication from ci.yml"
+    status: pending
+    acceptance:
+      - "ci.yml publishes immutable canary tags, prereleases, and images from tested artifacts on release-eligible master runs"
+  - id: TASK-013-4
+    title: "Phase 3: artifact-based validation (candidate digest modes)"
+    status: pending
+    acceptance:
+      - "merge-recovery-soak.yml and oci-validation.yml consume the candidate image digest without rebuilding"
+  - id: TASK-013-5
+    title: "Phase 4: stable promotion controller"
+    status: pending
+    acceptance:
+      - "release.yml performs exact-candidate promotion via release-gates.sh and promote-release.sh"
+      - "A regress verdict publishes an OCI Notifications alert to the soak-report list and holds promotion for documented maintainer review"
+  - id: TASK-013-6
+    title: "Phase 5: Deployment Trains"
+    status: pending
+    acceptance:
+      - "deployment-train.yml validates manifests under .github/deployment-trains/ and starts trains"
+      - "One non-publishing rehearsal completes, then the cost-accounting train (PR #216) publishes first"
+  - id: TASK-013-7
+    title: "Phase 6: Shard soak-in scheduling"
+    status: pending
+    blocked_by: [EPIC-014]
+    acceptance:
+      - "soak-in.yml gains a release trigger: one enrollment per stable release tag"
+      - "The deferred parameters (soak-in period length, Anchor criteria, quorum composition) are set and ratified"
+---
+```
+
+**Context:** `docs/release-process.md` is the ratified specification. This PR (feature/release-process-implementation, PR #279) delivers TASK-013-1 and TASK-013-2; later phases follow the Section 18 migration plan on follow-on branches.
+
+---
+
+### EPIC-014: Continuously Running Shard Quorum
+
+```yaml
+---
+epic_id: EPIC-014
+title: "Continuously Running Shard Quorum"
+status: pending
+priority: p2
+user_story: null
+blocked_by: [EPIC-013]
+created_at: 2026-08-19
+tasks:
+  - id: TASK-014-1
+    title: "Design the standing quorum (topology, lifecycle, upgrade path)"
+    status: pending
+  - id: TASK-014-2
+    title: "Stand up the quorum on OCI from existing fleet tooling"
+    status: pending
+  - id: TASK-014-3
+    title: "Wire Shard soak-in enrollment and Anchor promotion into the quorum"
+    status: pending
+  - id: TASK-014-4
+    title: "Expose selected shards as partner/customer test networks"
+    status: pending
+---
+```
+
+**Context:** Unlike the soaks, which create a fresh shard per iteration, this epic delivers shards that run continuously as a quorum. **Mechanism sketch (brief by intent — a follow-on branch/PR carries the design):** long-lived OCI instances run stable releases as quorum members, reusing the existing fleet tooling (runner launch, monitoring, ONS alerts, soak dashboard) as the foundation. Each weekly stable release enrolls new nodes through the Shard soak-in (`docs/release-process.md` Section 12); nodes that complete the soak period gain the Anchor role. The quorum is primarily internal release-validation infrastructure and also serves as a test network for select partners and customers. This epic delivers the quorum that release-process Phase 6 requires; the deferred Shard soak-in parameters are set here.
 
 ---
 
