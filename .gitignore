@@ -22,9 +22,11 @@ Thumbs.db
 *.rs.bk
 
 # Per-crate Cargo.lock (cargo build artifacts when invoked in subdirs)
-# Only the workspace-root Cargo.lock is tracked.
+# Only the workspace-root Cargo.lock is tracked, plus the standalone
+# soak-charts publisher crate's lock — its supply-chain pin (see its Cargo.toml).
 Cargo.lock
 !/Cargo.lock
+!/scripts/soak-charts/Cargo.lock
 
 # BNFC generated
 rholang/bnfc/
@@ -121,3 +123,5 @@ MC_TE.out
 
 *~
 docs/discoveries/*.md
+.tmp/
+docs/work-logs/*.md

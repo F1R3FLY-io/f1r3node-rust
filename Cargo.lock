@@ -5259,6 +5259,7 @@ dependencies = [
  "futures",
  "heed",
  "hex",
+ "imbl",
  "itertools 0.14.0",
  "lazy_static",
  "metrics 0.23.1",

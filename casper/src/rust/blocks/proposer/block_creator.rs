@@ -395,9 +395,15 @@ async fn prepare_user_deploys_with_policy(
         .collect();
     let earliest_block_number =
         block_number - casper_snapshot.on_chain_state.shard_conf.deploy_lifespan;
+    // Both expiry kinds are terminal for buffered work: a block-expired deploy can
+    // never again pass Validate::transaction_expiration, so holding it "recoverable"
+    // only re-offers it to a proposer that must reject it (issue #197).
     let expired_buffered: Vec<Signed<DeployData>> = buffered_deploys
         .iter()
-        .filter(|deploy| deploy.data.is_expired_at(current_time_millis))
+        .filter(|deploy| {
+            deploy.data.is_expired_at(current_time_millis)
+                || !not_expired_deploy(earliest_block_number, &deploy.data)
+        })
         .cloned()
         .collect();
     if !expired_buffered.is_empty() {
@@ -445,15 +451,22 @@ async fn prepare_user_deploys_with_policy(
 
     // Terminal purge: a rejected-buffer entry is dropped only once its sig is
     // canonically WON inside the FINALIZED ancestry (latest finalized
-    // disposition is a win). A win that is merely canonical-but-unfinalized
-    // can still be orphaned, so the entry must survive until finality — the
-    // buffer is the only re-proposable copy of merge-rejected work.
+    // disposition is a win) AND that finalized win sits strictly above every
+    // rejection visible from the current parents. A win that is merely
+    // canonical-but-unfinalized can still be orphaned, so the entry must
+    // survive until finality; symmetrically, a finalized win with a visible
+    // rejection at or above its height is not terminal — block finalization
+    // does not finalize effects, and the pending rejection can finalize and
+    // drop the win from canonical state (finalized-win blindness,
+    // finalized_win_pending_rejection_spec). The buffer is the only
+    // re-proposable copy of merge-rejected work.
     let finalized_won_buffered: Vec<Signed<DeployData>> = if buffered_deploys.is_empty() {
         Vec::new()
     } else {
-        let finalized_won = interpreter_util::canonical_won_sigs(
+        let finalized_won = interpreter_util::finalized_won_terminal_sigs(
             block_store,
-            std::slice::from_ref(&casper_snapshot.last_finalized_block),
+            &casper_snapshot.last_finalized_block,
+            &parent_hashes,
             buffer_scan_floor,
         )?;
         buffered_deploys
@@ -590,27 +603,26 @@ async fn prepare_user_deploys_with_policy(
         .collect();
     let block_expired_deploys: Vec<_> = unfinalized
         .iter()
-        .filter(|d| {
-            !recovered_sigs.contains(&d.sig)
-                && !casper_snapshot.rejected_in_scope.contains(&d.sig)
-                && !not_expired_deploy(earliest_block_number, &d.data)
-        })
+        .filter(|d| !not_expired_deploy(earliest_block_number, &d.data))
         .collect();
     let time_expired_deploys: Vec<_> = unfinalized
         .iter()
         .filter(|d| d.data.is_expired_at(current_time_millis))
         .collect();
 
-    // Filter valid deploys (not expired by block, not expired by time, and not future)
+    // Filter valid deploys (not expired by block, not expired by time, and not future).
+    // Block expiry applies to recovered and rejected-retry deploys too: validation
+    // (Validate::transaction_expiration) has no recovery carve-out, so a block-expired
+    // deploy admitted here can only yield a self-created block that fails its own
+    // validation with ContainsExpiredDeploy — and, because nothing purged the deploy,
+    // every subsequent propose rebuilt the same invalid block (the permanent
+    // finalization wedge of issue #197). Expiry is a chain-level invariant; recovery
+    // cannot outlive it.
     let valid: HashSet<Signed<DeployData>> = unfinalized
         .iter()
         .filter(|deploy| {
-            let rejected_ready_for_retry = casper_snapshot.rejected_in_scope.contains(&deploy.sig)
-                && !casper_snapshot.deploys_in_scope.contains(&deploy.sig);
             not_future_deploy(block_number, &deploy.data)
-                && (recovered_sigs.contains(&deploy.sig)
-                    || rejected_ready_for_retry
-                    || not_expired_deploy(earliest_block_number, &deploy.data))
+                && not_expired_deploy(earliest_block_number, &deploy.data)
                 && !deploy.data.is_expired_at(current_time_millis)
         })
         .cloned()
@@ -5956,8 +5968,11 @@ mod tests {
             .any(|deploy| deploy.sig == recovered.sig));
     }
 
+    // Inverted contract (issue #197): a block-expired recovered deploy must be
+    // excluded and purged, not selected — validation has no recovery carve-out,
+    // so selecting it could only wedge the proposer on its own invalid block.
     #[tokio::test]
-    async fn recovered_buffered_deploy_is_selected_after_block_expiry() {
+    async fn recovered_buffered_deploy_is_purged_after_block_expiry() {
         let mut kvm = InMemoryStoreManager::new();
         let deploy_storage = Arc::new(parking_lot::Mutex::new(
             KeyValueDeployStorage::new(&mut kvm)
@@ -6010,11 +6025,7 @@ mod tests {
         .await
         .expect("prepare deploys");
 
-        assert_eq!(prepared.deploys.len(), 1);
-        assert!(prepared
-            .deploys
-            .iter()
-            .any(|deploy| deploy.sig == recovered.sig));
+        assert!(prepared.deploys.is_empty());
     }
 
     // A canonical-but-unfinalized win purges only the ordinary-storage copy;

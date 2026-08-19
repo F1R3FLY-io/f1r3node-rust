@@ -54,7 +54,58 @@ Three workflows publish the site — `merge-recovery-soak.yml` (final),
 `soak-checkpoint-publish.yml` (mid-run) and `soak-dashboard-pages.yml`
 (dashboard edits) — and each carries the published data forward from its own
 file list. **A new data file must be added to all three**, or the next publisher
-to run deletes it.
+to run deletes it. Chart SVGs are the one exception: they ride
+`charts-manifest-<series>.json`, written by the renderer to name exactly the
+SVGs it produced, and the publishers iterate that manifest — so adding a chart
+is a renderer change only.
+
+Every chart on the dashboard is a pre-rendered SVG pair
+(`…-<series>-{light,dark}.svg`) from the standalone `scripts/soak-charts` crate
+(charton; deliberately not a workspace member — CI runs a dedicated cargo-deny
+pass for it, and its committed `Cargo.lock` pins the publisher builds via
+`--locked`). Colors are baked at render time, so each chart ships a light and a
+dark variant and the page swaps them with its theme logic.
+
+The failure map is a heatmap: rows are failure categories (total, per
+provider), columns are run dates, cell color is the failure rate on a
+sequential red ramp with a neutral non-red for 0%, and cell text carries the
+failures/iterations volume. The metric panels (throughput, peak RSS/CPU,
+finalization latency, too-far-ahead, LFB spread) pick their mark from data
+density at render time: with enough distinct dates they are layered line+point
+charts on a temporal axis (throughput adds a low-opacity trend area); with only
+a few they render as value-labelled bars or points, because a two-point line
+chart is mostly empty axis. A panel with no recorded data emits nothing, and
+the too-far-ahead counter is suppressed while it is all-zero — the page shows a
+"0 · target 0" badge instead of a flat line.
+
+Peak CPU steps up through three representations as richer data appears, each
+the honest chart for what exists: an aggregate line chart with a dashed
+status-red line at 100% (one full core); small-multiples facets per core when
+`passive.cpu_peak_per_core_pct` (core id → peak %) exists; and, preferred over
+both, the cluster grid `passive.cpu_peak_core_grid_pct` (node id → core id →
+peak %), rendered as the latest run's node × core utilization heatmap — cells
+on a cool-to-hot (Jet) ramp whose domain is pinned so red always means "at or
+beyond one full core", saturated cells (≥ 100%) carrying their printed value,
+and the ramp legend drawn by the page (charton's own continuous colorbar
+renders degenerate, so it stays suppressed).
+
+The grid carries real core rows when the harness provides them: the
+system-integration monitor samples per-CPU cgroup counters per node container
+and emits `resource-percore-timeseries.csv` (a separate file from
+`resource-timeseries.csv` so the aggregate extractors cannot double-count),
+which the soak driver reduces to per-(node, core) peaks
+(`cpu_peak_per_node_core_pct` per iteration) alongside the aggregate per-node
+peaks (`cpu_peak_per_node_pct`). `write-soak-summary.sh` rolls both up
+cell-wise: a node with per-core data in any iteration gets real core ids, and
+a node with none anywhere — pre-emission history, or a provider without the
+per-core hook — keeps a single `"all"` fallback row, so the same chart simply
+grows taller as real core data appears.
+
+The two publishers whose output can change history re-render both series; the
+checkpoint publisher only carries the SVGs forward, since a checkpoint never
+appends to history. Rendering is `continue-on-error` in the same spirit as the
+badges: a chart bug must never block the publish that makes history durable —
+the carried-forward SVGs from the previous publish stand instead.
 
 Each run also records what it soaked: the target ref, the commit sha (linked to
 GitHub) and the node version declared at that commit — the same value carried by
@@ -215,6 +266,12 @@ deliberately include a regressed run, so the failure styling is exercised
 without hand-editing anything. Everything generated lands in the gitignored
 `site/`, rebuilt on start and removed on exit.
 
+The chart SVGs are rendered from the seeded (or fetched) history when `cargo`
+is available, by building `scripts/soak-charts` — the one part of the preview
+outside the std-only guarantee, so it is best-effort: without cargo the chart
+figures simply hide themselves, and `--live` falls back to the published SVGs
+it fetched via the charts manifest.
+
 ## What is measured
 
 Passive (the soak's own load, per iteration, rolled up per run):
@@ -282,10 +339,18 @@ Thresholds live in one file: `scripts/bench/soak-gate-thresholds.json`
 the soak run**: failure rate +5pts, peak RSS +20%, finalization p95 +20%,
 throughput −20%. Active-segment metrics warn.
 
-**Releases are gated**: the `release.yml` workflow refuses to bump/tag on
-`master` while the latest published soak verdict is `regress`. Maintainer
-override: include `[soak-override]` in the release commit message (the gate
-logs a warning and proceeds).
+**Releases are gated**: while the latest published soak verdict is `regress`,
+the `release.yml` workflow holds the bump/tag without failing anything — the
+gate job stays green (soak state belongs to the badges and dashboard, not to
+the commit's build status), the release job is skipped, and the hold is
+surfaced as a neutral `release-held` check run on the commit plus a
+`::warning::` annotation on the gate job. A held release is quiet by design:
+no red ✗ appears; the release simply does not happen until the regression is
+fixed or overridden. The gate also holds when the verdict cannot be fetched
+(network error, 5xx, malformed JSON) — only a true 404 (pre-bootstrap
+dashboard) lets the release proceed. Maintainer override: include
+`[soak-override]` in the release commit message (the gate logs a warning and
+proceeds).
 
 ## Email subscription (OCI Notifications)
 
@@ -333,22 +398,26 @@ oci ons subscription delete --subscription-id <subscription-ocid>
   segment mid-loop before any state or rollup was written.
 - **The harness memory guards are sized to the host, and deliberately fire
   before the kernel does.** The harness default ceiling (5000MB) is
-  laptop-scale, while the 6-node shard legitimately peaks ~10GB under
-  `test_load` on the 32GB soak VM, so the soak passes `--rss-ceiling-mb`
-  computed as `MemTotal − 12GB` (~20GB there) and `--host-free-floor-mb` as
-  `min(MemTotal/4, 6000)` (~6000 there; harness default 2000). The floor is
-  scaled rather than flat because a flat 6000 breaches on contact on a small
-  host, where the clamped 5000 ceiling still permits a 5GB shard.
-  The reserve is 12GB rather than the 8GB first tried
-  because 8GB permits a 24GB node working set, which puts the *kernel* OOM
-  killer ahead of the watchdog — the harness never breaches, the kernel picks a
-  victim by `oom_score`, and `Runner.Worker` is a plausible one. That produces a
-  runner that vanishes mid-step with no log and no failed step, which is
-  unattributable; a breach is not. Override with `SOAK_HOST_RESERVE_MB`,
-  `SOAK_RSS_CEILING_MB`, `SOAK_HOST_FREE_FLOOR_MB`; `0` disables a guard, which
-  is not recommended. The floor is enforced on subprocess iterations only —
-  docker iterations rely on the ceiling. Sustained RSS growth is policed
-  week-over-week by the regression gate, not by these limits.
+  laptop-scale, while the 6-node shard legitimately peaks 16.7–19.3GB under
+  `test_load` (measured 2026-08: CI runs 30906818259 / 31332864501, with
+  per-validator skew up to ~5GB on one node), so the workflow pins explicit
+  values sized to the 48GB soak VM: `SOAK_RSS_CEILING_MB=28672` (~1.5× the
+  measured envelope — never fires on legitimate load, catches a real leak
+  attributably) and `SOAK_HOST_FREE_FLOOR_MB=8192`. The sizing invariant,
+  learned twice in 2026-08 (PR #217 review, then run 31390673884):
+  `ceiling + ~7GB host overhead + floor ≤ MemTotal`, otherwise the free-RAM
+  floor fires before the RSS ceiling can, replacing the kill that names the
+  overweight component with one that only names host pressure. The floor is
+  enforced at two layers: pytest's `--host-free-floor-mb` (subprocess
+  iterations only) and the orchestrator host guardian in
+  `run-merge-recovery-soak.sh`, which watches host free RAM on EVERY
+  iteration, docker included. The 12GB derivation reserve (used when
+  `SOAK_RSS_CEILING_MB` is unset) exists to keep the kernel OOM killer —
+  whose victim vanishes mid-step with no log — behind the watchdog; explicit
+  values must preserve that property. Override with `SOAK_HOST_RESERVE_MB`,
+  `SOAK_RSS_CEILING_MB`, `SOAK_HOST_FREE_FLOOR_MB`; `0` disables a guard,
+  which is not recommended. Sustained RSS growth is policed week-over-week
+  by the regression gate, not by these limits.
 - **Soak runners are exempt from the CI reaper, with an expiry.**
   `ci-runner-reaper.yml` terminates `ci-eph-*` instances older than 2h, which
   would kill any healthy soak mid-run. The **soak job tags the instance it is

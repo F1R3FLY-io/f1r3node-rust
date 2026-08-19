@@ -93,7 +93,8 @@ command -v jq >/dev/null || {
 mkdir -p "$OUT_DIR"
 
 SEGMENTS_JSON="$OUT_DIR/.segments.json"
-find "$SOAK_DIR" -path '*bench-segment-*/metrics.json' -print0 |
+find "$SOAK_DIR" -mindepth 2 -maxdepth 2 -type f \
+	-path '*/bench-segment-*/metrics.json' -print0 |
 	sort -z |
 	xargs -0 --no-run-if-empty cat |
 	jq -s 'sort_by(.segment_index)' >"$SEGMENTS_JSON"
@@ -139,6 +140,12 @@ jq -n \
         kind: $kind,
         target_ref: ($passive.target_ref // "unknown"),
         target_sha: ($passive.target_sha // "unknown"),
+        # How the run was triggered and how late it started relative to its
+        # intended slot (oci-resource-scheduler | cron-fallback | manual).
+        # Optional by construction like version below: runs predating the
+        # field carry the defaults and the dashboard must tolerate that.
+        trigger_source: ($passive.trigger_source // "unknown"),
+        slot_delay_seconds: ($passive.slot_delay_seconds // null),
         # Optional by construction: soaks that ran before the soak script began
         # emitting it, and any run where the node checkout was unreadable, have
         # no version. History entries are never backfilled, so the dashboard
@@ -156,7 +163,12 @@ jq -n \
         protection_breach: $protection_breach,
         # Seconds actually soaked so far, against the run
         # budget — lets the dashboard show progress on a checkpoint.
-        elapsed_seconds: ($passive.elapsed_seconds // null)
+        elapsed_seconds: ($passive.elapsed_seconds // null),
+        # Shard uptime (summed wall-clock of iterations that completed their
+        # full cycle; see write-soak-summary.sh). Optional by construction:
+        # runs that predate the field carry null and the dashboard uptime
+        # bar collapses rather than rendering a bar with no data.
+        shard_up_seconds: ($passive.shard_up_seconds // null)
       },
       passive: (if $passive == null then null else {
         iterations: $passive.iterations,
@@ -165,6 +177,7 @@ jq -n \
         iterations_per_hour: $passive.iterations_per_hour,
         rss_peak_mb: $passive.rss_peak_mb,
         cpu_peak_pct: $passive.cpu_peak_pct,
+        cpu_peak_core_grid_pct: $passive.cpu_peak_core_grid_pct,
         finalization_p50_ms: $passive.finalization_p50_ms,
         finalization_p95_ms: $passive.finalization_p95_ms,
         finalization_p99_ms: $passive.finalization_p99_ms,

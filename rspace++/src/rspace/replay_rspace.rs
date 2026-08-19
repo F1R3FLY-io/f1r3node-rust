@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use async_trait::async_trait;
-use dashmap::DashMap;
 use serde::Serialize;
 
 use super::checkpoint::SoftCheckpoint;
@@ -33,6 +32,7 @@ use super::metrics_constants::{
 use super::rspace_interface::{
     ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult, RSpaceResult,
 };
+use super::striped_locks::{self, ChannelLockGuard};
 use super::trace::Log;
 use super::trace::event::{COMM, Consume, Event, IOEvent, Produce};
 use crate::rspace::checkpoint::Checkpoint;
@@ -54,8 +54,12 @@ pub struct ReplayRSpace<C, P, A, K> {
     pub replay_data: Arc<Mutex<MultisetMultiMap<IOEvent, COMM>>>,
     logger: Arc<Mutex<Box<dyn RSpaceLogger<C, P, A, K>>>>,
     replay_waiting_continuations_estimate: Arc<AtomicI64>,
-    phase_a_locks: Arc<DashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
-    phase_b_locks: Arc<DashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
+    // Fixed-size striped locks — mirrors the RSpace fix in rspace.rs (PR #72).
+    // ReplayRSpace still had the pre-#72 growing DashMap<u64, Arc<Mutex>>
+    // (unbounded, `entry()` shard contention on insert), which #72 never
+    // ported here — see #43. See striped_locks.rs for the shared scheme.
+    phase_a_locks: Arc<Vec<Arc<tokio::sync::Mutex<()>>>>,
+    phase_b_locks: Arc<Vec<Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl<C, P, A, K> ReplayRSpace<C, P, A, K>
@@ -78,67 +82,29 @@ where
             .clone()
     }
 
-    fn channel_hash(channel: &C) -> u64 {
-        use std::hash::Hasher;
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        channel.hash(&mut hasher);
-        hasher.finish()
-    }
-
-    async fn acquire_locks(
-        lock_map: &DashMap<u64, Arc<tokio::sync::Mutex<()>>>,
-        keys: &[u64],
-    ) -> ChannelLockGuard {
-        let mut sorted_keys: Vec<u64> = keys.to_vec();
-        sorted_keys.sort();
-        sorted_keys.dedup();
-
-        let mut held: Vec<HeldLock> = Vec::with_capacity(sorted_keys.len());
-        for k in &sorted_keys {
-            let lock = lock_map
-                .entry(*k)
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-                .clone();
-            let guard = lock.clone().lock_owned().await;
-            held.push(HeldLock {
-                _guard: guard,
-                _lock: lock,
-            });
-        }
-
-        ChannelLockGuard { _held: held }
-    }
-
     async fn consume_lock(&self, channel_hashes: &[u64]) -> (ChannelLockGuard, ChannelLockGuard) {
-        let phase_a = Self::acquire_locks(&self.phase_a_locks, channel_hashes).await;
-        let phase_b = Self::acquire_locks(&self.phase_b_locks, channel_hashes).await;
-        (phase_a, phase_b)
+        striped_locks::consume_lock(&self.phase_a_locks, &self.phase_b_locks, channel_hashes).await
     }
 
     async fn produce_lock(&self, channel: &C) -> (ChannelLockGuard, ChannelLockGuard) {
-        let channel_hash = Self::channel_hash(channel);
-        let phase_a = Self::acquire_locks(&self.phase_a_locks, &[channel_hash]).await;
+        let channel_hash = striped_locks::channel_hash(channel);
+        let phase_a = striped_locks::acquire_locks(&self.phase_a_locks, &[channel_hash]).await;
 
         let store = self.get_store();
         let join_hashes: Vec<u64> = store
             .get_joins(channel)
             .into_iter()
             .flatten()
-            .map(|ch| Self::channel_hash(&ch))
+            .map(|ch| striped_locks::channel_hash(&ch))
             .collect();
 
-        let phase_b = Self::acquire_locks(&self.phase_b_locks, &join_hashes).await;
+        let phase_b = striped_locks::acquire_locks(&self.phase_b_locks, &join_hashes).await;
         (phase_a, phase_b)
     }
-}
 
-struct HeldLock {
-    _guard: tokio::sync::OwnedMutexGuard<()>,
-    _lock: Arc<tokio::sync::Mutex<()>>,
-}
-
-struct ChannelLockGuard {
-    _held: Vec<HeldLock>,
+    fn new_striped_locks() -> Arc<Vec<Arc<tokio::sync::Mutex<()>>>> {
+        striped_locks::new_striped_locks()
+    }
 }
 
 impl<C, P, A, K> SpaceMatcher<C, P, A, K> for ReplayRSpace<C, P, A, K>
@@ -184,8 +150,9 @@ where
 
         *self.event_log.lock().expect("event log lock") = Vec::new();
         *self.produce_counter.lock().expect("produce counter lock") = BTreeMap::new();
-        self.phase_a_locks.clear();
-        self.phase_b_locks.clear();
+
+        // Striped locks are fixed-size and stateless (Mutex<()>); nothing to
+        // clear on reset — they are reused across checkpoints.
 
         let history_reader = self.get_history_repository().get_history_reader(root)?;
         self.create_new_hot_store(history_reader);
@@ -277,8 +244,10 @@ where
             panic!("RUST ERROR: channels.length must equal patterns.length");
         } else {
             let consume_ref = Consume::create(&channels, &patterns, &continuation, persist);
-            let channel_hashes: Vec<u64> =
-                channels.iter().map(|ch| Self::channel_hash(ch)).collect();
+            let channel_hashes: Vec<u64> = channels
+                .iter()
+                .map(|ch| striped_locks::channel_hash(ch))
+                .collect();
             let _lock_guard = self.consume_lock(&channel_hashes).await;
 
             metrics::counter!("replay_rspace.consume.calls", "source" => "rspace").increment(1);
@@ -471,8 +440,8 @@ where
             replay_data: Arc::new(Mutex::new(MultisetMultiMap::empty())),
             logger: Arc::new(Mutex::new(Box::new(BasicLogger::new()))),
             replay_waiting_continuations_estimate: Arc::new(AtomicI64::new(0)),
-            phase_a_locks: Arc::new(DashMap::new()),
-            phase_b_locks: Arc::new(DashMap::new()),
+            phase_a_locks: Self::new_striped_locks(),
+            phase_b_locks: Self::new_striped_locks(),
         }
     }
 
@@ -498,8 +467,8 @@ where
             replay_data: Arc::new(Mutex::new(MultisetMultiMap::empty())),
             logger: Arc::new(Mutex::new(logger)),
             replay_waiting_continuations_estimate: Arc::new(AtomicI64::new(0)),
-            phase_a_locks: Arc::new(DashMap::new()),
-            phase_b_locks: Arc::new(DashMap::new()),
+            phase_a_locks: Self::new_striped_locks(),
+            phase_b_locks: Self::new_striped_locks(),
         }
     }
 
@@ -1341,5 +1310,104 @@ where
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Regression guard for the phase_a_locks/phase_b_locks fix ported from
+    // RSpace (PR #72 "Per-channel locks → fixed striped locks") — see
+    // f1r3node-rust#43. Before this fix, ReplayRSpace still used a growing
+    // DashMap<u64, Arc<Mutex>> (the pre-#72 pattern RSpace moved away from),
+    // which PR #72 explicitly flagged as an untouched residual: "Replay path
+    // still times out at forks >= 16". Mirrors
+    // `par_branch_event_log_does_not_contend_at_rholang_par_scale` in
+    // rspace.rs, but drives ReplayRSpace::produce() so it exercises
+    // produce_lock/phase_a_locks/phase_b_locks instead of the event log.
+
+    use serde::{Deserialize, Serialize};
+
+    use super::*;
+    use crate::rspace::r#match::Match;
+    use crate::rspace::rspace::RSpace;
+    use crate::rspace::rspace_interface::ISpace;
+    use crate::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+    #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
+    struct Wildcard;
+
+    struct AlwaysMatch;
+
+    impl Match<Wildcard, String, String> for AlwaysMatch {
+        fn get(&self, _: &Wildcard, a: &String) -> Option<String> { Some(a.clone()) }
+    }
+
+    async fn make_replay_rspace() -> ReplayRSpace<String, Wildcard, String, String> {
+        let mut kvm = InMemoryStoreManager::new();
+        let store = kvm.r_space_stores().await.unwrap();
+        let (_play, replay) = RSpace::<String, Wildcard, String, String>::create_with_replay(
+            store,
+            Arc::new(Box::new(AlwaysMatch)),
+        )
+        .unwrap();
+        replay
+    }
+
+    // 32 par-branches, each calling produce() on its own private channels —
+    // mirrors the rholang-par benchmark's replay side. Regression guard for
+    // the documented symptom "replay path still times out at forks >= 16"
+    // (PR #72's own follow-up list, f1r3node-rust#43): before this fix,
+    // ReplayRSpace acquired phase locks through an unbounded
+    // DashMap<u64, Arc<Mutex>> (the pre-#72 pattern RSpace already moved
+    // away from). A solo-vs-concurrent speedup ratio isn't a reliable
+    // assertion here — on the in-memory test store a single produce() is
+    // low-single-digit microseconds, so tokio task-spawn/scheduling
+    // overhead dominates the timing at that scale and swamps any lock
+    // signal. What's actually being guarded is forward progress: this
+    // bound (30s for 16,000 ops) is generous by roughly two orders of
+    // magnitude relative to observed run time, so it fails on a hang or
+    // reintroduced serialization, not on ordinary timing noise.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn par_branch_replay_produce_completes_at_rholang_par_scale() {
+        const PAR_BRANCHES: usize = 32;
+        const OPS_PER_BRANCH: usize = 500;
+        const MAX_WALL_CLOCK: std::time::Duration = std::time::Duration::from_secs(30);
+
+        let rspace = make_replay_rspace().await;
+
+        let t0 = std::time::Instant::now();
+        let handles: Vec<_> = (0..PAR_BRANCHES)
+            .map(|i| {
+                let s = rspace.clone();
+                tokio::spawn(async move {
+                    for j in 0..OPS_PER_BRANCH {
+                        s.produce(format!("branch_{}_{}", i, j), "datum".to_string(), false)
+                            .await
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.await.unwrap();
+        }
+        let elapsed = t0.elapsed();
+
+        eprintln!(
+            "replay_par_branch_scaling: branches={PAR_BRANCHES}  ops_per_branch={OPS_PER_BRANCH}  \
+             elapsed={:.3}s  (bound {:.0}s)",
+            elapsed.as_secs_f64(),
+            MAX_WALL_CLOCK.as_secs_f64(),
+        );
+
+        assert!(
+            elapsed < MAX_WALL_CLOCK,
+            "ReplayRSpace produce() at {PAR_BRANCHES} par-branches took {:.2}s (bound {:.0}s) — \
+             regression back to unbounded per-channel locking, the pre-#72 pattern that made \
+             replay time out at forks >= 16.",
+            elapsed.as_secs_f64(),
+            MAX_WALL_CLOCK.as_secs_f64(),
+        );
     }
 }

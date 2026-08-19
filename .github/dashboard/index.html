@@ -12,22 +12,37 @@
     background: var(--surface-1); color: var(--text-primary);
     --surface-1: #fcfcfb; --surface-2: #f1f0ee;
     --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #8a887f;
-    --grid: #e4e2dd; --series-1: #2a78d6; --series-2: #008300; --series-3: #e87ba4;
+    /* series-3 was #e87ba4, which sat at 2.36:1 against the light chart
+       surface — under the 3:1 mark-contrast floor. #d5588e is the nearest
+       darker step that passes all six palette checks (validated: CVD worst
+       adjacent ΔE 14.8, contrast ≥ 3:1 on #f1f0ee). */
+    --grid: #e4e2dd; --series-1: #2a78d6; --series-2: #008300; --series-3: #d5588e;
+    /* Neutral fill for 0% heatmap cells — must match zero_neutral in
+       scripts/soak-charts (the SVGs bake it in; this var only paints the
+       legend swatch beside them). */
+    --heat-zero: #e7e5e0;
     --good: #008300; --serious: #c81e1e; --serious-bg: #fdeaea;
+    /* Sheet tint strength: the same perceptual whisper needs a stronger mix
+       on a dark surface than a light one. */
+    --tint: 6%;
   }
   @media (prefers-color-scheme: dark) {
     :root:where(:not([data-theme="light"])) body {
       --surface-1: #1a1a19; --surface-2: #242423;
       --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #8a887f;
       --grid: #33322f; --series-1: #3987e5; --series-2: #008300; --series-3: #d55181;
+      --heat-zero: #33322f;
       --good: #33a133; --serious: #f05252; --serious-bg: #3a1f1f;
+      --tint: 14%;
     }
   }
   :root[data-theme="dark"] body {
     --surface-1: #1a1a19; --surface-2: #242423;
     --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #8a887f;
     --grid: #33322f; --series-1: #3987e5; --series-2: #008300; --series-3: #d55181;
+    --heat-zero: #33322f;
     --good: #33a133; --serious: #f05252; --serious-bg: #3a1f1f;
+    --tint: 14%;
   }
   h1 { font-size: 1.25rem; margin: 0 0 .25rem; }
   .sub { color: var(--text-secondary); margin: 0 0 1.25rem; }
@@ -37,26 +52,41 @@
      inside the bar so the panels stay siblings of them — that is what lets the
      buttons be positioned anywhere on the page. */
   .tabs { position: absolute; opacity: 0; pointer-events: none; }
-  .tabbar { display: flex; flex-wrap: wrap; gap: .75rem; margin: 0 0 1.5rem; }
+  /* The buttons are drawn as tabs physically attached to the panel below:
+     top-rounded, sitting on the panel's top border, with the active tab's
+     bottom edge cut away so button and panel read as one surface. That seam is
+     the visual statement that the panel's data belongs to the selected tab. */
+  .tabbar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: flex-end; margin: 0; }
   .tabbar label {
     display: flex; flex-direction: column; gap: .15rem; min-width: 11rem;
+    position: relative; z-index: 1; margin-bottom: -1px;
     padding: .8rem 1.1rem; cursor: pointer; user-select: none;
     background: var(--surface-2); color: var(--text-secondary);
-    border: 1px solid var(--grid); border-radius: 10px;
-    box-shadow: 0 1px 2px rgba(0,0,0,.10), 0 3px 10px rgba(0,0,0,.07);
-    transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease;
+    border: 1px solid var(--grid); border-radius: 10px 10px 0 0;
+    transition: box-shadow .12s ease, border-color .12s ease, background .12s ease;
   }
   .tabbar label:hover {
-    color: var(--text-primary); transform: translateY(-2px);
-    box-shadow: 0 3px 6px rgba(0,0,0,.14), 0 8px 20px rgba(0,0,0,.11);
+    color: var(--text-primary);
+    box-shadow: 0 -2px 6px rgba(0,0,0,.10);
   }
-  .tabbar label:active { transform: translateY(0); }
   .tab-title { font-weight: 700; font-size: 1.02rem; color: var(--text-primary); }
   .tab-hint { font-size: .82rem; color: var(--text-muted); }
   .tab-status { font-size: .82rem; font-weight: 600; margin-top: .2rem; color: var(--text-muted); }
   .tab-status.pass { color: var(--good); }
   .tab-status.regress { color: var(--serious); }
   .tab-status.running { color: var(--series-1); }
+  /* Shard uptime for the latest run, on the button between the verdict line
+     and the provenance line: the green share of the bar is time the shard was
+     up, the red remainder is time it was not. Collapses when the data is
+     absent, so runs that predate uptime emission show nothing rather than an
+     empty bar. */
+  .tab-uptime { display: flex; flex-direction: column; gap: .2rem; margin-top: .15rem; }
+  .tab-uptime:empty { display: none; }
+  .uptime-bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden;
+                background: var(--serious); }
+  .uptime-bar i { display: block; height: 100%; background: var(--good); }
+  .uptime-text { font-size: .78rem; color: var(--text-secondary);
+                 font-variant-numeric: tabular-nums; }
   /* What was soaked, on the button itself: which commit, version and day a
      series last covered is the thing you want before deciding which tab to
      open, not after. Empty until the verdict loads, so the button never shows
@@ -72,20 +102,33 @@
      a passing Daily tab is green twice over. Kept deliberately — the accent
      rides on the border and ring while status stays in its own text, and
      `regress` red against a green accent is still unambiguous. */
-  .tabbar label[for="tab-weekend"] { --accent: var(--series-1); }
-  .tabbar label[for="tab-daily"] { --accent: var(--good); }
+  /* The sheet colour: surface with a whisper of the series accent mixed in.
+     Both the selected tab and its panel paint this same colour, so the tint
+     follows the selection (blue sheet for Weekend, green for Daily) while the
+     tab-to-panel seam stays invisible. Browsers without color-mix fall back
+     to the untinted surface — the tint is a cue, not a load-bearing signal. */
+  .tabbar label[for="tab-weekend"], #panel-weekend { --accent: var(--series-1); }
+  .tabbar label[for="tab-daily"], #panel-daily { --accent: var(--good); }
+  .tabbar label, .panel { --sheet: var(--surface-1); }
+  @supports (background: color-mix(in srgb, red 4%, white)) {
+    .tabbar label, .panel { --sheet: color-mix(in srgb, var(--accent) var(--tint), var(--surface-1)); }
+  }
   /* Always visible, not just when selected, so the colour is a property of the
-     series rather than of the selection. */
-  .tabbar label { border-left-width: 3px; border-left-color: var(--accent); }
+     series rather than of the selection. The accent moves to the tab's top
+     edge — the natural accent position for a tab attached below. */
+  .tabbar label { border-top-width: 3px; border-top-color: var(--accent); }
   .running-note { background: var(--surface-2); border-left: 3px solid var(--series-1);
                   border-radius: 4px; padding: .6rem .9rem; margin-bottom: 1.25rem;
                   color: var(--text-secondary); }
-  /* The selected tab is raised and accented; without this the group reads as
-     four equal cards rather than a choice with one active member. */
+  /* The selected tab merges with the panel: its background becomes the panel
+     background and its bottom border is painted over the panel's top border,
+     so the two form one continuous surface — the inactive tab stays visibly
+     "behind" the sheet. */
   #tab-weekend:checked ~ .tabbar label[for="tab-weekend"],
   #tab-daily:checked ~ .tabbar label[for="tab-daily"] {
-    border-color: var(--accent); background: var(--surface-1);
-    box-shadow: 0 0 0 1px var(--accent), 0 4px 8px rgba(0,0,0,.16), 0 10px 24px rgba(0,0,0,.12);
+    background: var(--sheet); color: var(--text-primary);
+    border-color: var(--grid); border-top-color: var(--accent);
+    border-bottom-color: var(--sheet);
   }
   #tab-weekend:focus-visible ~ .tabbar label[for="tab-weekend"],
   #tab-daily:focus-visible ~ .tabbar label[for="tab-daily"] {
@@ -93,11 +136,28 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .tabbar label { transition: none; }
-    .tabbar label:hover { transform: none; }
+  }
+  /* Phone layout. The two tabs share the row as equal halves instead of
+     keeping the 11rem desktop floor — wrapping the second tab below the
+     first breaks the attached-tab seam, which is the one thing the tab
+     design must preserve. Paddings tighten one step; the charts already
+     stack single-column via the grid breakpoints. */
+  @media (max-width: 640px) {
+    body { padding: .75rem; }
+    .tabbar label { flex: 1 1 0; min-width: 0; padding: .6rem .7rem; }
+    .tab-hint, .tab-provenance { font-size: .74rem; }
+    #tab-weekend:checked ~ #panel-weekend,
+    #tab-daily:checked ~ #panel-daily { padding: .85rem; }
+    figure { padding: .7rem; }
+    th, td { padding: .35rem .45rem; }
   }
   .panel { display: none; }
   #tab-weekend:checked ~ #panel-weekend,
-  #tab-daily:checked ~ #panel-daily { display: block; }
+  #tab-daily:checked ~ #panel-daily {
+    display: block;
+    border: 1px solid var(--grid); border-radius: 0 10px 10px 10px;
+    background: var(--sheet); padding: 1.25rem; margin-bottom: 1.5rem;
+  }
 
   .panel-head { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; margin-bottom: 1rem; }
   .panel-head .meta { color: var(--text-secondary); }
@@ -129,13 +189,33 @@
   .legend { display: flex; gap: 1rem; flex-wrap: wrap; margin: .35rem 0 .5rem; color: var(--text-secondary); }
   .legend span { display: inline-flex; align-items: center; gap: .35rem; }
   .swatch { width: 12px; height: 3px; border-radius: 2px; display: inline-block; }
-  svg { display: block; width: 100%; height: auto; }
-  .gridline { stroke: var(--grid); stroke-width: 1; }
-  .axis-label { fill: var(--text-muted); font-size: 11px; }
-  .tooltip { position: fixed; pointer-events: none; background: var(--surface-1);
-             border: 1px solid var(--grid); border-radius: 6px; padding: .4rem .6rem;
-             font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.15); display: none; z-index: 10; }
-  .tooltip b { display: block; }
+  /* Heatmap legend swatches are cells, not lines. The ramp gradient mirrors
+     the ColorBrewer Reds scale the SVGs are rendered with (scripts/soak-charts);
+     zero cells use --heat-zero, matching the SVG's baked-in neutral. */
+  .swatch-cell { height: 12px; border-radius: 3px; }
+  .heat-ramp { background: linear-gradient(90deg, #fff5f0, #fb6a4a, #67000d); }
+  /* The CPU cluster grid's cool-to-hot scale — mirrors charton's Jet map
+     (idle blue through to saturated red), which the SVGs bake in. */
+  .jet-ramp { background: linear-gradient(90deg, #00007f, #0000ff, #00ffff,
+              #7fff00, #ffff00, #ff7f00, #ff0000, #7f0000); }
+  /* Every chart is a pre-rendered SVG pair from scripts/soak-charts with theme
+     colors baked in; show the variant matching the active theme with the same
+     three-state logic as the CSS vars above. */
+  .chart-svg { display: block; width: 100%; height: auto; }
+  .chart-dark { display: none; }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .chart-light { display: none; }
+    :root:where(:not([data-theme="light"])) .chart-dark { display: block; }
+  }
+  :root[data-theme="dark"] .chart-light { display: none; }
+  :root[data-theme="dark"] .chart-dark { display: block; }
+  /* The all-zero counter panel: the metric holds at its target, so it earns a
+     number, not an empty chart. */
+  .kpi-zero { margin: 1rem 0 0; font-size: 2.4rem; font-weight: 650;
+              display: flex; align-items: baseline; gap: .6rem; }
+  .kpi-zero .unit { font-size: .85rem; font-weight: 400; }
+  .latest { color: var(--text-secondary); font-weight: 400; font-size: .85em;
+            font-variant-numeric: tabular-nums; }
   .table-wrap { overflow-x: auto; }
   table { border-collapse: collapse; width: 100%; margin-top: 1.5rem; }
   th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid var(--grid); white-space: nowrap; }
@@ -149,23 +229,25 @@
 <input class="tabs" type="radio" name="soak-tab" id="tab-weekend" checked>
 <input class="tabs" type="radio" name="soak-tab" id="tab-daily">
 
+<h1>Merge-recovery soak benchmarks</h1>
+<p class="sub">Continuous soak of the merge-recovery suite against a live shard.</p>
+
 <div class="tabbar" role="group" aria-label="Soak series">
   <label for="tab-weekend">
     <span class="tab-title">Weekend</span>
     <span class="tab-hint">60h · master</span>
     <span class="tab-status" id="status-weekend">loading…</span>
+    <span class="tab-uptime" id="uptime-weekend"></span>
     <span class="tab-provenance" id="provenance-weekend"></span>
   </label>
   <label for="tab-daily">
     <span class="tab-title">Daily</span>
     <span class="tab-hint">22h · dev</span>
     <span class="tab-status" id="status-daily">loading…</span>
+    <span class="tab-uptime" id="uptime-daily"></span>
     <span class="tab-provenance" id="provenance-daily"></span>
   </label>
 </div>
-
-<h1>Merge-recovery soak benchmarks</h1>
-<p class="sub">Continuous soak of the merge-recovery suite against a live shard.</p>
 
 <div class="panel" id="panel-weekend">
   <div class="panel-head">
@@ -192,12 +274,10 @@
   <p class="sub" id="links-daily"></p>
 </div>
 
-<div class="tooltip" id="tooltip"></div>
 <script>
 (async function () {
   const RUNS_URL = "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/";
   const COMMIT_URL = "https://github.com/F1R3FLY-io/f1r3node-rust/commit/";
-  const tooltip = document.getElementById("tooltip");
 
   const SERIES = [
     { key: "weekend", history: "data/history.json", verdict: "data/latest-verdict.json",
@@ -209,42 +289,53 @@
   ];
 
   const S = ["var(--series-1)", "var(--series-2)", "var(--series-3)"];
-  const CHARTS = [
-    { title: "Failure rate", unit: "failures / iteration", fmt: v => (v * 100).toFixed(1) + "%",
-      series: [
-        { name: "total", path: ["passive", "failure_rate"], c: 0 },
-        { name: "docker", path: ["passive", "providers", "docker"], deriv: p => p && p.iterations > 0 ? p.failures / p.iterations : null, c: 1 },
-        { name: "subprocess", path: ["passive", "providers", "subprocess"], deriv: p => p && p.iterations > 0 ? p.failures / p.iterations : null, c: 2 },
-      ] },
-    { title: "Throughput", unit: "iterations / hour", fmt: v => v.toFixed(2),
+  // Metric panels are pre-rendered SVG pairs from scripts/soak-charts, one per
+  // theme, swapped like the heatmap. Mark shape (layered line+points vs
+  // value-labelled bars) is the renderer's call, made from data density; the
+  // page only frames the images — caption with unit (plus the latest value
+  // for single-series panels), a legend when several series share a panel,
+  // and the all-zero KPI special case. Exact per-run values live in the
+  // table, which is also where hover-tooltip readings went when the charts
+  // became static images.
+  const PANELS = [
+    { slug: "throughput", title: "Throughput", unit: "iterations / hour",
+      fmt: v => v.toFixed(2),
       series: [
         { name: "total", path: ["passive", "iterations_per_hour"], c: 0 },
       ] },
-    { title: "Peak node RSS", unit: "MB", fmt: v => Math.round(v).toLocaleString(),
+    { slug: "peak-rss", title: "Peak node RSS",
+      unit: "MB · Resident Set Size (footprint)",
+      fmt: v => Math.round(v).toLocaleString(),
       series: [
         { name: "soak load", path: ["passive", "rss_peak_mb"], c: 0 },
         { name: "bench segments", path: ["active", "rss_peak_mb"], c: 2 },
       ] },
-    { title: "Peak node CPU", unit: "%", fmt: v => v.toFixed(1),
+    { slug: "peak-cpu", title: "Peak node CPU",
+      unit: "% of one core · readings above 100% mean several cores were busy",
+      fmt: v => v.toFixed(1),
       series: [
         { name: "soak load", path: ["passive", "cpu_peak_pct"], c: 0 },
       ] },
-    { title: "Finalization latency p95", unit: "ms", fmt: v => Math.round(v).toLocaleString(),
+    { slug: "finality-p95", title: "Finalization latency p95", unit: "ms",
+      fmt: v => Math.round(v).toLocaleString(),
       series: [
         { name: "soak load", path: ["passive", "finalization_p95_ms"], c: 0 },
         { name: "bench segments", path: ["active", "p95_ms"], c: 2 },
       ] },
-    { title: "Finalization latency percentiles", unit: "ms", fmt: v => Math.round(v).toLocaleString(),
+    { slug: "finality-percentiles", title: "Finalization latency percentiles", unit: "ms",
+      fmt: v => Math.round(v).toLocaleString(),
       series: [
         { name: "p50", path: ["passive", "finalization_p50_ms"], c: 0 },
         { name: "p95", path: ["passive", "finalization_p95_ms"], c: 1 },
         { name: "p99", path: ["passive", "finalization_p99_ms"], c: 2 },
       ] },
-    { title: "Too-far-ahead errors", unit: "rejections / run", fmt: v => Math.round(v).toLocaleString(),
+    { slug: "too-far-ahead", title: "Too-far-ahead errors", unit: "rejections / run",
+      fmt: v => Math.round(v).toLocaleString(), zeroBadge: true,
       series: [
         { name: "total", path: ["passive", "too_far_ahead_errors"], c: 0 },
       ] },
-    { title: "LFB convergence spread", unit: "blocks", fmt: v => Math.round(v).toLocaleString(),
+    { slug: "lfb-spread", title: "LFB convergence spread", unit: "blocks",
+      fmt: v => Math.round(v).toLocaleString(),
       series: [
         { name: "p95", path: ["passive", "tracked_metrics", "lfb_spread", "p95"], c: 1 },
         { name: "max", path: ["passive", "tracked_metrics", "lfb_spread", "max"], c: 2 },
@@ -335,6 +426,18 @@
   // before the soak emitted a version carry "unknown" — shown as absent rather
   // than as a version literally named unknown. The element collapses when empty
   // (`.tab-provenance:empty`), so a button never shows a dangling separator.
+  // Trigger provenance, compact: "oci" (the scheduler hit its slot), "cron
+  // +95m" (the fallback carried the night, that late), or "manual". The delay
+  // rides along whenever it is over a minute — an on-time oci dispatch stays
+  // a bare "oci". Runs predating the field render nothing.
+  function triggerLabel(run) {
+    const src = { "oci-resource-scheduler": "oci", "cron-fallback": "cron", "manual": "manual" }[run.trigger_source] || null;
+    if (!src) return null;
+    const d = run.slot_delay_seconds;
+    const late = (typeof d === "number" && d >= 60) ? ` +${Math.round(d / 60)}m` : "";
+    return src + late;
+  }
+
   function provenanceParts(run) {
     const known = v => v && v !== "unknown" ? String(v) : null;
     const ref = known(run.target_ref), sha = known(run.target_sha);
@@ -343,12 +446,36 @@
     if (ref || sha) parts.push([ref, sha ? sha.slice(0, 8) : null].filter(Boolean).join(" @ "));
     if (ver) parts.push("version " + ver);
     if (day) parts.push(day);
+    const trig = triggerLabel(run);
+    if (trig) parts.push(trig);
     return parts;
   }
 
   function renderProvenance(el, verdict) {
     const r = (verdict && verdict.run) || null;
     el.textContent = r ? provenanceParts(r).join(" · ") : "";
+  }
+
+  // Shard uptime for the latest run, between the verdict and provenance lines.
+  // Green share of the bar = time the shard was up; red remainder = time it
+  // was not (bring-up churn, watchdog kills, restarts). The denominator is the
+  // elapsed time for a mid-run checkpoint and the full window for a completed
+  // run. Runs recorded before the soak emitted shard_up_seconds render
+  // nothing — the element collapses rather than showing a bar with no data.
+  function renderUptime(el, verdict) {
+    el.innerHTML = "";
+    const r = (verdict && verdict.run) || null;
+    if (!r) return;
+    const up = r.shard_up_seconds;
+    const span = verdict.verdict === "in_progress" ? r.elapsed_seconds : r.duration_seconds;
+    if (typeof up !== "number" || typeof span !== "number" || span <= 0) return;
+    const ratio = Math.min(Math.max(up / span, 0), 1);
+    const pct = (ratio * 100).toFixed(ratio >= 0.995 && ratio < 1 ? 1 : 0);
+    const hrs = s => (s / 3600).toFixed(s >= 36000 ? 0 : 1);
+    el.innerHTML =
+      `<span class="uptime-bar" role="img" aria-label="shard uptime ${pct}%">` +
+      `<i style="width:${(ratio * 100).toFixed(2)}%"></i></span>` +
+      `<span class="uptime-text">uptime ${pct}% · ${hrs(up)}h of ${hrs(span)}h</span>`;
   }
 
   // Rendered only when non-empty, so the strip's presence is itself the signal.
@@ -359,77 +486,104 @@
       f.map(s => "<li>" + esc(s) + "</li>").join("") + "</ul></div>";
   }
 
-  function renderCharts(container, history) {
-    const dates = history.map(h => ((h.run || {}).date || "").slice(0, 10));
-    const W = 360, H = 180, PX = 44, PY = 18;
+  // The failure map replaces the failure-rate line chart: for sparse failure
+  // data a heatmap carries strictly more — rate (color), volume (cell text),
+  // and category, per day. The cells are pre-rendered SVGs published by
+  // scripts/soak-charts (one per theme; colors are baked at render time, so the
+  // page swaps variants with the same theme logic as everything else). The
+  // legend is built here because the SVG suppresses its own: a ramp labelled
+  // with the series' real min/max nonzero rates, a neutral swatch for 0%, and
+  // the absence rule — a missing cell means that category did not run.
+  function renderHeatmap(container, seriesKey, history) {
+    const rates = [];
+    for (const h of history) {
+      const p = h.passive || {};
+      if (typeof p.failure_rate === "number" && p.failure_rate > 0) rates.push(p.failure_rate);
+      for (const k of ["docker", "subprocess"]) {
+        const pr = p.providers && p.providers[k];
+        if (pr && pr.iterations > 0 && pr.failures > 0) rates.push(pr.failures / pr.iterations);
+      }
+    }
+    const pct = v => (v * 100).toFixed(v < 0.01 ? 2 : 1) + "%";
+    const range = rates.length
+      ? `${pct(Math.min(...rates))} – ${pct(Math.max(...rates))}`
+      : "no failures recorded";
+    const fig = document.createElement("figure");
+    fig.className = "heatmap-figure";
+    fig.innerHTML =
+      `<figcaption>Failure map <span class="unit">failures / iteration</span></figcaption>` +
+      `<div class="legend"><span><i class="swatch swatch-cell" style="background:var(--heat-zero)"></i>0%</span>` +
+      `<span><i class="swatch swatch-cell heat-ramp"></i>${esc(range)}</span>` +
+      `<span class="unit">blank = did not run</span></div>` +
+      `<img class="chart-svg chart-light" alt="Failure heatmap: rate by category and date" ` +
+      `src="data/failure-heatmap-${esc(seriesKey)}-light.svg" ` +
+      `onerror="this.closest('figure').style.display='none'">` +
+      `<img class="chart-svg chart-dark" alt="Failure heatmap: rate by category and date" ` +
+      `src="data/failure-heatmap-${esc(seriesKey)}-dark.svg" ` +
+      `onerror="this.closest('figure').style.display='none'">`;
+    container.appendChild(fig);
+  }
 
-    for (const def of CHARTS) {
+  function renderPanels(container, seriesKey, history) {
+    for (const def of PANELS) {
       const seriesData = def.series.map(s => ({
         name: s.name, c: s.c,
         values: history.map(h => {
-          const v = s.deriv ? s.deriv(g(h, s.path)) : g(h, s.path);
+          const v = g(h, s.path);
           return typeof v === "number" && isFinite(v) ? v : null;
         }),
       })).filter(s => s.values.some(v => v !== null));
       const all = seriesData.flatMap(s => s.values).filter(v => v !== null);
+      // No data → no panel, mirroring the renderer, which emits no SVG then.
       if (all.length === 0) continue;
-      const max = Math.max(...all) * 1.1 || 1;
-
-      const x = i => history.length === 1 ? W / 2 : PX + (i * (W - PX - 8)) / (history.length - 1);
-      const y = v => H - PY - (v / max) * (H - 2 * PY);
-
-      let svg = "";
-      for (let t = 0; t <= 2; t++) {
-        const v = (max * t) / 2, yy = y(v);
-        svg += `<line class="gridline" x1="${PX}" y1="${yy}" x2="${W - 8}" y2="${yy}"/>` +
-               `<text class="axis-label" x="${PX - 5}" y="${yy + 3}" text-anchor="end">${def.fmt(v)}</text>`;
-      }
-      for (const s of seriesData) {
-        const pts = s.values.map((v, i) => v === null ? null : [x(i), y(v)]).filter(Boolean);
-        if (pts.length > 1) {
-          svg += `<polyline fill="none" stroke="${S[s.c]}" stroke-width="2" stroke-linejoin="round" ` +
-                 `points="${pts.map(p => p.map(n => n.toFixed(1)).join(",")).join(" ")}"/>`;
-        }
-        for (const [px, py] of pts) {
-          svg += `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="3.5" fill="${S[s.c]}" ` +
-                 `stroke="var(--surface-2)" stroke-width="2"/>`;
-        }
-      }
-      // Tick labels are centred on their point, so the first and last would
-      // overflow the viewBox and render clipped. Anchor the edges inward.
-      dates.forEach((d, i) => {
-        if (history.length <= 6 || i % Math.ceil(history.length / 6) === 0 || i === history.length - 1) {
-          const anchor = i === 0 ? "start" : (i === history.length - 1 ? "end" : "middle");
-          svg += `<text class="axis-label" x="${x(i)}" y="${H - 4}" text-anchor="${anchor}">${esc(d.slice(5))}</text>`;
-        }
-      });
 
       const fig = document.createElement("figure");
-      const legend = seriesData.length > 1
+      // All-zero counters are suppressed at the renderer, so a flat zero line
+      // never poses as information; the number still deserves a surface,
+      // because "no rejections, and we are watching" is the good news.
+      if (def.zeroBadge && all.every(v => v === 0)) {
+        fig.innerHTML =
+          `<figcaption>${def.title} <span class="unit">${def.unit}</span></figcaption>` +
+          `<p class="kpi-zero">0<span class="unit">across ${all.length} run${all.length > 1 ? "s" : ""} · target 0</span></p>`;
+        container.appendChild(fig);
+        continue;
+      }
+
+      // The CPU panel becomes a node × core grid heatmap once the soak
+      // records the cluster grid; its legend is the color scale itself. The
+      // SVG suppresses charton's own legend (it renders a continuous
+      // colorbar as a black slab), so the ramp is drawn here, themed.
+      const gridRun = def.slug === "peak-cpu"
+        ? history.some(h => {
+            const grid = g(h, ["passive", "cpu_peak_core_grid_pct"]);
+            return grid && typeof grid === "object" && Object.keys(grid).length > 0;
+          })
+        : false;
+      const legend = gridRun
+        ? '<div class="legend"><span><i class="swatch swatch-cell jet-ramp"></i>0% → hot</span>' +
+          '<span class="unit">cell = one core · labelled ≥ 100% (a full core)</span></div>'
+        : seriesData.length > 1
         ? '<div class="legend">' + seriesData.map(s =>
             `<span><i class="swatch" style="background:${S[s.c]}"></i>${s.name}</span>`).join("") + "</div>"
         : "";
-      fig.innerHTML = `<figcaption>${def.title} <span class="unit">${def.unit}</span></figcaption>` +
-        legend + `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${def.title} over time"></svg>`;
-      fig.querySelector("svg").innerHTML = svg;
-
-      const svgEl = fig.querySelector("svg");
-      svgEl.addEventListener("mousemove", ev => {
-        const rect = svgEl.getBoundingClientRect();
-        const mx = ((ev.clientX - rect.left) / rect.width) * W;
-        let best = 0, bestD = Infinity;
-        for (let i = 0; i < history.length; i++) {
-          const d = Math.abs(x(i) - mx);
-          if (d < bestD) { bestD = d; best = i; }
-        }
-        const rows = seriesData.map(s => s.values[best] === null ? "" :
-          `<span style="color:${S[s.c]}">●</span> ${s.name}: ${def.fmt(s.values[best])}<br>`).join("");
-        tooltip.innerHTML = `<b>${esc(dates[best])}</b>${rows}`;
-        tooltip.style.display = "block";
-        tooltip.style.left = (ev.clientX + 14) + "px";
-        tooltip.style.top = (ev.clientY + 14) + "px";
-      });
-      svgEl.addEventListener("mouseleave", () => { tooltip.style.display = "none"; });
+      // Selective direct label: single-series charts get the latest value in
+      // the caption, so the current state reads at a glance. Multi-series
+      // charts leave it to the legend and the table — one number per caption
+      // would misattribute; one per series is clutter.
+      const latest = seriesData.length === 1
+        ? seriesData[0].values.reduce((acc, v) => v !== null ? v : acc, null)
+        : null;
+      const latestHtml = latest !== null
+        ? ` <span class="latest">· latest ${def.fmt(latest)}</span>` : "";
+      fig.innerHTML =
+        `<figcaption>${def.title} <span class="unit">${def.unit}</span>${latestHtml}</figcaption>` +
+        legend +
+        `<img class="chart-svg chart-light" alt="${def.title} chart" ` +
+        `src="data/chart-${def.slug}-${esc(seriesKey)}-light.svg" ` +
+        `onerror="this.closest('figure').style.display='none'">` +
+        `<img class="chart-svg chart-dark" alt="${def.title} chart" ` +
+        `src="data/chart-${def.slug}-${esc(seriesKey)}-dark.svg" ` +
+        `onerror="this.closest('figure').style.display='none'">`;
       container.appendChild(fig);
     }
   }
@@ -446,14 +600,18 @@
       // "unknown" is what pre-version runs carry; show a dash so the column
       // reads as "not recorded" rather than as a version by that name.
       const ver = r.version && r.version !== "unknown" ? `<code>${esc(r.version)}</code>` : "-";
+      // Same optional-by-construction stance as version: rows predating
+      // trigger emission show a dash, not a value pretending to be recorded.
+      const trig = triggerLabel(r);
       return `<tr><td>${esc((r.date || "").slice(0, 10))}</td><td>${ver}</td><td>${shaCell(r.target_sha)}</td>` +
+        `<td>${trig ? esc(trig) : "-"}</td>` +
         `<td class="num">${n(p.iterations)}</td><td class="num">${n(p.failure_rate)}</td>` +
         `<td class="num">${n(p.iterations_per_hour)}</td><td class="num">${n(p.rss_peak_mb)}</td>` +
         `<td class="num">${n(p.finalization_p95_ms)}</td><td class="num">${n(a && a.p95_ms)}</td>` +
         `<td>${runLink}</td></tr>`;
     }).join("");
     el.innerHTML =
-      `<table><thead><tr><th>date</th><th>version</th><th>sha</th><th class="num">iters</th>` +
+      `<table><thead><tr><th>date</th><th>version</th><th>sha</th><th>trigger</th><th class="num">iters</th>` +
       `<th class="num">fail rate</th><th class="num">iters/h</th><th class="num">RSS MB</th>` +
       `<th class="num">final p95 ms</th><th class="num">bench p95 ms</th><th>run</th></tr></thead>` +
       `<tbody>${rows}</tbody></table>`;
@@ -466,6 +624,7 @@
     const history = Array.isArray(historyRaw) ? historyRaw : [];
 
     renderStatus(document.getElementById("status-" + def.key), verdict, history.length);
+    renderUptime(document.getElementById("uptime-" + def.key), verdict);
     renderProvenance(document.getElementById("provenance-" + def.key), verdict);
     renderProgress(document.getElementById("progress-" + def.key), verdict);
     renderFailures(document.getElementById("failures-" + def.key), verdict);
@@ -482,7 +641,8 @@
         `<p class="empty">${def.empty}</p>`;
       continue;
     }
-    renderCharts(document.getElementById("charts-" + def.key), history);
+    renderHeatmap(document.getElementById("charts-" + def.key), def.key, history);
+    renderPanels(document.getElementById("charts-" + def.key), def.key, history);
     renderTable(document.getElementById("table-" + def.key), history);
   }
 })();
