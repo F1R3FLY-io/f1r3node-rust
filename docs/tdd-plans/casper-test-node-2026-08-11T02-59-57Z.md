@@ -5,7 +5,7 @@ produced_by: /tdd
 produced_at: 2026-08-11T03:18:01Z
 source_discovery: docs/discoveries/architecture-review-2026-08-11T02-59-57Z.md
 source_candidate: C1
-parent_task: TASK-012-1
+parent_task: TASK-015-1
 accepted_design: common-caller
 glossary: docs/Glossary.md
 test_runner: cargo-test
@@ -140,7 +140,7 @@ The plan is complete when all ten behaviors are checked and every cycle has a no
 
 - `/tdd --status` reports the plan complete.
 - `/loop /tdd` stops naturally.
-- `/task-complete TASK-012-1 --unit-tests B1,B2,B3,B4,B5,B6,B7,B8,B9,B10` closes the parent task after verification.
+- `/task-complete TASK-015-1 --unit-tests B1,B2,B3,B4,B5,B6,B7,B8,B9,B10` closes the parent task after verification.
 
 ## Reopening
 
