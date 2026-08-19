@@ -1071,6 +1071,101 @@ fn canonical_unary_elist(payload: &[u8]) -> Option<(usize, i64)> {
     }
 }
 
+/// Build the canonical protobuf body of one `Expr` whose shape is an exact
+/// unary `EList` spine ending in `GInt`.
+///
+/// Lengths are computed from the leaf outward and emitted from the root
+/// inward.  This is the same two-pass discipline as the generated protobuf
+/// encoder, specialized to the three-field recurrence in this shape; no
+/// intermediate nested `Par` or component trie is constructed.
+fn encode_canonical_unary_elist_expr(depth: usize, terminal: i64) -> Option<Vec<u8>> {
+    const EXPR_ELIST_TAG: u32 = 20;
+    const ELIST_PAR_TAG: u32 = 1;
+    const PAR_EXPR_TAG: u32 = 5;
+    const EXPR_GINT_TAG: u32 = 2;
+
+    let zigzag = ((terminal << 1) ^ (terminal >> 63)) as u64;
+    let mut expr_len = key_len(EXPR_GINT_TAG).checked_add(encoded_len_varint(zigzag))?;
+    let mut frames = Vec::with_capacity(depth);
+    for _ in 0..depth {
+        let child_expr_len = expr_len;
+        let par_len = key_len(PAR_EXPR_TAG)
+            .checked_add(encoded_len_varint(child_expr_len as u64))?
+            .checked_add(child_expr_len)?;
+        let list_len = key_len(ELIST_PAR_TAG)
+            .checked_add(encoded_len_varint(par_len as u64))?
+            .checked_add(par_len)?;
+        expr_len = key_len(EXPR_ELIST_TAG)
+            .checked_add(encoded_len_varint(list_len as u64))?
+            .checked_add(list_len)?;
+        frames.push((list_len, par_len, child_expr_len));
+    }
+
+    let mut out = Vec::with_capacity(expr_len);
+    for &(list_len, par_len, child_expr_len) in frames.iter().rev() {
+        encode_key(EXPR_ELIST_TAG, WireType::LengthDelimited, &mut out);
+        prost::encoding::encode_varint(list_len as u64, &mut out);
+        encode_key(ELIST_PAR_TAG, WireType::LengthDelimited, &mut out);
+        prost::encoding::encode_varint(par_len as u64, &mut out);
+        encode_key(PAR_EXPR_TAG, WireType::LengthDelimited, &mut out);
+        prost::encoding::encode_varint(child_expr_len as u64, &mut out);
+    }
+    encode_key(EXPR_GINT_TAG, WireType::Varint, &mut out);
+    prost::encoding::encode_varint(zigzag, &mut out);
+    debug_assert_eq!(out.len(), expr_len);
+    Some(out)
+}
+
+/// Adopt one already-proved canonical unary `EList` expression as the sole
+/// endpoint of a `ParBag`.
+///
+/// The score and protobuf body are written directly into the final trie key.
+/// This avoids the quadratic sequence of constructing, hashing, and dropping
+/// every nested suffix trie while preserving the exact `RPB\x03` key language.
+fn import_canonical_unary_elist_expr(expr_body: &[u8], depth: usize, terminal: i64) -> Option<Par> {
+    let score_capacity = 32usize.checked_add(depth.checked_mul(44)?)?;
+    let mut key = Vec::with_capacity(
+        PAR_BAG_KEY_HEADER_LEN
+            .checked_add(score_capacity)?
+            .checked_add(expr_body.len())?
+            .checked_add(PAR_BAG_SCORE_LEN_BYTES)?,
+    );
+    key.extend_from_slice(&component_prefix(ParComponentTag::Expr));
+    let score_start = key.len();
+    for _ in 0..depth {
+        begin_score_node(&mut key, Score::ELIST);
+        append_int_score_atom(&mut key, -1);
+        begin_score_node(&mut key, Score::PAR);
+    }
+    begin_score_node(&mut key, Score::INT);
+    append_int_score_atom(&mut key, terminal);
+    end_score_node(&mut key);
+    for _ in 0..depth {
+        append_int_score_atom(&mut key, 0);
+        end_score_node(&mut key);
+        append_int_score_atom(&mut key, 0);
+        end_score_node(&mut key);
+    }
+    let score_len = u64::try_from(key.len().checked_sub(score_start)?)
+        .expect("one allocated canonical score length fits in u64");
+    key.extend_from_slice(expr_body);
+    key.extend_from_slice(&score_len.to_be_bytes());
+
+    let mut components = ParBag::new();
+    components
+        .insert_bytes(ParComponentTag::Expr, &key, Multiplicity::ONE, Some(true))
+        .expect("one validated singleton component cannot overflow multiplicity");
+    Some(Par::from_parts(components, Vec::new(), false))
+}
+
+/// Construct the resident canonical unary-list `Par` directly from its two
+/// scalar parameters.  Canonical-path decoding uses this after its byte cursor
+/// has proved the structural path image.
+pub(crate) fn import_canonical_unary_elist_par(depth: usize, terminal: i64) -> Option<Par> {
+    let expr_body = encode_canonical_unary_elist_expr(depth, terminal)?;
+    import_canonical_unary_elist_expr(&expr_body, depth, terminal)
+}
+
 fn validate_unary_elist_key(score: &[u8], payload: &[u8]) -> Option<bool> {
     let (depth, terminal) = canonical_unary_elist(payload)?;
 
@@ -1295,7 +1390,16 @@ fn import_canonical_singleton_epathmap_par(protobuf: &[u8]) -> Option<Par> {
 /// generated protobuf PDA entry points. `None` always delegates to the full
 /// generated schema machine.
 pub(crate) fn import_canonical_parbag_fast_path(protobuf: &[u8]) -> Option<Par> {
+    const PAR_EXPR_KEY: u64 = (5 << 3) | 2;
+
+    let unary = || {
+        let expr_body = canonical_single_delimited_field(protobuf, PAR_EXPR_KEY)?;
+        let (depth, terminal) = canonical_unary_elist(expr_body)?;
+        import_canonical_unary_elist_expr(expr_body, depth, terminal)
+    };
+
     import_canonical_singleton_epathmap_par(protobuf)
+        .or_else(unary)
         .or_else(|| import_canonical_singleton_eset_unary_elist_par(protobuf))
 }
 
@@ -1389,6 +1493,13 @@ impl EncodedParComponent<'_, Expr> {
     /// encoded body instead of repeatedly decoding every remaining suffix.
     pub fn canonical_unary_elist_depth(self) -> Option<usize> {
         canonical_unary_elist(self.payload).map(|(depth, _terminal)| depth)
+    }
+
+    /// Return both scalar parameters of the exact canonical unary-list shape.
+    /// Canonical-path encoding can consequently stream its structural trie
+    /// image without decoding any suffix `ParBag`.
+    pub(crate) fn canonical_unary_elist_parts(self) -> Option<(usize, i64)> {
+        canonical_unary_elist(self.payload)
     }
 }
 
@@ -2643,6 +2754,30 @@ mod fast_key_tests {
             let (_tag, score, payload) = split_key_parts(key).expect("canonical key");
             assert_eq!(validate_unary_elist_key(score, payload), None);
         });
+    }
+
+    #[test]
+    fn direct_unary_elist_import_is_byte_score_and_term_identical() {
+        for depth in [0, 1, 32, 256] {
+            for terminal in [i64::MIN, -1, 0, 1, i64::MAX] {
+                let expected = Par::default().with_exprs(vec![unary_elist_expr(depth, terminal)]);
+                let protobuf = protobuf_encoder::encode_to_vec(&expected);
+
+                let from_protobuf = import_canonical_parbag_fast_path(&protobuf)
+                    .expect("the canonical unary-list protobuf shape is imported");
+                let direct = import_canonical_unary_elist_par(depth, terminal)
+                    .expect("the scalar unary-list parameters are representable");
+
+                assert_eq!(from_protobuf, expected);
+                assert_eq!(direct, expected);
+                assert_eq!(protobuf_encoder::encode_to_vec(&from_protobuf), protobuf);
+                assert_eq!(protobuf_encoder::encode_to_vec(&direct), protobuf);
+                assert_eq!(
+                    direct.components().cached_canonical_path_stability(),
+                    Some(true)
+                );
+            }
+        }
     }
 
     #[test]

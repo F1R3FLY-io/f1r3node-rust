@@ -60,6 +60,21 @@ fn nested_list(depth: usize) -> Par {
 }
 
 fn par_depth(par: &Par) -> usize {
+    if par.cardinality() == 1 && par.family_cardinality::<Expr>() == 1 {
+        let mut encoded_depth = None;
+        par.visit_encoded::<Expr>(|entry| {
+            if entry.multiplicity().get() == 1 {
+                encoded_depth = entry.canonical_unary_elist_depth();
+            }
+        });
+        if let Some(depth) = encoded_depth {
+            return depth;
+        }
+    }
+
+    // General fallback for a shape outside the exact byte-native probe
+    // alphabet. Deep unary fixtures take the branch above so this oracle does
+    // not rebuild every suffix ParBag merely to count wrappers.
     let mut depth = 0usize;
     let mut cursor = par.clone();
     loop {

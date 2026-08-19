@@ -434,6 +434,27 @@ fn ground_etuple_carrier(elements: Vec<Par>) -> Par {
     }))
 }
 
+/// Recognize the dominant deep stable carrier directly in its authoritative
+/// ParBag endpoint.  The payload cursor is linear and borrowed; no suffix
+/// `Par`, score tree, or temporary PathMap is materialized.
+fn encoded_unary_elist_parts(par: &Par) -> Option<(usize, i64)> {
+    if !par.locally_free().is_empty()
+        || par.connective_used()
+        || par.cardinality() != 1
+        || par.family_cardinality::<Expr>() != 1
+    {
+        return None;
+    }
+
+    let mut result = None;
+    par.visit_encoded::<Expr>(|entry| {
+        if entry.multiplicity().get() == 1 {
+            result = entry.canonical_unary_elist_parts();
+        }
+    });
+    result
+}
+
 fn epathmap_carrier(repr: EPathMapRepr<Par>) -> Par {
     let mut map = EPathMap::default();
     map.replace_decoded_representation_deferred_key_validation(repr)
@@ -529,6 +550,15 @@ impl<'p> EncMachine<'p> {
         self.emit(&scratch)
     }
 
+    fn emit_unary_elist_segment(&mut self, depth: usize, terminal: i64) -> Result<(), CodecError> {
+        for _ in 0..depth {
+            self.emit_byte(tag::ELIST)?;
+            self.emit_uv(1)?;
+        }
+        self.emit_byte(tag::GINT)?;
+        self.emit_uv(zigzag64(terminal))
+    }
+
     /// Schedule the §1.3 top-level path ops for `par` (split / bare / escape
     /// on the trie grammar). Total over ALL Pars — a ¬eval_stable node at a
     /// top-level segment position takes the `0x0F` escape arm.
@@ -548,6 +578,17 @@ impl<'p> EncMachine<'p> {
         // own stability.
         if self.top_level_stable.is_none() {
             self.top_level_stable = Some(stable);
+        }
+        if stable {
+            if let Some((depth, terminal)) = encoded_unary_elist_parts(par_ref) {
+                if depth > 0 {
+                    // The outer EList is the top-level split form; only its
+                    // child is emitted as a segment, followed by TERM.
+                    self.emit_unary_elist_segment(depth - 1, terminal)?;
+                    self.emit_byte(tag::TERM)?;
+                    return Ok(());
+                }
+            }
         }
         if let Some(list) = split_carrier_list(par_ref) {
             // Split form: per-element segments + the terminator. LIFO push:
@@ -668,6 +709,9 @@ impl<'p> EncMachine<'p> {
             self.emit_byte(tag::ESCAPE)?;
             self.emit_uv(protobuf_bytes.len() as u64)?;
             return self.emit(&protobuf_bytes);
+        }
+        if let Some((depth, terminal)) = encoded_unary_elist_parts(par_ref) {
+            return self.emit_unary_elist_segment(depth, terminal);
         }
         match (
             par_ref.family_cardinality::<Expr>(),
@@ -1525,11 +1569,53 @@ enum CanonicalValidationTask<'a> {
     StableValue(CanonicalRegion<'a>),
 }
 
+/// Parse the exact canonical path image of
+/// `EList([EList([.. EList([GInt(_)]) ..])])` without constructing the
+/// recursively nested semantic graph.
+///
+/// The outer list is represented by the top-level split terminator, so the
+/// number of semantic list wrappers is one greater than the number of `ELIST`
+/// segment tags in the byte stream.
+fn canonical_unary_elist_path(path: &[u8]) -> Option<(usize, i64)> {
+    let limit = path.len().checked_sub(1)?;
+    if path.get(limit).copied()? != tag::TERM {
+        return None;
+    }
+
+    let mut cursor = 0usize;
+    let mut nested = 0usize;
+    while cursor < limit && path[cursor] == tag::ELIST {
+        cursor += 1;
+        if read_uv(path, &mut cursor, limit).ok()? != 1 {
+            return None;
+        }
+        nested = nested.checked_add(1)?;
+    }
+    if cursor >= limit || path[cursor] != tag::GINT {
+        return None;
+    }
+    cursor += 1;
+    let encoded = read_uv(path, &mut cursor, limit).ok()?;
+    if cursor != limit {
+        return None;
+    }
+    Some((nested.checked_add(1)?, unzigzag64(encoded)))
+}
+
 /// Validate a canonical path and every EPathMap key/value body reachable from
 /// it with one explicit global worklist. Nested ACT line keys remain borrowed
 /// subranges of the root buffer, so a depth-N one-entry map chain touches each
 /// encoded byte at its owning layer instead of rebuilding N suffix tries.
 pub(crate) fn validate_canonical_path(path: &[u8]) -> Result<CanonicalPathMetadata, CodecError> {
+    if canonical_unary_elist_path(path).is_some() {
+        return Ok(CanonicalPathMetadata {
+            stable: true,
+            reducer_eval_identity: true,
+            locally_free: Vec::new(),
+            connective_used: false,
+        });
+    }
+
     let mut tasks = vec![CanonicalValidationTask::Key {
         region: CanonicalRegion {
             backing: CanonicalBacking::Borrowed(path),
@@ -1645,6 +1731,10 @@ pub(crate) fn validate_canonical_path(path: &[u8]) -> Result<CanonicalPathMetada
 /// not Prost's recursively budgeted `Par::decode`; canonicality is then checked
 /// against the same iterative encoder that produced the payload.
 pub(crate) fn decode_trie_path_after_validation(path: &[u8]) -> Result<Par, CodecError> {
+    if let Some((depth, terminal)) = canonical_unary_elist_path(path) {
+        return crate::rust::par_bag::import_canonical_unary_elist_par(depth, terminal)
+            .ok_or(CodecError::Truncated);
+    }
     DecMachine::new(path, DecMode::Semantic).run_path()
 }
 
