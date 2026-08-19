@@ -290,22 +290,11 @@ async fn finalized_noncanonical_deploy_is_reproposed_after_canonical_rejection()
             .await
             .expect("sync the rejecting merge");
     }
-    fixture.nodes.sort_by(|left, right| {
-        left.validator_id_opt
-            .as_ref()
-            .expect("left validator identity")
-            .public_key
-            .bytes
-            .cmp(
-                &right
-                    .validator_id_opt
-                    .as_ref()
-                    .expect("right validator identity")
-                    .public_key
-                    .bytes,
-            )
-    });
 
+    // Recovery custody is owner-only: the buffer entry lives solely on the
+    // validator that sent the rejected copy's carrier (block_a's proposer,
+    // nodes[0]), so that node must drive the finalization and the recovery
+    // proposal.
     fixture.nodes[0]
         .block_dag_storage
         .record_directly_finalized(merge_block.block_hash.clone(), 1.0, |_| async { Ok(()) })
