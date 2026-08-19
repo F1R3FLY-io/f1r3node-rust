@@ -2469,6 +2469,37 @@ impl ParBag {
             });
     }
 
+    /// Visit every authoritative RPB3 endpoint as its already-separated score
+    /// and protobuf slices.
+    ///
+    /// This is the zero-decode import boundary for transient construction
+    /// plans. The callback borrows the zipper's reused path buffer; callers
+    /// that retain a fragment must copy that fragment before returning.
+    pub(crate) fn visit_canonical_key_parts(
+        &self,
+        mut visitor: impl FnMut(ParComponentTag, &[u8], &[u8], Multiplicity),
+    ) {
+        for tag in [
+            ParComponentTag::Send,
+            ParComponentTag::Receive,
+            ParComponentTag::New,
+            ParComponentTag::Expr,
+            ParComponentTag::Match,
+            ParComponentTag::GUnforgeable,
+            ParComponentTag::Connective,
+            ParComponentTag::Bundle,
+            ParComponentTag::If,
+        ] {
+            self.components
+                .visit_prefix(&component_prefix(tag), |path, multiplicity| {
+                    let (actual_tag, score, protobuf) = split_key_parts(path)
+                        .expect("ParBag invariant: every component has a valid RPB3 key");
+                    debug_assert_eq!(actual_tag, tag);
+                    visitor(tag, score, protobuf, multiplicity);
+                });
+        }
+    }
+
     /// Append one family's canonical score trees in the exact order encoded by
     /// its PathMap keys. Keys are
     /// `score-prefix || canonical-protobuf-body || u64-BE(score-length)`, so

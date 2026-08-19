@@ -20,9 +20,10 @@
 //! represented as another flat arena.  Parent scores reference child score
 //! nodes by index; no recursive `Tree` is cloned while a construction grows.
 
+use std::cmp::Ordering;
 use std::fmt;
 
-use prost::encoding::{encode_key, encode_varint, encoded_len_varint, key_len, WireType};
+use prost::encoding::{encoded_len_varint, key_len};
 
 use super::par_bag::{Multiplicity, ParBag, ParBagComponent, ParComponentTag, PAR_BAG_KEY_DOMAIN};
 use super::rholang::protobuf_encoder;
@@ -98,6 +99,79 @@ enum ScorePiece {
     Repeat { child: PlannedScore, count: u64 },
 }
 
+enum ScoreCursorOp {
+    Score(PlannedScore),
+    Bytes { fragment: usize, offset: usize },
+    Repeat { child: PlannedScore, remaining: u64 },
+}
+
+/// A zero-copy cursor over the prefix-free canonical score language.
+///
+/// Canonicalization compares these cursors directly.  It does not flatten a
+/// planned score graph, even when that graph represents a deep recursive term
+/// or a high multiplicity.
+struct ScoreByteCursor<'a> {
+    arena: &'a ParConstruction,
+    work: Vec<ScoreCursorOp>,
+}
+
+impl<'a> ScoreByteCursor<'a> {
+    fn new(arena: &'a ParConstruction, root: PlannedScore) -> Self {
+        Self {
+            arena,
+            work: vec![ScoreCursorOp::Score(root)],
+        }
+    }
+}
+
+impl Iterator for ScoreByteCursor<'_> {
+    type Item = u8;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.work.pop()? {
+                ScoreCursorOp::Score(score) => {
+                    for piece in self.arena.scores[score.0].pieces.iter().rev() {
+                        self.work.push(match *piece {
+                            ScorePiece::Bytes(fragment) => ScoreCursorOp::Bytes {
+                                fragment,
+                                offset: 0,
+                            },
+                            ScorePiece::Child(child) => ScoreCursorOp::Score(child),
+                            ScorePiece::Repeat { child, count } => ScoreCursorOp::Repeat {
+                                child,
+                                remaining: count,
+                            },
+                        });
+                    }
+                }
+                ScoreCursorOp::Bytes { fragment, offset } => {
+                    let bytes = &self.arena.byte_fragments[fragment];
+                    let byte = *bytes.get(offset)?;
+                    if offset + 1 < bytes.len() {
+                        self.work.push(ScoreCursorOp::Bytes {
+                            fragment,
+                            offset: offset + 1,
+                        });
+                    }
+                    return Some(byte);
+                }
+                ScoreCursorOp::Repeat { child, remaining } => {
+                    if remaining != 0 {
+                        if remaining != 1 {
+                            self.work.push(ScoreCursorOp::Repeat {
+                                child,
+                                remaining: remaining - 1,
+                            });
+                        }
+                        self.work.push(ScoreCursorOp::Score(child));
+                    }
+                }
+            }
+        }
+    }
+}
+
 struct ScoreNode {
     pieces: Vec<ScorePiece>,
     encoded_len: usize,
@@ -139,6 +213,236 @@ enum ProtoBuildOp<'a> {
 enum WireRoot {
     Par(PlannedPar),
     Proto(usize),
+}
+
+#[derive(Clone, Copy)]
+struct InlineWireBytes {
+    bytes: [u8; 20],
+    len: u8,
+    offset: u8,
+}
+
+impl InlineWireBytes {
+    fn protobuf_varints(values: &[u64]) -> Self {
+        let mut inline = Self {
+            bytes: [0; 20],
+            len: 0,
+            offset: 0,
+        };
+        for &value in values {
+            let mut value = value;
+            loop {
+                let mut byte = (value & 0x7f) as u8;
+                value >>= 7;
+                if value != 0 {
+                    byte |= 0x80;
+                }
+                inline.bytes[usize::from(inline.len)] = byte;
+                inline.len += 1;
+                if value == 0 {
+                    break;
+                }
+            }
+        }
+        inline
+    }
+
+    fn length_delimited_prefix(tag: u32, len: usize) -> Self {
+        Self::protobuf_varints(&[(u64::from(tag) << 3) | 2, len as u64])
+    }
+}
+
+enum WireCursorOp<'a> {
+    Node {
+        node: usize,
+        index: usize,
+    },
+    Nested {
+        tag: u32,
+        node: usize,
+    },
+    ChildPar {
+        tag: u32,
+        par: PlannedPar,
+    },
+    Par(PlannedPar),
+    Components {
+        occurrences: &'a [Occurrence],
+        index: usize,
+        remaining: u64,
+        after_metadata: bool,
+    },
+    RootMetadata(PlannedPar),
+    Bytes {
+        bytes: &'a [u8],
+        offset: usize,
+    },
+    Inline(InlineWireBytes),
+}
+
+/// A byte cursor over a planned protobuf graph.
+///
+/// The same cursor drives final emission and canonical tie-breaking. It is a
+/// PDA over integer arena edges and borrowed byte fragments; neither operation
+/// materializes a nested message or calls itself recursively.
+struct WireByteCursor<'a> {
+    arena: &'a ParConstruction,
+    work: Vec<WireCursorOp<'a>>,
+}
+
+impl<'a> WireByteCursor<'a> {
+    fn new(arena: &'a ParConstruction, root: WireRoot) -> Self {
+        let root = match root {
+            WireRoot::Par(par) => WireCursorOp::Par(par),
+            WireRoot::Proto(node) => WireCursorOp::Node { node, index: 0 },
+        };
+        Self {
+            arena,
+            work: vec![root],
+        }
+    }
+}
+
+impl Iterator for WireByteCursor<'_> {
+    type Item = u8;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        fn is_after_metadata(tag: ParComponentTag) -> bool {
+            matches!(tag, ParComponentTag::Bundle | ParComponentTag::If)
+        }
+
+        loop {
+            match self.work.pop()? {
+                WireCursorOp::Node { node, index } => {
+                    if let Some(piece) = self.arena.protobuf_nodes[node].pieces.get(index) {
+                        self.work.push(WireCursorOp::Node {
+                            node,
+                            index: index + 1,
+                        });
+                        self.work.push(match piece {
+                            ProtoPiece::Bytes(bytes) => WireCursorOp::Bytes { bytes, offset: 0 },
+                            ProtoPiece::Node { tag, node } => WireCursorOp::Nested {
+                                tag: *tag,
+                                node: *node,
+                            },
+                            ProtoPiece::Par { tag, par } => WireCursorOp::ChildPar {
+                                tag: *tag,
+                                par: *par,
+                            },
+                        });
+                    }
+                }
+                WireCursorOp::Nested { tag, node } => {
+                    self.work.push(WireCursorOp::Node { node, index: 0 });
+                    self.work.push(WireCursorOp::Inline(
+                        InlineWireBytes::length_delimited_prefix(
+                            tag,
+                            self.arena.protobuf_nodes[node].encoded_len,
+                        ),
+                    ));
+                }
+                WireCursorOp::ChildPar { tag, par } => {
+                    self.work.push(WireCursorOp::Par(par));
+                    self.work.push(WireCursorOp::Inline(
+                        InlineWireBytes::length_delimited_prefix(
+                            tag,
+                            self.arena.pars[par.0].protobuf_len,
+                        ),
+                    ));
+                }
+                WireCursorOp::Par(par) => {
+                    let node = &self.arena.pars[par.0];
+                    self.work.push(WireCursorOp::Components {
+                        occurrences: &node.occurrences,
+                        index: 0,
+                        remaining: 0,
+                        after_metadata: true,
+                    });
+                    self.work.push(WireCursorOp::RootMetadata(par));
+                    self.work.push(WireCursorOp::Components {
+                        occurrences: &node.occurrences,
+                        index: 0,
+                        remaining: 0,
+                        after_metadata: false,
+                    });
+                }
+                WireCursorOp::Components {
+                    occurrences,
+                    mut index,
+                    mut remaining,
+                    after_metadata,
+                } => {
+                    while remaining == 0 && index < occurrences.len() {
+                        let occurrence = occurrences[index];
+                        index += 1;
+                        if is_after_metadata(self.arena.components[occurrence.component.0].tag)
+                            == after_metadata
+                        {
+                            remaining = occurrence.multiplicity.get();
+                            break;
+                        }
+                    }
+                    if remaining != 0 {
+                        let occurrence = occurrences[index - 1];
+                        let component = &self.arena.components[occurrence.component.0];
+                        self.work.push(WireCursorOp::Components {
+                            occurrences,
+                            index,
+                            remaining: remaining - 1,
+                            after_metadata,
+                        });
+                        self.work.push(WireCursorOp::Node {
+                            node: component.protobuf,
+                            index: 0,
+                        });
+                        self.work.push(WireCursorOp::Inline(
+                            InlineWireBytes::length_delimited_prefix(
+                                component.tag.byte().into(),
+                                self.arena.protobuf_nodes[component.protobuf].encoded_len,
+                            ),
+                        ));
+                    }
+                }
+                WireCursorOp::RootMetadata(par) => {
+                    let node = &self.arena.pars[par.0];
+                    if node.connective_used {
+                        self.work
+                            .push(WireCursorOp::Inline(InlineWireBytes::protobuf_varints(&[
+                                10 << 3,
+                                1,
+                            ])));
+                    }
+                    if !node.locally_free.is_empty() {
+                        self.work.push(WireCursorOp::Bytes {
+                            bytes: &node.locally_free,
+                            offset: 0,
+                        });
+                        self.work.push(WireCursorOp::Inline(
+                            InlineWireBytes::length_delimited_prefix(9, node.locally_free.len()),
+                        ));
+                    }
+                }
+                WireCursorOp::Bytes { bytes, offset } => {
+                    let byte = *bytes.get(offset)?;
+                    if offset + 1 < bytes.len() {
+                        self.work.push(WireCursorOp::Bytes {
+                            bytes,
+                            offset: offset + 1,
+                        });
+                    }
+                    return Some(byte);
+                }
+                WireCursorOp::Inline(mut inline) => {
+                    let byte = inline.bytes[usize::from(inline.offset)];
+                    inline.offset += 1;
+                    if inline.offset < inline.len {
+                        self.work.push(WireCursorOp::Inline(inline));
+                    }
+                    return Some(byte);
+                }
+            }
+        }
+    }
 }
 
 struct ComponentNode {
@@ -224,6 +528,14 @@ impl ParConstruction {
             encoded_len,
         });
         Ok(id)
+    }
+
+    fn score_from_encoded(
+        &mut self,
+        canonical_score: &[u8],
+    ) -> Result<PlannedScore, ParConstructionError> {
+        let fragment = self.bytes(canonical_score.to_vec());
+        self.score_from_pieces(vec![ScorePiece::Bytes(fragment)])
     }
 
     /// One canonical integer score leaf.
@@ -354,26 +666,22 @@ impl ParConstruction {
             .collect();
 
         if occurrences.len() > 1 {
-            let mut keyed = Vec::with_capacity(occurrences.len());
+            occurrences
+                .sort_by(|left, right| self.compare_components(left.component, right.component));
+            let mut coalesced: Vec<Occurrence> = Vec::with_capacity(occurrences.len());
             for occurrence in occurrences {
-                keyed.push((self.component_key(occurrence.component)?, occurrence));
-            }
-            keyed.sort_by(|left, right| left.0.cmp(&right.0));
-            let mut coalesced: Vec<(Vec<u8>, Occurrence)> = Vec::with_capacity(keyed.len());
-            for (key, occurrence) in keyed {
-                if let Some((previous_key, previous)) = coalesced.last_mut() {
-                    if previous_key == &key {
+                if let Some(previous) = coalesced.last_mut() {
+                    if self.compare_components(previous.component, occurrence.component)
+                        == Ordering::Equal
+                    {
                         previous.multiplicity =
                             previous.multiplicity.checked_add(occurrence.multiplicity)?;
                         continue;
                     }
                 }
-                coalesced.push((key, occurrence));
+                coalesced.push(occurrence);
             }
-            occurrences = coalesced
-                .into_iter()
-                .map(|(_, occurrence)| occurrence)
-                .collect();
+            occurrences = coalesced;
         }
 
         let mut score_pieces = Vec::new();
@@ -449,6 +757,61 @@ impl ParConstruction {
         self.par(std::iter::empty(), Vec::new(), false)
     }
 
+    /// Import an already-authoritative resident `Par` without decoding any
+    /// component or traversing any nested AST.
+    ///
+    /// The PathMap zipper lends each RPB3 score/body pair exactly once. Those
+    /// canonical fragments become leaves in this transient arena, so a later
+    /// planned parent can reference the imported value without rebuilding it.
+    pub fn import_par(&mut self, par: &Par) -> Result<PlannedPar, ParConstructionError> {
+        let singleton_stable = if par.locally_free().is_empty() && !par.connective_used() {
+            par.components()
+                .cached_canonical_path_stability()
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        let mut imported = Vec::with_capacity(par.components().distinct_len());
+        par.components()
+            .visit_canonical_key_parts(|tag, score, protobuf, multiplicity| {
+                imported.push((
+                    tag,
+                    score.to_vec().into_boxed_slice(),
+                    protobuf.to_vec().into_boxed_slice(),
+                    multiplicity,
+                ));
+            });
+
+        let imported_is_singleton = imported.len() == 1;
+        let mut occurrences = Vec::with_capacity(imported.len());
+        for (tag, score, protobuf, multiplicity) in imported {
+            let score = self.score_from_encoded(&score)?;
+            let protobuf_id = self.protobuf_nodes.len();
+            let encoded_len = protobuf.len();
+            self.protobuf_nodes.push(ProtoNode {
+                pieces: if protobuf.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![ProtoPiece::Bytes(protobuf)]
+                },
+                encoded_len,
+            });
+            let component = PlannedComponent(self.components.len());
+            self.components.push(ComponentNode {
+                tag,
+                score,
+                protobuf: protobuf_id,
+                canonical_path_stable: singleton_stable && imported_is_singleton,
+            });
+            occurrences.push((component, multiplicity));
+        }
+        self.par(
+            occurrences,
+            par.locally_free().to_vec(),
+            par.connective_used(),
+        )
+    }
+
     /// Emit the root planned `Par` into its sole resident representation.
     pub fn finish(&self, root: PlannedPar) -> Result<Par, ParConstructionError> {
         let planned = &self.pars[root.0];
@@ -502,6 +865,23 @@ impl ParConstruction {
         Ok(out)
     }
 
+    /// Compare exact eventual RPB3 keys without constructing either key.
+    /// Both the prefix-free score and canonical protobuf tie-break are lazy
+    /// cursors over arena fragments.
+    fn compare_components(&self, left: PlannedComponent, right: PlannedComponent) -> Ordering {
+        let left = &self.components[left.0];
+        let right = &self.components[right.0];
+        left.tag
+            .cmp(&right.tag)
+            .then_with(|| {
+                ScoreByteCursor::new(self, left.score).cmp(ScoreByteCursor::new(self, right.score))
+            })
+            .then_with(|| {
+                WireByteCursor::new(self, WireRoot::Proto(left.protobuf))
+                    .cmp(WireByteCursor::new(self, WireRoot::Proto(right.protobuf)))
+            })
+    }
+
     fn emit_score(&self, root: PlannedScore, out: &mut Vec<u8>) {
         enum Op {
             Score(PlannedScore),
@@ -552,133 +932,7 @@ impl ParConstruction {
     /// same `Par` operation; it never calls `protobuf_bytes` recursively and
     /// never allocates an intermediate child body.
     fn emit_wire(&self, root: WireRoot, out: &mut Vec<u8>) {
-        enum Op<'a> {
-            Node {
-                node: usize,
-                index: usize,
-            },
-            Nested {
-                tag: u32,
-                node: usize,
-            },
-            ChildPar {
-                tag: u32,
-                par: PlannedPar,
-            },
-            Par(PlannedPar),
-            Components {
-                occurrences: &'a [Occurrence],
-                index: usize,
-                remaining: u64,
-                after_metadata: bool,
-            },
-            RootMetadata(PlannedPar),
-            Bytes(&'a [u8]),
-        }
-
-        fn is_after_metadata(tag: ParComponentTag) -> bool {
-            matches!(tag, ParComponentTag::Bundle | ParComponentTag::If)
-        }
-
-        let mut work = vec![match root {
-            WireRoot::Par(par) => Op::Par(par),
-            WireRoot::Proto(node) => Op::Node { node, index: 0 },
-        }];
-        while let Some(op) = work.pop() {
-            match op {
-                Op::Node { node, index } => {
-                    if let Some(piece) = self.protobuf_nodes[node].pieces.get(index) {
-                        work.push(Op::Node {
-                            node,
-                            index: index + 1,
-                        });
-                        work.push(match piece {
-                            ProtoPiece::Bytes(bytes) => Op::Bytes(bytes),
-                            ProtoPiece::Node { tag, node } => Op::Nested {
-                                tag: *tag,
-                                node: *node,
-                            },
-                            ProtoPiece::Par { tag, par } => Op::ChildPar {
-                                tag: *tag,
-                                par: *par,
-                            },
-                        });
-                    }
-                }
-                Op::Nested { tag, node } => {
-                    encode_key(tag, WireType::LengthDelimited, out);
-                    encode_varint(self.protobuf_nodes[node].encoded_len as u64, out);
-                    work.push(Op::Node { node, index: 0 });
-                }
-                Op::ChildPar { tag, par } => {
-                    encode_key(tag, WireType::LengthDelimited, out);
-                    encode_varint(self.pars[par.0].protobuf_len as u64, out);
-                    work.push(Op::Par(par));
-                }
-                Op::Par(par) => {
-                    let node = &self.pars[par.0];
-                    work.push(Op::Components {
-                        occurrences: &node.occurrences,
-                        index: 0,
-                        remaining: 0,
-                        after_metadata: true,
-                    });
-                    work.push(Op::RootMetadata(par));
-                    work.push(Op::Components {
-                        occurrences: &node.occurrences,
-                        index: 0,
-                        remaining: 0,
-                        after_metadata: false,
-                    });
-                }
-                Op::Components {
-                    occurrences,
-                    mut index,
-                    mut remaining,
-                    after_metadata,
-                } => {
-                    while remaining == 0 && index < occurrences.len() {
-                        let occurrence = occurrences[index];
-                        index += 1;
-                        if is_after_metadata(self.components[occurrence.component.0].tag)
-                            == after_metadata
-                        {
-                            remaining = occurrence.multiplicity.get();
-                            break;
-                        }
-                    }
-                    if remaining != 0 {
-                        let occurrence = occurrences[index - 1];
-                        let component = &self.components[occurrence.component.0];
-                        work.push(Op::Components {
-                            occurrences,
-                            index,
-                            remaining: remaining - 1,
-                            after_metadata,
-                        });
-                        encode_key(component.tag.byte().into(), WireType::LengthDelimited, out);
-                        encode_varint(
-                            self.protobuf_nodes[component.protobuf].encoded_len as u64,
-                            out,
-                        );
-                        work.push(Op::Node {
-                            node: component.protobuf,
-                            index: 0,
-                        });
-                    }
-                }
-                Op::RootMetadata(par) => {
-                    let node = &self.pars[par.0];
-                    if !node.locally_free.is_empty() {
-                        prost::encoding::bytes::encode(9, &node.locally_free, out);
-                    }
-                    if node.connective_used {
-                        prost::encoding::bool::encode(10, &true, out);
-                    }
-                }
-                Op::Bytes(bytes) => out.extend_from_slice(bytes),
-            }
-        }
+        out.extend(WireByteCursor::new(self, root));
     }
 
     fn plan_protobuf<T: ProtobufNode>(
@@ -1000,6 +1254,35 @@ mod tests {
                 with_component_key(&expected_expr, <[u8]>::to_vec)
             );
         }
+    }
+
+    #[test]
+    fn resident_import_preserves_multiplicity_metadata_and_exact_trie_image() {
+        let source = Par::default()
+            .with_exprs(vec![
+                Expr {
+                    expr_instance: Some(ExprInstance::GString("alpha".to_owned())),
+                },
+                Expr {
+                    expr_instance: Some(ExprInstance::GInt(7)),
+                },
+                Expr {
+                    expr_instance: Some(ExprInstance::GInt(7)),
+                },
+            ])
+            .with_locally_free(vec![1, 0, 1])
+            .with_connective_used(true);
+
+        let mut arena = ParConstruction::new();
+        let planned = arena.import_par(&source).expect("import resident Par");
+        let actual = arena.finish(planned).expect("finish imported Par");
+
+        assert_eq!(actual, source);
+        assert_eq!(actual.compact_snapshot(), source.compact_snapshot());
+        assert_eq!(
+            arena.protobuf_bytes(planned),
+            source.protobuf_bytes().unwrap()
+        );
     }
 
     #[test]
