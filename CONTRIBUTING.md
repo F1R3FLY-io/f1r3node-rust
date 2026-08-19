@@ -37,6 +37,26 @@ Use this path sparingly. A hotfix reaches `master` without ever being integrated
 work already queued in `dev`, so it trades integration coverage for speed. Anything that can
 wait should go through `dev` like everything else.
 
+## Release Pipeline
+
+After maintainers promote `dev` to `master`, automation carries the merged work to a release. The diagram shows the target workflow chain. The process definition, its gates, and the current migration phase live in [docs/release-process.md](docs/release-process.md).
+
+```mermaid
+flowchart TD
+    A["push to master"] --> CI["ci.yml<br/>full CI: build, test, heavy pipeline"]
+    CI -- "workflow_run:<br/>completed + success" --> CP["canary-publish.yml<br/>eligibility gate, identity gate,<br/>canary tag + prerelease + images by digest"]
+    CP --> G1["oci-validation.yml<br/>exact-candidate mode"]
+    CP --> G2["slashing-tests.yml<br/>exact-SHA required suite"]
+    CP --> G3["merge-recovery-soak.yml<br/>60h stability soak from the canary digest"]
+    G1 --> RP["release.yml<br/>promotion controller: verify every gate,<br/>stable tag + release + image copy"]
+    G2 --> RP
+    G3 --> RP
+    RP -- "release: published<br/>(stable tag)" --> SI["soak-in.yml<br/>Shard soak-in enrollment"]
+    SI --> TN["Test net<br/>soaking node becomes an Anchor"]
+```
+
+Every stable release is built once: the canary publisher reuses the CI run's own artifacts, each gate validates the exact candidate digest, and promotion copies verified bytes without a rebuild. Stable releases then enroll in the test net through the Shard soak-in. Deployment Trains provide an independent release path for reviewed feature branches (release-process section 13).
+
 ## Local Checks
 
 Run the same checks CI enforces before opening a PR (the `RUSTFLAGS` target-features are

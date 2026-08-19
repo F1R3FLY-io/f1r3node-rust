@@ -128,10 +128,10 @@ tasks:
     status: in_progress
     blocked_by: [EPIC-014]
     notes:
-      - "The release trigger is implemented: soak-in.yml fires on stable release publication (prereleases gate out) while enrollment stays held until the EPIC-014 quorum exists."
+      - "The release trigger is implemented: soak-in.yml fires on stable release publication (prereleases gate out) while enrollment stays held until the EPIC-014 test net exists."
     acceptance:
       - "soak-in.yml gains a release trigger: one enrollment per stable release tag"
-      - "The deferred parameters (soak-in period length, Anchor criteria, quorum composition) are set and ratified"
+      - "The deferred parameters (soak-in period length, Anchor criteria, test net composition) are set and ratified"
 ---
 ```
 
@@ -139,12 +139,12 @@ tasks:
 
 ---
 
-### EPIC-014: Continuously Running Shard Quorum
+### EPIC-014: Test Net (Continuously Running Shards)
 
 ```yaml
 ---
 epic_id: EPIC-014
-title: "Continuously Running Shard Quorum"
+title: "Test Net (Continuously Running Shards)"
 status: pending
 priority: p2
 user_story: null
@@ -152,21 +152,21 @@ blocked_by: [EPIC-013]
 created_at: 2026-08-19
 tasks:
   - id: TASK-014-1
-    title: "Design the standing quorum (topology, lifecycle, upgrade path)"
+    title: "Design the test net (topology, lifecycle, upgrade path)"
     status: pending
   - id: TASK-014-2
-    title: "Stand up the quorum on OCI from existing fleet tooling"
+    title: "Stand up the test net on OCI from existing fleet tooling"
     status: pending
   - id: TASK-014-3
-    title: "Wire Shard soak-in enrollment and Anchor promotion into the quorum"
+    title: "Wire Shard soak-in enrollment and Anchor promotion into the test net"
     status: pending
   - id: TASK-014-4
-    title: "Expose selected shards as partner/customer test networks"
+    title: "Open selected test net shards to partners and customers"
     status: pending
 ---
 ```
 
-**Context:** Unlike the soaks, which create a fresh shard per iteration, this epic delivers shards that run continuously as a quorum. **Mechanism sketch (brief by intent — a follow-on branch/PR carries the design):** long-lived OCI instances run stable releases as quorum members, reusing the existing fleet tooling (runner launch, monitoring, ONS alerts, soak dashboard) as the foundation. Each weekly stable release enrolls new nodes through the Shard soak-in (`docs/release-process.md` Section 12); nodes that complete the soak period gain the Anchor role. The quorum is primarily internal release-validation infrastructure and also serves as a test network for select partners and customers. This epic delivers the quorum that release-process Phase 6 requires; the deferred Shard soak-in parameters are set here.
+**Context:** Unlike the soaks, which create a fresh shard per iteration, this epic delivers the test net: shards that run continuously. **Mechanism sketch (brief by intent — a follow-on branch/PR carries the design):** long-lived OCI instances run stable releases as test net members, reusing the existing fleet tooling (runner launch, monitoring, ONS alerts, soak dashboard) as the foundation. Each weekly stable release enrolls new nodes through the Shard soak-in (`docs/release-process.md` Section 12); nodes that complete the soak period gain the Anchor role. The test net is primarily internal release-validation infrastructure and also serves select partners and customers. This epic delivers the test net that release-process Phase 6 requires; the deferred Shard soak-in parameters are set here.
 
 ---
 

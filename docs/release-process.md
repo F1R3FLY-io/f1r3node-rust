@@ -301,19 +301,19 @@ The stable release remains valid when `master` advances during the soak. Evidenc
 
 ## 12. Shard soak-in
 
-A Shard soak-in adds each weekly stable release to a long-running quorum of shards. "Soak-in" is the SRE-style term that already means "run it long enough to trust it."
+A Shard soak-in adds each weekly stable release to the test net, the continuously running network of shards. "Soak-in" is the SRE-style term that already means "run it long enough to trust it."
 
-New stable nodes enter a soak period inside or adjacent to the quorum. The Soak-in measures how the new nodes behave with the current quorum members. The Soak-in catches compatibility issues and confirms that the new nodes stay up.
+New stable nodes enter a soak period inside or adjacent to the test net. The Soak-in measures how the new nodes behave with the current test net members. The Soak-in catches compatibility issues and confirms that the new nodes stay up.
 
-A node becomes a true Anchor only after it completes the soak period. Until that point, the node holds no Anchor role in the quorum.
+A node becomes a true Anchor only after it completes the soak period. Until that point, the node holds no Anchor role in the test net.
 
 Enrollment has its own schedule. Automation schedules one Shard soak-in for each stable release tag. The trigger is a stable release publication, which has passed the 60h stability soak gate.
 
-Three parameters are deferred to Phase 6, when the quorum exists and real behavior can inform them: the soak-in period length, the measurable Anchor promotion criteria, and the quorum composition. The scheduling rule, the trigger, and the soaking-node versus Anchor distinction are binding now.
+Three parameters are deferred to Phase 6, when the test net exists and real behavior can inform them: the soak-in period length, the measurable Anchor promotion criteria, and the test net composition. The scheduling rule, the trigger, and the soaking-node versus Anchor distinction are binding now.
 
-The quorum itself is a set of continuously running shards, unlike the per-iteration shards that the soaks create. EPIC-014 in `docs/ToDos.md` plans that standing quorum: long-lived OCI instances run stable releases, reuse the existing fleet tooling, and also serve as a test network for select partners and customers. A follow-on branch carries that work; this document only requires that the quorum exists before Phase 6 completes.
+The test net is a set of continuously running shards, unlike the per-iteration shards that the soaks create. EPIC-014 in `docs/ToDos.md` plans the test net: long-lived OCI instances run stable releases, reuse the existing fleet tooling, and serve select partners and customers. A follow-on branch carries that work; this document only requires that the test net exists before Phase 6 completes.
 
-**Follow-on:** a future change will separate the Casper consensus into its own repository. The Soak-in quorum will then consume consensus releases from that repository.
+**Follow-on:** a future change will separate the Casper consensus into its own repository. The test net will then consume consensus releases from that repository.
 
 ## 13. Deployment Trains
 
@@ -456,7 +456,7 @@ Implementation adds or changes these components.
 | `.github/workflows/oci-validation.yml` | Add trusted exact-candidate dispatch mode |
 | `.github/workflows/reusable-oci-validation.yml` | Consume a candidate image digest without rebuilding |
 | `.github/workflows/deployment-train.yml` | Validate manifests and start independent trains |
-| `.github/workflows/soak-in.yml` | Schedule and enroll stable releases into the Shard soak-in quorum |
+| `.github/workflows/soak-in.yml` | Schedule and enroll stable releases into the test net for the Shard soak-in |
 | `.github/scripts/release-evidence.sh` | Build and validate evidence documents |
 | `.github/scripts/release-gates.sh` | Validate exact-SHA gate runs |
 | `.github/scripts/promote-release.sh` | Perform idempotent artifact promotion |
@@ -465,6 +465,22 @@ Implementation adds or changes these components.
 Exact script boundaries can change after test design. The release invariants must not change without maintainer ratification.
 
 ### 17.1 Workflow triggers and durations
+
+The diagram shows how the release workflows chain in the target state:
+
+```mermaid
+flowchart TD
+    A["push to master"] --> CI["ci.yml<br/>full CI: build, test, heavy pipeline"]
+    CI -- "workflow_run:<br/>completed + success" --> CP["canary-publish.yml<br/>eligibility gate, identity gate,<br/>canary tag + prerelease + images by digest"]
+    CP --> G1["oci-validation.yml<br/>exact-candidate mode"]
+    CP --> G2["slashing-tests.yml<br/>exact-SHA required suite"]
+    CP --> G3["merge-recovery-soak.yml<br/>60h stability soak from the canary digest"]
+    G1 --> RP["release.yml<br/>promotion controller: verify every gate,<br/>stable tag + release + image copy"]
+    G2 --> RP
+    G3 --> RP
+    RP -- "release: published<br/>(stable tag)" --> SI["soak-in.yml<br/>Shard soak-in enrollment"]
+    SI --> TN["Test net<br/>soaking node becomes an Anchor"]
+```
 
 This table defines the target state after the Section 17 workflow changes are complete. The Basis column states whether time, an event, or an operator starts the workflow. Durations marked *measured* are medians of recent successful runs. Durations marked *estimated* have no run history yet.
 
@@ -483,7 +499,7 @@ This table defines the target state after the Section 17 workflow changes are co
 | `slashing-tests.yml` | `push`, `pull_request`, `schedule` 06:30 UTC daily, `workflow_dispatch` | Event + time + manual | 10–15 min *measured*; the nightly exhaustive tier exceeds 20 min | Slashing suite |
 | `release-evidence.yml` | `workflow_dispatch` (ci_run_id) | Manual | 10–20 min *estimated* (30-min cap) | Exact-run candidate evidence |
 | `release.yml` | `workflow_dispatch`; promotion resumes automatically after a missing gate completes | Manual start, automatic resume | 5–15 min *estimated* (no builds; copy and verify only) | Exact-candidate stable promotion |
-| `soak-in.yml` | `release` (stable tag published), `workflow_dispatch` | Event (one enrollment per stable release) + manual | Enrollment takes minutes; the soak-in period itself runs in the quorum, not in Actions | Shard soak-in enrollment |
+| `soak-in.yml` | `release` (stable tag published), `workflow_dispatch` | Event (one enrollment per stable release) + manual | Enrollment takes minutes; the soak-in period itself runs in the test net, not in Actions | Shard soak-in enrollment |
 | `deployment-train.yml` | `workflow_dispatch` (manifest path) | Manual | Minutes for setup *estimated*; the started gates run in their own workflows | Train validation and setup |
 | `testbed-quality-gate.yml` | `workflow_dispatch`, including dispatch from train manifest gates | Manual + tooling | No measured runs | Feature-specific train gate |
 | `deny-schedule.yml` | `schedule` Mondays 06:00 UTC, `workflow_dispatch` | Time + manual | About 1 min *measured* | Weekly advisory sweep |
@@ -532,9 +548,9 @@ Phase 1 disables automatic stable publication. A manual workflow generates evide
 3. Run the cost-accounting train as the first publishing train.
 4. Document the completed train evidence.
 
-### Phase 6: Shard soak-in quorum
+### Phase 6: Shard soak-in on the test net
 
-1. Stand up the long-running quorum of shards.
+1. Stand up the test net, the continuously running network of shards.
 2. Schedule a Shard soak-in for each stable release tag after its publication.
 3. Promote soaked nodes to the Anchor role after the soak period.
 4. Document the Shard soak-in enrollment and Anchor promotion evidence.
@@ -555,4 +571,4 @@ Maintainers must ratify these decisions before stable automation is enabled. All
 - [x] Merge, squash, and rebase rules — ratified 2026-08-19 with the merge-commit-only operational note
 - [x] Version reservation and ordering rules — ratified 2026-08-19
 - [x] First Deployment Train selection — ratified 2026-08-19: cost-accounting (PR #216), after the Phase 5 non-publishing rehearsal
-- [x] Shard soak-in and Anchor promotion policy — ratified 2026-08-19 as a skeleton: period length, Anchor criteria, and quorum composition deferred to Phase 6
+- [x] Shard soak-in and Anchor promotion policy — ratified 2026-08-19 as a skeleton: period length, Anchor criteria, and test net composition deferred to Phase 6

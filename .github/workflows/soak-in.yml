@@ -62,8 +62,8 @@ jobs:
             echo
             echo "The requested stable tag has a valid format: \`$STABLE_TAG\`."
             echo
-            echo "The Shard soak-in quorum infrastructure is not provisioned yet."
+            echo "The test net that hosts Shard soak-ins is not provisioned yet."
             echo "docs/release-process.md section 12 defines the Shard soak-in phase."
             echo "Section 18 Phase 6 defines the enrollment migration steps."
-            echo "This workflow did not deploy a node, change a quorum, or grant an Anchor role."
+            echo "This workflow did not deploy a node, change the test net, or grant an Anchor role."
           } >> "$GITHUB_STEP_SUMMARY"

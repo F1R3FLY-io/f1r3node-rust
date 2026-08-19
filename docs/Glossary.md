@@ -77,11 +77,17 @@ The dev integration soak is the scheduled variable-length soak of the `dev` inte
 
 **Preferred usage.** Use this term for the scheduled integration-branch soak. *Avoid*: daily soak. The machine series key keeps the legacy value `daily` until a separate identifier migration. *Distinguish from* the [60h stability soak](#60h-stability-soak): integration monitoring versus a release gate.
 
+### Test net
+
+The test net is the continuously running network of shards that hosts [Shard soak-ins](#shard-soak-in) and serves select partners and customers. Its shards run stable releases; nodes that complete a soak-in period hold the [Anchor](#anchor) role. Unlike the per-iteration soak shards, the test net does not restart between runs.
+
+**Preferred usage.** Use this term for the standing shard network. *Avoid*: long-running quorum of shards, standing quorum, and continuously running shard quorum. *Distinguish from* the casper test-network fixture, which is an in-process test helper, not infrastructure.
+
 ### Shard soak-in
 
-A Shard soak-in is the post-promotion period in which a weekly [stable release](#stable-release) runs in a long-running quorum of shards. The Shard soak-in measures node behavior with the current quorum members, catches compatibility issues, and confirms that the new nodes stay up. Enrollment is scheduled for each stable release tag. The trigger is a stable release publication, which has passed the [60h stability soak](#60h-stability-soak) gate.
+A Shard soak-in is the post-promotion period in which a weekly [stable release](#stable-release) runs in the [test net](#test-net). The Shard soak-in measures node behavior with the current test net members, catches compatibility issues, and confirms that the new nodes stay up. Enrollment is scheduled for each stable release tag. The trigger is a stable release publication, which has passed the [60h stability soak](#60h-stability-soak) gate.
 
-**Preferred usage.** Use this term for post-promotion quorum trials. *Avoid*: Soak-in, without the Shard qualifier, in new prose. *Distinguish from* the [60h stability soak](#60h-stability-soak), which is a pre-promotion release gate on one candidate.
+**Preferred usage.** Use this term for post-promotion test net trials. *Avoid*: Soak-in, without the Shard qualifier, in new prose. *Distinguish from* the [60h stability soak](#60h-stability-soak), which is a pre-promotion release gate on one candidate.
 
 ### Soak-in
 
@@ -89,9 +95,9 @@ Deprecated name for the [Shard soak-in](#shard-soak-in).
 
 ### Anchor
 
-An Anchor is a node that completed its [Shard soak-in](#shard-soak-in) period and holds full membership in the quorum of shards.
+An Anchor is a node that completed its [Shard soak-in](#shard-soak-in) period and holds full membership in the [test net](#test-net).
 
-**Preferred usage.** Use this term only after a completed Shard soak-in. *Distinguish from* a soaking node, which runs inside or adjacent to the quorum without the Anchor role.
+**Preferred usage.** Use this term only after a completed Shard soak-in. *Distinguish from* a soaking node, which runs inside or adjacent to the test net without the Anchor role.
 
 ### Peak node RSS
 
