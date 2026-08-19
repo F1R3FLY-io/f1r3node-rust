@@ -35,10 +35,14 @@ use super::rholang::protobuf_encoder;
 use super::rholang::protobuf_schema::{ProtobufDescent, ProtobufNode, ProtobufSeq, NO_RESUME};
 use super::rholang::sorter::expr_sort_matcher::ExprSortMatcher;
 use super::rholang::sorter::score_tree::{encode_order_key, Score, ScoreAtom, Tree};
-use super::rholang::sorter::sort_combine::sort_var;
+use super::rholang::sorter::sort_combine::{sort_unforgeable, sort_var};
 use super::rholang::sorter::sortable::Sortable;
+use crate::rhoapi::connective::ConnectiveInstance;
 use crate::rhoapi::expr::ExprInstance;
-use crate::rhoapi::{EPathMap, EZipper, Expr, Par};
+use crate::rhoapi::g_unforgeable::UnfInstance;
+use crate::rhoapi::{
+    Bundle, Connective, EPathMap, EZipper, Expr, GUnforgeable, If, Match, New, Par, Receive, Send,
+};
 
 /// An index into a [`ParConstruction`]'s planned-Par arena.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1188,6 +1192,327 @@ impl ParConstruction {
         Ok(id)
     }
 
+    fn require_arity(
+        context: &'static str,
+        expected: usize,
+        supplied: usize,
+    ) -> Result<(), ParConstructionError> {
+        if expected == supplied {
+            Ok(())
+        } else {
+            Err(ParConstructionError::ChildArity {
+                context,
+                expected,
+                supplied,
+            })
+        }
+    }
+
+    /// Plan a canonical Send. Child order is channel followed by data.
+    pub fn send_component(
+        &mut self,
+        shell: &Send,
+        children: &[PlannedPar],
+    ) -> Result<PlannedComponent, ParConstructionError> {
+        Self::require_arity("Send", shell.data.len() + 1, children.len())?;
+        let persistent = self.score_i64(i64::from(shell.persistent))?;
+        let connective = self.score_i64(i64::from(shell.connective_used))?;
+        let scores: Vec<_> = std::iter::once(persistent)
+            .chain(std::iter::once(self.par_score(children[0])))
+            .chain(children[1..].iter().map(|child| self.par_score(*child)))
+            .chain(std::iter::once(connective))
+            .collect();
+        let score = self.score_constructor(Score::SEND, scores)?;
+        self.component(shell, children, score, false)
+    }
+
+    /// Plan a canonical Bundle from its single body.
+    pub fn bundle_component(
+        &mut self,
+        shell: &Bundle,
+        children: &[PlannedPar],
+    ) -> Result<PlannedComponent, ParConstructionError> {
+        Self::require_arity("Bundle", 1, children.len())?;
+        let constructor = match (shell.write_flag, shell.read_flag) {
+            (true, true) => Score::BUNDLE_READ_WRITE,
+            (true, false) => Score::BUNDLE_WRITE,
+            (false, true) => Score::BUNDLE_READ,
+            (false, false) => Score::BUNDLE_EQUIV,
+        };
+        let score = self.score_constructor(constructor, [self.par_score(children[0])])?;
+        self.component(shell, children, score, false)
+    }
+
+    /// Plan a canonical conditional in condition/true/false order.
+    pub fn if_component(
+        &mut self,
+        shell: &If,
+        children: &[PlannedPar],
+    ) -> Result<PlannedComponent, ParConstructionError> {
+        Self::require_arity("If", 3, children.len())?;
+        let connective = self.score_i64(i64::from(shell.connective_used))?;
+        let score = self.score_constructor(Score::IF, [
+            self.par_score(children[0]),
+            self.par_score(children[1]),
+            self.par_score(children[2]),
+            connective,
+        ])?;
+        self.component(shell, children, score, false)
+    }
+
+    /// Plan a leaf unforgeable and retain the GPrivate canonical-path arm.
+    pub fn unforgeable_component(
+        &mut self,
+        shell: &GUnforgeable,
+    ) -> Result<PlannedComponent, ParConstructionError> {
+        let score = self.score_tree(&sort_unforgeable(shell).score)?;
+        let (stable, segment) = match shell.unf_instance.as_ref() {
+            Some(UnfInstance::GPrivateBody(private)) => {
+                let mut bytes = vec![path_tag::GPRIVATE];
+                let mut len = private.id.len() as u64;
+                loop {
+                    let mut byte = (len & 0x7f) as u8;
+                    len >>= 7;
+                    if len != 0 {
+                        byte |= 0x80;
+                    }
+                    bytes.push(byte);
+                    if len == 0 {
+                        break;
+                    }
+                }
+                bytes.extend_from_slice(&private.id);
+                (
+                    true,
+                    Some(CanonicalSegment::Bytes(bytes.into_boxed_slice())),
+                )
+            }
+            _ => (false, None),
+        };
+        let component = self.component(shell, &[], score, stable)?;
+        self.components[component.0].canonical_segment = segment;
+        Ok(component)
+    }
+
+    /// Plan a connective. And/Or children remain order-preserving, matching
+    /// the historical sorter; no commutative reorder is invented here.
+    pub fn connective_component(
+        &mut self,
+        shell: &Connective,
+        children: &[PlannedPar],
+    ) -> Result<PlannedComponent, ParConstructionError> {
+        let score = match shell.connective_instance.as_ref() {
+            Some(ConnectiveInstance::ConnAndBody(and)) => {
+                Self::require_arity("Connective::And", and.ps.len(), children.len())?;
+                let scores: Vec<_> = children
+                    .iter()
+                    .map(|child| self.par_score(*child))
+                    .collect();
+                self.score_constructor(Score::CONNECTIVE_AND, scores)?
+            }
+            Some(ConnectiveInstance::ConnOrBody(or)) => {
+                Self::require_arity("Connective::Or", or.ps.len(), children.len())?;
+                let scores: Vec<_> = children
+                    .iter()
+                    .map(|child| self.par_score(*child))
+                    .collect();
+                self.score_constructor(Score::CONNECTIVE_OR, scores)?
+            }
+            Some(ConnectiveInstance::ConnNotBody(_)) => {
+                Self::require_arity("Connective::Not", 1, children.len())?;
+                self.score_constructor(Score::CONNECTIVE_NOT, [self.par_score(children[0])])?
+            }
+            Some(ConnectiveInstance::VarRefBody(var)) => {
+                Self::require_arity("Connective::VarRef", 0, children.len())?;
+                let index = self.score_i64(i64::from(var.index))?;
+                let depth = self.score_i64(i64::from(var.depth))?;
+                self.score_constructor(Score::CONNECTIVE_VARREF, [index, depth])?
+            }
+            Some(ConnectiveInstance::ConnBool(value)) => {
+                Self::require_arity("Connective::Bool", 0, children.len())?;
+                let value = self.score_i64(i64::from(*value))?;
+                self.score_constructor(Score::CONNECTIVE_BOOL, [value])?
+            }
+            Some(ConnectiveInstance::ConnInt(value)) => {
+                Self::require_arity("Connective::Int", 0, children.len())?;
+                let value = self.score_i64(i64::from(*value))?;
+                self.score_constructor(Score::CONNECTIVE_INT, [value])?
+            }
+            Some(ConnectiveInstance::ConnString(value)) => {
+                Self::require_arity("Connective::String", 0, children.len())?;
+                let value = self.score_i64(i64::from(*value))?;
+                self.score_constructor(Score::CONNECTIVE_STRING, [value])?
+            }
+            Some(ConnectiveInstance::ConnUri(value)) => {
+                Self::require_arity("Connective::Uri", 0, children.len())?;
+                let value = self.score_i64(i64::from(*value))?;
+                self.score_constructor(Score::CONNECTIVE_URI, [value])?
+            }
+            Some(ConnectiveInstance::ConnByteArray(value)) => {
+                Self::require_arity("Connective::ByteArray", 0, children.len())?;
+                let value = self.score_i64(i64::from(*value))?;
+                self.score_constructor(Score::CONNECTIVE_BYTEARRAY, [value])?
+            }
+            None => {
+                Self::require_arity("absent Connective", 0, children.len())?;
+                self.score_i64(Score::ABSENT as i64)?
+            }
+        };
+        self.component(shell, children, score, false)
+    }
+
+    /// Plan New. Children are body followed by injection values in BTreeMap
+    /// key order, which is both the sorter and generated-map order.
+    pub fn new_component(
+        &mut self,
+        shell: &New,
+        children: &[PlannedPar],
+    ) -> Result<PlannedComponent, ParConstructionError> {
+        Self::require_arity("New", shell.injections.len() + 1, children.len())?;
+        let mut canonical_shell = shell.clone();
+        canonical_shell.uri.sort();
+
+        let bind_count = self.score_i64(i64::from(shell.bind_count))?;
+        let mut scores = vec![bind_count];
+        if canonical_shell.uri.is_empty() {
+            scores.push(self.score_i64(Score::ABSENT as i64)?);
+        } else {
+            for uri in &canonical_shell.uri {
+                scores.push(self.score_string(uri)?);
+            }
+        }
+        if shell.injections.is_empty() {
+            scores.push(self.score_i64(Score::ABSENT as i64)?);
+        } else {
+            for ((key, _), value) in shell.injections.iter().zip(&children[1..]) {
+                let key = self.score_string(key)?;
+                scores.push(self.score_node([key, self.par_score(*value)])?);
+            }
+        }
+        scores.push(self.par_score(children[0]));
+        let score = self.score_constructor(Score::NEW, scores)?;
+        self.component(&canonical_shell, children, score, false)
+    }
+
+    /// Plan Match. The input includes one guard handle per case even when the
+    /// source guard is absent; absent/empty guards contribute to the score but
+    /// are omitted from canonical protobuf exactly like the production sorter.
+    pub fn match_component(
+        &mut self,
+        shell: &Match,
+        children: &[PlannedPar],
+    ) -> Result<PlannedComponent, ParConstructionError> {
+        let expected = 1usize
+            .checked_add(
+                shell
+                    .cases
+                    .len()
+                    .checked_mul(3)
+                    .ok_or(ParConstructionError::LengthOverflow("Match child arity"))?,
+            )
+            .ok_or(ParConstructionError::LengthOverflow("Match child arity"))?;
+        Self::require_arity("Match", expected, children.len())?;
+
+        let target = children[0];
+        let mut scores = Vec::with_capacity(shell.cases.len() + 2);
+        scores.push(self.par_score(target));
+        let mut wire_children = Vec::with_capacity(expected);
+        wire_children.push(target);
+        let mut canonical_shell = shell.clone();
+        let mut cursor = 1usize;
+        for (source_case, canonical_case) in
+            shell.cases.iter().zip(canonical_shell.cases.iter_mut())
+        {
+            let pattern = children[cursor];
+            let source = children[cursor + 1];
+            let guard = children[cursor + 2];
+            cursor += 3;
+            let free_count = self.score_i64(i64::from(source_case.free_count))?;
+            scores.push(self.score_node([
+                self.par_score(pattern),
+                self.par_score(source),
+                free_count,
+                self.par_score(guard),
+            ])?);
+            wire_children.extend([pattern, source]);
+            let guard_present = source_case
+                .guard
+                .as_ref()
+                .is_some_and(|guard| guard != &Par::default());
+            if guard_present {
+                wire_children.push(guard);
+            } else {
+                canonical_case.guard = None;
+            }
+        }
+        scores.push(self.score_i64(i64::from(shell.connective_used))?);
+        let score = self.score_constructor(Score::MATCH, scores)?;
+        self.component(&canonical_shell, &wire_children, score, false)
+    }
+
+    /// Plan Receive. Children are every bind's patterns then source, followed
+    /// by body and one condition handle (the empty planned Par when absent).
+    pub fn receive_component(
+        &mut self,
+        shell: &Receive,
+        children: &[PlannedPar],
+    ) -> Result<PlannedComponent, ParConstructionError> {
+        let bind_children = shell.binds.iter().try_fold(0usize, |sum, bind| {
+            sum.checked_add(bind.patterns.len() + 1)
+                .ok_or(ParConstructionError::LengthOverflow("Receive child arity"))
+        })?;
+        let expected = bind_children
+            .checked_add(2)
+            .ok_or(ParConstructionError::LengthOverflow("Receive child arity"))?;
+        Self::require_arity("Receive", expected, children.len())?;
+
+        let persistent = self.score_i64(i64::from(shell.persistent))?;
+        let peek = self.score_i64(i64::from(shell.peek))?;
+        let mut scores = vec![persistent, peek];
+        let mut wire_children = Vec::with_capacity(expected);
+        let mut cursor = 0usize;
+        for bind in &shell.binds {
+            let pattern_end = cursor + bind.patterns.len();
+            let patterns = &children[cursor..pattern_end];
+            let source = children[pattern_end];
+            cursor = pattern_end + 1;
+
+            let remainder = match &bind.remainder {
+                Some(var) => self.score_tree(&sort_var(var).score)?,
+                None => self.score_i64(Score::ABSENT as i64)?,
+            };
+            let bind_scores: Vec<_> = std::iter::once(self.par_score(source))
+                .chain(patterns.iter().map(|pattern| self.par_score(*pattern)))
+                .chain(std::iter::once(remainder))
+                .collect();
+            scores.push(self.score_node(bind_scores)?);
+            wire_children.extend(patterns.iter().copied());
+            wire_children.push(source);
+        }
+
+        let body = children[cursor];
+        let condition = children[cursor + 1];
+        wire_children.push(body);
+        let condition_present = shell
+            .condition
+            .as_ref()
+            .is_some_and(|condition| condition != &Par::default());
+        let mut canonical_shell = shell.clone();
+        if condition_present {
+            wire_children.push(condition);
+        } else {
+            canonical_shell.condition = None;
+        }
+        scores.extend([
+            self.par_score(body),
+            self.score_i64(i64::from(shell.bind_count))?,
+            self.score_i64(i64::from(shell.connective_used))?,
+            self.par_score(condition),
+        ]);
+        let score = self.score_constructor(Score::RECEIVE, scores)?;
+        self.component(&canonical_shell, &wire_children, score, false)
+    }
+
     fn schema_expr_component(
         &mut self,
         shell: &Expr,
@@ -2311,10 +2636,16 @@ impl Drop for ParConstruction {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
+    use crate::rhoapi::connective::ConnectiveInstance;
     use crate::rhoapi::expr::ExprInstance;
+    use crate::rhoapi::g_unforgeable::UnfInstance;
     use crate::rhoapi::{
-        EMap, EMethod, ENot, EPathMap, EPlus, ESet, ETuple, EZipper, Expr, KeyValuePair,
+        Bundle, Connective, ConnectiveBody, EMap, EMethod, ENot, EPathMap, EPlus, ESet, ETuple,
+        EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, Match, MatchCase, New, Receive,
+        ReceiveBind, Send,
     };
     use crate::rust::par_bag::with_component_key;
 
@@ -2548,6 +2879,227 @@ mod tests {
     }
 
     #[test]
+    fn every_top_level_component_plan_matches_production_canonicalization() {
+        fn assert_exact(arena: &ParConstruction, planned: PlannedPar, expected: &Par) {
+            let actual = arena.finish(planned).unwrap();
+            assert_eq!(&actual, expected);
+            assert_eq!(actual.compact_snapshot(), expected.compact_snapshot());
+            assert_eq!(
+                arena.protobuf_bytes(planned),
+                expected.protobuf_bytes().unwrap()
+            );
+        }
+
+        let one_r = resident_gint(1);
+        let two_r = resident_gint(2);
+        let three_r = resident_gint(3);
+        let empty_r = Par::default();
+        let mut arena = ParConstruction::new();
+        let one = planned_gint(&mut arena, 1).unwrap();
+        let two = planned_gint(&mut arena, 2).unwrap();
+        let three = planned_gint(&mut arena, 3).unwrap();
+        let empty = arena.empty_par().unwrap();
+
+        let send_shell = Send {
+            chan: Some(Par::default()),
+            data: vec![Par::default(), Par::default()],
+            persistent: true,
+            locally_free: vec![1],
+            connective_used: true,
+        };
+        let send = arena
+            .send_component(&send_shell, &[one, two, three])
+            .unwrap();
+        let send = arena
+            .par([(send, Multiplicity::ONE)], Vec::new(), false)
+            .unwrap();
+        assert_exact(
+            &arena,
+            send,
+            &Par::default().with_sends(vec![Send {
+                chan: Some(one_r.clone()),
+                data: vec![two_r.clone(), three_r.clone()],
+                ..send_shell
+            }]),
+        );
+
+        let bundle_shell = Bundle {
+            body: Some(Par::default()),
+            write_flag: true,
+            read_flag: false,
+        };
+        let bundle = arena.bundle_component(&bundle_shell, &[one]).unwrap();
+        let bundle = arena
+            .par([(bundle, Multiplicity::ONE)], Vec::new(), false)
+            .unwrap();
+        assert_exact(
+            &arena,
+            bundle,
+            &Par::default().with_bundles(vec![Bundle {
+                body: Some(one_r.clone()),
+                ..bundle_shell
+            }]),
+        );
+
+        let if_shell = If {
+            condition: Some(Par::default()),
+            if_true: Some(Par::default()),
+            if_false: Some(Par::default()),
+            locally_free: vec![2],
+            connective_used: true,
+        };
+        let conditional = arena.if_component(&if_shell, &[one, two, three]).unwrap();
+        let conditional = arena
+            .par([(conditional, Multiplicity::ONE)], Vec::new(), false)
+            .unwrap();
+        assert_exact(
+            &arena,
+            conditional,
+            &Par::default().with_conditionals(vec![If {
+                condition: Some(one_r.clone()),
+                if_true: Some(two_r.clone()),
+                if_false: Some(three_r.clone()),
+                ..if_shell
+            }]),
+        );
+
+        let unforgeable_shell = GUnforgeable {
+            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
+                id: vec![0, 1, 2, 0xff],
+            })),
+        };
+        let unforgeable = arena.unforgeable_component(&unforgeable_shell).unwrap();
+        let unforgeable = arena
+            .par([(unforgeable, Multiplicity::ONE)], Vec::new(), false)
+            .unwrap();
+        let expected_unforgeable =
+            Par::default().with_unforgeables(vec![unforgeable_shell.clone()]);
+        assert_exact(&arena, unforgeable, &expected_unforgeable);
+        assert_eq!(
+            arena.canonical_path_bytes(unforgeable).unwrap(),
+            super::super::canonical_path::encode_trie_path(&expected_unforgeable)
+        );
+
+        let connective_shell = Connective {
+            connective_instance: Some(ConnectiveInstance::ConnAndBody(ConnectiveBody {
+                ps: vec![Par::default(), Par::default()],
+            })),
+        };
+        let connective = arena
+            .connective_component(&connective_shell, &[one, two])
+            .unwrap();
+        let connective = arena
+            .par([(connective, Multiplicity::ONE)], Vec::new(), false)
+            .unwrap();
+        assert_exact(
+            &arena,
+            connective,
+            &Par::default().with_connectives(vec![Connective {
+                connective_instance: Some(ConnectiveInstance::ConnAndBody(ConnectiveBody {
+                    ps: vec![one_r.clone(), two_r.clone()],
+                })),
+            }]),
+        );
+
+        let new_shell = New {
+            bind_count: 2,
+            p: Some(Par::default()),
+            uri: vec!["z".to_owned(), "a".to_owned()],
+            injections: BTreeMap::from([
+                ("left".to_owned(), Par::default()),
+                ("right".to_owned(), Par::default()),
+            ]),
+            locally_free: vec![3],
+        };
+        let new = arena.new_component(&new_shell, &[one, two, three]).unwrap();
+        let new = arena
+            .par([(new, Multiplicity::ONE)], Vec::new(), false)
+            .unwrap();
+        assert_exact(
+            &arena,
+            new,
+            &Par::default().with_news(vec![New {
+                p: Some(one_r.clone()),
+                injections: BTreeMap::from([
+                    ("left".to_owned(), two_r.clone()),
+                    ("right".to_owned(), three_r.clone()),
+                ]),
+                ..new_shell
+            }]),
+        );
+
+        let match_shell = Match {
+            target: Some(Par::default()),
+            cases: vec![MatchCase {
+                pattern: Some(Par::default()),
+                source: Some(Par::default()),
+                free_count: 1,
+                guard: Some(Par::default()),
+            }],
+            locally_free: vec![4],
+            connective_used: true,
+        };
+        let matched = arena
+            .match_component(&match_shell, &[one, two, three, empty])
+            .unwrap();
+        let matched = arena
+            .par([(matched, Multiplicity::ONE)], Vec::new(), false)
+            .unwrap();
+        assert_exact(
+            &arena,
+            matched,
+            &Par::default().with_matches(vec![Match {
+                target: Some(one_r.clone()),
+                cases: vec![MatchCase {
+                    pattern: Some(two_r.clone()),
+                    source: Some(three_r.clone()),
+                    free_count: 1,
+                    guard: None,
+                }],
+                ..match_shell
+            }]),
+        );
+
+        let receive_shell = Receive {
+            binds: vec![ReceiveBind {
+                patterns: vec![Par::default(), Par::default()],
+                source: Some(Par::default()),
+                remainder: None,
+                free_count: 2,
+            }],
+            body: Some(Par::default()),
+            persistent: true,
+            peek: true,
+            bind_count: 2,
+            locally_free: vec![5],
+            connective_used: true,
+            condition: Some(Par::default()),
+        };
+        let receive = arena
+            .receive_component(&receive_shell, &[one, two, three, one, empty])
+            .unwrap();
+        let receive = arena
+            .par([(receive, Multiplicity::ONE)], Vec::new(), false)
+            .unwrap();
+        assert_exact(
+            &arena,
+            receive,
+            &Par::default().with_receives(vec![Receive {
+                binds: vec![ReceiveBind {
+                    patterns: vec![one_r.clone(), two_r.clone()],
+                    source: Some(three_r),
+                    remainder: None,
+                    free_count: 2,
+                }],
+                body: Some(one_r),
+                condition: None,
+                ..receive_shell
+            }]),
+        );
+        assert_eq!(empty_r, Par::default());
+    }
+
+    #[test]
     fn planned_epathmap_and_zipper_stream_exact_pathmap_snapshots() {
         let one_resident = resident_gint(1);
         let two_resident = resident_gint(2);
@@ -2692,6 +3244,123 @@ mod tests {
             .expect("spawn fixed-stack EPathMap construction gate")
             .join()
             .expect("fixed-stack EPathMap construction gate");
+    }
+
+    #[test]
+    fn all_recursive_component_families_share_the_fixed_stack_construction_pda() {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                const DEPTH: usize = 8_192;
+                let mut arena = ParConstruction::new();
+                let empty = arena.empty_par().unwrap();
+                let mut value = planned_gint(&mut arena, 0).unwrap();
+
+                for level in 0..DEPTH {
+                    let component = match level % 8 {
+                        0 => arena
+                            .send_component(
+                                &Send {
+                                    chan: Some(Par::default()),
+                                    data: Vec::new(),
+                                    persistent: false,
+                                    locally_free: Vec::new(),
+                                    connective_used: false,
+                                },
+                                &[value],
+                            )
+                            .unwrap(),
+                        1 => arena
+                            .bundle_component(
+                                &Bundle {
+                                    body: Some(Par::default()),
+                                    write_flag: true,
+                                    read_flag: true,
+                                },
+                                &[value],
+                            )
+                            .unwrap(),
+                        2 => arena
+                            .new_component(
+                                &New {
+                                    bind_count: 0,
+                                    p: Some(Par::default()),
+                                    uri: Vec::new(),
+                                    injections: BTreeMap::new(),
+                                    locally_free: Vec::new(),
+                                },
+                                &[value],
+                            )
+                            .unwrap(),
+                        3 => arena
+                            .match_component(
+                                &Match {
+                                    target: Some(Par::default()),
+                                    cases: Vec::new(),
+                                    locally_free: Vec::new(),
+                                    connective_used: false,
+                                },
+                                &[value],
+                            )
+                            .unwrap(),
+                        4 => arena
+                            .connective_component(
+                                &Connective {
+                                    connective_instance: Some(ConnectiveInstance::ConnNotBody(
+                                        Par::default(),
+                                    )),
+                                },
+                                &[value],
+                            )
+                            .unwrap(),
+                        5 => arena
+                            .if_component(
+                                &If {
+                                    condition: Some(Par::default()),
+                                    if_true: Some(Par::default()),
+                                    if_false: Some(Par::default()),
+                                    locally_free: Vec::new(),
+                                    connective_used: false,
+                                },
+                                &[value, empty, empty],
+                            )
+                            .unwrap(),
+                        6 => arena
+                            .receive_component(
+                                &Receive {
+                                    binds: Vec::new(),
+                                    body: Some(Par::default()),
+                                    persistent: false,
+                                    peek: false,
+                                    bind_count: 0,
+                                    locally_free: Vec::new(),
+                                    connective_used: false,
+                                    condition: None,
+                                },
+                                &[value, empty],
+                            )
+                            .unwrap(),
+                        _ => {
+                            let expr = Expr {
+                                expr_instance: Some(ExprInstance::ENotBody(ENot {
+                                    p: Some(Par::default()),
+                                })),
+                            };
+                            arena.expr_component(&expr, &[value], false).unwrap()
+                        }
+                    };
+                    value = arena
+                        .par([(component, Multiplicity::ONE)], Vec::new(), false)
+                        .unwrap();
+                }
+
+                let bytes = arena.protobuf_bytes(value);
+                let actual = arena.finish(value).unwrap();
+                assert_eq!(actual.protobuf_bytes().unwrap(), bytes);
+            })
+            .expect("spawn fixed-stack all-family construction gate")
+            .join()
+            .expect("fixed-stack all-family construction gate");
     }
 
     #[test]
