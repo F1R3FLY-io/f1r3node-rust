@@ -1,0 +1,19 @@
+[package]
+name = "mettail-elab"
+version = "0.1.0"
+edition = "2021"
+description = "MeTTaIL DDL and module system: parser and theory elaborator"
+license = "Apache-2.0"
+
+# Deliberately dependency-free. This crate is built into the f1r3node-rust
+# workspace and is on the deploy-time compile path (plan D7), so its
+# dependency surface is kept at zero.
+[dependencies]
+
+[lib]
+name = "mettail_elab"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mettail-elab"
+path = "src/main.rs"
