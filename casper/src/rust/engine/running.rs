@@ -494,8 +494,6 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         bhm: BlockHashMessage,
         ignore_message_f: impl Fn(BlockHash) -> Result<bool, CasperError>,
     ) -> Result<(), CasperError> {
-        let __start = std::time::Instant::now();
-        let __peer_host = peer.endpoint.host.clone();
         let h = bhm.block_hash;
         if ignore_message_f(h.clone())? {
             tracing::debug!(
@@ -516,11 +514,6 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
                 )
                 .await?;
         }
-        tracing::info!(
-            "handle_block_hash_message [{}ms] from {}",
-            __start.elapsed().as_millis(),
-            __peer_host
-        );
         Ok(())
     }
 
@@ -530,8 +523,6 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         hb: HasBlock,
         ignore_message_f: impl Fn(BlockHash) -> Result<bool, CasperError>,
     ) -> Result<(), CasperError> {
-        let __start = std::time::Instant::now();
-        let __peer_host = peer.endpoint.host.clone();
         let h = hb.hash;
         if ignore_message_f(h.clone())? {
             tracing::debug!(
@@ -552,11 +543,6 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
                 )
                 .await?;
         }
-        tracing::info!(
-            "handle_has_block_message [{}ms] from {}",
-            __start.elapsed().as_millis(),
-            __peer_host
-        );
         Ok(())
     }
 
@@ -565,37 +551,20 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         peer: PeerNode,
         br: BlockRequest,
     ) -> Result<(), CasperError> {
-        let __start = std::time::Instant::now();
-        let __lookup_start = std::time::Instant::now();
         let maybe_block = self.casper.block_store().get(&br.hash)?;
-        let __lookup_ms = __lookup_start.elapsed().as_millis();
         if let Some(block) = maybe_block {
             tracing::info!(
                 "Received request for block {} from {}. Response sent.",
                 PrettyPrinter::build_string_bytes(&br.hash),
                 peer
             );
-            let __send_start = std::time::Instant::now();
             self.transport
                 .stream_message_to_peer(&self.conf, &peer, Arc::new(block.to_proto()))
                 .await?;
-            tracing::info!(
-                "handle_block_request [{}ms total, lookup {}ms, send {}ms] for {}",
-                __start.elapsed().as_millis(),
-                __lookup_ms,
-                __send_start.elapsed().as_millis(),
-                peer
-            );
         } else {
             tracing::info!(
                 "Received request for block {} from {}. No response given since block not found.",
                 PrettyPrinter::build_string_bytes(&br.hash),
-                peer
-            );
-            tracing::info!(
-                "handle_block_request [{}ms total, lookup {}ms, not found] for {}",
-                __start.elapsed().as_millis(),
-                __lookup_ms,
                 peer
             );
         }
@@ -608,18 +577,12 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         hbr: HasBlockRequest,
         block_lookup: impl Fn(BlockHash) -> bool,
     ) -> Result<(), CasperError> {
-        let __start = std::time::Instant::now();
         if block_lookup(hbr.hash.clone()) {
             let has_block = HasBlock { hash: hbr.hash };
             self.transport
                 .send_message_to_peer(&self.conf, &peer, Arc::new(has_block.to_proto()))
                 .await?;
         }
-        tracing::info!(
-            "handle_has_block_request [{}ms] for {}",
-            __start.elapsed().as_millis(),
-            peer
-        );
         Ok(())
     }
 
