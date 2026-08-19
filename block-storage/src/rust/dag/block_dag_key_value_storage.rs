@@ -837,6 +837,7 @@ impl BlockDagKeyValueStorage {
     /// genesis identities on one node is a bootstrap-integrity violation,
     /// never something to silently overwrite.
     pub fn record_genesis_hash(&self, hash: BlockHash) -> Result<(), KvStoreError> {
+        let _lock_guard = self.global_lock.write();
         let key = Self::GENESIS_HASH_KEY.to_string();
         if let Some(BlockHashSerde(existing)) = self.genesis_hash_index.get_one(&key)? {
             if existing == hash {
