@@ -719,6 +719,76 @@ jobs:
             echo "checkpoint_5=$cp5"
           } >> "$GITHUB_OUTPUT"
 
+  # Advisory docs link sweep for the 60h stability soak. Checks the
+  # external URLs that the blocking CI Link Checker no longer covers
+  # (general-web domains answer runner IPs inconsistently). This job has
+  # no needs-edge into the soak job and never fails: it can only emit a
+  # warning annotation and a result artifact that the ONS verdict email
+  # includes. It must never block the soak or any other job.
+  docs_link_sweep:
+    name: Docs External Link Sweep (advisory)
+    needs: schedule_gate
+    if: needs.schedule_gate.outputs.should_run == 'true' && needs.schedule_gate.outputs.kind == 'weekend'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout soak target
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.schedule_gate.outputs.target_sha }}
+          persist-credentials: false
+
+      - name: Sweep external documentation links
+        id: sweep
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: >-
+            --no-progress
+            --exclude-loopback
+            --exclude 'https://www\.gutenberg\.org/ebooks/132'
+            --max-retries 2
+            --retry-wait-time 5
+            --timeout 45
+            --accept 200..=299,403,429,503,504
+            --format json
+            './**/*.md'
+          output: /tmp/link-sweep.json
+          fail: false
+
+      - name: Summarize sweep result
+        env:
+          SWEEP_EXIT: ${{ steps.sweep.outputs.exit_code }}
+        shell: bash -euo pipefail {0}
+        run: |
+          broken=0
+          if [ -s /tmp/link-sweep.json ]; then
+            broken="$(jq -r '[.fail_map[]? | length] | add // 0' /tmp/link-sweep.json)"
+          fi
+          jq -n \
+            --argjson broken "$broken" \
+            --arg exit_code "${SWEEP_EXIT:-unknown}" \
+            '{broken: $broken, exit_code: $exit_code}' > /tmp/docs-link-sweep.json
+          if [ "$broken" -gt 0 ]; then
+            echo "::warning::advisory docs link sweep found $broken broken external link(s); see the docs-link-sweep artifact (does not gate the soak)"
+          fi
+          {
+            echo "### Docs external link sweep (advisory)"
+            echo
+            echo "Broken external links: $broken. This sweep never gates the soak."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sweep artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-link-sweep
+          path: |
+            /tmp/docs-link-sweep.json
+            /tmp/link-sweep.json
+          retention-days: 14
+          if-no-files-found: warn
+
   preflight_pending:
     name: Mark Integration Preflight Pending
     needs: schedule_gate
@@ -1725,12 +1795,21 @@ jobs:
           ci-control/scripts/bench/aggregate-perf-report.sh
           cat "$OUT_DIR/perf-report.md" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Fetch docs link sweep result (advisory)
+        if: always() && needs.schedule_gate.outputs.kind == 'weekend'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: docs-link-sweep
+          path: /tmp/merge-recovery-soak/link-sweep
+
       - name: Publish ONS alert email
         if: always() && needs.schedule_gate.outputs.preflight_only != 'true' && needs.schedule_gate.outputs.run_benchmarks == 'true' && steps.integration_preflight.outputs.result == 'passed' && steps.reset_telemetry.outcome == 'success'
         shell: bash -e {0}
         env:
           REPORT_DIR: /tmp/merge-recovery-soak/report
           ONS_TOPIC_OCID: ${{ vars.SOAK_ONS_TOPIC_OCID }}
+          LINK_SWEEP_JSON: /tmp/merge-recovery-soak/link-sweep/docs-link-sweep.json
           DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
