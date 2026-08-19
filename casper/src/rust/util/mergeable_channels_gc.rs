@@ -4,6 +4,8 @@
 //! This is required for multi-parent mode where immediate deletion during finalization
 //! can cause data races.
 
+use std::collections::HashSet;
+
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
@@ -11,8 +13,26 @@ use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::rust::casper::CasperShardConf;
 use crate::rust::finality::floor::{floor_of_block, Floor};
+use crate::rust::metrics_constants::MERGEABLE_CHANNELS_GC_METRICS_SOURCE;
 use crate::rust::safety::clique_oracle::FtThreshold;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
+
+/// `next_height`: heights below it are fully handled and never revisited.
+/// `processed` stays bounded to the retention window above it, not to chain age.
+#[derive(Default)]
+pub struct GcState {
+    next_height: i64,
+    processed: HashSet<BlockHash>,
+}
+
+impl GcState {
+    pub fn new() -> Self { Self::default() }
+}
+
+struct MainChain {
+    latest: BlockHash,
+    blocks: HashSet<BlockHash>,
+}
 
 /// Garbage collects mergeable channel data for blocks that are provably unreachable.
 ///
@@ -25,8 +45,9 @@ pub async fn collect_garbage(
     block_store: &KeyValueBlockStore,
     runtime_manager: &std::sync::Arc<RuntimeManager>,
     casper_shard_conf: &CasperShardConf,
+    state: &mut GcState,
 ) -> Result<usize, KvStoreError> {
-    let mut deleted_count = 0;
+    let pass_started = std::time::Instant::now();
 
     // The deletion anchor, derived ONCE per pass: the floor of the last
     // finalized block. Deletion is irreversible and the data serves merges,
@@ -40,14 +61,51 @@ pub async fn collect_garbage(
     .await
     .map_err(|e| KvStoreError::IoError(e.to_string()))?;
 
-    // Get all finalized blocks by traversing from genesis
-    // Note: This could be optimized by tracking pending GC blocks
-    let finalized_blocks = get_finalized_blocks(dag)?;
+    let result = run_pass(dag, block_store, runtime_manager, casper_shard_conf, &floor, state);
+    metrics::histogram!("mergeable_channels_gc.pass.time", "source" => MERGEABLE_CHANNELS_GC_METRICS_SOURCE)
+        .record(pass_started.elapsed().as_secs_f64());
+    result
+}
 
-    for block_hash in finalized_blocks {
-        if is_safe_to_delete(dag, &block_hash, &floor, casper_shard_conf)? {
-            // Get block to access its state hash
-            if let Some(block) = block_store.get(&block_hash)? {
+fn run_pass(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    runtime_manager: &std::sync::Arc<RuntimeManager>,
+    casper_shard_conf: &CasperShardConf,
+    floor: &Floor,
+    state: &mut GcState,
+) -> Result<usize, KvStoreError> {
+    let max_block_number = dag.latest_block_number();
+    if state.next_height > max_block_number {
+        tracing::debug!("Mergeable channels GC: nothing above watermark");
+        return Ok(0);
+    }
+
+    let max_allowed_depth = (casper_shard_conf.max_parent_depth as i64)
+        + (casper_shard_conf.mergeable_channels_gc_depth_buffer as i64);
+    let main_chains = build_main_chains(dag, state.next_height)?;
+    let levels = dag.topo_sort(state.next_height, None)?;
+
+    let mut deleted_count = 0;
+    let mut contiguous = true;
+
+    for level in levels {
+        if level.is_empty() {
+            continue;
+        }
+
+        let mut level_complete = true;
+        for block_hash in &level {
+            if state.processed.contains(block_hash) {
+                continue;
+            }
+
+            if !is_safe_to_delete(dag, block_hash, floor, max_allowed_depth, &main_chains)? {
+                level_complete = false;
+                continue;
+            }
+
+            if let Some(block) = block_store.get(block_hash)? {
                 let deleted = runtime_manager
                     .delete_mergeable_channels(
                         &block.body.state.post_state_hash,
@@ -60,10 +118,22 @@ pub async fn collect_garbage(
                     deleted_count += 1;
                     tracing::debug!(
                         "GC: Deleted mergeable data for block {}",
-                        hex::encode(&block_hash)
+                        hex::encode(block_hash)
                     );
                 }
             }
+
+            state.processed.insert(block_hash.clone());
+        }
+
+        if contiguous && level_complete {
+            let level_height = dag.lookup_unsafe(&level[0])?.block_number;
+            state.next_height = level_height + 1;
+            for block_hash in &level {
+                state.processed.remove(block_hash);
+            }
+        } else {
+            contiguous = false;
         }
     }
 
@@ -80,12 +150,41 @@ pub async fn collect_garbage(
     Ok(deleted_count)
 }
 
+/// Stops at `floor_height` — candidates never go below it and children only
+/// get higher, so nothing lower is ever queried.
+fn build_main_chains(
+    dag: &KeyValueDagRepresentation,
+    floor_height: i64,
+) -> Result<Vec<MainChain>, KvStoreError> {
+    dag.latest_message_hashes()
+        .values()
+        .map(|latest| {
+            let mut blocks = HashSet::new();
+            let mut current = Some(latest.clone());
+            while let Some(hash) = current {
+                if dag.block_number_unsafe(&hash)? < floor_height {
+                    break;
+                }
+                if !blocks.insert(hash.clone()) {
+                    break;
+                }
+                current = dag.main_parent(&hash);
+            }
+            Ok(MainChain {
+                latest: latest.clone(),
+                blocks,
+            })
+        })
+        .collect()
+}
+
 /// Check if a block's mergeable data is safe to delete.
 fn is_safe_to_delete(
     dag: &KeyValueDagRepresentation,
     block_hash: &BlockHash,
     floor: &Floor,
-    casper_shard_conf: &CasperShardConf,
+    max_allowed_depth: i64,
+    main_chains: &[MainChain],
 ) -> Result<bool, KvStoreError> {
     // 1. Check if block is finalized
     if !dag.is_finalized(block_hash) {
@@ -104,8 +203,6 @@ fn is_safe_to_delete(
     //    only delete less than before, never more.
     let block_meta = dag.lookup_unsafe(block_hash)?;
     let depth_from_floor = floor.block_number - block_meta.block_number;
-    let max_allowed_depth = (casper_shard_conf.max_parent_depth as i64)
-        + (casper_shard_conf.mergeable_channels_gc_depth_buffer as i64);
 
     if depth_from_floor <= max_allowed_depth {
         return Ok(false);
@@ -121,23 +218,15 @@ fn is_safe_to_delete(
         return Ok(false);
     }
 
-    let latest_message_hashes = dag.latest_message_hashes();
-
-    // For each validator's latest message, check if it's a descendant of any child (via main chain)
-    for (_, latest_msg_hash) in latest_message_hashes.iter() {
-        if latest_msg_hash == block_hash {
+    for main_chain in main_chains {
+        if &main_chain.latest == block_hash {
             // Validator's latest is still this block
             return Ok(false);
         }
 
-        // Check if latest message is descendant of any child (via main chain)
-        let mut found_in_child_chain = false;
-        for child_hash_ref in children.iter() {
-            if dag.is_in_main_chain(child_hash_ref, latest_msg_hash)? {
-                found_in_child_chain = true;
-                break;
-            }
-        }
+        let found_in_child_chain = children
+            .iter()
+            .any(|child_hash| main_chain.blocks.contains(child_hash));
 
         if !found_in_child_chain {
             return Ok(false);
@@ -145,21 +234,6 @@ fn is_safe_to_delete(
     }
 
     Ok(true)
-}
-
-/// Get all finalized blocks from the DAG.
-/// Note: This is a simple implementation that could be optimized.
-fn get_finalized_blocks(dag: &KeyValueDagRepresentation) -> Result<Vec<BlockHash>, KvStoreError> {
-    // Get all blocks via topo_sort and filter for finalized ones
-    let all_blocks = dag.topo_sort(0, None)?;
-
-    let finalized: Vec<BlockHash> = all_blocks
-        .into_iter()
-        .flatten()
-        .filter(|hash| dag.is_finalized(hash))
-        .collect();
-
-    Ok(finalized)
 }
 
 #[cfg(test)]
@@ -175,6 +249,11 @@ mod tests {
     use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
     use super::*;
+    use crate::rust::test_utils::helper::block_dag_storage_fixture::with_storage;
+    use crate::rust::test_utils::helper::block_generator::{
+        create_block_fast, create_genesis_block,
+    };
+    use crate::rust::test_utils::util::rholang::resources::mk_runtime_manager;
 
     fn hash(n: u8) -> Bytes { Bytes::from(vec![n; 32]) }
 
@@ -265,11 +344,19 @@ mod tests {
         conf
     }
 
+    fn max_allowed_depth_of(conf: &CasperShardConf) -> i64 {
+        (conf.max_parent_depth as i64) + (conf.mergeable_channels_gc_depth_buffer as i64)
+    }
+
     fn floor_at(n: u8) -> Floor {
         Floor {
             hash: hash(n),
             block_number: n as i64,
         }
+    }
+
+    fn all_main_chains(dag: &KeyValueDagRepresentation) -> Vec<MainChain> {
+        build_main_chains(dag, 0).expect("build main chains")
     }
 
     /// THE regression. Mergeable data serves merges, and a merge reads it for
@@ -283,11 +370,19 @@ mod tests {
     fn a_block_above_the_floor_is_never_collected_however_far_the_tip_has_run() {
         let dag = linear_chain_dag();
         let conf = conf();
+        let main_chains = all_main_chains(&dag);
         // Tip is TOP + 1 = 21, so block 12 is 9 below it — past the 4-block
         // allowance on the tip clock — but 2 ABOVE the floor at 10.
         assert_eq!(dag.latest_block_number(), TOP as i64 + 1);
         assert!(
-            !is_safe_to_delete(&dag, &hash(12), &floor_at(10), &conf).expect("safety check"),
+            !is_safe_to_delete(
+                &dag,
+                &hash(12),
+                &floor_at(10),
+                max_allowed_depth_of(&conf),
+                &main_chains
+            )
+            .expect("safety check"),
             "block 12 sits above the floor at 10, so a merge based on that floor \
              still reads its mergeable data. Anchored on the tip it reads as \
              depth 9 and is collected, and the merge then fails to find history \
@@ -302,8 +397,16 @@ mod tests {
     fn a_block_far_below_the_floor_is_still_collected() {
         let dag = linear_chain_dag();
         let conf = conf();
+        let main_chains = all_main_chains(&dag);
         assert!(
-            is_safe_to_delete(&dag, &hash(5), &floor_at(10), &conf).expect("safety check"),
+            is_safe_to_delete(
+                &dag,
+                &hash(5),
+                &floor_at(10),
+                max_allowed_depth_of(&conf),
+                &main_chains
+            )
+            .expect("safety check"),
             "block 5 is 5 below the floor at 10, past the 4-block allowance, so \
              no merge can still need it and holding it forever leaks",
         );
@@ -315,8 +418,16 @@ mod tests {
     fn the_allowance_boundary_is_measured_from_the_floor() {
         let dag = linear_chain_dag();
         let conf = conf();
+        let main_chains = all_main_chains(&dag);
         assert!(
-            !is_safe_to_delete(&dag, &hash(6), &floor_at(10), &conf).expect("safety check"),
+            !is_safe_to_delete(
+                &dag,
+                &hash(6),
+                &floor_at(10),
+                max_allowed_depth_of(&conf),
+                &main_chains
+            )
+            .expect("safety check"),
             "block 6 is exactly the 4-block allowance below the floor — retained",
         );
     }
@@ -335,9 +446,133 @@ mod tests {
             bms.add(meta).expect("re-add metadata");
         }
         let conf = conf();
+        let main_chains = all_main_chains(&dag);
         assert!(
-            !is_safe_to_delete(&dag, &hash(5), &floor_at(10), &conf).expect("safety check"),
+            !is_safe_to_delete(
+                &dag,
+                &hash(5),
+                &floor_at(10),
+                max_allowed_depth_of(&conf),
+                &main_chains
+            )
+            .expect("safety check"),
             "an unfinalized block's data may still be needed by a branch that wins",
         );
+    }
+
+    fn shard_conf(max_parent_depth: i32, depth_buffer: i32) -> CasperShardConf {
+        CasperShardConf {
+            max_parent_depth,
+            mergeable_channels_gc_depth_buffer: depth_buffer,
+            enable_mergeable_channel_gc: true,
+            ..CasperShardConf::new()
+        }
+    }
+
+    // A single validator produces a linear chain of `count` blocks past genesis.
+    // `create_block_fast` leaves `creator` at its default, so every block shares
+    // one identity — this is the single-validator case `build_main_chains` is built for.
+    async fn linear_chain(
+        block_store: &mut block_storage::rust::key_value_block_store::KeyValueBlockStore,
+        dag_storage: &mut block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage,
+        count: usize,
+    ) -> Vec<models::rust::casper::protocol::casper_message::BlockMessage> {
+        let genesis = create_genesis_block(
+            block_store,
+            dag_storage,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let mut chain = vec![genesis.clone()];
+        let mut parent = genesis.clone();
+        for _ in 0..count {
+            let block = create_block_fast(
+                block_store,
+                dag_storage,
+                vec![parent.block_hash.clone()],
+                &genesis,
+            );
+            chain.push(block.clone());
+            parent = block;
+        }
+        chain
+    }
+
+    #[tokio::test]
+    async fn watermark_holds_at_a_height_that_is_not_yet_finalized() {
+        with_storage(|mut block_store, mut dag_storage| async move {
+            let runtime_manager = Arc::new(mk_runtime_manager("gc-watermark-test", None).await);
+            let conf = shard_conf(0, 0); // max_allowed_depth = 0: anything but the tip qualifies
+            let mut state = GcState::new();
+
+            // genesis(h0) -> b1(h1) -> b2(h2) -> b3(h3, tip); finalize only up to b1.
+            let chain = linear_chain(&mut block_store, &mut dag_storage, 3).await;
+            dag_storage
+                .record_directly_finalized(chain[1].block_hash.clone(), 1.0, |_| async { Ok(()) })
+                .await
+                .unwrap();
+
+            {
+                let dag = dag_storage.get_representation().unwrap();
+                // The watermark/level-completion bookkeeping under test here is
+                // orthogonal to floor computation (covered by the floor-specific
+                // tests above, which exercise a linear chain where the floor
+                // never advances past genesis — the real floor machinery is
+                // built for multi-parent merges, not this single-validator
+                // fixture). Pin the floor at the tip, matching what `run_pass`'s
+                // caller (`collect_garbage`) supplies once per real pass.
+                let floor = Floor {
+                    hash: dag.last_finalized_block(),
+                    block_number: dag.latest_block_number(),
+                };
+                run_pass(&dag, &block_store, &runtime_manager, &conf, &floor, &mut state).unwrap();
+            }
+            // h2 (b2) is unfinalized, so the watermark must stop there rather
+            // than skipping past it because a later height happened to qualify.
+            assert_eq!(
+                state.next_height, 2,
+                "watermark must halt at the first height that is not fully handled"
+            );
+
+            // Extend the chain and finalize the rest; the previously-blocked
+            // height must be picked up on the next pass, not skipped forever.
+            let mut parent = chain.last().unwrap().clone();
+            let genesis = chain[0].clone();
+            let mut tail = Vec::new();
+            for _ in 0..3 {
+                let block = create_block_fast(
+                    &mut block_store,
+                    &mut dag_storage,
+                    vec![parent.block_hash.clone()],
+                    &genesis,
+                );
+                tail.push(block.clone());
+                parent = block;
+            }
+            dag_storage
+                .record_directly_finalized(parent.block_hash.clone(), 1.0, |_| async { Ok(()) })
+                .await
+                .unwrap();
+
+            {
+                let dag = dag_storage.get_representation().unwrap();
+                let floor = Floor {
+                    hash: dag.last_finalized_block(),
+                    block_number: dag.latest_block_number(),
+                };
+                run_pass(&dag, &block_store, &runtime_manager, &conf, &floor, &mut state).unwrap();
+            }
+            assert_eq!(
+                state.next_height, 6,
+                "watermark must advance past the previously-blocked height once it clears"
+            );
+        })
+        .await;
     }
 }
