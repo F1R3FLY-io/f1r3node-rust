@@ -383,7 +383,10 @@ jobs:
     name: Integration Tests (${{ matrix.arch }}-${{ matrix.provider }})
     needs: [build_docker_image, launch_ephemeral_runners]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    # 90 leaves headroom for the ucc suite's wall-clock-dominated
+    # convergence rounds, which serialize onto one xdist worker via
+    # --dist=loadgroup. Must stay well under the 6-hour OCI reaper horizon.
+    timeout-minutes: 90
     permissions:
       contents: read
     strategy:
