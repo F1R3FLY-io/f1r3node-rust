@@ -16,7 +16,7 @@ use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Bond, Justification, ProcessedDeploy,
+    BlockMessage, Bond, Justification, ProcessedDeploy, RejectedDeploy,
 };
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::system_processes::BlockData;
@@ -74,6 +74,7 @@ async fn compute_block_checkpoint(
         HashMap::new(),
         None,
         None,
+        None,
     )
     .await?;
 
@@ -96,6 +97,18 @@ fn inject_post_state_hash(
         block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
     )?;
     Ok(())
+}
+
+/// How a block records the construction of its state: the merge base its
+/// parents were re-based onto — the STATE parent, which for a merge need NOT
+/// be `parents[0]` — plus the sigs the merge applied from scope and the sigs
+/// it rejected. `Default` is the single-parent shape: no recorded base (the
+/// sole parent is the state parent), nothing applied, nothing rejected.
+#[derive(Clone, Default)]
+pub struct MergeFacts {
+    pub merge_base: Option<BlockHash>,
+    pub applied_from_scope: Vec<prost::bytes::Bytes>,
+    pub rejected_deploys: Vec<RejectedDeploy>,
 }
 
 pub fn build_block(
@@ -201,6 +214,7 @@ pub fn create_block(
     pre_state_hash: Option<StateHash>,
     seq_num: Option<i32>,
     invalid: Option<bool>,
+    merge_facts: Option<MergeFacts>,
 ) -> BlockMessage {
     let creator = creator.unwrap_or_default();
     let bonds = bonds.unwrap_or_default();
@@ -224,7 +238,7 @@ pub fn create_block(
         .unwrap()
         .as_millis() as i64;
 
-    let block = build_block(
+    let mut block = build_block(
         parents_hash_list,
         Some(creator),
         now,
@@ -236,6 +250,13 @@ pub fn create_block(
         Some(pre_state_hash),
         Some(seq_num),
     );
+
+    // Applied before indexing so the DAG metadata picks the recorded base up
+    // (`BlockMetadata::from` reads `body.merge_base`) alongside the stored body.
+    let merge_facts = merge_facts.unwrap_or_default();
+    block.body.merge_base = merge_facts.merge_base.unwrap_or_default();
+    block.body.applied_from_scope = merge_facts.applied_from_scope;
+    block.body.rejected_deploys = merge_facts.rejected_deploys;
 
     let modified_block = indexed_block_dag_storage
         .insert_indexed(&block, genesis, invalid)
@@ -268,6 +289,7 @@ pub fn create_block_fast(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -284,6 +306,7 @@ pub fn create_block_fast_with_creator(
         parents,
         genesis,
         Some(creator),
+        None,
         None,
         None,
         None,
@@ -328,5 +351,6 @@ pub fn create_validator_block(
         None,
         seq_num,
         invalid,
+        None,
     )
 }

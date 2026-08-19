@@ -131,6 +131,8 @@ pub fn block_with_system_deploys(
             rejected_deploys: vec![],
             system_deploys,
             extra_bytes: Bytes::new(),
+            applied_from_scope: vec![],
+            merge_base: Bytes::new(),
         },
         justifications: vec![],
         sender,
@@ -149,7 +151,6 @@ pub fn block_with_system_deploys(
 /// lock, no per-iteration cleanup.
 fn empty_dag() -> KeyValueDagRepresentation {
     let metadata_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
-    let deploy_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
     let floor_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
     let frontier_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
     KeyValueDagRepresentation {
@@ -164,9 +165,11 @@ fn empty_dag() -> KeyValueDagRepresentation {
         last_finalized_block_hash: Bytes::new(),
         finalized_blocks_set: imbl::HashSet::new(),
         block_metadata_index: Arc::new(RwLock::new(BlockMetadataStore::new(metadata_store))),
-        deploy_index: Arc::new(RwLock::new(deploy_store)),
         floor_index: floor_store,
         frontier_index: frontier_store,
+        lifecycle: Arc::new(RwLock::new(
+            block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(),
+        )),
     }
 }
 
@@ -183,6 +186,7 @@ fn metadata(evidence: &Evidence) -> BlockMetadata {
         directly_finalized: false,
         finalized: false,
         fault_tolerance_value: 0.0,
+        merge_base: prost::bytes::Bytes::new(),
     }
 }
 

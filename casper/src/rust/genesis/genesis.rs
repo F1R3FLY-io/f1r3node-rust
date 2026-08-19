@@ -212,6 +212,8 @@ impl Genesis {
             rejected_deploys: Vec::new(),
             system_deploys: Vec::new(),
             extra_bytes: Bytes::new(),
+            applied_from_scope: Vec::new(),
+            merge_base: Bytes::new(),
         };
 
         let header = proto_util::block_header(Vec::new(), genesis.version, genesis.timestamp);

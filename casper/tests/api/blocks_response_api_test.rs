@@ -99,6 +99,7 @@ fn create_dag_with_8_blocks(
         None,
         None,
         None,
+        None,
     );
 
     let justifications_b3: HashMap<Validator, BlockHash> = [
@@ -117,6 +118,7 @@ fn create_dag_with_8_blocks(
         Some(v1.clone()),
         Some(bonds.clone()),
         Some(justifications_b3),
+        None,
         None,
         None,
         None,
@@ -150,6 +152,7 @@ fn create_dag_with_8_blocks(
         None,
         None,
         None,
+        None,
     );
 
     let justifications_b5: HashMap<Validator, BlockHash> = [
@@ -168,6 +171,7 @@ fn create_dag_with_8_blocks(
         Some(v2.clone()),
         Some(bonds.clone()),
         Some(justifications_b5),
+        None,
         None,
         None,
         None,
@@ -201,6 +205,7 @@ fn create_dag_with_8_blocks(
         None,
         None,
         None,
+        None,
     );
 
     let justifications_b7: HashMap<Validator, BlockHash> = [
@@ -219,6 +224,7 @@ fn create_dag_with_8_blocks(
         Some(v3.clone()),
         Some(bonds.clone()),
         Some(justifications_b7),
+        None,
         None,
         None,
         None,
@@ -245,6 +251,7 @@ fn create_dag_with_8_blocks(
         Some(v2.clone()),
         Some(bonds.clone()),
         Some(justifications_b8),
+        None,
         None,
         None,
         None,

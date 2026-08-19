@@ -79,6 +79,12 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
     // The per-validate derivation slot: block_summary fills it at the first
     // floor-consuming step; the checkpoint and bonds steps below reuse it.
     let mut floor_ctx: Option<crate::rust::finality::floor_context::FloorContext> = None;
+    // This node's identity for the owner-scoped buffer populate inside the
+    // checkpoint recompute; observers pass None and buffer nothing.
+    let local_validator: Option<models::rust::validator::Validator> = this
+        .validator_id
+        .as_ref()
+        .map(|id| prost::bytes::Bytes::copy_from_slice(&id.public_key.bytes));
     let (block_summary_result, t1) = timed_step(
         "block-summary",
         BLOCK_VALIDATION_STEP_BLOCK_SUMMARY_TIME_METRIC,
@@ -129,9 +135,7 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
             .await
             {
                 Ok(ctx) => floor_ctx = Some(ctx),
-                Err(ex) => {
-                    return Ok(Either::Left(BlockError::from_floor_context_error(ex)));
-                }
+                Err(ex) => return Ok(Either::Left(BlockError::from_validation_error(ex))),
             }
         }
         let (validate_block_checkpoint_result, t2) = timed_step(
@@ -144,6 +148,7 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
                 &this.runtime_manager,
                 Some(&this.rejected_deploy_buffer),
                 floor_ctx.as_ref(),
+                local_validator.as_ref(),
             ),
         )
         .await?;
@@ -378,7 +383,7 @@ pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sy
             actual = %PrettyPrinter::build_string_no_limit(&block.body.state.pre_state_hash),
             "self-created block pre_state_hash mismatch"
         );
-        return Ok(Either::Left(BlockError::BlockException(
+        return Ok(Either::Left(BlockError::from_validation_error(
             CasperError::RuntimeError(msg),
         )));
     }
@@ -395,7 +400,7 @@ pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sy
             actual = %PrettyPrinter::build_string_no_limit(&block.body.state.post_state_hash),
             "self-created block post_state_hash mismatch"
         );
-        return Ok(Either::Left(BlockError::BlockException(
+        return Ok(Either::Left(BlockError::from_validation_error(
             CasperError::RuntimeError(msg),
         )));
     }

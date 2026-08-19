@@ -130,6 +130,7 @@ async fn step_block(
         HashMap::new(),
         None,
         None,
+        None,
     )
     .await?;
 
@@ -336,6 +337,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         None,
         None,
         None,
+        None,
     )
     .await
     .expect("Failed to compute parents post-state without finalized skew");
@@ -368,6 +370,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         &snapshot_with_skew,
         &runtime_manager,
         &latest_messages_with_skew,
+        None,
         None,
         None,
         None,
@@ -577,7 +580,7 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         "side deploy must change state"
     );
 
-    let cover_raw = build_empty_block(
+    let mut cover_raw = build_empty_block(
         2,
         3,
         validator.clone(),
@@ -586,6 +589,9 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         main.body.state.bonds.clone(),
         shard_name.clone(),
     );
+    // A multi-parent block records its state parent (E1); the covering
+    // parent's post-state is this block's state, so main is its base.
+    cover_raw.body.merge_base = main.block_hash.clone();
     let cover = step_block(
         &mut block_store,
         &dag_storage,
@@ -618,6 +624,7 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         &snapshot,
         &runtime_manager,
         &latest_messages,
+        None,
         None,
         None,
         None,
@@ -798,16 +805,20 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
     .await
     .expect("Failed to step b3");
 
+    // Delete the entry of a parent that is IN SCOPE. parents[0] is the merge
+    // base — its state is read directly and its chains are never collected, so
+    // its mergeable entry is not consulted and there is nothing to reconstruct.
+    // The reconstruction path guards scope blocks, which is b3 here.
     let deleted = runtime_manager
         .delete_mergeable_channels(
-            &b2.body.state.post_state_hash,
-            b2.sender.clone(),
-            b2.seq_num,
+            &b3.body.state.post_state_hash,
+            b3.sender.clone(),
+            b3.seq_num,
         )
         .expect("Failed to delete mergeable entry");
     assert!(
         deleted,
-        "Expected parent mergeable entry to exist before deletion."
+        "Expected the scope parent's mergeable entry to exist before deletion."
     );
 
     let mut snapshot = mk_snapshot(
@@ -827,10 +838,11 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
         .collect();
     let result = compute_parents_post_state(
         &block_store,
-        vec![b2.clone(), b3],
+        vec![b2.clone(), b3.clone()],
         &snapshot,
         &runtime_manager,
         &latest_messages,
+        None,
         None,
         None,
         None,
@@ -843,7 +855,7 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
     );
     assert!(
         runtime_manager
-            .get_mergeable_entry_bytes(&b2)
+            .get_mergeable_entry_bytes(&b3)
             .expect("mergeable entry query failed")
             .1
             .is_some(),
