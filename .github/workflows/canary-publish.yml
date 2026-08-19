@@ -1,0 +1,274 @@
+# Phase 2 canary publisher (docs/release-process.md sections 6 and 18).
+#
+# Publishes an immutable canary from one successful master CI run: the
+# canary Git tag, a GitHub prerelease with binaries and evidence, and
+# multi-architecture canary images on Docker Hub. It never rebuilds —
+# every byte comes from the CI run's own artifacts.
+#
+# Security model:
+#   - workflow_run executes THIS file from the default branch, so a
+#     pull-request head cannot change the publisher for its own run.
+#   - The run must be a completed, successful `push` to master of
+#     .github/workflows/ci.yml in this repository; the resolve step
+#     re-verifies that through the API for both trigger paths.
+#   - Canary image publication reuses the protected-branch-image-publish
+#     environment. The release-credentials environment arrives with
+#     Phase 4 stable promotion.
+#   - OCIR canary references are NOT recorded or published here: the
+#     registry location is repository-secret material and evidence is
+#     public. The OCIR canary path is deferred to Phase 3.
+#
+# Idempotent rerun: an existing canary tag or release is verified
+# against the candidate, never replaced (release invariants 2 and 4).
+name: Canary Publish
+
+run-name: Canary Publish [CI run ${{ inputs.ci_run_id || github.event.workflow_run.id }}]
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      ci_run_id:
+        description: Successful master CI workflow run ID
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: canary-publish
+  cancel-in-progress: false
+
+env:
+  DOCKER_IMAGE_NAME: f1r3flyindustries/f1r3fly-rust
+
+jobs:
+  publish:
+    name: Publish Canary
+    if: >-
+      github.event_name == 'workflow_dispatch' || (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'master'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      actions: read
+    environment: protected-branch-image-publish
+    steps:
+      - name: Checkout trusted release controls
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: ci-control
+          persist-credentials: false
+
+      - name: Resolve CI run
+        id: run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CI_RUN_ID: ${{ inputs.ci_run_id || github.event.workflow_run.id }}
+        shell: bash -euo pipefail {0}
+        run: |
+          if ! [[ "$CI_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::ci_run_id must be a positive integer"
+            exit 1
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CI_RUN_ID}" > "$RUNNER_TEMP/ci-run.json"
+          source_sha="$(jq -r '.head_sha' "$RUNNER_TEMP/ci-run.json")"
+          if ! [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::CI run does not identify a full source SHA"
+            exit 1
+          fi
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" '
+            .path == ".github/workflows/ci.yml"
+            and .event == "push"
+            and .head_branch == "master"
+            and .status == "completed"
+            and .conclusion == "success"
+            and .repository.full_name == $repository
+          ' "$RUNNER_TEMP/ci-run.json" >/dev/null || {
+            echo "::error::CI run must be a successful master push in this repository"
+            exit 1
+          }
+          run_attempt="$(jq -r '.run_attempt' "$RUNNER_TEMP/ci-run.json")"
+          if ! [[ "$run_attempt" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::CI run attempt must be a positive integer"
+            exit 1
+          fi
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "run_attempt=$run_attempt" >> "$GITHUB_OUTPUT"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CI_RUN_ID}/attempts/${run_attempt}/jobs?per_page=100" \
+            --paginate --jq '.jobs[]' | jq -s '{jobs: .}' > "$RUNNER_TEMP/ci-jobs.json"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CI_RUN_ID}/artifacts?per_page=100" \
+            --paginate --jq '.artifacts[]' | jq -s '{artifacts: .}' > "$RUNNER_TEMP/ci-artifacts.json"
+
+      - name: Checkout exact source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ steps.run.outputs.source_sha }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check release eligibility
+        id: eligibility
+        shell: bash -euo pipefail {0}
+        run: |
+          ci-control/.github/scripts/release-evidence.sh inspect-source candidate \
+            | tee "$RUNNER_TEMP/source-release-state.json"
+          if jq -e '.release_eligible == true' "$RUNNER_TEMP/source-release-state.json" >/dev/null; then
+            echo "eligible=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Canary publication skipped"
+              echo
+              echo "The source version is not release-eligible. No tag, release, or image was created."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Download exact CI artifacts
+        if: steps.eligibility.outputs.eligible == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.ci_run_id || github.event.workflow_run.id }}
+          pattern: artifacts-docker-*
+          path: /tmp/candidate-artifacts
+
+      - name: Extract tested binaries
+        if: steps.eligibility.outputs.eligible == 'true'
+        shell: bash -euo pipefail {0}
+        run: |
+          mkdir -p /tmp/candidate-artifacts/release
+          zcat /tmp/candidate-artifacts/artifacts-docker-amd64/rust-node-docker.tar.gz | docker image load
+          amd64_container="$(docker create "${DOCKER_IMAGE_NAME}:amd64")"
+          docker cp "$amd64_container:/opt/docker/bin/node" /tmp/candidate-artifacts/release/f1r3node-linux-amd64
+          docker rm "$amd64_container"
+          zcat /tmp/candidate-artifacts/artifacts-docker-arm64/rust-node-docker.tar.gz | docker image load
+          arm64_container="$(docker create --platform linux/arm64 "${DOCKER_IMAGE_NAME}:arm64")"
+          docker cp "$arm64_container:/opt/docker/bin/node" /tmp/candidate-artifacts/release/f1r3node-linux-arm64
+          docker rm "$arm64_container"
+          test -s /tmp/candidate-artifacts/release/f1r3node-linux-amd64
+          test -s /tmp/candidate-artifacts/release/f1r3node-linux-arm64
+
+      - name: Generate candidate evidence
+        id: evidence
+        if: steps.eligibility.outputs.eligible == 'true'
+        shell: bash -euo pipefail {0}
+        run: |
+          mkdir -p "$RUNNER_TEMP/release-evidence"
+          ci-control/.github/scripts/release-evidence.sh generate \
+            candidate \
+            "$GITHUB_REPOSITORY" \
+            "$RUNNER_TEMP/ci-run.json" \
+            "$RUNNER_TEMP/ci-jobs.json" \
+            "$RUNNER_TEMP/ci-artifacts.json" \
+            /tmp/candidate-artifacts \
+            "$RUNNER_TEMP/release-evidence/release-evidence.json"
+          candidate_tag="$(jq -r '.candidate_tag' "$RUNNER_TEMP/release-evidence/release-evidence.json")"
+          echo "candidate_tag=$candidate_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Docker Hub
+        if: steps.eligibility.outputs.eligible == 'true'
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        shell: bash -euo pipefail {0}
+        run: |
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
+
+      - name: Publish canary images
+        if: steps.eligibility.outputs.eligible == 'true'
+        env:
+          CANDIDATE_TAG: ${{ steps.evidence.outputs.candidate_tag }}
+        shell: bash -euo pipefail {0}
+        run: |
+          img="${DOCKER_IMAGE_NAME}:${CANDIDATE_TAG}"
+          docker tag "${DOCKER_IMAGE_NAME}:amd64" "${img}-amd64"
+          docker tag "${DOCKER_IMAGE_NAME}:arm64" "${img}-arm64"
+          amd64_digest="$(docker push "${img}-amd64" | grep -oE 'sha256:[0-9a-f]{64}' | tail -1)"
+          arm64_digest="$(docker push "${img}-arm64" | grep -oE 'sha256:[0-9a-f]{64}' | tail -1)"
+          docker manifest create "$img" --amend "${img}-amd64" --amend "${img}-arm64"
+          index_digest="$(docker manifest push "$img" | grep -oE 'sha256:[0-9a-f]{64}' | tail -1)"
+          ci-control/.github/scripts/release-evidence.sh record-images \
+            "$RUNNER_TEMP/release-evidence/release-evidence.json" \
+            "docker.io/${DOCKER_IMAGE_NAME}@${index_digest}" \
+            "$amd64_digest" \
+            "$arm64_digest"
+          sha256sum "$RUNNER_TEMP/release-evidence/release-evidence.json" \
+            > "$RUNNER_TEMP/release-evidence/release-evidence.json.sha256"
+
+      - name: Create immutable canary tag
+        if: steps.eligibility.outputs.eligible == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_TAG: ${{ steps.evidence.outputs.candidate_tag }}
+          SOURCE_SHA: ${{ steps.run.outputs.source_sha }}
+        shell: bash -euo pipefail {0}
+        run: |
+          if existing="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${CANDIDATE_TAG}" --jq '.object.sha' 2>/dev/null)"; then
+            if [ "$existing" = "$SOURCE_SHA" ]; then
+              echo "Tag ${CANDIDATE_TAG} already points at ${SOURCE_SHA}; rerun is idempotent."
+            else
+              echo "::error::Tag ${CANDIDATE_TAG} exists but points at ${existing}, not ${SOURCE_SHA}"
+              exit 1
+            fi
+          else
+            gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/${CANDIDATE_TAG}" \
+              -f sha="$SOURCE_SHA" >/dev/null
+            echo "Created tag ${CANDIDATE_TAG} at ${SOURCE_SHA}."
+          fi
+
+      - name: Create canary prerelease
+        if: steps.eligibility.outputs.eligible == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_TAG: ${{ steps.evidence.outputs.candidate_tag }}
+          SOURCE_SHA: ${{ steps.run.outputs.source_sha }}
+        shell: bash -euo pipefail {0}
+        run: |
+          assets_dir="$RUNNER_TEMP/release-assets"
+          mkdir -p "$assets_dir"
+          cp /tmp/candidate-artifacts/release/f1r3node-linux-amd64 "$assets_dir/"
+          cp /tmp/candidate-artifacts/release/f1r3node-linux-arm64 "$assets_dir/"
+          cp "$RUNNER_TEMP/release-evidence/release-evidence.json" "$assets_dir/"
+          cp "$RUNNER_TEMP/release-evidence/release-evidence.json.sha256" "$assets_dir/"
+          (cd "$assets_dir" && sha256sum f1r3node-linux-amd64 f1r3node-linux-arm64 > checksums.txt)
+          if gh release view "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq '.targetCommitish' >/dev/null 2>&1; then
+            echo "Release ${CANDIDATE_TAG} already exists; rerun verifies without replacing."
+          else
+            gh release create "$CANDIDATE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --prerelease \
+              --verify-tag \
+              --title "$CANDIDATE_TAG" \
+              --notes "Canary candidate for source ${SOURCE_SHA}. See release-evidence.json for the exact-run record." \
+              "$assets_dir/f1r3node-linux-amd64" \
+              "$assets_dir/f1r3node-linux-arm64" \
+              "$assets_dir/checksums.txt" \
+              "$assets_dir/release-evidence.json" \
+              "$assets_dir/release-evidence.json.sha256"
+          fi
+
+      - name: Report canary publication
+        if: steps.eligibility.outputs.eligible == 'true'
+        shell: bash -euo pipefail {0}
+        run: |
+          evidence="$RUNNER_TEMP/release-evidence/release-evidence.json"
+          {
+            echo "### Canary published"
+            echo
+            printf -- '- Candidate tag: `%s`\n' "$(jq -r '.candidate_tag' "$evidence")"
+            printf -- '- Source SHA: `%s`\n' "$(jq -r '.source_sha' "$evidence")"
+            printf -- '- Image index: `%s`\n' "$(jq -r '.images.docker_hub' "$evidence")"
+            printf -- '- Publication mode: `%s`\n' "$(jq -r '.publication_mode' "$evidence")"
+          } >> "$GITHUB_STEP_SUMMARY"

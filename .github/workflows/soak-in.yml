@@ -1,8 +1,10 @@
 name: Shard Soak-in Enrollment
 
-run-name: Shard Soak-in Enrollment [${{ inputs.stable_tag }}]
+run-name: Shard Soak-in Enrollment [${{ inputs.stable_tag || github.event.release.tag_name }}]
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       stable_tag:
@@ -19,18 +21,40 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Validate stable tag format
+        id: tag
         env:
-          STABLE_TAG: ${{ inputs.stable_tag }}
+          STABLE_TAG: ${{ inputs.stable_tag || github.event.release.tag_name }}
+          IS_PRERELEASE: ${{ github.event_name == 'release' && github.event.release.prerelease }}
         shell: bash -euo pipefail {0}
         run: |
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            echo "enroll=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Shard soak-in enrollment skipped"
+              echo
+              echo "The published release is a prerelease. Only stable releases enroll."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           if ! [[ "$STABLE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            if [ "$GITHUB_EVENT_NAME" = "release" ]; then
+              echo "enroll=false" >> "$GITHUB_OUTPUT"
+              {
+                echo "### Shard soak-in enrollment skipped"
+                echo
+                echo "The published tag does not use the stable vMAJOR.MINOR.PATCH format."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
             echo "::error::stable_tag must use the vMAJOR.MINOR.PATCH stable release format"
             exit 1
           fi
+          echo "enroll=true" >> "$GITHUB_OUTPUT"
 
       - name: Report migration state
+        if: steps.tag.outputs.enroll == 'true'
         env:
-          STABLE_TAG: ${{ inputs.stable_tag }}
+          STABLE_TAG: ${{ inputs.stable_tag || github.event.release.tag_name }}
         shell: bash -euo pipefail {0}
         run: |
           {

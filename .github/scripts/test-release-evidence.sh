@@ -117,4 +117,21 @@ mv "$SOURCE/node/Dockerfile.bak" "$SOURCE/node/Dockerfile"
 git -C "$SOURCE" tag v0.4.46
 "$TOOL" inspect-source "$SOURCE" | jq -e '.release_eligible == false' >/dev/null
 expect_failure 'stable version already exists' "$TOOL" generate "$SOURCE" "$REPOSITORY" "$TMP/run.json" "$TMP/jobs.json" "$TMP/artifacts.json" "$ARTIFACTS" "$TMP/ineligible.json"
+
+INDEX_REF="docker.io/f1r3flyindustries/f1r3fly-rust@sha256:$(printf 'index' | sha256sum | awk '{print $1}')"
+AMD64_DIGEST="sha256:$(printf 'amd64' | sha256sum | awk '{print $1}')"
+ARM64_DIGEST="sha256:$(printf 'arm64' | sha256sum | awk '{print $1}')"
+cp "$OUTPUT" "$TMP/canary-evidence.json"
+"$TOOL" record-images "$TMP/canary-evidence.json" "$INDEX_REF" "$AMD64_DIGEST" "$ARM64_DIGEST"
+jq -e '
+	.publication_mode == "canary"
+	and .images.publication_state == "published"
+	and .images.ocir == null
+' "$TMP/canary-evidence.json" >/dev/null
+"$TOOL" validate "$TMP/canary-evidence.json"
+expect_failure 'record-images rejects canary input' "$TOOL" record-images "$TMP/canary-evidence.json" "$INDEX_REF" "$AMD64_DIGEST" "$ARM64_DIGEST"
+cp "$OUTPUT" "$TMP/bad-ref.json"
+expect_failure 'record-images rejects a tag reference' "$TOOL" record-images "$TMP/bad-ref.json" "docker.io/f1r3flyindustries/f1r3fly-rust:v0.4.46-canary.812" "$AMD64_DIGEST" "$ARM64_DIGEST"
+jq '.images.linux_amd64_digest = "sha256:bad"' "$TMP/canary-evidence.json" >"$TMP/tampered-canary.json"
+expect_failure 'invalid canary image digest' "$TOOL" validate "$TMP/tampered-canary.json"
 printf 'release evidence tests passed\n'

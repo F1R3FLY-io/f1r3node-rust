@@ -318,6 +318,33 @@ generate_evidence() {
 	validate_evidence "$output"
 }
 
+record_images() {
+	local evidence="$1" index_ref="$2" amd64_digest="$3" arm64_digest="$4"
+	require_file "$evidence"
+	validate_evidence "$evidence"
+	[ "$(jq -r '.publication_mode' "$evidence")" = evidence_only ] ||
+		fail "record-images requires evidence_only input"
+	[[ "$index_ref" =~ ^[a-z0-9./_-]+@sha256:[0-9a-f]{64}$ ]] ||
+		fail "image index reference must be repository@sha256:digest"
+	require_artifact_digest "$amd64_digest" "linux amd64 image digest"
+	require_artifact_digest "$arm64_digest" "linux arm64 image digest"
+	local updated
+	updated="$(jq \
+		--arg docker_hub "$index_ref" \
+		--arg amd64 "$amd64_digest" \
+		--arg arm64 "$arm64_digest" \
+		'.publication_mode = "canary"
+		| .images = {
+			publication_state: "published",
+			docker_hub: $docker_hub,
+			ocir: null,
+			linux_amd64_digest: $amd64,
+			linux_arm64_digest: $arm64
+		}' "$evidence")"
+	printf '%s\n' "$updated" >"$evidence"
+	validate_evidence "$evidence"
+}
+
 validate_evidence() {
 	local evidence="$1" required_json jobs_digest recorded_digest
 	require_file "$evidence"
@@ -325,7 +352,7 @@ validate_evidence() {
 	jq -e --argjson required_jobs "$required_json" '
 		type == "object"
 		and .schema_version == 1
-		and .publication_mode == "evidence_only"
+		and (.publication_mode == "evidence_only" or .publication_mode == "canary")
 		and (.target_version | type == "string" and test("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"))
 		and .candidate_tag == ("v" + .target_version + "-canary." + (.ci.run_number | tostring))
 		and (.source_sha | type == "string" and test("^[0-9a-f]{40}$"))
@@ -349,9 +376,19 @@ validate_evidence() {
 			and (.github_artifact_id | type == "number" and . > 0 and floor == .)
 			and (.github_artifact_digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))
 		))
-		and .images.publication_state == "not_published"
-		and .images.docker_hub == null
-		and .images.ocir == null
+		and (
+			(.publication_mode == "evidence_only"
+				and .images.publication_state == "not_published"
+				and .images.docker_hub == null
+				and .images.ocir == null)
+			or
+			(.publication_mode == "canary"
+				and .images.publication_state == "published"
+				and (.images.docker_hub | type == "string" and test("^[a-z0-9./_-]+@sha256:[0-9a-f]{64}$"))
+				and .images.ocir == null
+				and (.images.linux_amd64_digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))
+				and (.images.linux_arm64_digest | type == "string" and test("^sha256:[0-9a-f]{64}$")))
+		)
 		and (.created_at | type == "string" and endswith("Z"))
 		and ([.. | strings | select(startswith("/"))] | length == 0)
 	' "$evidence" >/dev/null || fail "evidence schema validation failed"
@@ -365,6 +402,7 @@ usage() {
 		"usage: $0 inspect-source SOURCE_DIR" \
 		"       $0 required-jobs" \
 		"       $0 generate SOURCE_DIR REPOSITORY RUN_JSON JOBS_JSON ARTIFACTS_JSON ARTIFACTS_DIR OUTPUT" \
+		"       $0 record-images EVIDENCE_JSON INDEX_REF AMD64_DIGEST ARM64_DIGEST" \
 		"       $0 validate EVIDENCE_JSON" >&2
 	exit 2
 }
@@ -382,6 +420,10 @@ required-jobs)
 generate)
 	[ "$#" -eq 8 ] || usage
 	generate_evidence "$2" "$3" "$4" "$5" "$6" "$7" "$8"
+	;;
+record-images)
+	[ "$#" -eq 5 ] || usage
+	record_images "$2" "$3" "$4" "$5"
 	;;
 validate)
 	[ "$#" -eq 2 ] || usage

@@ -147,7 +147,7 @@ This lifecycle keeps the runtime version equal to the candidate version. Stable 
 
 ## 6. Candidate creation
 
-The candidate publisher runs inside the successful full CI run. It uses the artifacts that the run already built and tested.
+The candidate publisher runs against the successful full CI run. The `canary-publish.yml` workflow starts on run completion (`workflow_run`) and uses the artifacts that the run already built and tested. The workflow file always executes from the default branch.
 
 The publisher performs these actions:
 
@@ -203,6 +203,8 @@ The evidence document includes these fields:
 Exact field names can change during implementation. The schema version must change after an incompatible schema change.
 
 Phase 1 evidence uses `publication_mode: evidence_only`. Its image record uses `publication_state: not_published` and contains no registry references.
+
+Phase 2 canary evidence uses `publication_mode: canary`. It records the Docker Hub index reference and both architecture digests. The `ocir` field stays null: the OCIR registry location is repository-secret material and evidence is public. The OCIR canary path is deferred to Phase 3.
 
 Evidence must not contain credentials, tokens, user data, or local absolute paths.
 
@@ -448,7 +450,7 @@ Implementation adds or changes these components.
 
 | Component | Change |
 |---|---|
-| `.github/workflows/ci.yml` | Publish immutable canaries from tested artifacts |
+| `.github/workflows/canary-publish.yml` | Publish immutable canaries from tested CI artifacts on run completion |
 | `.github/workflows/release.yml` | Replace branch auto-bump behavior with exact-candidate promotion |
 | `.github/workflows/merge-recovery-soak.yml` | Add candidate image-digest mode and exact soak evidence |
 | `.github/workflows/oci-validation.yml` | Add trusted exact-candidate dispatch mode |
@@ -468,7 +470,8 @@ This table defines the target state after the Section 17 workflow changes are co
 
 | Workflow | Trigger | Basis | Typical duration | Role |
 |---|---|---|---|---|
-| `ci.yml` | `push` (dev, master, tags), `pull_request`, `workflow_dispatch` | Event + manual | 25–65 min *measured*; approval gates and runner queues can extend wall time to hours | Full CI; publishes the immutable canary on release-eligible `master` runs |
+| `ci.yml` | `push` (dev, master, tags), `pull_request`, `workflow_dispatch` | Event + manual | 25–65 min *measured*; approval gates and runner queues can extend wall time to hours | Full CI |
+| `canary-publish.yml` | `workflow_run` (CI completed, master push, success), `workflow_dispatch` (ci_run_id) | Event + manual | 10–20 min *estimated* | Publishes the immutable canary when the source is release-eligible; skips cleanly otherwise |
 | `ci-fork-pr.yml` | `pull_request_target` (dev, master) | Event | Seconds, then the gated pipeline after maintainer approval | Fork lane into the gated pipeline |
 | `_integration-pipeline.yml` | `workflow_call` | Called by ci.yml and ci-fork-pr.yml | 35–50 min *measured* | Heavy pipeline: image build, ephemeral runners, integration matrix, smoke tests |
 | `merge-recovery-soak.yml` | `schedule` 02:30 and 03:30 UTC (self-suppressing fallback; the OCI Function scheduler is the primary dispatcher), `workflow_dispatch` | Time + manual | 22 h dev integration soak; 60 h stability soak; preflight-only runs cap at about 3 h | Runs both soaks; release-eligible runs use candidate artifact mode |

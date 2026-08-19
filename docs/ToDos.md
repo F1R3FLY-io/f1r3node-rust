@@ -99,10 +99,13 @@ tasks:
     notes:
       - "release-evidence.yml generates exact-run evidence; release.yml and soak-in.yml are held-state stubs; release-evidence.sh plus unit tests and the test-release-workflows.sh contract guard are in place."
   - id: TASK-013-3
-    title: "Phase 2: canary publication from ci.yml"
-    status: pending
+    title: "Phase 2: canary publication (canary-publish.yml)"
+    status: in_progress
+    branch: feature/release-process-implementation
+    notes:
+      - "Implemented as canary-publish.yml: workflow_run on CI completion publishes the immutable canary tag, prerelease, and Docker Hub images by digest from the run's own artifacts; ineligible runs skip cleanly. Evidence upgrades to publication_mode: canary via release-evidence.sh record-images. OCIR canary deferred to Phase 3 (registry location is secret material). Remains in_progress until the first live master run proves it."
     acceptance:
-      - "ci.yml publishes immutable canary tags, prereleases, and images from tested artifacts on release-eligible master runs"
+      - "canary-publish.yml publishes immutable canary tags, prereleases, and images from tested artifacts on release-eligible master runs"
   - id: TASK-013-4
     title: "Phase 3: artifact-based validation (candidate digest modes)"
     status: pending
@@ -122,8 +125,10 @@ tasks:
       - "One non-publishing rehearsal completes, then the cost-accounting train (PR #216) publishes first"
   - id: TASK-013-7
     title: "Phase 6: Shard soak-in scheduling"
-    status: pending
+    status: in_progress
     blocked_by: [EPIC-014]
+    notes:
+      - "The release trigger is implemented: soak-in.yml fires on stable release publication (prereleases gate out) while enrollment stays held until the EPIC-014 quorum exists."
     acceptance:
       - "soak-in.yml gains a release trigger: one enrollment per stable release tag"
       - "The deferred parameters (soak-in period length, Anchor criteria, quorum composition) are set and ratified"
