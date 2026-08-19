@@ -822,18 +822,43 @@ impl RuntimeManager {
         );
         if let Some(ref cache) = self.replay_cache {
             if let Some(entry) = cache.get(&replay_cache_key) {
-                tracing::info!("[CACHE] ReplayCache hit for sender seq={}", seq_num);
+                // A replay that returns Ok must leave the mergeable entry for its
+                // post-state persisted — `ensure_mergeable_entry` exists precisely
+                // to rebuild a collected entry and has no other way to do it. The
+                // cache carries only the event log and the post-state, so honoring
+                // the shortcut while the entry is absent returns success having
+                // rebuilt nothing; the caller then reports the entry still missing
+                // and that error becomes a slashable verdict against the block's
+                // proposer. Verify presence first and fall through to the full
+                // replay (which persists) when it is gone.
+                let mergeable_key = MergeableKey {
+                    state_hash: StateHashSerde(entry.post_state.clone()),
+                    creator: sender.bytes.clone(),
+                    seq_num,
+                };
+                let mergeable_key_encoded = bincode::serialize(&mergeable_key).map_err(|e| {
+                    CasperError::KvStoreError(KvStoreError::SerializationError(e.to_string()))
+                })?;
 
-                // Rig the replay runtime with cached event log
-                let replay_runtime = self.spawn_replay_runtime().await;
-                let rspace_events: Vec<_> = entry
-                    .event_log
-                    .iter()
-                    .map(crate::rust::util::event_converter::to_rspace_event)
-                    .collect();
-                replay_runtime.rig(rspace_events).await?;
+                if self.mergeable_store.contains_key(mergeable_key_encoded)? {
+                    tracing::info!("[CACHE] ReplayCache hit for sender seq={}", seq_num);
 
-                return Ok(entry.post_state);
+                    // Rig the replay runtime with cached event log
+                    let replay_runtime = self.spawn_replay_runtime().await;
+                    let rspace_events: Vec<_> = entry
+                        .event_log
+                        .iter()
+                        .map(crate::rust::util::event_converter::to_rspace_event)
+                        .collect();
+                    replay_runtime.rig(rspace_events).await?;
+
+                    return Ok(entry.post_state);
+                }
+
+                tracing::warn!(
+                    "[CACHE] ReplayCache hit without mergeable entry for sender seq={}; falling back to full replay",
+                    seq_num
+                );
             }
         }
 
@@ -1235,15 +1260,31 @@ impl RuntimeManager {
 
         let block_data = BlockData::from_block(block);
         let is_genesis = block.header.parents_hash_list.is_empty();
-        self.replay_compute_state(
-            &block.body.state.pre_state_hash,
-            block.body.deploys.clone(),
-            block.body.system_deploys.clone(),
-            &block_data,
-            Some(invalid_blocks),
-            is_genesis,
-        )
-        .await?;
+        let computed_post_state = self
+            .replay_compute_state(
+                &block.body.state.pre_state_hash,
+                block.body.deploys.clone(),
+                block.body.system_deploys.clone(),
+                &block_data,
+                Some(invalid_blocks),
+                is_genesis,
+            )
+            .await?;
+
+        // The entry is keyed by post-state, so a replay that reproduces a
+        // different one stores it where nobody looks. Name that case: it is a
+        // replay-determinism failure, not a storage failure, and the two need
+        // very different responses.
+        if computed_post_state != block.body.state.post_state_hash {
+            return Err(CasperError::RuntimeError(format!(
+                "recompute for block {} (seq={}) produced post-state {} but the block declares {}; \
+                 the mergeable entry was stored under the computed key",
+                hex::encode(&block.block_hash),
+                block.seq_num,
+                hex::encode(&computed_post_state),
+                hex::encode(&block.body.state.post_state_hash),
+            )));
+        }
 
         // Fail closed: the full-replay path persists the entry. If it is still
         // absent the merge would diverge across nodes, so surface it.
