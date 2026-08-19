@@ -232,29 +232,11 @@ impl KeyValueDagRepresentation {
         &self,
         sig: &[u8],
     ) -> Result<Option<BlockHash>, KvStoreError> {
-        if let Some(terminal) = self.deploy_terminal(sig)? {
-            if terminal.latest_block_hash.is_empty() {
-                return Ok(None);
-            }
-            return Ok(Some(BlockHash::from(terminal.latest_block_hash)));
-        }
-        let Some(row) = self.deploy_lifecycle_events(sig)? else {
-            return Ok(None);
-        };
-        // An appearance is a block that CARRIES the deploy — inclusion
-        // events only. A rejection record's block holds the record, not the
-        // deploy; naming it here sends the caller to a block whose deploy
-        // list cannot contain the sig. A record-only row has no appearance.
-        Ok(row
-            .events
-            .iter()
-            .filter(|e| matches!(e.kind, LifecycleEventKind::Included { .. }))
-            .max_by(|a, b| {
-                a.height
-                    .cmp(&b.height)
-                    .then_with(|| a.block_hash.cmp(&b.block_hash))
-            })
-            .map(|e| BlockHash::from(e.block_hash.clone())))
+        Ok(self
+            .lifecycle
+            .read()
+            .canonical_appearance(sig)?
+            .map(BlockHash::from))
     }
 
     pub fn last_finalized_block(&self) -> BlockHash { self.last_finalized_block_hash.clone() }
@@ -740,6 +722,20 @@ pub struct BlockDagKeyValueStorage {
 }
 
 impl BlockDagKeyValueStorage {
+    /// Storage-level twin of `KeyValueDagRepresentation::deploy_canonical_appearance`
+    /// (same shared lifecycle tables), for callers holding the storage rather
+    /// than a representation.
+    pub fn deploy_canonical_appearance(
+        &self,
+        sig: &[u8],
+    ) -> Result<Option<BlockHash>, KvStoreError> {
+        Ok(self
+            .lifecycle
+            .read()
+            .canonical_appearance(sig)?
+            .map(BlockHash::from))
+    }
+
     pub async fn new(kvm: &mut impl KeyValueStoreManager) -> Result<Self, KvStoreError> {
         let block_metadata_kv_store = kvm.store("block-metadata".to_string()).await?;
         let block_metadata_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =

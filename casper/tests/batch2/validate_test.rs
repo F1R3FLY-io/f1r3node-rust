@@ -998,6 +998,53 @@ async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deplo
     .await
 }
 
+/// Production order: a candidate is validated BEFORE insertion, so its own
+/// deploys are not yet in any inserted block, and fresh deploys must clear
+/// the repeat check — the parent-scope scan and the ancestor traversal have
+/// nothing to find for them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_accepts_fresh_deploys_in_block_not_yet_inserted() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let genesis_deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![genesis_deploy]),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let fresh_deploy = construct_deploy::basic_processed_deploy(1, None).unwrap();
+        let candidate = build_block(
+            vec![genesis.block_hash.clone()],
+            None,
+            1786500000000,
+            None,
+            None,
+            Some(vec![fresh_deploy]),
+            None,
+            None,
+            None,
+            Some(1),
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut casper_snapshot = mk_casper_snapshot(dag);
+
+        let result =
+            Validate::repeat_deploy(&candidate, &mut casper_snapshot, &block_store, 50, None);
+        assert_eq!(result, Either::Right(ValidBlock::Valid));
+    })
+    .await
+}
+
 /// The duplicate scan walks the block's ancestry, and a storage failure during
 /// that walk used to be swallowed: the expansion returned nothing, the walk ended
 /// early, and the block passed. So a DAG that cannot be read all the way down —

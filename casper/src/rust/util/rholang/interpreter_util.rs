@@ -166,8 +166,11 @@ pub(crate) fn canonical_dispositions(
         if !visited.insert(hash.clone()) {
             continue;
         }
+        // A block this walk cannot read is a gap, not a "no": a partial
+        // disposition map silently misreads the retry gate and the
+        // canonical-won filter. Absence keeps its name so callers defer.
         let Some(block) = block_store.get(&hash)? else {
-            continue;
+            return Err(CasperError::BlockNotHeld(hash));
         };
         let bn = block.body.state.block_number;
         if bn < earliest_block_number {
@@ -1712,6 +1715,17 @@ pub async fn compute_parents_post_state(
                     suppressed
                 );
             }
+            for record in &rejected_user_records {
+                tracing::info!(
+                    target: "f1r3fly.casper.deploy_lifecycle",
+                    event = "merge_rejected",
+                    deploy_sig = %hex::encode(&record.sig),
+                    carrier = %hex::encode(&record.carrier),
+                    duplicate = record.duplicate,
+                    floor_block = floor_block_number,
+                    "deploy lifecycle"
+                );
+            }
             tracing::debug!(
                 target: "f1r3fly.merge.cpps",
                 step = "compute_parents_post_state.MERGE_POST",
@@ -1747,11 +1761,14 @@ pub async fn compute_parents_post_state(
                     for record in &rejected_user_records {
                         let (sig, src_block) = (&record.sig, &record.carrier);
                         if record.duplicate {
-                            tracing::debug!(
-                                target: "f1r3fly.casper.recovery",
-                                "RejectedDeployBuffer populate: skipped duplicate-flagged sig {} from {}",
-                                PrettyPrinter::build_string_bytes(sig),
-                                PrettyPrinter::build_string_bytes(src_block)
+                            tracing::info!(
+                                target: "f1r3fly.casper.deploy_lifecycle",
+                                event = "buffer_suppressed",
+                                deploy_sig = %hex::encode(sig),
+                                carrier = %hex::encode(src_block),
+                                reason = "duplicate_rejection",
+                                floor_block = floor_block_number,
+                                "deploy lifecycle"
                             );
                             continue;
                         }
@@ -1763,11 +1780,14 @@ pub async fn compute_parents_post_state(
                                 src_block,
                             )?
                         {
-                            tracing::debug!(
-                                target: "f1r3fly.casper.recovery",
-                                "RejectedDeployBuffer populate: skipped already-won sig {} from {}",
-                                PrettyPrinter::build_string_bytes(sig),
-                                PrettyPrinter::build_string_bytes(src_block)
+                            tracing::info!(
+                                target: "f1r3fly.casper.deploy_lifecycle",
+                                event = "buffer_suppressed",
+                                deploy_sig = %hex::encode(sig),
+                                carrier = %hex::encode(src_block),
+                                reason = "floor_win",
+                                floor_block = floor_block_number,
+                                "deploy lifecycle"
                             );
                             continue;
                         }
@@ -1803,6 +1823,17 @@ pub async fn compute_parents_post_state(
                                 }
                                 for pd in &block.body.deploys {
                                     if sig_set.contains(&pd.deploy.sig) {
+                                        tracing::info!(
+                                            target: "f1r3fly.casper.deploy_lifecycle",
+                                            event = "buffer_candidate",
+                                            deploy_sig = %hex::encode(&pd.deploy.sig),
+                                            carrier = %hex::encode(&src_block),
+                                            carrier_block = block.body.state.block_number,
+                                            valid_after_block =
+                                                pd.deploy.data.valid_after_block_number,
+                                            floor_block = floor_block_number,
+                                            "deploy lifecycle"
+                                        );
                                         deploys_to_buffer.push(pd.deploy.clone());
                                     }
                                 }
@@ -1835,6 +1866,16 @@ pub async fn compute_parents_post_state(
                         );
                     }
                     if !deploys_to_buffer.is_empty() {
+                        for deploy in &deploys_to_buffer {
+                            tracing::info!(
+                                target: "f1r3fly.casper.deploy_lifecycle",
+                                event = "buffer_added",
+                                deploy_sig = %hex::encode(&deploy.sig),
+                                valid_after_block = deploy.data.valid_after_block_number,
+                                floor_block = floor_block_number,
+                                "deploy lifecycle"
+                            );
+                        }
                         match buffer.lock() {
                             Ok(mut guard) => {
                                 if let Err(err) = guard.add(deploys_to_buffer) {
@@ -2564,6 +2605,25 @@ mod backstop_tests {
         .expect("visible win check"));
     }
 
+    /// The disposition walk refuses to judge from partial data: a block it
+    /// cannot read surfaces as `BlockNotHeld`, never as a smaller answer.
+    #[tokio::test]
+    async fn canonical_walk_reports_missing_blocks_instead_of_guessing() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let missing = Bytes::from(vec![0xAB; 32]);
+
+        let result = canonical_won_sigs(&block_store, &[missing.clone()], i64::MIN);
+
+        assert!(
+            matches!(result, Err(crate::rust::errors::CasperError::BlockNotHeld(ref hash)) if *hash == missing),
+            "a walk over an unreadable chain must name the absent block, got {:?}",
+            result
+        );
+    }
+
     #[tokio::test]
     async fn floor_rejection_is_not_canonical_win() {
         let mut kvm = InMemoryStoreManager::new();
@@ -2601,6 +2661,11 @@ mod backstop_tests {
             duplicate: false,
             carrier: Bytes::new(),
         }];
+        // The included deploy carries NO effect channels: canonical wins are
+        // decided from block metadata (deploy lists + records), never from
+        // an effect probe, so an effect-less deploy still wins.
+        let included = ProcessedDeploy::empty(deploy.clone());
+        assert!(included.deploy_log.is_empty());
         let clean_floor = block_implicits::get_random_block(
             Some(11),
             Some(1),
@@ -2611,7 +2676,7 @@ mod backstop_tests {
             Some(11),
             Some(Vec::new()),
             Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty(deploy.clone())]),
+            Some(vec![included]),
             Some(Vec::new()),
             Some(Vec::new()),
             Some("root".to_string()),

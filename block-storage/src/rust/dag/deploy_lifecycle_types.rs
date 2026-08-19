@@ -104,6 +104,32 @@ impl DeployLifecycleTables {
         Ok(results.into_iter().next().flatten())
     }
 
+    /// The sig's most recent canonical appearance — the latest INCLUSION
+    /// event by (height, hash), or the terminal record's frozen display
+    /// block once the row is pruned. A rejection record's block holds the
+    /// record, not the deploy, so record-only rows have no appearance.
+    pub fn canonical_appearance(&self, sig: &[u8]) -> Result<Option<ByteString>, KvStoreError> {
+        if let Some(terminal) = self.get_terminal(sig)? {
+            if terminal.latest_block_hash.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(terminal.latest_block_hash));
+        }
+        let Some(row) = self.get_events(sig)? else {
+            return Ok(None);
+        };
+        Ok(row
+            .events
+            .iter()
+            .filter(|e| matches!(e.kind, LifecycleEventKind::Included { .. }))
+            .max_by(|a, b| {
+                a.height
+                    .cmp(&b.height)
+                    .then_with(|| a.block_hash.cmp(&b.block_hash))
+            })
+            .map(|e| e.block_hash.clone()))
+    }
+
     /// Append events for a sig, recording `valid_after` with the first
     /// inclusion. No-op for sigs that already have a terminal record.
     pub fn append_events(

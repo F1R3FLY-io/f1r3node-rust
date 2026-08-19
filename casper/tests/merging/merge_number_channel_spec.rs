@@ -425,10 +425,11 @@ async fn test_case(
 
     let mut runtime_ops = RuntimeOps::new(runtime);
     let (res, _cost) = runtime_ops
-        .play_exploratory_deploy(
+        .play_exploratory_deploy_with_phlo_limit(
             RHO_EXPLORE_READ.to_owned(),
             &final_hash.to_bytes_prost(),
             None,
+            5_000_000,
         )
         .await
         .unwrap();

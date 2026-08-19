@@ -382,3 +382,26 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod floor_data_tests {
+    use models::rust::block_hash::BlockHash;
+
+    use super::*;
+
+    /// A floor derivation that dies on a block this node does not hold is an
+    /// availability event, never block invalidity: the store error carries
+    /// its name through `CasperError::BlockNotHeld` to `Undecidable`, so the
+    /// caller defers and fetches instead of recording a verdict.
+    #[test]
+    fn missing_floor_data_is_not_block_invalidity() {
+        let missing = BlockHash::from(vec![0xAB; 32]);
+        let status = BlockError::from(KvStoreError::MissingBlock {
+            hash: missing.clone(),
+            context: "floor derivation".to_string(),
+        });
+
+        assert_eq!(status, BlockError::Undecidable(missing));
+        assert!(!matches!(status, BlockError::Invalid(_)));
+    }
+}

@@ -169,7 +169,7 @@ impl TestNode {
     /// 3. Checks dependencies
     /// 4. Validates with effects
     pub async fn process_block_through_pipe(
-        casper: Arc<dyn Casper + Send + Sync + 'static>,
+        casper: Arc<dyn MultiParentCasper + Send + Sync + 'static>,
         block_processor: &BlockProcessor<TransportLayerTestImpl>,
         block: BlockMessage,
     ) -> Result<ValidBlockProcessing, CasperError> {

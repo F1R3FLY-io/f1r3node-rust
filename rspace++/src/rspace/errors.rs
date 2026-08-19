@@ -10,6 +10,15 @@ pub enum RSpaceError {
     KvStoreError(KvStoreError),
     BugFoundError(String),
     ReportingError(String),
+    /// Replay finished with recorded COMM events still unconsumed. Classified
+    /// by its own variant rather than by message text so consumers can
+    /// decide on the condition instead of parsing prose: a replay that
+    /// legitimately failed is allowed to leave entries behind, and that
+    /// distinction previously depended on a substring match.
+    UnusedCommEvent {
+        leftover_count: usize,
+        leftover: Vec<String>,
+    },
 }
 
 impl std::fmt::Display for RSpaceError {
@@ -21,6 +30,14 @@ impl std::fmt::Display for RSpaceError {
             RSpaceError::KvStoreError(err) => write!(f, "Key Value Store Error: {}", err),
             RSpaceError::BugFoundError(err) => write!(f, "RSpace Bug Found Error: {}", err),
             RSpaceError::ReportingError(err) => write!(f, "Reporting Error: {}", err),
+            RSpaceError::UnusedCommEvent {
+                leftover_count,
+                leftover,
+            } => write!(
+                f,
+                "Unused COMM event: replayData multimap has {} elements left; leftover={:?}",
+                leftover_count, leftover
+            ),
         }
     }
 }

@@ -601,6 +601,115 @@ mod tests {
         );
     }
 
+    /// A sig with BOTH a floor-covered failed execution and a later clean
+    /// win whose effect is in floor state must write `Finalized`, never
+    /// `Failed` — even past the contestability bound, where the Failed arm
+    /// is live. Coverage is checked first and a failed execution is not
+    /// membership, so the clean win answers before the Failed arm can
+    /// read the failed inclusion.
+    #[tokio::test]
+    async fn clean_covered_win_supersedes_a_covered_failed_execution() {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+        use models::rust::block_implicits::get_random_block;
+
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+
+        let mk = |number: i64,
+                  seq: i32,
+                  parents: Vec<BlockHash>,
+                  deploys: Vec<models::rust::casper::protocol::casper_message::ProcessedDeploy>| {
+            get_random_block(
+                Some(number),
+                Some(seq),
+                None,
+                None,
+                None,
+                None,
+                Some(number),
+                Some(parents),
+                Some(Vec::new()),
+                Some(deploys),
+                Some(Vec::new()),
+                None,
+                Some("test".to_string()),
+                None,
+            )
+        };
+
+        let deploy = crate::rust::util::construct_deploy::basic_deploy_data(
+            1,
+            None,
+            Some("test".to_string()),
+        )
+        .expect("deploy data");
+        let sig = deploy.sig.clone();
+        let mut failed_copy =
+            models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(deploy.clone());
+        failed_copy.is_failed = true;
+        let clean_copy =
+            models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(deploy);
+
+        let genesis = mk(0, 0, Vec::new(), Vec::new());
+        let a = mk(1, 1, vec![genesis.block_hash.clone()], vec![failed_copy]);
+        let b = mk(2, 2, vec![a.block_hash.clone()], vec![clean_copy]);
+        let c = mk(3, 3, vec![b.block_hash.clone()], Vec::new());
+        let d = mk(4, 4, vec![c.block_hash.clone()], Vec::new());
+
+        for block in [&genesis, &a, &b, &c, &d] {
+            block_store.put_block_message(block).expect("store block");
+        }
+        dag_storage
+            .insert(&genesis, InsertMode::Approved)
+            .expect("insert genesis");
+        for block in [&a, &b, &c, &d] {
+            dag_storage
+                .insert(block, InsertMode::Normal)
+                .expect("insert block");
+        }
+
+        // Arm the sig (adopted LFB still genesis: no verdict possible yet).
+        let dag = dag_storage.get_representation().expect("dag");
+        let register = DeployLifecycle::default();
+        let armed = register
+            .observe_block(&dag, &block_store, &b, 1, Some(1))
+            .await
+            .expect("observe b");
+        assert!(armed.is_empty(), "no verdict before a covering adoption");
+
+        // Adopt d (height 4): past decide_at = max(window_end, last
+        // inclusion at 2) + bound = 3, so the Failed arm is LIVE — and the
+        // failed execution at `a` is inside the adopted floor's closure.
+        dag_storage
+            .record_directly_finalized(d.block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .await
+            .expect("adopt d");
+        let dag = dag_storage.get_representation().expect("dag");
+        let terminalized = register
+            .observe_block(&dag, &block_store, &c, 1, Some(1))
+            .await
+            .expect("observe after adoption");
+
+        assert_eq!(terminalized, vec![sig.clone()]);
+        let record = dag
+            .deploy_terminal(&sig)
+            .expect("terminal lookup")
+            .expect("terminal record written");
+        assert_eq!(
+            record.state,
+            TerminalState::Finalized,
+            "the clean covered win must answer before the live Failed arm \
+             can read the covered failed execution"
+        );
+    }
+
     /// The terminal record's frozen appearance names a block that CARRIES
     /// the deploy: a rejection record at a greater height than the latest
     /// inclusion counts toward `rejection_count` but never becomes the

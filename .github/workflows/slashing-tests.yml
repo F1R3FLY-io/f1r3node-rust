@@ -69,7 +69,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
@@ -89,7 +89,7 @@ jobs:
     # of aborting early; 30 min was exceeded doing real work.
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
@@ -141,7 +141,7 @@ jobs:
       matrix:
         bug: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
@@ -159,7 +159,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
@@ -190,7 +190,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Java + TLC
         # Pinned release + sha256 (same fail-closed pattern as the OCI CLI
         # installer pin in _integration-pipeline.yml): a moved or compromised
@@ -208,18 +208,20 @@ jobs:
       - name: Run TLA+ invariant suite
         env:
           TLA_TOOLS_JAR: /home/runner/.tla/tla2tools.jar
-          # Opt-in exhaustive tier: only a manual dispatch with
-          # run_exhaustive=true sets this; schedule and default dispatches
-          # keep gating on the fast tier alone.
           RUN_EXHAUSTIVE_TLA: ${{ (github.event_name == 'workflow_dispatch' && inputs.run_exhaustive) && '1' || '0' }}
-        run: bash scripts/ci/check-tla-invariants.sh
+        run: |
+          args=(--tla)
+          if [[ "$RUN_EXHAUSTIVE_TLA" == "1" ]]; then
+            args+=(--exhaustive)
+          fi
+          bash scripts/ci/check-formal-invariants.sh "${args[@]}"
 
   rocq-build:
-    name: Rocq mechanization rebuild
+    name: Rocq slashing and fork-choice rebuild
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Rocq / Coq
         run: |
           sudo apt-get update
@@ -227,64 +229,17 @@ jobs:
           opam init --disable-sandboxing -y
           eval $(opam env)
           opam install -y coq
-      - name: Build Rocq slashing theories
+      - name: Run Rocq verification suite
         run: |
           eval $(opam env)
-          make -C formal/rocq/slashing -j1
-      - name: Verify no axioms or admits (textual pre-filter)
-        # Line-anchored so prose in comments (e.g. "per the no-Axiom rule")
-        # cannot trip the guard; only actual vernacular commands match. This
-        # is a fast heuristic with known false-negative gaps (mid-line
-        # `Admitted.`, `Admit Obligations.`, axioms pulled in via imports) —
-        # the kernel-level Print Assumptions step below is the authoritative
-        # gate. The explicit -d check keeps a moved/renamed theories/ from
-        # turning grep's exit 2 into a vacuous pass through `!`.
-        run: |
-          test -d formal/rocq/slashing/theories
-          ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?|Hypothes[ie]s)\b" \
-            formal/rocq/slashing/theories/
-      - name: Verify capstone trust base is closed (Print Assumptions)
-        # Authoritative axiom-freedom check (kernel-level, cf. the README's
-        # "Verifying the trust base"): the kernel reports every axiom, admit,
-        # parameter, or imported assumption the capstone theorems transitively
-        # depend on, regardless of where or how it was introduced. Both
-        # capstones must print "Closed under the global context".
-        #
-        # Implemented as a coqc-compiled check file rather than `coqtop -e`:
-        # `coqtop -batch` exits after argument parsing without a reliable -e
-        # across versions (first CI attempt died in 40ms with no output), and
-        # coqc is already proven present by the make step above. Output is
-        # captured with -e suspended so the assumption listing always reaches
-        # the log, even when the check fails.
-        run: |
-          eval $(opam env)
-          cd formal/rocq/slashing
-          cat > "${RUNNER_TEMP}/CheckAssumptions.v" <<'EOF'
-          From Slashing Require Import MainTheorem.
-          Print Assumptions main_bisimilarity_theorem.
-          Print Assumptions main_bisimilarity_strong.
-          EOF
-          set +e
-          out=$(coqc -Q theories Slashing "${RUNNER_TEMP}/CheckAssumptions.v" 2>&1)
-          status=$?
-          set -e
-          echo "$out"
-          if [ "$status" -ne 0 ]; then
-            echo "FAIL: assumption check did not run cleanly (coqc exit $status; output above)."
-            exit 1
-          fi
-          closed=$(grep -c "Closed under the global context" <<<"$out" || true)
-          if [ "$closed" -ne 2 ]; then
-            echo "FAIL: expected 2 closed trust bases, found $closed — capstone depends on axioms/admits listed above."
-            exit 1
-          fi
+          bash scripts/ci/check-formal-invariants.sh --rocq
 
   search-horizon-smoke:
     name: Search-horizon smoke tier (10k fuzz runs)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
@@ -308,10 +263,10 @@ jobs:
   mutation-coverage:
     name: Mutation coverage (cargo-mutants, nightly only)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-8-cores
     timeout-minutes: 240
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
@@ -330,12 +285,8 @@ jobs:
         # rely on the .mutants.toml include-list to scope to the
         # slashing modules only.
         env:
-          # The 7GB ubuntu-latest VM dies with a runner shutdown signal
-          # 30s-5min into the initial workspace build under cargo-mutants
-          # (nightlies 30992663244, 30895783563) — parallel rustc peak
-          # exceeds memory. Capping build concurrency keeps the peak
-          # inside the VM; the build is slower but the 240-minute job
-          # budget was never the binding constraint.
+          # The larger runner provides memory headroom for cargo-mutants;
+          # keep concurrency at 2 to bound peak memory during workspace builds.
           CARGO_BUILD_JOBS: 2
         run: cargo mutants --in-place --no-shuffle --timeout 120 --baseline=skip
 
@@ -345,7 +296,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
@@ -381,7 +332,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:

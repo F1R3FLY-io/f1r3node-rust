@@ -7,9 +7,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use casper::rust::api::block_api::BlockAPI;
+use casper::rust::api::block_api::{BlockAPI, ExploratoryDeployRejection};
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::api::graph_generator::{GraphConfig, GraphzGenerator};
+use casper::rust::casper::DeployError;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::ProposeFunction;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
@@ -150,6 +151,9 @@ impl DeployGrpcServiceV1Impl {
             Err(_) => return,
         };
 
+        // Cached when available, replayed only when the reporter is idle:
+        // block_report refuses rather than queues, so this never adds to the
+        // load it would be competing with.
         match self
             .block_report_api
             .block_report(block_hash_bytes, false)
@@ -169,9 +173,10 @@ impl DeployGrpcServiceV1Impl {
                 }
             }
             Err(_) => {
-                // Validators: transfers_available stays false (proto default),
-                // transfers stays empty Vec. Clients check transfers_available
-                // to distinguish "no transfers" from "unavailable."
+                // Validators, and a reporter busy with another replay:
+                // transfers_available stays false (proto default), transfers
+                // stays empty Vec. Clients check transfers_available to
+                // distinguish "no transfers" from "unavailable."
             }
         }
     }
@@ -272,7 +277,17 @@ impl DeployService for DeployGrpcServiceV1Impl {
         {
             Ok(result) => Self::create_success_deploy_response(result),
             Err(e) => {
-                error!("Deploy service method error do_deploy: {}", e);
+                let is_duplicate = e.chain().any(|cause| {
+                    matches!(
+                        cause.downcast_ref::<DeployError>(),
+                        Some(DeployError::DuplicateDeploy(_))
+                    )
+                });
+                if is_duplicate {
+                    tracing::debug!("Duplicate deploy rejected: {}", e);
+                } else {
+                    error!("Deploy service method error do_deploy: {}", e);
+                }
                 Self::create_error_deploy_response(e.into_service_error())
             }
         }
@@ -824,6 +839,21 @@ impl DeployService for DeployGrpcServiceV1Impl {
             }
             Err(e) => {
                 error!("Deploy service method error exploratory_deploy: {}", e);
+                // Backpressure and deadline overrun have exact gRPC statuses, so
+                // they travel on the transport's own status channel instead of
+                // being flattened into `ServiceError`'s prose. The status is
+                // chosen from the error variant, so it agrees with the HTTP
+                // classification of the same failure by construction.
+                if let Some(rejection) = ExploratoryDeployRejection::classify(&e) {
+                    return Err(match rejection {
+                        ExploratoryDeployRejection::Busy { .. } => {
+                            tonic::Status::unavailable(e.to_string())
+                        }
+                        ExploratoryDeployRejection::Timeout { .. } => {
+                            tonic::Status::deadline_exceeded(e.to_string())
+                        }
+                    });
+                }
                 Ok(tonic::Response::new(ExploratoryDeployResponse {
                     message: Some(
                         models::casper::v1::exploratory_deploy_response::Message::Error(

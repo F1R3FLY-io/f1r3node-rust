@@ -203,6 +203,25 @@ pub fn resolve(
     sig: &[u8],
     known_block_hash: Option<&BlockHash>,
 ) -> ApiErr<DeployFinalizationStatus> {
+    let status = resolve_lookup(dag, block_store, sig, known_block_hash)?;
+    tracing::info!(
+        target: "f1r3fly.casper.deploy_lifecycle",
+        event = "status_resolved",
+        deploy_sig = %hex::encode(sig),
+        resolved_state = ?status.state,
+        rejection_count = status.rejection_count,
+        latest_block = ?status.latest_block_hash.as_ref().map(hex::encode),
+        "deploy lifecycle"
+    );
+    Ok(status)
+}
+
+fn resolve_lookup(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    sig: &[u8],
+    known_block_hash: Option<&BlockHash>,
+) -> ApiErr<DeployFinalizationStatus> {
     if let Some(record) = dag
         .deploy_terminal(sig)
         .map_err(|e| eyre::eyre!("deploy lifecycle terminal lookup failed: {}", e))?

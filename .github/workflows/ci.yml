@@ -18,27 +18,13 @@ on:
       - trying
       - "feature/**"
 
-# Concurrency: PRs run in parallel (one group per ref) for fast feedback; pushes
-# (dev/master/staging/trying/tags) share a single group so merge and release runs
-# serialize rather than piling up independent 4-VM OCI matrices.
-#
-# Pushes never cancel: a re-push queues behind its own in-flight run, so release
-# jobs and long integration runs always reach completion.
-#
-# PRs DO cancel their own older runs, and must. GitHub keeps only one *pending*
-# run per group, so queueing instead of superseding means a third event evicts
-# the queued one — and an evicted run reports nothing, leaving every required
-# check on the current head permanently "Expected — waiting for status to be
-# reported". PR #158 hit exactly that on 2026-07-29: the run for head 1d3d79b1
-# was cancelled while queued behind a 14-hour predecessor, all 12 required
-# checks never reported, and the PR sat BLOCKED with no failure to point at.
-#
-# Superseding is also what you actually want per PR: once a newer head exists,
-# the older head's results cannot satisfy branch protection anyway, because
-# required checks are commit-scoped. Cancelling them deliberately frees the lane
-# for the head that matters instead of starving it.
+# GitHub keeps one running item and one pending item in each concurrency group.
+# Issue #267 showed that one shared push group can discard a pending test run.
+# A push key includes its ref and SHA. Thus, a branch and tag at one SHA stay
+# separate.
+# A newer PR head cancels only the obsolete run for that PR.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || 'push' }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && format('{0}-{1}', github.ref, github.sha) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -66,7 +52,7 @@ jobs:
       SYSTEM_INTEGRATION_REF: ${{ steps.env.outputs.SYSTEM_INTEGRATION_REF }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -109,6 +95,7 @@ jobs:
           env_file=.github/oci-validation.env
           oci_yml=.github/workflows/oci-validation.yml
           pipe_yml=.github/workflows/_integration-pipeline.yml
+          soak_yml=.github/workflows/merge-recovery-soak.yml
 
           # value of a `KEY=value` line in a dotenv file
           envval() { grep -E "^$1=" "$2" | head -1 | cut -d= -f2- | sed -E 's/[[:space:]]*$//'; }
@@ -128,6 +115,9 @@ jobs:
           check "SYSTEM_INTEGRATION_REF (oci-validation.env vs _integration-pipeline.yml)" \
             "$(envval SYSTEM_INTEGRATION_REF "$env_file")" \
             "$(yval SYSTEM_INTEGRATION_REF "$pipe_yml")"
+          check "SYSTEM_INTEGRATION_REF (oci-validation.env vs merge-recovery-soak.yml)" \
+            "$(envval SYSTEM_INTEGRATION_REF "$env_file")" \
+            "$(yval SYSTEM_INTEGRATION_REF "$soak_yml")"
 
           for key in OCI_CLI_INSTALLER_URL OCI_CLI_INSTALLER_SHA256 OCI_CLI_INSTALLER_PY_SHA256 OCI_CLI_VERSION; do
             check "$key (oci-validation.yml vs _integration-pipeline.yml)" \
@@ -147,7 +137,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # Deliberately the first step and deliberately in this job. `Lint` is a
       # required status check on devProtect and masterProtect, so a violation
@@ -163,6 +153,14 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-soak-schedule-routing.sh
 
+      - name: Verify system-integration node capability contract
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-system-integration-node-capabilities.sh
+
+      - name: Verify system-integration repin helper
+        shell: bash -euo pipefail {0}
+        run: scripts/test-repin-system-integration.sh
+
       - name: Verify soak summary aggregation
         shell: bash -euo pipefail {0}
         run: scripts/bench/test-write-soak-summary.sh
@@ -174,6 +172,10 @@ jobs:
       - name: Verify latency benchmark readiness and finalization
         shell: bash -euo pipefail {0}
         run: bash scripts/bench/test-latency-benchmark.sh
+
+      - name: Verify integration preflight driver
+        shell: bash -euo pipefail {0}
+        run: scripts/bench/test-run-integration-preflight.sh
 
       - name: Verify soak fail-closed driver
         shell: bash -euo pipefail {0}
@@ -210,7 +212,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: cargo-deny check
         uses: EmbarkStudios/cargo-deny-action@v2
@@ -234,7 +236,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Link Checker
         uses: lycheeverse/lychee-action@v2
@@ -294,7 +296,7 @@ jobs:
           - graphz
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
@@ -363,6 +365,11 @@ jobs:
   pipeline:
     name: Heavy Pipeline
     needs: lint
+    # A newer branch or PR head replaces obsolete heavy work. Version tags use
+    # separate groups and run to completion. OCI launch remains globally locked.
+    concurrency:
+      group: ci-heavy-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}
+      cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
     if: >-
       (github.event_name == 'push'
       && (github.ref == 'refs/heads/dev'
@@ -392,6 +399,8 @@ jobs:
   # Internal-only: fork PRs get this check from ci-fork-pr.yml instead, so this
   # one skips for them (a skipped required check is treated as passing).
   # PRs from dev/master skip too, mirroring the pipeline job's dedupe condition.
+  # Each gate checks only its two architecture slots. A failure in another
+  # architecture does not change this gate's result.
   integration_tests_amd64:
     name: Integration Tests (amd64)
     needs: pipeline
@@ -415,17 +424,20 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash -e {0}
         run: |
-          if [ "${{ needs.pipeline.result }}" = "failure" ] || [ "${{ needs.pipeline.result }}" = "cancelled" ]; then
-            echo "Heavy Pipeline did not succeed (result: ${{ needs.pipeline.result }}); failing gate."
-            exit 1
-          fi
-          failures=$(gh api \
+          slots=$(gh api \
             "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
             --paginate \
-            --jq '.jobs[] | select(.name | contains("Integration Tests (amd64-")) | select(.conclusion != "success") | "\(.conclusion)\t\(.name)"')
+            --jq '.jobs[] | select(.name | contains("Integration Tests (amd64-")) | "\(.conclusion // "pending")\t\(.name)"')
+          slot_count=$(printf '%s\n' "$slots" | grep -c . || true)
+          if [ "$slot_count" -ne 2 ]; then
+            echo "Expected 2 amd64 integration test slots, but found $slot_count:"
+            printf '%s\n' "$slots"
+            exit 1
+          fi
+          failures=$(printf '%s\n' "$slots" | awk -F '\t' '$1 != "success"')
           if [ -n "$failures" ]; then
             echo "amd64 integration test failures:"
-            echo "$failures"
+            printf '%s\n' "$failures"
             exit 1
           fi
           echo "All amd64 integration test slots succeeded"
@@ -453,17 +465,20 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash -e {0}
         run: |
-          if [ "${{ needs.pipeline.result }}" = "failure" ] || [ "${{ needs.pipeline.result }}" = "cancelled" ]; then
-            echo "Heavy Pipeline did not succeed (result: ${{ needs.pipeline.result }}); failing gate."
-            exit 1
-          fi
-          failures=$(gh api \
+          slots=$(gh api \
             "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
             --paginate \
-            --jq '.jobs[] | select(.name | contains("Integration Tests (arm64-")) | select(.conclusion != "success") | "\(.conclusion)\t\(.name)"')
+            --jq '.jobs[] | select(.name | contains("Integration Tests (arm64-")) | "\(.conclusion // "pending")\t\(.name)"')
+          slot_count=$(printf '%s\n' "$slots" | grep -c . || true)
+          if [ "$slot_count" -ne 2 ]; then
+            echo "Expected 2 arm64 integration test slots, but found $slot_count:"
+            printf '%s\n' "$slots"
+            exit 1
+          fi
+          failures=$(printf '%s\n' "$slots" | awk -F '\t' '$1 != "success"')
           if [ -n "$failures" ]; then
             echo "arm64 integration test failures:"
-            echo "$failures"
+            printf '%s\n' "$failures"
             exit 1
           fi
           echo "All arm64 integration test slots succeeded"
@@ -473,6 +488,9 @@ jobs:
   release_docker_image:
     name: Release Docker Image
     timeout-minutes: 15
+    concurrency:
+      group: ci-image-publish-${{ github.ref }}
+      cancel-in-progress: false
     needs:
       - build_base
       - lint
@@ -487,45 +505,107 @@ jobs:
         github.ref == 'refs/heads/dev'
       )
     runs-on: ubuntu-latest
-    environment: ephemeral-launch
+    environment: ${{ (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') && 'protected-branch-image-publish' || 'ephemeral-launch' }}
     steps:
+      - name: Check branch publish tip
+        id: publish_gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash -euo pipefail {0}
+        run: |
+          cat > "$RUNNER_TEMP/branch-tip-guard.sh" <<'GUARD'
+          branch_tip_status() {
+            if [[ "$GITHUB_REF" != refs/heads/* ]]; then
+              echo current
+              return 0
+            fi
+
+            local branch tip attempt
+            branch="${GITHUB_REF#refs/heads/}"
+            for attempt in 1 2 3; do
+              if tip="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" --jq '.object.sha')"; then
+                if [[ "$tip" == "$GITHUB_SHA" ]]; then
+                  echo current
+                else
+                  echo stale
+                fi
+                return 0
+              fi
+              if [[ "$attempt" -lt 3 ]]; then
+                sleep $((attempt * 2))
+              fi
+            done
+            echo "Unable to read the tip of $GITHUB_REF after 3 attempts." >&2
+            return 1
+          }
+
+          publish_mutable() {
+            local status
+            status="$(branch_tip_status)" || return 1
+            if [[ "$status" == stale ]]; then
+              echo "Skip mutable publication because $GITHUB_SHA is not the tip of $GITHUB_REF."
+              return 0
+            fi
+            "$@"
+          }
+          GUARD
+
+          source "$RUNNER_TEMP/branch-tip-guard.sh"
+          status="$(branch_tip_status)"
+          if [[ "$status" == stale ]]; then
+            echo "Skip image publication because $GITHUB_SHA is not the tip of $GITHUB_REF."
+            publish=false
+          else
+            publish=true
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
       - name: Checkout (for version)
-        uses: actions/checkout@v4
+        if: steps.publish_gate.outputs.publish == 'true'
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Load AMD64 Docker Image
+        if: steps.publish_gate.outputs.publish == 'true'
         uses: actions/download-artifact@v4
         with:
           name: artifacts-docker-amd64
           path: /tmp/amd64
 
       - name: Import AMD64 Docker Image
-        shell: bash -ex {0}
+        if: steps.publish_gate.outputs.publish == 'true'
+        shell: bash -euxo pipefail {0}
         run: zcat /tmp/amd64/rust-node-docker.tar.gz | docker image load
 
       - name: Load ARM64 Docker Image
+        if: steps.publish_gate.outputs.publish == 'true'
         uses: actions/download-artifact@v4
         with:
           name: artifacts-docker-arm64
           path: /tmp/arm64
 
       - name: Import ARM64 Docker Image
-        shell: bash -ex {0}
+        if: steps.publish_gate.outputs.publish == 'true'
+        shell: bash -euxo pipefail {0}
         run: zcat /tmp/arm64/rust-node-docker.tar.gz | docker image load
 
       - name: Log in to Docker Hub
+        if: steps.publish_gate.outputs.publish == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Publish Docker Image
+        if: steps.publish_gate.outputs.publish == 'true'
         env:
           VERSION: ${{ needs.build_base.outputs.VERSION }}
           BRANCH: ${{ needs.build_base.outputs.BRANCH }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash -exu -o pipefail {0}
         run: |
+          source "$RUNNER_TEMP/branch-tip-guard.sh"
           SOURCE_AMD64="${DOCKER_IMAGE_NAME}:amd64"
           SOURCE_ARM64="${DOCKER_IMAGE_NAME}:arm64"
 
@@ -571,18 +651,20 @@ jobs:
           docker push "${IMG_VERSION}-amd64"
           docker push "${IMG_VERSION}-arm64"
 
-          docker tag "$SOURCE_AMD64" "${IMG_LATEST}-amd64"
-          docker tag "$SOURCE_ARM64" "${IMG_LATEST}-arm64"
-          docker push "${IMG_LATEST}-amd64"
-          docker push "${IMG_LATEST}-arm64"
-
-          # Multi-arch manifests
+          # Multi-arch version manifest
           docker manifest create "${IMG_VERSION}" --amend "${IMG_VERSION}-amd64" "${IMG_VERSION}-arm64"
           docker manifest push "${IMG_VERSION}"
+
+          # Mutable channel pointers
+          docker tag "$SOURCE_AMD64" "${IMG_LATEST}-amd64"
+          docker tag "$SOURCE_ARM64" "${IMG_LATEST}-arm64"
+          publish_mutable docker push "${IMG_LATEST}-amd64"
+          publish_mutable docker push "${IMG_LATEST}-arm64"
           docker manifest create "${IMG_LATEST}" --amend "${IMG_LATEST}-amd64" "${IMG_LATEST}-arm64"
-          docker manifest push "${IMG_LATEST}"
+          publish_mutable docker manifest push "${IMG_LATEST}"
 
       - name: Log in to OCIR
+        if: steps.publish_gate.outputs.publish == 'true'
         uses: docker/login-action@v3
         with:
           registry: ${{ secrets.OCIR_REGISTRY }}
@@ -590,11 +672,14 @@ jobs:
           password: ${{ secrets.OCIR_AUTH_TOKEN }}
 
       - name: Publish to OCIR
+        if: steps.publish_gate.outputs.publish == 'true'
         env:
           VERSION: ${{ needs.build_base.outputs.VERSION }}
           BRANCH: ${{ needs.build_base.outputs.BRANCH }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash -exu -o pipefail {0}
         run: |
+          source "$RUNNER_TEMP/branch-tip-guard.sh"
           OCIR_BASE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.OCIR_NAMESPACE }}/${{ secrets.OCIR_REPO }}"
           SOURCE_AMD64="${DOCKER_IMAGE_NAME}:amd64"
           SOURCE_ARM64="${DOCKER_IMAGE_NAME}:arm64"
@@ -634,19 +719,43 @@ jobs:
           docker push "${IMG_VERSION}-amd64"
           docker push "${IMG_VERSION}-arm64"
 
-          docker tag "$SOURCE_AMD64" "${IMG_LATEST}-amd64"
-          docker tag "$SOURCE_ARM64" "${IMG_LATEST}-arm64"
-          docker push "${IMG_LATEST}-amd64"
-          docker push "${IMG_LATEST}-arm64"
-
           docker manifest create "${IMG_VERSION}" --amend "${IMG_VERSION}-amd64" "${IMG_VERSION}-arm64"
           docker manifest push "${IMG_VERSION}"
+
+          docker tag "$SOURCE_AMD64" "${IMG_LATEST}-amd64"
+          docker tag "$SOURCE_ARM64" "${IMG_LATEST}-arm64"
+          publish_mutable docker push "${IMG_LATEST}-amd64"
+          publish_mutable docker push "${IMG_LATEST}-arm64"
           docker manifest create "${IMG_LATEST}" --amend "${IMG_LATEST}-amd64" "${IMG_LATEST}-arm64"
-          docker manifest push "${IMG_LATEST}"
+          publish_mutable docker manifest push "${IMG_LATEST}"
+
+      - name: Report image publication result
+        if: always()
+        env:
+          PUBLISH_ALLOWED: ${{ steps.publish_gate.outputs.publish }}
+          PUBLICATION_STATUS: ${{ job.status }}
+        shell: bash -euo pipefail {0}
+        run: |
+          if [[ "$PUBLICATION_STATUS" != success ]]; then
+            result=failed
+          elif [[ "$PUBLISH_ALLOWED" != true ]]; then
+            result=skipped-stale-sha
+          else
+            result=published
+          fi
+          {
+            echo "### Image publication"
+            printf -- '- Result: `%s`\n' "$result"
+            printf -- '- Ref: `%s`\n' "$GITHUB_REF"
+            printf -- '- SHA: `%s`\n' "$GITHUB_SHA"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # GitHub release with multi-arch binaries attached (tag pushes only).
   release_packages:
     name: Release Packages
+    concurrency:
+      group: ci-package-publish-${{ github.ref }}
+      cancel-in-progress: false
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
@@ -660,7 +769,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout (for CHANGELOG.md)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Load Docker artifact (amd64)
         uses: actions/download-artifact@v4

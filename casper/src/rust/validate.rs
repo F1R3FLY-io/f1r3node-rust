@@ -484,6 +484,36 @@ impl Validate {
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-transaction-expired-validation");
+        // Fill the floor slot here — the first consumer. Only deploy-carrying
+        // blocks pay the derivation; a derivation failure surfaces at this
+        // step as the same BlockException class every step's storage failure
+        // uses.
+        if floor_ctx_slot.is_none()
+            && !block.body.deploys.is_empty()
+            && !block.header.parents_hash_list.is_empty()
+        {
+            let latest_messages: BTreeMap<Validator, BlockHash> = block
+                .justifications
+                .iter()
+                .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+                .collect();
+            match crate::rust::finality::floor_context::FloorContext::derive(
+                &s.dag,
+                block_store,
+                &block.header.parents_hash_list,
+                &latest_messages,
+                crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                    s.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
+                ),
+            )
+            .await
+            {
+                Ok(ctx) => *floor_ctx_slot = Some(ctx),
+                Err(ex) => {
+                    return Either::Left(BlockError::from_validation_error(ex));
+                }
+            }
+        }
         match __step!(
             BLOCK_VALIDATION_TRANSACTION_EXPIRATION_TIME_METRIC,
             Self::transaction_expiration(

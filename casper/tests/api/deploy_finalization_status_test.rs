@@ -456,3 +456,124 @@ async fn end_to_end_win_finalizes_via_admission_hook() {
          the settle ladder"
     );
 }
+
+/// The register's ingest covers every inserted block regardless of how it
+/// hangs in the DAG: a sig whose only inclusion is in a block reachable
+/// solely through a SECONDARY parent slot still has a row, so the
+/// resolver answers with that inclusion instead of `pending_unknown`.
+/// (The strong form — such an inclusion FINALIZES via merge + floor
+/// state — is pinned end-to-end by
+/// `verdict_convergence_spec::a_deploy_finalizes_from_a_carrier_the_spine_never_holds`.)
+///
+/// ```text
+///     genesis (h=0)
+///       |   |
+///       A   B       both at h=1; the sig lives only in B.body.deploys
+///        \ /
+///         C         h=2, parents=[A, B] — B is the secondary slot
+/// ```
+#[tokio::test]
+async fn resolve_finds_sig_in_secondary_parent_branch() {
+    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+    use casper::rust::util::construct_deploy;
+    use models::rust::block_implicits;
+    use models::rust::casper::protocol::casper_message::ProcessedDeploy;
+
+    use crate::util::rholang::resources::{
+        block_dag_storage_from_dyn, generate_scope_id, mk_test_rnode_store_manager_shared,
+    };
+
+    let ctx = TestContext::new().await;
+    let genesis_block = ctx.genesis.genesis_block.clone();
+    let genesis_hash = genesis_block.block_hash.clone();
+
+    let mut kvm = mk_test_rnode_store_manager_shared(generate_scope_id());
+    let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
+        .await
+        .expect("block store");
+    let dag_storage = block_dag_storage_from_dyn(&mut *kvm)
+        .await
+        .expect("dag storage");
+
+    block_store
+        .put_block_message(&genesis_block)
+        .expect("store genesis");
+    dag_storage
+        .insert(&genesis_block, InsertMode::Approved)
+        .expect("dag genesis");
+
+    let deploy_b =
+        construct_deploy::source_deploy_now_full("Nil".to_string(), None, None, None, None, None)
+            .expect("construct deploy");
+    let deploy_b_sig = deploy_b.sig.to_vec();
+
+    let block_a = block_implicits::get_random_block(
+        Some(1),
+        Some(1),
+        None,
+        None,
+        None,
+        None,
+        Some(0),
+        Some(vec![genesis_hash.clone()]),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(genesis_block.body.state.bonds.clone()),
+        Some(genesis_block.shard_id.clone()),
+        None,
+    );
+    let block_b = block_implicits::get_random_block(
+        Some(1),
+        Some(1),
+        None,
+        None,
+        None,
+        None,
+        Some(0),
+        Some(vec![genesis_hash.clone()]),
+        Some(Vec::new()),
+        Some(vec![ProcessedDeploy::empty(deploy_b)]),
+        Some(Vec::new()),
+        Some(genesis_block.body.state.bonds.clone()),
+        Some(genesis_block.shard_id.clone()),
+        None,
+    );
+    let block_c = block_implicits::get_random_block(
+        Some(2),
+        Some(2),
+        None,
+        None,
+        None,
+        None,
+        Some(0),
+        Some(vec![block_a.block_hash.clone(), block_b.block_hash.clone()]),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(genesis_block.body.state.bonds.clone()),
+        Some(genesis_block.shard_id.clone()),
+        None,
+    );
+    for block in [&block_a, &block_b, &block_c] {
+        block_store.put_block_message(block).expect("store block");
+        dag_storage
+            .insert(block, InsertMode::Normal)
+            .expect("dag insert");
+    }
+
+    let dag = dag_storage
+        .get_representation()
+        .expect("dag representation");
+    let status = deploy_finalization_status::resolve(&dag, &block_store, &deploy_b_sig, None)
+        .expect("resolve");
+
+    assert_eq!(status.state, DeployFinalizationState::Pending);
+    assert_eq!(
+        status.latest_block_hash.as_ref(),
+        Some(&block_b.block_hash),
+        "the row fed at B's insert must surface B as the sig's appearance \
+         even though B is reachable only through C's secondary parent slot"
+    );
+    assert_eq!(status.rejection_count, 0);
+}

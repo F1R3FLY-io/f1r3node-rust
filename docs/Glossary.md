@@ -29,6 +29,59 @@ correctness — proved, model-checked, and tested — is the organizing concern.
 
 ## Canonical Terms
 
+### Peak node RSS
+
+Peak node resident set size (RSS) is the maximum combined memory use of all
+shard nodes at one sampling time. The passive series reports the largest
+iteration value in megabytes. The active series reports the median of
+successful benchmark-segment peaks.
+
+**Preferred usage.** Use this term for concurrent shard-node memory use.
+*Distinguish from* [Peak node CPU](#peak-node-cpu): memory use versus processor
+use. *Avoid*: host memory and separate per-node memory peaks.
+
+### Peak node CPU
+
+Peak node central processing unit (CPU) use is the maximum combined processor
+use of all shard nodes at one sampling time. One hundred percent equals one
+fully used processor core. Thus, multiple active cores can produce a value
+above 100 percent. Each soak run reports the largest iteration value.
+
+**Preferred usage.** Use this term for concurrent shard-node processor use.
+*Distinguish from* [Peak node RSS](#peak-node-rss): processor use versus memory
+use. *Avoid*: a single-node peak or a host-wide CPU peak.
+
+### Finalization latency p95
+
+Finalization latency p95 is the per-run median of 95th-percentile latency
+values. The passive series uses `f1r3fly.propose.timing` `total_ms`
+proposal-processing samples. The active series uses submit-to-finalize samples
+from each controlled-load segment.
+
+**Preferred usage.** Specify the passive series or the active series.
+*Distinguish from* the other series because the two series use different
+measurement boundaries. *Avoid*: using the two p95 metrics as synonyms.
+
+### Too-far-ahead errors
+
+Too-far-ahead errors are logged proposal rejections that occur when a proposal
+is too far ahead of the last finalized block. Each soak run reports the sum of
+these log events across its iterations.
+
+**Preferred usage.** Use this term for the proposal-rejection count.
+*Distinguish from* [Finalization latency p95](#finalization-latency-p95):
+rejection count versus processing duration. *Avoid*: all proposal errors.
+
+### LFB convergence spread
+
+Last finalized block (LFB) convergence spread is the difference between the
+largest and smallest LFB numbers across shard nodes in one sample. The
+dashboard reports p95 and maximum run aggregates in blocks.
+
+**Preferred usage.** Use this term to describe shard agreement on finalized
+state. *Distinguish from* finalization distance from the block graph tip.
+*Avoid*: block height and finalization latency.
+
 ### Verification tier
 
 A verification tier is the CI budget class a formal check runs under: the

@@ -197,9 +197,11 @@ pub(crate) async fn compute_last_finalized_block(
         let finalization_in_progress = finalization_in_progress_for_effect.clone();
         async move {
             let effect_started = std::time::Instant::now();
+            let directly_finalized_hash = new_lfb.clone();
             block_dag_storage
                 .record_directly_finalized(new_lfb.clone(), ft_value, |finalized_set: &HashSet<BlockHash>| {
                     let finalized_set = finalized_set.clone();
+                    let directly_finalized_hash = directly_finalized_hash.clone();
                     let block_store = block_store.clone();
                     let runtime_manager = runtime_manager.clone();
                     let event_publisher = event_publisher.clone();
@@ -242,6 +244,33 @@ pub(crate) async fn compute_last_finalized_block(
                                     PrettyPrinter::build_string_bytes(&block.block_hash),
                                     PrettyPrinter::build_string_bytes(&block.sender),
                                     block.seq_num
+                                );
+                            }
+
+                            for processed in &block.body.deploys {
+                                tracing::info!(
+                                    target: "f1r3fly.casper.deploy_lifecycle",
+                                    event = "finalized_inclusion",
+                                    deploy_sig = %hex::encode(&processed.deploy.sig),
+                                    block_hash = %hex::encode(&block.block_hash),
+                                    block_number = block.body.state.block_number,
+                                    sender = %hex::encode(&block.sender),
+                                    failed = processed.is_failed,
+                                    directly_finalized = block_hash == &directly_finalized_hash,
+                                    "deploy lifecycle"
+                                );
+                            }
+                            for rejected in &block.body.rejected_deploys {
+                                tracing::info!(
+                                    target: "f1r3fly.casper.deploy_lifecycle",
+                                    event = "finalized_rejection",
+                                    deploy_sig = %hex::encode(&rejected.sig),
+                                    block_hash = %hex::encode(&block.block_hash),
+                                    block_number = block.body.state.block_number,
+                                    carrier = %hex::encode(&rejected.carrier),
+                                    duplicate = rejected.duplicate,
+                                    directly_finalized = block_hash == &directly_finalized_hash,
+                                    "deploy lifecycle"
                                 );
                             }
 
@@ -298,6 +327,20 @@ pub(crate) async fn compute_last_finalized_block(
             )
             .await
             .map_err(CasperError::from)?;
+        // `floor_of_view` only ever returns an adoption that CAPTURES the
+        // current LFB, so `extends_previous_lfb` is true by construction —
+        // emitted anyway for parity with soak dashboards that alarm on it.
+        tracing::info!(
+            target: "f1r3fly.casper.finalization_lifecycle",
+            event = "candidate_finalized",
+            candidate_hash = %hex::encode(&new_lfb.hash),
+            candidate_height = new_lfb.block_number,
+            previous_lfb_hash = %hex::encode(&last_finalized_block_hash),
+            previous_lfb_height = last_finalized_block_height,
+            extends_previous_lfb = true,
+            fault_tolerance = ft_value,
+            "finalization lifecycle"
+        );
         new_lfb_found_effect((new_lfb.hash.clone(), ft_value))
             .await
             .map_err(CasperError::KvStoreError)?;

@@ -297,6 +297,15 @@ pub struct HeartbeatConf {
         default = "default_stale_recovery_min_interval"
     )]
     pub stale_recovery_min_interval: Duration,
+    /// Time without a new finalized block before one additional, deterministic
+    /// convergence proposal is allowed. This does not delay or replace the
+    /// routine stale-LFB recovery governed by `max_lfb_age`.
+    #[serde(
+        rename = "finality-progress-timeout",
+        deserialize_with = "de_duration",
+        default = "default_finality_progress_timeout"
+    )]
+    pub finality_progress_timeout: Duration,
     /// When pending deploys land, opens a grace window during which lag caps
     /// relax to `advanced.deploy_recovery_max_lag` and self-propose-cooldown
     /// is bypassable. Burst-tolerance budget.
@@ -319,6 +328,7 @@ impl Default for HeartbeatConf {
             max_lfb_age: Duration::from_secs(5),
             self_propose_cooldown: default_self_propose_cooldown(),
             stale_recovery_min_interval: default_stale_recovery_min_interval(),
+            finality_progress_timeout: default_finality_progress_timeout(),
             deploy_finalization_grace: default_deploy_finalization_grace(),
             advanced: HeartbeatAdvancedConf::default(),
         }
@@ -328,6 +338,8 @@ impl Default for HeartbeatConf {
 fn default_self_propose_cooldown() -> Duration { Duration::from_secs(15) }
 
 fn default_stale_recovery_min_interval() -> Duration { Duration::from_secs(12) }
+
+fn default_finality_progress_timeout() -> Duration { Duration::from_secs(30) }
 
 fn default_deploy_finalization_grace() -> Duration { Duration::from_secs(25) }
 

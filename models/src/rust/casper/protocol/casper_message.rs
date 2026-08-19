@@ -1557,3 +1557,19 @@ mod approved_block_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejected_deploy_decodes_legacy_wire_format() {
+        let legacy = [0x0a, 0x03, b's', b'i', b'g'];
+        let decoded = RejectedDeployProto::decode(legacy.as_slice()).unwrap();
+        let record = RejectedDeploy::from_proto(decoded);
+
+        assert_eq!(record.sig, ByteString::from_static(b"sig"));
+        assert!(!record.duplicate);
+        assert!(record.carrier.is_empty());
+    }
+}

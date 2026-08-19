@@ -95,6 +95,10 @@ impl ConfigMapper<Options> for NodeConf {
                 run.discovery_heartbeat_batch_size,
             );
             Self::try_override_value(
+                &mut self.peers_discovery.heartbeat_failure_threshold,
+                run.discovery_heartbeat_failure_threshold,
+            );
+            Self::try_override_value(
                 &mut self.peers_discovery.init_wait_loop_interval,
                 run.discovery_init_wait_loop_interval,
             );
@@ -125,6 +129,18 @@ impl ConfigMapper<Options> for NodeConf {
             Self::try_override_value(
                 &mut self.api_server.max_blocks_limit,
                 run.api_max_blocks_limit,
+            );
+            Self::try_override_value(
+                &mut self.api_server.exploratory_deploy_max_concurrent,
+                run.api_exploratory_deploy_max_concurrent,
+            );
+            Self::try_override_value(
+                &mut self.api_server.exploratory_deploy_phlo_limit,
+                run.api_exploratory_deploy_phlo_limit,
+            );
+            Self::try_override_value(
+                &mut self.api_server.exploratory_deploy_execution_timeout,
+                run.api_exploratory_deploy_execution_timeout,
             );
             Self::try_override_value(
                 &mut self.api_server.keep_alive_time,
@@ -452,6 +468,9 @@ mod tests {
         "--api-grpc-max-recv-message-size=111111",
         "--api-max-blocks-limit=111111",
         "--api-enable-reporting",
+        "--api-exploratory-deploy-max-concurrent=111111",
+        "--api-exploratory-deploy-phlo-limit=111111",
+        "--api-exploratory-deploy-execution-timeout=111111seconds",
         "--api-keep-alive-time=111111seconds",
         "--api-keep-alive-timeout=111111seconds",
         "--api-tcp-keepalive-time=111111seconds",
@@ -607,6 +626,7 @@ mod tests {
                 discovery_lookup_interval: Some(Duration::from_secs(111111)),
                 discovery_cleanup_interval: Some(Duration::from_secs(111111)),
                 discovery_heartbeat_batch_size: Some(111111),
+                discovery_heartbeat_failure_threshold: Some(111111),
                 discovery_init_wait_loop_interval: Some(Duration::from_secs(111111)),
                 protocol_port: Some(11111),
                 protocol_grpc_max_recv_message_size: Some(111111),
@@ -624,6 +644,9 @@ mod tests {
                 api_port_admin_http: Some(11111),
                 api_max_blocks_limit: Some(111111),
                 api_enable_reporting: true,
+                api_exploratory_deploy_max_concurrent: Some(111111),
+                api_exploratory_deploy_phlo_limit: Some(111111),
+                api_exploratory_deploy_execution_timeout: Some(Duration::from_secs(111111)),
                 api_keep_alive_time: Some(Duration::from_secs(111111)),
                 api_keep_alive_timeout: Some(Duration::from_secs(111111)),
                 api_tcp_keepalive_time: Some(Duration::from_secs(111111)),
@@ -724,6 +747,7 @@ mod tests {
                 lookup_interval: Duration::from_secs(30),
                 cleanup_interval: Duration::from_secs(30),
                 heartbeat_batch_size: 4,
+                heartbeat_failure_threshold: 3,
                 init_wait_loop_interval: Duration::from_secs(30),
             },
             api_server: crate::rust::configuration::model::ApiServer {
@@ -736,6 +760,9 @@ mod tests {
                 http_max_body_bytes: 16777216,
                 max_blocks_limit: 100,
                 enable_reporting: false,
+                exploratory_deploy_max_concurrent: 1,
+                exploratory_deploy_phlo_limit: 5_000_000,
+                exploratory_deploy_execution_timeout: Duration::from_secs(15),
                 keep_alive_time: Duration::from_secs(2),
                 keep_alive_timeout: Duration::from_secs(20),
                 tcp_keepalive_time: Duration::from_secs(5),
@@ -911,6 +938,20 @@ mod tests {
         assert_eq!(default_config.api_server.host, "localhost".to_string());
         assert_eq!(default_config.api_server.grpc_max_recv_message_size, 111111);
         assert_eq!(default_config.api_server.max_blocks_limit, 111111);
+        assert_eq!(
+            default_config.api_server.exploratory_deploy_max_concurrent,
+            111111
+        );
+        assert_eq!(
+            default_config.api_server.exploratory_deploy_phlo_limit,
+            111111
+        );
+        assert_eq!(
+            default_config
+                .api_server
+                .exploratory_deploy_execution_timeout,
+            Duration::from_secs(111111)
+        );
         assert_eq!(
             default_config.api_server.keep_alive_time,
             Duration::from_secs(111111)
