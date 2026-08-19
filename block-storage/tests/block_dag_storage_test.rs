@@ -1234,3 +1234,108 @@ fn insert_projects_lifecycle_events_from_valid_bodies_only() {
         );
     });
 }
+
+/// A restored (truncated) DAG holds a window of blocks whose deepest
+/// parent references point below the truncation boundary, and LFS
+/// populate marks only the ANCHOR finalized — the window itself, the
+/// anchor's own ancestry included, carries no finality marks. Adopting a
+/// new LFB above the anchor must therefore walk unmarked window branches,
+/// and that walk must treat an unheld parent as the horizon (everything
+/// below the boundary is below the anchor's floor, i.e. settled), never
+/// as an error: erroring aborts the adoption and wedges the finalizer
+/// forever while the chain grows past it.
+#[test]
+fn truncated_window_finalization_walk_terminates_at_the_horizon() {
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut kvm = InMemoryStoreManager::new();
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+
+        // Never inserted: the parent reference below the truncation boundary.
+        let below_boundary = get_random_block(
+            Some(2),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![]),
+            None,
+            None,
+            None,
+            Some(vec![]),
+            None,
+            None,
+        );
+
+        let make = |number: i64, parents: Vec<BlockHash>| {
+            get_random_block(
+                Some(number),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(parents),
+                None,
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            )
+        };
+        let b3 = make(3, vec![below_boundary.block_hash.clone()]);
+        let b4 = make(4, vec![b3.block_hash.clone()]);
+        let anchor = make(5, vec![b4.block_hash.clone()]);
+        // Multi-parent: the finalized anchor plus an unmarked window block,
+        // so the marking walk cannot stop at the anchor alone.
+        let b6 = make(6, vec![anchor.block_hash.clone(), b4.block_hash.clone()]);
+
+        // LFS populate order: anchor (Approved — the only finality mark),
+        // then the window, newest to oldest, then post-restore admission.
+        let mode_approved =
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved;
+        let mode_normal = block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal;
+        dag_storage.insert(&anchor, mode_approved).unwrap();
+        dag_storage.insert(&b4, mode_normal).unwrap();
+        dag_storage.insert(&b3, mode_normal).unwrap();
+        dag_storage.insert(&b6, mode_normal).unwrap();
+
+        let result = dag_storage
+            .record_directly_finalized(b6.block_hash.clone(), 1.0, |_| async { Ok(()) })
+            .await;
+        assert!(
+            result.is_ok(),
+            "adopting an LFB above a truncated window must terminate the \
+             finalized-ancestry marking walk at the horizon, not abort on the \
+             unheld parent: {:?}",
+            result.err()
+        );
+
+        let dag = dag_storage.get_representation().unwrap();
+        assert_eq!(
+            dag.last_finalized_block(),
+            b6.block_hash,
+            "the adoption must land: the LFB pointer moves to the new block"
+        );
+        for (name, hash) in [
+            ("b6", &b6.block_hash),
+            ("b4", &b4.block_hash),
+            ("b3", &b3.block_hash),
+        ] {
+            assert!(
+                dag.is_finalized(hash),
+                "{name} is held ancestry of the adopted LFB and must be marked finalized"
+            );
+        }
+        assert!(
+            !dag.contains(&below_boundary.block_hash),
+            "the below-boundary reference stays unheld: the walk terminates \
+             there without inventing an entry for it"
+        );
+    });
+}
