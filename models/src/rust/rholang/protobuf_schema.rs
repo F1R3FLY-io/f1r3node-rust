@@ -265,6 +265,20 @@ pub enum ProtobufDescent<'a> {
 /// Object-safe by construction — no associated constants, no generic methods —
 /// because the driver's op stack holds `&dyn ProtobufNode`.
 pub trait ProtobufNode {
+    /// Identify the external `Par` feedback vertex to schema-driven consumers.
+    ///
+    /// The ordinary protobuf encoder deliberately treats `Par` as an opaque
+    /// node.  Construction planning needs the complementary fact: a generated
+    /// message edge that reaches this node is a replaceable `Par` slot.  The
+    /// default keeps every generated implementation source-compatible; the
+    /// hand-maintained external implementation below is the sole override.
+    fn as_par(&self) -> Option<&Par> { None }
+
+    /// Identify the external EPathMap feedback vertex.  A construction plan
+    /// keeps an already-authoritative EPathMap opaque and delegates its EPM1
+    /// snapshot to the production protobuf PDA instead of projecting entries.
+    fn as_epathmap(&self) -> Option<&EPathMap> { None }
+
     /// This node's fields, in ASCENDING MINIMUM TAG order.
     fn protobuf_program(&self) -> &'static [ProtobufField];
 
@@ -343,6 +357,9 @@ pub static PAR_PROTOBUF_PROGRAM: &[ProtobufField] = &[];
 
 impl ProtobufNode for Par {
     #[inline]
+    fn as_par(&self) -> Option<&Par> { Some(self) }
+
+    #[inline]
     fn protobuf_program(&self) -> &'static [ProtobufField] { PAR_PROTOBUF_PROGRAM }
 
     fn protobuf_len_step(&self, from: usize) -> (u64, ProtobufDescent<'_>) {
@@ -391,6 +408,9 @@ pub static EPATHMAP_PROTOBUF_PROGRAM: &[ProtobufField] = &[
 ];
 
 impl ProtobufNode for EPathMap {
+    #[inline]
+    fn as_epathmap(&self) -> Option<&EPathMap> { Some(self) }
+
     #[inline]
     fn protobuf_program(&self) -> &'static [ProtobufField] { EPATHMAP_PROTOBUF_PROGRAM }
 

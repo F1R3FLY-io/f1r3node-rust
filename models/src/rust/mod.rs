@@ -8,6 +8,7 @@ pub mod equivocation_record;
 pub mod normalizer_env;
 pub mod par;
 pub mod par_bag;
+pub mod par_construction;
 pub mod par_ext;
 pub mod par_map;
 pub mod par_map_type_mapper;

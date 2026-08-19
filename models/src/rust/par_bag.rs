@@ -1796,6 +1796,13 @@ impl<'a, T: ParBagComponent> EncodedParComponent<'a, T> {
 
 impl EncodedParComponent<'_, Expr> {
     /// Return the depth of an exact canonical
+    /// `ENot(Par(ENot(.. Par::default() ..)))` component.
+    ///
+    /// Like the ordered-collection recognizers below, this walks the stored
+    /// protobuf body directly and allocates no nested `Par` values.
+    pub fn canonical_unary_enot_depth(self) -> Option<usize> { canonical_unary_enot(self.payload) }
+
+    /// Return the depth of an exact canonical
     /// `EList([EList([.. EList([GInt(_)]) ..])])` component.
     ///
     /// This is a schema-directed byte cursor over the stored canonical
@@ -2174,6 +2181,22 @@ impl ParBag {
             self.seed_singleton_caches(tag, key, canonical_path_stable);
         }
         Ok(next)
+    }
+
+    /// Insert a key emitted by the schema-driven [`ParConstruction`] PDA.
+    ///
+    /// The planner constructs the same canonical RPB3 key language as
+    /// [`ParBagComponent::append_key_suffix`] and has already proved its score
+    /// and protobuf lengths.  Revalidating it here would decode the just-built
+    /// recursive body and restore the construction cost this path removes.
+    pub(crate) fn insert_planned_key(
+        &mut self,
+        tag: ParComponentTag,
+        key: &[u8],
+        amount: Multiplicity,
+        canonical_path_stable: bool,
+    ) -> Result<Multiplicity, BagError> {
+        self.insert_bytes(tag, key, amount, Some(canonical_path_stable))
     }
 
     fn remove_bytes(
