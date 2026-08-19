@@ -179,7 +179,8 @@ impl EpmLayout {
 /// Build the final-byte topology directly from PathMap. No `Par` projection or
 /// encoded-value table is retained: the only temporary index maps the stable
 /// addresses supplied by PathMap to ACTree03 value ordinals.
-pub(crate) fn layout(repr: &EPathMapRepr<Par>) -> EpmLayout {
+pub(crate) fn layout<T>(repr: &EPathMapRepr<T>) -> EpmLayout
+where T: Clone + Send + Sync + Unpin + 'static {
     let mut prefix = Vec::new();
     prefix.extend_from_slice(EPM_MAGIC);
     prefix.push(EPM_VERSION);
@@ -204,11 +205,11 @@ pub(crate) fn layout(repr: &EPathMapRepr<Par>) -> EpmLayout {
             let mut zipper = map.read_zipper();
             let mut value_count = 0usize;
             while let Some(value) = zipper.to_next_get_val() {
-                ordinal_by_address.insert(value as *const Par as usize, value_count as u64);
+                ordinal_by_address.insert(value as *const T as usize, value_count as u64);
                 value_count += 1;
             }
             let arena = ArenaCompactTree::from_zipper(map.read_zipper(), |value| {
-                ordinal_by_address[&(value as *const Par as usize)]
+                ordinal_by_address[&(value as *const T as usize)]
             });
             let bytes = arena.get_data();
             push_varint(&mut prefix, bytes.len() as u64);

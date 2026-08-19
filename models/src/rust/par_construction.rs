@@ -13,8 +13,9 @@
 //! placeholder per recursive slot and the corresponding planned children in
 //! generated wire order.  The planner records bounded wire fragments and child
 //! obligations without serializing a child.  Lengths are computed bottom-up,
-//! and final emission is a heap worklist.  EPathMap remains an opaque EPM1
-//! endpoint, so planning never projects a trie into entries.
+//! and final emission is a heap worklist. EPathMap keeps canonical keys in its
+//! homogeneous PathMap specialization and streams the PathMap-produced EPM1
+//! topology plus planned map values; it is never projected into decoded Pars.
 //!
 //! Canonical score keys use the same prefix-free byte language as the sorter,
 //! represented as another flat arena.  Parent scores reference child score
@@ -23,8 +24,12 @@
 use std::cmp::Ordering;
 use std::fmt;
 
+use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperReadOnlyIteration};
+use pathmap::PathMap;
 use prost::encoding::{encoded_len_varint, key_len};
 
+use super::canonical_path::tag as path_tag;
+use super::epathmap_trie_codec::{self, EPathMapMode, EPathMapRepr};
 use super::par_bag::{Multiplicity, ParBag, ParBagComponent, ParComponentTag, PAR_BAG_KEY_DOMAIN};
 use super::rholang::protobuf_encoder;
 use super::rholang::protobuf_schema::{ProtobufDescent, ProtobufNode, ProtobufSeq, NO_RESUME};
@@ -33,7 +38,7 @@ use super::rholang::sorter::score_tree::{encode_order_key, Score, ScoreAtom, Tre
 use super::rholang::sorter::sort_combine::sort_var;
 use super::rholang::sorter::sortable::Sortable;
 use crate::rhoapi::expr::ExprInstance;
-use crate::rhoapi::{Expr, Par};
+use crate::rhoapi::{EPathMap, EZipper, Expr, Par};
 
 /// An index into a [`ParConstruction`]'s planned-Par arena.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -46,6 +51,12 @@ pub struct PlannedScore(usize);
 /// An index into the planned-component arena.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PlannedComponent(usize);
+
+/// An index into a transient homogeneous EPathMap arena. Keys remain in their
+/// prefix-compressed PathMap and map values are lightweight planned-Par
+/// handles; no decoded entry projection becomes resident state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PlannedEPathMap(usize);
 
 /// A construction failure. Every variant denotes an addressability or semantic
 /// invariant failure; none is a policy depth/arity limit.
@@ -65,7 +76,6 @@ pub enum ParConstructionError {
         expected: usize,
         supplied: usize,
     },
-    UnsupportedPlannedShape(&'static str),
     Multiplicity(super::par_bag::BagError),
 }
 
@@ -92,9 +102,6 @@ impl fmt::Display for ParConstructionError {
                 formatter,
                 "{context} requires {expected} planned Par children but received {supplied}"
             ),
-            Self::UnsupportedPlannedShape(shape) => {
-                write!(formatter, "planned construction does not yet support {shape}")
-            }
             Self::Multiplicity(error) => error.fmt(formatter),
         }
     }
@@ -118,12 +125,15 @@ enum ScorePiece {
     Bytes(usize),
     Child(PlannedScore),
     Repeat { child: PlannedScore, count: u64 },
+    EscapedWire { root: WireRoot, encoded_len: usize },
 }
 
-enum ScoreCursorOp {
+enum ScoreCursorOp<'a> {
     Score(PlannedScore),
     Bytes { fragment: usize, offset: usize },
     Repeat { child: PlannedScore, remaining: u64 },
+    EscapedWire(WireByteCursor<'a>),
+    Byte(u8),
 }
 
 /// A zero-copy cursor over the prefix-free canonical score language.
@@ -133,7 +143,7 @@ enum ScoreCursorOp {
 /// or a high multiplicity.
 struct ScoreByteCursor<'a> {
     arena: &'a ParConstruction,
-    work: Vec<ScoreCursorOp>,
+    work: Vec<ScoreCursorOp<'a>>,
 }
 
 impl<'a> ScoreByteCursor<'a> {
@@ -163,6 +173,9 @@ impl Iterator for ScoreByteCursor<'_> {
                                 child,
                                 remaining: count,
                             },
+                            ScorePiece::EscapedWire { root, .. } => {
+                                ScoreCursorOp::EscapedWire(WireByteCursor::new(self.arena, root))
+                            }
                         });
                     }
                 }
@@ -188,6 +201,15 @@ impl Iterator for ScoreByteCursor<'_> {
                         self.work.push(ScoreCursorOp::Score(child));
                     }
                 }
+                ScoreCursorOp::EscapedWire(mut cursor) => {
+                    let byte = cursor.next()?;
+                    self.work.push(ScoreCursorOp::EscapedWire(cursor));
+                    if byte == 0 {
+                        self.work.push(ScoreCursorOp::Byte(0xff));
+                    }
+                    return Some(byte);
+                }
+                ScoreCursorOp::Byte(byte) => return Some(byte),
             }
         }
     }
@@ -202,11 +224,13 @@ enum ProtoPiece {
     Bytes(Box<[u8]>),
     Node { tag: u32, node: usize },
     Par { tag: u32, par: PlannedPar },
+    EPathMapSnapshot { tag: u32, map: PlannedEPathMap },
 }
 
 struct ProtoNode {
     pieces: Vec<ProtoPiece>,
     encoded_len: usize,
+    zero_count: usize,
 }
 
 /// One operation in the generated-schema construction walk.
@@ -234,6 +258,7 @@ enum ProtoBuildOp<'a> {
 enum WireRoot {
     Par(PlannedPar),
     Proto(usize),
+    EPathMapSnapshot(PlannedEPathMap),
 }
 
 #[derive(Clone, Copy)]
@@ -271,6 +296,13 @@ impl InlineWireBytes {
     fn length_delimited_prefix(tag: u32, len: usize) -> Self {
         Self::protobuf_varints(&[(u64::from(tag) << 3) | 2, len as u64])
     }
+
+    fn zero_count(&self) -> usize {
+        self.bytes[..usize::from(self.len)]
+            .iter()
+            .filter(|&&byte| byte == 0)
+            .count()
+    }
 }
 
 enum WireCursorOp<'a> {
@@ -286,6 +318,10 @@ enum WireCursorOp<'a> {
         tag: u32,
         par: PlannedPar,
     },
+    NestedEPathMapSnapshot {
+        tag: u32,
+        map: PlannedEPathMap,
+    },
     Par(PlannedPar),
     Components {
         occurrences: &'a [Occurrence],
@@ -294,6 +330,11 @@ enum WireCursorOp<'a> {
         after_metadata: bool,
     },
     RootMetadata(PlannedPar),
+    EPathMapSnapshot {
+        map: PlannedEPathMap,
+        prefix_emitted: bool,
+        value_index: usize,
+    },
     Bytes {
         bytes: &'a [u8],
         offset: usize,
@@ -316,6 +357,11 @@ impl<'a> WireByteCursor<'a> {
         let root = match root {
             WireRoot::Par(par) => WireCursorOp::Par(par),
             WireRoot::Proto(node) => WireCursorOp::Node { node, index: 0 },
+            WireRoot::EPathMapSnapshot(map) => WireCursorOp::EPathMapSnapshot {
+                map,
+                prefix_emitted: false,
+                value_index: 0,
+            },
         };
         Self {
             arena,
@@ -350,6 +396,12 @@ impl Iterator for WireByteCursor<'_> {
                                 tag: *tag,
                                 par: *par,
                             },
+                            ProtoPiece::EPathMapSnapshot { tag, map } => {
+                                WireCursorOp::NestedEPathMapSnapshot {
+                                    tag: *tag,
+                                    map: *map,
+                                }
+                            }
                         });
                     }
                 }
@@ -368,6 +420,19 @@ impl Iterator for WireByteCursor<'_> {
                         InlineWireBytes::length_delimited_prefix(
                             tag,
                             self.arena.pars[par.0].protobuf_len,
+                        ),
+                    ));
+                }
+                WireCursorOp::NestedEPathMapSnapshot { tag, map } => {
+                    self.work.push(WireCursorOp::EPathMapSnapshot {
+                        map,
+                        prefix_emitted: false,
+                        value_index: 0,
+                    });
+                    self.work.push(WireCursorOp::Inline(
+                        InlineWireBytes::length_delimited_prefix(
+                            tag,
+                            self.arena.epathmaps[map.0].snapshot_len,
                         ),
                     ));
                 }
@@ -443,6 +508,35 @@ impl Iterator for WireByteCursor<'_> {
                         ));
                     }
                 }
+                WireCursorOp::EPathMapSnapshot {
+                    map,
+                    prefix_emitted,
+                    value_index,
+                } => {
+                    let node = &self.arena.epathmaps[map.0];
+                    if !prefix_emitted {
+                        self.work.push(WireCursorOp::EPathMapSnapshot {
+                            map,
+                            prefix_emitted: true,
+                            value_index: 0,
+                        });
+                        self.work.push(WireCursorOp::Bytes {
+                            bytes: &node.prefix,
+                            offset: 0,
+                        });
+                    } else if let Some(&value) = node.value_order.get(value_index) {
+                        self.work.push(WireCursorOp::EPathMapSnapshot {
+                            map,
+                            prefix_emitted: true,
+                            value_index: value_index + 1,
+                        });
+                        self.work.push(WireCursorOp::Par(value));
+                        self.work
+                            .push(WireCursorOp::Inline(InlineWireBytes::protobuf_varints(&[
+                                self.arena.pars[value.0].protobuf_len as u64,
+                            ])));
+                    }
+                }
                 WireCursorOp::Bytes { bytes, offset } => {
                     let byte = *bytes.get(offset)?;
                     if offset + 1 < bytes.len() {
@@ -471,6 +565,14 @@ struct ComponentNode {
     score: PlannedScore,
     protobuf: usize,
     canonical_path_stable: bool,
+    canonical_segment: Option<CanonicalSegment>,
+}
+
+enum CanonicalSegment {
+    Bytes(Box<[u8]>),
+    List(Box<[PlannedPar]>),
+    Tuple(Box<[PlannedPar]>),
+    EPathMap(PlannedEPathMap),
 }
 
 #[derive(Clone, Copy)]
@@ -485,6 +587,23 @@ struct ParNode {
     connective_used: bool,
     score: PlannedScore,
     protobuf_len: usize,
+    protobuf_zero_count: usize,
+    canonical_path_stable: bool,
+    split_children: Option<Box<[PlannedPar]>>,
+    canonical_path_override: Option<Box<[u8]>>,
+    canonical_segment_override: Option<Box<[u8]>>,
+}
+
+struct PlannedEPathMapNode {
+    repr: EPathMapRepr<PlannedPar>,
+    /// EPM1 magic/version/mode + ACTree03 arena + value count.
+    prefix: Box<[u8]>,
+    /// Canonical trie-order map-value schedule. This is an ordinal schedule of
+    /// integer arena handles, not a decoded `Vec<Par>` or semantic authority.
+    value_order: Box<[PlannedPar]>,
+    snapshot_len: usize,
+    snapshot_zero_count: usize,
+    entries_stable: bool,
 }
 
 /// Temporary schema construction arena.
@@ -496,6 +615,7 @@ pub struct ParConstruction {
     byte_fragments: Vec<Box<[u8]>>,
     scores: Vec<ScoreNode>,
     protobuf_nodes: Vec<ProtoNode>,
+    epathmaps: Vec<PlannedEPathMapNode>,
     components: Vec<ComponentNode>,
     pars: Vec<ParNode>,
 }
@@ -510,6 +630,7 @@ impl ParConstruction {
             byte_fragments: Vec::new(),
             scores: Vec::new(),
             protobuf_nodes: Vec::new(),
+            epathmaps: Vec::new(),
             components: Vec::new(),
             pars: Vec::new(),
         }
@@ -538,6 +659,7 @@ impl ParConstruction {
                     .ok_or(ParConstructionError::LengthOverflow(
                         "canonical score multiplicity",
                     ))?,
+                ScorePiece::EscapedWire { encoded_len, .. } => encoded_len,
             };
             encoded_len = encoded_len
                 .checked_add(add)
@@ -614,6 +736,34 @@ impl ParConstruction {
         self.score_from_pieces(vec![ScorePiece::Bytes(bytes)])
     }
 
+    /// A canonical byte-array score atom whose payload remains a streaming
+    /// wire graph. Zero escaping is represented as a cursor transform and its
+    /// final length is derived from maintained byte/zero counts, so nested
+    /// EPathMaps do not get flattened merely to become an ordering key.
+    fn score_wire_bytes(
+        &mut self,
+        root: WireRoot,
+        wire_len: usize,
+        zero_count: usize,
+    ) -> Result<PlannedScore, ParConstructionError> {
+        let prefix = self.bytes(Box::<[u8]>::from([1, 3]));
+        let suffix = self.bytes(Box::<[u8]>::from([0, 0]));
+        let escaped_len =
+            wire_len
+                .checked_add(zero_count)
+                .ok_or(ParConstructionError::LengthOverflow(
+                    "escaped canonical byte score",
+                ))?;
+        self.score_from_pieces(vec![
+            ScorePiece::Bytes(prefix),
+            ScorePiece::EscapedWire {
+                root,
+                encoded_len: escaped_len,
+            },
+            ScorePiece::Bytes(suffix),
+        ])
+    }
+
     /// A canonical score node with no implicit constructor leaf.
     pub fn score_node(
         &mut self,
@@ -670,6 +820,349 @@ impl ParConstruction {
             })
     }
 
+    /// Emit the exact canonical PathMap key of a planned Par directly from the
+    /// construction graph. Stable collection segments traverse child handles;
+    /// unstable positions stream the already-planned protobuf body into the
+    /// escape arm. No nested resident `Par` is constructed.
+    pub fn canonical_path_bytes(&self, root: PlannedPar) -> Result<Vec<u8>, ParConstructionError> {
+        enum Op {
+            Path(PlannedPar),
+            Segment(PlannedPar),
+            Byte(u8),
+        }
+
+        fn push_uv(out: &mut Vec<u8>, mut value: u64) {
+            loop {
+                let mut byte = (value & 0x7f) as u8;
+                value >>= 7;
+                if value != 0 {
+                    byte |= 0x80;
+                }
+                out.push(byte);
+                if value == 0 {
+                    break;
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+        let mut work = vec![Op::Path(root)];
+        while let Some(op) = work.pop() {
+            match op {
+                Op::Byte(byte) => out.push(byte),
+                Op::Path(par) => {
+                    let node = &self.pars[par.0];
+                    if let Some(path) = &node.canonical_path_override {
+                        out.extend_from_slice(path);
+                    } else if let Some(children) = &node.split_children {
+                        work.push(Op::Byte(path_tag::TERM));
+                        for &child in children.iter().rev() {
+                            work.push(Op::Segment(child));
+                        }
+                    } else {
+                        work.push(Op::Segment(par));
+                    }
+                }
+                Op::Segment(par) => {
+                    let node = &self.pars[par.0];
+                    if let Some(segment) = &node.canonical_segment_override {
+                        out.extend_from_slice(segment);
+                        continue;
+                    }
+                    if !node.canonical_path_stable {
+                        out.push(path_tag::ESCAPE);
+                        push_uv(&mut out, node.protobuf_len as u64);
+                        self.emit_par(par, &mut out);
+                        continue;
+                    }
+                    let occurrence = node
+                        .occurrences
+                        .first()
+                        .expect("a stable Par has one component occurrence");
+                    let component = &self.components[occurrence.component.0];
+                    match component
+                        .canonical_segment
+                        .as_ref()
+                        .expect("a newly planned stable component has a segment program")
+                    {
+                        CanonicalSegment::Bytes(bytes) => out.extend_from_slice(bytes),
+                        CanonicalSegment::List(children) => {
+                            out.push(path_tag::ELIST);
+                            push_uv(&mut out, children.len() as u64);
+                            for &child in children.iter().rev() {
+                                work.push(Op::Segment(child));
+                            }
+                        }
+                        CanonicalSegment::Tuple(children) => {
+                            out.push(path_tag::ETUPLE);
+                            push_uv(&mut out, children.len() as u64);
+                            for &child in children.iter().rev() {
+                                work.push(Op::Segment(child));
+                            }
+                        }
+                        CanonicalSegment::EPathMap(map) => {
+                            let map_node = &self.epathmaps[map.0];
+                            match &map_node.repr {
+                                EPathMapRepr::Empty => {
+                                    out.push(path_tag::EPATHMAP);
+                                    push_uv(&mut out, 0);
+                                }
+                                EPathMapRepr::Set(entries) => {
+                                    let mut region_len = 0usize;
+                                    let mut zipper = entries.read_zipper();
+                                    while zipper.to_next_val() {
+                                        let key = zipper.path();
+                                        region_len = region_len
+                                            .checked_add(encoded_len_varint(key.len() as u64))
+                                            .and_then(|n| n.checked_add(key.len()))
+                                            .ok_or(ParConstructionError::LengthOverflow(
+                                                "stable EPathMap region",
+                                            ))?;
+                                    }
+                                    out.push(path_tag::EPATHMAP);
+                                    push_uv(&mut out, region_len as u64);
+                                    let mut zipper = entries.read_zipper();
+                                    while zipper.to_next_val() {
+                                        let key = zipper.path();
+                                        push_uv(&mut out, key.len() as u64);
+                                        out.extend_from_slice(key);
+                                    }
+                                }
+                                EPathMapRepr::Map(_) => {
+                                    out.push(path_tag::EPATHMAP_MAP);
+                                    push_uv(&mut out, map_node.snapshot_len as u64);
+                                    self.emit_wire(WireRoot::EPathMapSnapshot(*map), &mut out);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn push_proto_node(&mut self, pieces: Vec<ProtoPiece>) -> Result<usize, ParConstructionError> {
+        let mut encoded_len = 0usize;
+        let mut zero_count = 0usize;
+        for piece in &pieces {
+            let (child_len, child_zeroes, prefix) = match piece {
+                ProtoPiece::Bytes(bytes) => {
+                    encoded_len = encoded_len
+                        .checked_add(bytes.len())
+                        .ok_or(ParConstructionError::LengthOverflow("protobuf node"))?;
+                    zero_count = zero_count
+                        .checked_add(bytes.iter().filter(|&&byte| byte == 0).count())
+                        .ok_or(ParConstructionError::LengthOverflow(
+                            "protobuf zero-byte count",
+                        ))?;
+                    continue;
+                }
+                ProtoPiece::Node { tag, node } => (
+                    self.protobuf_nodes[*node].encoded_len,
+                    self.protobuf_nodes[*node].zero_count,
+                    InlineWireBytes::length_delimited_prefix(
+                        *tag,
+                        self.protobuf_nodes[*node].encoded_len,
+                    ),
+                ),
+                ProtoPiece::Par { tag, par } => (
+                    self.pars[par.0].protobuf_len,
+                    self.pars[par.0].protobuf_zero_count,
+                    InlineWireBytes::length_delimited_prefix(*tag, self.pars[par.0].protobuf_len),
+                ),
+                ProtoPiece::EPathMapSnapshot { tag, map } => (
+                    self.epathmaps[map.0].snapshot_len,
+                    self.epathmaps[map.0].snapshot_zero_count,
+                    InlineWireBytes::length_delimited_prefix(
+                        *tag,
+                        self.epathmaps[map.0].snapshot_len,
+                    ),
+                ),
+            };
+            encoded_len = encoded_len
+                .checked_add(usize::from(prefix.len))
+                .and_then(|n| n.checked_add(child_len))
+                .ok_or(ParConstructionError::LengthOverflow("protobuf node"))?;
+            zero_count = zero_count
+                .checked_add(prefix.zero_count())
+                .and_then(|n| n.checked_add(child_zeroes))
+                .ok_or(ParConstructionError::LengthOverflow(
+                    "protobuf zero-byte count",
+                ))?;
+        }
+        let id = self.protobuf_nodes.len();
+        self.protobuf_nodes.push(ProtoNode {
+            pieces,
+            encoded_len,
+            zero_count,
+        });
+        Ok(id)
+    }
+
+    fn wrap_proto_node(&mut self, tag: u32, child: usize) -> Result<usize, ParConstructionError> {
+        self.push_proto_node(vec![ProtoPiece::Node { tag, node: child }])
+    }
+
+    fn component_from_proto(
+        &mut self,
+        tag: ParComponentTag,
+        score: PlannedScore,
+        protobuf: usize,
+        canonical_path_stable: bool,
+        canonical_segment: Option<CanonicalSegment>,
+    ) -> PlannedComponent {
+        let component = PlannedComponent(self.components.len());
+        self.components.push(ComponentNode {
+            tag,
+            score,
+            protobuf,
+            canonical_path_stable,
+            canonical_segment,
+        });
+        component
+    }
+
+    fn planned_epathmap(
+        &mut self,
+        shell: &EPathMap,
+        par_children: &[PlannedPar],
+    ) -> Result<(PlannedEPathMap, usize), ParConstructionError> {
+        let expected = match shell.mode() {
+            EPathMapMode::Empty => 0,
+            EPathMapMode::Set => shell.len(),
+            EPathMapMode::Map => shell
+                .len()
+                .checked_mul(2)
+                .ok_or(ParConstructionError::LengthOverflow("EPathMap child arity"))?,
+        };
+        if expected != par_children.len() {
+            return Err(ParConstructionError::ChildArity {
+                context: "EPathMap",
+                expected,
+                supplied: par_children.len(),
+            });
+        }
+
+        let repr = match shell.mode() {
+            EPathMapMode::Empty => EPathMapRepr::Empty,
+            EPathMapMode::Set => {
+                let mut entries = PathMap::new();
+                for &entry in par_children {
+                    let key = self.canonical_path_bytes(entry)?;
+                    entries.insert(&key, ());
+                }
+                if entries.is_empty() {
+                    EPathMapRepr::Empty
+                } else {
+                    EPathMapRepr::Set(entries)
+                }
+            }
+            EPathMapMode::Map => {
+                let mut entries = PathMap::new();
+                for pair in par_children.chunks_exact(2) {
+                    let key = pair[0];
+                    let value = pair[1];
+                    let encoded_key = self.canonical_path_bytes(key)?;
+                    entries.insert(&encoded_key, value);
+                }
+                if entries.is_empty() {
+                    EPathMapRepr::Empty
+                } else {
+                    EPathMapRepr::Map(entries)
+                }
+            }
+        };
+
+        let entries_stable = match &repr {
+            EPathMapRepr::Empty => true,
+            EPathMapRepr::Set(entries) => {
+                let mut stable = true;
+                let mut zipper = entries.read_zipper();
+                while stable && zipper.to_next_val() {
+                    stable = super::canonical_path::path_declares_stable(zipper.path())
+                        .expect("planned keys are emitted by the canonical path PDA");
+                }
+                stable
+            }
+            EPathMapRepr::Map(entries) => {
+                let mut stable = true;
+                let mut zipper = entries.read_zipper();
+                while stable {
+                    let Some(value) = zipper.to_next_get_val() else {
+                        break;
+                    };
+                    stable = super::canonical_path::path_declares_stable(zipper.path())
+                        .expect("planned keys are emitted by the canonical path PDA")
+                        && self.pars[value.0].canonical_path_stable;
+                }
+                stable
+            }
+        };
+
+        let layout = epathmap_trie_codec::layout(&repr);
+        let prefix = layout.prefix().to_vec().into_boxed_slice();
+        let mut value_order = Vec::with_capacity(layout.value_count());
+        if let EPathMapRepr::Map(entries) = &repr {
+            let mut zipper = entries.read_zipper();
+            while let Some(value) = zipper.to_next_get_val() {
+                value_order.push(*value);
+            }
+        }
+        debug_assert_eq!(value_order.len(), layout.value_count());
+
+        let mut snapshot_len = prefix.len();
+        let mut snapshot_zero_count = prefix.iter().filter(|&&byte| byte == 0).count();
+        for &value in &value_order {
+            let body_len = self.pars[value.0].protobuf_len;
+            let len_prefix = InlineWireBytes::protobuf_varints(&[body_len as u64]);
+            snapshot_len = snapshot_len
+                .checked_add(usize::from(len_prefix.len))
+                .and_then(|n| n.checked_add(body_len))
+                .ok_or(ParConstructionError::LengthOverflow(
+                    "planned EPathMap snapshot",
+                ))?;
+            snapshot_zero_count = snapshot_zero_count
+                .checked_add(len_prefix.zero_count())
+                .and_then(|n| n.checked_add(self.pars[value.0].protobuf_zero_count))
+                .ok_or(ParConstructionError::LengthOverflow(
+                    "planned EPathMap zero-byte count",
+                ))?;
+        }
+
+        let map = PlannedEPathMap(self.epathmaps.len());
+        self.epathmaps.push(PlannedEPathMapNode {
+            repr,
+            prefix,
+            value_order: value_order.into_boxed_slice(),
+            snapshot_len,
+            snapshot_zero_count,
+            entries_stable,
+        });
+
+        let mut pieces = Vec::new();
+        let mut bounded = Vec::new();
+        if !shell.locally_free.is_empty() {
+            prost::encoding::bytes::encode(3, &shell.locally_free, &mut bounded);
+        }
+        if shell.connective_used {
+            prost::encoding::bool::encode(4, &true, &mut bounded);
+        }
+        if !bounded.is_empty() {
+            pieces.push(ProtoPiece::Bytes(bounded.into_boxed_slice()));
+        }
+        if let Some(remainder) = &shell.remainder {
+            let remainder = self.plan_protobuf(remainder, &[])?;
+            pieces.push(ProtoPiece::Node {
+                tag: 5,
+                node: remainder,
+            });
+        }
+        pieces.push(ProtoPiece::EPathMapSnapshot { tag: 9, map });
+        let protobuf = self.push_proto_node(pieces)?;
+        Ok((map, protobuf))
+    }
+
     /// Plan one canonical component shell.
     ///
     /// `par_children` is ordered by the generated protobuf walk, not by Rust
@@ -690,8 +1183,133 @@ impl ParConstruction {
             score,
             protobuf,
             canonical_path_stable,
+            canonical_segment: None,
         });
         Ok(id)
+    }
+
+    fn schema_expr_component(
+        &mut self,
+        shell: &Expr,
+        par_children: &[PlannedPar],
+        score: PlannedScore,
+    ) -> Result<PlannedComponent, ParConstructionError> {
+        let (canonical_segment, stable) = self.expr_canonical_segment(shell, par_children)?;
+        let component = self.component(shell, par_children, score, stable)?;
+        self.components[component.0].canonical_segment = canonical_segment;
+        Ok(component)
+    }
+
+    fn expr_canonical_segment(
+        &self,
+        shell: &Expr,
+        par_children: &[PlannedPar],
+    ) -> Result<(Option<CanonicalSegment>, bool), ParConstructionError> {
+        fn push_uv(out: &mut Vec<u8>, mut value: u64) {
+            loop {
+                let mut byte = (value & 0x7f) as u8;
+                value >>= 7;
+                if value != 0 {
+                    byte |= 0x80;
+                }
+                out.push(byte);
+                if value == 0 {
+                    break;
+                }
+            }
+        }
+
+        let Some(instance) = shell.expr_instance.as_ref() else {
+            return Ok((None, false));
+        };
+        let mut bytes = Vec::new();
+        let segment = match instance {
+            ExprInstance::GBool(value) => {
+                bytes.push(if *value {
+                    path_tag::GBOOL_TRUE
+                } else {
+                    path_tag::GBOOL_FALSE
+                });
+                CanonicalSegment::Bytes(bytes.into_boxed_slice())
+            }
+            ExprInstance::GInt(value) => {
+                bytes.push(path_tag::GINT);
+                push_uv(&mut bytes, ((*value << 1) ^ (*value >> 63)) as u64);
+                CanonicalSegment::Bytes(bytes.into_boxed_slice())
+            }
+            ExprInstance::GString(value) => {
+                bytes.push(path_tag::GSTRING);
+                push_uv(&mut bytes, value.len() as u64);
+                bytes.extend_from_slice(value.as_bytes());
+                CanonicalSegment::Bytes(bytes.into_boxed_slice())
+            }
+            ExprInstance::GUri(value) => {
+                bytes.push(path_tag::GURI);
+                push_uv(&mut bytes, value.len() as u64);
+                bytes.extend_from_slice(value.as_bytes());
+                CanonicalSegment::Bytes(bytes.into_boxed_slice())
+            }
+            ExprInstance::GByteArray(value) => {
+                bytes.push(path_tag::GBYTE_ARRAY);
+                push_uv(&mut bytes, value.len() as u64);
+                bytes.extend_from_slice(value);
+                CanonicalSegment::Bytes(bytes.into_boxed_slice())
+            }
+            ExprInstance::GDouble(bits) => {
+                bytes.push(path_tag::GDOUBLE);
+                bytes.extend_from_slice(&bits.to_be_bytes());
+                CanonicalSegment::Bytes(bytes.into_boxed_slice())
+            }
+            ExprInstance::GBigInt(value) => {
+                bytes.push(path_tag::GBIG_INT);
+                push_uv(&mut bytes, value.len() as u64);
+                bytes.extend_from_slice(value);
+                CanonicalSegment::Bytes(bytes.into_boxed_slice())
+            }
+            ExprInstance::GBigRat(value) => {
+                bytes.push(path_tag::GBIG_RAT);
+                push_uv(&mut bytes, value.numerator.len() as u64);
+                bytes.extend_from_slice(&value.numerator);
+                push_uv(&mut bytes, value.denominator.len() as u64);
+                bytes.extend_from_slice(&value.denominator);
+                CanonicalSegment::Bytes(bytes.into_boxed_slice())
+            }
+            ExprInstance::GFixedPoint(value) => {
+                bytes.push(path_tag::GFIXED_POINT);
+                push_uv(&mut bytes, value.unscaled.len() as u64);
+                bytes.extend_from_slice(&value.unscaled);
+                push_uv(&mut bytes, u64::from(value.scale));
+                CanonicalSegment::Bytes(bytes.into_boxed_slice())
+            }
+            ExprInstance::EListBody(list)
+                if list.remainder.is_none()
+                    && list.locally_free.is_empty()
+                    && !list.connective_used =>
+            {
+                return Ok((
+                    Some(CanonicalSegment::List(
+                        par_children.to_vec().into_boxed_slice(),
+                    )),
+                    par_children
+                        .iter()
+                        .all(|child| self.pars[child.0].canonical_path_stable),
+                ));
+            }
+            ExprInstance::ETupleBody(tuple)
+                if tuple.locally_free.is_empty() && !tuple.connective_used =>
+            {
+                return Ok((
+                    Some(CanonicalSegment::Tuple(
+                        par_children.to_vec().into_boxed_slice(),
+                    )),
+                    par_children
+                        .iter()
+                        .all(|child| self.pars[child.0].canonical_path_stable),
+                ));
+            }
+            _ => return Ok((None, false)),
+        };
+        Ok((Some(segment), true))
     }
 
     /// Plan an order-preserving `Expr` constructor directly from normalized
@@ -701,11 +1319,11 @@ impl ParConstruction {
     /// differs from protobuf field order (`EMethod`), this method performs the
     /// permutation once before invoking the generated schema walk. Recursive
     /// scores remain arena references rather than owned score trees.
-    pub fn ordered_expr_component(
+    pub fn expr_component(
         &mut self,
         shell: &Expr,
         par_children: &[PlannedPar],
-        canonical_path_stable: bool,
+        _canonical_path_stable: bool,
     ) -> Result<PlannedComponent, ParConstructionError> {
         fn exact(
             context: &'static str,
@@ -727,7 +1345,7 @@ impl ParConstruction {
             exact("absent Expr", 0, par_children.len())?;
             let score = ExprSortMatcher::sort_match(shell).score;
             let score = self.score_tree(&score)?;
-            return self.component(shell, &[], score, canonical_path_stable);
+            return self.schema_expr_component(shell, &[], score);
         };
 
         let unary_tag = match instance {
@@ -738,7 +1356,7 @@ impl ParConstruction {
         if let Some(tag) = unary_tag {
             exact("unary Expr", 1, par_children.len())?;
             let score = self.score_constructor(tag, [self.par_score(par_children[0])])?;
-            return self.component(shell, par_children, score, canonical_path_stable);
+            return self.schema_expr_component(shell, par_children, score);
         }
 
         let binary_tag = match instance {
@@ -767,7 +1385,7 @@ impl ParConstruction {
                 self.par_score(par_children[0]),
                 self.par_score(par_children[1]),
             ])?;
-            return self.component(shell, par_children, score, canonical_path_stable);
+            return self.schema_expr_component(shell, par_children, score);
         }
 
         match instance {
@@ -783,7 +1401,7 @@ impl ParConstruction {
                 children.extend(par_children.iter().map(|child| self.par_score(*child)));
                 children.push(connective);
                 let score = self.score_constructor(Score::ELIST, children)?;
-                self.component(shell, par_children, score, canonical_path_stable)
+                self.schema_expr_component(shell, par_children, score)
             }
             ExprInstance::ETupleBody(tuple) => {
                 exact("ETuple", tuple.ps.len(), par_children.len())?;
@@ -792,7 +1410,7 @@ impl ParConstruction {
                 children.extend(par_children.iter().map(|child| self.par_score(*child)));
                 children.push(connective);
                 let score = self.score_constructor(Score::ETUPLE, children)?;
-                self.component(shell, par_children, score, canonical_path_stable)
+                self.schema_expr_component(shell, par_children, score)
             }
             ExprInstance::EMethodBody(method) => {
                 exact("EMethod", method.arguments.len() + 1, par_children.len())?;
@@ -810,7 +1428,7 @@ impl ParConstruction {
                 let wire_children: Vec<_> = std::iter::once(target)
                     .chain(arguments.iter().copied())
                     .collect();
-                self.component(shell, &wire_children, score, canonical_path_stable)
+                self.schema_expr_component(shell, &wire_children, score)
             }
             ExprInstance::GBool(_)
             | ExprInstance::GInt(_)
@@ -825,7 +1443,7 @@ impl ParConstruction {
                 exact("leaf Expr", 0, par_children.len())?;
                 let score = ExprSortMatcher::sort_match(shell).score;
                 let score = self.score_tree(&score)?;
-                self.component(shell, &[], score, canonical_path_stable)
+                self.schema_expr_component(shell, &[], score)
             }
             ExprInstance::ESetBody(set) => {
                 exact("ESet", set.ps.len(), par_children.len())?;
@@ -854,7 +1472,7 @@ impl ParConstruction {
                 children.extend(canonical.iter().map(|child| self.par_score(*child)));
                 children.push(connective);
                 let score = self.score_constructor(Score::ESET, children)?;
-                self.component(&canonical_shell, &canonical, score, canonical_path_stable)
+                self.schema_expr_component(&canonical_shell, &canonical, score)
             }
             ExprInstance::EMapBody(map) => {
                 exact("EMap", map.kvs.len() * 2, par_children.len())?;
@@ -919,18 +1537,73 @@ impl ParConstruction {
                     .iter()
                     .flat_map(|pair| [pair.key, pair.value])
                     .collect();
-                self.component(
-                    &canonical_shell,
-                    &wire_children,
-                    score,
-                    canonical_path_stable,
-                )
+                self.schema_expr_component(&canonical_shell, &wire_children, score)
             }
-            ExprInstance::EPathmapBody(_) => Err(ParConstructionError::UnsupportedPlannedShape(
-                "EPathMap expression",
-            )),
-            ExprInstance::EZipperBody(_) => {
-                Err(ParConstructionError::UnsupportedPlannedShape("EZipper"))
+            ExprInstance::EPathmapBody(pathmap) => {
+                let (planned_map, map_protobuf) = self.planned_epathmap(pathmap, par_children)?;
+                let map_node = &self.epathmaps[planned_map.0];
+                let snapshot_score = self.score_wire_bytes(
+                    WireRoot::EPathMapSnapshot(planned_map),
+                    map_node.snapshot_len,
+                    map_node.snapshot_zero_count,
+                )?;
+                let connective = self.score_i64(i64::from(pathmap.connective_used))?;
+                let score =
+                    self.score_constructor(Score::EPATHMAP, [snapshot_score, connective])?;
+                let expr_protobuf = self.wrap_proto_node(32, map_protobuf)?;
+                let stable = pathmap.remainder.is_none()
+                    && pathmap.locally_free.is_empty()
+                    && !pathmap.connective_used
+                    && self.epathmaps[planned_map.0].entries_stable;
+                Ok(self.component_from_proto(
+                    ParComponentTag::Expr,
+                    score,
+                    expr_protobuf,
+                    stable,
+                    stable.then_some(CanonicalSegment::EPathMap(planned_map)),
+                ))
+            }
+            ExprInstance::EZipperBody(zipper) => {
+                let Some(pathmap) = zipper.pathmap.as_ref() else {
+                    exact("EZipper without PathMap", 0, par_children.len())?;
+                    let score = ExprSortMatcher::sort_match(shell).score;
+                    let score = self.score_tree(&score)?;
+                    return self.schema_expr_component(shell, &[], score);
+                };
+                let (planned_map, map_protobuf) = self.planned_epathmap(pathmap, par_children)?;
+                let map_node = &self.epathmaps[planned_map.0];
+                let snapshot_score = self.score_wire_bytes(
+                    WireRoot::EPathMapSnapshot(planned_map),
+                    map_node.snapshot_len,
+                    map_node.snapshot_zero_count,
+                )?;
+                let connective = self.score_i64(i64::from(zipper.connective_used))?;
+                let score =
+                    self.score_constructor(Score::EPATHMAP + 1, [snapshot_score, connective])?;
+
+                let tail = EZipper {
+                    pathmap: None,
+                    current_path: zipper.current_path.clone(),
+                    is_write_zipper: zipper.is_write_zipper,
+                    locally_free: zipper.locally_free.clone(),
+                    connective_used: zipper.connective_used,
+                    cursor_kind: zipper.cursor_kind,
+                };
+                let tail = self.plan_protobuf(&tail, &[])?;
+                let mut pieces = vec![ProtoPiece::Node {
+                    tag: 1,
+                    node: map_protobuf,
+                }];
+                pieces.append(&mut self.protobuf_nodes[tail].pieces);
+                let zipper_protobuf = self.push_proto_node(pieces)?;
+                let expr_protobuf = self.wrap_proto_node(33, zipper_protobuf)?;
+                Ok(self.component_from_proto(
+                    ParComponentTag::Expr,
+                    score,
+                    expr_protobuf,
+                    false,
+                    None,
+                ))
             }
             ExprInstance::ENegBody(_)
             | ExprInstance::ENotBody(_)
@@ -1019,9 +1692,12 @@ impl ParConstruction {
         let score = self.score_node_with_pieces(Score::PAR, score_pieces)?;
 
         let mut protobuf_len = 0usize;
+        let mut protobuf_zero_count = 0usize;
         for occurrence in &occurrences {
             let component = &self.components[occurrence.component.0];
             let body_len = self.protobuf_nodes[component.protobuf].encoded_len;
+            let prefix =
+                InlineWireBytes::length_delimited_prefix(component.tag.byte().into(), body_len);
             let one = key_len(component.tag.byte().into())
                 .checked_add(encoded_len_varint(body_len as u64))
                 .and_then(|n| n.checked_add(body_len))
@@ -1036,12 +1712,38 @@ impl ParConstruction {
             protobuf_len = protobuf_len
                 .checked_add(family)
                 .ok_or(ParConstructionError::LengthOverflow("Par protobuf body"))?;
+            let one_zeroes = prefix
+                .zero_count()
+                .checked_add(self.protobuf_nodes[component.protobuf].zero_count)
+                .ok_or(ParConstructionError::LengthOverflow(
+                    "Par protobuf zero-byte count",
+                ))?;
+            protobuf_zero_count = protobuf_zero_count
+                .checked_add(
+                    one_zeroes
+                        .checked_mul(usize::try_from(occurrence.multiplicity.get()).map_err(
+                            |_| ParConstructionError::LengthOverflow("Par component multiplicity"),
+                        )?)
+                        .ok_or(ParConstructionError::LengthOverflow(
+                            "Par protobuf zero-byte count",
+                        ))?,
+                )
+                .ok_or(ParConstructionError::LengthOverflow(
+                    "Par protobuf zero-byte count",
+                ))?;
         }
         if !locally_free.is_empty() {
             protobuf_len = protobuf_len
                 .checked_add(prost::encoding::bytes::encoded_len(9, &locally_free))
                 .ok_or(ParConstructionError::LengthOverflow(
                     "Par locally-free field",
+                ))?;
+            let prefix = InlineWireBytes::length_delimited_prefix(9, locally_free.len());
+            protobuf_zero_count = protobuf_zero_count
+                .checked_add(prefix.zero_count())
+                .and_then(|n| n.checked_add(locally_free.iter().filter(|&&byte| byte == 0).count()))
+                .ok_or(ParConstructionError::LengthOverflow(
+                    "Par protobuf zero-byte count",
                 ))?;
         }
         if connective_used {
@@ -1050,6 +1752,26 @@ impl ParConstruction {
                 .ok_or(ParConstructionError::LengthOverflow("Par connective flag"))?;
         }
 
+        let singleton = (occurrences.len() == 1
+            && occurrences[0].multiplicity == Multiplicity::ONE)
+            .then(|| &self.components[occurrences[0].component.0]);
+        let canonical_path_stable = locally_free.is_empty()
+            && !connective_used
+            && singleton.is_some_and(|component| {
+                matches!(
+                    component.tag,
+                    ParComponentTag::Expr | ParComponentTag::GUnforgeable
+                ) && component.canonical_path_stable
+            });
+        let split_children = if locally_free.is_empty() && !connective_used {
+            singleton.and_then(|component| match &component.canonical_segment {
+                Some(CanonicalSegment::List(children)) => Some(children.clone()),
+                _ => None,
+            })
+        } else {
+            None
+        };
+
         let id = PlannedPar(self.pars.len());
         self.pars.push(ParNode {
             occurrences,
@@ -1057,6 +1779,11 @@ impl ParConstruction {
             connective_used,
             score,
             protobuf_len,
+            protobuf_zero_count,
+            canonical_path_stable,
+            split_children,
+            canonical_path_override: None,
+            canonical_segment_override: None,
         });
         Ok(id)
     }
@@ -1106,13 +1833,9 @@ impl ParConstruction {
     /// canonical fragments become leaves in this transient arena, so a later
     /// planned parent can reference the imported value without rebuilding it.
     pub fn import_par(&mut self, par: &Par) -> Result<PlannedPar, ParConstructionError> {
-        let singleton_stable = if par.locally_free().is_empty() && !par.connective_used() {
-            par.components()
-                .cached_canonical_path_stability()
-                .unwrap_or(false)
-        } else {
-            false
-        };
+        let (canonical_path, singleton_stable) =
+            super::canonical_path::encode_trie_path_with_stability(par);
+        let canonical_segment = super::canonical_path::encode_trie_segment(par);
         let mut imported = Vec::with_capacity(par.components().distinct_len());
         par.components()
             .visit_canonical_key_parts(|tag, score, protobuf, multiplicity| {
@@ -1130,6 +1853,7 @@ impl ParConstruction {
             let score = self.score_from_encoded(&score)?;
             let protobuf_id = self.protobuf_nodes.len();
             let encoded_len = protobuf.len();
+            let zero_count = protobuf.iter().filter(|&&byte| byte == 0).count();
             self.protobuf_nodes.push(ProtoNode {
                 pieces: if protobuf.is_empty() {
                     Vec::new()
@@ -1137,6 +1861,7 @@ impl ParConstruction {
                     vec![ProtoPiece::Bytes(protobuf)]
                 },
                 encoded_len,
+                zero_count,
             });
             let component = PlannedComponent(self.components.len());
             self.components.push(ComponentNode {
@@ -1144,14 +1869,20 @@ impl ParConstruction {
                 score,
                 protobuf: protobuf_id,
                 canonical_path_stable: singleton_stable && imported_is_singleton,
+                canonical_segment: None,
             });
             occurrences.push((component, multiplicity));
         }
-        self.par(
+        let planned = self.par(
             occurrences,
             par.locally_free().to_vec(),
             par.connective_used(),
-        )
+        )?;
+        self.pars[planned.0].canonical_path_stable = singleton_stable;
+        self.pars[planned.0].canonical_path_override = Some(canonical_path.into_boxed_slice());
+        self.pars[planned.0].canonical_segment_override =
+            Some(canonical_segment.into_boxed_slice());
+        Ok(planned)
     }
 
     /// Emit the root planned `Par` into its sole resident representation.
@@ -1229,6 +1960,7 @@ impl ParConstruction {
             Score(PlannedScore),
             Bytes(usize),
             Repeat { child: PlannedScore, remaining: u64 },
+            EscapedWire(WireRoot),
         }
         let mut work = vec![Op::Score(root)];
         while let Some(op) = work.pop() {
@@ -1242,6 +1974,7 @@ impl ParConstruction {
                                 child,
                                 remaining: count,
                             },
+                            ScorePiece::EscapedWire { root, .. } => Op::EscapedWire(root),
                         });
                     }
                 }
@@ -1255,6 +1988,14 @@ impl ParConstruction {
                             });
                         }
                         work.push(Op::Score(child));
+                    }
+                }
+                Op::EscapedWire(root) => {
+                    for byte in WireByteCursor::new(self, root) {
+                        out.push(byte);
+                        if byte == 0 {
+                            out.push(0xff);
+                        }
                     }
                 }
             }
@@ -1287,6 +2028,7 @@ impl ParConstruction {
         self.protobuf_nodes.push(ProtoNode {
             pieces: Vec::new(),
             encoded_len: 0,
+            zero_count: 0,
         });
         let mut work = vec![ProtoBuildOp::Node {
             node: shell,
@@ -1412,6 +2154,7 @@ impl ParConstruction {
                         self.protobuf_nodes.push(ProtoNode {
                             pieces,
                             encoded_len: 0,
+                            zero_count: 0,
                         });
                         self.protobuf_nodes[target]
                             .pieces
@@ -1433,31 +2176,62 @@ impl ParConstruction {
 
         for id in (start..self.protobuf_nodes.len()).rev() {
             let mut len = 0usize;
+            let mut zero_count = 0usize;
             for piece in &self.protobuf_nodes[id].pieces {
-                let add = match piece {
-                    ProtoPiece::Bytes(bytes) => bytes.len(),
+                let (add, add_zeroes) = match piece {
+                    ProtoPiece::Bytes(bytes) => {
+                        (bytes.len(), bytes.iter().filter(|&&byte| byte == 0).count())
+                    }
                     ProtoPiece::Node { tag, node } => {
                         let child = self.protobuf_nodes[*node].encoded_len;
-                        key_len(*tag)
+                        let add = key_len(*tag)
                             .checked_add(encoded_len_varint(child as u64))
                             .and_then(|n| n.checked_add(child))
                             .ok_or(ParConstructionError::LengthOverflow(
                                 "nested protobuf message",
-                            ))?
+                            ))?;
+                        let prefix = InlineWireBytes::length_delimited_prefix(*tag, child);
+                        (
+                            add,
+                            prefix.zero_count() + self.protobuf_nodes[*node].zero_count,
+                        )
                     }
                     ProtoPiece::Par { tag, par } => {
                         let child = self.pars[par.0].protobuf_len;
-                        key_len(*tag)
+                        let add = key_len(*tag)
                             .checked_add(encoded_len_varint(child as u64))
                             .and_then(|n| n.checked_add(child))
-                            .ok_or(ParConstructionError::LengthOverflow("nested planned Par"))?
+                            .ok_or(ParConstructionError::LengthOverflow("nested planned Par"))?;
+                        let prefix = InlineWireBytes::length_delimited_prefix(*tag, child);
+                        (
+                            add,
+                            prefix.zero_count() + self.pars[par.0].protobuf_zero_count,
+                        )
+                    }
+                    ProtoPiece::EPathMapSnapshot { tag, map } => {
+                        let child = self.epathmaps[map.0].snapshot_len;
+                        let add = key_len(*tag)
+                            .checked_add(encoded_len_varint(child as u64))
+                            .and_then(|n| n.checked_add(child))
+                            .ok_or(ParConstructionError::LengthOverflow(
+                                "planned EPathMap snapshot",
+                            ))?;
+                        let prefix = InlineWireBytes::length_delimited_prefix(*tag, child);
+                        (
+                            add,
+                            prefix.zero_count() + self.epathmaps[map.0].snapshot_zero_count,
+                        )
                     }
                 };
                 len = len
                     .checked_add(add)
                     .ok_or(ParConstructionError::LengthOverflow("protobuf node"))?;
+                zero_count = zero_count.checked_add(add_zeroes).ok_or(
+                    ParConstructionError::LengthOverflow("protobuf zero-byte count"),
+                )?;
             }
             self.protobuf_nodes[id].encoded_len = len;
+            self.protobuf_nodes[id].zero_count = zero_count;
         }
         Ok(root)
     }
@@ -1488,6 +2262,7 @@ impl ParConstruction {
         if let Some(map) = child.as_epathmap() {
             let bytes = protobuf_encoder::encode_to_vec(map);
             let node = self.protobuf_nodes.len();
+            let zero_count = bytes.iter().filter(|&&byte| byte == 0).count();
             self.protobuf_nodes.push(ProtoNode {
                 encoded_len: bytes.len(),
                 pieces: if bytes.is_empty() {
@@ -1495,6 +2270,7 @@ impl ParConstruction {
                 } else {
                     vec![ProtoPiece::Bytes(bytes.into_boxed_slice())]
                 },
+                zero_count,
             });
             self.protobuf_nodes[target]
                 .pieces
@@ -1505,6 +2281,7 @@ impl ParConstruction {
         self.protobuf_nodes.push(ProtoNode {
             pieces: Vec::new(),
             encoded_len: 0,
+            zero_count: 0,
         });
         self.protobuf_nodes[target]
             .pieces
@@ -1525,6 +2302,7 @@ impl Drop for ParConstruction {
         // the non-recursive nature evident to stack-slope instrumentation.
         self.components.clear();
         self.pars.clear();
+        self.epathmaps.clear();
         self.protobuf_nodes.clear();
         self.scores.clear();
         self.byte_fragments.clear();
@@ -1535,7 +2313,9 @@ impl Drop for ParConstruction {
 mod tests {
     use super::*;
     use crate::rhoapi::expr::ExprInstance;
-    use crate::rhoapi::{EMap, EMethod, ENot, EPlus, ESet, ETuple, Expr, KeyValuePair};
+    use crate::rhoapi::{
+        EMap, EMethod, ENot, EPathMap, EPlus, ESet, ETuple, EZipper, Expr, KeyValuePair,
+    };
     use crate::rust::par_bag::with_component_key;
 
     fn planned_gint(
@@ -1545,7 +2325,7 @@ mod tests {
         let expr = Expr {
             expr_instance: Some(ExprInstance::GInt(value)),
         };
-        let component = arena.ordered_expr_component(&expr, &[], true)?;
+        let component = arena.expr_component(&expr, &[], true)?;
         arena.par([(component, Multiplicity::ONE)], Vec::new(), false)
     }
 
@@ -1558,8 +2338,14 @@ mod tests {
                 p: Some(Par::default()),
             })),
         };
-        let component = arena.ordered_expr_component(&expr, &[child], false)?;
+        let component = arena.expr_component(&expr, &[child], false)?;
         arena.par([(component, Multiplicity::ONE)], Vec::new(), false)
+    }
+
+    fn resident_gint(value: i64) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(value)),
+        }])
     }
 
     #[test]
@@ -1608,7 +2394,7 @@ mod tests {
             })),
         };
         let plus = arena
-            .ordered_expr_component(&plus_shell, &[one, two], false)
+            .expr_component(&plus_shell, &[one, two], false)
             .unwrap();
         let plus = arena
             .par([(plus, Multiplicity::ONE)], Vec::new(), false)
@@ -1622,7 +2408,7 @@ mod tests {
             })),
         };
         let tuple = arena
-            .ordered_expr_component(&tuple_shell, &[plus, two], false)
+            .expr_component(&tuple_shell, &[plus, two], false)
             .unwrap();
         let tuple = arena
             .par([(tuple, Multiplicity::ONE)], Vec::new(), false)
@@ -1638,9 +2424,9 @@ mod tests {
             })),
         };
         // Sorter evaluation order is arguments first, target last. Protobuf
-        // order is target first; `ordered_expr_component` owns that permutation.
+        // order is target first; `expr_component` owns that permutation.
         let method = arena
-            .ordered_expr_component(&method_shell, &[one, tuple, plus], false)
+            .expr_component(&method_shell, &[one, tuple, plus], false)
             .unwrap();
         let root = arena
             .par([(method, Multiplicity::ONE)], Vec::new(), false)
@@ -1696,7 +2482,7 @@ mod tests {
             })),
         };
         let set = arena
-            .ordered_expr_component(&set_shell, &[two, one, two], false)
+            .expr_component(&set_shell, &[two, one, two], false)
             .unwrap();
         let set = arena
             .par([(set, Multiplicity::ONE)], Vec::new(), false)
@@ -1711,7 +2497,7 @@ mod tests {
             })),
         };
         let map = arena
-            .ordered_expr_component(&map_shell, &[one, two, one, three, two, set], false)
+            .expr_component(&map_shell, &[one, two, one, three, two, set], false)
             .unwrap();
         let root = arena
             .par([(map, Multiplicity::ONE)], Vec::new(), false)
@@ -1759,6 +2545,153 @@ mod tests {
 
         assert_eq!(actual, expected);
         assert_eq!(actual.compact_snapshot(), expected.compact_snapshot());
+    }
+
+    #[test]
+    fn planned_epathmap_and_zipper_stream_exact_pathmap_snapshots() {
+        let one_resident = resident_gint(1);
+        let two_resident = resident_gint(2);
+        let three_resident = resident_gint(3);
+
+        let set_shell = EPathMap::from_set_iter(
+            [two_resident.clone(), one_resident.clone()],
+            Vec::new(),
+            false,
+            None,
+        );
+        let map_shell = EPathMap::new_map(
+            [
+                (one_resident.clone(), Par::default()),
+                (two_resident.clone(), Par::default()),
+            ],
+            Vec::new(),
+            false,
+            None,
+        );
+
+        let mut arena = ParConstruction::new();
+        let one = planned_gint(&mut arena, 1).unwrap();
+        let two = planned_gint(&mut arena, 2).unwrap();
+        let three = planned_gint(&mut arena, 3).unwrap();
+
+        let set_expr = Expr {
+            expr_instance: Some(ExprInstance::EPathmapBody(set_shell.clone())),
+        };
+        let set_component = arena.expr_component(&set_expr, &[one, two], true).unwrap();
+        let set = arena
+            .par([(set_component, Multiplicity::ONE)], Vec::new(), false)
+            .unwrap();
+
+        let map_expr = Expr {
+            expr_instance: Some(ExprInstance::EPathmapBody(map_shell.clone())),
+        };
+        let map_component = arena
+            .expr_component(&map_expr, &[one, set, two, three], true)
+            .unwrap();
+        let map = arena
+            .par([(map_component, Multiplicity::ONE)], Vec::new(), false)
+            .unwrap();
+
+        let expected_set = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::from_set_iter(
+                [one_resident.clone(), two_resident.clone()],
+                Vec::new(),
+                false,
+                None,
+            ))),
+        }]);
+        let expected_map_value = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::new_map(
+                [
+                    (one_resident.clone(), expected_set.clone()),
+                    (two_resident.clone(), three_resident.clone()),
+                ],
+                Vec::new(),
+                false,
+                None,
+            ))),
+        }]);
+        let actual_map_value = arena.finish(map).unwrap();
+        assert_eq!(actual_map_value, expected_map_value);
+        assert_eq!(
+            actual_map_value.compact_snapshot(),
+            expected_map_value.compact_snapshot()
+        );
+        assert_eq!(
+            arena.canonical_path_bytes(map).unwrap(),
+            super::super::canonical_path::encode_trie_path(&expected_map_value)
+        );
+
+        let zipper = EZipper {
+            pathmap: Some(map_shell),
+            current_path: vec![vec![path_tag::GINT, 2]],
+            is_write_zipper: true,
+            locally_free: vec![1, 0, 1],
+            connective_used: true,
+            cursor_kind: 1,
+        };
+        let zipper_expr = Expr {
+            expr_instance: Some(ExprInstance::EZipperBody(zipper.clone())),
+        };
+        let zipper_component = arena
+            .expr_component(&zipper_expr, &[one, set, two, three], false)
+            .unwrap();
+        let zipper_par = arena
+            .par([(zipper_component, Multiplicity::ONE)], Vec::new(), false)
+            .unwrap();
+        let actual_zipper = arena.finish(zipper_par).unwrap();
+        let expected_zipper = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EZipperBody(EZipper {
+                pathmap: Some(EPathMap::new_map(
+                    [(one_resident, expected_set), (two_resident, three_resident)],
+                    Vec::new(),
+                    false,
+                    None,
+                )),
+                ..zipper
+            })),
+        }]);
+        assert_eq!(actual_zipper, expected_zipper);
+        assert_eq!(
+            actual_zipper.compact_snapshot(),
+            expected_zipper.compact_snapshot()
+        );
+    }
+
+    #[test]
+    fn planned_epathmap_value_chain_is_stack_safe_and_linear_to_emit() {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                const DEPTH: usize = 4_096;
+                let key_resident = resident_gint(1);
+                let shell =
+                    EPathMap::new_map([(key_resident, Par::default())], Vec::new(), false, None);
+                let expr_shell = Expr {
+                    expr_instance: Some(ExprInstance::EPathmapBody(shell)),
+                };
+
+                let mut arena = ParConstruction::new();
+                let key = planned_gint(&mut arena, 1).unwrap();
+                let mut value = arena.empty_par().unwrap();
+                for _ in 0..DEPTH {
+                    let component = arena
+                        .expr_component(&expr_shell, &[key, value], true)
+                        .unwrap();
+                    value = arena
+                        .par([(component, Multiplicity::ONE)], Vec::new(), false)
+                        .unwrap();
+                }
+
+                let expected_len = arena.pars[value.0].protobuf_len;
+                let bytes = arena.protobuf_bytes(value);
+                assert_eq!(bytes.len(), expected_len);
+                let actual = arena.finish(value).unwrap();
+                assert_eq!(actual.protobuf_bytes().unwrap(), bytes);
+            })
+            .expect("spawn fixed-stack EPathMap construction gate")
+            .join()
+            .expect("fixed-stack EPathMap construction gate");
     }
 
     #[test]
