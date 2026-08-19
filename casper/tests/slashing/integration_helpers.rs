@@ -193,17 +193,21 @@ pub async fn equivocate_block(
         block_data.clone(),
         invalid_blocks,
         Some(&producing_node.rejected_deploy_buffer),
+        None,
+        None,
     )
     .await?;
 
-    let (
+    let interpreter_util::DeploysCheckpoint {
         pre_state_hash,
         post_state_hash,
-        processed_deploys,
+        deploys: processed_deploys,
         rejected_deploys,
-        processed_system_deploys,
-        new_bonds,
-    ) = checkpoint;
+        system_deploys: processed_system_deploys,
+        bonds: new_bonds,
+        applied_from_scope,
+        merge_base,
+    } = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
 
@@ -211,9 +215,7 @@ pub async fn equivocate_block(
     // that function is private to block_creator.rs (`fn`, not
     // `pub fn`), so we replicate its 25-line body here. The
     // proto_util helpers are public.
-    use models::rust::casper::protocol::casper_message::{
-        Body, F1r3flyState, Header, RejectedDeploy,
-    };
+    use models::rust::casper::protocol::casper_message::{Body, F1r3flyState, Header};
 
     let state = F1r3flyState {
         pre_state_hash,
@@ -221,16 +223,14 @@ pub async fn equivocate_block(
         bonds: new_bonds,
         block_number: block_data.block_number,
     };
-    let rejected_deploys_wrapped: Vec<RejectedDeploy> = rejected_deploys
-        .into_iter()
-        .map(|sig| RejectedDeploy { sig })
-        .collect();
     let body = Body {
         state,
         deploys: processed_deploys,
-        rejected_deploys: rejected_deploys_wrapped,
+        rejected_deploys,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
+        applied_from_scope,
+        merge_base: merge_base.unwrap_or_default(),
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
@@ -332,23 +332,25 @@ pub async fn propose_with_explicit_justifications(
         block_data.clone(),
         invalid_blocks,
         Some(&producing_node.rejected_deploy_buffer),
+        None,
+        None,
     )
     .await?;
 
-    let (
+    let interpreter_util::DeploysCheckpoint {
         pre_state_hash,
         post_state_hash,
-        processed_deploys,
+        deploys: processed_deploys,
         rejected_deploys,
-        processed_system_deploys,
-        new_bonds,
-    ) = checkpoint;
+        system_deploys: processed_system_deploys,
+        bonds: new_bonds,
+        applied_from_scope,
+        merge_base,
+    } = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
 
-    use models::rust::casper::protocol::casper_message::{
-        Body, F1r3flyState, Header, RejectedDeploy,
-    };
+    use models::rust::casper::protocol::casper_message::{Body, F1r3flyState, Header};
 
     let state = F1r3flyState {
         pre_state_hash,
@@ -356,16 +358,14 @@ pub async fn propose_with_explicit_justifications(
         bonds: new_bonds,
         block_number: block_data.block_number,
     };
-    let rejected_deploys_wrapped: Vec<RejectedDeploy> = rejected_deploys
-        .into_iter()
-        .map(|sig| RejectedDeploy { sig })
-        .collect();
     let body = Body {
         state,
         deploys: processed_deploys,
-        rejected_deploys: rejected_deploys_wrapped,
+        rejected_deploys,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
+        applied_from_scope,
+        merge_base: merge_base.unwrap_or_default(),
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
@@ -505,23 +505,25 @@ pub async fn propose_with_block_mutation(
         block_data.clone(),
         invalid_blocks,
         Some(&producing_node.rejected_deploy_buffer),
+        None,
+        None,
     )
     .await?;
 
-    let (
+    let interpreter_util::DeploysCheckpoint {
         pre_state_hash,
         post_state_hash,
-        processed_deploys,
+        deploys: processed_deploys,
         rejected_deploys,
-        processed_system_deploys,
-        new_bonds,
-    ) = checkpoint;
+        system_deploys: processed_system_deploys,
+        bonds: new_bonds,
+        applied_from_scope,
+        merge_base,
+    } = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
 
-    use models::rust::casper::protocol::casper_message::{
-        Body, F1r3flyState, Header, RejectedDeploy,
-    };
+    use models::rust::casper::protocol::casper_message::{Body, F1r3flyState, Header};
 
     let state = F1r3flyState {
         pre_state_hash,
@@ -529,16 +531,14 @@ pub async fn propose_with_block_mutation(
         bonds: new_bonds,
         block_number: block_data.block_number,
     };
-    let rejected_deploys_wrapped: Vec<RejectedDeploy> = rejected_deploys
-        .into_iter()
-        .map(|sig| RejectedDeploy { sig })
-        .collect();
     let body = Body {
         state,
         deploys: processed_deploys,
-        rejected_deploys: rejected_deploys_wrapped,
+        rejected_deploys,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
+        applied_from_scope,
+        merge_base: merge_base.unwrap_or_default(),
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
@@ -653,23 +653,25 @@ pub async fn propose_neglecting_block(
         block_data.clone(),
         invalid_blocks,
         Some(&producing_node.rejected_deploy_buffer),
+        None,
+        None,
     )
     .await?;
 
-    let (
+    let interpreter_util::DeploysCheckpoint {
         pre_state_hash,
         post_state_hash,
-        processed_deploys,
+        deploys: processed_deploys,
         rejected_deploys,
-        processed_system_deploys,
-        new_bonds,
-    ) = checkpoint;
+        system_deploys: processed_system_deploys,
+        bonds: new_bonds,
+        applied_from_scope,
+        merge_base,
+    } = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
 
-    use models::rust::casper::protocol::casper_message::{
-        Body, F1r3flyState, Header, RejectedDeploy,
-    };
+    use models::rust::casper::protocol::casper_message::{Body, F1r3flyState, Header};
 
     let state = F1r3flyState {
         pre_state_hash,
@@ -677,16 +679,14 @@ pub async fn propose_neglecting_block(
         bonds: new_bonds,
         block_number: block_data.block_number,
     };
-    let rejected_deploys_wrapped: Vec<RejectedDeploy> = rejected_deploys
-        .into_iter()
-        .map(|sig| RejectedDeploy { sig })
-        .collect();
     let body = Body {
         state,
         deploys: processed_deploys,
-        rejected_deploys: rejected_deploys_wrapped,
+        rejected_deploys,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
+        applied_from_scope,
+        merge_base: merge_base.unwrap_or_default(),
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),

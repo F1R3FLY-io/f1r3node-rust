@@ -302,9 +302,13 @@ impl Validate {
         expiration_threshold: i32,
         max_number_of_parents: i32,
         max_parent_depth: i32,
-        depth_buffer: i32,
         block_store: &KeyValueBlockStore,
         disable_validator_progress_check: bool,
+        // Per-operation derivation slot, filled at the first step that
+        // consumes the block's floor (transaction expiration) and reused by
+        // the caller for the checkpoint and bonds steps. Filling lazily
+        // keeps every earlier step's error order exactly as it was.
+        floor_ctx_slot: &mut Option<crate::rust::finality::floor_context::FloorContext>,
     ) -> ValidBlockProcessing {
         use crate::rust::metrics_constants::*;
         macro_rules! __step {
@@ -350,9 +354,46 @@ impl Validate {
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-validation");
+        // Fill the floor slot here — the first consumer (the retry gate
+        // reads the block's frozen floor). Only deploy-carrying blocks pay
+        // the derivation; a derivation failure surfaces at this step as the
+        // same BlockException class every step's storage failure uses.
+        if floor_ctx_slot.is_none()
+            && !block.body.deploys.is_empty()
+            && !block.header.parents_hash_list.is_empty()
+        {
+            let latest_messages: BTreeMap<Validator, BlockHash> = block
+                .justifications
+                .iter()
+                .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+                .collect();
+            match crate::rust::finality::floor_context::FloorContext::derive(
+                &s.dag,
+                block_store,
+                &block.header.parents_hash_list,
+                &latest_messages,
+                crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                    s.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
+                ),
+            )
+            .await
+            {
+                Ok(ctx) => *floor_ctx_slot = Some(ctx),
+                // A derivation that needed history this node lacks is not a
+                // verdict on the block; `from_validation_error` keeps it out of
+                // the exception class that becomes a slashable InvalidTransaction.
+                Err(ex) => return Either::Left(BlockError::from_validation_error(ex)),
+            }
+        }
         match __step!(
             BLOCK_VALIDATION_REPEAT_DEPLOY_TIME_METRIC,
-            Self::repeat_deploy(block, s, block_store, expiration_threshold)
+            Self::repeat_deploy(
+                block,
+                s,
+                block_store,
+                expiration_threshold,
+                floor_ctx_slot.as_ref()
+            )
         ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
@@ -401,7 +442,9 @@ impl Validate {
                     Ok(Some(parent_block)) => parent_block,
                     Ok(None) => return Either::Left(BlockError::MissingBlocks),
                     Err(err) => {
-                        return Either::Left(BlockError::BlockException(CasperError::from(err)));
+                        return Either::Left(BlockError::from_validation_error(CasperError::from(
+                            err,
+                        )));
                     }
                 };
                 for bond in &parent_block.body.state.bonds {
@@ -441,9 +484,43 @@ impl Validate {
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-transaction-expired-validation");
+        // Fill the floor slot here — the first consumer. Only deploy-carrying
+        // blocks pay the derivation; a derivation failure surfaces at this
+        // step as the same BlockException class every step's storage failure
+        // uses.
+        if floor_ctx_slot.is_none()
+            && !block.body.deploys.is_empty()
+            && !block.header.parents_hash_list.is_empty()
+        {
+            let latest_messages: BTreeMap<Validator, BlockHash> = block
+                .justifications
+                .iter()
+                .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+                .collect();
+            match crate::rust::finality::floor_context::FloorContext::derive(
+                &s.dag,
+                block_store,
+                &block.header.parents_hash_list,
+                &latest_messages,
+                crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                    s.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
+                ),
+            )
+            .await
+            {
+                Ok(ctx) => *floor_ctx_slot = Some(ctx),
+                Err(ex) => {
+                    return Either::Left(BlockError::from_validation_error(ex));
+                }
+            }
+        }
         match __step!(
             BLOCK_VALIDATION_TRANSACTION_EXPIRATION_TIME_METRIC,
-            Self::transaction_expiration(block, expiration_threshold)
+            Self::transaction_expiration(
+                block,
+                expiration_threshold,
+                floor_ctx_slot.as_ref().map(|ctx| ctx.floor.block_number),
+            )
         ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
@@ -473,7 +550,6 @@ impl Validate {
                 s,
                 max_number_of_parents,
                 max_parent_depth,
-                depth_buffer,
                 disable_validator_progress_check,
             )
         ) {
@@ -504,21 +580,24 @@ impl Validate {
     /// Validate no deploy with the same sig has been produced in the chain
     /// Agnostic of non-parent justifications.
     ///
-    /// Recovery exemption: a sig whose LATEST canonical disposition within
-    /// the BLOCK'S OWN parent scope is a merge rejection is a legitimate
-    /// recovery re-inclusion — the rejected-deploy buffer pipeline
-    /// re-proposes such deploys so their effects can land in canonical
-    /// state. Without this exemption, every recovery-path block would fail
-    /// `InvalidRepeatDeploy`.
+    /// Recovery exemption, GATED on the block's frozen floor: a sig whose
+    /// LATEST canonical disposition within the BLOCK'S OWN parent scope is
+    /// a merge rejection is a legitimate recovery re-inclusion — but only
+    /// once the retry gate opens (`FloorContext::retry_gate_open`: the
+    /// latest kept rejection is settled in the block's floor closure).
+    /// Re-inclusion against a live contest is `PrematureDeployRetry` —
+    /// non-slashable, never admitted — because ungated re-proposal
+    /// regenerated same-sig sibling copies faster than merges could
+    /// adjudicate them and livelocked the shard under sustained contention.
     ///
-    /// The exemption is a PURE FUNCTION OF THE BLOCK (its parents and the
-    /// disposition records in their ancestry), never of the validating
-    /// node's live view. An earlier version gated it on the sig's LOCAL
-    /// finalization status (`deploy_finalization_status::resolve`) and the
-    /// validator's own `rejected_in_scope` snapshot set — both node-local:
-    /// two honest validators whose finalization progress differed by one
-    /// step returned opposite verdicts for the same block, forking the
-    /// network (the roaming `InvalidRepeatDeploy` Heavy Pipeline failures).
+    /// The exemption is a PURE FUNCTION OF THE BLOCK (its parents, the
+    /// disposition records in their ancestry, and its justification-derived
+    /// floor), never of the validating node's live view. An earlier version
+    /// gated it on the sig's LOCAL finalization status and the validator's
+    /// own `rejected_in_scope` snapshot set — both node-local: two honest
+    /// validators whose finalization progress differed by one step returned
+    /// opposite verdicts for the same block, forking the network (the
+    /// roaming `InvalidRepeatDeploy` Heavy Pipeline failures).
     ///
     /// The double-execution defense is preserved deterministically: if a
     /// re-inclusion already WON above the rejection in the block's parent
@@ -528,11 +607,17 @@ impl Validate {
     /// scope must NOT poison this block: judged in its own context the
     /// re-inclusion is legal recovery, and the eventual merge's keep-one
     /// dedup reconciles the duplicate.
+    ///
+    /// `floor_ctx` is the operation's derivation context; `None` (the
+    /// parentless shape, where no records are visible and no floor is
+    /// derivable) grants no exemption at all — every sig goes through the
+    /// ancestor scan unchanged.
     pub fn repeat_deploy(
         block: &BlockMessage,
         s: &mut CasperSnapshot,
         block_store: &KeyValueBlockStore,
         expiration_threshold: i32,
+        floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
     ) -> ValidBlockProcessing {
         if block.body.deploys.is_empty() {
             return Either::Right(ValidBlock::Valid);
@@ -543,7 +628,7 @@ impl Validate {
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-get-parents");
         let init_parents = match proto_util::get_parents_metadata(&s.dag, &block_metadata) {
             Ok(parents) => parents,
-            Err(e) => return Either::Left(BlockError::BlockException(CasperError::from(e))),
+            Err(e) => return Either::Left(BlockError::from_validation_error(e)),
         };
 
         // Calculate max block number and earliest acceptable block number
@@ -551,25 +636,53 @@ impl Validate {
         let earliest_block_number = max_block_number + 1 - expiration_threshold as i64;
 
         // Latest canonical dispositions within the block's parent scope,
-        // over the same expiration window the ancestor scan uses. This is
-        // exactly the record the proposer's admission logic consults
-        // (`canonical_won_sigs` from its parents), so proposer and every
-        // validator evaluate the same predicate on the same inputs.
-        let canonical_rejected =
-            match crate::rust::util::rholang::interpreter_util::canonical_rejected_sigs(
-                block_store,
-                &block.header.parents_hash_list,
-                earliest_block_number,
-            ) {
+        // over the same expiration window the ancestor scan uses, from the
+        // operation's ONE record walk. The proposer's admission logic reads
+        // the same walk on its side, so proposer and every validator
+        // evaluate the same predicate on the same inputs.
+        let mut exempt: HashSet<Bytes> = HashSet::new();
+        if let Some(ctx) = floor_ctx {
+            let rejected = match ctx.rejected_sigs(block_store, earliest_block_number) {
                 Ok(sigs) => sigs,
-                Err(e) => return Either::Left(BlockError::BlockException(e)),
+                Err(e) => return Either::Left(BlockError::from_validation_error(e)),
             };
+            for pd in &block.body.deploys {
+                let sig = &pd.deploy.sig;
+                if !rejected.contains(sig) {
+                    continue;
+                }
+                match ctx.retry_gate_open(&s.dag, block_store, earliest_block_number, sig) {
+                    Ok(true) => {
+                        exempt.insert(sig.clone());
+                    }
+                    Ok(false) => {
+                        tracing::warn!(
+                            "{}",
+                            Self::ignore(
+                                block,
+                                &format!(
+                                    "deploy {} re-includes a rejected sig whose latest kept \
+                                     rejection is not settled in the block's floor (#{}) — \
+                                     premature retry",
+                                    hex::encode(&sig[..8.min(sig.len())]),
+                                    ctx.floor.block_number,
+                                )
+                            )
+                        );
+                        return Either::Left(BlockError::Invalid(
+                            InvalidBlock::PrematureDeployRetry,
+                        ));
+                    }
+                    Err(e) => return Either::Left(BlockError::from_validation_error(e)),
+                }
+            }
+        }
 
         let deploy_key_set: HashSet<Vec<u8>> = block
             .body
             .deploys
             .iter()
-            .filter(|pd| !canonical_rejected.contains(&pd.deploy.sig))
+            .filter(|pd| !exempt.contains(&pd.deploy.sig))
             .map(|pd| pd.deploy.sig.to_vec())
             .collect();
         if deploy_key_set.is_empty() {
@@ -577,7 +690,10 @@ impl Validate {
         }
 
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block");
-        let maybe_duplicated_block_metadata = dag_ops::bf_traverse_find(
+        // A failed expansion is not an empty one: swallowing it ends the scan
+        // early, and "found no duplicate" is then a statement about what could
+        // be read, not about the chain. That verdict admits the repeat.
+        let maybe_duplicated_block_metadata = match dag_ops::try_bf_traverse_find(
             init_parents,
             |block_metadata| {
                 proto_util::get_parent_metadatas_above_block_number(
@@ -585,12 +701,16 @@ impl Validate {
                     earliest_block_number,
                     &s.dag,
                 )
-                .unwrap_or_default()
             },
             |block_metadata| {
-                block_store.has_any_deploy_sig_unsafe(&block_metadata.block_hash, &deploy_key_set)
+                block_store
+                    .has_any_deploy_sig_strict(&block_metadata.block_hash, &deploy_key_set)
+                    .map_err(CasperError::from)
             },
-        );
+        ) {
+            Ok(found) => found,
+            Err(e) => return Either::Left(BlockError::from_validation_error(e)),
+        };
 
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block-log");
         let maybe_error = maybe_duplicated_block_metadata.map(|duplicated_block_metadata| {
@@ -618,7 +738,7 @@ impl Validate {
             block_hash_string,
             current_block_hash_string
           );
-          return BlockError::BlockException(CasperError::RuntimeError(format!(
+          return BlockError::from_validation_error(CasperError::RuntimeError(format!(
             "InvalidRepeatDeploy duplicate-deploy invariant violated: block {} indexed as duplicate-deploy carrier for current block {} contains no matching deploy",
             block_hash_string,
             current_block_hash_string,
@@ -657,7 +777,7 @@ impl Validate {
         let current_time = match SystemTime::now().duration_since(UNIX_EPOCH) {
             Ok(d) => d.as_millis() as i64,
             Err(e) => {
-                return Either::Left(BlockError::BlockException(CasperError::from(e)));
+                return Either::Left(BlockError::from_validation_error(CasperError::from(e)));
             }
         };
 
@@ -715,7 +835,7 @@ impl Validate {
             .collect::<Result<Vec<BlockMetadata>, KvStoreError>>()
         {
             Ok(parents) => parents,
-            Err(e) => return Either::Left(BlockError::BlockException(CasperError::from(e))),
+            Err(e) => return Either::Left(BlockError::from_validation_error(CasperError::from(e))),
         };
 
         let max_block_number = parents
@@ -771,12 +891,20 @@ impl Validate {
         maybe_error.map_or(Either::Right(ValidBlock::Valid), Either::Left)
     }
 
+    /// Expiry validity reads the block's own frozen floor when one is
+    /// derivable — the same clock the merge window rule and the buffer
+    /// retain close windows on, so honest floor-clock retries stay valid
+    /// under floor lag. A block with no derivable floor (parentless, or no
+    /// deploys to judge) falls back to its own block number, which is never
+    /// looser than the floor's bound.
     pub fn transaction_expiration(
         b: &BlockMessage,
         expiration_threshold: i32,
+        block_floor_number: Option<i64>,
     ) -> ValidBlockProcessing {
-        let earliest_acceptable_valid_after_block_number =
-            proto_util::block_number(b) - expiration_threshold as i64;
+        let earliest_acceptable_valid_after_block_number = block_floor_number
+            .unwrap_or_else(|| proto_util::block_number(b))
+            - expiration_threshold as i64;
 
         let processed_deploys = proto_util::deploys(b);
         let deploys: Vec<_> = processed_deploys
@@ -841,7 +969,7 @@ impl Validate {
                 Some(justification) => match s.dag.lookup(&justification.latest_block_hash) {
                     Ok(Some(block_metadata)) => block_metadata.sequence_number as i64,
                     Ok(None) => {
-                        return Either::Left(BlockError::BlockException(CasperError::from(
+                        return Either::Left(BlockError::from_validation_error(CasperError::from(
                             KvStoreError::KeyNotFound(format!(
                                 "Latest block hash {} is missing from block dag store.",
                                 PrettyPrinter::build_string_bytes(&justification.latest_block_hash)
@@ -849,7 +977,9 @@ impl Validate {
                         )));
                     }
                     Err(e) => {
-                        return Either::Left(BlockError::BlockException(CasperError::from(e)));
+                        return Either::Left(BlockError::from_validation_error(CasperError::from(
+                            e,
+                        )));
                     }
                 },
                 None => -1,
@@ -948,7 +1078,6 @@ impl Validate {
         s: &mut CasperSnapshot,
         max_number_of_parents: i32,
         max_parent_depth: i32,
-        depth_buffer: i32,
         disable_validator_progress_check: bool,
     ) -> ValidBlockProcessing {
         // Check if block contains user deploys (non-system deploys)
@@ -991,7 +1120,7 @@ impl Validate {
 
         // Parent-depth enforcement: symmetric to proposer-side `Estimator::filterDeepParents`.
         // Reject any block whose parents fall outside the consensus-permitted horizon
-        // (depth from highest tip > max_parent_depth + depth_buffer). An honest proposer
+        // (depth from the block's highest parent > max_parent_depth). An honest proposer
         // already drops these parents before signing; this check rejects blocks from
         // buggy or malicious proposers that would otherwise hit `UnknownRootError` on
         // joiners that don't carry pre-horizon rspace history.
@@ -1006,29 +1135,63 @@ impl Validate {
         // genesis ended up indexed (test fixtures may assign genesis a non-zero
         // block_number; production assigns 0).
         if max_parent_depth != i32::MAX {
-            let max_allowed_depth = (max_parent_depth as i64) + (depth_buffer as i64);
-            let highest_tip_height = s.dag.latest_block_number();
+            // ANCHOR: the block's OWN parent frontier, never this node's tip.
+            // The proposer drops parents more than `max_parent_depth` below the
+            // highest parent it selected (`snapshot.rs`), so anchoring the check
+            // on that same value makes proposer and validator agree by
+            // construction — filtering only ever removes LOW parents, so the max
+            // over the declared parents is the max the proposer used.
+            //
+            // Reading `latest_block_number()` here instead made a validity
+            // verdict depend on how far ahead the validating node happened to
+            // be: two nodes at different heights could reach different verdicts
+            // on the same block, and a node catching up (or joined by LFS)
+            // rejected history that was perfectly legal when it was produced.
+            // `depth_buffer` existed only to absorb that skew, and the skew it
+            // absorbed was unbounded, so it is gone with the anchor.
+            let mut parent_numbers: Vec<(BlockHash, i64)> = Vec::with_capacity(parent_hashes.len());
+            let mut frontier_known = true;
             for parent_hash in &parent_hashes {
-                if parent_hash == &genesis.block_hash {
-                    continue; // genesis exempt
+                match s.dag.lookup_unsafe(parent_hash) {
+                    Ok(meta) => parent_numbers.push((parent_hash.clone(), meta.block_number)),
+                    // A parent with no metadata leaves the frontier unknown, and
+                    // an anchor derived from a partial parent set could reject a
+                    // legal block. Skip the check and let the dependency gate
+                    // handle the missing parent.
+                    Err(_) => {
+                        frontier_known = false;
+                        break;
+                    }
                 }
-                let parent_meta = match s.dag.lookup_unsafe(parent_hash) {
-                    Ok(meta) => meta,
-                    Err(_) => continue, // missing-parent handled by dependency gate, not here
-                };
-                let depth = highest_tip_height - parent_meta.block_number;
-                if depth > max_allowed_depth {
-                    let message = format!(
-                        "parent {} at block_number {} is at depth {} from highest tip {} \
-                         (exceeds max_parent_depth + depth_buffer = {})",
-                        PrettyPrinter::build_string_bytes(parent_hash),
-                        parent_meta.block_number,
-                        depth,
-                        highest_tip_height,
-                        max_allowed_depth
-                    );
-                    tracing::warn!("{}", Self::ignore(b, &message));
-                    return Either::Left(BlockError::Invalid(InvalidBlock::InvalidParents));
+            }
+            if frontier_known {
+                // Stated as what the rule actually is — no two of this block's
+                // parents may spread more than `max_parent_depth` apart — rather
+                // than as a comparison against a derived maximum. There is then
+                // no "highest parent" to be absent, so no default to invent: an
+                // empty parent set simply has no pair that violates it, which is
+                // the right answer. The pass is quadratic in the parent count,
+                // which `max_number_of_parents` has already bounded above.
+                for (deep_hash, deep_number) in &parent_numbers {
+                    if deep_hash == &genesis.block_hash {
+                        continue; // genesis exempt
+                    }
+                    for (_, other_number) in &parent_numbers {
+                        let spread = *other_number - *deep_number;
+                        if spread > max_parent_depth as i64 {
+                            let message = format!(
+                                "parent {} at block_number {} is {} below the block's parent \
+                                 at block_number {} (exceeds max_parent_depth = {})",
+                                PrettyPrinter::build_string_bytes(deep_hash),
+                                deep_number,
+                                spread,
+                                other_number,
+                                max_parent_depth
+                            );
+                            tracing::warn!("{}", Self::ignore(b, &message));
+                            return Either::Left(BlockError::Invalid(InvalidBlock::InvalidParents));
+                        }
+                    }
                 }
             }
         }
@@ -1048,7 +1211,7 @@ impl Validate {
                 let prev_block_meta = match s.dag.lookup(&prev_block_hash) {
                     Ok(Some(meta)) => meta,
                     Ok(None) => {
-                        return Either::Left(BlockError::BlockException(CasperError::from(
+                        return Either::Left(BlockError::from_validation_error(CasperError::from(
                             KvStoreError::KeyNotFound(format!(
                                 "Previous block {} not found in DAG",
                                 PrettyPrinter::build_string_bytes(&prev_block_hash)
@@ -1056,7 +1219,9 @@ impl Validate {
                         )));
                     }
                     Err(e) => {
-                        return Either::Left(BlockError::BlockException(CasperError::from(e)));
+                        return Either::Left(BlockError::from_validation_error(CasperError::from(
+                            e,
+                        )));
                     }
                 };
 
@@ -1064,12 +1229,41 @@ impl Validate {
                 // This breaks the deadlock after genesis ceremony when all validators are at genesis
                 let is_genesis = prev_block_meta.parents.is_empty();
 
-                // BFS traverse to get ancestor closure of previous block
-                // Stop traversal at finalized blocks to prevent unbounded traversal on long chains
+                // BFS the ancestor closure of the previous block, bounded by
+                // HEIGHT rather than by finality.
+                //
+                // The bound exists only to stop the traversal running the length
+                // of the chain — the original stopped at finalized blocks for
+                // that reason alone, and finality carries no meaning in this
+                // rule. But `is_finalized` is node-local state, so it made a
+                // VALIDITY verdict depend on how much the validating node had
+                // finalized: a node holding fewer markers walks deeper, sees a
+                // larger closure, finds fewer parents "new", and can reject a
+                // block its peers accepted. The node that is behind is the strict
+                // one, so catching up rejects legal history.
+                //
+                // The lowest declared parent is the exact bound. Ancestry is
+                // strictly height-decreasing, so every path from the previous
+                // block down to a parent stays at or above that parent's height;
+                // nothing below the lowest parent can BE a parent, and no path to
+                // a parent passes through it. Truncating there is therefore
+                // lossless, not merely conservative. Seeded from the block's own
+                // number — every parent is below it — so there is no empty case
+                // and no default.
+                let mut lowest_parent_height = b.body.state.block_number;
+                for parent_hash in &parent_hashes {
+                    if let Ok(Some(meta)) = s.dag.lookup(parent_hash) {
+                        if meta.block_number < lowest_parent_height {
+                            lowest_parent_height = meta.block_number;
+                        }
+                    }
+                }
                 let ancestor_hashes: Vec<BlockHash> =
                     dag_ops::bf_traverse(vec![prev_block_hash.clone()], |hash| {
                         match s.dag.lookup(hash) {
-                            Ok(Some(meta)) if !s.dag.is_finalized(hash) => meta.parents.clone(),
+                            Ok(Some(meta)) if meta.block_number >= lowest_parent_height => {
+                                meta.parents.clone()
+                            }
                             _ => vec![],
                         }
                     });
@@ -1200,7 +1394,7 @@ impl Validate {
     ///   per `block_status::is_slashable` and the T-9.3 catch-all dispatcher.
     /// * any other `CasperError` (storage I/O, runtime, history) — the local
     ///   node experienced an infrastructure failure unrelated to the block
-    ///   author's behavior. Propagate as `BlockError::BlockException(e)`;
+    ///   author's behavior. Propagate as `BlockError::from_validation_error(e)`;
     ///   do NOT slash the block sender for a fault attributable to local
     ///   infrastructure. Bug-fix rationale: see
     ///   docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14.
@@ -1239,7 +1433,7 @@ impl Validate {
                     PrettyPrinter::build_string_bytes(&block.block_hash),
                     infra_err
                 );
-                Either::Left(BlockError::BlockException(infra_err))
+                Either::Left(BlockError::from_validation_error(infra_err))
             }
         }
     }
@@ -1315,13 +1509,17 @@ impl Validate {
                     let new_justification = match s.dag.lookup_unsafe(new_justification_hash) {
                         Ok(metadata) => metadata,
                         Err(e) => {
-                            return Either::Left(BlockError::BlockException(CasperError::from(e)))
+                            return Either::Left(BlockError::from_validation_error(
+                                CasperError::from(e),
+                            ))
                         }
                     };
                     let cur_justification = match s.dag.lookup_unsafe(cur_justification_hash) {
                         Ok(metadata) => metadata,
                         Err(e) => {
-                            return Either::Left(BlockError::BlockException(CasperError::from(e)))
+                            return Either::Left(BlockError::from_validation_error(
+                                CasperError::from(e),
+                            ))
                         }
                     };
 
@@ -1337,7 +1535,7 @@ impl Validate {
 
                 Either::Right(ValidBlock::Valid)
             }
-            Err(e) => Either::Left(BlockError::BlockException(CasperError::from(e))),
+            Err(e) => Either::Left(BlockError::from_validation_error(CasperError::from(e))),
         }
     }
 
@@ -1352,7 +1550,7 @@ impl Validate {
             match epoch_for_block_number(block.body.state.block_number, epoch_length) {
                 Ok(epoch) => epoch,
                 Err(error) => {
-                    return Either::Left(BlockError::BlockException(CasperError::from(
+                    return Either::Left(BlockError::from_validation_error(CasperError::from(
                         SlashAuthError::from(error),
                     )))
                 }
@@ -1385,7 +1583,9 @@ impl Validate {
                 Ok(Some(metadata)) => metadata,
                 Ok(None) => continue,
                 Err(error) => {
-                    return Either::Left(BlockError::BlockException(CasperError::from(error)))
+                    return Either::Left(BlockError::from_validation_error(CasperError::from(
+                        error,
+                    )))
                 }
             };
             let target_activation_epoch = (*target_activation_epoch).into();
@@ -1403,7 +1603,7 @@ impl Validate {
             ) {
                 Ok(authorized) => authorized,
                 Err(error) => {
-                    return Either::Left(BlockError::BlockException(CasperError::from(
+                    return Either::Left(BlockError::from_validation_error(CasperError::from(
                         SlashAuthError::from(error),
                     )))
                 }
@@ -1418,7 +1618,9 @@ impl Validate {
                 Ok(Some(metadata)) => metadata,
                 Ok(None) => continue,
                 Err(error) => {
-                    return Either::Left(BlockError::BlockException(CasperError::from(error)))
+                    return Either::Left(BlockError::from_validation_error(CasperError::from(
+                        error,
+                    )))
                 }
             };
             if !metadata.invalid {
@@ -1440,7 +1642,7 @@ impl Validate {
             ) {
                 Ok(required) => required,
                 Err(error) => {
-                    return Either::Left(BlockError::BlockException(CasperError::from(
+                    return Either::Left(BlockError::from_validation_error(CasperError::from(
                         SlashAuthError::from(error),
                     )))
                 }
@@ -1460,55 +1662,62 @@ impl Validate {
         block_store: &KeyValueBlockStore,
         snapshot: &CasperSnapshot,
         runtime_manager: &RuntimeManager,
+        floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
     ) -> ValidBlockProcessing {
         let parent_hashes = b.header.parents_hash_list.clone();
         if parent_hashes.is_empty() {
             return Self::bonds_cache(b, runtime_manager).await;
         }
 
-        let latest_messages: BTreeMap<Validator, BlockHash> = b
-            .justifications
-            .iter()
-            .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
-            .collect();
-        let floor = match crate::rust::finality::floor::finalized_floor(
-            &snapshot.dag,
-            &parent_hashes,
-            &latest_messages,
-            crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-                snapshot
-                    .on_chain_state
-                    .shard_conf
-                    .fault_tolerance_threshold_ppm,
-            ),
-        )
-        .await
-        {
-            Ok(floor) => floor,
-            Err(ex) => {
-                tracing::warn!("Failed to derive finalized floor for bonds cache: {}", ex);
-                return Either::Left(BlockError::BlockException(ex));
+        let floor_state = match floor_ctx {
+            Some(ctx) => ctx.floor_state.clone(),
+            None => {
+                let latest_messages: BTreeMap<Validator, BlockHash> = b
+                    .justifications
+                    .iter()
+                    .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+                    .collect();
+                let floor = match crate::rust::finality::floor::finalized_floor(
+                    &snapshot.dag,
+                    block_store,
+                    &parent_hashes,
+                    &latest_messages,
+                    crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                        snapshot
+                            .on_chain_state
+                            .shard_conf
+                            .fault_tolerance_threshold_ppm,
+                    ),
+                )
+                .await
+                {
+                    Ok(floor) => floor,
+                    Err(ex) => {
+                        tracing::warn!("Failed to derive finalized floor for bonds cache: {}", ex);
+                        return Either::Left(BlockError::from_validation_error(ex));
+                    }
+                };
+                let floor_block = match block_store.get(&floor.hash) {
+                    Ok(Some(block)) => block,
+                    Ok(None) => {
+                        let err = CasperError::RuntimeError(format!(
+                            "finalized-floor block {} not in block store for bonds cache",
+                            PrettyPrinter::build_string_bytes(&floor.hash)
+                        ));
+                        tracing::warn!("{}", err);
+                        return Either::Left(BlockError::from_validation_error(err));
+                    }
+                    Err(ex) => {
+                        tracing::warn!(
+                            "Failed to read finalized-floor block for bonds cache: {}",
+                            ex
+                        );
+                        return Either::Left(BlockError::from_validation_error(ex.into()));
+                    }
+                };
+                proto_util::post_state_hash(&floor_block)
             }
         };
-        let floor_block = match block_store.get(&floor.hash) {
-            Ok(Some(block)) => block,
-            Ok(None) => {
-                let err = CasperError::RuntimeError(format!(
-                    "finalized-floor block {} not in block store for bonds cache",
-                    PrettyPrinter::build_string_bytes(&floor.hash)
-                ));
-                tracing::warn!("{}", err);
-                return Either::Left(BlockError::BlockException(err));
-            }
-            Err(ex) => {
-                tracing::warn!(
-                    "Failed to read finalized-floor block for bonds cache: {}",
-                    ex
-                );
-                return Either::Left(BlockError::BlockException(ex.into()));
-            }
-        };
-        let floor_state = proto_util::post_state_hash(&floor_block);
 
         // Same shared helper the proposer uses to package `block.bonds`, called on
         // the same floor state ⇒ the recomputed committee is identical by
@@ -1535,7 +1744,7 @@ impl Validate {
             }
             Err(ex) => {
                 tracing::warn!("Failed to compute bonds from finalized-floor state: {}", ex);
-                Either::Left(BlockError::BlockException(ex))
+                Either::Left(BlockError::from_validation_error(ex))
             }
         }
     }
@@ -1569,7 +1778,7 @@ impl Validate {
             }
             Err(ex) => {
                 tracing::warn!("Failed to compute bonds from tuplespace hash: {}", ex);
-                Either::Left(BlockError::BlockException(ex))
+                Either::Left(BlockError::from_validation_error(ex))
             }
         }
     }
@@ -1628,6 +1837,7 @@ mod merge_recovery_validation_tests {
                 directly_finalized: false,
                 finalized: false,
                 fault_tolerance_value: 0.0,
+                merge_base: Bytes::new(),
             })
             .expect("metadata inserted");
     }
@@ -1667,6 +1877,8 @@ mod merge_recovery_validation_tests {
                 rejected_deploys: Vec::new(),
                 system_deploys,
                 extra_bytes: Bytes::new(),
+                applied_from_scope: Vec::new(),
+                merge_base: Bytes::new(),
             },
             justifications: vec![Justification {
                 validator: offender,

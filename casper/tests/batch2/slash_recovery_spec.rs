@@ -528,6 +528,7 @@ async fn e1c_re_issues_merge_rejected_slash() {
             .on_chain_state
             .shard_conf
             .disable_late_block_filtering,
+        buffer_populated: true,
     };
 
     let latest_messages: std::collections::BTreeMap<_, _> = snapshot
@@ -535,18 +536,19 @@ async fn e1c_re_issues_merge_rejected_slash() {
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (merged_state, merged_rejected, _) =
-        casper::rust::util::rholang::interpreter_util::compute_parents_post_state(
-            &nodes[1].block_store,
-            snapshot.parents.clone(),
-            &snapshot,
-            &nodes[1].runtime_manager,
-            &latest_messages,
-            None,
-            Some(&nodes[1].rejected_deploy_buffer),
-        )
-        .await
-        .expect("real merge to seed cache value");
+    let mut merged = casper::rust::util::rholang::interpreter_util::compute_parents_post_state(
+        &nodes[1].block_store,
+        snapshot.parents.clone(),
+        &snapshot,
+        &nodes[1].runtime_manager,
+        &latest_messages,
+        None,
+        Some(&nodes[1].rejected_deploy_buffer),
+        None,
+        None,
+    )
+    .await
+    .expect("real merge to seed cache value");
 
     let synthetic = RejectedSlash {
         invalid_block_hash: invalid_block.block_hash.clone(),
@@ -555,7 +557,10 @@ async fn e1c_re_issues_merge_rejected_slash() {
     };
     nodes[1]
         .runtime_manager
-        .put_cached_parents_post_state(cache_key, (merged_state, merged_rejected, vec![synthetic]));
+        .put_cached_parents_post_state(cache_key, {
+            merged.rejected_slashes = vec![synthetic];
+            merged
+        });
     drop(snapshot);
 
     // Propose. A user deploy keeps `create_block` from short-circuiting
@@ -710,6 +715,7 @@ async fn rejected_slash_recovery_keeps_empty_proposer_alive() {
             .on_chain_state
             .shard_conf
             .disable_late_block_filtering,
+        buffer_populated: true,
     };
 
     let latest_messages: std::collections::BTreeMap<_, _> = snapshot
@@ -717,18 +723,19 @@ async fn rejected_slash_recovery_keeps_empty_proposer_alive() {
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (merged_state, merged_rejected, _) =
-        casper::rust::util::rholang::interpreter_util::compute_parents_post_state(
-            &nodes[1].block_store,
-            snapshot.parents.clone(),
-            &snapshot,
-            &nodes[1].runtime_manager,
-            &latest_messages,
-            None,
-            Some(&nodes[1].rejected_deploy_buffer),
-        )
-        .await
-        .expect("real merge to seed cache value");
+    let mut merged = casper::rust::util::rholang::interpreter_util::compute_parents_post_state(
+        &nodes[1].block_store,
+        snapshot.parents.clone(),
+        &snapshot,
+        &nodes[1].runtime_manager,
+        &latest_messages,
+        None,
+        Some(&nodes[1].rejected_deploy_buffer),
+        None,
+        None,
+    )
+    .await
+    .expect("real merge to seed cache value");
 
     let synthetic = RejectedSlash {
         invalid_block_hash: invalid_block.block_hash.clone(),
@@ -737,7 +744,10 @@ async fn rejected_slash_recovery_keeps_empty_proposer_alive() {
     };
     nodes[1]
         .runtime_manager
-        .put_cached_parents_post_state(cache_key, (merged_state, merged_rejected, vec![synthetic]));
+        .put_cached_parents_post_state(cache_key, {
+            merged.rejected_slashes = vec![synthetic];
+            merged
+        });
     drop(snapshot);
 
     // No user deploy. With allow_empty_blocks=false (TestNode default) and

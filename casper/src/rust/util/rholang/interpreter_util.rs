@@ -10,7 +10,8 @@ use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
+    BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy,
+    SystemDeployData,
 };
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -22,8 +23,7 @@ use rspace_plus_plus::rspace::history::Either;
 
 use super::replay_failure::ReplayFailure;
 use super::runtime_manager::RuntimeManager;
-use crate::rust::api::deploy_finalization_status::{self, DeployFinalizationState};
-use crate::rust::block_status::BlockStatus;
+use crate::rust::block_status::{BlockError, BlockStatus};
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
 use crate::rust::merging::block_index::BlockIndex;
@@ -56,62 +56,143 @@ pub fn canonical_won_sigs(
     canonical_disposition_sigs(block_store, parents, earliest_block_number, true)
 }
 
-pub fn canonical_rejected_sigs(
-    block_store: &KeyValueBlockStore,
-    parents: &[BlockHash],
-    earliest_block_number: i64,
-) -> Result<HashSet<Bytes>, CasperError> {
-    canonical_disposition_sigs(block_store, parents, earliest_block_number, false)
-}
-
-fn block_in_floor_merge_scope(
+/// True iff `hash`'s content is NOT already represented in the merge base's
+/// committed state, so this merge has to collect it.
+///
+/// The base is the block's MAIN PARENT. Its own history is in the base by
+/// construction; content it merged in from elsewhere sits in its state but not
+/// on its ancestry, and the settled-sig dedup drops those copies. The base
+/// itself is never in its own scope.
+fn block_in_base_merge_scope(
     dag: &KeyValueDagRepresentation,
     hash: &BlockHash,
-    floor_hash: &BlockHash,
-    floor_block_number: i64,
+    base_hash: &BlockHash,
+    base_block_number: i64,
 ) -> Result<bool, CasperError> {
+    if hash == base_hash {
+        return Ok(false);
+    }
     let meta = dag.lookup_unsafe(hash)?;
-    if meta.block_number > floor_block_number {
+    if meta.block_number > base_block_number {
         return Ok(true);
     }
-    Ok(!dag.is_dag_ancestor(hash, floor_hash)?)
+    Ok(!dag.is_dag_ancestor(hash, base_hash)?)
+}
+
+/// Per-sig canonical disposition facts over one operation's parent cone.
+/// One walk collects everything recovery reads: the latest disposition
+/// (who currently stands), the latest kept rejection record (the
+/// adjudication a retry settles against), and the first carrier (whose
+/// sender is the deploy's recovery owner).
+#[derive(Debug, Clone)]
+pub(crate) struct SigDisposition {
+    /// Latest disposition as `(height, won)`. A win and a rejection never
+    /// share a height (a merge sits one block above its siblings), so the
+    /// highest-block disposition is the latest; a same-height tie prefers
+    /// REJECTION so a keep-one loser stays re-proposable.
+    pub latest: (i64, bool),
+    /// The highest-block kept rejection RECORD naming this sig, as
+    /// `(height, record-bearing block)`. A same-height tie breaks to the
+    /// lexicographically LARGER hash so every node lands on one block.
+    pub latest_kept_rejection: Option<(i64, BlockHash)>,
+    /// The lowest-block INCLUSION of this sig, as
+    /// `(height, carrier, carrier sender)`. A same-height tie breaks to
+    /// the lexicographically SMALLER hash.
+    pub first_carrier: Option<(i64, BlockHash, Bytes)>,
+}
+
+impl SigDisposition {
+    pub fn won(&self) -> bool { self.latest.1 }
+}
+
+/// The latest-disposition tie logic shared by every disposition map: keep
+/// the higher block; at equal height an existing REJECTION stands.
+fn update_latest(latest: &mut (i64, bool), bn: i64, won: bool) {
+    let (best_bn, best_won) = *latest;
+    if best_bn > bn || (best_bn == bn && !best_won) {
+        return;
+    }
+    *latest = (bn, won);
+}
+
+fn note_inclusion(
+    dispositions: &mut HashMap<Bytes, SigDisposition>,
+    sig: Bytes,
+    bn: i64,
+    carrier: &BlockHash,
+    sender: &Bytes,
+) {
+    let disposition = dispositions.entry(sig).or_insert(SigDisposition {
+        latest: (bn, true),
+        latest_kept_rejection: None,
+        first_carrier: None,
+    });
+    update_latest(&mut disposition.latest, bn, true);
+    match &disposition.first_carrier {
+        Some((h, b, _)) if *h < bn || (*h == bn && b <= carrier) => {}
+        _ => disposition.first_carrier = Some((bn, carrier.clone(), sender.clone())),
+    }
+}
+
+fn note_kept_rejection(
+    dispositions: &mut HashMap<Bytes, SigDisposition>,
+    sig: Bytes,
+    bn: i64,
+    record_block: &BlockHash,
+) {
+    let disposition = dispositions.entry(sig).or_insert(SigDisposition {
+        latest: (bn, false),
+        latest_kept_rejection: None,
+        first_carrier: None,
+    });
+    update_latest(&mut disposition.latest, bn, false);
+    match &disposition.latest_kept_rejection {
+        Some((h, b)) if *h > bn || (*h == bn && b >= record_block) => {}
+        _ => disposition.latest_kept_rejection = Some((bn, record_block.clone())),
+    }
 }
 
 /// BFS-walk the closure of `parents` down to `earliest_block_number`,
-/// returning each sig's latest disposition as `sig -> (height, won)`.
-/// A win and a rejection never share a height (a merge sits one block above
-/// its siblings), so the highest-block disposition is the latest; a
-/// same-height tie prefers REJECTION so a keep-one loser stays re-proposable.
-fn canonical_dispositions(
+/// collecting each sig's `SigDisposition`.
+pub(crate) fn canonical_dispositions(
     block_store: &KeyValueBlockStore,
     parents: &[BlockHash],
     earliest_block_number: i64,
-) -> Result<HashMap<Bytes, (i64, bool)>, CasperError> {
-    let mut disposition: HashMap<Bytes, (i64, bool)> = HashMap::new();
+) -> Result<HashMap<Bytes, SigDisposition>, CasperError> {
+    let mut dispositions: HashMap<Bytes, SigDisposition> = HashMap::new();
     let mut visited: HashSet<BlockHash> = HashSet::new();
     let mut queue: VecDeque<BlockHash> = parents.iter().cloned().collect();
     while let Some(hash) = queue.pop_front() {
         if !visited.insert(hash.clone()) {
             continue;
         }
+        // A block this walk cannot read is a gap, not a "no": a partial
+        // disposition map silently misreads the retry gate and the
+        // canonical-won filter. Absence keeps its name so callers defer.
         let Some(block) = block_store.get(&hash)? else {
-            continue;
+            return Err(CasperError::BlockNotHeld(hash));
         };
         let bn = block.body.state.block_number;
         if bn < earliest_block_number {
             continue;
         }
         for pd in &block.body.deploys {
-            record_disposition(&mut disposition, pd.deploy.sig.clone(), bn, true);
+            note_inclusion(
+                &mut dispositions,
+                pd.deploy.sig.clone(),
+                bn,
+                &hash,
+                &block.sender,
+            );
         }
-        for rd in &block.body.rejected_deploys {
-            record_disposition(&mut disposition, rd.sig.clone(), bn, false);
+        for rd in proto_util::kept_rejected_records(&block) {
+            note_kept_rejection(&mut dispositions, rd.sig.clone(), bn, &hash);
         }
         for p in &block.header.parents_hash_list {
             queue.push_back(p.clone());
         }
     }
-    Ok(disposition)
+    Ok(dispositions)
 }
 
 fn canonical_disposition_sigs(
@@ -123,82 +204,9 @@ fn canonical_disposition_sigs(
     Ok(
         canonical_dispositions(block_store, parents, earliest_block_number)?
             .into_iter()
-            .filter_map(|(sig, (_, won))| (won == target_won).then_some(sig))
+            .filter_map(|(sig, disposition)| (disposition.won() == target_won).then_some(sig))
             .collect(),
     )
-}
-
-/// BFS-walk the closure of `parents` down to `earliest_block_number`,
-/// returning each rejected sig's HIGHEST rejection height. Unlike
-/// `canonical_dispositions`, a later win does not mask the rejection —
-/// callers use this to ask "is there any rejection at or above height H?",
-/// which the latest-disposition map cannot answer once a higher win exists.
-fn max_visible_rejection_heights(
-    block_store: &KeyValueBlockStore,
-    parents: &[BlockHash],
-    earliest_block_number: i64,
-) -> Result<HashMap<Bytes, i64>, CasperError> {
-    let mut latest: HashMap<Bytes, i64> = HashMap::new();
-    let mut visited: HashSet<BlockHash> = HashSet::new();
-    let mut queue: VecDeque<BlockHash> = parents.iter().cloned().collect();
-    while let Some(hash) = queue.pop_front() {
-        if !visited.insert(hash.clone()) {
-            continue;
-        }
-        let Some(block) = block_store.get(&hash)? else {
-            continue;
-        };
-        let bn = block.body.state.block_number;
-        if bn < earliest_block_number {
-            continue;
-        }
-        for rd in &block.body.rejected_deploys {
-            latest
-                .entry(rd.sig.clone())
-                .and_modify(|height| *height = (*height).max(bn))
-                .or_insert(bn);
-        }
-        for p in &block.header.parents_hash_list {
-            queue.push_back(p.clone());
-        }
-    }
-    Ok(latest)
-}
-
-/// Sigs whose rejected-buffer entry is TERMINAL: the latest disposition in
-/// the FINALIZED ancestry is a win, AND that finalized win sits strictly
-/// above every rejection visible from `visible_parents`. Block finalization
-/// does not finalize a deploy's effects — a conflict-set merge above the
-/// LFB can still reject a deploy whose winning block already finalized, and
-/// once that rejecting block finalizes, canonical state has dropped the
-/// deploy. A finalized win therefore only terminates recovery once no
-/// visible rejection at or above its height can overturn it. (Walking the
-/// finalized chain alone — the pre-fix behavior — is blind to exactly that
-/// pending rejection; regression: finalized_win_pending_rejection_spec,
-/// root-caused from integration run 31150220859.)
-pub fn finalized_won_terminal_sigs(
-    block_store: &KeyValueBlockStore,
-    last_finalized_block: &BlockHash,
-    visible_parents: &[BlockHash],
-    earliest_block_number: i64,
-) -> Result<HashSet<Bytes>, CasperError> {
-    let finalized = canonical_dispositions(
-        block_store,
-        std::slice::from_ref(last_finalized_block),
-        earliest_block_number,
-    )?;
-    let visible_rejections =
-        max_visible_rejection_heights(block_store, visible_parents, earliest_block_number)?;
-    Ok(finalized
-        .into_iter()
-        .filter_map(|(sig, (win_height, won))| {
-            let terminal = won
-                && visible_rejections
-                    .get(&sig)
-                    .is_none_or(|rejection_height| win_height > *rejection_height);
-            terminal.then_some(sig)
-        })
-        .collect())
 }
 
 fn rejected_sig_has_visible_non_source_win(
@@ -221,7 +229,7 @@ fn rejected_sig_has_visible_non_source_win(
                 record_disposition(&mut disposition, pd.deploy.sig.clone(), bn, true);
             }
         }
-        for rd in &block.body.rejected_deploys {
+        for rd in proto_util::kept_rejected_records(&block) {
             if rd.sig == *sig {
                 record_disposition(&mut disposition, rd.sig.clone(), bn, false);
             }
@@ -230,143 +238,66 @@ fn rejected_sig_has_visible_non_source_win(
     Ok(disposition.get(sig).map(|(_, won)| *won).unwrap_or(false))
 }
 
-#[cfg(test)]
-fn visible_rejected_deploy_sigs(
+/// Record-emission dedup, carrier-exact: a computed record is redundant —
+/// and only then suppressible — when a visible block already carries the
+/// IDENTICAL record (same sig, same carrier, same duplicate flag). A
+/// record adjudicates exactly the copy its carrier names; a visible record
+/// naming a sibling carrier of the same sig covers nothing about this one,
+/// and suppressing on it leaves an adjudicated copy permanently
+/// unrecorded — the copy then reads as a standing win and recovery stands
+/// down on lost work. Flag-differing records are distinct testimony (the
+/// same copy can be adjudicated redundant by one merge and effect-dropping
+/// by another base) and never suppress each other.
+fn suppress_already_recorded_rejections(
     block_store: &KeyValueBlockStore,
     visible_blocks: &HashSet<BlockHash>,
-) -> Result<HashSet<Bytes>, CasperError> {
-    Ok(
-        visible_rejected_deploy_latest_heights(block_store, visible_blocks)?
-            .into_keys()
-            .collect(),
-    )
-}
+    rejected_records: &mut Vec<RejectedDeploy>,
+) -> Result<usize, CasperError> {
+    if rejected_records.is_empty() {
+        return Ok(0);
+    }
 
-fn visible_rejected_deploy_latest_heights(
-    block_store: &KeyValueBlockStore,
-    visible_blocks: &HashSet<BlockHash>,
-) -> Result<HashMap<Bytes, i64>, CasperError> {
-    let mut latest: HashMap<Bytes, i64> = HashMap::new();
+    let mut visible_records: HashSet<RejectedDeploy> = HashSet::new();
     for hash in visible_blocks {
         let Some(block) = block_store.get(hash)? else {
             continue;
         };
-        for rd in &block.body.rejected_deploys {
-            latest
-                .entry(rd.sig.clone())
-                .and_modify(|height| *height = (*height).max(block.body.state.block_number))
-                .or_insert(block.body.state.block_number);
-        }
+        visible_records.extend(block.body.rejected_deploys.iter().cloned());
     }
-    Ok(latest)
-}
-
-fn suppress_rejected_pairs_with_later_visible_rejection(
-    block_store: &KeyValueBlockStore,
-    visible_blocks: &HashSet<BlockHash>,
-    rejected_user_pairs: &mut Vec<(Bytes, BlockHash)>,
-) -> Result<usize, CasperError> {
-    if rejected_user_pairs.is_empty() {
+    if visible_records.is_empty() {
         return Ok(0);
     }
 
-    let visible_rejected_heights =
-        visible_rejected_deploy_latest_heights(block_store, visible_blocks)?;
-    if visible_rejected_heights.is_empty() {
-        return Ok(0);
-    }
-
-    let before = rejected_user_pairs.len();
-    let mut retained = Vec::with_capacity(rejected_user_pairs.len());
-    for (sig, source_block) in std::mem::take(rejected_user_pairs) {
-        let suppress = match visible_rejected_heights.get(&sig) {
-            Some(rejected_height) => match block_store.get(&source_block)? {
-                Some(source) => *rejected_height > source.body.state.block_number,
-                None => false,
-            },
-            None => false,
-        };
-        if !suppress {
-            retained.push((sig, source_block));
-        }
-    }
-    *rejected_user_pairs = retained;
-    Ok(before.saturating_sub(rejected_user_pairs.len()))
+    let before = rejected_records.len();
+    rejected_records.retain(|record| !visible_records.contains(record));
+    Ok(before.saturating_sub(rejected_records.len()))
 }
 
-fn retain_pending_rejected_deploys_for_buffer(
-    dag: &KeyValueDagRepresentation,
-    block_store: &KeyValueBlockStore,
+/// Buffer retain as a pure floor-window rule: keep a rejected deploy while
+/// its validity window is open at the merging block's floor
+/// (node-identical — the floor derives from the block's frozen
+/// justifications), drop it only once the floor passes the window. A
+/// window-closed deploy could never land again anyway, and no node-local
+/// verdict may shorten the buffer's custody: the floor is the only
+/// irreversibility line — a win merely marked finalized by this node's
+/// finalizer can still sit above the floor where a later merge can reject
+/// it, and the buffer holds the only re-proposable copy. Settled work
+/// leaves through the terminal purge or at window close, never through a
+/// local verdict.
+fn retain_recoverable_rejected_deploys_for_buffer(
+    floor_block_number: i64,
     deploy_lifespan: i64,
     deploys: &mut Vec<Signed<DeployData>>,
-    rejecting_block_number: i64,
-) -> Result<usize, CasperError> {
-    if deploys.is_empty() {
-        return Ok(0);
-    }
-
-    let sigs: HashSet<Bytes> = deploys.iter().map(|deploy| deploy.sig.clone()).collect();
-    let statuses =
-        deploy_finalization_status::resolve_batch(dag, block_store, deploy_lifespan, &sigs)
-            .map_err(|err| {
-                CasperError::RuntimeError(format!(
-                    "RejectedDeployBuffer finalization-status filter failed: {}",
-                    err
-                ))
-            })?;
-
-    // `Finalized` is not terminal by itself: the resolver scans only the
-    // finalized chain, so it cannot see the rejection this populate call is
-    // servicing. A finalized win only settles the sig when it sits strictly
-    // ABOVE the rejecting block — otherwise the pending rejection can
-    // finalize and drop the win's effects from canonical state, and the
-    // buffer holds the only re-proposable copy (regression:
-    // finalized_win_pending_rejection_spec). A win above the rejection
-    // (late validation of an already-recovered rejection) stays terminal.
-    let scan_floor = deploys
-        .iter()
-        .map(|d| d.data.valid_after_block_number)
-        .min()
-        .unwrap_or(rejecting_block_number)
-        .min(rejecting_block_number);
-    let finalized_dispositions = canonical_dispositions(
-        block_store,
-        std::slice::from_ref(&dag.last_finalized_block()),
-        scan_floor,
-    )?;
-
+) -> usize {
     let before = deploys.len();
     deploys.retain(|deploy| {
-        let state = statuses.get(&deploy.sig).map(|status| status.state);
-        match state {
-            None | Some(DeployFinalizationState::Pending) => true,
-            Some(DeployFinalizationState::Finalized) => {
-                match finalized_dispositions.get(&deploy.sig) {
-                    Some((win_height, true)) => *win_height <= rejecting_block_number,
-                    disagreement => {
-                        // The resolver and the finalized-chain disposition scan
-                        // disagree: `Finalized` without a winning finalized
-                        // disposition (or none at all). Retaining is the safe
-                        // direction — the buffer holds the only re-proposable
-                        // copy — but the disagreement itself is the resolver's
-                        // known blindness to rejections above the LFB, so make
-                        // it visible rather than silent.
-                        tracing::warn!(
-                            target: "f1r3fly.casper.recovery",
-                            "RejectedDeployBuffer populate: resolver reports Finalized for {} but the \
-                             finalized-chain disposition is {:?} (rejecting block #{}); retaining",
-                            PrettyPrinter::build_string_bytes(&deploy.sig),
-                            disagreement,
-                            rejecting_block_number
-                        );
-                        true
-                    }
-                }
-            }
-            Some(_) => false,
-        }
+        deploy
+            .data
+            .valid_after_block_number
+            .saturating_add(deploy_lifespan)
+            > floor_block_number
     });
-    Ok(before - deploys.len())
+    before - deploys.len()
 }
 
 /// Update `disposition[sig]` toward the latest (highest-block) verdict. A higher
@@ -377,13 +308,31 @@ fn record_disposition(
     bn: i64,
     won: bool,
 ) {
-    match disposition.get(&sig) {
-        Some((best_bn, _)) if *best_bn > bn => {}
-        Some((best_bn, best_won)) if *best_bn == bn && !*best_won => {}
-        _ => {
-            disposition.insert(sig, (bn, won));
+    match disposition.entry(sig) {
+        std::collections::hash_map::Entry::Occupied(mut entry) => {
+            update_latest(entry.get_mut(), bn, won)
+        }
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert((bn, won));
         }
     }
+}
+
+/// The applied set and merge base are frozen merge facts the
+/// state-membership walk reads; a block recording facts its
+/// validator-recomputed merge did not produce is invalid, the same
+/// contract as the rejected records.
+fn state_facts_mismatch(
+    block: &BlockMessage,
+    merged: &super::runtime_manager::MergedPreState,
+) -> bool {
+    let block_applied: HashSet<Bytes> = block.body.applied_from_scope.iter().cloned().collect();
+    let block_base: Option<BlockHash> = if block.body.merge_base.is_empty() {
+        None
+    } else {
+        Some(block.body.merge_base.clone())
+    };
+    block_applied != merged.applied_from_scope || block_base != merged.merge_base
 }
 
 // Returns (None, checkpoints) if the block's tuplespace hash
@@ -394,6 +343,12 @@ pub async fn validate_block_checkpoint(
     s: &mut CasperSnapshot,
     runtime_manager: &RuntimeManager,
     rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
+    floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
+    // This node's validator identity. The rejected-deploy buffer is
+    // OWNER-SCOPED: only the sender of a rejected copy's carrier buffers
+    // its retries, so the populate must know who "we" are. `None`
+    // (observers, exploratory contexts) buffers nothing.
+    local_validator: Option<&Validator>,
 ) -> Result<BlockProcessing<Option<StateHash>>, CasperError> {
     tracing::trace!(target: "f1r3fly.casper.block_validation", "before-unsafe-get-parents");
     let incoming_pre_state_hash = proto_util::pre_state_hash(block);
@@ -416,6 +371,8 @@ pub async fn validate_block_checkpoint(
         &latest_messages,
         None,
         rejected_deploy_buffer,
+        floor_ctx,
+        local_validator,
     )
     .await;
     metrics::histogram!(
@@ -430,24 +387,20 @@ pub async fn validate_block_checkpoint(
     );
 
     match computed_parents_info {
-        Ok((computed_pre_state_hash, rejected_deploys, _rejected_slashes)) => {
-            let block_deploy_sigs: HashSet<_> = block
-                .body
-                .deploys
-                .iter()
-                .map(|pd| pd.deploy.sig.clone())
-                .collect();
-            let rejected_deploy_ids: HashSet<_> = rejected_deploys
-                .iter()
-                .filter(|sig| !block_deploy_sigs.contains(*sig))
-                .cloned()
-                .collect();
-            let block_rejected_deploy_sigs: HashSet<_> = block
-                .body
-                .rejected_deploys
-                .iter()
-                .map(|d| d.sig.clone())
-                .collect();
+        Ok(merged) => {
+            let computed_pre_state_hash = merged.state.clone();
+            // The rejected-record equality is exact and total: every record
+            // the recomputed merge formed must appear in the block — sig,
+            // carrier, and duplicate flag — and nothing else may. There is
+            // deliberately NO carve-out for sigs the block also carries in
+            // `body.deploys`: a record is consensus content regardless of
+            // whether its subject rides fresh in the same block, and
+            // excusing that overlap let a block drop the adjudication its
+            // own merge computed while executing the adjudicated deploy.
+            let computed_rejected: HashSet<RejectedDeploy> =
+                merged.rejected_user.iter().cloned().collect();
+            let block_rejected: HashSet<RejectedDeploy> =
+                block.body.rejected_deploys.iter().cloned().collect();
 
             if incoming_pre_state_hash != computed_pre_state_hash {
                 tracing::debug!(target: "f1r3fly.casper.block_validation", block = %hex::encode(&block.block_hash[..8.min(block.block_hash.len())]), computed = %hex::encode(&computed_pre_state_hash[..8.min(computed_pre_state_hash.len())]), incoming = %hex::encode(&incoming_pre_state_hash[..8.min(incoming_pre_state_hash.len())]), "validate.block_checkpoint: PRE-STATE MISMATCH (recomputed merge != block's recorded pre-state) -> reject, NO replay");
@@ -459,15 +412,25 @@ pub async fn validate_block_checkpoint(
                 );
 
                 Ok(Either::Right(None))
-            } else if rejected_deploy_ids != block_rejected_deploy_sigs {
-                // Detailed logging for InvalidRejectedDeploy mismatch
-                let extra_in_computed: Vec<_> = rejected_deploy_ids
-                    .difference(&block_rejected_deploy_sigs)
-                    .cloned()
+            } else if computed_rejected != block_rejected {
+                // Detailed logging for InvalidRejectedDeploy mismatch: a
+                // record differing in ANY field — sig, carrier, or
+                // duplicate flag — is a disagreement.
+                let describe = |record: &RejectedDeploy| {
+                    format!(
+                        "{}@{}{}",
+                        hex::encode(&record.sig[..8.min(record.sig.len())]),
+                        hex::encode(&record.carrier[..8.min(record.carrier.len())]),
+                        if record.duplicate { "(dup)" } else { "" }
+                    )
+                };
+                let extra_in_computed: Vec<String> = computed_rejected
+                    .difference(&block_rejected)
+                    .map(describe)
                     .collect();
-                let missing_in_computed: Vec<_> = block_rejected_deploy_sigs
-                    .difference(&rejected_deploy_ids)
-                    .cloned()
+                let missing_in_computed: Vec<String> = block_rejected
+                    .difference(&computed_rejected)
+                    .map(describe)
                     .collect();
 
                 // Find duplicates across all deploy sigs in the block
@@ -484,12 +447,28 @@ pub async fn validate_block_checkpoint(
                     block_num = block.body.state.block_number,
                     block_hash = %PrettyPrinter::build_string_bytes(&block.block_hash),
                     sender = %PrettyPrinter::build_string_bytes(&block.sender),
-                    validator_rejected = rejected_deploy_ids.len(),
-                    block_rejected = block_rejected_deploy_sigs.len(),
+                    validator_rejected = computed_rejected.len(),
+                    block_rejected = block_rejected.len(),
                     extra_count = extra_in_computed.len(),
                     missing_count = missing_in_computed.len(),
+                    extra_in_computed = ?extra_in_computed,
+                    missing_in_computed = ?missing_in_computed,
                     duplicate_count,
-                    "rejected deploy mismatch: validator and block creator disagree on rejected deploys"
+                    "rejected deploy mismatch: validator and block creator disagree on rejected records"
+                );
+
+                Ok(Either::Left(BlockStatus::invalid_rejected_deploy()))
+            } else if state_facts_mismatch(block, &merged) {
+                tracing::error!(
+                    target: "f1r3fly.casper.block_validation",
+                    block_num = block.body.state.block_number,
+                    block_hash = %PrettyPrinter::build_string_bytes(&block.block_hash),
+                    sender = %PrettyPrinter::build_string_bytes(&block.sender),
+                    block_applied = block.body.applied_from_scope.len(),
+                    validator_applied = merged.applied_from_scope.len(),
+                    block_base = %PrettyPrinter::build_string_bytes(&block.body.merge_base),
+                    "applied-from-scope / merge-base mismatch: validator and \
+                     block creator disagree on the merge's recorded state facts"
                 );
 
                 Ok(Either::Left(BlockStatus::invalid_rejected_deploy()))
@@ -508,7 +487,7 @@ pub async fn validate_block_checkpoint(
                 handle_errors(proto_util::post_state_hash(block), replay_result)
             }
         }
-        Err(ex) => Ok(Either::Left(BlockStatus::exception(ex))),
+        Err(ex) => Ok(Either::Left(BlockError::from_validation_error(ex))),
     }
 }
 
@@ -656,6 +635,12 @@ async fn replay_block(
                     );
                     return Ok(Either::Left(match replay_error {
                         CasperError::ReplayFailure(replay_failure) => replay_failure,
+                        // Availability is not a replay failure. Stringifying it
+                        // here is what laundered "I do not hold that root" into
+                        // an InternalError, then a RuntimeError, then a
+                        // slashable verdict. Surface it typed; the caller's
+                        // classifier turns it into a deferral.
+                        other if other.is_availability() => return Err(other),
                         other => ReplayFailure::internal_error(other.to_string()),
                     }));
                 } else {
@@ -684,7 +669,7 @@ fn handle_errors(
                     "Internal errors encountered while processing deploy: {}",
                     msg
                 ));
-                Ok(Either::Left(BlockStatus::exception(exception)))
+                Ok(Either::Left(BlockError::from_validation_error(exception)))
             }
 
             ReplayFailure::ReplayStatusMismatch {
@@ -757,6 +742,24 @@ pub fn print_deploy_errors(deploy_sig: &Bytes, errors: &[InterpreterError]) {
     tracing::warn!("Deploy ({}) errors: {}", deploy_info, error_messages);
 }
 
+/// The result of executing a block's deploys against its merged pre-state
+/// — everything block packaging needs, named. The rejected records travel
+/// exactly as the merge formed them: sig, carrier, and duplicate flag are
+/// all consensus content, re-derived and compared by every validator.
+pub struct DeploysCheckpoint {
+    pub pre_state_hash: StateHash,
+    pub post_state_hash: StateHash,
+    pub deploys: Vec<ProcessedDeploy>,
+    pub rejected_deploys: Vec<RejectedDeploy>,
+    pub system_deploys: Vec<ProcessedSystemDeploy>,
+    pub bonds: Vec<Bond>,
+    // The merge's recorded state-construction facts, packaged into the
+    // block body (sorted sigs; base empty where the header derives it)
+    // and consensus-checked at validation beside the rejected records.
+    pub applied_from_scope: Vec<Bytes>,
+    pub merge_base: Option<BlockHash>,
+}
+
 pub async fn compute_deploys_checkpoint(
     block_store: &mut KeyValueBlockStore,
     parents: Vec<BlockMessage>,
@@ -767,17 +770,9 @@ pub async fn compute_deploys_checkpoint(
     block_data: BlockData,
     invalid_blocks: HashMap<BlockHash, Validator>,
     rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
-) -> Result<
-    (
-        StateHash,
-        StateHash,
-        Vec<ProcessedDeploy>,
-        Vec<prost::bytes::Bytes>,
-        Vec<ProcessedSystemDeploy>,
-        Vec<Bond>,
-    ),
-    CasperError,
-> {
+    floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
+    local_validator: Option<&Validator>,
+) -> Result<DeploysCheckpoint, CasperError> {
     let checkpoint_started = std::time::Instant::now();
     // Using tracing events for async - Span[F] equivalent from Scala
     tracing::debug!(target: "f1r3fly.casper.compute_deploys_checkpoint", "compute-deploys-checkpoint-started");
@@ -807,10 +802,26 @@ pub async fn compute_deploys_checkpoint(
         &latest_messages,
         None,
         rejected_deploy_buffer,
+        floor_ctx,
+        local_validator,
     )
     .await?;
     let parents_ms = parents_started.elapsed().as_millis();
-    let (pre_state_hash, rejected_deploys, _rejected_slashes) = computed_parents_info;
+    let pre_state_hash = computed_parents_info.state.clone();
+    let rejected_deploys: Vec<RejectedDeploy> = computed_parents_info.rejected_user.clone();
+    // Sorted so the packaged field is deterministic — the equality check at
+    // validation compares recomputed sets, but the block bytes must not
+    // depend on HashSet iteration order.
+    let applied_from_scope: Vec<Bytes> = {
+        let mut sigs: Vec<Bytes> = computed_parents_info
+            .applied_from_scope
+            .iter()
+            .cloned()
+            .collect();
+        sigs.sort();
+        sigs
+    };
+    let merge_base = computed_parents_info.merge_base.clone();
 
     // Compute state and bonds using one spawned runtime
     let compute_state_started = std::time::Instant::now();
@@ -837,14 +848,16 @@ pub async fn compute_deploys_checkpoint(
         rejected_deploys.len()
     );
 
-    Ok((
+    Ok(DeploysCheckpoint {
         pre_state_hash,
         post_state_hash,
-        processed_deploys,
+        deploys: processed_deploys,
         rejected_deploys,
-        processed_system_deploys,
+        system_deploys: processed_system_deploys,
         bonds,
-    ))
+        applied_from_scope,
+        merge_base,
+    })
 }
 
 /// Ensure every block in the merge `scope` has its mergeable-channels entry
@@ -932,6 +945,100 @@ pub(crate) fn merge_scope_backstop_exceeded(floor_distance: i64) -> bool {
     floor_distance > MAX_FLOOR_DISTANCE_BLOCKS
 }
 
+/// Resolve the floor for a merge derivation: from the caller's
+/// `FloorContext` when present, else derived from the frozen justification
+/// snapshot (same inputs, same result), plus the floor block's committed
+/// post-state — the merge base.
+async fn resolve_merge_floor(
+    block_store: &KeyValueBlockStore,
+    s: &CasperSnapshot,
+    parent_hashes: &[BlockHash],
+    latest_messages: &BTreeMap<Validator, BlockHash>,
+    floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
+) -> Result<
+    (
+        BlockHash,
+        Blake2b256Hash,
+        i64,
+        Vec<crate::rust::finality::floor::Floor>,
+    ),
+    CasperError,
+> {
+    match floor_ctx {
+        Some(ctx) => Ok((
+            ctx.floor.hash.clone(),
+            ctx.floor_state_hash(),
+            ctx.floor.block_number,
+            ctx.settled_floors.clone(),
+        )),
+        None => {
+            let (floor, settled_floors) =
+                crate::rust::finality::floor::finalized_floor_with_candidates(
+                    &s.dag,
+                    block_store,
+                    parent_hashes,
+                    latest_messages,
+                    crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                        s.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
+                    ),
+                )
+                .await?;
+            let floor_hash = floor.hash.clone();
+
+            // The floor block's committed post-state is FS(floor) — the merge base.
+            // The floor is an ancestor of the parents (which are stored), so this is
+            // present in normal operation; surface a clear error instead of panicking
+            // if the block store and DAG ever desynchronize.
+            let floor_block = block_store.get(&floor_hash)?.ok_or_else(|| {
+                CasperError::RuntimeError(format!(
+                    "finalized-floor block {} not in block store (DAG/store desync)",
+                    hex::encode(&floor_hash[..8.min(floor_hash.len())])
+                ))
+            })?;
+            let floor_state =
+                Blake2b256Hash::from_bytes_prost(&floor_block.body.state.post_state_hash);
+            Ok((
+                floor_hash,
+                floor_state,
+                floor_block.body.state.block_number,
+                settled_floors,
+            ))
+        }
+    }
+}
+
+/// True iff `parent`'s committed state carries everything settled in the
+/// floor's state — the precondition for taking a parent's post-state
+/// verbatim. A fast path may skip the merge only when the parent's state
+/// lineage already holds the floor; otherwise the block goes through the
+/// full merge, where this same question decides the base and a parent that
+/// fails it is replaced by the floor, so the scope re-collects what the
+/// parent is missing. A verbatim state has no such repair available — it
+/// is missing settled content, collects no scope to recover it, and every
+/// witnessed descendant is then refused by containment while unfinalized
+/// width piles up (the 3cd723b6 finalization stall).
+fn parent_state_holds_floor(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    parent: &BlockMessage,
+    floor_hash: &BlockHash,
+    floor_block_number: i64,
+) -> Result<bool, CasperError> {
+    crate::rust::finality::floor::state_contains(
+        dag,
+        block_store,
+        &crate::rust::finality::floor::Floor {
+            hash: parent.block_hash.clone(),
+            block_number: parent.body.state.block_number,
+        },
+        &crate::rust::finality::floor::Floor {
+            hash: floor_hash.clone(),
+            block_number: floor_block_number,
+        },
+        &mut crate::rust::finality::floor::IntroducedSigsMemo::new(),
+    )
+}
+
 /// Compute the merged post-state from multiple parent blocks.
 ///
 /// For exploratory deploy, pass `disable_late_block_filtering_override = Some(true)` to
@@ -948,25 +1055,27 @@ pub async fn compute_parents_post_state(
     latest_messages: &BTreeMap<Validator, BlockHash>,
     disable_late_block_filtering_override: Option<bool>,
     rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
-) -> Result<
-    (
-        StateHash,
-        Vec<Bytes>,
-        Vec<crate::rust::merging::rejected_slash::RejectedSlash>,
-    ),
-    CasperError,
-> {
+    // The caller's per-operation derivation context. When present, the
+    // floor (and its post-state) come from it instead of a second
+    // derivation, and the settled-sig probes share its memo. `None`
+    // derives locally — same inputs, same result.
+    floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
+    // This node's validator identity for the OWNER-SCOPED buffer populate;
+    // `None` buffers nothing.
+    local_validator: Option<&Validator>,
+) -> Result<super::runtime_manager::MergedPreState, CasperError> {
+    use super::runtime_manager::MergedPreState;
     let total_started = std::time::Instant::now();
 
     // No entered span guard here: the function is async (it awaits floor
     // derivation), and an `.entered()` guard is not `Send` across an await.
     // The individual tracing events below carry their own targets.
     tracing::debug!(
-        target: "f1r3fly.merge.step",
+        target: "f1r3fly.merge.cpps",
         step = "compute_parents_post_state.ENTER",
         n_parents = parents.len(),
         latest_messages = latest_messages.len(),
-        "merge.step: enter compute_parents_post_state"
+        "merge.cpps: enter compute_parents_post_state"
     );
     match parents.len() {
         // For genesis, use empty trie's root hash
@@ -978,77 +1087,149 @@ pub async fn compute_parents_post_state(
                 total_started.elapsed().as_millis()
             );
             tracing::debug!(
-                target: "f1r3fly.merge.step",
+                target: "f1r3fly.merge.cpps",
                 step = "compute_parents_post_state.EXIT",
                 path = "genesis",
                 post_state = %hex::encode(&state[..8.min(state.len())]),
-                "merge.step: exit compute_parents_post_state"
+                "merge.cpps: exit compute_parents_post_state"
             );
-            Ok((state, Vec::new(), Vec::new()))
+            Ok(MergedPreState {
+                state,
+                rejected_user: Vec::new(),
+                rejected_slashes: Vec::new(),
+                applied_from_scope: HashSet::new(),
+                merge_base: None,
+            })
         }
 
-        // For single parent, get its post state hash
-        1 => {
-            let parent = &parents[0];
-            let state = proto_util::post_state_hash(parent);
-            tracing::debug!(
-                target: "f1r3fly.casper.compute_parents_post_state.timing",
-                "compute_parents_post_state timing: path=single_parent, parents=1, total_ms={}",
-                total_started.elapsed().as_millis()
-            );
-            tracing::debug!(
-                target: "f1r3fly.merge.step",
-                step = "compute_parents_post_state.EXIT",
-                path = "single_parent",
-                post_state = %hex::encode(&state[..8.min(state.len())]),
-                "merge.step: exit compute_parents_post_state"
-            );
-            Ok((state, Vec::new(), Vec::new()))
-        }
-
-        // Multiple parents - we might want to take some data from the parent with the most stake,
-        // e.g. bonds map, slashing deploys, bonding deploys.
-        // such system deploys are not mergeable, so take them from one of the parents.
+        // One or more parents. The two fast paths (single parent; a parent
+        // that DAG-covers every other) may take a parent's post-state
+        // verbatim ONLY when that parent's state lineage holds the derived
+        // floor — otherwise the block re-bases through the full merge.
         _ => {
             let cache_lookup_started = std::time::Instant::now();
-            // A parent that DAG-covers every other parent already carries their
-            // effects in its post-state, deploys included — merging a block with
-            // its own ancestors is degenerate (the merger assumes siblings), so
-            // the covering parent short-circuits regardless of deploy content.
-            // (Port note: 6981b37a's empty-deploys guard is deliberately NOT
-            // taken — it re-exposed ancestor-merges on linear chains here.)
-            for candidate in &parents {
-                let covers_all = parents
-                    .iter()
-                    .filter(|p| p.block_hash != candidate.block_hash)
-                    .all(|p| {
-                        s.dag
-                            .is_dag_ancestor(&p.block_hash, &candidate.block_hash)
-                            .unwrap_or(false)
-                    });
-                if covers_all {
-                    tracing::debug!(
-                        target: "f1r3fly.casper.compute_parents_post_state.fast_path",
-                        "compute_parents_post_state fast path: descendant parent {} covers all {} parents",
-                        PrettyPrinter::build_string_bytes(&candidate.block_hash),
-                        parents.len()
-                    );
-                    let state = proto_util::post_state_hash(candidate);
+            let parent_hashes: Vec<BlockHash> =
+                parents.iter().map(|p| p.block_hash.clone()).collect();
+            let mut pre_resolved: Option<(
+                BlockHash,
+                Blake2b256Hash,
+                i64,
+                Vec<crate::rust::finality::floor::Floor>,
+            )> = None;
+
+            if parents.len() == 1 {
+                let parent = &parents[0];
+                let resolved =
+                    resolve_merge_floor(block_store, s, &parent_hashes, latest_messages, floor_ctx)
+                        .await?;
+                if parent_state_holds_floor(&s.dag, block_store, parent, &resolved.0, resolved.2)? {
+                    let state = proto_util::post_state_hash(parent);
                     tracing::debug!(
                         target: "f1r3fly.casper.compute_parents_post_state.timing",
-                        "compute_parents_post_state timing: path=descendant_fast_path, parents={}, cache_lookup_ms={}, total_ms={}",
-                        parents.len(),
-                        cache_lookup_started.elapsed().as_millis(),
+                        "compute_parents_post_state timing: path=single_parent, parents=1, total_ms={}",
                         total_started.elapsed().as_millis()
                     );
                     tracing::debug!(
-                        target: "f1r3fly.merge.step",
+                        target: "f1r3fly.merge.cpps",
                         step = "compute_parents_post_state.EXIT",
-                        path = "descendant_fast_path",
+                        path = "single_parent",
                         post_state = %hex::encode(&state[..8.min(state.len())]),
-                        "merge.step: exit compute_parents_post_state"
+                        "merge.cpps: exit compute_parents_post_state"
                     );
-                    return Ok((state, Vec::new(), Vec::new()));
+                    return Ok(MergedPreState {
+                        state,
+                        rejected_user: Vec::new(),
+                        rejected_slashes: Vec::new(),
+                        applied_from_scope: HashSet::new(),
+                        merge_base: None,
+                    });
+                }
+                tracing::debug!(
+                    target: "f1r3fly.merge.cpps",
+                    step = "compute_parents_post_state.REBASE",
+                    path = "single_parent_rebase",
+                    floor = %hex::encode(&resolved.0[..8.min(resolved.0.len())]),
+                    floor_block = resolved.2,
+                    "merge.cpps: parent lineage does not hold the floor; re-basing"
+                );
+                pre_resolved = Some(resolved);
+            } else {
+                // A parent that DAG-covers every other parent already carries their
+                // effects in its post-state, deploys included — merging a block with
+                // its own ancestors is degenerate (the merger assumes siblings), so
+                // the covering parent short-circuits regardless of deploy content —
+                // provided its state lineage holds the floor.
+                // (Port note: 6981b37a's empty-deploys guard is deliberately NOT
+                // taken — it re-exposed ancestor-merges on linear chains here.)
+                for candidate in &parents {
+                    let covers_all = parents
+                        .iter()
+                        .filter(|p| p.block_hash != candidate.block_hash)
+                        .all(|p| {
+                            s.dag
+                                .is_dag_ancestor(&p.block_hash, &candidate.block_hash)
+                                .unwrap_or(false)
+                        });
+                    if covers_all {
+                        let resolved = resolve_merge_floor(
+                            block_store,
+                            s,
+                            &parent_hashes,
+                            latest_messages,
+                            floor_ctx,
+                        )
+                        .await?;
+                        if parent_state_holds_floor(
+                            &s.dag,
+                            block_store,
+                            candidate,
+                            &resolved.0,
+                            resolved.2,
+                        )? {
+                            tracing::debug!(
+                                target: "f1r3fly.casper.compute_parents_post_state.fast_path",
+                                "compute_parents_post_state fast path: descendant parent {} covers all {} parents",
+                                PrettyPrinter::build_string_bytes(&candidate.block_hash),
+                                parents.len()
+                            );
+                            let state = proto_util::post_state_hash(candidate);
+                            tracing::debug!(
+                                target: "f1r3fly.casper.compute_parents_post_state.timing",
+                                "compute_parents_post_state timing: path=descendant_fast_path, parents={}, cache_lookup_ms={}, total_ms={}",
+                                parents.len(),
+                                cache_lookup_started.elapsed().as_millis(),
+                                total_started.elapsed().as_millis()
+                            );
+                            tracing::debug!(
+                                target: "f1r3fly.merge.cpps",
+                                step = "compute_parents_post_state.EXIT",
+                                path = "descendant_fast_path",
+                                post_state = %hex::encode(&state[..8.min(state.len())]),
+                                "merge.cpps: exit compute_parents_post_state"
+                            );
+                            // The covering parent is the state parent. Multi-parent
+                            // headers cannot derive which parent carried the state,
+                            // so the fast path records it — the state-membership
+                            // walk continues there instead of guessing.
+                            return Ok(MergedPreState {
+                                state,
+                                rejected_user: Vec::new(),
+                                rejected_slashes: Vec::new(),
+                                applied_from_scope: HashSet::new(),
+                                merge_base: Some(candidate.block_hash.clone()),
+                            });
+                        }
+                        tracing::debug!(
+                            target: "f1r3fly.merge.cpps",
+                            step = "compute_parents_post_state.REBASE",
+                            path = "descendant_rebase",
+                            floor = %hex::encode(&resolved.0[..8.min(resolved.0.len())]),
+                            floor_block = resolved.2,
+                            "merge.cpps: covering parent's lineage does not hold the floor; re-basing"
+                        );
+                        pre_resolved = Some(resolved);
+                        break;
+                    }
                 }
             }
 
@@ -1066,16 +1247,15 @@ pub async fn compute_parents_post_state(
                     .map(|(v, h)| (v.clone(), h.clone()))
                     .collect(),
                 disable_late_block_filtering,
+                buffer_populated: rejected_deploy_buffer.is_some(),
             };
-            if let Some((cached_state, cached_rejected, cached_slashes)) =
-                runtime_manager.get_cached_parents_post_state(&cache_key)
-            {
+            if let Some(cached) = runtime_manager.get_cached_parents_post_state(&cache_key) {
                 tracing::debug!(
                     target: "f1r3fly.casper.compute_parents_post_state.cache",
                     "compute_parents_post_state cache hit: parents={}, rejected_deploys={}, rejected_slashes={}",
                     cache_key.sorted_parent_hashes.len(),
-                    cached_rejected.len(),
-                    cached_slashes.len()
+                    cached.rejected_user.len(),
+                    cached.rejected_slashes.len()
                 );
                 tracing::debug!(
                     target: "f1r3fly.casper.compute_parents_post_state.timing",
@@ -1085,15 +1265,15 @@ pub async fn compute_parents_post_state(
                     total_started.elapsed().as_millis()
                 );
                 tracing::debug!(
-                    target: "f1r3fly.merge.step",
+                    target: "f1r3fly.merge.cpps",
                     step = "compute_parents_post_state.CACHE_SKIP",
                     path = "cache_hit",
-                    post_state = %hex::encode(&cached_state[..8.min(cached_state.len())]),
-                    n_rejected = cached_rejected.len(),
-                    n_rejected_slash = cached_slashes.len(),
-                    "merge.step: cache hit, merge skipped"
+                    post_state = %hex::encode(&cached.state[..8.min(cached.state.len())]),
+                    n_rejected = cached.rejected_user.len(),
+                    n_rejected_slash = cached.rejected_slashes.len(),
+                    "merge.cpps: cache hit, merge skipped"
                 );
-                return Ok((cached_state, cached_rejected, cached_slashes));
+                return Ok(cached);
             }
             let cache_lookup_ms = cache_lookup_started.elapsed().as_millis();
 
@@ -1133,14 +1313,16 @@ pub async fn compute_parents_post_state(
                 Ok(block_index)
             };
 
-            // Compute scope: the unsealed band not represented by the finalized floor.
+            // Compute scope: the band not already represented by the merge
+            // base's committed state.
             //
-            // H3: derive the floor BEFORE collecting the merge scope so the
-            // ancestor walk can drop only blocks represented by the floor's
-            // DAG past. A below-floor sibling can still be a direct parent, and
-            // its effects are not in the floor's post-state.
-            let parent_hashes: Vec<BlockHash> =
-                parents.iter().map(|p| p.block_hash.clone()).collect();
+            // The floor is derived BEFORE the scope is collected because the
+            // base depends on it — the base is the main parent only while that
+            // parent's state holds the floor's settled content. Once the base
+            // is fixed, the ancestor walk drops exactly the blocks it already
+            // carries. A block at or below the base's height can still be a
+            // direct parent off its ancestry, and its effects are not in the
+            // base's post-state.
             let max_parent_block_number = parents
                 .iter()
                 .map(|p| p.body.state.block_number)
@@ -1148,40 +1330,129 @@ pub async fn compute_parents_post_state(
                 .unwrap_or(0);
 
             // Node-deterministic finalized floor, derived from the block's frozen
-            // justification snapshot — the cut the merge builds on. Replaces the
-            // LCA base: the floor is finalization-aware and advance-only, so the
-            // merged state is MONOTONE, where the LCA base let it churn
-            // (path-dependent FS).
+            // justification snapshot (already resolved when a fast-path guard
+            // refused). The floor is no longer the base — it is the finality
+            // clock: it keys the validity window, supplies the bonds committee,
+            // bounds the base's lineage walk, and is the base of last resort
+            // when the main parent's state does not hold its settled content.
             let floor_derive_started = std::time::Instant::now();
-            let floor = crate::rust::finality::floor::finalized_floor(
-                &s.dag,
-                &parent_hashes,
-                latest_messages,
-                crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-                    s.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
-                ),
-            )
-            .await?;
+            let (floor_hash, floor_state, floor_block_number, settled_floors) = match pre_resolved {
+                Some(resolved) => resolved,
+                None => {
+                    resolve_merge_floor(block_store, s, &parent_hashes, latest_messages, floor_ctx)
+                        .await?
+                }
+            };
             let floor_derive_ms = floor_derive_started.elapsed().as_millis();
-            let floor_hash = floor.hash.clone();
 
-            // The floor block's committed post-state is FS(floor) — the merge base.
-            // The floor is an ancestor of the parents (which are stored), so this is
-            // present in normal operation; surface a clear error instead of panicking
-            // if the block store and DAG ever desynchronize.
-            let floor_block = block_store.get(&floor_hash)?.ok_or_else(|| {
+            // The merge base is the MAIN PARENT, not the floor. A block extends
+            // its main parent on the spine, so building its state from anywhere
+            // else is what lets the two come apart: the spine says the parent's
+            // content is there and the state says it is gone. Basing on the
+            // parent makes `state(B) >= state(parents[0])` hold by construction
+            // rather than by preference, and bounds the merge to the branches
+            // that actually diverged instead of replaying everything since
+            // finality.
+            //
+            // The floor is still derived — it is the finality clock, the bonds
+            // committee, and the validity-window key — it is just no longer the
+            // base.
+            let main_parent_hash = parent_hashes[0].clone();
+            let main_parent_block = block_store.get(&main_parent_hash)?.ok_or_else(|| {
                 CasperError::RuntimeError(format!(
-                    "finalized-floor block {} not in block store (DAG/store desync)",
-                    hex::encode(&floor_hash[..8.min(floor_hash.len())])
+                    "main parent {} not in block store (DAG/store desync)",
+                    hex::encode(&main_parent_hash[..8.min(main_parent_hash.len())])
                 ))
             })?;
-            let floor_state =
-                Blake2b256Hash::from_bytes_prost(&floor_block.body.state.post_state_hash);
-            let floor_block_number = floor_block.body.state.block_number;
+            let base_block_number = main_parent_block.body.state.block_number;
+
+            // Basing on the main parent inherits whatever the parent's state
+            // holds — including what it does NOT hold. A merge may legally
+            // reject a chain that is not yet settled in its own view; once that
+            // chain settles, a descendant basing on it would carry the omission
+            // forever, because the parent's own ancestry is out of scope.
+            //
+            // So the scope anchors at the main parent only while the parent's
+            // state actually contains the floor's settled content. When it does
+            // not, the anchor drops to the floor and the settled-sig dedup
+            // re-collects exactly what the base is missing — the repair the old
+            // floor-wide rebase performed on every merge, now paid for only
+            // when it is needed.
+            let mut containment_memo = crate::rust::finality::floor::IntroducedSigsMemo::new();
+            let base_holds_floor = crate::rust::finality::floor::state_contains(
+                &s.dag,
+                block_store,
+                &crate::rust::finality::floor::Floor {
+                    hash: main_parent_hash.clone(),
+                    block_number: base_block_number,
+                },
+                &crate::rust::finality::floor::Floor {
+                    hash: floor_hash.clone(),
+                    block_number: floor_block_number,
+                },
+                &mut containment_memo,
+            )?;
+            // The BASE moves with the anchor, not just the scope. Widening the
+            // scope alone is not enough: the base's own content cannot be
+            // adjudicated away, so a settled chain re-collected into scope would
+            // still lose to the very parent that wrongly dropped it. Settled
+            // content has to outrank the base, and the only way for that to hold
+            // is for the base not to be that parent.
+            let (scope_anchor_hash, scope_anchor_number) = if base_holds_floor {
+                (main_parent_hash.clone(), base_block_number)
+            } else {
+                tracing::debug!(
+                    target: "f1r3fly.merge.cpps",
+                    step = "compute_parents_post_state.BASE_FALLS_BACK_TO_FLOOR",
+                    main_parent = %hex::encode(&main_parent_hash[..8.min(main_parent_hash.len())]),
+                    floor = %hex::encode(&floor_hash[..8.min(floor_hash.len())]),
+                    "main parent's state lacks settled content; basing on the floor instead"
+                );
+                (floor_hash.clone(), floor_block_number)
+            };
+            // The base's own work since the parents diverged: blocks on its
+            // main-parent chain that at least one other parent has not seen.
+            // Bounded BELOW by the floor — anything at or under it is in every
+            // base by definition, so it can never be the base's distinct
+            // contribution. Without that bound a genesis co-parent (one bonded
+            // validator that has not spoken) makes "seen by every other parent"
+            // unsatisfiable and the walk runs to genesis.
+            let mut base_lineage_blocks: HashSet<BlockHash> = HashSet::new();
+            let mut cursor = Some(scope_anchor_hash.clone());
+            while let Some(hash) = cursor {
+                let number = s
+                    .dag
+                    .block_number_unsafe(&hash)
+                    .map_err(CasperError::from)?;
+                if number <= floor_block_number {
+                    break;
+                }
+                let mut seen_by_every_other_parent = true;
+                for other in parent_hashes.iter().skip(1) {
+                    if !s.dag.is_dag_ancestor(&hash, other)? {
+                        seen_by_every_other_parent = false;
+                        break;
+                    }
+                }
+                if seen_by_every_other_parent {
+                    break;
+                }
+                base_lineage_blocks.insert(hash.clone());
+                cursor = s.dag.main_parent(&hash);
+            }
+
+            let anchor_block = block_store.get(&scope_anchor_hash)?.ok_or_else(|| {
+                CasperError::RuntimeError(format!(
+                    "merge base {} not in block store (DAG/store desync)",
+                    hex::encode(&scope_anchor_hash[..8.min(scope_anchor_hash.len())])
+                ))
+            })?;
+            let base_state =
+                Blake2b256Hash::from_bytes_prost(&anchor_block.body.state.post_state_hash);
 
             let include_visible_ancestor =
                 |hash: &BlockHash, dag: &KeyValueDagRepresentation| -> bool {
-                    block_in_floor_merge_scope(dag, hash, &floor_hash, floor_block_number)
+                    block_in_base_merge_scope(dag, hash, &scope_anchor_hash, scope_anchor_number)
                         .unwrap_or(false)
                 };
             // Get all ancestors of all parents (including the parents themselves)
@@ -1208,17 +1479,17 @@ pub async fn compute_parents_post_state(
 
             // Scope visible_blocks to blocks not represented by the floor.
             let pre_filter_count = visible_blocks.len();
-            let pre_filter_blocks: Option<Vec<BlockHash>> = if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG)
+            let pre_filter_blocks: Option<Vec<BlockHash>> = if tracing::enabled!(target: "f1r3fly.merge.cpps", tracing::Level::DEBUG)
             {
                 Some(visible_blocks.iter().cloned().collect())
             } else {
                 None
             };
             visible_blocks.retain(|bh| {
-                block_in_floor_merge_scope(&s.dag, bh, &floor_hash, floor_block_number)
+                block_in_base_merge_scope(&s.dag, bh, &scope_anchor_hash, scope_anchor_number)
                     .unwrap_or(true)
             });
-            if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+            if tracing::enabled!(target: "f1r3fly.merge.cpps", tracing::Level::DEBUG) {
                 let dropped: Vec<String> = match &pre_filter_blocks {
                     Some(pre) => pre
                         .iter()
@@ -1228,20 +1499,23 @@ pub async fn compute_parents_post_state(
                     None => Vec::new(),
                 };
                 tracing::debug!(
-                    target: "f1r3fly.merge.step",
+                    target: "f1r3fly.merge.cpps",
                     step = "compute_parents_post_state.FLOOR",
                     floor = %hex::encode(&floor_hash[..8.min(floor_hash.len())]),
                     floor_block = floor_block_number,
-                    base_state = %hex::encode(&floor_block.body.state.post_state_hash[..8.min(floor_block.body.state.post_state_hash.len())]),
+                    floor_state = %hex::encode(&floor_state.bytes()[..8]),
+                    base = %hex::encode(&scope_anchor_hash[..8.min(scope_anchor_hash.len())]),
+                    base_block = scope_anchor_number,
+                    base_state = %hex::encode(&base_state.bytes()[..8]),
                     scope_before = pre_filter_count,
                     scope_after = visible_blocks.len(),
                     n_dropped = dropped.len(),
                     dropped = ?dropped,
                     n_parents = parents.len(),
-                    "merge.step: floor derived; base=floor.post_state; scope filtered to >= floor block"
+                    "merge.cpps: floor derived; base=anchor.post_state; scope filtered to the band above the base"
                 );
             }
-            tracing::debug!(target: "f1r3fly.casper.compute_parents_post_state", floor = %hex::encode(&floor_hash[..8.min(floor_hash.len())]), floor_block = floor_block_number, base_state = %hex::encode(&floor_block.body.state.post_state_hash[..8.min(floor_block.body.state.post_state_hash.len())]), scope_blocks = visible_blocks.len(), n_parents = parents.len(), "merge.compute_parents_post_state: floor+base+scope computed");
+            tracing::debug!(target: "f1r3fly.casper.compute_parents_post_state", floor = %hex::encode(&floor_hash[..8.min(floor_hash.len())]), floor_block = floor_block_number, base = %hex::encode(&scope_anchor_hash[..8.min(scope_anchor_hash.len())]), base_state = %hex::encode(&base_state.bytes()[..8]), scope_blocks = visible_blocks.len(), n_parents = parents.len(), "merge.compute_parents_post_state: floor+base+scope computed");
             if visible_blocks.len() < pre_filter_count {
                 tracing::debug!(
                     target: "f1r3fly.casper.compute_parents_post_state",
@@ -1334,35 +1608,73 @@ pub async fn compute_parents_post_state(
             // merge builds indices; recompute any this node never replayed
             // (otherwise a missing entry makes the merge fail node-locally → fork).
             tracing::debug!(
-                target: "f1r3fly.merge.step",
+                target: "f1r3fly.merge.cpps",
                 step = "compute_parents_post_state.ENSURE_MERGEABLE_PRE",
                 scope_blocks = visible_blocks_len,
-                "merge.step: ensure_scope_mergeable_present begin"
+                "merge.cpps: ensure_scope_mergeable_present begin"
             );
-            ensure_scope_mergeable_present(block_store, runtime_manager, &s.dag, &visible_blocks)
-                .await?;
+            // The base's own lineage blocks are indexed too — the merge builds
+            // their combined event log to see what the base already holds — but
+            // they are not in `visible_blocks`, so they need the same guarantee.
+            let mergeable_required: HashSet<BlockHash> = visible_blocks
+                .iter()
+                .chain(base_lineage_blocks.iter())
+                .cloned()
+                .collect();
+            ensure_scope_mergeable_present(
+                block_store,
+                runtime_manager,
+                &s.dag,
+                &mergeable_required,
+            )
+            .await?;
             tracing::debug!(
-                target: "f1r3fly.merge.step",
+                target: "f1r3fly.merge.cpps",
                 step = "compute_parents_post_state.ENSURE_MERGEABLE_POST",
                 scope_blocks = visible_blocks_len,
-                "merge.step: ensure_scope_mergeable_present done"
+                "merge.cpps: ensure_scope_mergeable_present done"
             );
 
             // Use DagMerger to merge parent states with scope
             tracing::debug!(
-                target: "f1r3fly.merge.step",
+                target: "f1r3fly.merge.cpps",
                 step = "compute_parents_post_state.MERGE_PRE",
                 floor = %hex::encode(&floor_hash[..8.min(floor_hash.len())]),
-                base_state = %hex::encode(&floor_state.bytes()[..8.min(floor_state.bytes().len())]),
+                base = %hex::encode(&scope_anchor_hash[..8.min(scope_anchor_hash.len())]),
+                base_state = %hex::encode(&base_state.bytes()[..8.min(base_state.bytes().len())]),
                 scope_blocks = visible_blocks_len,
                 disable_late_block_filtering,
-                "merge.step: dag_merger::merge begin"
+                "merge.cpps: dag_merger::merge begin"
             );
             let merge_started = std::time::Instant::now();
+            // Settled-sig probe for the merge dedup: a sig whose effect is
+            // already in the base's committed state has no legitimate scope
+            // copy — every one is a stale duplicate no rejection record
+            // covers. Memoization lives inside the merge (one probe per
+            // unique sig per merge call). The walk bound is the validity
+            // window's floor edge: a scope-live sig's window was open at
+            // its execution, so nothing deeper can hold its effect.
+            let settled_walk_bound =
+                floor_block_number - s.on_chain_state.shard_conf.deploy_lifespan;
+            // The base is the main parent, so "already settled in the base"
+            // asks about the MAIN PARENT's state. This is what drops scope
+            // copies of content the parent merged in from elsewhere: those
+            // blocks are not on its ancestry, so the scope filter keeps them,
+            // but their effects are already in the base and re-applying would
+            // double them. The floor context's memo is keyed on the floor and
+            // cannot answer this question.
+            let sig_settled_in_base = |sig: &Bytes| -> Result<bool, CasperError> {
+                crate::rust::finality::deploy_lifecycle::effect_in_state_of(
+                    block_store,
+                    &main_parent_hash,
+                    sig,
+                    settled_walk_bound,
+                )
+            };
             let merger_result = dag_merger::merge(
                 &s.dag,
-                &floor_hash,
-                &floor_state,
+                &scope_anchor_hash,
+                &base_state,
                 |hash: &BlockHash| -> Result<Vec<DeployChainIndex>, CasperError> {
                     let block_index = block_index_f(hash)?;
                     Ok(block_index.deploy_chains)
@@ -1371,48 +1683,95 @@ pub async fn compute_parents_post_state(
                 dag_merger::cost_optimal_rejection_alg(),
                 Some(visible_blocks.clone()),
                 disable_late_block_filtering,
+                floor_block_number,
+                s.on_chain_state.shard_conf.deploy_lifespan,
+                &sig_settled_in_base,
+                &base_lineage_blocks,
             )?;
             let merge_ms = merge_started.elapsed().as_millis();
 
-            let (state, mut rejected_user_pairs, rejected_slash_pairs) = merger_result;
-            let suppressed = suppress_rejected_pairs_with_later_visible_rejection(
+            let (state, mut rejected_user_records, rejected_slash_pairs, applied_user_sigs) =
+                merger_result;
+            // The tripwire runs on the PRE-suppression records: suppression
+            // drops a record whose identical copy is visible elsewhere in
+            // scope, but the drop it testifies to still happened in THIS
+            // merge — a settled chain kept out must trip regardless of
+            // whether its record is re-emitted.
+            assert_no_settled_rejection(
+                block_store,
+                &settled_floors,
+                &rejected_user_records,
+                s.on_chain_state.shard_conf.deploy_lifespan,
+            )?;
+            let suppressed = suppress_already_recorded_rejections(
                 block_store,
                 &visible_blocks,
-                &mut rejected_user_pairs,
+                &mut rejected_user_records,
             )?;
             if suppressed > 0 {
                 tracing::debug!(
                     target: "f1r3fly.casper.recovery",
-                    "compute_parents_post_state: suppressed {} already-visible rejected deploy(s)",
+                    "compute_parents_post_state: suppressed {} already-recorded rejection(s)",
                     suppressed
                 );
             }
+            for record in &rejected_user_records {
+                tracing::info!(
+                    target: "f1r3fly.casper.deploy_lifecycle",
+                    event = "merge_rejected",
+                    deploy_sig = %hex::encode(&record.sig),
+                    carrier = %hex::encode(&record.carrier),
+                    duplicate = record.duplicate,
+                    floor_block = floor_block_number,
+                    "deploy lifecycle"
+                );
+            }
             tracing::debug!(
-                target: "f1r3fly.merge.step",
+                target: "f1r3fly.merge.cpps",
                 step = "compute_parents_post_state.MERGE_POST",
                 new_state = %hex::encode(&state.bytes()[..8.min(state.bytes().len())]),
-                n_rejected_user = rejected_user_pairs.len(),
+                n_rejected_user = rejected_user_records.len(),
                 n_rejected_slash = rejected_slash_pairs.len(),
                 merge_ms,
-                "merge.step: dag_merger::merge returned"
+                "merge.cpps: dag_merger::merge returned"
             );
-            tracing::debug!(target: "f1r3fly.casper.compute_parents_post_state", merged_state = %hex::encode(&state.bytes()[..8.min(state.bytes().len())]), n_rejected_user = rejected_user_pairs.len(), n_rejected_slash = rejected_slash_pairs.len(), merge_ms, "merge.compute_parents_post_state: DagMerger produced merged state");
+            tracing::debug!(target: "f1r3fly.casper.compute_parents_post_state", merged_state = %hex::encode(&state.bytes()[..8.min(state.bytes().len())]), n_rejected_user = rejected_user_records.len(), n_rejected_slash = rejected_slash_pairs.len(), merge_ms, "merge.compute_parents_post_state: DagMerger produced merged state");
 
-            // Populate the rejected-deploy buffer from (sig, source_block_hash) pairs.
-            // Looking up the `Signed<DeployData>` from the block store lets the block
-            // creator re-propose these deploys in a subsequent block. Fetching each
-            // source block at most once keeps the cost proportional to the number of
-            // distinct rejected-from blocks.
-            //
+            // Populate the rejected-deploy buffer from the records' (sig,
+            // carrier) naming. Looking up the `Signed<DeployData>` from the
+            // carrier block lets the block creator re-propose these deploys
+            // in a subsequent block. Fetching each carrier at most once
+            // keeps the cost proportional to the number of distinct
+            // carriers. Duplicate-flagged records buffer nothing: their
+            // copy's effect already stands, so a re-proposal could only be
+            // executed onto a state that carries it.
             if let Some(buffer) = rejected_deploy_buffer {
-                if !rejected_user_pairs.is_empty() {
+                if !rejected_user_records.is_empty() {
+                    // Bounded to the deploy-lifespan window below the floor:
+                    // a win deeper than that belongs to a deploy whose
+                    // validity window is closed at this floor, and the
+                    // buffer retain drops window-closed deploys regardless —
+                    // so the unbounded walk to genesis bought nothing.
                     let floor_won = canonical_won_sigs(
                         block_store,
                         std::slice::from_ref(&floor_hash),
-                        i64::MIN,
+                        floor_block_number - s.on_chain_state.shard_conf.deploy_lifespan,
                     )?;
                     let mut by_block: HashMap<BlockHash, Vec<Bytes>> = HashMap::new();
-                    for (sig, src_block) in &rejected_user_pairs {
+                    for record in &rejected_user_records {
+                        let (sig, src_block) = (&record.sig, &record.carrier);
+                        if record.duplicate {
+                            tracing::info!(
+                                target: "f1r3fly.casper.deploy_lifecycle",
+                                event = "buffer_suppressed",
+                                deploy_sig = %hex::encode(sig),
+                                carrier = %hex::encode(src_block),
+                                reason = "duplicate_rejection",
+                                floor_block = floor_block_number,
+                                "deploy lifecycle"
+                            );
+                            continue;
+                        }
                         if floor_won.contains(sig)
                             || rejected_sig_has_visible_non_source_win(
                                 block_store,
@@ -1421,11 +1780,14 @@ pub async fn compute_parents_post_state(
                                 src_block,
                             )?
                         {
-                            tracing::debug!(
-                                target: "f1r3fly.casper.recovery",
-                                "RejectedDeployBuffer populate: skipped already-won sig {} from {}",
-                                PrettyPrinter::build_string_bytes(sig),
-                                PrettyPrinter::build_string_bytes(src_block)
+                            tracing::info!(
+                                target: "f1r3fly.casper.deploy_lifecycle",
+                                event = "buffer_suppressed",
+                                deploy_sig = %hex::encode(sig),
+                                carrier = %hex::encode(src_block),
+                                reason = "floor_win",
+                                floor_block = floor_block_number,
+                                "deploy lifecycle"
                             );
                             continue;
                         }
@@ -1439,8 +1801,39 @@ pub async fn compute_parents_post_state(
                         let sig_set: HashSet<Bytes> = sigs.into_iter().collect();
                         match block_store.get(&src_block) {
                             Ok(Some(block)) => {
+                                // Owner-only recovery custody: the buffer
+                                // belongs to the validator that sent the
+                                // rejected copy's carrier — the deploy's
+                                // single holder, matching the one-validator
+                                // deploy model. Everyone else drops the pair
+                                // (the deploy body stays on-chain in the
+                                // carrier; nothing is lost), which
+                                // structurally eliminates same-sig retry
+                                // fan-out. `None` (observers, exploratory
+                                // contexts) buffers nothing.
+                                let owned = local_validator.is_some_and(|me| block.sender == *me);
+                                if !owned {
+                                    tracing::debug!(
+                                        target: "f1r3fly.casper.recovery",
+                                        "RejectedDeployBuffer populate: not the owner of carrier {}; dropping {} pair(s)",
+                                        PrettyPrinter::build_string_bytes(&src_block),
+                                        sig_set.len()
+                                    );
+                                    continue;
+                                }
                                 for pd in &block.body.deploys {
                                     if sig_set.contains(&pd.deploy.sig) {
+                                        tracing::info!(
+                                            target: "f1r3fly.casper.deploy_lifecycle",
+                                            event = "buffer_candidate",
+                                            deploy_sig = %hex::encode(&pd.deploy.sig),
+                                            carrier = %hex::encode(&src_block),
+                                            carrier_block = block.body.state.block_number,
+                                            valid_after_block =
+                                                pd.deploy.data.valid_after_block_number,
+                                            floor_block = floor_block_number,
+                                            "deploy lifecycle"
+                                        );
                                         deploys_to_buffer.push(pd.deploy.clone());
                                     }
                                 }
@@ -1460,30 +1853,29 @@ pub async fn compute_parents_post_state(
                             }
                         }
                     }
-                    match retain_pending_rejected_deploys_for_buffer(
-                        &s.dag,
-                        block_store,
+                    let skipped = retain_recoverable_rejected_deploys_for_buffer(
+                        floor_block_number,
                         s.on_chain_state.shard_conf.deploy_lifespan,
                         &mut deploys_to_buffer,
-                        max_parent_block_number.saturating_add(1),
-                    ) {
-                        Ok(skipped) if skipped > 0 => {
-                            tracing::info!(
-                                target: "f1r3fly.casper.recovery",
-                                "RejectedDeployBuffer populate: skipped {} terminal deploy(s)",
-                                skipped
-                            );
-                        }
-                        Ok(_) => {}
-                        Err(err) => {
-                            tracing::warn!(
-                                "RejectedDeployBuffer populate: finalization-status filter failed; skipping populate: {}",
-                                err
-                            );
-                            deploys_to_buffer.clear();
-                        }
+                    );
+                    if skipped > 0 {
+                        tracing::info!(
+                            target: "f1r3fly.casper.recovery",
+                            "RejectedDeployBuffer populate: skipped {} window-closed deploy(s)",
+                            skipped
+                        );
                     }
                     if !deploys_to_buffer.is_empty() {
+                        for deploy in &deploys_to_buffer {
+                            tracing::info!(
+                                target: "f1r3fly.casper.deploy_lifecycle",
+                                event = "buffer_added",
+                                deploy_sig = %hex::encode(&deploy.sig),
+                                valid_after_block = deploy.data.valid_after_block_number,
+                                floor_block = floor_block_number,
+                                "deploy lifecycle"
+                            );
+                        }
                         match buffer.lock() {
                             Ok(mut guard) => {
                                 if let Err(err) = guard.add(deploys_to_buffer) {
@@ -1558,32 +1950,27 @@ pub async fn compute_parents_post_state(
                     out
                 };
 
-            // Strip block hashes; the cache and callers only need the deploy sigs.
-            let rejected: Vec<Bytes> = rejected_user_pairs
-                .into_iter()
-                .map(|(sig, _)| sig)
-                .collect();
-
             let computed_state = prost::bytes::Bytes::copy_from_slice(&state.bytes());
+            let merged = MergedPreState {
+                state: computed_state.clone(),
+                rejected_user: rejected_user_records,
+                rejected_slashes,
+                applied_from_scope: applied_user_sigs,
+                merge_base: Some(scope_anchor_hash.clone()),
+            };
             // The floor is a deterministic function of the block's justifications,
             // so the merged state is always cacheable (no snapshot-LFB fallback).
             tracing::debug!(
-                target: "f1r3fly.merge.step",
+                target: "f1r3fly.merge.cpps",
                 step = "compute_parents_post_state.CACHE_PUT",
                 path = "merged",
                 post_state = %hex::encode(&computed_state[..8.min(computed_state.len())]),
-                n_rejected = rejected.len(),
-                n_rejected_slash = rejected_slashes.len(),
-                "merge.step: cache put merged parents-post-state"
+                n_rejected = merged.rejected_user.len(),
+                n_rejected_slash = merged.rejected_slashes.len(),
+                n_applied = merged.applied_from_scope.len(),
+                "merge.cpps: cache put merged parents-post-state"
             );
-            runtime_manager.put_cached_parents_post_state(
-                cache_key,
-                (
-                    computed_state.clone(),
-                    rejected.clone(),
-                    rejected_slashes.clone(),
-                ),
-            );
+            runtime_manager.put_cached_parents_post_state(cache_key, merged.clone());
             tracing::debug!(
                 target: "f1r3fly.casper.compute_parents_post_state.timing",
                 "compute_parents_post_state timing: path=merged, parents={}, cache_lookup_ms={}, collect_ancestors_ms={}, flatten_visible_ms={}, floor_derive_ms={}, merge_ms={}, visible_blocks={}, rejected_deploys={}, rejected_slashes={}, total_ms={}",
@@ -1594,22 +1981,60 @@ pub async fn compute_parents_post_state(
                 floor_derive_ms,
                 merge_ms,
                 visible_blocks_len,
-                rejected.len(),
-                rejected_slashes.len(),
+                merged.rejected_user.len(),
+                merged.rejected_slashes.len(),
                 total_started.elapsed().as_millis()
             );
             tracing::debug!(
-                target: "f1r3fly.merge.step",
+                target: "f1r3fly.merge.cpps",
                 step = "compute_parents_post_state.EXIT",
                 path = "merged",
                 post_state = %hex::encode(&computed_state[..8.min(computed_state.len())]),
-                n_rejected = rejected.len(),
-                n_rejected_slash = rejected_slashes.len(),
-                "merge.step: exit compute_parents_post_state"
+                n_rejected = merged.rejected_user.len(),
+                n_rejected_slash = merged.rejected_slashes.len(),
+                "merge.cpps: exit compute_parents_post_state"
             );
-            Ok((computed_state, rejected, rejected_slashes))
+            Ok(merged)
         }
     }
+}
+
+/// The merge-time settled-rejection tripwire: no merge may reject a chain
+/// whose effect is settled in any of the derivation's settled floors. It
+/// runs on the merge's PRE-suppression records — the complete drop set for
+/// in-scope chains — and is the guard for the floor derivation's re-merge
+/// arm: a non-ancestor floor's chains provably re-enter the merge's scope,
+/// and a settled chain among them must land, never be kept out. A drop of
+/// settled content is a finalized-floor safety violation surfaced here,
+/// never a silent erasure. Duplicate records discarded a redundant copy of
+/// an effect that is still present and are exempt.
+fn assert_no_settled_rejection(
+    block_store: &KeyValueBlockStore,
+    settled_floors: &[crate::rust::finality::floor::Floor],
+    rejected: &[RejectedDeploy],
+    deploy_lifespan: i64,
+) -> Result<(), CasperError> {
+    for record in rejected.iter().filter(|r| !r.duplicate) {
+        for floor in settled_floors {
+            let min_height = floor.block_number.saturating_sub(deploy_lifespan);
+            if crate::rust::finality::deploy_lifecycle::effect_in_state_of(
+                block_store,
+                &floor.hash,
+                &record.sig,
+                min_height,
+            )? {
+                return Err(CasperError::Other(format!(
+                    "finalized-floor safety violation: merge rejected sig {} whose \
+                     effect is settled in floor {}#{} — a settled chain must be \
+                     re-applied, never kept out",
+                    hex::encode(&record.sig[..8.min(record.sig.len())]),
+                    PrettyPrinter::build_string_bytes(&floor.hash),
+                    floor.block_number,
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1631,9 +2056,9 @@ mod backstop_tests {
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::{
-        block_in_floor_merge_scope, canonical_won_sigs, merge_scope_backstop_exceeded,
-        rejected_sig_has_visible_non_source_win, retain_pending_rejected_deploys_for_buffer,
-        suppress_rejected_pairs_with_later_visible_rejection, visible_rejected_deploy_sigs,
+        block_in_base_merge_scope, canonical_dispositions, canonical_won_sigs,
+        merge_scope_backstop_exceeded, rejected_sig_has_visible_non_source_win,
+        retain_recoverable_rejected_deploys_for_buffer, suppress_already_recorded_rejections,
         MAX_FLOOR_DISTANCE_BLOCKS,
     };
     use crate::rust::util::construct_deploy;
@@ -1660,6 +2085,252 @@ mod backstop_tests {
         let below = merge_scope_backstop_exceeded(MAX_FLOOR_DISTANCE_BLOCKS);
         let above = merge_scope_backstop_exceeded(MAX_FLOOR_DISTANCE_BLOCKS + 1);
         assert!(!below && above);
+    }
+
+    /// The walk collects three facts per sig in ONE pass; each has its own
+    /// determinism contract. First carrier: LOWEST block, same-height tie to
+    /// the lexicographically SMALLER hash; its sender is the recovery owner.
+    /// Latest disposition: highest block, rejection wins a same-height tie.
+    #[tokio::test]
+    async fn disposition_walk_first_carrier_is_lowest_block_smaller_hash_tie() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let deploy = construct_deploy::source_deploy_now_full(
+            "@7!(7)".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("deploy");
+        let sig = deploy.sig.clone();
+        let secp = Secp256k1;
+        let (_, s_root) = secp.new_key_pair();
+        let (_, s_b) = secp.new_key_pair();
+        let (_, s_c) = secp.new_key_pair();
+
+        let root = disposition_test_block(1, s_root.bytes.clone(), Vec::new(), Vec::new());
+        // Two same-height sibling carriers with distinct senders, then a
+        // higher inclusion — the walk must pick the smaller-hash sibling
+        // and ignore the later copy for first-carrier purposes.
+        let carrier_b =
+            disposition_test_block(2, s_b.bytes.clone(), vec![root.block_hash.clone()], vec![
+                ProcessedDeploy::empty(deploy.clone()),
+            ]);
+        let carrier_c =
+            disposition_test_block(2, s_c.bytes.clone(), vec![root.block_hash.clone()], vec![
+                ProcessedDeploy::empty(deploy.clone()),
+            ]);
+        let tip = disposition_test_block(
+            3,
+            s_root.bytes.clone(),
+            vec![carrier_b.block_hash.clone(), carrier_c.block_hash.clone()],
+            vec![ProcessedDeploy::empty(deploy)],
+        );
+        for block in [&root, &carrier_b, &carrier_c, &tip] {
+            block_store.put_block_message(block).expect("store block");
+        }
+
+        let dispositions =
+            canonical_dispositions(&block_store, &[tip.block_hash.clone()], i64::MIN)
+                .expect("walk");
+        let disposition = dispositions.get(&sig).expect("sig disposition");
+
+        assert_eq!(disposition.latest, (3, true), "latest is the tip inclusion");
+        let (expected_hash, expected_sender) = if carrier_b.block_hash <= carrier_c.block_hash {
+            (carrier_b.block_hash.clone(), s_b.bytes.clone())
+        } else {
+            (carrier_c.block_hash.clone(), s_c.bytes.clone())
+        };
+        assert_eq!(
+            disposition.first_carrier,
+            Some((2, expected_hash, expected_sender)),
+            "first carrier is the lowest inclusion; the same-height tie \
+             breaks to the smaller hash, and its sender is the owner",
+        );
+    }
+
+    /// Latest kept rejection: HIGHEST record-bearing block, same-height tie
+    /// to the lexicographically LARGER hash — the adjudication the retry
+    /// gate settles against must be node-identical.
+    #[tokio::test]
+    async fn disposition_walk_latest_kept_rejection_is_highest_block_larger_hash_tie() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let deploy = construct_deploy::source_deploy_now_full(
+            "@8!(8)".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("deploy");
+        let sig = deploy.sig.clone();
+        let secp = Secp256k1;
+        let (_, s_root) = secp.new_key_pair();
+
+        let carrier = disposition_test_block(1, s_root.bytes.clone(), Vec::new(), vec![
+            ProcessedDeploy::empty(deploy),
+        ]);
+        let mut record_d = disposition_test_block(
+            2,
+            s_root.bytes.clone(),
+            vec![carrier.block_hash.clone()],
+            Vec::new(),
+        );
+        record_d.body.rejected_deploys = vec![RejectedDeploy {
+            sig: sig.clone(),
+            duplicate: false,
+            carrier: carrier.block_hash.clone(),
+        }];
+        let mut record_e = disposition_test_block(
+            2,
+            s_root.bytes.clone(),
+            vec![carrier.block_hash.clone()],
+            Vec::new(),
+        );
+        record_e.body.rejected_deploys = vec![RejectedDeploy {
+            sig: sig.clone(),
+            duplicate: false,
+            carrier: carrier.block_hash.clone(),
+        }];
+        let tip = disposition_test_block(
+            3,
+            s_root.bytes.clone(),
+            vec![record_d.block_hash.clone(), record_e.block_hash.clone()],
+            Vec::new(),
+        );
+        for block in [&carrier, &record_d, &record_e, &tip] {
+            block_store.put_block_message(block).expect("store block");
+        }
+
+        let dispositions =
+            canonical_dispositions(&block_store, &[tip.block_hash.clone()], i64::MIN)
+                .expect("walk");
+        let disposition = dispositions.get(&sig).expect("sig disposition");
+
+        assert_eq!(
+            disposition.latest,
+            (2, false),
+            "the height-2 rejection outranks the height-1 inclusion",
+        );
+        let expected_hash = std::cmp::max(record_d.block_hash.clone(), record_e.block_hash.clone());
+        assert_eq!(
+            disposition.latest_kept_rejection,
+            Some((2, expected_hash)),
+            "the latest kept rejection is the highest record-bearing block; \
+             the same-height tie breaks to the larger hash",
+        );
+        assert_eq!(
+            disposition
+                .first_carrier
+                .as_ref()
+                .map(|(h, b, _)| (*h, b.clone())),
+            Some((1, carrier.block_hash.clone())),
+            "the height-1 inclusion is the first carrier",
+        );
+    }
+
+    /// The tripwire errors exactly when a NON-duplicate record rejects a
+    /// sig whose effect is settled in a settled floor's state: duplicate
+    /// records (redundant-copy discards) and unsettled sigs pass.
+    #[tokio::test]
+    async fn settled_rejection_tripwire_fires_on_settled_content_only() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let settled_deploy = construct_deploy::source_deploy_now_full(
+            "@8!(8)".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("settled deploy");
+        let stranger = construct_deploy::source_deploy_now_full(
+            "@9!(9)".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("stranger deploy");
+        let secp = Secp256k1;
+        let (_, s_e) = secp.new_key_pair();
+        let floor_block = disposition_test_block(1, s_e.bytes.clone(), Vec::new(), vec![
+            ProcessedDeploy::empty(settled_deploy.clone()),
+        ]);
+        block_store
+            .put_block_message(&floor_block)
+            .expect("store floor block");
+        let settled = vec![crate::rust::finality::floor::Floor {
+            hash: floor_block.block_hash.clone(),
+            block_number: 1,
+        }];
+        let record = |sig: &Bytes, duplicate: bool| RejectedDeploy {
+            sig: sig.clone(),
+            duplicate,
+            carrier: floor_block.block_hash.clone(),
+        };
+
+        let err = super::assert_no_settled_rejection(
+            &block_store,
+            &settled,
+            &[record(&settled_deploy.sig, false)],
+            50,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("finalized-floor safety violation"),
+            "a non-duplicate rejection of settled content must be a hard error: {err}"
+        );
+        super::assert_no_settled_rejection(
+            &block_store,
+            &settled,
+            &[record(&settled_deploy.sig, true)],
+            50,
+        )
+        .expect("a duplicate record discards a redundant copy — exempt");
+        super::assert_no_settled_rejection(
+            &block_store,
+            &settled,
+            &[record(&stranger.sig, false)],
+            50,
+        )
+        .expect("rejecting an unsettled sig is ordinary adjudication");
+    }
+
+    fn disposition_test_block(
+        block_number: i64,
+        sender: Bytes,
+        parents: Vec<BlockHash>,
+        deploys: Vec<ProcessedDeploy>,
+    ) -> BlockMessage {
+        block_implicits::get_random_block(
+            Some(block_number),
+            Some(1),
+            None,
+            None,
+            Some(sender),
+            Some(1),
+            Some(0),
+            Some(parents),
+            Some(Vec::new()),
+            Some(deploys),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some("root".to_string()),
+            None,
+        )
     }
 
     fn scope_test_block(
@@ -1754,7 +2425,7 @@ mod backstop_tests {
         .into_iter()
         .collect();
         visible_blocks.retain(|hash| {
-            block_in_floor_merge_scope(&dag, hash, &floor.block_hash, floor_block_number)
+            block_in_base_merge_scope(&dag, hash, &floor.block_hash, floor_block_number)
                 .expect("scope predicate")
         });
 
@@ -1902,7 +2573,11 @@ mod backstop_tests {
             Some("root".to_string()),
             None,
         );
-        later_rejection.body.rejected_deploys = vec![RejectedDeploy { sig: sig.clone() }];
+        later_rejection.body.rejected_deploys = vec![RejectedDeploy {
+            sig: sig.clone(),
+            duplicate: false,
+            carrier: Bytes::new(),
+        }];
         block_store
             .put_block_message(&lower_clean)
             .expect("store lower clean");
@@ -1928,6 +2603,25 @@ mod backstop_tests {
             &higher_source.block_hash,
         )
         .expect("visible win check"));
+    }
+
+    /// The disposition walk refuses to judge from partial data: a block it
+    /// cannot read surfaces as `BlockNotHeld`, never as a smaller answer.
+    #[tokio::test]
+    async fn canonical_walk_reports_missing_blocks_instead_of_guessing() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let missing = Bytes::from(vec![0xAB; 32]);
+
+        let result = canonical_won_sigs(&block_store, &[missing.clone()], i64::MIN);
+
+        assert!(
+            matches!(result, Err(crate::rust::errors::CasperError::BlockNotHeld(ref hash)) if *hash == missing),
+            "a walk over an unreadable chain must name the absent block, got {:?}",
+            result
+        );
     }
 
     #[tokio::test]
@@ -1964,7 +2658,14 @@ mod backstop_tests {
         );
         rejected_floor.body.rejected_deploys = vec![RejectedDeploy {
             sig: rejected_sig.clone(),
+            duplicate: false,
+            carrier: Bytes::new(),
         }];
+        // The included deploy carries NO effect channels: canonical wins are
+        // decided from block metadata (deploy lists + records), never from
+        // an effect probe, so an effect-less deploy still wins.
+        let included = ProcessedDeploy::empty(deploy.clone());
+        assert!(included.deploy_log.is_empty());
         let clean_floor = block_implicits::get_random_block(
             Some(11),
             Some(1),
@@ -1975,7 +2676,7 @@ mod backstop_tests {
             Some(11),
             Some(Vec::new()),
             Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty(deploy.clone())]),
+            Some(vec![included]),
             Some(Vec::new()),
             Some(Vec::new()),
             Some("root".to_string()),
@@ -2005,91 +2706,18 @@ mod backstop_tests {
         assert!(clean_floor_wins.contains(&deploy.sig));
     }
 
+    /// Emission dedup is exact: only a visible record IDENTICAL in sig,
+    /// carrier, and flag makes re-emission redundant. A visible record of
+    /// the same sig naming a different carrier is testimony about a
+    /// different copy and suppresses nothing.
     #[tokio::test]
-    async fn visible_rejected_deploys_are_detected_from_visible_blocks() {
-        let mut kvm = InMemoryStoreManager::new();
-        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
-            .await
-            .expect("block store");
-        let rejected_sig = Bytes::from_static(b"rejected");
-        let unseen_sig = Bytes::from_static(b"unseen");
-        let mut rejected_block = block_implicits::get_random_block(
-            Some(1),
-            Some(1),
-            None,
-            None,
-            None,
-            None,
-            Some(1),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some("root".to_string()),
-            None,
-        );
-        rejected_block.body.rejected_deploys = vec![RejectedDeploy {
-            sig: rejected_sig.clone(),
-        }];
-        let unseen_block = block_implicits::get_random_block(
-            Some(1),
-            Some(1),
-            None,
-            None,
-            None,
-            None,
-            Some(1),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some("root".to_string()),
-            None,
-        );
-        block_store
-            .put_block_message(&rejected_block)
-            .expect("store rejected block");
-        block_store
-            .put_block_message(&unseen_block)
-            .expect("store unseen block");
-
-        let visible_blocks = [rejected_block.block_hash.clone()].into_iter().collect();
-        let detected =
-            visible_rejected_deploy_sigs(&block_store, &visible_blocks).expect("detect rejected");
-
-        assert!(detected.contains(&rejected_sig));
-        assert!(!detected.contains(&unseen_sig));
-    }
-
-    #[tokio::test]
-    async fn older_visible_rejection_does_not_suppress_recovery_source_rejection() {
+    async fn only_the_identical_visible_record_suppresses_re_emission() {
         let mut kvm = InMemoryStoreManager::new();
         let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
             .await
             .expect("block store");
         let recovered_sig = Bytes::from_static(b"recovered");
         let duplicate_sig = Bytes::from_static(b"duplicate");
-        let mut old_rejection = block_implicits::get_random_block(
-            Some(10),
-            Some(1),
-            None,
-            None,
-            None,
-            None,
-            Some(10),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some("root".to_string()),
-            None,
-        );
-        old_rejection.body.rejected_deploys = vec![RejectedDeploy {
-            sig: recovered_sig.clone(),
-        }];
         let source = block_implicits::get_random_block(
             Some(20),
             Some(1),
@@ -2106,7 +2734,32 @@ mod backstop_tests {
             Some("root".to_string()),
             None,
         );
-        let mut later_rejection = block_implicits::get_random_block(
+        // A visible record of `recovered_sig` naming a DIFFERENT carrier:
+        // it adjudicated a sibling copy, not the one at `source`.
+        let mut sibling_record_block = block_implicits::get_random_block(
+            Some(10),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(10),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some("root".to_string()),
+            None,
+        );
+        sibling_record_block.body.rejected_deploys = vec![RejectedDeploy {
+            sig: recovered_sig.clone(),
+            duplicate: false,
+            carrier: Bytes::from(vec![0xD7; 32]),
+        }];
+        // A visible record IDENTICAL to the computed one for
+        // `duplicate_sig`: same sig, same carrier, same flag.
+        let mut identical_record_block = block_implicits::get_random_block(
             Some(21),
             Some(1),
             None,
@@ -2122,60 +2775,100 @@ mod backstop_tests {
             Some("root".to_string()),
             None,
         );
-        later_rejection.body.rejected_deploys = vec![RejectedDeploy {
+        identical_record_block.body.rejected_deploys = vec![RejectedDeploy {
             sig: duplicate_sig.clone(),
+            duplicate: false,
+            carrier: source.block_hash.clone(),
         }];
         block_store
-            .put_block_message(&old_rejection)
-            .expect("store old rejection");
+            .put_block_message(&sibling_record_block)
+            .expect("store sibling record");
         block_store
             .put_block_message(&source)
             .expect("store source");
         block_store
-            .put_block_message(&later_rejection)
-            .expect("store later rejection");
+            .put_block_message(&identical_record_block)
+            .expect("store identical record");
 
         let visible_blocks: HashSet<_> = [
-            old_rejection.block_hash.clone(),
+            sibling_record_block.block_hash.clone(),
             source.block_hash.clone(),
-            later_rejection.block_hash.clone(),
+            identical_record_block.block_hash.clone(),
         ]
         .into_iter()
         .collect();
-        let mut rejected_pairs = vec![
-            (recovered_sig.clone(), source.block_hash.clone()),
-            (duplicate_sig.clone(), source.block_hash.clone()),
-        ];
+        let retained_record = RejectedDeploy {
+            sig: recovered_sig.clone(),
+            duplicate: false,
+            carrier: source.block_hash.clone(),
+        };
+        let mut rejected_records = vec![retained_record.clone(), RejectedDeploy {
+            sig: duplicate_sig.clone(),
+            duplicate: false,
+            carrier: source.block_hash.clone(),
+        }];
 
-        let suppressed = suppress_rejected_pairs_with_later_visible_rejection(
+        let suppressed = suppress_already_recorded_rejections(
             &block_store,
             &visible_blocks,
-            &mut rejected_pairs,
+            &mut rejected_records,
         )
-        .expect("suppress rejected pairs");
+        .expect("suppress rejected records");
 
         assert_eq!(suppressed, 1);
-        assert_eq!(rejected_pairs, vec![(recovered_sig, source.block_hash)]);
+        assert_eq!(rejected_records, vec![retained_record]);
     }
 
+    /// A record adjudicates the copy its carrier names, and ONLY that copy.
+    /// A visible record naming a SIBLING carrier of the same sig covers
+    /// nothing about this carrier's copy — suppressing this pair on it
+    /// leaves the sibling's adjudication permanently unrecorded: the copy
+    /// reads as a standing win, recovery stands down, and the work is lost
+    /// while the record plane looks complete.
     #[tokio::test]
-    async fn finalized_rejected_deploys_are_not_buffered_again() {
+    async fn record_naming_a_sibling_carrier_does_not_suppress_this_carriers_pair() {
         let mut kvm = InMemoryStoreManager::new();
         let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
             .await
             .expect("block store");
-        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
-            .await
-            .expect("dag storage");
+        let deploy = construct_deploy::source_deploy_now_full(
+            "@11!(11)".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("deploy");
+        let sig = deploy.sig.clone();
 
-        let genesis = block_implicits::get_random_block(
-            Some(0),
-            Some(0),
+        // This carrier: holds the copy the computed pair adjudicates.
+        let this_carrier = block_implicits::get_random_block(
+            Some(20),
+            Some(1),
             None,
             None,
             None,
             None,
-            Some(0),
+            Some(20),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(vec![ProcessedDeploy::empty(deploy)]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some("root".to_string()),
+            None,
+        );
+        // A later visible record of the SAME sig naming a DIFFERENT carrier
+        // (a sibling copy adjudicated elsewhere).
+        let mut sibling_record_block = block_implicits::get_random_block(
+            Some(21),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(21),
             Some(Vec::new()),
             Some(Vec::new()),
             Some(Vec::new()),
@@ -2184,77 +2877,99 @@ mod backstop_tests {
             Some("root".to_string()),
             None,
         );
-        let finalized = construct_deploy::source_deploy_now_full(
-            "@1!(1)".to_string(),
-            None,
-            None,
-            None,
-            Some(0),
-            None,
+        sibling_record_block.body.rejected_deploys = vec![RejectedDeploy {
+            sig: sig.clone(),
+            duplicate: false,
+            carrier: Bytes::from(vec![0xC4; 32]),
+        }];
+        block_store
+            .put_block_message(&this_carrier)
+            .expect("store this carrier");
+        block_store
+            .put_block_message(&sibling_record_block)
+            .expect("store sibling record");
+
+        let visible_blocks: HashSet<BlockHash> = [
+            this_carrier.block_hash.clone(),
+            sibling_record_block.block_hash.clone(),
+        ]
+        .into_iter()
+        .collect();
+        let this_record = RejectedDeploy {
+            sig: sig.clone(),
+            duplicate: false,
+            carrier: this_carrier.block_hash.clone(),
+        };
+        let mut rejected_records = vec![this_record.clone()];
+
+        let suppressed = suppress_already_recorded_rejections(
+            &block_store,
+            &visible_blocks,
+            &mut rejected_records,
         )
-        .expect("finalized deploy");
-        let pending = construct_deploy::source_deploy_now_full(
-            "@2!(2)".to_string(),
-            None,
-            None,
-            None,
-            Some(0),
-            None,
-        )
-        .expect("pending deploy");
-        let finalized_block = block_implicits::get_random_block(
-            Some(1),
-            Some(1),
-            None,
-            None,
-            None,
-            None,
-            Some(1),
-            Some(vec![genesis.block_hash.clone()]),
-            Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty(finalized.clone())]),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some("root".to_string()),
-            None,
+        .expect("suppress rejected records");
+
+        assert_eq!(
+            suppressed, 0,
+            "a record naming a sibling carrier covers nothing about this copy"
         );
+        assert_eq!(
+            rejected_records,
+            vec![this_record],
+            "the record for this carrier must be emitted"
+        );
+    }
 
-        block_store
-            .put_block_message(&genesis)
-            .expect("store genesis");
-        block_store
-            .put_block_message(&finalized_block)
-            .expect("store finalized");
-        dag_storage
-            .insert(&genesis, InsertMode::Approved)
-            .expect("insert genesis");
-        dag_storage
-            .insert(&finalized_block, InsertMode::Normal)
-            .expect("insert finalized");
+    /// The retain is a pure floor-window rule: a rejected deploy whose
+    /// validity window is OPEN at the merging block's floor stays
+    /// buffered, regardless of any node-local verdict about it. The floor
+    /// is the only irreversibility line — a win merely marked finalized by
+    /// this node's finalizer can still sit above the floor, inside the
+    /// merge scope of future blocks, where a later merge can reject it;
+    /// the buffer holds the only re-proposable copy. Settled work leaves
+    /// through the purge (effect in floor state) or at window close.
+    #[test]
+    fn window_open_rejected_deploys_stay_buffered_and_window_closed_drop() {
+        let open = construct_deploy::source_deploy_now_full(
+            "@31!(31)".to_string(),
+            None,
+            None,
+            None,
+            Some(60),
+            None,
+        )
+        .expect("window-open deploy");
+        let closed = construct_deploy::source_deploy_now_full(
+            "@32!(32)".to_string(),
+            None,
+            None,
+            None,
+            Some(0),
+            None,
+        )
+        .expect("window-closed deploy");
 
-        let mut dag = dag_storage.get_representation().expect("dag");
-        dag.last_finalized_block_hash = finalized_block.block_hash.clone();
+        // Floor at #100, lifespan 50: valid_after 60 keeps its window open
+        // (60 + 50 > 100); valid_after 0 closed it at floor #50.
+        let mut deploys = vec![open.clone(), closed.clone()];
+        let skipped = retain_recoverable_rejected_deploys_for_buffer(100, 50, &mut deploys);
 
-        // Rejection below the finalized win (late validation of an
-        // already-recovered rejection): the finalized sig is terminal.
-        let mut deploys = vec![finalized.clone(), pending.clone()];
-        let skipped =
-            retain_pending_rejected_deploys_for_buffer(&dag, &block_store, 50, &mut deploys, 0)
-                .expect("retain pending");
-
-        assert_eq!(skipped, 1);
+        assert_eq!(
+            skipped, 1,
+            "exactly the window-closed deploy leaves the buffer"
+        );
         assert_eq!(deploys.len(), 1);
-        assert_eq!(deploys[0].sig, pending.sig);
+        assert_eq!(
+            deploys[0].sig, open.sig,
+            "the window-open deploy stays buffered regardless of local verdicts"
+        );
 
-        // Rejection ABOVE the finalized win: `Finalized` is not terminal —
-        // the pending rejection can finalize and drop the win's effects, so
-        // the deploy must stay buffered (finalized-win blindness fix).
-        let mut deploys = vec![finalized.clone(), pending.clone()];
-        let skipped =
-            retain_pending_rejected_deploys_for_buffer(&dag, &block_store, 50, &mut deploys, 2)
-                .expect("retain pending with rejection above win");
-
-        assert_eq!(skipped, 0);
-        assert_eq!(deploys.len(), 2);
+        // At the exact boundary (valid_after + lifespan == floor) the
+        // window is closed — the same boundary the merge window rule and
+        // selection expiry use on the floor clock.
+        let mut boundary = vec![closed.clone()];
+        let skipped = retain_recoverable_rejected_deploys_for_buffer(50, 50, &mut boundary);
+        assert_eq!(skipped, 1);
+        assert!(boundary.is_empty());
     }
 }

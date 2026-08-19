@@ -35,6 +35,8 @@ pub enum CasperMessage {
     StoreItemsMessage(StoreItemsMessage),
     MergeableEntryRequest(MergeableEntryRequest),
     MergeableEntryResponse(MergeableEntryResponse),
+    FloorCacheRequest(FloorCacheRequest),
+    FloorCacheResponse(FloorCacheResponse),
 }
 
 impl CasperMessage {
@@ -114,6 +116,14 @@ impl CasperMessage {
 
     pub fn from_mergeable_entry_response(proto: MergeableEntryResponseProto) -> Self {
         CasperMessage::MergeableEntryResponse(MergeableEntryResponse::from_proto(proto))
+    }
+
+    pub fn from_floor_cache_request(proto: FloorCacheRequestProto) -> Self {
+        CasperMessage::FloorCacheRequest(FloorCacheRequest::from_proto(proto))
+    }
+
+    pub fn from_floor_cache_response(proto: FloorCacheResponseProto) -> Self {
+        CasperMessage::FloorCacheResponse(FloorCacheResponse::from_proto(proto))
     }
 }
 
@@ -239,10 +249,110 @@ impl BlockApproval {
     }
 }
 
+/// Ask a peer for its cached finalized-floor values for the named blocks.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FloorCacheRequest {
+    pub hashes: Vec<ByteString>,
+}
+
+impl FloorCacheRequest {
+    pub fn from_proto(proto: FloorCacheRequestProto) -> Self {
+        Self {
+            hashes: proto.hashes,
+        }
+    }
+
+    pub fn to_proto(self) -> FloorCacheRequestProto {
+        FloorCacheRequestProto {
+            hashes: self.hashes,
+        }
+    }
+}
+
+/// One block's cached floor and frontier, as the responder derived them when
+/// it validated the block.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FloorCacheEntry {
+    pub block_hash: ByteString,
+    pub floor_hash: ByteString,
+    pub frontier_hash: ByteString,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FloorCacheResponse {
+    pub entries: Vec<FloorCacheEntry>,
+}
+
+impl FloorCacheResponse {
+    pub fn from_proto(proto: FloorCacheResponseProto) -> Self {
+        Self {
+            entries: proto
+                .entries
+                .into_iter()
+                .map(|entry| FloorCacheEntry {
+                    block_hash: entry.block_hash,
+                    floor_hash: entry.floor_hash,
+                    frontier_hash: entry.frontier_hash,
+                })
+                .collect(),
+        }
+    }
+
+    pub fn to_proto(self) -> FloorCacheResponseProto {
+        FloorCacheResponseProto {
+            entries: self
+                .entries
+                .into_iter()
+                .map(|entry| FloorCacheEntryProto {
+                    block_hash: entry.block_hash,
+                    floor_hash: entry.floor_hash,
+                    frontier_hash: entry.frontier_hash,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// The anchor's finalized floor and frontier, carried with the approved block
+/// so a restored node can start deriving forward from them.
+///
+/// Each block is named by hash AND number: the number sizes the receiver's
+/// download window, which it must fix before it holds any block to look up.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FinalizedFloorSeed {
+    pub floor_hash: ByteString,
+    pub floor_number: i64,
+    pub frontier_hash: ByteString,
+    pub frontier_number: i64,
+}
+
+impl FinalizedFloorSeed {
+    pub fn from_proto(proto: FinalizedFloorSeedProto) -> Self {
+        Self {
+            floor_hash: proto.floor_hash,
+            floor_number: proto.floor_number,
+            frontier_hash: proto.frontier_hash,
+            frontier_number: proto.frontier_number,
+        }
+    }
+
+    pub fn to_proto(self) -> FinalizedFloorSeedProto {
+        FinalizedFloorSeedProto {
+            floor_hash: self.floor_hash,
+            floor_number: self.floor_number,
+            frontier_hash: self.frontier_hash,
+            frontier_number: self.frontier_number,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApprovedBlock {
     pub candidate: ApprovedBlockCandidate,
     pub sigs: Vec<Signature>,
+    /// Absent from peers that predate the seed, and from the non-trim response
+    /// (a node syncing from genesis derives its own floors).
+    pub floor_seed: Option<FinalizedFloorSeed>,
 }
 
 impl ApprovedBlock {
@@ -254,6 +364,7 @@ impl ApprovedBlock {
                     .ok_or_else(|| "Missing candidate field".to_string())?,
             )?,
             sigs: proto.sigs,
+            floor_seed: proto.floor_seed.map(FinalizedFloorSeed::from_proto),
         })
     }
 
@@ -261,6 +372,7 @@ impl ApprovedBlock {
         ApprovedBlockProto {
             candidate: Some(self.candidate.to_proto()),
             sigs: self.sigs,
+            floor_seed: self.floor_seed.map(FinalizedFloorSeed::to_proto),
         }
     }
 }
@@ -422,15 +534,35 @@ impl Header {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RejectedDeploy {
     pub sig: ByteString,
+    /// Set by the merge that formed this record when the sig's effect is
+    /// present in that merge's own post-state (a kept copy in the same
+    /// merge, or already settled in its base): the record discarded a
+    /// redundant copy and does not dispute the sig's standing win.
+    pub duplicate: bool,
+    /// The block that held the copy this record adjudicated — the rejected
+    /// chain's source block, recorded by the forming merge.
+    pub carrier: ByteString,
 }
 
 impl RejectedDeploy {
-    pub fn from_proto(proto: RejectedDeployProto) -> Self { Self { sig: proto.sig } }
+    pub fn from_proto(proto: RejectedDeployProto) -> Self {
+        Self {
+            sig: proto.sig,
+            duplicate: proto.duplicate,
+            carrier: proto.carrier,
+        }
+    }
 
-    pub fn to_proto(self) -> RejectedDeployProto { RejectedDeployProto { sig: self.sig } }
+    pub fn to_proto(self) -> RejectedDeployProto {
+        RejectedDeployProto {
+            sig: self.sig,
+            duplicate: self.duplicate,
+            carrier: self.carrier,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -440,6 +572,8 @@ pub struct Body {
     pub rejected_deploys: Vec<RejectedDeploy>,
     pub system_deploys: Vec<ProcessedSystemDeploy>,
     pub extra_bytes: ByteString,
+    pub applied_from_scope: Vec<ByteString>,
+    pub merge_base: ByteString,
 }
 
 impl Body {
@@ -466,6 +600,8 @@ impl Body {
                 .map(|s| ProcessedSystemDeploy::from_proto(s))
                 .collect::<Result<Vec<ProcessedSystemDeploy>, String>>()?,
             extra_bytes: proto.extra_bytes,
+            applied_from_scope: proto.applied_from_scope,
+            merge_base: proto.merge_base,
         })
     }
 
@@ -491,6 +627,8 @@ impl Body {
                 .map(|s| s.to_proto())
                 .collect(),
             extra_bytes: self.extra_bytes.clone(),
+            applied_from_scope: self.applied_from_scope.clone(),
+            merge_base: self.merge_base.clone(),
         }
     }
 }
@@ -1289,5 +1427,149 @@ impl MergeableEntryResponse {
             block_hash: self.block_hash,
             serialized_entry: self.serialized_entry,
         }
+    }
+}
+
+#[cfg(test)]
+mod approved_block_tests {
+    use prost::bytes::Bytes;
+
+    use super::*;
+
+    fn candidate() -> ApprovedBlockCandidate {
+        ApprovedBlockCandidate {
+            block: BlockMessage {
+                block_hash: Bytes::from_static(b"anchor"),
+                header: Header {
+                    parents_hash_list: vec![],
+                    timestamp: 0,
+                    version: 0,
+                    extra_bytes: Bytes::new(),
+                },
+                body: Body {
+                    state: F1r3flyState {
+                        pre_state_hash: Bytes::new(),
+                        post_state_hash: Bytes::new(),
+                        bonds: vec![],
+                        block_number: 87,
+                    },
+                    deploys: vec![],
+                    rejected_deploys: vec![],
+                    system_deploys: vec![],
+                    extra_bytes: Bytes::new(),
+                    applied_from_scope: vec![],
+                    merge_base: Bytes::new(),
+                },
+                justifications: vec![],
+                sender: Bytes::new(),
+                seq_num: 0,
+                sig: Bytes::new(),
+                sig_algorithm: String::new(),
+                shard_id: "root".to_string(),
+                extra_bytes: Bytes::new(),
+            },
+            required_sigs: 0,
+        }
+    }
+
+    /// The finalized-floor cache travels with the LFS window. A restored node
+    /// cannot derive floors for blocks below its anchor — the derivation
+    /// recurses through history it deliberately does not keep — and without
+    /// them every sibling-branch validation crawls gap-by-gap toward genesis.
+    /// The responder computed these values when it validated the blocks; the
+    /// numbers are hashes only, a few KB for a window whose size is constant
+    /// in chain height.
+    #[test]
+    fn the_floor_cache_survives_the_wire() {
+        let entry = FloorCacheEntry {
+            block_hash: Bytes::from_static(b"window-block"),
+            floor_hash: Bytes::from_static(b"its-floor"),
+            frontier_hash: Bytes::from_static(b"its-frontier"),
+        };
+        let request = FloorCacheRequest {
+            hashes: vec![Bytes::from_static(b"window-block")],
+        };
+        let response = FloorCacheResponse {
+            entries: vec![entry],
+        };
+
+        assert_eq!(
+            FloorCacheRequest::from_proto(request.clone().to_proto()),
+            request,
+            "the requested hash set must survive the wire"
+        );
+        assert_eq!(
+            FloorCacheResponse::from_proto(response.clone().to_proto()),
+            response,
+            "every entry must survive intact: the receiver writes these into the \
+             same caches its own validation would have filled"
+        );
+    }
+
+    /// The seed rides on the ApprovedBlock, never inside its candidate: the
+    /// candidate's serialized bytes are what the genesis ceremony signs and
+    /// what `Validate::approved_block` re-derives to verify, so a field added
+    /// there would put unsigned peer-supplied data inside the signed envelope
+    /// and make two ceremony participants disagree on the digest.
+    #[test]
+    fn the_floor_seed_survives_the_wire_and_the_candidate_digest_does_not_move() {
+        let seed = FinalizedFloorSeed {
+            floor_hash: Bytes::from_static(b"floor"),
+            floor_number: 37,
+            frontier_hash: Bytes::from_static(b"frontier"),
+            frontier_number: 41,
+        };
+        let seeded = ApprovedBlock {
+            candidate: candidate(),
+            sigs: vec![],
+            floor_seed: Some(seed.clone()),
+        };
+        let bare = ApprovedBlock {
+            candidate: candidate(),
+            sigs: vec![],
+            floor_seed: None,
+        };
+
+        assert_eq!(
+            ApprovedBlock::from_proto(seeded.clone().to_proto()).expect("round trip"),
+            seeded,
+            "the seed must survive the wire intact: the receiver sizes its download \
+             window from these numbers before it requests a single block"
+        );
+        assert_eq!(
+            ApprovedBlock::from_proto(bare.clone().to_proto()).expect("round trip"),
+            bare,
+            "a peer that sends no seed must decode as no seed, not as a zero floor"
+        );
+
+        assert_eq!(
+            seeded
+                .to_proto()
+                .candidate
+                .expect("candidate")
+                .encode_to_vec(),
+            bare.to_proto()
+                .candidate
+                .expect("candidate")
+                .encode_to_vec(),
+            "seeding must not shift one byte of the candidate: those bytes are the \
+             ceremony's signed payload"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejected_deploy_decodes_legacy_wire_format() {
+        let legacy = [0x0a, 0x03, b's', b'i', b'g'];
+        let decoded = RejectedDeployProto::decode(legacy.as_slice()).unwrap();
+        let record = RejectedDeploy::from_proto(decoded);
+
+        assert_eq!(record.sig, ByteString::from_static(b"sig"));
+        assert!(!record.duplicate);
+        assert!(record.carrier.is_empty());
     }
 }

@@ -48,6 +48,10 @@ fn proposer_queue_max_pending() -> usize { PROPOSER_QUEUE_MAX_PENDING }
 
 fn block_processor_queue_max_pending() -> usize { BLOCK_PROCESSOR_QUEUE_MAX_PENDING }
 
+fn block_report_prewarm_enabled(is_node_read_only: bool, dev_mode: bool) -> bool {
+    is_node_read_only || dev_mode
+}
+
 pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'static>(
     rp_connections: ConnectionsCell,
     rp_conf_cell: comm::rust::rp::rp_conf::RPConfCell,
@@ -231,7 +235,9 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     // Runtime manager (play and replay runtimes)
     let (runtime_manager, history_repo) = {
         use casper::rust::genesis::genesis::Genesis;
-        use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+        use casper::rust::util::rholang::runtime_manager::{
+            ExploratoryDeployConfig, RuntimeManager,
+        };
         use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
         let rspace_stores = rnode_store_manager
@@ -241,11 +247,16 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
 
         let mergeable_store = RuntimeManager::mergeable_store(&mut rnode_store_manager).await?;
         tracing::debug!("[Setup] Creating RuntimeManager with history...");
-        let result = RuntimeManager::create_with_history(
+        let result = RuntimeManager::create_with_history_config(
             rspace_stores,
             mergeable_store,
             Arc::new(Genesis::default_mergeable_tags()),
             external_services.clone(),
+            ExploratoryDeployConfig::new(
+                conf.api_server.exploratory_deploy_max_concurrent,
+                conf.api_server.exploratory_deploy_phlo_limit,
+                conf.api_server.exploratory_deploy_execution_timeout,
+            )?,
         );
         tracing::debug!("[Setup] RuntimeManager created successfully");
         result
@@ -264,8 +275,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                 .map_err(|e| CasperError::Other(format!("Failed to get rspace stores: {}", e)))?;
             reporting_casper::rho_reporter(
                 &rspace_stores,
-                &block_store,
                 &block_dag_storage,
+                runtime_manager.replay_lock(),
                 rholang::rust::interpreter::external_services::ExternalServices::noop(),
             )
         } else {
@@ -333,6 +344,23 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         .read()
         .map_err(|e| CasperError::Other(format!("Failed to read RPConf: {}", e)))?;
 
+    // Runtime state requester: fetches rspace roots named as missing while the
+    // node runs — the state a settled-history admission arrives without, and
+    // the state a deferred replay is waiting on. The processor names roots on
+    // `fetch_tx`; Running routes incoming StoreItemsMessage chunks to
+    // `items_tx`.
+    let state_requester_handles = {
+        let has_root_rm = runtime_manager.clone();
+        let has_root: casper::rust::engine::lfs_horizon_requester::HasRootFn =
+            Arc::new(move |root| has_root_rm.has_root(root));
+        casper::rust::engine::runtime_state_requester::spawn(
+            transport_layer.clone(),
+            rp_conf.clone(),
+            rspace_state_manager.importer.clone(),
+            has_root,
+        )
+    };
+
     // Block processor
     let block_processor = casper::rust::blocks::block_processor::new_block_processor(
         block_store.clone(),
@@ -342,6 +370,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         transport_layer.clone(),
         rp_connections.clone(),
         rp_conf.clone(),
+        Some(state_requester_handles.fetch_tx.clone()),
     );
 
     // Proposer instance
@@ -525,6 +554,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             conf.protocol_server.disable_state_exporter,
             heartbeat_signal_ref.clone(),
             conf.standalone,
+            Some(state_requester_handles.items_tx.clone()),
         )) as Arc<dyn CasperLaunch>
     };
     info!("CasperLaunch initialized");
@@ -583,31 +613,48 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         use futures::StreamExt;
         use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 
-        let report_api = block_report_api.clone();
-        let transfer_unforgeable_for_events = transfer_unforgeable.clone();
-        let event_pub = event_publisher.clone();
         let is_ready_flag = is_ready.clone();
         let mut event_stream = event_publisher.consume();
+        const PREWARM_QUEUE_CAPACITY: usize = 64;
+        let (report_tx, mut report_rx) = tokio::sync::mpsc::channel::<
+            shared::rust::shared::f1r3fly_event::BlockFinalised,
+        >(PREWARM_QUEUE_CAPACITY);
+        let report_api = block_report_api.clone();
+        let transfer_unforgeable_for_reports = transfer_unforgeable.clone();
+        let event_pub_for_reports = event_publisher.clone();
+        let prewarm_enabled = block_report_prewarm_enabled(is_node_read_only, conf.dev_mode);
+
+        tokio::spawn(async move {
+            while let Some(finalized) = report_rx.recv().await {
+                metrics::gauge!("block_report.prewarm_queue_depth", "source" => "node")
+                    .set(report_rx.len() as f64);
+                handle_block_finalized(
+                    report_api.clone(),
+                    transfer_unforgeable_for_reports.clone(),
+                    event_pub_for_reports.clone(),
+                    finalized.block_hash,
+                    finalized.block_number,
+                )
+                .await;
+            }
+        });
 
         tokio::spawn(async move {
             while let Some(event) = event_stream.next().await {
                 match &event {
-                    F1r3flyEvent::BlockFinalised(finalized) => {
-                        let api = report_api.clone();
-                        let unforgeable = transfer_unforgeable_for_events.clone();
-                        let publisher = event_pub.clone();
-                        let block_hash = finalized.block_hash.clone();
-                        let block_number = finalized.block_number;
-                        tokio::spawn(async move {
-                            handle_block_finalized(
-                                api,
-                                unforgeable,
-                                publisher,
-                                block_hash,
-                                block_number,
+                    F1r3flyEvent::BlockFinalised(finalized) if prewarm_enabled => {
+                        if report_tx.send(finalized.clone()).await.is_err() {
+                            metrics::counter!(
+                                "block_report.prewarm_skipped",
+                                "source" => "node",
+                                "reason" => "queue_closed"
                             )
-                            .await;
-                        });
+                            .increment(1);
+                            tracing::warn!(
+                                block_hash = %finalized.block_hash,
+                                "Block report prewarm queue closed"
+                            );
+                        }
                     }
                     F1r3flyEvent::EnteredRunningState(_) => {
                         is_ready_flag.store(true, std::sync::atomic::Ordering::Release);
@@ -861,7 +908,6 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             disable_validator_progress_check: conf.standalone,
             enable_mergeable_channel_gc: conf.casper.enable_mergeable_channel_gc,
             mergeable_channels_gc_depth_buffer: conf.casper.mergeable_channels_gc_depth_buffer,
-            finalizer_conf: conf.casper.finalizer.clone(),
             synchrony_recovery_stall_window: conf.casper.synchrony_recovery_stall_window,
             synchrony_recovery_cooldown: conf.casper.synchrony_recovery_cooldown,
             synchrony_recovery_max_bypasses: conf.casper.synchrony_recovery_max_bypasses,
@@ -877,7 +923,6 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             // `casper::rust::casper`. When `CasperConf` gains corresponding
             // fields, plumb them through here; the consts are then the
             // documented fallback.
-            finalizer_blocking_timeout: casper::rust::casper::FINALIZER_BLOCKING_TIMEOUT_DEFAULT,
             active_validators_cache_max_entries:
                 casper::rust::casper::ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT,
         };
@@ -980,7 +1025,7 @@ async fn handle_block_finalized(
             return;
         }
     };
-    match report_api.block_report(block_hash_bytes, false).await {
+    match report_api.prewarm_block_report(block_hash_bytes).await {
         Ok(report) => {
             let transfers_by_deploy = extract_transfers_from_report(&report, &transfer_unforgeable);
 
@@ -1001,11 +1046,14 @@ async fn handle_block_finalized(
             }
         }
         Err(e) => {
-            tracing::debug!(
+            // Nothing retries a pre-cache: the event has been consumed and no
+            // path revisits finalized blocks, so this block's transfers stay
+            // unavailable until something traces it by hand.
+            tracing::warn!(
                 target: "f1r3fly.node.transaction",
                 %block_hash,
                 error = %e,
-                "Block report pre-cache skipped (expected on validators)"
+                "Block report pre-cache failed; transfers for this block will be unavailable"
             );
         }
     }
@@ -1038,7 +1086,15 @@ fn build_deploy_transfers(
 mod tests {
     use models::casper::TransferInfo;
 
-    use super::build_deploy_transfers;
+    use super::{block_report_prewarm_enabled, build_deploy_transfers};
+
+    #[test]
+    fn block_report_prewarm_supports_read_only_and_dev_mode_nodes() {
+        assert!(block_report_prewarm_enabled(true, false));
+        assert!(block_report_prewarm_enabled(false, true));
+        assert!(block_report_prewarm_enabled(true, true));
+        assert!(!block_report_prewarm_enabled(false, false));
+    }
 
     fn transfer(from: &str, to: &str, amount: i64) -> TransferInfo {
         TransferInfo {

@@ -46,6 +46,8 @@ impl MockKeyValueStore {
 }
 
 impl KeyValueStore for MockKeyValueStore {
+    fn as_any(&self) -> &dyn std::any::Any { self }
+
     fn get(&self, keys: &Vec<Vec<u8>>) -> Result<Vec<Option<Vec<u8>>>, KvStoreError> {
         let data = self.data.lock().unwrap();
         let results: Vec<Option<Vec<u8>>> = keys.iter().map(|key| data.get(key).cloned()).collect();
@@ -58,6 +60,15 @@ impl KeyValueStore for MockKeyValueStore {
             data.insert(key, value);
         }
         Ok(())
+    }
+
+    fn put_one_if_absent(&self, key: Vec<u8>, value: Vec<u8>) -> Result<bool, KvStoreError> {
+        let mut data = self.data.lock().unwrap();
+        if data.contains_key(&key) {
+            return Ok(false);
+        }
+        data.insert(key, value);
+        Ok(true)
     }
 
     fn delete(&self, keys: Vec<Vec<u8>>) -> Result<usize, KvStoreError> {
@@ -132,12 +143,18 @@ impl KeyValueStore for MockKeyValueStore {
 pub struct EmptyKeyValueStore;
 
 impl KeyValueStore for EmptyKeyValueStore {
+    fn as_any(&self) -> &dyn std::any::Any { self }
+
     fn get(&self, keys: &Vec<Vec<u8>>) -> Result<Vec<Option<Vec<u8>>>, KvStoreError> {
         Ok(vec![None; keys.len()])
     }
 
     fn put(&self, _kv_pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Result<(), KvStoreError> {
         Ok(()) // No-op
+    }
+
+    fn put_one_if_absent(&self, _key: Vec<u8>, _value: Vec<u8>) -> Result<bool, KvStoreError> {
+        Ok(true)
     }
 
     fn delete(&self, _keys: Vec<Vec<u8>>) -> Result<usize, KvStoreError> {

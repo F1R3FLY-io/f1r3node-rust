@@ -32,12 +32,18 @@ CSV
 # __system__ row is host state and must not become a grid node, and the
 # non-numeric core id is a malformed row that must be rejected — the grid
 # assertion below proves both filters.
+# validator1 appears under BOTH container namings — the legacy
+# "rnode.<network>." prefix and the bare per-iteration shard hash
+# ("f6f7eb46.") that once leaked 42 columns into the published grid. The
+# node id is the name's final dot-segment, so both rows must fold into one
+# "validator1" key with the per-cell max (7.5 beats 3.0).
 # CRLF matters most here: cpu_percent is the LAST column, so without
 # CR-stripping every row fails the numeric check (smoke run 31547587950
 # published an all-fallback grid exactly this way).
 cat <<'CSV' | sed 's/$/\r/' >"$FAKE_ARCHIVE_DIR/session/resource-percore-timeseries.csv"
 elapsed_s,node,core,cpu_percent
-1.0,rnode.test.validator1,0,7.5
+1.0,f6f7eb46.validator1,0,3.0
+2.0,rnode.test.validator1,0,7.5
 1.0,rnode.test.validator1,1,42.0
 1.0,__system__,0,93.0
 1.0,rnode.test.validator1,not-a-core,88.0
@@ -54,6 +60,10 @@ proposal rejected: too far ahead of the last finalized block
 LOG
 cp "$FAKE_DATA_DIR/session/validator1.log" "$FAKE_ARCHIVE_DIR/session/validator1.log"
 printf 'fake pytest started\n'
+printf 'All-node LFBs at drain: {validator1: 12, validator2: 9} (spread 3 blocks)\n'
+if [ "${FAKE_EMIT_SOAK_METRIC:-false}" = "true" ]; then
+	printf 'SOAK_METRIC name=lfb_spread value=4 phase=drain\n'
+fi
 while :; do sleep 1; done
 SH
 cat >"$TMP/bin/docker" <<'SH'
@@ -81,6 +91,7 @@ METRICS
 SH
 chmod +x "$TMP/bin/poetry" "$TMP/bin/docker" "$TMP/bin/curl"
 
+test ! -e "$TMP/output"
 PATH="$TMP/bin:$PATH" \
 	FAKE_POETRY_PID_FILE="$TMP/fake-poetry.pid" \
 	FAKE_DATA_DIR="$TMP/system-integration/integration-tests/data" \
@@ -100,6 +111,14 @@ for _ in $(seq 1 20); do
 	sleep 0.25
 done
 test -e "$TMP/output/iteration-00001-docker/.started"
+jq -e '
+  .target_ref == "unknown"
+  and .target_sha == "unknown"
+  and (.started_at | type) == "number"
+  and .requested_seconds == 120
+  and .iterations == 1
+  and .failures == 0
+' "$TMP/output/.soak-checkpoint-state.json" >/dev/null
 for _ in $(seq 1 20); do
 	[ -s "$TMP/output/iteration-00001-docker/node-metrics-timeseries.csv" ] &&
 		grep -q 'test.validator1.*12.*1048576.*2.*2.*7' \
@@ -148,6 +167,8 @@ jq -e '
   and .iteration_metrics[0].cpu_peak_per_node_pct == {"validator1": 10, "validator2": 20}
   and .iteration_metrics[0].cpu_peak_per_node_core_pct == {"validator1": {"0": 7.5, "1": 42}}
   and .iteration_metrics[0].too_far_ahead_errors == 1
+  and .iteration_metrics[0].metrics.lfb_spread == {p50: 3, p95: 3, max: 3, min: 3, samples: 1}
+  and .tracked_metrics.lfb_spread == {p50: 3, p95: 3, max: 3, samples: 1}
 ' "$TMP/output/summary.json" >/dev/null
 grep -q 'replay_cache_retained_bytes,1048576' \
 	"$TMP/output/iteration-00001-docker/node-metrics-timeseries.csv"
@@ -169,6 +190,7 @@ PATH="$TMP/bin:$PATH" \
 	FAKE_POETRY_PID_FILE="$TMP/fake-poetry-2.pid" \
 	FAKE_DATA_DIR="$TMP/si2/integration-tests/data" \
 	FAKE_ARCHIVE_DIR="$TMP/si2/integration-tests/log-archive" \
+	FAKE_EMIT_SOAK_METRIC=true \
 	SOAK_DURATION_SECONDS=6 \
 	SYSTEM_INTEGRATION_DIR="$TMP/si2" \
 	SOAK_OUTPUT_DIR="$TMP/output2" \
@@ -213,6 +235,8 @@ jq -e '
   and .iteration_metrics[0].rss_peak_mb == 768
   and .iteration_metrics[0].cpu_peak_per_node_pct == {"validator1": 10, "validator2": 20}
   and .iteration_metrics[0].cpu_peak_per_node_core_pct == {"validator1": {"0": 7.5, "1": 42}}
+  and .iteration_metrics[0].metrics.lfb_spread == {p50: 4, p95: 4, max: 4, min: 4, samples: 1}
+  and .tracked_metrics.lfb_spread == {p50: 4, p95: 4, max: 4, samples: 1}
 ' "$TMP/output2/summary.json" >/dev/null
 test -s "$TMP/fake-poetry-2.pid"
 ! kill -0 "$(cat "$TMP/fake-poetry-2.pid")" 2>/dev/null

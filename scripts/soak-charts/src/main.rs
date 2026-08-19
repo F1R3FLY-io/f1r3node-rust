@@ -651,7 +651,7 @@ fn render_cpu_panel(history: &[Entry], theme: &Theme, out: &str) -> Result<bool,
     // node × core heatmap; otherwise per-core facets; otherwise the aggregate
     // line. Each step down is the honest chart for the data that exists.
     if let Some(grid) = latest_cpu_grid(history) {
-        render_cpu_grid(grid, theme, out)?;
+        render_cpu_grid(&normalize_cpu_grid(grid), theme, out)?;
         return Ok(true);
     }
     let obs = collect_cpu(history);
@@ -839,6 +839,33 @@ fn latest_cpu_grid(history: &[Entry]) -> Option<&CpuGrid> {
         .map(|(_, grid)| grid)
 }
 
+/// Node ids arrive as `<prefix>.<node>` when the harness names containers
+/// with a per-iteration shard hash (`f6f7eb46.validator1`), and a run's
+/// rollup unions every iteration's keys — published entries have carried up
+/// to 7 hash prefixes × 6 nodes, exploding the grid to 42 columns of
+/// axis-label soup. The driver now strips the prefix at extraction, but
+/// history published before that fix keeps the prefixed keys forever, so the
+/// renderer folds them too: a node id is its final dot-segment, and cells
+/// that collide keep the max — "peak" semantics across shards and
+/// iterations, matching the rollup's own max-merge.
+fn normalize_cpu_grid(grid: &CpuGrid) -> CpuGrid {
+    let mut out = CpuGrid::new();
+    for (node, cores) in grid {
+        let mut short = node.rsplit('.').next().unwrap_or(node);
+        if short.is_empty() {
+            short = node;
+        }
+        let entry = out.entry(short.to_string()).or_default();
+        for (core, v) in cores {
+            entry
+                .entry(core.clone())
+                .and_modify(|e| *e = v.max(*e))
+                .or_insert(*v);
+        }
+    }
+    out
+}
+
 /// Ids like "0", "1", … "15" must not sort lexicographically ("0", "1",
 /// "10", … "2"); non-numeric ids keep plain string order.
 fn id_sorted(ids: impl Iterator<Item = String>) -> Vec<String> {
@@ -852,15 +879,19 @@ fn id_sorted(ids: impl Iterator<Item = String>) -> Vec<String> {
 }
 
 /// Node × core utilization heatmap: x = node, y = core, cell color = that
-/// core's peak load on a cool-to-hot ramp. Jet is the one charton map running
-/// blue (idle) through to red (hot) as the design calls for; it is not
-/// perceptually uniform, so color never carries saturation alone — every cell
-/// at ≥100% (a full core) also gets its value printed on the cell. Color is
+/// core's peak load on a single-hue sequential ramp (Oranges: pale = idle,
+/// deep = hot). Magnitude gets one hue light-to-dark — the earlier Jet
+/// rainbow made mid-range hues read as false categories and its midpoint
+/// greens/yellows drowned the labels. Color still never carries saturation
+/// alone: every cell at ≥100% (a full core) also gets its value printed on
+/// the cell, in white ink that reads on the ramp's dark top end. Color is
 /// the value CLAMPED to 100 on a fixed [0, 100] domain: an unclamped domain
-/// stretched by one multi-core outlier (today's "all" rows reach 260%+) would
-/// paint a 95%-saturated core cool blue. The clamp keeps the invariant that
-/// red always means "at or beyond one full core" — the printed value carries
-/// how far beyond — and cores a node did not report leave no cell at all.
+/// stretched by one multi-core outlier (today's "all" rows reach 260%+)
+/// would paint a 95%-saturated core near-white. The clamp keeps the
+/// invariant that the darkest cells mean "at or beyond one full core" — the
+/// printed value carries how far beyond — and cores a node did not report
+/// leave no cell at all. Keep the ramp in step with the page legend's
+/// .heat-cpu-ramp gradient in .github/dashboard/index.html.
 fn render_cpu_grid(grid: &CpuGrid, theme: &Theme, out: &str) -> Result<(), Box<dyn Error>> {
     let nodes = id_sorted(grid.keys().cloned());
     let cores = id_sorted(grid.values().flat_map(|c| c.keys().cloned()));
@@ -907,19 +938,27 @@ fn render_cpu_grid(grid: &CpuGrid, theme: &Theme, out: &str) -> Result<(), Box<d
         .configure_theme(|t| {
             // Legend suppressed like every chart here — charton renders a
             // continuous colorbar as a black slab (same degenerate fallback
-            // as constant-column normalization), so the page draws the Jet
-            // ramp legend itself, themed, next to the caption. Node labels
-            // angle only when enough nodes exist to collide.
+            // as constant-column normalization), so the page draws the ramp
+            // legend itself, themed, next to the caption. The normalized
+            // grid's six short node names fit horizontally; labels angle
+            // only past that. A cluster VM exposes 32+ cores, so the core
+            // axis drops to a smaller tick font once its labels would
+            // otherwise collide at ~10px row pitch.
             base_theme(t, theme)
-                .with_x_tick_label_angle(if nodes.len() > 4 { 45.0 } else { 0.0 })
-                .with_color_map(ColorMap::Jet)
+                .with_x_tick_label_angle(if nodes.len() > 6 { 45.0 } else { 0.0 })
+                .with_tick_label_size(if cores.len() > 16 { 8.0 } else { 10.0 })
+                .with_color_map(ColorMap::Oranges)
         })];
 
-    // Saturated cells only: printing every value turns a 16×8 grid into a
-    // number sheet, but ≥100% is the state the panel exists to surface. Hot
-    // Jet cells are dark reds — white ink reads on all of them.
+    // Saturated cells only: printing every value turns a 6×32 grid into a
+    // number sheet, but ≥100% is the state the panel exists to surface.
+    // Saturated Oranges cells are the ramp's dark browns — white ink reads
+    // on all of them. Suppressed entirely if the grid is somehow still wide
+    // enough that a printed value cannot fit its cell (a 9px label needs
+    // ~35px of column; past 12 columns the labels would overlap into the
+    // exact soup the normalization above exists to prevent).
     let sat: Vec<usize> = (0..pct.len()).filter(|&i| pct[i] >= 99.5).collect();
-    if !sat.is_empty() {
+    if !sat.is_empty() && nodes.len() <= 12 {
         let ds = Dataset::new()
             .with_column(
                 "node",
@@ -940,7 +979,15 @@ fn render_cpu_grid(grid: &CpuGrid, theme: &Theme, out: &str) -> Result<(), Box<d
                 .mark_text()?
                 .configure_text(|t| t.with_size(9.0).with_color("#ffffff"))
                 .encode((alt::x("node"), alt::y("core"), alt::text("label")))?
-                .configure_theme(|t| base_theme(t, theme).with_x_tick_label_angle(0.0)),
+                // Mirror the rect layer's axis config exactly: a layered
+                // chart draws each layer's axes, so a mismatched angle or
+                // tick size here prints a second, differently-styled label
+                // set on top of the first.
+                .configure_theme(|t| {
+                    base_theme(t, theme)
+                        .with_x_tick_label_angle(if nodes.len() > 6 { 45.0 } else { 0.0 })
+                        .with_tick_label_size(if cores.len() > 16 { 8.0 } else { 10.0 })
+                }),
         );
     }
 

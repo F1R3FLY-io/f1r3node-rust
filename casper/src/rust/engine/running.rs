@@ -21,7 +21,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     self, ApprovedBlock, ApprovedBlockCandidate, BlockHashMessage, BlockMessage, BlockRequest,
-    CasperMessage, HasBlock, HasBlockRequest,
+    CasperMessage, FinalizedFloorSeed, HasBlock, HasBlockRequest,
 };
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
@@ -36,9 +36,11 @@ use crate::rust::engine::engine::{self, Engine};
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
+use crate::rust::finality::floor::floor_of_block;
 use crate::rust::metrics_constants::{
     BLOCK_HASH_RECEIVED_METRIC, BLOCK_REQUEST_RECEIVED_METRIC, RUNNING_METRICS_SOURCE,
 };
+use crate::rust::safety::clique_oracle::FtThreshold;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,7 +118,6 @@ pub async fn update_fork_choice_tips_if_stuck<T: TransportLayer + Send + Sync>(
             transport
                 .send_fork_choice_tip_request(connections_cell, conf)
                 .await?;
-            let _ = engine.recover_stuck_validator(delay_threshold).await?;
         }
     }
 
@@ -203,6 +204,12 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                                 e
                             ))
                         })?;
+                    let now_ms = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as i64;
+                    self.last_peer_block_arrival_ms
+                        .store(now_ms, std::sync::atomic::Ordering::Relaxed);
                 }
                 Ok(())
             }
@@ -248,11 +255,16 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                         required_sigs: 0,
                     },
                     sigs: vec![],
+                    // Filled in below, and only for a trimmed response.
+                    floor_seed: None,
                 };
 
                 let approved_block = if abr.trim_state {
                     // If Last Finalized State is requested return Last Finalized block as Approved block
-                    last_approved_block
+                    ApprovedBlock {
+                        floor_seed: self.floor_seed_for(&last_finalized_block_hash).await,
+                        ..last_approved_block
+                    }
                 } else {
                     // Respond with approved block that this node is started from.
                     // The very first one is genesis, but this node still might start from later block,
@@ -298,6 +310,22 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                     );
                     Ok(())
                 }
+            }
+            // Chunks answering the runtime state requester's root fetches.
+            // Without a requester wired these fall through as they always did.
+            CasperMessage::StoreItemsMessage(items) => {
+                if let Some(tx) = &self.state_items_tx {
+                    if tx.try_send(items).is_err() {
+                        tracing::warn!(
+                            "state requester items queue full or closed; dropping chunk \
+                             (the resend tick re-requests it)"
+                        );
+                    }
+                }
+                Ok(())
+            }
+            CasperMessage::FloorCacheRequest(req) => {
+                self.handle_floor_cache_request(peer, req.hashes).await
             }
             CasperMessage::MergeableEntryRequest(req) => {
                 if self.disable_state_exporter {
@@ -346,6 +374,16 @@ pub struct Running<T: TransportLayer + Send + Sync> {
     conf: RPConf,
     block_retriever: BlockRetriever<T>,
     recovery_context: Option<RunningRecoveryContext>,
+    /// Wall-clock of the last peer block accepted for processing. The
+    /// stale-rejoin trigger requires receive-quiescence in addition to
+    /// own-message staleness: a node that keeps receiving blocks is not
+    /// partitioned — it is failing to PROPOSE, and ejecting it into an
+    /// approved-block state rejoin destroys its custody duties.
+    last_peer_block_arrival_ms: Arc<std::sync::atomic::AtomicI64>,
+    /// Routes incoming [`casper_message::StoreItemsMessage`]s to the runtime
+    /// state requester. `None` on a node that cannot need one (genesis
+    /// ceremony); without it those messages are dropped, as they always were.
+    state_items_tx: Option<mpsc::Sender<casper_message::StoreItemsMessage>>,
 }
 
 #[derive(Clone)]
@@ -370,7 +408,89 @@ const MAX_BLOCKS_IN_PROCESSING: usize = 2_048;
 
 fn max_blocks_in_processing() -> usize { MAX_BLOCKS_IN_PROCESSING }
 
+/// The stale-rejoin trigger: rejoin-from-approved-block only when the
+/// validator's own latest message is stale AND no peer block has arrived
+/// for the same window. Own-staleness alone is not a partition signal — a
+/// node that keeps receiving and validating peer blocks has a working
+/// network and a local PROPOSE problem, and ejecting it into a state
+/// rejoin abandons its owner-custody duties for the rejoin's duration
+/// (observed as an 80-minute self-eviction in the ucc ca7197d8 specimen,
+/// where every validator was propose-wedged but fully connected).
+fn should_rejoin_from_approved_block(
+    own_latest_age_ms: i64,
+    arrival_age_ms: i64,
+    threshold_ms: i64,
+) -> bool {
+    own_latest_age_ms >= threshold_ms && arrival_age_ms >= threshold_ms
+}
+
 impl<T: TransportLayer + Send + Sync> Running<T> {
+    /// The floor and frontier of the block we are about to hand over as a sync
+    /// anchor.
+    ///
+    /// A trimmed response gives the requester nothing below the anchor, and
+    /// `floor(B)` is defined by recursion through B's parents — so the
+    /// requester cannot derive the anchor's own floor no matter how it tries.
+    /// We can: the anchor is our last finalized block and its floor is either
+    /// cached or derivable from history we still hold.
+    ///
+    /// Returns `None` rather than failing the request. A seedless anchor leaves
+    /// the requester deferring — visibly, and without accusing anyone — which is
+    /// strictly better than refusing to serve it at all. Genesis reaches here
+    /// with no frontier (it is its own floor, cached without one) and needs no
+    /// seed: a genesis anchor is not trimmed.
+    async fn floor_seed_for(&self, anchor: &BlockHash) -> Option<FinalizedFloorSeed> {
+        let seed: Result<Option<FinalizedFloorSeed>, CasperError> = async {
+            let dag = self.casper.block_dag().await?;
+            let ftt = FtThreshold::from_ppm(
+                self.casper
+                    .casper_shard_conf()
+                    .fault_tolerance_threshold_ppm,
+            );
+            // Populates BOTH caches from one derivation, so the frontier read
+            // below cannot miss for any block that has parents.
+            let floor = floor_of_block(&dag, self.casper.block_store(), anchor, ftt).await?;
+            let Some(frontier_hash) = dag.get_cached_frontier(anchor)? else {
+                return Ok(None);
+            };
+            let frontier_number = dag
+                .lookup(&frontier_hash)?
+                .map(|meta| meta.block_number)
+                .ok_or_else(|| CasperError::BlockNotHeld(frontier_hash.clone()))?;
+            Ok(Some(FinalizedFloorSeed {
+                floor_hash: floor.hash,
+                floor_number: floor.block_number,
+                frontier_hash,
+                frontier_number,
+            }))
+        }
+        .await;
+
+        match seed {
+            Ok(Some(seed)) => {
+                tracing::info!(
+                    anchor = %PrettyPrinter::build_string_bytes(anchor),
+                    floor = %PrettyPrinter::build_string_bytes(&seed.floor_hash),
+                    floor_number = seed.floor_number,
+                    frontier = %PrettyPrinter::build_string_bytes(&seed.frontier_hash),
+                    frontier_number = seed.frontier_number,
+                    "Serving trimmed approved block with a finalized-floor seed"
+                );
+                Some(seed)
+            }
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(
+                    anchor = %PrettyPrinter::build_string_bytes(anchor),
+                    error = %e,
+                    "Could not derive a floor seed for the trimmed approved block; the \
+                     requester will not be able to derive finality above it"
+                );
+                None
+            }
+        }
+    }
+
     pub fn new(
         block_processing_queue_tx: mpsc::Sender<(
             Arc<dyn MultiParentCasper + Send + Sync>,
@@ -387,7 +507,12 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         conf: RPConf,
         block_retriever: BlockRetriever<T>,
         recovery_context: Option<RunningRecoveryContext>,
+        state_items_tx: Option<mpsc::Sender<casper_message::StoreItemsMessage>>,
     ) -> Self {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
         Running {
             block_processing_queue_tx,
             blocks_in_processing,
@@ -400,6 +525,8 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             conf,
             block_retriever,
             recovery_context,
+            last_peer_block_arrival_ms: Arc::new(std::sync::atomic::AtomicI64::new(now_ms)),
+            state_items_tx,
         }
     }
 
@@ -444,7 +571,15 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             .unwrap()
             .as_millis() as i64;
         let latest_age_ms = now_ms.saturating_sub(latest_block.header.timestamp);
-        if latest_age_ms < delay_threshold.as_millis() as i64 {
+        let arrival_age_ms = now_ms.saturating_sub(
+            self.last_peer_block_arrival_ms
+                .load(std::sync::atomic::Ordering::Relaxed),
+        );
+        if !should_rejoin_from_approved_block(
+            latest_age_ms,
+            arrival_age_ms,
+            delay_threshold.as_millis() as i64,
+        ) {
             return Ok(false);
         }
 
@@ -483,6 +618,7 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             &recovery_context.runtime_manager,
             &recovery_context.estimator,
             &recovery_context.heartbeat_signal_ref,
+            self.state_items_tx.clone(),
         )
         .await?;
 
@@ -636,6 +772,54 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
     /// - Block present, no mergeable entry: respond with empty `serialized_entry`.
     /// - Block present and entry present: respond with raw bincode bytes from
     ///   the mergeable_store.
+    /// Serve cached finalized-floor values for the requested blocks.
+    ///
+    /// The values are pure functions of the named blocks, computed when this
+    /// node validated them. Entries this node does not have BOTH values for
+    /// are omitted — the requester derives those locally from its neighbours.
+    /// Capped so a hostile request cannot turn this into a scan.
+    async fn handle_floor_cache_request(
+        &self,
+        peer: PeerNode,
+        hashes: Vec<BlockHash>,
+    ) -> Result<(), CasperError> {
+        const FLOOR_CACHE_REQUEST_CAP: usize = 4_096;
+        if hashes.len() > FLOOR_CACHE_REQUEST_CAP {
+            tracing::warn!(
+                requested = hashes.len(),
+                cap = FLOOR_CACHE_REQUEST_CAP,
+                %peer,
+                "FloorCacheRequest over cap; ignoring"
+            );
+            return Ok(());
+        }
+        let dag = self.casper.block_dag().await?;
+        let mut entries = Vec::new();
+        for hash in hashes {
+            let (Some(floor), Some(frontier)) = (
+                dag.get_cached_floor(&hash)?,
+                dag.get_cached_frontier(&hash)?,
+            ) else {
+                continue;
+            };
+            entries.push(casper_message::FloorCacheEntry {
+                block_hash: hash,
+                floor_hash: floor,
+                frontier_hash: frontier,
+            });
+        }
+        tracing::info!(
+            entries = entries.len(),
+            %peer,
+            "Serving finalized-floor cache entries"
+        );
+        let resp = casper_message::FloorCacheResponse { entries };
+        self.transport
+            .stream_message_to_peer(&self.conf, &peer, Arc::new(resp.to_proto()))
+            .await?;
+        Ok(())
+    }
+
     async fn handle_mergeable_entry_request(
         &self,
         peer: PeerNode,
@@ -714,5 +898,26 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
 
         tracing::info!("Store items sent to {}", peer);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_rejoin_from_approved_block;
+
+    /// A propose-wedged but connected validator must NOT rejoin: its own
+    /// latest message is stale, yet peer blocks keep arriving — the network
+    /// is alive and the fault is local to proposing.
+    #[test]
+    fn a_receiving_validator_with_a_stale_own_message_must_not_rejoin() {
+        assert!(!should_rejoin_from_approved_block(120_000, 500, 60_000));
+    }
+
+    /// Genuine quiescence: own message stale AND nothing arriving for the
+    /// window — the partition signal the rejoin exists for.
+    #[test]
+    fn a_quiescent_stale_validator_rejoins() {
+        assert!(should_rejoin_from_approved_block(120_000, 90_000, 60_000));
+        assert!(!should_rejoin_from_approved_block(500, 90_000, 60_000));
     }
 }

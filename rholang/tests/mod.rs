@@ -12,6 +12,7 @@ mod rholang_numeric_eval_spec;
 mod reduce_spec;
 mod replay_memory_profile_spec;
 mod setsubtrie_spec;
+mod single_term_recursion_spec;
 mod substitute_test;
 mod zipper_advanced_navigation_spec;
 mod zipper_path_management_spec;

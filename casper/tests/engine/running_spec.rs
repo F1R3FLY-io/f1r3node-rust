@@ -264,6 +264,7 @@ mod tests {
                     block: genesis_block,
                     required_sigs: 0,
                 },
+                floor_seed: None,
                 sigs: Vec::new(),
             };
 
@@ -364,7 +365,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stale_validator_should_transition_to_initializing_and_request_approved_block() {
+    async fn stale_validator_should_stay_running_and_request_fork_choice_tips() {
         let fixture = TestFixture::new().await;
         let engine_cell = Arc::new(EngineCell::init());
 
@@ -386,6 +387,7 @@ mod tests {
                 block: fixture.genesis.clone(),
                 required_sigs: 0,
             },
+            floor_seed: None,
             sigs: Vec::new(),
         };
 
@@ -421,8 +423,14 @@ mod tests {
                 casper_shard_conf: fixture.casper_shard_conf.clone(),
                 heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             }),
+            None,
         );
         engine_cell.set(Arc::new(running)).await;
+
+        // The rejoin requires receive-quiescence in addition to the stale
+        // own message: no peer block has arrived since construction, so
+        // aging past the threshold makes the node genuinely quiescent.
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
 
         update_fork_choice_tips_if_stuck(
             &engine_cell,
@@ -436,8 +444,8 @@ mod tests {
 
         let engine = engine_cell.get().await;
         assert!(
-            engine.with_casper().is_none(),
-            "stale validator should leave Running and transition into Initializing"
+            engine.with_casper().is_some(),
+            "stale validator should remain Running while requesting peer tips"
         );
 
         let expected_proto = ApprovedBlockRequestProto {
@@ -455,9 +463,13 @@ mod tests {
         });
 
         assert!(
-            found_approved_block_request,
-            "recovery should request an approved block from peers; requests: {:?}",
+            !found_approved_block_request,
+            "stale validator should not request an approved block; requests: {:?}",
             requests.iter().map(|r| &r.msg).collect::<Vec<_>>()
+        );
+        assert!(
+            !requests.is_empty(),
+            "stale validator should request fork-choice tips"
         );
     }
 
@@ -487,6 +499,7 @@ mod tests {
                 block: fixture.genesis.clone(),
                 required_sigs: 0,
             },
+            floor_seed: None,
             sigs: Vec::new(),
         };
 
@@ -522,6 +535,7 @@ mod tests {
                 casper_shard_conf: fixture.casper_shard_conf.clone(),
                 heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             }),
+            None,
         );
         engine_cell.set(Arc::new(running)).await;
 

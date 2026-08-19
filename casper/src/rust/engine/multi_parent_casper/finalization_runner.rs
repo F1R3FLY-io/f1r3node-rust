@@ -1,6 +1,13 @@
 //! Finalization runner — background task, RAII guard,
 //! `compute_last_finalized_block`, `update_last_finalized_block`.
 //!
+//! The LFB DECISION does not live here: it is `floor::floor_of_view` — the
+//! one finality clock, shared with every block operation's floor
+//! derivation. This module hosts only the runner scaffolding around it:
+//! pacing (`finalization_rate`), the queued-run loop with its timeout
+//! backstop, and the finalization effects (`record_directly_finalized`,
+//! event publication) applied when the clock advances.
+//!
 //! Phase 3 (Commit 2): extracted from `engine::multi_parent_casper`.
 //! The functions here are reachable via:
 //!   * `MultiParentCasper::last_finalized_block` (mod.rs) →
@@ -38,20 +45,22 @@
 //!
 //! If you are here because a static diff told you a fix went missing: it didn't.
 //! Re-run the test above before restoring anything.
+//!
+//! Deploy-STORAGE release does not happen in this module at all: the
+//! deploy-lifecycle register names the moment a deploy stops being
+//! re-proposable (its write-once terminal verdict), and block admission
+//! releases the pool copy against exactly that list.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
-// Phase 9 (A-3): deploy_storage uses parking_lot::Mutex.
-use parking_lot::Mutex;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use shared::rust::store::key_value_store::KvStoreError;
 
@@ -61,12 +70,7 @@ use shared::rust::store::key_value_store::KvStoreError;
 use super::events::finalised_event;
 use super::types::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
-use crate::rust::finality::finalizer::Finalizer;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
-
-// Phase 13 (TC-1): the previous `FINALIZER_BLOCKING_TIMEOUT = 15s`
-// constant is now `CasperShardConf::finalizer_blocking_timeout`,
-// passed in via `FinalizationContext::finalizer_blocking_timeout`.
 
 /// RAII guard that ensures the finalization flag is reset on drop.
 /// This prevents the flag from being stuck in `true` state if the async block
@@ -87,18 +91,15 @@ impl Drop for FinalizationGuard<'_> {
 pub(crate) struct FinalizationContext {
     pub(crate) block_dag_storage: BlockDagKeyValueStorage,
     pub(crate) block_store: KeyValueBlockStore,
-    pub(crate) deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
     pub(crate) runtime_manager: Arc<RuntimeManager>,
     pub(crate) event_publisher: F1r3flyEvents,
     pub(crate) finalization_in_progress: Arc<AtomicBool>,
     pub(crate) enable_mergeable_channel_gc: bool,
     pub(crate) ftt: crate::rust::safety::clique_oracle::FtThreshold,
-    pub(crate) finalizer_conf: crate::rust::casper_conf::FinalizerConf,
-    pub(crate) finalizer_blocking_timeout: std::time::Duration,
 }
 
 /// Build a `FinalizationContext` from a `MultiParentCasperImpl`. Single
-/// source of truth for the 10-field clone — previously duplicated at
+/// source of truth for the field-by-field clone — previously duplicated at
 /// `traits::last_finalized_block` and the trigger site in
 /// `finalization_runner::run_finalization`. Replaces both literal
 /// constructions so adding/renaming a context field is one edit.
@@ -110,7 +111,6 @@ pub(crate) fn build_finalization_context<
     FinalizationContext {
         block_dag_storage: this.block_dag_storage.clone(),
         block_store: this.block_store.clone(),
-        deploy_storage: this.deploy_storage.clone(),
         runtime_manager: this.runtime_manager.clone(),
         event_publisher: this.event_publisher.clone(),
         finalization_in_progress: this.finalization_in_progress.clone(),
@@ -119,8 +119,6 @@ pub(crate) fn build_finalization_context<
         ftt: crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
             this.casper_shard_conf.fault_tolerance_threshold_ppm,
         ),
-        finalizer_conf: this.casper_shard_conf.finalizer_conf.clone(),
-        finalizer_blocking_timeout: this.casper_shard_conf.finalizer_blocking_timeout,
     }
 }
 
@@ -133,7 +131,9 @@ pub(crate) async fn run_queued_finalizer(
     let _task_guard = FinalizationGuard(finalizer_task_in_progress.as_ref());
     tracing::info!(target: "f1r3fly.casper", "finalizer-run-started");
 
-    let finalizer_blocking_timeout = ctx.finalizer_blocking_timeout;
+    // Backstop only: floor-of-view rides the persisted floor/frontier
+    // caches, so a cycle exceeding this is a stall to surface, not pace.
+    let finalizer_blocking_timeout = std::time::Duration::from_secs(15);
     loop {
         match tokio::time::timeout(
             finalizer_blocking_timeout,
@@ -169,16 +169,12 @@ pub(crate) async fn compute_last_finalized_block(
     let FinalizationContext {
         block_dag_storage,
         block_store,
-        deploy_storage,
         runtime_manager,
         event_publisher,
         finalization_in_progress,
         enable_mergeable_channel_gc,
         ftt,
-        finalizer_conf,
-        finalizer_blocking_timeout: _,
     } = ctx;
-    let finalizer_conf = &finalizer_conf;
     let lfb_lookup_started = std::time::Instant::now();
     // Get current LFB hash and height
     let dag = block_dag_storage.get_representation()?;
@@ -188,7 +184,6 @@ pub(crate) async fn compute_last_finalized_block(
     // Keep effect closure FnMut-compatible by cloning captured state on each invocation.
     let block_dag_storage_for_effect = block_dag_storage.clone();
     let block_store_for_effect = block_store.clone();
-    let deploy_storage_for_effect = deploy_storage.clone();
     let runtime_manager_for_effect = runtime_manager.clone();
     let event_publisher_for_effect = event_publisher.clone();
     let finalization_in_progress_for_effect = finalization_in_progress.clone();
@@ -197,17 +192,17 @@ pub(crate) async fn compute_last_finalized_block(
     let new_lfb_found_effect = move |(new_lfb, ft_value): (BlockHash, f32)| {
         let block_dag_storage = block_dag_storage_for_effect.clone();
         let block_store = block_store_for_effect.clone();
-        let deploy_storage = deploy_storage_for_effect.clone();
         let runtime_manager = runtime_manager_for_effect.clone();
         let event_publisher = event_publisher_for_effect.clone();
         let finalization_in_progress = finalization_in_progress_for_effect.clone();
         async move {
             let effect_started = std::time::Instant::now();
+            let directly_finalized_hash = new_lfb.clone();
             block_dag_storage
                 .record_directly_finalized(new_lfb.clone(), ft_value, |finalized_set: &HashSet<BlockHash>| {
                     let finalized_set = finalized_set.clone();
+                    let directly_finalized_hash = directly_finalized_hash.clone();
                     let block_store = block_store.clone();
-                    let deploy_storage = deploy_storage.clone();
                     let runtime_manager = runtime_manager.clone();
                     let event_publisher = event_publisher.clone();
                     let finalization_in_progress = finalization_in_progress.clone();
@@ -229,25 +224,13 @@ pub(crate) async fn compute_last_finalized_block(
                                     PrettyPrinter::build_string_bytes(block_hash)
                                 ))
                             })?;
-                            let deploys: Vec<_> = block
-                                .body
-                                .deploys
-                                .iter()
-                                .map(|pd| pd.deploy.clone())
-                                .collect();
 
-                            // Remove block deploys from persistent store.
-                            // Phase 9 (A-3): parking_lot::Mutex — no poison.
-                            let deploys_count = deploys.len();
-                            deploy_storage.lock().remove(deploys)?;
-                            let finalized_set_str = PrettyPrinter::build_string_hashes(
-                                &finalized_set.iter().map(|h| h.to_vec()).collect::<Vec<_>>(),
-                            );
-                            let removed_deploy_msg = format!(
-                                "Removed {} deploys from deploy history as we finalized block {}.",
-                                deploys_count, finalized_set_str
-                            );
-                            tracing::info!("{}", removed_deploy_msg);
+                            // Deploy-storage removal deliberately does NOT
+                            // happen here: node-local finalization of a
+                            // block is not evidence its deploys' effects
+                            // are canonical. The lifecycle register's
+                            // terminal verdicts drive the release, at
+                            // block admission.
 
                             // Remove block index from cache
                             runtime_manager.remove_block_index_cache(block_hash);
@@ -261,6 +244,33 @@ pub(crate) async fn compute_last_finalized_block(
                                     PrettyPrinter::build_string_bytes(&block.block_hash),
                                     PrettyPrinter::build_string_bytes(&block.sender),
                                     block.seq_num
+                                );
+                            }
+
+                            for processed in &block.body.deploys {
+                                tracing::info!(
+                                    target: "f1r3fly.casper.deploy_lifecycle",
+                                    event = "finalized_inclusion",
+                                    deploy_sig = %hex::encode(&processed.deploy.sig),
+                                    block_hash = %hex::encode(&block.block_hash),
+                                    block_number = block.body.state.block_number,
+                                    sender = %hex::encode(&block.sender),
+                                    failed = processed.is_failed,
+                                    directly_finalized = block_hash == &directly_finalized_hash,
+                                    "deploy lifecycle"
+                                );
+                            }
+                            for rejected in &block.body.rejected_deploys {
+                                tracing::info!(
+                                    target: "f1r3fly.casper.deploy_lifecycle",
+                                    event = "finalized_rejection",
+                                    deploy_sig = %hex::encode(&rejected.sig),
+                                    block_hash = %hex::encode(&block.block_hash),
+                                    block_number = block.body.state.block_number,
+                                    carrier = %hex::encode(&rejected.carrier),
+                                    duplicate = rejected.duplicate,
+                                    directly_finalized = block_hash == &directly_finalized_hash,
+                                    "deploy lifecycle"
                                 );
                             }
 
@@ -292,24 +302,62 @@ pub(crate) async fn compute_last_finalized_block(
         }
     };
 
-    // Run finalizer
+    // ONE finality clock: the LFB is the floor of the live view — the same
+    // derivation, candidate soundness, and exact `>= θ` decision every block
+    // operation uses (deliberately unifying away the old Finalizer's strict
+    // `> θ` LFB decision: an LFB lagging the floors at the exact threshold
+    // boundary would be a second clock). The derived floor advances the LFB
+    // only when it CAPTURES the current one — the same state-monotonicity
+    // predicate floor candidacy runs — so the read surface can never
+    // designate a state missing settled content.
     let finalizer_started = std::time::Instant::now();
-    let new_finalized_hash_opt = Finalizer::run(
-        &dag,
-        ftt,
-        last_finalized_block_height,
-        new_lfb_found_effect,
-        finalizer_conf,
-    )
-    .await
-    .map_err(CasperError::KvStoreError)?;
-    let finalizer_ms = finalizer_started.elapsed().as_millis();
-    let new_lfb_found = new_finalized_hash_opt.is_some();
+    let current = crate::rust::finality::floor::Floor {
+        hash: last_finalized_block_hash.clone(),
+        block_number: last_finalized_block_height,
+    };
+    let new_lfb_opt =
+        crate::rust::finality::floor::floor_of_view(&dag, &block_store, &current, ftt).await?;
 
-    // Get the final LFB hash (either new or existing)
-    let final_lfb_hash = new_finalized_hash_opt
-        .map(|(hash, _ft)| hash)
-        .unwrap_or(last_finalized_block_hash);
+    let new_lfb_found = new_lfb_opt.is_some();
+    let final_lfb_hash = if let Some(new_lfb) = new_lfb_opt {
+        let ft_value =
+            crate::rust::safety::clique_oracle::CliqueOracle::normalized_fault_tolerance(
+                &new_lfb.hash,
+                &dag,
+            )
+            .await
+            .map_err(CasperError::from)?;
+        // `floor_of_view` only ever returns an adoption that CAPTURES the
+        // current LFB, so `extends_previous_lfb` is true by construction —
+        // emitted anyway for parity with soak dashboards that alarm on it.
+        tracing::info!(
+            target: "f1r3fly.casper.finalization_lifecycle",
+            event = "candidate_finalized",
+            candidate_hash = %hex::encode(&new_lfb.hash),
+            candidate_height = new_lfb.block_number,
+            previous_lfb_hash = %hex::encode(&last_finalized_block_hash),
+            previous_lfb_height = last_finalized_block_height,
+            extends_previous_lfb = true,
+            fault_tolerance = ft_value,
+            "finalization lifecycle"
+        );
+        new_lfb_found_effect((new_lfb.hash.clone(), ft_value))
+            .await
+            .map_err(CasperError::KvStoreError)?;
+        new_lfb.hash
+    } else {
+        last_finalized_block_hash
+    };
+    let finalizer_ms = finalizer_started.elapsed().as_millis();
+
+    // Deploy-pool release is NOT done here. The register
+    // (`finality::deploy_lifecycle`) is the one component that re-evaluates
+    // as the floor advances, so it is the only component that can name the
+    // moment a deploy stops being re-proposable; block admission releases
+    // the pool copy against exactly its write-once terminal list. The
+    // finality marker is never a release edge: a marked block can still be
+    // excluded from every future cone, and an orphaned carrier's pool copy
+    // is its only route back into a live branch.
 
     // Return the finalized block
     let read_started = std::time::Instant::now();

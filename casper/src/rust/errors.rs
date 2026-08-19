@@ -1,6 +1,8 @@
 use std::fmt;
 
 use comm::rust::errors::CommError;
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::pretty_printer::PrettyPrinter;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rspace_plus_plus::rspace::errors::HistoryError;
 use shared::rust::store::key_value_store::KvStoreError;
@@ -26,6 +28,13 @@ pub enum CasperError {
     /// `engine::multi_parent_casper::validation_dispatcher` can `match` on the structured
     /// reason instead of grepping a stringified error.
     SlashAuth(SlashAuthError),
+    /// A walk needed a block this node does not hold. It is a statement about
+    /// this node's history, never about the block being judged: a node whose
+    /// history is truncated below its sync anchor legitimately lacks blocks its
+    /// peers have. Carried as a variant rather than a message so the block
+    /// processor can request the named block and retry, instead of folding it
+    /// into the storage-failure class that becomes a slashable verdict.
+    BlockNotHeld(BlockHash),
     Other(String),
 }
 
@@ -43,8 +52,33 @@ impl fmt::Display for CasperError {
             CasperError::StreamError(error) => write!(f, "Stream error: {}", error),
             CasperError::LockError(error) => write!(f, "Lock error: {}", error),
             CasperError::SlashAuth(error) => write!(f, "Slash authorization error: {}", error),
+            CasperError::BlockNotHeld(hash) => write!(
+                f,
+                "block not held by this node: {} — its history does not reach that block",
+                PrettyPrinter::build_string_bytes(hash)
+            ),
             CasperError::Other(error) => write!(f, "Other error: {}", error),
         }
+    }
+}
+
+impl CasperError {
+    /// True for errors that state an ABSENCE on this node — a block or a state
+    /// root it does not hold — rather than a fault or a fact about a block.
+    /// These must reach `BlockError::from_validation_error` typed: any path
+    /// that stringifies one launders "I don't have it" into a slashable
+    /// verdict against whoever proposed the block being judged.
+    pub fn is_availability(&self) -> bool {
+        use rholang::rust::interpreter::errors::InterpreterError;
+        use rspace_plus_plus::rspace::errors::{HistoryError, RSpaceError, RootError};
+
+        matches!(
+            self,
+            CasperError::BlockNotHeld(_)
+                | CasperError::InterpreterError(InterpreterError::RSpaceError(
+                    RSpaceError::HistoryError(HistoryError::RootError(RootError::RootNotFound(_))),
+                ))
+        )
     }
 }
 
@@ -56,8 +90,21 @@ impl From<InterpreterError> for CasperError {
     fn from(error: InterpreterError) -> Self { CasperError::InterpreterError(error) }
 }
 
+/// A block the DAG does not hold arrives here as a store error, because the DAG
+/// primitives the clique oracle reads through are storage APIs. It is not a
+/// storage failure, and the two must not share a class: the storage class
+/// becomes `InvalidTransaction`, which is slashable. Collapsing it into
+/// `BlockNotHeld` at the boundary means every walk under `floor.rs` — the
+/// oracle's weight maps, main-chain membership, self-justification chains —
+/// gets the deferral the floor walk already had, without a match arm at each
+/// caller.
 impl From<KvStoreError> for CasperError {
-    fn from(error: KvStoreError) -> Self { CasperError::KvStoreError(error) }
+    fn from(error: KvStoreError) -> Self {
+        match error {
+            KvStoreError::MissingBlock { hash, .. } => CasperError::BlockNotHeld(hash),
+            other => CasperError::KvStoreError(other),
+        }
+    }
 }
 
 impl From<ReplayFailure> for CasperError {

@@ -61,9 +61,6 @@ pub struct CasperConf {
     #[serde(rename = "heartbeat")]
     pub heartbeat_conf: HeartbeatConf,
 
-    #[serde(rename = "finalizer", default)]
-    pub finalizer: FinalizerConf,
-
     #[serde(
         rename = "synchrony-recovery-stall-window",
         deserialize_with = "de_duration",
@@ -300,6 +297,15 @@ pub struct HeartbeatConf {
         default = "default_stale_recovery_min_interval"
     )]
     pub stale_recovery_min_interval: Duration,
+    /// Time without a new finalized block before one additional, deterministic
+    /// convergence proposal is allowed. This does not delay or replace the
+    /// routine stale-LFB recovery governed by `max_lfb_age`.
+    #[serde(
+        rename = "finality-progress-timeout",
+        deserialize_with = "de_duration",
+        default = "default_finality_progress_timeout"
+    )]
+    pub finality_progress_timeout: Duration,
     /// When pending deploys land, opens a grace window during which lag caps
     /// relax to `advanced.deploy_recovery_max_lag` and self-propose-cooldown
     /// is bypassable. Burst-tolerance budget.
@@ -322,6 +328,7 @@ impl Default for HeartbeatConf {
             max_lfb_age: Duration::from_secs(5),
             self_propose_cooldown: default_self_propose_cooldown(),
             stale_recovery_min_interval: default_stale_recovery_min_interval(),
+            finality_progress_timeout: default_finality_progress_timeout(),
             deploy_finalization_grace: default_deploy_finalization_grace(),
             advanced: HeartbeatAdvancedConf::default(),
         }
@@ -331,6 +338,8 @@ impl Default for HeartbeatConf {
 fn default_self_propose_cooldown() -> Duration { Duration::from_secs(15) }
 
 fn default_stale_recovery_min_interval() -> Duration { Duration::from_secs(12) }
+
+fn default_finality_progress_timeout() -> Duration { Duration::from_secs(30) }
 
 fn default_deploy_finalization_grace() -> Duration { Duration::from_secs(25) }
 
@@ -408,53 +417,6 @@ fn default_pending_deploy_max_lag() -> i64 { 20 }
 fn default_deploy_recovery_max_lag() -> i64 { 64 }
 
 fn default_empty_frontier_max_unfinalized_blocks() -> i64 { 64 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FinalizerConf {
-    #[serde(
-        rename = "work-budget",
-        deserialize_with = "de_duration",
-        default = "default_finalizer_work_budget"
-    )]
-    pub work_budget: Duration,
-    #[serde(
-        rename = "step-timeout",
-        deserialize_with = "de_duration",
-        default = "default_finalizer_step_timeout"
-    )]
-    pub step_timeout: Duration,
-    #[serde(
-        rename = "catchup-work-budget",
-        deserialize_with = "de_duration",
-        default = "default_finalizer_catchup_work_budget"
-    )]
-    pub catchup_work_budget: Duration,
-    #[serde(
-        rename = "catchup-step-timeout",
-        deserialize_with = "de_duration",
-        default = "default_finalizer_catchup_step_timeout"
-    )]
-    pub catchup_step_timeout: Duration,
-}
-
-impl Default for FinalizerConf {
-    fn default() -> Self {
-        Self {
-            work_budget: default_finalizer_work_budget(),
-            step_timeout: default_finalizer_step_timeout(),
-            catchup_work_budget: default_finalizer_catchup_work_budget(),
-            catchup_step_timeout: default_finalizer_catchup_step_timeout(),
-        }
-    }
-}
-
-fn default_finalizer_work_budget() -> Duration { Duration::from_secs(8) }
-
-fn default_finalizer_step_timeout() -> Duration { Duration::from_secs(1) }
-
-fn default_finalizer_catchup_work_budget() -> Duration { Duration::from_secs(8) }
-
-fn default_finalizer_catchup_step_timeout() -> Duration { Duration::from_secs(1) }
 
 pub fn de_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where D: serde::Deserializer<'de> {

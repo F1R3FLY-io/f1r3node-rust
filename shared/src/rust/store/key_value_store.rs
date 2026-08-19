@@ -4,10 +4,21 @@ use std::fmt::Debug;
 use crate::rust::ByteBuffer;
 
 // See shared/src/main/scala/coop/rchain/store/KeyValueStore.scala
-pub trait KeyValueStore: Send + Sync {
+pub trait KeyValueStore: Send + Sync + 'static {
+    /// Enables downcasting to a concrete store type (e.g. `LmdbKeyValueStore`)
+    /// so callers holding a store behind `Arc<dyn KeyValueStore>` can detect
+    /// and batch same-environment LMDB writes — see
+    /// `lmdb_key_value_store::batched_put`. Has no default body (trait
+    /// objects can't provide one); every implementor must define it as
+    /// `fn as_any(&self) -> &dyn std::any::Any { self }`.
+    fn as_any(&self) -> &dyn std::any::Any;
+
     fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError>;
 
     fn put(&self, kv_pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError>;
+
+    /// Atomically insert one key/value pair, returning false when the key already exists.
+    fn put_one_if_absent(&self, key: ByteBuffer, value: ByteBuffer) -> Result<bool, KvStoreError>;
 
     fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError>;
 
@@ -78,6 +89,15 @@ pub enum KvStoreError {
     /// Returned when a DAG representation is requested before the
     /// approved-block / last-finalized-block bootstrap has completed.
     LastFinalizedBlockUninitialized,
+    /// A block the DAG index does not hold, carried as bytes so the caller can
+    /// request it. Distinct from [`KvStoreError::KeyNotFound`], which means a
+    /// store lost a value its index still points at: this one means the index
+    /// never had the block, the normal condition of a node restored from a sync
+    /// anchor. Callers that judge blocks must be able to tell the two apart.
+    MissingBlock {
+        hash: prost::bytes::Bytes,
+        context: String,
+    },
 }
 
 impl std::fmt::Display for KvStoreError {
@@ -92,6 +112,14 @@ impl std::fmt::Display for KvStoreError {
                 f,
                 "DagState does not contain lastFinalizedBlock (bootstrap incomplete)"
             ),
+            KvStoreError::MissingBlock { hash, context } => {
+                write!(
+                    f,
+                    "DAG storage is missing hash {}{}",
+                    hex::encode(hash),
+                    context
+                )
+            }
         }
     }
 }

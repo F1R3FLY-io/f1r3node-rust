@@ -86,23 +86,56 @@ impl KeyValueBlockStore {
         self.get(block_hash).expect(&err_msg).expect(&err_msg)
     }
 
-    /// Fast path used by repeat-deploy checks to avoid full BlockMessage conversion.
+    /// Fast path used by deploy scans to avoid full BlockMessage conversion.
+    /// A block that is not stored reports `false` — callers that cannot treat
+    /// an unread block as an answer want `has_any_deploy_sig_strict`.
     pub fn has_any_deploy_sig(
         &self,
         block_hash: &BlockHash,
         deploy_sigs: &HashSet<Vec<u8>>,
     ) -> Result<bool, KvStoreError> {
+        Ok(self
+            .has_any_deploy_sig_opt(block_hash, deploy_sigs)?
+            .unwrap_or(false))
+    }
+
+    /// As `has_any_deploy_sig`, but a block whose body is absent is a storage
+    /// gap rather than a negative answer. The duplicate scan in
+    /// `Validate::repeat_deploy` reads a `false` as "this ancestor does not
+    /// carry the sig", so conflating the two admits the repeat it exists to
+    /// reject — and after an LFS restore the DAG legitimately knows about
+    /// blocks whose bodies were never downloaded.
+    pub fn has_any_deploy_sig_strict(
+        &self,
+        block_hash: &BlockHash,
+        deploy_sigs: &HashSet<Vec<u8>>,
+    ) -> Result<bool, KvStoreError> {
+        self.has_any_deploy_sig_opt(block_hash, deploy_sigs)?
+            .ok_or_else(|| {
+                KvStoreError::KeyNotFound(format!(
+                    "BlockStore is missing hash: {}",
+                    PrettyPrinter::build_string_bytes(block_hash),
+                ))
+            })
+    }
+
+    /// `None` when the block is not in the store; `Some(has_any)` otherwise.
+    fn has_any_deploy_sig_opt(
+        &self,
+        block_hash: &BlockHash,
+        deploy_sigs: &HashSet<Vec<u8>>,
+    ) -> Result<Option<bool>, KvStoreError> {
         if deploy_sigs.is_empty() {
-            return Ok(false);
+            return Ok(Some(false));
         }
         let key = block_hash.to_vec();
         if let Some(has_any) = Self::cached_has_any_deploy_sig(&key, deploy_sigs) {
-            return Ok(has_any);
+            return Ok(Some(has_any));
         }
 
         let bytes = match self.store.get_one(&key)? {
             Some(bytes) => bytes,
-            None => return Ok(false),
+            None => return Ok(None),
         };
 
         let body = Self::decode_block_deploy_sigs(&bytes)?;
@@ -128,12 +161,15 @@ impl KeyValueBlockStore {
             block_deploy_sigs.push(sig);
         }
         Self::cache_deploy_sigs(key, block_deploy_sigs);
-        Ok(has_any)
+        Ok(Some(has_any))
     }
 
-    /// Fetch rejected deploy signatures for a block without decoding a full BlockMessage.
-    /// Returns the `body.rejected_deploys[*].sig` values. Most blocks have none; only
-    /// multi-parent merge blocks that dropped a conflicting deploy populate this list.
+    /// Fetch KEPT rejected deploy signatures for a block without decoding a
+    /// full BlockMessage. Returns the `body.rejected_deploys[*].sig` values
+    /// of non-duplicate records only: a duplicate-flagged record discarded a
+    /// redundant copy and does not dispute the sig's standing win, so
+    /// disposition readers skip it. Most blocks have none; only multi-parent
+    /// merge blocks that dropped a conflicting deploy populate this list.
     pub fn rejected_deploy_sigs(
         &self,
         block_hash: &BlockHash,
@@ -144,7 +180,12 @@ impl KeyValueBlockStore {
             None => return Ok(None),
         };
         let body = Self::decode_block_deploy_sigs(&bytes)?;
-        let sigs = body.rejected_deploys.into_iter().map(|r| r.sig).collect();
+        let sigs = body
+            .rejected_deploys
+            .into_iter()
+            .filter(|r| !r.duplicate)
+            .map(|r| r.sig)
+            .collect();
         Ok(Some(sigs))
     }
 
@@ -184,19 +225,6 @@ impl KeyValueBlockStore {
 
         Self::cache_deploy_sigs(key, block_deploy_sigs.clone());
         Ok(Some(block_deploy_sigs))
-    }
-
-    pub fn has_any_deploy_sig_unsafe(
-        &self,
-        block_hash: &BlockHash,
-        deploy_sigs: &HashSet<Vec<u8>>,
-    ) -> bool {
-        let err_msg = format!(
-            "BlockStore is missing hash: {}",
-            PrettyPrinter::build_string_bytes(block_hash),
-        );
-        self.has_any_deploy_sig(block_hash, deploy_sigs)
-            .expect(&err_msg)
     }
 
     pub fn put(&self, block_hash: BlockHash, block: &BlockMessage) -> Result<(), KvStoreError> {
@@ -429,6 +457,8 @@ struct BlockDeploySigsDeploy {
 struct BlockDeploySigsRejectedDeploy {
     #[prost(bytes = "vec", tag = "1")]
     sig: Vec<u8>,
+    #[prost(bool, tag = "2")]
+    duplicate: bool,
 }
 
 // See block-storage/src/test/scala/coop/rchain/blockstorage/KeyValueBlockStoreSpec.scala
@@ -467,6 +497,8 @@ mod tests {
     }
 
     impl KeyValueStore for MockKeyValueStore {
+        fn as_any(&self) -> &dyn std::any::Any { self }
+
         fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
             self.update_input_keys(keys.to_vec());
             Ok(vec![self.get_result.clone()])
@@ -485,6 +517,18 @@ mod tests {
                 .unwrap()
                 .extend(kv_pairs.iter().map(|(_, v)| v.clone()));
             Ok(())
+        }
+
+        fn put_one_if_absent(
+            &self,
+            key: shared::rust::ByteBuffer,
+            value: shared::rust::ByteBuffer,
+        ) -> Result<bool, KvStoreError> {
+            if self.get_result.is_some() {
+                return Ok(false);
+            }
+            self.put(vec![(key, value)])?;
+            Ok(true)
         }
 
         fn delete(&self, _keys: Vec<shared::rust::ByteBuffer>) -> Result<usize, KvStoreError> {
@@ -529,11 +573,21 @@ mod tests {
     pub struct NotImplementedKV;
 
     impl KeyValueStore for NotImplementedKV {
+        fn as_any(&self) -> &dyn std::any::Any { self }
+
         fn get(&self, _keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
             todo!()
         }
 
         fn put(&self, _kv_pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError> {
+            todo!()
+        }
+
+        fn put_one_if_absent(
+            &self,
+            _key: ByteBuffer,
+            _value: ByteBuffer,
+        ) -> Result<bool, KvStoreError> {
             todo!()
         }
 
@@ -571,6 +625,7 @@ mod tests {
         ApprovedBlock {
             candidate,
             sigs: vec![],
+            floor_seed: None,
         }
     }
 

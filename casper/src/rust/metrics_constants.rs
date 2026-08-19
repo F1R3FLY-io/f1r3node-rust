@@ -127,6 +127,12 @@ pub const BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC: &str =
 pub const BLOCK_REPLAY_DEPLOY_CHECK_REPLAY_DATA_TIME_METRIC: &str =
     "block.replay.deploy.check-replay-data.time";
 
+// Per-deploy play (propose) breakdown metrics — mirrors the replay ones above,
+// minus rig/discard-event-log/check-replay-data which have no play-path equivalent.
+pub const BLOCK_PLAY_DEPLOY_PRECHARGE_TIME_METRIC: &str = "block.play.deploy.precharge.time";
+pub const BLOCK_PLAY_DEPLOY_EVALUATE_TIME_METRIC: &str = "block.play.deploy.evaluate.time";
+pub const BLOCK_PLAY_DEPLOY_REFUND_TIME_METRIC: &str = "block.play.deploy.refund.time";
+
 // Runtime spawn timing metrics
 pub const RUNTIME_SPAWN_TIME_METRIC: &str = "runtime.spawn.time";
 pub const RUNTIME_SPAWN_REPLAY_TIME_METRIC: &str = "runtime.spawn-replay.time";
@@ -250,7 +256,6 @@ pub const BLOCK_CREATOR_DEPLOY_ADMISSION_MISSING_PROGRESS_METADATA_METRIC: &str 
     "block-creator.deploy-admission.missing-progress-metadata";
 
 // Finalization pipeline.
-pub const FINALIZER_RUN_TIME_METRIC: &str = "finalizer.run.time";
 pub const CLIQUE_ORACLE_COMPUTE_TIME_METRIC: &str = "clique-oracle.compute.time";
 
 // Counter incremented every time `compute_parents_post_state` refuses to build
@@ -338,4 +343,3 @@ pub const CREATE_CHECKPOINT_SPAN: &str = "create-checkpoint";
 pub const REPLAY_SYSTEM_DEPLOY_SPAN: &str = "replay-system-deploy";
 pub const COMPUTE_MAX_CLIQUE_WEIGHT_SPAN: &str = "compute-max-clique-weight";
 pub const NORMALIZED_FAULT_TOLERANCE_SPAN: &str = "normalized-fault-tolerance";
-pub const FINALIZER_RUN_SPAN: &str = "finalizer-run";

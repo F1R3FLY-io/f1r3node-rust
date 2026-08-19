@@ -60,6 +60,12 @@ pub(crate) fn admit_deploy<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     deploy: Signed<DeployData>,
 ) -> Result<Either<DeployError, DeployId>, CasperError> {
+    let deploy_id = deploy.sig.to_vec();
+    // This fast path avoids parsing known deploys; reserve_deploy performs the authoritative check.
+    if deploy_is_known(this, &deploy_id)? {
+        return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
+    }
+
     // Create normalizer environment from deploy
     let normalizer_env = normalizer_env_from_deploy(&deploy);
     let parse_started_at = std::time::Instant::now();
@@ -80,16 +86,61 @@ pub(crate) fn admit_deploy<T: TransportLayer + Send + Sync>(
         Ok(_parsed_term) => {
             let parse_elapsed_ms = parse_started_at.elapsed().as_millis();
             let add_started_at = std::time::Instant::now();
-            let deploy_id = add_deploy(this, deploy)?;
+            let deploy_result = add_deploy(this, deploy)?;
             tracing::debug!(
                 target: "f1r3fly.casper.deploy.timing",
                 parse_ms = parse_elapsed_ms,
                 add_deploy_ms = add_started_at.elapsed().as_millis(),
                 "Deploy parse/add completed"
             );
-            Ok(Either::Right(deploy_id))
+            Ok(deploy_result)
         }
     }
+}
+
+fn deploy_is_known<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+    deploy_id: &DeployId,
+) -> Result<bool, CasperError> {
+    if this.deploy_storage.lock().contains_sig(deploy_id)? {
+        return Ok(true);
+    }
+    if this
+        .block_dag_storage
+        .deploy_canonical_appearance(deploy_id)?
+        .is_some()
+    {
+        return Ok(true);
+    }
+    this.rejected_deploy_buffer
+        .lock()
+        .map_err(|error| CasperError::LockError(error.to_string()))?
+        .contains_sig(deploy_id)
+        .map_err(Into::into)
+}
+
+fn reserve_deploy<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+    deploy: Signed<DeployData>,
+) -> Result<bool, CasperError> {
+    let deploy_id = deploy.sig.to_vec();
+    if this
+        .block_dag_storage
+        .deploy_canonical_appearance(&deploy_id)?
+        .is_some()
+    {
+        return Ok(false);
+    }
+
+    let mut deploy_storage = this.deploy_storage.lock();
+    let rejected_deploys = this
+        .rejected_deploy_buffer
+        .lock()
+        .map_err(|error| CasperError::LockError(error.to_string()))?;
+    if rejected_deploys.contains_sig(&deploy_id)? {
+        return Ok(false);
+    }
+    deploy_storage.add_if_absent(deploy).map_err(Into::into)
 }
 
 pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
@@ -117,6 +168,40 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     )?;
     record_dag_cardinality_metrics(&updated_dag);
 
+    // Advance the deploy-lifecycle register: the insert above already
+    // ingested the block's body into the lifecycle event rows; this bumps
+    // the register's clocks and evaluates the sigs whose thresholds
+    // crossed. A crash between insert and this step only delays a verdict
+    // (the schedule re-arms from the persisted open rows).
+    let terminalized = this
+        .deploy_lifecycle
+        .observe_block(
+            &updated_dag,
+            &this.block_store,
+            block,
+            this.casper_shard_conf.deploy_lifespan,
+            crate::rust::finality::deploy_lifecycle::citability_horizon(
+                this.casper_shard_conf.max_parent_depth,
+            ),
+        )
+        .await?;
+
+    // Release the proposer's pool copy of every sig the register just
+    // settled. This is the ONLY deploy-pool eviction on the finality path:
+    // the register is what re-evaluates as the floor advances, so it is
+    // the only component that can name the moment a deploy stops being
+    // re-proposable. Keying this on the finality marker instead destroys
+    // work — a marked block can still be orphaned, and an orphaned carrier
+    // yields no rejection record, so the pool copy is its only route back
+    // into a live branch. Non-owners simply do not hold the sig (deploys
+    // never gossip) and the removal is a no-op.
+    if !terminalized.is_empty() {
+        let mut storage = this.deploy_storage.lock();
+        for sig in &terminalized {
+            storage.remove_by_sig(sig)?;
+        }
+    }
+
     // Publish BlockAdded event
     this.event_publisher
         .publish(super::events::added_event(block))?;
@@ -143,9 +228,11 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
 pub(crate) fn add_deploy<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     deploy: Signed<DeployData>,
-) -> Result<DeployId, CasperError> {
-    // Add deploy to storage. Phase 9 (A-3): parking_lot::Mutex.
-    this.deploy_storage.lock().add(vec![deploy.clone()])?;
+) -> Result<Either<DeployError, DeployId>, CasperError> {
+    let deploy_id = deploy.sig.to_vec();
+    if !reserve_deploy(this, deploy.clone())? {
+        return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
+    }
 
     // Log the received deploy
     let deploy_info = PrettyPrinter::build_string_signed_deploy_data(&deploy);
@@ -164,8 +251,7 @@ pub(crate) fn add_deploy<T: TransportLayer + Send + Sync>(
         }
     }
 
-    // Return deploy signature as DeployId
-    Ok(deploy.sig.to_vec())
+    Ok(Either::Right(deploy_id))
 }
 
 fn stored_deploy_is_pending_for_snapshot(
@@ -202,8 +288,10 @@ pub(crate) async fn admit_has_pending_deploys_in_storage_for_snapshot<
     snapshot: &CasperSnapshot,
 ) -> Result<bool, CasperError> {
     let latest_block_number = snapshot.dag.latest_block_number();
-    let earliest_block_number =
-        latest_block_number - snapshot.on_chain_state.shard_conf.deploy_lifespan;
+    let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
+        latest_block_number,
+        snapshot.on_chain_state.shard_conf.deploy_lifespan,
+    )?;
     // Pre-epoch system clock (operationally impossible on modern
     // systems, but per-correctness directive: handle the corner). A
     // silent zero would make every deploy's `is_expired_at(0)` return
