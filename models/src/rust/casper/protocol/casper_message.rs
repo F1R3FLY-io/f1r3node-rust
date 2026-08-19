@@ -284,6 +284,9 @@ pub struct FloorCacheResponse {
     /// The shard's genesis block hash; empty when the responder does not
     /// hold it.
     pub genesis_hash: ByteString,
+    /// The genesis block itself; absent when the responder does not hold
+    /// it. Verified against `genesis_hash` by the receiver before storing.
+    pub genesis_block: Option<BlockMessage>,
 }
 
 impl FloorCacheResponse {
@@ -299,6 +302,9 @@ impl FloorCacheResponse {
                 })
                 .collect(),
             genesis_hash: proto.genesis_hash,
+            genesis_block: proto
+                .genesis_block
+                .and_then(|block| BlockMessage::from_proto(block).ok()),
         }
     }
 
@@ -314,6 +320,7 @@ impl FloorCacheResponse {
                 })
                 .collect(),
             genesis_hash: self.genesis_hash,
+            genesis_block: self.genesis_block.map(|block| block.to_proto()),
         }
     }
 }
@@ -1497,6 +1504,7 @@ mod approved_block_tests {
         let response = FloorCacheResponse {
             entries: vec![entry],
             genesis_hash: Bytes::from_static(b"the-genesis"),
+            genesis_block: Some(crate::rust::block_implicits::get_random_block_default()),
         };
 
         assert_eq!(

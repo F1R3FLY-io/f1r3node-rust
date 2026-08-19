@@ -112,9 +112,16 @@ message FloorCacheResponseProto {
   // The shard's genesis block hash (empty when the responder does not hold
   // it). A truncated requester holds no height-0 block but must seed
   // newly-bonded latest-message slots with the same network-uniform genesis
-  // sentinel every ceremony node derives locally — hash only, never the
-  // block. Same trust class as the entries: the peer that chose the anchor.
+  // sentinel every ceremony node derives locally. Same trust class as the
+  // entries: the peer that chose the anchor.
   bytes genesisHash = 2;
+  // The genesis block itself (absent when the responder does not hold it).
+  // Hash-addressed: the receiver verifies it against genesisHash before
+  // storing, so the field carries no trust of its own. Holding genesis makes
+  // a truncated node's latest-message structures identical to a ceremony
+  // node's — the newly-bonded sentinel points at it and the propose snapshot
+  // dereferences every slot.
+  BlockMessageProto genesisBlock = 3;
 }
 
 message ApprovedBlockRequestProto {
