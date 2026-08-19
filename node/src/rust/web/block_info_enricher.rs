@@ -219,6 +219,10 @@ mod tests {
 
     use super::*;
 
+    fn init_logger() {
+        shared::rust::tracing_init::init_for_tests();
+    }
+
     fn make_deployer() -> (String, String) {
         let secp256k1 = Secp256k1;
         let (_sk, pk) = secp256k1.new_key_pair();
@@ -263,6 +267,7 @@ mod tests {
         amount: i64,
     ) -> ReportCommProto {
         let ret_unforg = make_transfer_unforgeable();
+        let ret_unforg_for_data = ret_unforg.clone();
         let produce_data = ListParWithRandom {
             pars: vec![
                 make_par_string(from),
@@ -270,7 +275,7 @@ mod tests {
                 make_par_string(to),
                 make_par_int(amount),
                 Par::default(),
-                ret_unforg,
+                ret_unforg_for_data,
             ],
             random_state: vec![],
         };
@@ -282,7 +287,7 @@ mod tests {
                 peeks: vec![],
             }),
             produces: vec![ReportProduceProto {
-                channel: Some(transfer_unforgeable.clone()),
+                channel: Some(ret_unforg),
                 data: Some(produce_data),
             }],
         }
@@ -306,127 +311,65 @@ mod tests {
         }
     }
 
-    /// Build a `DeployInfo` whose `phlo_limit * phlo_price` matches the
-    /// precharge amount used by the test precharge transfers (100). Tests that
-    /// include a precharge transfer must send it for exactly this amount so
-    /// the position-based shape check on `report[0]` recognises it. The
-    /// recipient is `"pos_vault_addr"` — a placeholder for the real
-    /// `posVaultAddr`.
-    fn make_deploy_info(deploy_sig: &str, deployer_hex: &str) -> DeployInfo {
+    fn make_deploy_info_with_charge(
+        deploy_sig: &str,
+        deployer_hex: &str,
+        phlo_limit: i64,
+        phlo_price: i64,
+    ) -> DeployInfo {
         DeployInfo {
             sig: deploy_sig.to_string(),
             deployer: deployer_hex.to_string(),
-            phlo_price: 1,
-            phlo_limit: 100,
+            phlo_limit,
+            phlo_price,
             ..Default::default()
         }
     }
 
     fn make_block_event(deploy: DeployInfoWithEventData) -> BlockEventInfo {
         BlockEventInfo {
-            block_info: Some(LightBlockInfo::default()),
+            block_info: Some(LightBlockInfo::default()).into(),
             deploys: vec![deploy],
             system_deploys: vec![],
             post_state_hash: vec![].into(),
         }
     }
 
-    fn make_deploy_with_transfer(
-        deploy_sig: &str,
-        transfer_unforgeable: &Par,
-        deployer_hex: &str,
-        deployer_addr: &str,
-        to: &str,
-        amount: i64,
-    ) -> BlockEventInfo {
-        let precharge_report =
-            make_transfer_report(transfer_unforgeable, deployer_addr, "pos_vault_addr", 100);
-        let user_report = make_transfer_report(transfer_unforgeable, deployer_addr, to, amount);
-        make_block_event(DeployInfoWithEventData {
-            deploy_info: Some(make_deploy_info(deploy_sig, deployer_hex)).into(),
-            report: vec![precharge_report, user_report],
-        })
-    }
-
+    // 1. [precharge, user], amounts consistent → one user transfer, precharge
+    //    excluded, no warning.
     #[test]
-    fn extract_transfers_finds_user_transfers() {
+    fn precharge_then_user_consistent_excludes_precharge() {
         let transfer_unforgeable = make_transfer_unforgeable();
         let (deployer_hex, deployer_addr) = make_deployer();
-        let report = make_deploy_with_transfer(
-            "deploy_abc",
-            &transfer_unforgeable,
-            &deployer_hex,
-            &deployer_addr,
-            "receiver_addr",
-            1000,
-        );
+
+        let precharge_report =
+            make_transfer_report(&transfer_unforgeable, &deployer_addr, "pos_vault_addr", 100);
+        let user_report =
+            make_transfer_report(&transfer_unforgeable, &deployer_addr, "receiver_addr", 1000);
+        let report = make_block_event(DeployInfoWithEventData {
+            deploy_info: Some(make_deploy_info_with_charge(
+                "deploy_abc",
+                &deployer_hex,
+                100,
+                1,
+            ))
+            .into(),
+            report: vec![precharge_report, user_report],
+        });
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
 
         let transfers = result.get("deploy_abc").expect("should have deploy entry");
-        assert_eq!(transfers.len(), 1, "should have one user transfer");
-
-        let t = &transfers[0];
-        assert_eq!(t.from_addr, deployer_addr);
-        assert_eq!(t.to_addr, "receiver_addr");
-        assert_eq!(t.amount, 1000);
-        assert!(t.success);
-        assert!(t.fail_reason.is_empty());
+        assert_eq!(transfers.len(), 1, "precharge excluded, user transfer kept");
+        assert_eq!(transfers[0].to_addr, "receiver_addr");
+        assert_eq!(transfers[0].amount, 1000);
+        assert_eq!(transfers[0].from_addr, deployer_addr);
     }
 
+    // 2. [precharge, user, refund] → only the user transfer (refund excluded
+    //    by sender).
     #[test]
-    fn extract_transfers_handles_precharge_absent() {
-        let transfer_unforgeable = make_transfer_unforgeable();
-        let (deployer_hex, deployer_addr) = make_deployer();
-
-        let user_report =
-            make_transfer_report(&transfer_unforgeable, &deployer_addr, "receiver_addr", 500);
-        let report = make_block_event(DeployInfoWithEventData {
-            deploy_info: Some(make_deploy_info("deploy_single_batch", &deployer_hex)).into(),
-            report: vec![user_report],
-        });
-
-        let result = extract_transfers_from_report(&report, &transfer_unforgeable);
-
-        let transfers = result
-            .get("deploy_single_batch")
-            .expect("should have deploy entry");
-        assert_eq!(
-            transfers.len(),
-            1,
-            "single-batch user transfer must not be dropped"
-        );
-        assert_eq!(transfers[0].amount, 500);
-    }
-
-    #[test]
-    fn extract_transfers_handles_unparseable_precharge() {
-        let transfer_unforgeable = make_transfer_unforgeable();
-        let (deployer_hex, deployer_addr) = make_deployer();
-
-        let empty_precharge = SingleReport { events: vec![] };
-        let user_report =
-            make_transfer_report(&transfer_unforgeable, &deployer_addr, "receiver_addr", 300);
-        let report = make_block_event(DeployInfoWithEventData {
-            deploy_info: Some(make_deploy_info("deploy_no_precharge_tx", &deployer_hex)).into(),
-            report: vec![empty_precharge, user_report],
-        });
-
-        let result = extract_transfers_from_report(&report, &transfer_unforgeable);
-
-        let transfers = result
-            .get("deploy_no_precharge_tx")
-            .expect("should have deploy entry");
-        assert_eq!(
-            transfers.len(),
-            1,
-            "user transfer must survive unparseable precharge"
-        );
-        assert_eq!(transfers[0].amount, 300);
-    }
-
-    #[test]
-    fn extract_transfers_excludes_refund_and_system_side_effects() {
+    fn precharge_user_refund_keeps_only_user_transfer() {
         let transfer_unforgeable = make_transfer_unforgeable();
         let (deployer_hex, deployer_addr) = make_deployer();
 
@@ -437,7 +380,13 @@ mod tests {
         let refund_report =
             make_transfer_report(&transfer_unforgeable, "pos_vault_addr", &deployer_addr, 50);
         let report = make_block_event(DeployInfoWithEventData {
-            deploy_info: Some(make_deploy_info("deploy_with_refund", &deployer_hex)).into(),
+            deploy_info: Some(make_deploy_info_with_charge(
+                "deploy_with_refund",
+                &deployer_hex,
+                100,
+                1,
+            ))
+            .into(),
             report: vec![precharge_report, user_report, refund_report],
         });
 
@@ -451,67 +400,102 @@ mod tests {
         assert_eq!(transfers[0].amount, 700);
     }
 
+    // 3. precharge_amount > 0, report[0] empty → nothing skipped, user
+    //    transfers returned, warning emitted. Assert on observable behaviour
+    //    (returned transfers), not on log output.
     #[test]
-    fn extract_transfers_preserves_entry_for_no_transfer_deploy() {
+    fn precharge_amount_positive_but_report0_empty_returns_user_transfers() {
+        init_logger();
         let transfer_unforgeable = make_transfer_unforgeable();
-        let (deployer_hex, _deployer_addr) = make_deployer();
+        let (deployer_hex, deployer_addr) = make_deployer();
 
+        let empty_precharge = SingleReport { events: vec![] };
+        let user_report =
+            make_transfer_report(&transfer_unforgeable, &deployer_addr, "receiver_addr", 300);
         let report = make_block_event(DeployInfoWithEventData {
-            deploy_info: Some(make_deploy_info("deploy_no_transfer", &deployer_hex)).into(),
-            report: vec![SingleReport { events: vec![] }, SingleReport {
-                events: vec![],
-            }],
+            deploy_info: Some(make_deploy_info_with_charge(
+                "deploy_empty_precharge",
+                &deployer_hex,
+                100,
+                1,
+            ))
+            .into(),
+            report: vec![empty_precharge, user_report],
         });
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
 
         let transfers = result
-            .get("deploy_no_transfer")
-            .expect("deploy with non-empty report must always receive a map entry");
-        assert!(transfers.is_empty(), "should have no transfers");
+            .get("deploy_empty_precharge")
+            .expect("should have deploy entry");
+        assert_eq!(
+            transfers.len(),
+            1,
+            "report[0] not skipped; user transfer returned"
+        );
+        assert_eq!(transfers[0].amount, 300);
     }
 
+    // 4. precharge_amount > 0, report[0] holds a transfer with the wrong
+    //    amount → nothing skipped, that transfer is returned too, warning
+    //    emitted.
     #[test]
-    fn extract_transfers_skips_empty_report_deploy() {
+    fn precharge_amount_positive_but_report0_wrong_amount_is_not_skipped() {
+        init_logger();
         let transfer_unforgeable = make_transfer_unforgeable();
-        let (deployer_hex, _deployer_addr) = make_deployer();
+        let (deployer_hex, deployer_addr) = make_deployer();
 
+        // Expected precharge amount is 100, but report[0] carries 999 from the
+        // deployer — wrong amount, so the shape check fails and report[0] is
+        // not skipped.
+        let wrong_precharge =
+            make_transfer_report(&transfer_unforgeable, &deployer_addr, "pos_vault_addr", 999);
+        let user_report =
+            make_transfer_report(&transfer_unforgeable, &deployer_addr, "receiver_addr", 500);
         let report = make_block_event(DeployInfoWithEventData {
-            deploy_info: Some(make_deploy_info("deploy_empty_report", &deployer_hex)).into(),
-            report: vec![],
+            deploy_info: Some(make_deploy_info_with_charge(
+                "deploy_wrong_precharge",
+                &deployer_hex,
+                100,
+                1,
+            ))
+            .into(),
+            report: vec![wrong_precharge, user_report],
         });
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
 
-        assert!(
-            !result.contains_key("deploy_empty_report"),
-            "deploy with empty report should not receive a map entry"
+        let transfers = result
+            .get("deploy_wrong_precharge")
+            .expect("should have deploy entry");
+        assert_eq!(
+            transfers.len(),
+            2,
+            "report[0] not skipped; both the wrong-amount transfer and the user transfer returned"
         );
+        assert_eq!(transfers[0].amount, 999);
+        assert_eq!(transfers[1].amount, 500);
     }
 
-    /// Regression guard for the genesis-block bug: genesis deploys replay
-    /// without cost accounting, so they produce no precharge. When such a
-    /// deploy happens to span multiple report batches, every batch is a
-    /// user-deploy batch and the first deployer-funded transfer is genuine.
-    /// Under the old `.skip(1)` logic this first transfer was discarded.
+    // 5. Genesis shape: phlo_price == 0, several batches, no precharge → all
+    //    transfers returned. Regression guard for the old `.skip(1)` genesis
+    //    bug.
     #[test]
-    fn extract_transfers_genesis_multi_batch_keeps_first_transfer() {
+    fn genesis_shape_with_zero_phlo_price_keeps_all_transfers() {
         let transfer_unforgeable = make_transfer_unforgeable();
         let (deployer_hex, deployer_addr) = make_deployer();
 
-        // Two genuine user transfers across two batches, no precharge. A
-        // genesis deploy carries no precharge, so deploy info is left with
-        // default phlo pricing (charge amount 0 -> nothing to exclude).
         let first_report =
             make_transfer_report(&transfer_unforgeable, &deployer_addr, "receiver_a", 111);
         let second_report =
             make_transfer_report(&transfer_unforgeable, &deployer_addr, "receiver_b", 222);
         let report = make_block_event(DeployInfoWithEventData {
-            deploy_info: Some(DeployInfo {
-                sig: "deploy_genesis".to_string(),
-                deployer: deployer_hex,
-                ..Default::default()
-            })
+            deploy_info: Some(make_deploy_info_with_charge(
+                "deploy_genesis",
+                &deployer_hex,
+                i64::MAX,
+                0,
+            ))
             .into(),
             report: vec![first_report, second_report],
         });
@@ -530,5 +514,270 @@ mod tests {
         assert_eq!(transfers[0].amount, 111);
         assert_eq!(transfers[1].to_addr, "receiver_b");
         assert_eq!(transfers[1].amount, 222);
+    }
+
+    // 6. Non-empty report, no transfers → entry present, vector empty.
+    #[test]
+    fn non_empty_report_with_no_transfers_has_empty_entry() {
+        let transfer_unforgeable = make_transfer_unforgeable();
+        let (deployer_hex, _deployer_addr) = make_deployer();
+
+        let report = make_block_event(DeployInfoWithEventData {
+            deploy_info: Some(make_deploy_info_with_charge(
+                "deploy_no_transfer",
+                &deployer_hex,
+                100,
+                1,
+            ))
+            .into(),
+            report: vec![SingleReport { events: vec![] }, SingleReport {
+                events: vec![],
+            }],
+        });
+
+        let result = extract_transfers_from_report(&report, &transfer_unforgeable);
+
+        let transfers = result
+            .get("deploy_no_transfer")
+            .expect("deploy with non-empty report must always receive a map entry");
+        assert!(transfers.is_empty(), "should have no transfers");
+    }
+
+    // 7. Empty report → no entry.
+    #[test]
+    fn empty_report_deploy_gets_no_entry() {
+        let transfer_unforgeable = make_transfer_unforgeable();
+        let (deployer_hex, _deployer_addr) = make_deployer();
+
+        let report = make_block_event(DeployInfoWithEventData {
+            deploy_info: Some(make_deploy_info_with_charge(
+                "deploy_empty_report",
+                &deployer_hex,
+                100,
+                1,
+            ))
+            .into(),
+            report: vec![],
+        });
+
+        let result = extract_transfers_from_report(&report, &transfer_unforgeable);
+
+        assert!(
+            !result.contains_key("deploy_empty_report"),
+            "deploy with empty report should not receive a map entry"
+        );
+    }
+
+    // 8. Multiple user transfers within one batch and across batches → all
+    //    returned, order preserved.
+    #[test]
+    fn multiple_user_transfers_across_batches_all_returned_in_order() {
+        let transfer_unforgeable = make_transfer_unforgeable();
+        let (deployer_hex, deployer_addr) = make_deployer();
+
+        let precharge_report =
+            make_transfer_report(&transfer_unforgeable, &deployer_addr, "pos_vault_addr", 100);
+
+        // First user batch holds two transfers in the same batch.
+        let batch_with_two = SingleReport {
+            events: vec![
+                ReportProto {
+                    report: Some(report_proto::Report::Comm(make_comm_event(
+                        &transfer_unforgeable,
+                        &deployer_addr,
+                        "receiver_a",
+                        10,
+                    ))),
+                },
+                ReportProto {
+                    report: Some(report_proto::Report::Comm(make_comm_event(
+                        &transfer_unforgeable,
+                        &deployer_addr,
+                        "receiver_b",
+                        20,
+                    ))),
+                },
+            ],
+        };
+
+        // Second user batch holds one transfer.
+        let batch_with_one =
+            make_transfer_report(&transfer_unforgeable, &deployer_addr, "receiver_c", 30);
+
+        let report = make_block_event(DeployInfoWithEventData {
+            deploy_info: Some(make_deploy_info_with_charge(
+                "deploy_multi",
+                &deployer_hex,
+                100,
+                1,
+            ))
+            .into(),
+            report: vec![precharge_report, batch_with_two, batch_with_one],
+        });
+
+        let result = extract_transfers_from_report(&report, &transfer_unforgeable);
+
+        let transfers = result
+            .get("deploy_multi")
+            .expect("should have deploy entry");
+        assert_eq!(transfers.len(), 3, "all user transfers returned in order");
+        assert_eq!(transfers[0].to_addr, "receiver_a");
+        assert_eq!(transfers[0].amount, 10);
+        assert_eq!(transfers[1].to_addr, "receiver_b");
+        assert_eq!(transfers[1].amount, 20);
+        assert_eq!(transfers[2].to_addr, "receiver_c");
+        assert_eq!(transfers[2].amount, 30);
+    }
+
+    // The deployer is derived from `DeployInfo.deployer` only. A malformed
+    // deployer hex (non-fatal) yields no matching transfers but still a map
+    // entry, never a panic.
+    #[test]
+    fn invalid_deployer_hex_yields_empty_entry_without_panic() {
+        init_logger();
+        let transfer_unforgeable = make_transfer_unforgeable();
+        let (_deployer_hex, deployer_addr) = make_deployer();
+
+        let user_report =
+            make_transfer_report(&transfer_unforgeable, &deployer_addr, "receiver_addr", 123);
+        let report = make_block_event(DeployInfoWithEventData {
+            deploy_info: Some(DeployInfo {
+                sig: "deploy_bad_deployer".to_string(),
+                deployer: "not-hex".to_string(),
+                phlo_limit: 100,
+                phlo_price: 1,
+                ..Default::default()
+            })
+            .into(),
+            report: vec![user_report],
+        });
+
+        let result = extract_transfers_from_report(&report, &transfer_unforgeable);
+
+        let transfers = result
+            .get("deploy_bad_deployer")
+            .expect("non-empty report must still get a map entry");
+        assert!(
+            transfers.is_empty(),
+            "no transfer matches an unparseable deployer"
+        );
+    }
+
+    // 9. Precharge only: report == [precharge_batch], precharge_amount > 0,
+    //    no user transfers. report[0] matches the precharge shape so it is
+    //    skipped; report[1..] is empty, so the deploy still receives a map
+    //    entry — an empty vector, not a missing key — and no warning is
+    //    emitted.
+    #[test]
+    fn precharge_only_yields_empty_entry() {
+        let transfer_unforgeable = make_transfer_unforgeable();
+        let (deployer_hex, deployer_addr) = make_deployer();
+
+        let precharge_report =
+            make_transfer_report(&transfer_unforgeable, &deployer_addr, "pos_vault_addr", 100);
+        let report = make_block_event(DeployInfoWithEventData {
+            deploy_info: Some(make_deploy_info_with_charge(
+                "deploy_precharge_only",
+                &deployer_hex,
+                100,
+                1,
+            ))
+            .into(),
+            report: vec![precharge_report],
+        });
+
+        let result = extract_transfers_from_report(&report, &transfer_unforgeable);
+
+        // A deploy with a non-empty report always receives a map entry,
+        // possibly empty — never a missing key.
+        let transfers = result
+            .get("deploy_precharge_only")
+            .expect("precharge-only deploy with non-empty report must still receive a map entry");
+        assert!(
+            transfers.is_empty(),
+            "report[0] is the consistent precharge and is skipped; no user transfers remain"
+        );
+    }
+
+    // 10. User transfer batch precedes the precharge batch. report[0] holds a
+    //     deployer-sent transfer whose amount != precharge_amount; report[1]
+    //     holds the precharge. The shape check on report[0] fails (amount
+    //     mismatch), so nothing is skipped: both transfers are returned and a
+    //     warning is emitted. The genuine user transfer in report[0] is present.
+    #[test]
+    fn user_transfer_before_precharge_is_not_dropped() {
+        init_logger();
+        let transfer_unforgeable = make_transfer_unforgeable();
+        let (deployer_hex, deployer_addr) = make_deployer();
+
+        let user_report =
+            make_transfer_report(&transfer_unforgeable, &deployer_addr, "receiver_addr", 777);
+        let precharge_report =
+            make_transfer_report(&transfer_unforgeable, &deployer_addr, "pos_vault_addr", 100);
+        let report = make_block_event(DeployInfoWithEventData {
+            deploy_info: Some(make_deploy_info_with_charge(
+                "deploy_user_before_precharge",
+                &deployer_hex,
+                100,
+                1,
+            ))
+            .into(),
+            report: vec![user_report, precharge_report],
+        });
+
+        let result = extract_transfers_from_report(&report, &transfer_unforgeable);
+
+        let transfers = result
+            .get("deploy_user_before_precharge")
+            .expect("should have deploy entry");
+        assert_eq!(
+            transfers.len(),
+            2,
+            "report[0] not skipped; the user transfer and the precharge are both returned"
+        );
+        // The genuine user transfer must survive — never a silent drop.
+        assert_eq!(transfers[0].to_addr, "receiver_addr");
+        assert_eq!(transfers[0].amount, 777);
+        assert_eq!(transfers[0].from_addr, deployer_addr);
+        assert_eq!(transfers[1].to_addr, "pos_vault_addr");
+        assert_eq!(transfers[1].amount, 100);
+    }
+
+    // 11. Precharge absent entirely but precharge_amount > 0: report contains
+    //     only a single user-transfer batch. report[0] fails the shape check
+    //     (its amount != precharge_amount), so nothing is skipped; the user
+    //     transfer is returned and a warning is emitted. 
+    #[test]
+    fn precharge_absent_one_user_transfer_is_returned() {
+        init_logger();
+        let transfer_unforgeable = make_transfer_unforgeable();
+        let (deployer_hex, deployer_addr) = make_deployer();
+
+        let user_report =
+            make_transfer_report(&transfer_unforgeable, &deployer_addr, "receiver_addr", 456);
+        let report = make_block_event(DeployInfoWithEventData {
+            deploy_info: Some(make_deploy_info_with_charge(
+                "deploy_no_precharge_one_user",
+                &deployer_hex,
+                100,
+                1,
+            ))
+            .into(),
+            report: vec![user_report],
+        });
+
+        let result = extract_transfers_from_report(&report, &transfer_unforgeable);
+
+        let transfers = result
+            .get("deploy_no_precharge_one_user")
+            .expect("should have deploy entry");
+        assert_eq!(
+            transfers.len(),
+            1,
+            "report[0] not skipped; the single user transfer is returned"
+        );
+        assert_eq!(transfers[0].to_addr, "receiver_addr");
+        assert_eq!(transfers[0].amount, 456);
+        assert_eq!(transfers[0].from_addr, deployer_addr);
     }
 }

@@ -234,7 +234,7 @@ async fn cost_accounted_user_deploy_report_starts_with_precharge_batch() {
 
 /// Genesis block: deploys are the blessed standard contracts built by
 /// `standard_deploys::to_deploy` with `phlo_price = 0`, so
-/// `total_phlo_charge()` = 0. 
+/// `total_phlo_charge()` = 0.
 #[tokio::test]
 async fn genesis_deploys_carry_zero_phlo_price_so_no_precharge() {
     let genesis = GenesisBuilder::new()
