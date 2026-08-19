@@ -1935,6 +1935,7 @@ async fn bridge_query_survives_multi_parent_merge() {
         HashMap::new(),
         None,
         None,
+        None,
     )
     .await
     .expect("compute block A");
@@ -2021,6 +2022,7 @@ async fn bridge_query_survives_multi_parent_merge() {
         HashMap::new(),
         None,
         None,
+        None,
     )
     .await
     .expect("compute block B");
@@ -2052,6 +2054,7 @@ async fn bridge_query_survives_multi_parent_merge() {
         &snapshot_merge,
         &rm,
         &latest_messages,
+        None,
         None,
         None,
         None,
@@ -2129,6 +2132,7 @@ in {{
         &rm,
         BlockData::from_block(&query_block_raw),
         HashMap::new(),
+        None,
         None,
         None,
     )
@@ -2317,6 +2321,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         HashMap::new(),
         None,
         None,
+        None,
     )
     .await
     .expect("compute block A");
@@ -2379,6 +2384,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         &rm,
         BlockData::from_block(&block_b_raw),
         HashMap::new(),
+        None,
         None,
         None,
     )
@@ -2576,6 +2582,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         &snapshot_merge,
         &rm,
         &latest_messages,
+        None,
         None,
         None,
         None,
@@ -3092,6 +3099,7 @@ new deployId(`rho:system:deployId`) in {
         HashMap::new(),
         None,
         None,
+        None,
     )
     .await
     .expect("compute block A");
@@ -3148,6 +3156,7 @@ new deployId(`rho:system:deployId`) in {
         &rm,
         BlockData::from_block(&block_b_raw),
         HashMap::new(),
+        None,
         None,
         None,
     )
@@ -3208,6 +3217,7 @@ new deployId(`rho:system:deployId`) in {
         HashMap::new(),
         None,
         None,
+        None,
     )
     .await
     .expect("compute block C");
@@ -3260,6 +3270,7 @@ new deployId(`rho:system:deployId`) in {
         HashMap::new(),
         None,
         None,
+        None,
     )
     .await
     .expect("compute block D");
@@ -3292,6 +3303,7 @@ new deployId(`rho:system:deployId`) in {
         &snapshot_cd,
         &rm,
         &latest_messages,
+        None,
         None,
         None,
         None,

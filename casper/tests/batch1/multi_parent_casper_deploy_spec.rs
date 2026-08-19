@@ -153,7 +153,7 @@ async fn multi_parent_casper_should_reject_a_deploy_already_in_the_dag() {
 
     assert!(node
         .block_dag_storage
-        .lookup_by_deploy_id(&expected_id)
+        .deploy_canonical_appearance(&expected_id)
         .unwrap()
         .is_some());
     assert!(matches!(

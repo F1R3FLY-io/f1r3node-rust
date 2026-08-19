@@ -415,6 +415,7 @@ async fn genesis_from_input_files_should_create_a_valid_genesis_block() {
                     &runtime_manager,
                     None,
                     None,
+                    None,
                 )
                 .await
                 .expect("validate_block_checkpoint should succeed");

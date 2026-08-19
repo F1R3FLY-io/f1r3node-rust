@@ -7,7 +7,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
-use block_storage::rust::dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, DeployId};
+use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
 use block_storage::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
@@ -200,7 +200,6 @@ impl TestFixture {
         let kvm_blockstorage = Arc::new(Mutex::new(HashMap::new()));
         let kvm_approved_block = Arc::new(Mutex::new(HashMap::new()));
         let kvm_dagstorage_metadata = Arc::new(Mutex::new(HashMap::new()));
-        let kvm_dagstorage_deploy_index = Arc::new(Mutex::new(HashMap::new()));
         let kvm_dagstorage_latest_messages = Arc::new(Mutex::new(HashMap::new()));
         let kvm_dagstorage_invalid_blocks = Arc::new(Mutex::new(HashMap::new()));
         let kvm_dagstorage_equivocation_tracker = Arc::new(Mutex::new(HashMap::new()));
@@ -230,12 +229,6 @@ impl TestFixture {
             KeyValueTypedStoreImpl::<BlockHashSerde, BlockMetadata>::new(metadata_store);
         let block_metadata_store = BlockMetadataStore::new(metadata_typed_store);
 
-        let deploy_index_store = Arc::new(MockKeyValueStore::with_shared_data(
-            kvm_dagstorage_deploy_index.clone(),
-        ));
-        let deploy_index_typed_store =
-            KeyValueTypedStoreImpl::<DeployId, BlockHashSerde>::new(deploy_index_store);
-
         let latest_messages_store = Arc::new(MockKeyValueStore::with_shared_data(
             kvm_dagstorage_latest_messages.clone(),
         ));
@@ -261,7 +254,6 @@ impl TestFixture {
             Arc::new(parking_lot::RwLock::new(())),
             latest_messages_typed_store,
             Arc::new(parking_lot::RwLock::new(block_metadata_store)),
-            Arc::new(parking_lot::RwLock::new(deploy_index_typed_store)),
             invalid_blocks_typed_store,
             KeyValueTypedStoreImpl::new(Arc::new(
                 rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
@@ -346,6 +338,7 @@ impl TestFixture {
                 block: genesis.clone(),
                 required_sigs: 0,
             },
+            floor_seed: None,
             sigs: Vec::new(),
         };
 
@@ -493,6 +486,7 @@ impl TestFixture {
             transport_layer.clone(),
             rp_conf.clone(),
             block_retriever.clone(),
+            None,
             None,
         );
 

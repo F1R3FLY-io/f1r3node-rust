@@ -234,6 +234,12 @@ pub struct ParentsPostStateCacheKey {
     // sharing a cache entry.
     pub sorted_latest_messages: Vec<(Validator, BlockHash)>,
     pub disable_late_block_filtering: bool,
+    // Whether the computation ran with a rejected-deploy buffer attached.
+    // Buffer population is a side effect of the merge, not part of the
+    // cached value — a bufferless computation (exploratory deploy) must
+    // never satisfy a lookup from the create/validate path, or that
+    // path's buffer populate is silently skipped.
+    pub buffer_populated: bool,
 }
 
 /// The merged pre-state a block builds on, with every fact the merge
@@ -255,10 +261,10 @@ pub struct MergedPreState {
     /// Empty on the non-merging shapes (genesis, single parent, covering
     /// parent), where effects arrive via a parent's post-state instead.
     pub applied_from_scope: std::collections::HashSet<prost::bytes::Bytes>,
-    pub settled_user_sigs: std::collections::HashSet<prost::bytes::Bytes>,
-    /// The block whose committed state `state` derives from: the floor for
-    /// the merged path; `None` where the header already determines it
-    /// (genesis, single parent, covering parent).
+    /// The block whose committed state `state` derives from: on the merged
+    /// path the main parent, or the floor when the main parent's state does
+    /// not hold the floor's settled content. `None` where the header already
+    /// determines it (genesis, single parent, covering parent).
     pub merge_base: Option<BlockHash>,
 }
 
@@ -1192,7 +1198,7 @@ impl RuntimeManager {
         })?;
         self.mergeable_store
             .put_one(key_bytes, value)
-            .map_err(CasperError::KvStoreError)
+            .map_err(CasperError::from)
     }
 
     /// True iff this node already holds the mergeable-channels entry for `block`.

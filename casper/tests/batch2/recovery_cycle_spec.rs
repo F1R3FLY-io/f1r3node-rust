@@ -11,6 +11,7 @@
 // Rholang body is `Nil`, so play execution has no `|` parallel
 // composition and is fully deterministic.
 
+use casper::rust::casper::MultiParentCasper;
 use casper::rust::util::construct_deploy;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
@@ -27,11 +28,9 @@ struct TestContext {
 }
 
 impl TestContext {
-    async fn new(validators_num: usize) -> Self {
-        let parameters =
-            GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(validators_num));
+    async fn new() -> Self {
         let genesis = GenesisBuilder::new()
-            .build_genesis_with_parameters(Some(parameters))
+            .build_genesis_with_parameters(None)
             .await
             .unwrap();
 
@@ -147,23 +146,28 @@ fn assert_touched_integer_add_channels_single_valued(
 /// * The larger-sig deploy is routed to `nodes[0]`'s block_a so the
 ///   rejected sig lives in validator 0's own previous block.
 ///
-/// * Validator 0 must NOT propose merge_block. Validator 1 does. That
-///   keeps validator 0's `latest_message_hash` at block_a, so when
-///   validator 0 later creates recovery_block,
-///   `collect_self_chain_deploy_sigs` walks `block_a → genesis` and
-///   block_a's body deploys (including the rejected sig) always land
-///   in `self_chain_deploy_sigs`. The hash-asc tiebreak that decides
-///   merge_block's main parent is irrelevant — we never traverse
-///   merge_block via the self-chain walk.
+/// * Validator 0 must NOT propose merge_block. Validator 1 does. The
+///   rejected copy's carrier is validator 0's own block_a, so the
+///   owner-scoped buffer populate lands the retry with validator 0 —
+///   the node whose later create re-proposes it — while validator 1
+///   (a non-owner) merely records the adjudication.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
-    let ctx = TestContext::new(2).await;
-    let shard_id = ctx.genesis.genesis_block.shard_id.clone();
+    // Two validators bonded in genesis (stakes {1, 3}): validator 1 holds a
+    // witnessing majority, so the settle ladder below can advance the floor.
+    // A genesis bonding the full default validator set would strand every
+    // floor at genesis with only two nodes running.
+    let genesis_parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(2));
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(genesis_parameters))
+        .await
+        .unwrap();
+    let shard_id = genesis.genesis_block.shard_id.clone();
 
     // Two validators, no synchrony constraint, unlimited parents so the
     // multi-parent merge actually happens.
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis, 2, None, None, None, None)
         .await
         .expect("create_network(2)");
     for node in nodes.iter_mut() {
@@ -250,8 +254,8 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
     );
 
     // Validator 1 proposes merge_block. Validator 0 deliberately does
-    // not propose it: keeping validator 0's latest at block_a is what
-    // makes the recovery propose's self-chain walk deterministic.
+    // not propose it: the rejected copy's carrier stays validator 0's
+    // own block_a, so the owner-scoped populate buffers the retry there.
     //
     // The marker deploy gives `create_block` something fresh to commit
     // so it doesn't short-circuit on `NoNewDeploys`.
@@ -332,21 +336,6 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
             .await
             .expect("sync merge_block 1 -> 0");
     }
-    nodes.sort_by(|left, right| {
-        left.validator_id_opt
-            .as_ref()
-            .expect("left validator identity")
-            .public_key
-            .bytes
-            .cmp(
-                &right
-                    .validator_id_opt
-                    .as_ref()
-                    .expect("right validator identity")
-                    .public_key
-                    .bytes,
-            )
-    });
     assert!(
         nodes[0].contains(&merge_block.block_hash),
         "validator 0 must observe merge_block before recovery propose"
@@ -365,15 +354,60 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
             hex::encode(&conflict_sig)
         );
     }
-    nodes[0]
-        .block_dag_storage
-        .record_directly_finalized(merge_block.block_hash.clone(), 1.0, |_| async { Ok(()) })
+    // Settle the adjudication: the retry gate opens only once the rejection
+    // record is inside the proposer's frozen floor closure. Validator 1
+    // (majority stake) mints settle rounds synced to validator 0 until
+    // validator 0's derived floor covers merge_block.
+    let m_height = merge_block.body.state.block_number;
+    let mut settled = false;
+    for round in 0..30i32 {
+        let settle_marker = {
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+            construct_deploy::basic_deploy_data(
+                50 + round,
+                Some(construct_deploy::DEFAULT_SEC2.clone()),
+                Some(shard_id.clone()),
+            )
+            .expect("build settle marker")
+        };
+        let b = nodes[1]
+            .add_block_from_deploys(std::slice::from_ref(&settle_marker))
+            .await
+            .expect("settle round");
+        {
+            let (a, c) = nodes.split_at_mut(1);
+            a[0].sync_with_one(&mut c[0])
+                .await
+                .expect("sync settle round 1 -> 0");
+        }
+        let dag = nodes[0].casper.block_dag().await.expect("dag");
+        let floor = casper::rust::finality::floor::floor_of_block(
+            &dag,
+            &nodes[0].block_store,
+            &b.block_hash,
+            casper::rust::safety::clique_oracle::FtThreshold::from_f32_lossy(0.0),
+        )
         .await
-        .expect("mark merge frontier finalized for recovery gate");
+        .expect("floor_of_block");
+        if floor.hash == merge_block.block_hash
+            || (floor.block_number >= m_height
+                && dag
+                    .is_dag_ancestor(&merge_block.block_hash, &floor.hash)
+                    .expect("ancestor query"))
+        {
+            settled = true;
+            break;
+        }
+    }
+    assert!(
+        settled,
+        "staging precondition: validator 0's floor must come to cover \
+         merge_block within the settle rounds"
+    );
 
     // Validator 0 proposes another block while its source block is still
-    // visible in unresolved scope. Since the merge rejection is visible and
-    // the deploy is in the rejected-deploy buffer, the rejected sig must be
+    // visible in unresolved scope. The rejection is now settled in the
+    // floor, so the retry gate is open and the rejected sig must be
     // retryable rather than blocked until the source leaves the DAG window.
     let marker_deploy_2 = {
         tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
@@ -401,10 +435,9 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
             .collect::<Vec<_>>()
     );
     // Packaging the replay must NOT drain the buffer entry: the recovery
-    // block is not yet canonical (it could be orphaned, e.g. by recovery-
-    // context single-parent narrowing), and the buffer holds the only
-    // re-proposable copy. The entry is purged only once the replay is
-    // finalized-won.
+    // block is not yet canonical (fork choice could leave it behind), and
+    // the buffer holds the only re-proposable copy. The entry is purged
+    // only once the replay is finalized-won.
     {
         let buffer_guard = nodes[0].rejected_deploy_buffer.lock().expect("buffer lock");
         assert!(
@@ -454,23 +487,22 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
             .block_dag_storage
             .get_representation()
             .expect("dag representation")
-            .lookup_by_deploy_id(&surviving_sig.to_vec())
+            .deploy_canonical_appearance(&surviving_sig)
             .ok()
             .flatten()
             .is_some(),
         "the surviving sig {} must be reachable in the canonical view via \
-         the deploy index",
+         its lifecycle row",
         hex::encode(&surviving_sig)
     );
 
     // Buffer custody after the replay wins: the purge keys on floor-state
-    // evidence of the deploy's effect, and this deploy (`Nil` — the
-    // conflict is the system-level precharge) creates no number cells, so
-    // the probe can never attest it. Its custody therefore ends at window
-    // close via the retain, never at a node-local finality marker — the
-    // entry STAYS buffered here, while the canonical-won selection filter
-    // keeps it from ever being re-proposed. (The probe-visible purge path
-    // is pinned in exactly_once_spec.)
+    // membership of the deploy's effect, and the FLOOR has not covered
+    // the replay here — the finality marker written below is not the
+    // floor. Custody therefore holds through the marker — the entry
+    // STAYS buffered, while the canonical-won selection filter keeps it
+    // from ever being re-proposed — and ends only when the floor either
+    // covers the replay or closes the window.
     nodes[0]
         .block_dag_storage
         .record_directly_finalized(recovery_block.block_hash.clone(), 1.0, |_| async { Ok(()) })
@@ -499,8 +531,8 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
             buffer_guard
                 .contains_sig(&conflict_sig)
                 .expect("buffer.contains_sig"),
-            "a probe-invisible deploy stays in buffer custody until window \
-             close; no node-local finality marker may evict it"
+            "an uncovered replay's deploy stays in buffer custody; no \
+             node-local finality marker may evict it"
         );
     }
 }
@@ -508,7 +540,7 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() {
-    let ctx = TestContext::new(3).await;
+    let ctx = TestContext::new().await;
     let shard_id = ctx.genesis.genesis_block.shard_id.clone();
 
     let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)

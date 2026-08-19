@@ -77,6 +77,11 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
     disable_state_exporter: bool,
     /// Shared reference to heartbeat signal for triggering immediate wake on deploy
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
+    state_items_tx: Option<
+        tokio::sync::mpsc::Sender<
+            models::rust::casper::protocol::casper_message::StoreItemsMessage,
+        >,
+    >,
 }
 
 const MAX_BLOCKS_IN_PROCESSING: usize = 2_048;
@@ -141,6 +146,11 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         disable_state_exporter: bool,
         heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
         standalone: bool,
+        state_items_tx: Option<
+            tokio::sync::mpsc::Sender<
+                models::rust::casper::protocol::casper_message::StoreItemsMessage,
+            >,
+        >,
     ) -> Self {
         // Scala equivalent: val casperShardConf = CasperShardConf(...)
         let casper_shard_conf = CasperShardConf {
@@ -174,7 +184,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             disable_validator_progress_check: standalone,
             enable_mergeable_channel_gc: conf.enable_mergeable_channel_gc,
             mergeable_channels_gc_depth_buffer: conf.mergeable_channels_gc_depth_buffer,
-            finalizer_conf: conf.finalizer.clone(),
             synchrony_recovery_stall_window: conf.synchrony_recovery_stall_window,
             synchrony_recovery_cooldown: conf.synchrony_recovery_cooldown,
             synchrony_recovery_max_bypasses: conf.synchrony_recovery_max_bypasses,
@@ -185,11 +194,9 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             native_token_name: conf.genesis_block_data.native_token_name.clone(),
             native_token_symbol: conf.genesis_block_data.native_token_symbol.clone(),
             native_token_decimals: conf.genesis_block_data.native_token_decimals,
-            // Phase 13: defaults match the previous hardcoded constants
-            // (`FINALIZER_BLOCKING_TIMEOUT = 15s`,
-            // `MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES = 4096`). When CasperConf
-            // gains corresponding fields, plumb them through here.
-            finalizer_blocking_timeout: std::time::Duration::from_secs(15),
+            // Phase 13: default matches the previous hardcoded constant
+            // (`MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES = 4096`). When CasperConf
+            // gains a corresponding field, plumb it through here.
             active_validators_cache_max_entries: 4096,
         };
 
@@ -219,6 +226,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             trim_state,
             disable_state_exporter,
             heartbeat_signal_ref,
+            state_items_tx,
         }
     }
 
@@ -451,6 +459,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             }),
             &self.engine_cell,
             &self.event_publisher,
+            self.state_items_tx.clone(),
         )
         .await?;
 
@@ -564,6 +573,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.runtime_manager.clone(),
             self.estimator.clone(),
             self.heartbeat_signal_ref.clone(),
+            self.state_items_tx.clone(),
         );
 
         self.engine_cell.set(Arc::new(genesis_validator)).await;
@@ -754,6 +764,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             &self.runtime_manager,
             &self.estimator,
             &self.heartbeat_signal_ref,
+            self.state_items_tx.clone(),
         )
         .await?;
 

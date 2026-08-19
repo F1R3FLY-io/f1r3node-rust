@@ -86,6 +86,7 @@ async fn recovery_effect_is_applied_at_most_once() {
             None,
             None,
             None,
+            None,
         );
 
         // Production record over each scope.
@@ -149,6 +150,7 @@ async fn recovery_effect_is_applied_at_most_once() {
             None,
             None,
             Some(vec![loser_deploy.clone()]),
+            None,
             None,
             None,
             None,

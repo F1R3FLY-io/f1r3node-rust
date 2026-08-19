@@ -157,7 +157,10 @@ jobs:
   loom-interleavings:
     name: Loom exhaustive interleaving (T-9.2)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Exhaustive interleaving flirts with 30 minutes and a timeout kill
+    # reports as "cancelled" — same lesson the TLA+ job learned. 60 keeps a
+    # slow run alive without masking a genuine hang for long.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
       - name: Install Rust

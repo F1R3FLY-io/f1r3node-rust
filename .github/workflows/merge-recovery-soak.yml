@@ -216,7 +216,16 @@ env:
   # lifecycle-tracker, and bridge-read behavior from the failed preflight.
   # Verified that 22121713 is the immutable GitHub merge commit. The focused
   # concurrency suite and workflow security invariants pass.
-  SYSTEM_INTEGRATION_REF: 22121713d8874ac84f94f4b3ddb30dda78fa7f88
+  #
+  # 2026-08-18: bumped to the SI PR #121 main merge. The hardened consensus
+  # suite: conf catalog order and hourly rotation, bonding fixtures pin their
+  # epoch length, observer retry accepts retry or loud degrade or completed
+  # restore, and post-recovery convergence FT is polled instead of read at
+  # adoption (the FT cache converges; a floor-inherited LFB can transiently
+  # report below FTT). Verified that fc56ecd3 is the immutable GitHub merge
+  # commit; the CI-exact suite, ucc 11/11, and the convergence test passed
+  # locally; repin helper and workflow security invariants pass.
+  SYSTEM_INTEGRATION_REF: fc56ecd3ea2c3d529870b6c1b001ae10f877fc61
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
