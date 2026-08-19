@@ -48,12 +48,12 @@ pub fn extract_transfers_from_report(
     let mut transfers_by_deploy: HashMap<String, Vec<TransferInfo>> = HashMap::new();
 
     for deploy in &report.deploys {
-        let deploy_info = deploy.deploy_info.as_ref();
-        let deploy_sig = deploy_info.map(|info| info.sig.clone()).unwrap_or_default();
-
         if deploy.report.is_empty() {
             continue;
         }
+
+        let deploy_info = deploy.deploy_info.as_ref();
+        let deploy_sig = deploy_info.map(|info| info.sig.clone()).unwrap_or_default();
 
         let deployer_addr = deploy_info.and_then(|info| {
             let pk_bytes = hex::decode(&info.deployer).ok()?;
@@ -68,6 +68,8 @@ pub fn extract_transfers_from_report(
                 "deployer vault address could not be derived from deploy info; \
                  user transfers for this deploy will be dropped"
             );
+            transfers_by_deploy.insert(deploy_sig, Vec::new());
+            continue;
         }
 
         let precharge_amount = deploy_info
@@ -219,9 +221,7 @@ mod tests {
 
     use super::*;
 
-    fn init_logger() {
-        shared::rust::tracing_init::init_for_tests();
-    }
+    fn init_logger() { shared::rust::tracing_init::init_for_tests(); }
 
     fn make_deployer() -> (String, String) {
         let secp256k1 = Secp256k1;
@@ -631,7 +631,12 @@ mod tests {
 
     // The deployer is derived from `DeployInfo.deployer` only. A malformed
     // deployer hex (non-fatal) yields no matching transfers but still a map
-    // entry, never a panic.
+    // entry, never a panic. This test also exercises the `precharge_amount > 0`
+    // path (phlo_limit=100 * phlo_price=1 = 100): the shape check must be
+    // skipped entirely when `deployer_addr` is `None`, so only the
+    // "deployer vault address could not be derived" warning fires — not the
+    // misleading "report[0] does not match the expected precharge shape"
+    // warning.
     #[test]
     fn invalid_deployer_hex_yields_empty_entry_without_panic() {
         init_logger();
@@ -746,7 +751,7 @@ mod tests {
     // 11. Precharge absent entirely but precharge_amount > 0: report contains
     //     only a single user-transfer batch. report[0] fails the shape check
     //     (its amount != precharge_amount), so nothing is skipped; the user
-    //     transfer is returned and a warning is emitted. 
+    //     transfer is returned and a warning is emitted.
     #[test]
     fn precharge_absent_one_user_transfer_is_returned() {
         init_logger();
