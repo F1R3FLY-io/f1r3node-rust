@@ -84,7 +84,7 @@ behaviors:
 
 # TDD Plan -- `casper-test-node`
 
-This plan deepens the [`Test node`](../Glossary.md#test-node) interface accepted as candidate C1 in the [architecture review](../discoveries/architecture-review-2026-08-11T02-59-57Z.md). It exercises standalone and configured-network entry points, network scenario operations, and focused inspection while preserving observable [`Block proposal`](../Glossary.md#block-proposal) and [`Block validation`](../Glossary.md#block-validation) behavior. Each invocation completes one vertical RED-GREEN cycle through the public interface.
+This plan deepens the [`Test node`](../Glossary.md#test-node) interface accepted as candidate C1 in the 2026-08-11 architecture review (provenance and the 2026-08-19 divergence baseline: [work log](../work-logs/casper-test-node-congruence-baseline-2026-08-19.md)). It exercises standalone and configured-network entry points, network scenario operations, and focused inspection while preserving observable [`Block proposal`](../Glossary.md#block-proposal) and [`Block validation`](../Glossary.md#block-validation) behavior. Each invocation completes one vertical RED-GREEN cycle through the public interface.
 
 ## Public Interface
 
@@ -93,7 +93,7 @@ This plan deepens the [`Test node`](../Glossary.md#test-node) interface accepted
 - **Invariants:** one canonical fixture behavior; deterministic local network construction; explicit configuration for behavioral variation; no caller construction of consensus implementation fields; preserved block-proposal and block-validation outcomes
 - **Ordering constraints:** construction precedes scenario operations; publication or propagation precedes peer observation; synchronization applies peer knowledge before convergence assertions
 - **Error modes:** invalid configuration, read-only proposal, failed proposal, failed validation, unavailable peer, and local storage/runtime errors remain typed `Result` failures or existing typed proposal outcomes
-- **Required configuration:** genesis context and node count; optional parent limits, synchrony settings, read-only count, bootstrap index, and empty-block behavior
+- **Required configuration:** genesis context and node count; optional parent limits, synchrony settings, read-only count, bootstrap index, empty-block behavior, and shard `deploy_lifespan` override (window-boundary specs depend on it; see the baseline work log)
 - **Performance characteristics:** tests use local adapters with deterministic bounded scenarios; no remote network is required
 
 Changing this interface requires re-running TDD planning because every behavior is pinned to the accepted common-caller design.

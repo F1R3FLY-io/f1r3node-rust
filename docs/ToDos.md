@@ -1081,7 +1081,7 @@ epic_id: EPIC-015
 title: "Casper Test Infrastructure Congruence"
 status: pending
 priority: p2
-user_story: null
+user_story: US-005
 blocked_by: []
 created_at: 2026-08-11
 claimed_by: null
@@ -1091,7 +1091,9 @@ tasks:
     title: "Deepen the Casper test node"
     status: pending
     priority: p2
-    discovered_in: docs/discoveries/architecture-review-2026-08-11T02-59-57Z.md
+    discovered_in: docs/work-logs/casper-test-node-congruence-baseline-2026-08-19.md
+    notes:
+      - "Baseline 2026-08-19: the duplicate casper/tests helper tree and the canonical casper/src/rust/test_utils tree diverged by roughly 1,000 lines; the duplicate tree holds create_network_with_deploy_lifespan and the MultiParentCasper-typed accessor, which the canonical tree lacks. The first consolidation attempt (976b7a252, PR #230) is superseded. See the discovered_in work log for the full baseline and provenance."
     glossary_terms:
       - docs/Glossary.md#test-node
       - docs/Glossary.md#block-proposal
@@ -1106,6 +1108,7 @@ tasks:
       - "Empty-block behavior, bootstrap selection, parent limits, synchrony settings, and read-only nodes remain expressible as explicit configuration with behavior tests"
       - "Focused inspection required by tests crosses named test node accessors; tests do not initialize or copy fields of the consensus implementation"
       - "Local storage, runtime, and transport stand-ins remain at internal seams; tests do not mock internal collaborators"
+      - "Features that exist only in the duplicate tree (at minimum create_network_with_deploy_lifespan and the MultiParentCasper-typed accessor) are ported to the canonical fixtures before the duplicate tree collapses to re-exports"
       - "Old duplicate fixture tests are replaced rather than layered, and removing the duplicate helper tree does not move construction complexity into callers"
       - "Each TDD cycle covers one behavior at a time, and test names cite docs/Glossary.md#test-node plus any applicable block-proposal or block-validation anchor"
 ---
