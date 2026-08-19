@@ -61,7 +61,14 @@ pub async fn collect_garbage(
     .await
     .map_err(|e| KvStoreError::IoError(e.to_string()))?;
 
-    let result = run_pass(dag, block_store, runtime_manager, casper_shard_conf, &floor, state);
+    let result = run_pass(
+        dag,
+        block_store,
+        runtime_manager,
+        casper_shard_conf,
+        &floor,
+        state,
+    );
     metrics::histogram!("mergeable_channels_gc.pass.time", "source" => MERGEABLE_CHANNELS_GC_METRICS_SOURCE)
         .record(pass_started.elapsed().as_secs_f64());
     result
@@ -531,7 +538,15 @@ mod tests {
                     hash: dag.last_finalized_block(),
                     block_number: dag.latest_block_number(),
                 };
-                run_pass(&dag, &block_store, &runtime_manager, &conf, &floor, &mut state).unwrap();
+                run_pass(
+                    &dag,
+                    &block_store,
+                    &runtime_manager,
+                    &conf,
+                    &floor,
+                    &mut state,
+                )
+                .unwrap();
             }
             // h2 (b2) is unfinalized, so the watermark must stop there rather
             // than skipping past it because a later height happened to qualify.
@@ -566,7 +581,15 @@ mod tests {
                     hash: dag.last_finalized_block(),
                     block_number: dag.latest_block_number(),
                 };
-                run_pass(&dag, &block_store, &runtime_manager, &conf, &floor, &mut state).unwrap();
+                run_pass(
+                    &dag,
+                    &block_store,
+                    &runtime_manager,
+                    &conf,
+                    &floor,
+                    &mut state,
+                )
+                .unwrap();
             }
             assert_eq!(
                 state.next_height, 6,
