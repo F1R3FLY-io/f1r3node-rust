@@ -47,7 +47,8 @@ EOF
 	id: (.key + 1000),
 	name: .value,
 	status: "completed",
-	conclusion: "success"
+	conclusion: "success",
+	completed_at: ("2026-08-16T0" + ((.key % 10) | tostring) + ":00:00Z")
 }] | {jobs: .}' >"$TMP/jobs.json"
 cat >"$TMP/artifacts.json" <<EOF
 {

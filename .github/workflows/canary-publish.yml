@@ -18,8 +18,13 @@
 #     registry location is repository-secret material and evidence is
 #     public. The OCIR canary path is deferred to Phase 3.
 #
-# Idempotent rerun: an existing canary tag or release is verified
-# against the candidate, never replaced (release invariants 2 and 4).
+# Idempotency and identity (release invariants 2 and 4): the identity
+# gate runs BEFORE any registry or repository mutation. When the canary
+# tag already exists, the gate requires the matching prerelease and its
+# evidence asset, verifies the tag target and the binary checksums
+# against the current candidate, and turns the run into a verified
+# no-op. Any mismatch or partial prior publication fails closed for
+# maintainer investigation; nothing is ever replaced.
 name: Canary Publish
 
 run-name: Canary Publish [CI run ${{ inputs.ci_run_id || github.event.workflow_run.id }}]
@@ -176,8 +181,73 @@ jobs:
           candidate_tag="$(jq -r '.candidate_tag' "$RUNNER_TEMP/release-evidence/release-evidence.json")"
           echo "candidate_tag=$candidate_tag" >> "$GITHUB_OUTPUT"
 
-      - name: Log in to Docker Hub
+      # Identity gate: runs BEFORE any registry or repository mutation.
+      # publish=true  -> fresh candidate; every later publication step runs.
+      # publish=false -> the tag, prerelease, and evidence already exist and
+      #                  match this candidate byte for byte; the rerun is a
+      #                  verified no-op. Any other prior state fails closed.
+      - name: Verify candidate identity
+        id: identity
         if: steps.eligibility.outputs.eligible == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_TAG: ${{ steps.evidence.outputs.candidate_tag }}
+          SOURCE_SHA: ${{ steps.run.outputs.source_sha }}
+        shell: bash -euo pipefail {0}
+        run: |
+          evidence="$RUNNER_TEMP/release-evidence/release-evidence.json"
+          if ! ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${CANDIDATE_TAG}" 2>/dev/null)"; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "Tag ${CANDIDATE_TAG} does not exist; fresh publication."
+            exit 0
+          fi
+          object_sha="$(jq -r '.object.sha' <<<"$ref_json")"
+          object_type="$(jq -r '.object.type' <<<"$ref_json")"
+          if [ "$object_type" = "tag" ]; then
+            object_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${object_sha}" --jq '.object.sha')"
+          fi
+          if [ "$object_sha" != "$SOURCE_SHA" ]; then
+            echo "::error::Tag ${CANDIDATE_TAG} exists but resolves to ${object_sha}, not ${SOURCE_SHA}"
+            exit 1
+          fi
+          if ! release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${CANDIDATE_TAG}" 2>/dev/null)"; then
+            echo "::error::Tag ${CANDIDATE_TAG} exists without its prerelease. A prior publication is partial; investigate before rerunning."
+            exit 1
+          fi
+          jq -e '.prerelease == true' <<<"$release_json" >/dev/null || {
+            echo "::error::Release ${CANDIDATE_TAG} exists but is not a prerelease"
+            exit 1
+          }
+          mkdir -p "$RUNNER_TEMP/existing-release"
+          gh release download "$CANDIDATE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern release-evidence.json \
+            --dir "$RUNNER_TEMP/existing-release" || {
+            echo "::error::Release ${CANDIDATE_TAG} exists without a release-evidence.json asset; investigate before rerunning."
+            exit 1
+          }
+          existing="$RUNNER_TEMP/existing-release/release-evidence.json"
+          for probe in \
+            '.source_sha' \
+            '.candidate_tag' \
+            '.artifacts.linux_amd64.binary_sha256' \
+            '.artifacts.linux_arm64.binary_sha256'; do
+            want="$(jq -r "$probe" "$evidence")"
+            have="$(jq -r "$probe" "$existing")"
+            if [ "$want" != "$have" ]; then
+              echo "::error::Existing canary ${CANDIDATE_TAG} differs at ${probe}: existing=${have} candidate=${want}. The first published attempt is canonical; do not republish."
+              exit 1
+            fi
+          done
+          echo "publish=false" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Canary rerun verified"
+            echo
+            echo "Tag, prerelease, and evidence for ${CANDIDATE_TAG} already exist and match this candidate. Nothing was replaced."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Log in to Docker Hub
+        if: steps.eligibility.outputs.eligible == 'true' && steps.identity.outputs.publish == 'true'
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -186,7 +256,7 @@ jobs:
           printf '%s' "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
 
       - name: Publish canary images
-        if: steps.eligibility.outputs.eligible == 'true'
+        if: steps.eligibility.outputs.eligible == 'true' && steps.identity.outputs.publish == 'true'
         env:
           CANDIDATE_TAG: ${{ steps.evidence.outputs.candidate_tag }}
         shell: bash -euo pipefail {0}
@@ -194,10 +264,34 @@ jobs:
           img="${DOCKER_IMAGE_NAME}:${CANDIDATE_TAG}"
           docker tag "${DOCKER_IMAGE_NAME}:amd64" "${img}-amd64"
           docker tag "${DOCKER_IMAGE_NAME}:arm64" "${img}-arm64"
-          amd64_digest="$(docker push "${img}-amd64" | grep -oE 'sha256:[0-9a-f]{64}' | tail -1)"
-          arm64_digest="$(docker push "${img}-arm64" | grep -oE 'sha256:[0-9a-f]{64}' | tail -1)"
-          docker manifest create "$img" --amend "${img}-amd64" --amend "${img}-arm64"
-          index_digest="$(docker manifest push "$img" | grep -oE 'sha256:[0-9a-f]{64}' | tail -1)"
+          docker push "${img}-amd64" >/dev/null
+          docker push "${img}-arm64" >/dev/null
+          # RepoDigests is authoritative after a push; grepping push output
+          # can capture a layer digest instead of the manifest digest.
+          digest_of() {
+            docker inspect --format '{{join .RepoDigests "\n"}}' "$1" \
+              | sed -n "s|^${DOCKER_IMAGE_NAME}@||p" | head -1
+          }
+          amd64_digest="$(digest_of "${img}-amd64")"
+          arm64_digest="$(digest_of "${img}-arm64")"
+          [[ "$amd64_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no amd64 repo digest"; exit 1; }
+          [[ "$arm64_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no arm64 repo digest"; exit 1; }
+          # The index is assembled from digest-qualified references so a
+          # concurrent tag move cannot change what the index points at.
+          docker manifest create "$img" \
+            --amend "${DOCKER_IMAGE_NAME}@${amd64_digest}" \
+            --amend "${DOCKER_IMAGE_NAME}@${arm64_digest}"
+          index_digest="$(docker manifest push "$img" | tail -1)"
+          [[ "$index_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::manifest push did not return an index digest"; exit 1; }
+          # Verify the published index really references the recorded digests.
+          docker buildx imagetools inspect "docker.io/${DOCKER_IMAGE_NAME}@${index_digest}" --raw \
+            > "$RUNNER_TEMP/index.json"
+          for d in "$amd64_digest" "$arm64_digest"; do
+            jq -e --arg d "$d" '[.manifests[].digest] | index($d) != null' "$RUNNER_TEMP/index.json" >/dev/null || {
+              echo "::error::published index ${index_digest} does not reference ${d}"
+              exit 1
+            }
+          done
           ci-control/.github/scripts/release-evidence.sh record-images \
             "$RUNNER_TEMP/release-evidence/release-evidence.json" \
             "docker.io/${DOCKER_IMAGE_NAME}@${index_digest}" \
@@ -206,30 +300,28 @@ jobs:
           sha256sum "$RUNNER_TEMP/release-evidence/release-evidence.json" \
             > "$RUNNER_TEMP/release-evidence/release-evidence.json.sha256"
 
+      - name: Log out of Docker Hub
+        if: always()
+        shell: bash -euo pipefail {0}
+        run: docker logout || true
+
       - name: Create immutable canary tag
-        if: steps.eligibility.outputs.eligible == 'true'
+        if: steps.eligibility.outputs.eligible == 'true' && steps.identity.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CANDIDATE_TAG: ${{ steps.evidence.outputs.candidate_tag }}
           SOURCE_SHA: ${{ steps.run.outputs.source_sha }}
         shell: bash -euo pipefail {0}
         run: |
-          if existing="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${CANDIDATE_TAG}" --jq '.object.sha' 2>/dev/null)"; then
-            if [ "$existing" = "$SOURCE_SHA" ]; then
-              echo "Tag ${CANDIDATE_TAG} already points at ${SOURCE_SHA}; rerun is idempotent."
-            else
-              echo "::error::Tag ${CANDIDATE_TAG} exists but points at ${existing}, not ${SOURCE_SHA}"
-              exit 1
-            fi
-          else
-            gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
-              -f ref="refs/tags/${CANDIDATE_TAG}" \
-              -f sha="$SOURCE_SHA" >/dev/null
-            echo "Created tag ${CANDIDATE_TAG} at ${SOURCE_SHA}."
-          fi
+          # The identity gate proved the tag absent; a concurrent creation
+          # between the gate and this step still fails closed here.
+          gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f ref="refs/tags/${CANDIDATE_TAG}" \
+            -f sha="$SOURCE_SHA" >/dev/null
+          echo "Created tag ${CANDIDATE_TAG} at ${SOURCE_SHA}."
 
       - name: Create canary prerelease
-        if: steps.eligibility.outputs.eligible == 'true'
+        if: steps.eligibility.outputs.eligible == 'true' && steps.identity.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CANDIDATE_TAG: ${{ steps.evidence.outputs.candidate_tag }}
@@ -243,24 +335,20 @@ jobs:
           cp "$RUNNER_TEMP/release-evidence/release-evidence.json" "$assets_dir/"
           cp "$RUNNER_TEMP/release-evidence/release-evidence.json.sha256" "$assets_dir/"
           (cd "$assets_dir" && sha256sum f1r3node-linux-amd64 f1r3node-linux-arm64 > checksums.txt)
-          if gh release view "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq '.targetCommitish' >/dev/null 2>&1; then
-            echo "Release ${CANDIDATE_TAG} already exists; rerun verifies without replacing."
-          else
-            gh release create "$CANDIDATE_TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              --prerelease \
-              --verify-tag \
-              --title "$CANDIDATE_TAG" \
-              --notes "Canary candidate for source ${SOURCE_SHA}. See release-evidence.json for the exact-run record." \
-              "$assets_dir/f1r3node-linux-amd64" \
-              "$assets_dir/f1r3node-linux-arm64" \
-              "$assets_dir/checksums.txt" \
-              "$assets_dir/release-evidence.json" \
-              "$assets_dir/release-evidence.json.sha256"
-          fi
+          gh release create "$CANDIDATE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --prerelease \
+            --verify-tag \
+            --title "$CANDIDATE_TAG" \
+            --notes "Canary candidate for source ${SOURCE_SHA}. See release-evidence.json for the exact-run record." \
+            "$assets_dir/f1r3node-linux-amd64" \
+            "$assets_dir/f1r3node-linux-arm64" \
+            "$assets_dir/checksums.txt" \
+            "$assets_dir/release-evidence.json" \
+            "$assets_dir/release-evidence.json.sha256"
 
       - name: Report canary publication
-        if: steps.eligibility.outputs.eligible == 'true'
+        if: steps.eligibility.outputs.eligible == 'true' && steps.identity.outputs.publish == 'true'
         shell: bash -euo pipefail {0}
         run: |
           evidence="$RUNNER_TEMP/release-evidence/release-evidence.json"

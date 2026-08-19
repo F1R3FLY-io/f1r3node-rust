@@ -183,7 +183,6 @@ validate_run() {
 	run_id="$(jq -r '.id' "$run_json")"
 	run_number="$(jq -r '.run_number' "$run_json")"
 	run_attempt="$(jq -r '.run_attempt' "$run_json")"
-	completed_at="$(jq -r '.updated_at' "$run_json")"
 	require_positive_integer "$run_id" "CI run ID"
 	require_positive_integer "$run_number" "CI run number"
 	require_positive_integer "$run_attempt" "CI run attempt"
@@ -191,15 +190,13 @@ validate_run() {
 		--argjson run_id "$run_id" \
 		--argjson run_number "$run_number" \
 		--argjson run_attempt "$run_attempt" \
-		--arg completed_at "$completed_at" \
 		'{
 			run_id: $run_id,
 			run_number: $run_number,
 			run_attempt: $run_attempt,
 			workflow: ".github/workflows/ci.yml",
 			event: "push",
-			conclusion: "success",
-			completed_at: $completed_at
+			conclusion: "success"
 		}'
 }
 
@@ -271,6 +268,15 @@ generate_evidence() {
 	run_id="$(jq -r '.run_id' <<<"$run_record")"
 	target_version="$(jq -r '.target_version' <<<"$source_json")"
 	run_number="$(jq -r '.run_number' <<<"$run_record")"
+	# The completion timestamp is the max completed_at across the validated
+	# required jobs. Those are immutable for a given run attempt, unlike the
+	# run's updated_at, which changes on later run mutations and would break
+	# byte-identical evidence regeneration.
+	completed_at="$(jq -r --argjson names "$(required_jobs_json)" \
+		'[.jobs[] | select(.name as $n | $names | index($n)) | .completed_at] | max' \
+		"$jobs_json")"
+	[[ "$completed_at" == *Z ]] || fail "required jobs carry no usable completion timestamp"
+	run_record="$(jq --arg completed_at "$completed_at" '. + {completed_at: $completed_at}' <<<"$run_record")"
 	amd64="$(artifact_record \
 		"$artifacts_json" "$run_id" artifacts-docker-amd64 \
 		"$artifacts_dir/artifacts-docker-amd64/rust-node-docker.tar.gz" \

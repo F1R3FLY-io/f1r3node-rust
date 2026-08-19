@@ -72,7 +72,7 @@ fail_if(canary_uses.empty?, "canary publish has no pinned actions")
 fail_if(canary_uses.any? { |value| !value.match?(/@[0-9a-f]{40}$/) }, "canary publish actions must use full commit SHAs")
 canary_text = File.read(canary_path)
 fail_if(!canary_text.include?("/attempts/${run_attempt}/jobs"), "canary publish must read jobs from the recorded run attempt")
-fail_if(canary_text.match?(/docker\s+build|cargo\s+build|buildx\s+build/), "canary publish must never rebuild")
+fail_if(canary_text.match?(/docker\s+build\b|cargo\s+build\b|buildx\s+build\b/), "canary publish must never rebuild")
 fail_if(canary_text.match?(/--force|-f\s+ref=refs\/tags.*--method\s+PATCH/), "canary publish must never move a tag")
 fail_if(!canary_text.include?("--prerelease"), "canary publish must create a prerelease, not a release")
 
