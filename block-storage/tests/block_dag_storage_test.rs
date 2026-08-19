@@ -1339,3 +1339,101 @@ fn truncated_window_finalization_walk_terminates_at_the_horizon() {
         );
     });
 }
+
+/// The newly-bonded latest-message placeholder must be network-uniform:
+/// every node seeds the same slot with the same value, or the joiner's
+/// first self-justifying proposal reads as an equivocation on whichever
+/// side seeded differently. Ceremony nodes derive genesis from their
+/// height-0 block; a truncated node holds no height-0 block and must use
+/// the LEARNED genesis hash — never the block that happens to be inserted
+/// at seeding time, which is right on no node.
+#[test]
+fn newly_bonded_placeholder_is_the_learned_genesis_on_a_truncated_dag() {
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut kvm = InMemoryStoreManager::new();
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+
+        let make = |number: i64, parents: Vec<BlockHash>| {
+            get_random_block(
+                Some(number),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(parents),
+                None,
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            )
+        };
+
+        // Truncated window: the anchor's own parent is never inserted, and
+        // no height-0 block exists anywhere in this DAG.
+        let below_boundary = make(4, vec![]);
+        let anchor = make(5, vec![below_boundary.block_hash.clone()]);
+        dag_storage
+            .insert(
+                &anchor,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            )
+            .unwrap();
+
+        // The genesis hash this node learned during restore.
+        let genesis = make(0, vec![]);
+        dag_storage
+            .record_genesis_hash(genesis.block_hash.clone())
+            .unwrap();
+
+        // A bonding block: its bonds name a validator that has no latest
+        // message and appears in no justification — the newly-bonded case.
+        let new_validator = Validator::from(vec![7u8; 65]);
+        let bonding_block = get_random_block(
+            Some(6),
+            None,
+            None,
+            None,
+            Some(Validator::from(vec![9u8; 65])),
+            None,
+            None,
+            Some(vec![anchor.block_hash.clone()]),
+            Some(vec![]),
+            None,
+            None,
+            Some(vec![models::rust::casper::protocol::casper_message::Bond {
+                validator: new_validator.clone(),
+                stake: 100,
+            }]),
+            None,
+            None,
+        );
+        assert_ne!(
+            bonding_block.sender, new_validator,
+            "fixture: the joiner must not be the inserting block's sender"
+        );
+        dag_storage
+            .insert(
+                &bonding_block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+            )
+            .unwrap();
+
+        let dag = dag_storage.get_representation().unwrap();
+        assert_eq!(
+            dag.latest_message_hash(&new_validator),
+            Some(genesis.block_hash.clone()),
+            "the newly-bonded slot on a truncated node must be seeded with the \
+             learned genesis hash, not with whatever block was being inserted \
+             (got {:?}, inserting block was {})",
+            dag.latest_message_hash(&new_validator)
+                .map(|h| hex::encode(&h)),
+            hex::encode(&bonding_block.block_hash),
+        );
+    });
+}

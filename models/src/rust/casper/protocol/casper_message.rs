@@ -281,6 +281,9 @@ pub struct FloorCacheEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FloorCacheResponse {
     pub entries: Vec<FloorCacheEntry>,
+    /// The shard's genesis block hash; empty when the responder does not
+    /// hold it.
+    pub genesis_hash: ByteString,
 }
 
 impl FloorCacheResponse {
@@ -295,6 +298,7 @@ impl FloorCacheResponse {
                     frontier_hash: entry.frontier_hash,
                 })
                 .collect(),
+            genesis_hash: proto.genesis_hash,
         }
     }
 
@@ -309,6 +313,7 @@ impl FloorCacheResponse {
                     frontier_hash: entry.frontier_hash,
                 })
                 .collect(),
+            genesis_hash: self.genesis_hash,
         }
     }
 }
@@ -1491,6 +1496,7 @@ mod approved_block_tests {
         };
         let response = FloorCacheResponse {
             entries: vec![entry],
+            genesis_hash: Bytes::from_static(b"the-genesis"),
         };
 
         assert_eq!(

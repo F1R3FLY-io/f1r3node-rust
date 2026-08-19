@@ -201,6 +201,10 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
 
     fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
 
+    fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> {
+        self.block_dag_storage.genesis_hash().map_err(Into::into)
+    }
+
     fn get_validator(&self) -> Option<ValidatorIdentity> { self.validator_id.clone() }
 
     async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> {

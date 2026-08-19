@@ -163,6 +163,10 @@ pub trait MultiParentCasper: Casper + Send + Sync {
 
     fn block_store(&self) -> &KeyValueBlockStore;
 
+    /// The shard's genesis block hash when this node holds or has learned it.
+    /// Defaulted to `None` so effect mocks need no genesis wiring.
+    fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> { Ok(None) }
+
     /// Read-only access to the shard configuration. Used by APIs that need
     /// shard-scoped parameters such as `deploy_lifespan` to compute deploy
     /// finalization status.

@@ -1039,11 +1039,20 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     .await?;
                 match tokio::time::timeout(RESPONSE_TIMEOUT, rx.recv()).await {
                     Ok(Some(response)) => {
+                        // The genesis hash rides the same trusted exchange:
+                        // a truncated node holds no height-0 block, and the
+                        // newly-bonded latest-message placeholder must be
+                        // this network-uniform value on every node.
+                        if !response.genesis_hash.is_empty() {
+                            self.block_dag_storage
+                                .record_genesis_hash(response.genesis_hash.clone())?;
+                        }
                         let written =
                             apply_floor_cache_entries(&dag, &solicited, response.entries)?;
                         tracing::info!(
                             written,
                             requested = hashes.len(),
+                            genesis_learned = !response.genesis_hash.is_empty(),
                             "Floor cache received: restored blocks carry their finality"
                         );
                         return Ok(());
