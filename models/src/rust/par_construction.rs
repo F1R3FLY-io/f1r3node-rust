@@ -28,8 +28,12 @@ use prost::encoding::{encoded_len_varint, key_len};
 use super::par_bag::{Multiplicity, ParBag, ParBagComponent, ParComponentTag, PAR_BAG_KEY_DOMAIN};
 use super::rholang::protobuf_encoder;
 use super::rholang::protobuf_schema::{ProtobufDescent, ProtobufNode, ProtobufSeq, NO_RESUME};
-use super::rholang::sorter::score_tree::Score;
-use crate::rhoapi::Par;
+use super::rholang::sorter::expr_sort_matcher::ExprSortMatcher;
+use super::rholang::sorter::score_tree::{encode_order_key, Score, ScoreAtom, Tree};
+use super::rholang::sorter::sort_combine::sort_var;
+use super::rholang::sorter::sortable::Sortable;
+use crate::rhoapi::expr::ExprInstance;
+use crate::rhoapi::{Expr, Par};
 
 /// An index into a [`ParConstruction`]'s planned-Par arena.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -56,6 +60,12 @@ pub enum ParConstructionError {
         consumed: usize,
         supplied: usize,
     },
+    ChildArity {
+        context: &'static str,
+        expected: usize,
+        supplied: usize,
+    },
+    UnsupportedPlannedShape(&'static str),
     Multiplicity(super::par_bag::BagError),
 }
 
@@ -74,6 +84,17 @@ impl fmt::Display for ParConstructionError {
                 formatter,
                 "component schema consumed {consumed} Par slots but {supplied} were supplied"
             ),
+            Self::ChildArity {
+                context,
+                expected,
+                supplied,
+            } => write!(
+                formatter,
+                "{context} requires {expected} planned Par children but received {supplied}"
+            ),
+            Self::UnsupportedPlannedShape(shape) => {
+                write!(formatter, "planned construction does not yet support {shape}")
+            }
             Self::Multiplicity(error) => error.fmt(formatter),
         }
     }
@@ -538,6 +559,18 @@ impl ParConstruction {
         self.score_from_pieces(vec![ScorePiece::Bytes(fragment)])
     }
 
+    /// Import one already-computed canonical score tree into the fragment
+    /// arena. This is used only for bounded non-`Par` leaves such as `Var` and
+    /// unforgeables; recursive child scores remain arena edges.
+    pub fn score_tree(
+        &mut self,
+        canonical_score: &Tree<ScoreAtom>,
+    ) -> Result<PlannedScore, ParConstructionError> {
+        let mut encoded = Vec::new();
+        encode_order_key(canonical_score, &mut encoded);
+        self.score_from_encoded(&encoded)
+    }
+
     /// One canonical integer score leaf.
     pub fn score_i64(&mut self, value: i64) -> Result<PlannedScore, ParConstructionError> {
         let mut bytes = Vec::with_capacity(10);
@@ -622,6 +655,21 @@ impl ParConstruction {
 
     pub fn par_score(&self, par: PlannedPar) -> PlannedScore { self.pars[par.0].score }
 
+    pub fn locally_free(&self, par: PlannedPar) -> &[u8] { &self.pars[par.0].locally_free }
+
+    pub fn connective_used(&self, par: PlannedPar) -> bool { self.pars[par.0].connective_used }
+
+    /// Exact canonical term order for planned `Par` values: semantic score,
+    /// then emitted protobuf bytes. Both halves are compared as cursors.
+    pub fn compare_pars(&self, left: PlannedPar, right: PlannedPar) -> Ordering {
+        ScoreByteCursor::new(self, self.par_score(left))
+            .cmp(ScoreByteCursor::new(self, self.par_score(right)))
+            .then_with(|| {
+                WireByteCursor::new(self, WireRoot::Par(left))
+                    .cmp(WireByteCursor::new(self, WireRoot::Par(right)))
+            })
+    }
+
     /// Plan one canonical component shell.
     ///
     /// `par_children` is ordered by the generated protobuf walk, not by Rust
@@ -644,6 +692,266 @@ impl ParConstruction {
             canonical_path_stable,
         });
         Ok(id)
+    }
+
+    /// Plan an order-preserving `Expr` constructor directly from normalized
+    /// child handles.
+    ///
+    /// The supplied child order is the sorter's evaluation order. Where that
+    /// differs from protobuf field order (`EMethod`), this method performs the
+    /// permutation once before invoking the generated schema walk. Recursive
+    /// scores remain arena references rather than owned score trees.
+    pub fn ordered_expr_component(
+        &mut self,
+        shell: &Expr,
+        par_children: &[PlannedPar],
+        canonical_path_stable: bool,
+    ) -> Result<PlannedComponent, ParConstructionError> {
+        fn exact(
+            context: &'static str,
+            expected: usize,
+            supplied: usize,
+        ) -> Result<(), ParConstructionError> {
+            if expected == supplied {
+                Ok(())
+            } else {
+                Err(ParConstructionError::ChildArity {
+                    context,
+                    expected,
+                    supplied,
+                })
+            }
+        }
+
+        let Some(instance) = shell.expr_instance.as_ref() else {
+            exact("absent Expr", 0, par_children.len())?;
+            let score = ExprSortMatcher::sort_match(shell).score;
+            let score = self.score_tree(&score)?;
+            return self.component(shell, &[], score, canonical_path_stable);
+        };
+
+        let unary_tag = match instance {
+            ExprInstance::ENegBody(_) => Some(Score::ENEG),
+            ExprInstance::ENotBody(_) => Some(Score::ENOT),
+            _ => None,
+        };
+        if let Some(tag) = unary_tag {
+            exact("unary Expr", 1, par_children.len())?;
+            let score = self.score_constructor(tag, [self.par_score(par_children[0])])?;
+            return self.component(shell, par_children, score, canonical_path_stable);
+        }
+
+        let binary_tag = match instance {
+            ExprInstance::EMultBody(_) => Some(Score::EMULT),
+            ExprInstance::EDivBody(_) => Some(Score::EDIV),
+            ExprInstance::EModBody(_) => Some(Score::EMOD),
+            ExprInstance::EPlusBody(_) => Some(Score::EPLUS),
+            ExprInstance::EMinusBody(_) => Some(Score::EMINUS),
+            ExprInstance::ELtBody(_) => Some(Score::ELT),
+            ExprInstance::ELteBody(_) => Some(Score::ELTE),
+            ExprInstance::EGtBody(_) => Some(Score::EGT),
+            ExprInstance::EGteBody(_) => Some(Score::EGTE),
+            ExprInstance::EEqBody(_) => Some(Score::EEQ),
+            ExprInstance::ENeqBody(_) => Some(Score::ENEQ),
+            ExprInstance::EAndBody(_) => Some(Score::EAND),
+            ExprInstance::EOrBody(_) => Some(Score::EOR),
+            ExprInstance::EMatchesBody(_) => Some(Score::EMATCHES),
+            ExprInstance::EPercentPercentBody(_) => Some(Score::EPERCENT),
+            ExprInstance::EPlusPlusBody(_) => Some(Score::EPLUSPLUS),
+            ExprInstance::EMinusMinusBody(_) => Some(Score::EMINUSMINUS),
+            _ => None,
+        };
+        if let Some(tag) = binary_tag {
+            exact("binary Expr", 2, par_children.len())?;
+            let score = self.score_constructor(tag, [
+                self.par_score(par_children[0]),
+                self.par_score(par_children[1]),
+            ])?;
+            return self.component(shell, par_children, score, canonical_path_stable);
+        }
+
+        match instance {
+            ExprInstance::EListBody(list) => {
+                exact("EList", list.ps.len(), par_children.len())?;
+                let remainder = match &list.remainder {
+                    Some(var) => self.score_tree(&sort_var(var).score)?,
+                    None => self.score_i64(-1)?,
+                };
+                let connective = self.score_i64(i64::from(list.connective_used))?;
+                let mut children = Vec::with_capacity(par_children.len() + 2);
+                children.push(remainder);
+                children.extend(par_children.iter().map(|child| self.par_score(*child)));
+                children.push(connective);
+                let score = self.score_constructor(Score::ELIST, children)?;
+                self.component(shell, par_children, score, canonical_path_stable)
+            }
+            ExprInstance::ETupleBody(tuple) => {
+                exact("ETuple", tuple.ps.len(), par_children.len())?;
+                let connective = self.score_i64(i64::from(tuple.connective_used))?;
+                let mut children = Vec::with_capacity(par_children.len() + 1);
+                children.extend(par_children.iter().map(|child| self.par_score(*child)));
+                children.push(connective);
+                let score = self.score_constructor(Score::ETUPLE, children)?;
+                self.component(shell, par_children, score, canonical_path_stable)
+            }
+            ExprInstance::EMethodBody(method) => {
+                exact("EMethod", method.arguments.len() + 1, par_children.len())?;
+                let (&target, arguments) = par_children
+                    .split_last()
+                    .expect("EMethod arity proved one target");
+                let method_name = self.score_string(&method.method_name)?;
+                let connective = self.score_i64(i64::from(method.connective_used))?;
+                let mut children = Vec::with_capacity(par_children.len() + 2);
+                children.push(method_name);
+                children.push(self.par_score(target));
+                children.extend(arguments.iter().map(|child| self.par_score(*child)));
+                children.push(connective);
+                let score = self.score_constructor(Score::EMETHOD, children)?;
+                let wire_children: Vec<_> = std::iter::once(target)
+                    .chain(arguments.iter().copied())
+                    .collect();
+                self.component(shell, &wire_children, score, canonical_path_stable)
+            }
+            ExprInstance::GBool(_)
+            | ExprInstance::GInt(_)
+            | ExprInstance::GString(_)
+            | ExprInstance::GUri(_)
+            | ExprInstance::GByteArray(_)
+            | ExprInstance::GDouble(_)
+            | ExprInstance::GBigInt(_)
+            | ExprInstance::GBigRat(_)
+            | ExprInstance::GFixedPoint(_)
+            | ExprInstance::EVarBody(_) => {
+                exact("leaf Expr", 0, par_children.len())?;
+                let score = ExprSortMatcher::sort_match(shell).score;
+                let score = self.score_tree(&score)?;
+                self.component(shell, &[], score, canonical_path_stable)
+            }
+            ExprInstance::ESetBody(set) => {
+                exact("ESet", set.ps.len(), par_children.len())?;
+                let mut canonical = par_children.to_vec();
+                canonical.sort_by(|left, right| self.compare_pars(*left, *right));
+                canonical
+                    .dedup_by(|right, left| self.compare_pars(*left, *right) == Ordering::Equal);
+
+                let mut canonical_shell = shell.clone();
+                let ExprInstance::ESetBody(canonical_set) = canonical_shell
+                    .expr_instance
+                    .as_mut()
+                    .expect("ESet shell retains its instance")
+                else {
+                    unreachable!("the exhaustive arm selected ESet")
+                };
+                canonical_set.ps = vec![Par::default(); canonical.len()];
+
+                let remainder = match &set.remainder {
+                    Some(var) => self.score_tree(&sort_var(var).score)?,
+                    None => self.score_i64(-1)?,
+                };
+                let connective = self.score_i64(i64::from(set.connective_used))?;
+                let mut children = Vec::with_capacity(canonical.len() + 2);
+                children.push(remainder);
+                children.extend(canonical.iter().map(|child| self.par_score(*child)));
+                children.push(connective);
+                let score = self.score_constructor(Score::ESET, children)?;
+                self.component(&canonical_shell, &canonical, score, canonical_path_stable)
+            }
+            ExprInstance::EMapBody(map) => {
+                exact("EMap", map.kvs.len() * 2, par_children.len())?;
+
+                struct Pair {
+                    key: PlannedPar,
+                    value: PlannedPar,
+                    protobuf: usize,
+                }
+                let pair_shell = crate::rhoapi::KeyValuePair {
+                    key: Some(Par::default()),
+                    value: Some(Par::default()),
+                };
+                let mut pairs = Vec::with_capacity(map.kvs.len());
+                for children in par_children.chunks_exact(2) {
+                    pairs.push(Pair {
+                        key: children[0],
+                        value: children[1],
+                        protobuf: self.plan_protobuf(&pair_shell, children)?,
+                    });
+                }
+                pairs.sort_by(|left, right| {
+                    ScoreByteCursor::new(self, self.par_score(left.key))
+                        .cmp(ScoreByteCursor::new(self, self.par_score(right.key)))
+                        .then_with(|| {
+                            WireByteCursor::new(self, WireRoot::Proto(left.protobuf))
+                                .cmp(WireByteCursor::new(self, WireRoot::Proto(right.protobuf)))
+                        })
+                });
+                let mut canonical: Vec<Pair> = Vec::with_capacity(pairs.len());
+                for pair in pairs {
+                    if let Some(previous) = canonical.last_mut() {
+                        if self.compare_pars(previous.key, pair.key) == Ordering::Equal {
+                            *previous = pair;
+                            continue;
+                        }
+                    }
+                    canonical.push(pair);
+                }
+
+                let mut canonical_shell = shell.clone();
+                let ExprInstance::EMapBody(canonical_map) = canonical_shell
+                    .expr_instance
+                    .as_mut()
+                    .expect("EMap shell retains its instance")
+                else {
+                    unreachable!("the exhaustive arm selected EMap")
+                };
+                canonical_map.kvs = (0..canonical.len()).map(|_| pair_shell.clone()).collect();
+
+                let remainder = match &map.remainder {
+                    Some(var) => self.score_tree(&sort_var(var).score)?,
+                    None => self.score_i64(-1)?,
+                };
+                let connective = self.score_i64(i64::from(map.connective_used))?;
+                let mut scores = Vec::with_capacity(canonical.len() + 2);
+                scores.push(remainder);
+                scores.extend(canonical.iter().map(|pair| self.par_score(pair.key)));
+                scores.push(connective);
+                let score = self.score_constructor(Score::EMAP, scores)?;
+                let wire_children: Vec<_> = canonical
+                    .iter()
+                    .flat_map(|pair| [pair.key, pair.value])
+                    .collect();
+                self.component(
+                    &canonical_shell,
+                    &wire_children,
+                    score,
+                    canonical_path_stable,
+                )
+            }
+            ExprInstance::EPathmapBody(_) => Err(ParConstructionError::UnsupportedPlannedShape(
+                "EPathMap expression",
+            )),
+            ExprInstance::EZipperBody(_) => {
+                Err(ParConstructionError::UnsupportedPlannedShape("EZipper"))
+            }
+            ExprInstance::ENegBody(_)
+            | ExprInstance::ENotBody(_)
+            | ExprInstance::EMultBody(_)
+            | ExprInstance::EDivBody(_)
+            | ExprInstance::EModBody(_)
+            | ExprInstance::EPlusBody(_)
+            | ExprInstance::EMinusBody(_)
+            | ExprInstance::ELtBody(_)
+            | ExprInstance::ELteBody(_)
+            | ExprInstance::EGtBody(_)
+            | ExprInstance::EGteBody(_)
+            | ExprInstance::EEqBody(_)
+            | ExprInstance::ENeqBody(_)
+            | ExprInstance::EAndBody(_)
+            | ExprInstance::EOrBody(_)
+            | ExprInstance::EMatchesBody(_)
+            | ExprInstance::EPercentPercentBody(_)
+            | ExprInstance::EPlusPlusBody(_)
+            | ExprInstance::EMinusMinusBody(_) => unreachable!("handled by arity class above"),
+        }
     }
 
     /// Plan a canonical `Par` from top-level component occurrences.
@@ -755,6 +1063,40 @@ impl ParConstruction {
 
     pub fn empty_par(&mut self) -> Result<PlannedPar, ParConstructionError> {
         self.par(std::iter::empty(), Vec::new(), false)
+    }
+
+    /// Bag union of two planned parallel compositions. Component paths remain
+    /// arena references; only the bounded occurrence descriptors and root
+    /// summaries are merged here.
+    pub fn parallel(
+        &mut self,
+        left: PlannedPar,
+        right: PlannedPar,
+    ) -> Result<PlannedPar, ParConstructionError> {
+        let mut occurrences = Vec::with_capacity(
+            self.pars[left.0].occurrences.len() + self.pars[right.0].occurrences.len(),
+        );
+        occurrences.extend(
+            self.pars[left.0]
+                .occurrences
+                .iter()
+                .map(|occurrence| (occurrence.component, occurrence.multiplicity)),
+        );
+        occurrences.extend(
+            self.pars[right.0]
+                .occurrences
+                .iter()
+                .map(|occurrence| (occurrence.component, occurrence.multiplicity)),
+        );
+        let locally_free = super::utils::union(
+            self.pars[left.0].locally_free.clone(),
+            self.pars[right.0].locally_free.clone(),
+        );
+        self.par(
+            occurrences,
+            locally_free,
+            self.pars[left.0].connective_used || self.pars[right.0].connective_used,
+        )
     }
 
     /// Import an already-authoritative resident `Par` without decoding any
@@ -1193,19 +1535,17 @@ impl Drop for ParConstruction {
 mod tests {
     use super::*;
     use crate::rhoapi::expr::ExprInstance;
-    use crate::rhoapi::{ENot, Expr};
+    use crate::rhoapi::{EMap, EMethod, ENot, EPlus, ESet, ETuple, Expr, KeyValuePair};
     use crate::rust::par_bag::with_component_key;
 
     fn planned_gint(
         arena: &mut ParConstruction,
         value: i64,
     ) -> Result<PlannedPar, ParConstructionError> {
-        let scalar = arena.score_i64(value)?;
-        let score = arena.score_constructor(Score::INT, [scalar])?;
         let expr = Expr {
             expr_instance: Some(ExprInstance::GInt(value)),
         };
-        let component = arena.component(&expr, &[], score, true)?;
+        let component = arena.ordered_expr_component(&expr, &[], true)?;
         arena.par([(component, Multiplicity::ONE)], Vec::new(), false)
     }
 
@@ -1213,13 +1553,12 @@ mod tests {
         arena: &mut ParConstruction,
         child: PlannedPar,
     ) -> Result<PlannedPar, ParConstructionError> {
-        let score = arena.score_constructor(Score::ENOT, [arena.par_score(child)])?;
         let expr = Expr {
             expr_instance: Some(ExprInstance::ENotBody(ENot {
                 p: Some(Par::default()),
             })),
         };
-        let component = arena.component(&expr, &[child], score, false)?;
+        let component = arena.ordered_expr_component(&expr, &[child], false)?;
         arena.par([(component, Multiplicity::ONE)], Vec::new(), false)
     }
 
@@ -1257,6 +1596,172 @@ mod tests {
     }
 
     #[test]
+    fn ordered_expr_score_and_wire_permutations_match_the_production_sorter() {
+        let mut arena = ParConstruction::new();
+        let one = planned_gint(&mut arena, 1).unwrap();
+        let two = planned_gint(&mut arena, 2).unwrap();
+
+        let plus_shell = Expr {
+            expr_instance: Some(ExprInstance::EPlusBody(EPlus {
+                p1: Some(Par::default()),
+                p2: Some(Par::default()),
+            })),
+        };
+        let plus = arena
+            .ordered_expr_component(&plus_shell, &[one, two], false)
+            .unwrap();
+        let plus = arena
+            .par([(plus, Multiplicity::ONE)], Vec::new(), false)
+            .unwrap();
+
+        let tuple_shell = Expr {
+            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                ps: vec![Par::default(), Par::default()],
+                locally_free: Vec::new(),
+                connective_used: false,
+            })),
+        };
+        let tuple = arena
+            .ordered_expr_component(&tuple_shell, &[plus, two], false)
+            .unwrap();
+        let tuple = arena
+            .par([(tuple, Multiplicity::ONE)], Vec::new(), false)
+            .unwrap();
+
+        let method_shell = Expr {
+            expr_instance: Some(ExprInstance::EMethodBody(EMethod {
+                method_name: "choose".to_owned(),
+                target: Some(Par::default()),
+                arguments: vec![Par::default(), Par::default()],
+                locally_free: Vec::new(),
+                connective_used: false,
+            })),
+        };
+        // Sorter evaluation order is arguments first, target last. Protobuf
+        // order is target first; `ordered_expr_component` owns that permutation.
+        let method = arena
+            .ordered_expr_component(&method_shell, &[one, tuple, plus], false)
+            .unwrap();
+        let root = arena
+            .par([(method, Multiplicity::ONE)], Vec::new(), false)
+            .unwrap();
+        let actual = arena.finish(root).unwrap();
+
+        let one = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(1)),
+        }]);
+        let two = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(2)),
+        }]);
+        let plus = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EPlusBody(EPlus {
+                p1: Some(one.clone()),
+                p2: Some(two.clone()),
+            })),
+        }]);
+        let tuple = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                ps: vec![plus.clone(), two],
+                locally_free: Vec::new(),
+                connective_used: false,
+            })),
+        }]);
+        let expected = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EMethodBody(EMethod {
+                method_name: "choose".to_owned(),
+                target: Some(plus),
+                arguments: vec![one, tuple],
+                locally_free: Vec::new(),
+                connective_used: false,
+            })),
+        }]);
+
+        assert_eq!(actual, expected);
+        assert_eq!(actual.compact_snapshot(), expected.compact_snapshot());
+    }
+
+    #[test]
+    fn ac_expr_plans_match_set_deduplication_and_map_collision_winners() {
+        let mut arena = ParConstruction::new();
+        let one = planned_gint(&mut arena, 1).unwrap();
+        let two = planned_gint(&mut arena, 2).unwrap();
+        let three = planned_gint(&mut arena, 3).unwrap();
+
+        let set_shell = Expr {
+            expr_instance: Some(ExprInstance::ESetBody(ESet {
+                ps: vec![Par::default(); 3],
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        };
+        let set = arena
+            .ordered_expr_component(&set_shell, &[two, one, two], false)
+            .unwrap();
+        let set = arena
+            .par([(set, Multiplicity::ONE)], Vec::new(), false)
+            .unwrap();
+
+        let map_shell = Expr {
+            expr_instance: Some(ExprInstance::EMapBody(EMap {
+                kvs: vec![KeyValuePair::default(); 3],
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        };
+        let map = arena
+            .ordered_expr_component(&map_shell, &[one, two, one, three, two, set], false)
+            .unwrap();
+        let root = arena
+            .par([(map, Multiplicity::ONE)], Vec::new(), false)
+            .unwrap();
+        let actual = arena.finish(root).unwrap();
+
+        let one = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(1)),
+        }]);
+        let two = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(2)),
+        }]);
+        let three = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(3)),
+        }]);
+        let set = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ESetBody(ESet {
+                ps: vec![two.clone(), one.clone(), two.clone()],
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        }]);
+        let expected = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EMapBody(EMap {
+                kvs: vec![
+                    KeyValuePair {
+                        key: Some(one.clone()),
+                        value: Some(two.clone()),
+                    },
+                    KeyValuePair {
+                        key: Some(one),
+                        value: Some(three),
+                    },
+                    KeyValuePair {
+                        key: Some(two),
+                        value: Some(set),
+                    },
+                ],
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        }]);
+
+        assert_eq!(actual, expected);
+        assert_eq!(actual.compact_snapshot(), expected.compact_snapshot());
+    }
+
+    #[test]
     fn resident_import_preserves_multiplicity_metadata_and_exact_trie_image() {
         let source = Par::default()
             .with_exprs(vec![
@@ -1283,6 +1788,33 @@ mod tests {
             arena.protobuf_bytes(planned),
             source.protobuf_bytes().unwrap()
         );
+    }
+
+    #[test]
+    fn planned_parallel_uses_bag_addition_without_flattening_component_keys() {
+        let left_value = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(7)),
+        }]);
+        let right_value = Par::default().with_exprs(vec![
+            Expr {
+                expr_instance: Some(ExprInstance::GString("alpha".to_owned())),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::GInt(7)),
+            },
+        ]);
+        let expected_order = left_value.cmp(&right_value);
+        let expected = left_value.clone().parallel(right_value.clone()).unwrap();
+
+        let mut arena = ParConstruction::new();
+        let left = arena.import_par(&left_value).unwrap();
+        let right = arena.import_par(&right_value).unwrap();
+        assert_eq!(arena.compare_pars(left, right), expected_order);
+        let root = arena.parallel(left, right).unwrap();
+        let actual = arena.finish(root).unwrap();
+
+        assert_eq!(actual, expected);
+        assert_eq!(actual.compact_snapshot(), expected.compact_snapshot());
     }
 
     #[test]
