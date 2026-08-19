@@ -108,7 +108,7 @@
 //! | one | ONE, shared | **agree** (1 distinct value) | `genesis_vaults_order_determinism::genesis_post_state_hash_is_identical_across_independent_builds`, PASS in 88 s |
 //! | one | SIX, one per build | **agree** (1 distinct value) | `…::genesis_post_state_hash_is_identical_across_independent_rspace_scopes`, PASS in 76.63 s |
 //! | FOUR, before the fixture repair | four | **DISAGREE** — 4 distinct values: `1083c5e0…`, `64088270…`, `a8f6ee11…`, `979b2fbc…` | the `--no-capture` log of `tree_hash_map_delete_restores_never_set`, four cells |
-//! | FOUR, after the fixture repair | four | **agree** — `28ca4bcf56ec1987…20a925ca` in every process | `default_genesis_post_state_hash_is_pinned_across_processes`, 4/4 independent processes, 14.58–14.82 s each |
+//! | FOUR, after the authoritative ParBag cutover | four | **agree** — `9dd75ebae52af3ae…f56fd23f` in every process | `default_genesis_post_state_hash_is_pinned_across_processes`, repeated independent processes, 8.86–8.98 s each |
 //!
 //! The historical premise that those four processes had identical inputs was false in one precise
 //! place. `build_genesis_parameters_with_defaults(None, None)` read two `lazy_static!` key cohorts

@@ -3,7 +3,8 @@ use models::rhoapi::var::VarInstance::{FreeVar, Wildcard};
 use models::rhoapi::If;
 use models::rust::rholang::implicits::vector_par;
 use models::rust::rholang::match_path::{
-    append_match_path_event, encode_match_path, encode_par_match_path, RHO_MATCH_PATH_VERSION,
+    append_match_path_event, encode_match_path, encode_par_match_atom,
+    is_single_expr_match_carrier, single_expr_match_component, RHO_MATCH_PATH_VERSION,
 };
 use models::rust::rholang::match_schema::{RhoPathCursor, RhoPathEvent};
 use models::rust::rholang::match_schema_tables::ParCursor;
@@ -86,7 +87,7 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
         }
         let mut output = StructuralSequenceEncoder::with_capacity(pattern.patterns.len());
         for par in &pattern.patterns {
-            output.push(&encode_par_match_path(par));
+            output.push(&encode_par_match_atom(par));
         }
         Some(output.finish())
     }
@@ -143,11 +144,21 @@ pub(super) fn rho_path_query_atom(
     pattern: &Par,
     captures: &mut PathMap<()>,
 ) -> Option<RhoPathQueryAtom> {
-    rho_path_query_cursor_atom(
-        ParCursor::from(pattern),
-        !pattern.connective_used() && pattern.locally_free().is_empty(),
-        captures,
-    )
+    let exact = !pattern.connective_used() && pattern.locally_free().is_empty();
+    let Some(expr) = single_expr_match_component(pattern) else {
+        return rho_path_query_cursor_atom(ParCursor::from(pattern), exact, captures);
+    };
+    if let Some(hole) = rho_match_hole_expr(&expr) {
+        if !record_linear_capture(captures, &hole) {
+            return None;
+        }
+        return Some(match hole {
+            RhoMatchQueryPart::Capture(id) => RhoPathQueryAtom::Capture(id),
+            RhoMatchQueryPart::Wildcard => RhoPathQueryAtom::Wildcard,
+            RhoMatchQueryPart::Exact(_) => unreachable!("a pattern hole is never exact"),
+        });
+    }
+    rho_path_query_cursor_atom(ParCursor::from(&expr), exact, captures)
 }
 
 /// Compile one generated rhoapi cursor into a conservative RMP1 candidate
@@ -177,7 +188,12 @@ pub(super) fn rho_path_query_cursor_atom(
             });
         }
     }
-    if let Some(query) = compile_ordered_nested_query(root, captures) {
+    // Query compilation may encounter a valid hole before a later structural
+    // arm forces conservative fallback. Keep those speculative captures on a
+    // CoW branch and publish them only with a complete query.
+    let mut derived_captures = captures.clone();
+    if let Some(query) = compile_ordered_nested_query(root, &mut derived_captures) {
+        *captures = derived_captures;
         return Some(RhoPathQueryAtom::Match(query));
     }
     exact.then(|| RhoPathQueryAtom::Exact(encode_match_path(root)))
@@ -196,10 +212,7 @@ fn compile_ordered_nested_query(
     }
 
     if let ParCursor::Par(pattern) = root {
-        if !single_expr_carrier(pattern) {
-            return None;
-        }
-        pattern.first::<Expr>().ok()??.0.expr_instance?;
+        single_expr_match_component(pattern)?.expr_instance?;
     }
 
     let mut parts = Vec::new();
@@ -232,7 +245,7 @@ fn compile_ordered_nested_query(
                         saw_hole = true;
                         continue;
                     }
-                    if !single_expr_carrier(par) {
+                    if !is_single_expr_match_carrier(par) {
                         return None;
                     }
                 }
@@ -292,32 +305,25 @@ fn flush_exact_query_part(parts: &mut Vec<RhoMatchQueryPart>, exact: &mut Vec<u8
 }
 
 fn rho_match_hole(pattern: &Par) -> Option<RhoMatchQueryPart> {
-    if !single_expr_carrier(pattern) {
-        return None;
-    }
-    let ExprInstance::EVarBody(variable) = pattern.first::<Expr>().ok()??.0.expr_instance? else {
+    rho_match_hole_expr(&single_expr_match_component(pattern)?)
+}
+
+fn rho_match_hole_expr(expr: &Expr) -> Option<RhoMatchQueryPart> {
+    let ExprInstance::EVarBody(variable) = expr.expr_instance.as_ref()? else {
         return None;
     };
-    match variable.v.and_then(|variable| variable.var_instance) {
-        Some(FreeVar(level)) => u32::try_from(level)
+    match variable
+        .v
+        .as_ref()
+        .and_then(|variable| variable.var_instance.as_ref())
+    {
+        Some(FreeVar(level)) => u32::try_from(*level)
             .ok()
             .map(RhoPathCaptureId::new)
             .map(RhoMatchQueryPart::Capture),
         Some(Wildcard(_)) => Some(RhoMatchQueryPart::Wildcard),
         _ => None,
     }
-}
-
-fn single_expr_carrier(pattern: &Par) -> bool {
-    pattern.family_cardinality::<Send>() == 0
-        && pattern.family_cardinality::<Receive>() == 0
-        && pattern.family_cardinality::<New>() == 0
-        && pattern.family_cardinality::<Expr>() == 1
-        && pattern.family_cardinality::<models::rhoapi::Match>() == 0
-        && pattern.family_cardinality::<GUnforgeable>() == 0
-        && pattern.family_cardinality::<Bundle>() == 0
-        && pattern.family_cardinality::<Connective>() == 0
-        && pattern.family_cardinality::<If>() == 0
 }
 
 fn is_empty_par(par: &Par) -> bool { par == &Par::default() }

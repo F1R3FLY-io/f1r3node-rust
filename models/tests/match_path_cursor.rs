@@ -7,7 +7,7 @@ use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::Expr;
 use models::rust::rholang::match_path::{
-    encode_match_path, encode_par_match_path, RHO_MATCH_PATH_VERSION,
+    encode_match_path, encode_par_match_path, shares_cow_bincode_identity, RHO_MATCH_PATH_VERSION,
 };
 use models::rust::rholang::match_path_cursor::{
     validate_match_path, EncodedRhoMatchPathCursor, RhoMatchPathScalar, RhoMatchPathToken,
@@ -110,6 +110,43 @@ fn validated_paths_compare_and_hash_by_canonical_bytes() {
     let mut cloned = original.clone();
     assert_eq!(original.next(), cloned.next());
     assert_eq!(original, cloned);
+}
+
+#[test]
+fn cow_identity_witness_is_sound_and_conservative() {
+    let original = par_corpus::all_par_fields();
+    let shared = original.clone();
+    assert!(shares_cow_bincode_identity(
+        ParCursor::from(&original),
+        ParCursor::from(&shared),
+    ));
+
+    let independently_built = par_corpus::all_par_fields();
+    assert_eq!(original, independently_built);
+    assert!(!shares_cow_bincode_identity(
+        ParCursor::from(&original),
+        ParCursor::from(&independently_built),
+    ));
+
+    let mut metadata_changed = shared.clone();
+    metadata_changed.replace_locally_free(vec![0xFE]);
+    assert!(!shares_cow_bincode_identity(
+        ParCursor::from(&original),
+        ParCursor::from(&metadata_changed),
+    ));
+
+    let map = par_corpus::ground_pathmap();
+    let shared_map = map.clone();
+    assert!(shares_cow_bincode_identity(
+        ParCursor::from(&map),
+        ParCursor::from(&shared_map),
+    ));
+    let mut changed_map = shared_map;
+    changed_map.insert_entry(par_corpus::gint(1_000));
+    assert!(!shares_cow_bincode_identity(
+        ParCursor::from(&map),
+        ParCursor::from(&changed_map),
+    ));
 }
 
 #[test]

@@ -214,17 +214,6 @@ fn line<T: Message>(name: &str, scored: ScoredTerm<T>) -> String {
     )
 }
 
-/// `Var` is a `prost::Message`, but `ReceiveBind` needs a wrapper to be encoded
-/// on its own; both go through the same shape so the fixture is uniform.
-fn line_debug<T: std::fmt::Debug>(name: &str, scored: ScoredTerm<T>) -> String {
-    format!(
-        "{}\t{:?}\t{}",
-        name,
-        scored.term,
-        render_score(&scored.score)
-    )
-}
-
 // ---------------------------------------------------------------------------
 // corpus builders
 // ---------------------------------------------------------------------------
@@ -793,11 +782,11 @@ fn actual_lines() -> Vec<String> {
         "receive/nocond+peek+persistent",
         ReceiveSortMatcher::sort_match(&receive(false, true, true)),
     ));
-    out.push(line_debug(
+    out.push(line(
         "bind/remainder",
         ReceiveSortMatcher::sort_bind(receive_bind(true)),
     ));
-    out.push(line_debug(
+    out.push(line(
         "bind/no-remainder",
         ReceiveSortMatcher::sort_bind(receive_bind(false)),
     ));

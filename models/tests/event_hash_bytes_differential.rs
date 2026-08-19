@@ -614,15 +614,18 @@ fn the_recorded_epathmap_entries_migrated_from_a_vec_to_a_deduplicating_trie() {
         "the corpus entries are no longer the promoted ones"
     );
 
-    // The archive still describes a map holding the SAME leaf twice.
-    let leaf = format!("{:?}", recorded_gbool_false_par());
+    // The archive still describes a map holding the SAME leaf twice.  Count
+    // the archived protobuf-derive spelling itself: reconstructing it from the
+    // current `Debug` implementation would make this migration record depend
+    // on a presentation API that is deliberately free to evolve.
+    const ARCHIVED_LEAF: &str = "Some(GBool(false))";
     assert_eq!(
-        recorded[0].1.matches(&leaf).count(),
+        recorded[0].1.matches(ARCHIVED_LEAF).count(),
         2,
         "entry 0 no longer records the DUPLICATE that distinguishes it from entry 1"
     );
     assert_eq!(
-        recorded[1].1.matches(&leaf).count(),
+        recorded[1].1.matches(ARCHIVED_LEAF).count(),
         1,
         "entry 1 no longer records the single-entry control"
     );

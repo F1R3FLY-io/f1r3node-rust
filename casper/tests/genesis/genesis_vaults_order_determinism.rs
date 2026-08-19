@@ -73,7 +73,7 @@ use crate::util::rholang::resources::generate_scope_id;
 const N_BUILDS: usize = 6;
 const N_CHEAP_BUILDS: usize = 24;
 const DEFAULT_GENESIS_POST_STATE_HASH: &str =
-    "28ca4bcf56ec1987f14d1217272d1962c0032b2bbd0e825039c575df20a925ca";
+    "9dd75ebae52af3ae038f2e79dd34f51f2543b2f30014a22a053b2ce9f56fd23f";
 
 /// The consensus-visible projection of a vault list: the base58 addresses **in order**, paired with
 /// their balances. This is what `VaultsGenerator` renders, so two vault lists with this projection
@@ -436,7 +436,7 @@ async fn genesis_post_state_hash_is_identical_across_independent_builds() {
 /// `Secp256k1::new_key_pair()` in `lazy_static!` values. After replacing them with the shared
 /// deterministic fixture keyspace,
 /// [`default_genesis_post_state_hash_is_pinned_across_processes`] passed in four independent
-/// processes at `28ca4bcf56ec1987…20a925ca` (14.58–14.82 s each).
+/// processes at `9dd75ebae52af3ae…f56fd23f` (8.86–8.98 s each).
 ///
 /// # ⚠ Why asserting agreement is the CORRECT gate and not merely the convenient one
 ///

@@ -17,15 +17,10 @@
 //   * Layer 2 (old-vs-new golden; cross-process): capture per-program (is_failed, cost, deployLog
 //     fingerprint, balanced) on the PRE-CHANGE checkout, assert byte-identical on the NEW driver.
 //
-// GENESIS DETERMINISM NOTE: the shared test genesis (`with_runtime_manager` -> GenesisBuilder ->
-// DEFAULT_VALIDATOR_KEY_PAIRS) uses `Secp256k1::new_key_pair()` = OsRng, i.e. RANDOM validator keys
-// per process, into a temp LMDB. Therefore the ABSOLUTE post_state_root and any genesis-derived channel
-// hashes are NOT comparable across processes. The invariants captured in the Layer-2 golden are exactly
-// the genesis-key-INDEPENDENT ones (is_failed, cost, self-contained deployLog fingerprint, and the
-// `balanced` predicate post_state==genesis_pre_state). The absolute post_state (#3) old-vs-new equality
-// is proven instead by Layer 1's exact in-process replay (which reproduces post_state byte-for-byte
-// against the same-run genesis). Deploys use a FIXED timestamp + the FIXED DEFAULT_SEC deployer so the
-// deploy-local channel seeds (and hence the self-contained deployLog) are deterministic.
+// GENESIS DETERMINISM NOTE: the shared test genesis now uses the fixed default validator/vault
+// keyspace. Layer 2 nevertheless records only driver-relevant portable projections; Layer 1 proves
+// the stronger byte-exact play/replay post-state equality in one store. Deploys use a fixed timestamp
+// and deployer, so deploy-local channel seeds and canonical COMM protobuf bytes are deterministic.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -35,6 +30,7 @@ use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block::state_hash::StateHash;
 use models::rust::casper::protocol::casper_message::{DeployData, Event, ProcessedDeploy};
+use prost::Message;
 use serde::{Deserialize, Serialize};
 
 use crate::util::genesis_builder::GenesisContext;
@@ -44,8 +40,7 @@ use crate::util::rholang::resources::with_runtime_manager;
 /// random seed and the self-contained deployLog — deterministic across processes.
 const FIXED_TS: i64 = 1_600_000_000_000;
 
-/// Stable, dependency-free 64-bit fingerprint (FNV-1a) over a byte slice. Used to fingerprint the
-/// Debug rendering of a self-contained deployLog. Stable across runs and toolchains.
+/// Stable, dependency-free 64-bit fingerprint (FNV-1a) over a byte slice.
 fn fnv1a(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for &b in bytes {
@@ -53,6 +48,28 @@ fn fnv1a(bytes: &[u8]) -> u64 {
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
     h
+}
+
+/// Canonical, presentation-independent COMM multiset fingerprint.
+///
+/// `Debug` is explicitly not a wire contract, and PathMap-backed `Par` now uses
+/// a trie-native structural summary. Each COMM is therefore projected through
+/// its canonical protobuf representation, byte-sorted to remove scheduling
+/// order, and length-delimited before hashing so concatenation is injective.
+fn comm_fingerprint(deploy_log: &[Event]) -> (usize, u64) {
+    let mut comms: Vec<Vec<u8>> = deploy_log
+        .iter()
+        .filter(|event| matches!(event, Event::Comm(_)))
+        .map(|event| event.to_proto().encode_to_vec())
+        .collect();
+    comms.sort();
+
+    let mut canonical = Vec::new();
+    for comm in &comms {
+        canonical.extend_from_slice(&(comm.len() as u64).to_le_bytes());
+        canonical.extend_from_slice(comm);
+    }
+    (comms.len(), fnv1a(&canonical))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,7 +81,7 @@ struct Golden {
     /// Number of COMM events (actual matches) in the deployLog. Deterministic: equals the number of
     /// COMMs that fired (independent of scheduling-dependent dangling deposits / re-install events).
     comm_count: usize,
-    /// FNV-1a over the SORTED (order-canonical) multiset of the COMM events' Debug renderings. The COMM
+    /// FNV-1a over the sorted, length-delimited canonical protobuf bytes of the COMM events. The COMM
     /// events carry the matched channels + data hashes (deploy-local, deterministic under a fixed deploy
     /// signature); the STANDALONE Produce/Consume deposits & dangling re-installs — whose count is
     /// scheduling-dependent EVEN ON THE OLD DRIVER — are excluded, so this IS cross-process portable.
@@ -213,7 +230,11 @@ async fn async_driver_four_invariants_differential() {
     with_runtime_manager(
         |mut runtime_manager, genesis_context, genesis_block| async move {
             let genesis_post_state = genesis_block.body.state.post_state_hash.clone();
-            let existing = load_goldens();
+            // Golden regeneration is explicit: ordinary test runs are always
+            // read-only, while the named environment switch records all corpus
+            // rows in one internally consistent execution.
+            let recapture = std::env::var_os("F1R3_CAPTURE_ASYNC_DRIVER_GOLDENS").is_some();
+            let existing = if recapture { None } else { load_goldens() };
             let mut captured: BTreeMap<String, Golden> = BTreeMap::new();
 
             for prog in corpus() {
@@ -246,15 +267,7 @@ async fn async_driver_four_invariants_differential() {
                 // signature). We fingerprint the SORTED multiset of COMM events (order-independent, since
                 // concurrent COMM emission order varies on both drivers). Layer-1 (replay==play) covers
                 // the FULL deployLog byte-exactly for each specific execution.
-                let mut comms: Vec<String> = pd
-                    .deploy_log
-                    .iter()
-                    .filter(|e| matches!(e, Event::Comm(_)))
-                    .map(|e| format!("{:?}", e))
-                    .collect();
-                comms.sort();
-                let comm_count = comms.len();
-                let comm_fnv = fnv1a(comms.join("\n").as_bytes());
+                let (comm_count, comm_fnv) = comm_fingerprint(&pd.deploy_log);
 
                 let golden = Golden {
                     is_failed: pd.is_failed,

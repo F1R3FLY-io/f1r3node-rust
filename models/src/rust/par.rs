@@ -473,6 +473,20 @@ impl Par {
             .expect("two finite Par values cannot overflow u64 multiplicity")
     }
 
+    /// Wrap `terminal` in `depth` singleton ELists in one byte-native pass.
+    ///
+    /// This is the bulk-construction counterpart to repeated `with_exprs`
+    /// calls. It preserves the exact protobuf and canonical-sort image while
+    /// avoiding repeated copying of every already-built suffix.
+    pub fn wrap_unary_elist(depth: usize, terminal: Self) -> Option<Self> {
+        super::par_bag::wrap_canonical_unary_elist_par(depth, terminal)
+    }
+
+    /// The ETuple specialization of [`Par::wrap_unary_elist`].
+    pub fn wrap_unary_etuple(depth: usize, terminal: Self) -> Option<Self> {
+        super::par_bag::wrap_canonical_unary_etuple_par(depth, terminal)
+    }
+
     pub fn protobuf_encoded_len(&self) -> Result<usize, ParProtobufError> {
         let mut total = 0usize;
         self.components
@@ -568,60 +582,20 @@ impl Hash for Par {
     }
 }
 
-struct ParFamilyDebug<'a, T> {
-    components: &'a ParBag,
-    marker: PhantomData<T>,
-}
-
-impl<'a, T> ParFamilyDebug<'a, T> {
-    fn new(components: &'a ParBag) -> Self {
-        Self {
-            components,
-            marker: PhantomData,
-        }
-    }
-}
-
-impl<T> fmt::Debug for ParFamilyDebug<'_, T>
-where T: ParBagComponent + fmt::Debug
-{
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut list = formatter.debug_list();
-        self.components.visit_encoded::<T>(|entry| {
-            let multiplicity = entry.multiplicity();
-            let value = entry
-                .decode()
-                .expect("Par invariant: every stored component body was validated");
-            for _ in 0..multiplicity.get() {
-                list.entry(&value);
-            }
-        });
-        list.finish()
-    }
-}
-
 impl fmt::Debug for Par {
+    /// Trie-native diagnostics for the trie-native representation.
+    ///
+    /// Expanding every canonical component body here would reconstruct the
+    /// recursive AST shadow that `ParBag` deliberately eliminated. Besides
+    /// making `Debug` O(total decoded tree), nested components would re-enter
+    /// `Par::fmt` through prost's generated message formatters and consume one
+    /// native frame per term level. Keep diagnostics on the authoritative
+    /// PathMap root instead; the Rholang pretty-printer is the stack-safe API
+    /// for a complete source-like rendering.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Par")
-            .field("sends", &ParFamilyDebug::<Send>::new(&self.components))
-            .field(
-                "receives",
-                &ParFamilyDebug::<Receive>::new(&self.components),
-            )
-            .field("news", &ParFamilyDebug::<New>::new(&self.components))
-            .field("exprs", &ParFamilyDebug::<Expr>::new(&self.components))
-            .field("matches", &ParFamilyDebug::<Match>::new(&self.components))
-            .field(
-                "unforgeables",
-                &ParFamilyDebug::<GUnforgeable>::new(&self.components),
-            )
-            .field("bundles", &ParFamilyDebug::<Bundle>::new(&self.components))
-            .field(
-                "connectives",
-                &ParFamilyDebug::<Connective>::new(&self.components),
-            )
-            .field("conditionals", &ParFamilyDebug::<If>::new(&self.components))
+            .field("components", &self.components)
             .field("locally_free", &self.locally_free)
             .field("connective_used", &self.connective_used)
             .finish()

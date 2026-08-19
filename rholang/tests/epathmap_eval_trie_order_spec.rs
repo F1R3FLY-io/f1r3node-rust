@@ -78,7 +78,7 @@ async fn evaluator_streams_set_and_map_children_in_canonical_forward_order() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn evaluator_preserves_native_roots_when_eval_is_identity() {
+async fn evaluator_preserves_native_images_when_eval_is_identity() {
     let (_space, reducer) = create_test_space::<TestSpace>().await;
     let env = Env::new();
 
@@ -110,24 +110,22 @@ async fn evaluator_preserves_native_roots_when_eval_is_identity() {
     ];
 
     for (label, map) in fixtures {
-        // Warm the shared snapshot only to give this test a stable allocation
-        // identity.  Production evaluation never needs to force the snapshot.
+        // `Par` is an authoritative bag of canonical component bytes. Crossing
+        // that boundary intentionally does not retain a decoded EPathMap object
+        // graph, so allocation identity before/after `pathmap_expr` is neither
+        // observable nor a valid CoW contract. The reducer's internal identity
+        // fast path still root-clones the EPathMap it decodes; the public
+        // contract is the exact native EPM1 image.
         let original_snapshot = map.trie_snapshot().to_vec();
-        let original_snapshot_ptr = map.trie_snapshot().as_ptr();
         let evaluated = reducer
             .eval_expr(&pathmap_expr(map), &env)
             .unwrap_or_else(|error| panic!("{label} EPathMap evaluates: {error}"));
         let evaluated = evaluated_pathmap(&evaluated);
 
         assert_eq!(
-            evaluated.trie_snapshot().as_ptr(),
-            original_snapshot_ptr,
-            "{label}: eval-stable evaluation must retain the shared PathMap/snapshot root"
-        );
-        assert_eq!(
             evaluated.trie_snapshot(),
             original_snapshot,
-            "{label}: preserving the root must remain byte-identical"
+            "{label}: eval-stable evaluation must retain the native PathMap image"
         );
     }
 }

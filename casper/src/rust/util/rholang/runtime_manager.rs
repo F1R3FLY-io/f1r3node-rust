@@ -1372,13 +1372,11 @@ impl RuntimeManager {
      * the time. For some situations, we can just use the value directly for better performance.
      */
     pub fn empty_state_hash_fixed() -> StateHash {
-        // Updated 2026-04-29 by Phase 9 of where-clauses-and-match-guards
-        // (plan §7.12): the guard moved from BindPattern.condition (Phase 7)
-        // to TaggedContinuation.guard, dropping a field from BindPattern and
-        // adding one to TaggedContinuation. Both shifts re-encode the
-        // bootstrap registry's installed continuations and patterns.
-        // Coordinated upgrade required.
-        hex::decode("cb7480d13e774ef931c0d22379cbe4deb6fed0f096d7ff93d507a2b3276d7efe")
+        // Re-measured 2026-08-18 after the authoritative ParBag cutover. The
+        // executable empty-runtime constructor produces the historical root;
+        // the prior cb7480… pin was copied from an intermediate schema state
+        // and had no passing executable witness at this revision.
+        hex::decode("382d0f2821eab27ac0163841f3838bc00a201bed6f8135e0a5746788420dbd51")
             .unwrap()
             .into()
     }

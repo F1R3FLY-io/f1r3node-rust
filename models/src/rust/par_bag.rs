@@ -1137,62 +1137,6 @@ fn canonical_unary_enot(payload: &[u8]) -> Option<usize> {
     }
 }
 
-/// Build the canonical protobuf body of one `Expr` whose shape is an exact
-/// unary `EList` spine ending in `GInt`.
-///
-/// Lengths are computed from the leaf outward and emitted from the root
-/// inward.  This is the same two-pass discipline as the generated protobuf
-/// encoder, specialized to the three-field recurrence in this shape; no
-/// intermediate nested `Par` or component trie is constructed.
-fn encode_canonical_unary_ordered_expr(
-    kind: CanonicalUnaryOrderedKind,
-    depth: usize,
-    terminal: i64,
-) -> Option<Vec<u8>> {
-    const ELIST_PAR_TAG: u32 = 1;
-    const PAR_EXPR_TAG: u32 = 5;
-    const EXPR_GINT_TAG: u32 = 2;
-
-    let zigzag = ((terminal << 1) ^ (terminal >> 63)) as u64;
-    let mut expr_len = key_len(EXPR_GINT_TAG).checked_add(encoded_len_varint(zigzag))?;
-    let mut frames = Vec::with_capacity(depth);
-    for _ in 0..depth {
-        let child_expr_len = expr_len;
-        let par_len = key_len(PAR_EXPR_TAG)
-            .checked_add(encoded_len_varint(child_expr_len as u64))?
-            .checked_add(child_expr_len)?;
-        let list_len = key_len(ELIST_PAR_TAG)
-            .checked_add(encoded_len_varint(par_len as u64))?
-            .checked_add(par_len)?;
-        expr_len = key_len(kind.expr_tag())
-            .checked_add(encoded_len_varint(list_len as u64))?
-            .checked_add(list_len)?;
-        frames.push((list_len, par_len, child_expr_len));
-    }
-
-    let mut out = Vec::with_capacity(expr_len);
-    for &(list_len, par_len, child_expr_len) in frames.iter().rev() {
-        encode_key(kind.expr_tag(), WireType::LengthDelimited, &mut out);
-        prost::encoding::encode_varint(list_len as u64, &mut out);
-        encode_key(ELIST_PAR_TAG, WireType::LengthDelimited, &mut out);
-        prost::encoding::encode_varint(par_len as u64, &mut out);
-        encode_key(PAR_EXPR_TAG, WireType::LengthDelimited, &mut out);
-        prost::encoding::encode_varint(child_expr_len as u64, &mut out);
-    }
-    encode_key(EXPR_GINT_TAG, WireType::Varint, &mut out);
-    prost::encoding::encode_varint(zigzag, &mut out);
-    debug_assert_eq!(out.len(), expr_len);
-    Some(out)
-}
-
-fn encode_canonical_unary_elist_expr(depth: usize, terminal: i64) -> Option<Vec<u8>> {
-    encode_canonical_unary_ordered_expr(CanonicalUnaryOrderedKind::EList, depth, terminal)
-}
-
-fn encode_canonical_unary_etuple_expr(depth: usize, terminal: i64) -> Option<Vec<u8>> {
-    encode_canonical_unary_ordered_expr(CanonicalUnaryOrderedKind::ETuple, depth, terminal)
-}
-
 /// Adopt one already-proved canonical unary `EList` expression as the sole
 /// endpoint of a `ParBag`.
 ///
@@ -1264,6 +1208,129 @@ fn import_canonical_unary_etuple_expr(
     )
 }
 
+/// Wrap an arbitrary canonical terminal `Par` in `depth` unary EList or
+/// ETuple expressions and construct the final authoritative ParBag endpoint in
+/// one linear pass.
+///
+/// Repeatedly calling `Par::with_exprs` is a persistent update at every level:
+/// each update must encode the complete previous protobuf suffix, so building
+/// a depth-`d` spine that way copies `1 + ... + d` bytes. This routine plans
+/// every protobuf length once, emits the final outer expression once, and
+/// writes its canonical score directly into the one final PathMap key.
+fn wrap_canonical_unary_ordered_par(
+    kind: CanonicalUnaryOrderedKind,
+    depth: usize,
+    terminal: Par,
+) -> Option<Par> {
+    if depth == 0 {
+        return Some(terminal);
+    }
+
+    const COLLECTION_PAR_TAG: u32 = 1;
+    const PAR_EXPR_TAG: u32 = 5;
+
+    let terminal_stable = crate::rust::pathmap_crate_type_mapper::eval_stable_par(&terminal);
+    let terminal_body = terminal.protobuf_bytes().ok()?;
+
+    // Frames are recorded inner-to-outer. `child_par_len` is either the
+    // terminal's complete Par body or the field-5 Par wrapper around the next
+    // inner collection expression.
+    let mut child_par_len = terminal_body.len();
+    let mut frames = Vec::with_capacity(depth);
+    for _ in 0..depth {
+        let list_len = key_len(COLLECTION_PAR_TAG)
+            .checked_add(encoded_len_varint(child_par_len as u64))?
+            .checked_add(child_par_len)?;
+        let expr_len = key_len(kind.expr_tag())
+            .checked_add(encoded_len_varint(list_len as u64))?
+            .checked_add(list_len)?;
+        frames.push((expr_len, list_len, child_par_len));
+        child_par_len = key_len(PAR_EXPR_TAG)
+            .checked_add(encoded_len_varint(expr_len as u64))?
+            .checked_add(expr_len)?;
+    }
+
+    let outer_expr_len = frames.last()?.0;
+    let mut expr_body = Vec::with_capacity(outer_expr_len);
+    for index in (0..frames.len()).rev() {
+        let (expr_len, list_len, planned_child_par_len) = frames[index];
+        let _ = expr_len;
+        encode_key(kind.expr_tag(), WireType::LengthDelimited, &mut expr_body);
+        prost::encoding::encode_varint(list_len as u64, &mut expr_body);
+        encode_key(
+            COLLECTION_PAR_TAG,
+            WireType::LengthDelimited,
+            &mut expr_body,
+        );
+        prost::encoding::encode_varint(planned_child_par_len as u64, &mut expr_body);
+        if index != 0 {
+            let child_expr_len = frames[index - 1].0;
+            encode_key(PAR_EXPR_TAG, WireType::LengthDelimited, &mut expr_body);
+            prost::encoding::encode_varint(child_expr_len as u64, &mut expr_body);
+        }
+    }
+    expr_body.extend_from_slice(&terminal_body);
+    debug_assert_eq!(expr_body.len(), outer_expr_len);
+
+    let score_capacity = terminal
+        .components()
+        .score_components_snapshot()
+        .len()
+        .checked_add(depth.checked_mul(44)?)?
+        .checked_add(64)?;
+    let mut key = Vec::with_capacity(
+        PAR_BAG_KEY_HEADER_LEN
+            .checked_add(score_capacity)?
+            .checked_add(expr_body.len())?
+            .checked_add(PAR_BAG_SCORE_LEN_BYTES)?,
+    );
+    key.extend_from_slice(&component_prefix(ParComponentTag::Expr));
+    let score_start = key.len();
+    for level in 0..depth {
+        begin_score_node(&mut key, kind.score());
+        if matches!(kind, CanonicalUnaryOrderedKind::EList) {
+            append_int_score_atom(&mut key, -1);
+        }
+        if level + 1 < depth {
+            begin_score_node(&mut key, Score::PAR);
+        }
+    }
+    terminal
+        .components()
+        .append_par_score_key(terminal.connective_used(), &mut key);
+    for level in (0..depth).rev() {
+        append_int_score_atom(&mut key, 0);
+        end_score_node(&mut key);
+        if level != 0 {
+            append_int_score_atom(&mut key, 0);
+            end_score_node(&mut key);
+        }
+    }
+    let score_len = u64::try_from(key.len().checked_sub(score_start)?)
+        .expect("one allocated canonical score length fits in u64");
+    key.extend_from_slice(&expr_body);
+    key.extend_from_slice(&score_len.to_be_bytes());
+
+    let mut components = ParBag::new();
+    components
+        .insert_bytes(
+            ParComponentTag::Expr,
+            &key,
+            Multiplicity::ONE,
+            Some(terminal_stable),
+        )
+        .expect("one validated singleton component cannot overflow multiplicity");
+    Some(Par::from_parts(components, Vec::new(), false))
+}
+
+pub(crate) fn wrap_canonical_unary_elist_par(depth: usize, terminal: Par) -> Option<Par> {
+    wrap_canonical_unary_ordered_par(CanonicalUnaryOrderedKind::EList, depth, terminal)
+}
+
+pub(crate) fn wrap_canonical_unary_etuple_par(depth: usize, terminal: Par) -> Option<Par> {
+    wrap_canonical_unary_ordered_par(CanonicalUnaryOrderedKind::ETuple, depth, terminal)
+}
+
 /// Write the complete authoritative ParBag key for one already-proved
 /// canonical unary `ENot` expression, without constructing its suffix Pars.
 fn canonical_unary_enot_key(expr_body: &[u8], depth: usize) -> Option<Vec<u8>> {
@@ -1317,13 +1384,21 @@ fn import_canonical_unary_enot_expr(expr_body: &[u8], depth: usize) -> Option<Pa
 /// scalar parameters.  Canonical-path decoding uses this after its byte cursor
 /// has proved the structural path image.
 pub(crate) fn import_canonical_unary_elist_par(depth: usize, terminal: i64) -> Option<Par> {
-    let expr_body = encode_canonical_unary_elist_expr(depth, terminal)?;
-    import_canonical_unary_elist_expr(&expr_body, depth, terminal)
+    wrap_canonical_unary_elist_par(
+        depth,
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(terminal)),
+        }]),
+    )
 }
 
 pub(crate) fn import_canonical_unary_etuple_par(depth: usize, terminal: i64) -> Option<Par> {
-    let expr_body = encode_canonical_unary_etuple_expr(depth, terminal)?;
-    import_canonical_unary_etuple_expr(&expr_body, depth, terminal)
+    wrap_canonical_unary_etuple_par(
+        depth,
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(terminal)),
+        }]),
+    )
 }
 
 fn validate_unary_elist_key(score: &[u8], payload: &[u8]) -> Option<bool> {
@@ -1918,10 +1993,21 @@ impl Hash for ParBag {
 }
 
 impl fmt::Debug for ParBag {
+    /// Constant-space structural diagnostics.
+    ///
+    /// PathMap keys contain complete canonical protobuf component bodies.
+    /// Printing those byte arrays would make a diagnostic proportional to the
+    /// encoded term (quadratic for a unary nested-protobuf ladder) and would
+    /// expose implementation bytes rather than useful Bag state.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ParBag")
-            .field("components", &self.components)
+            .field("distinct_len", &self.components.distinct_len())
+            .field("cardinality", &self.components.cardinality())
+            .field(
+                "cardinality_is_saturated",
+                &self.components.cardinality_is_saturated(),
+            )
             .field(
                 "family_cardinalities",
                 &self
@@ -1936,6 +2022,16 @@ impl fmt::Debug for ParBag {
 
 impl ParBag {
     pub fn new() -> Self { Self::default() }
+
+    /// Whether two bags still share the immutable auxiliary root installed by
+    /// [`Clone`]. Every successful mutation detaches that root before changing
+    /// either the authoritative [`Bag`] or one of its byte projections, so a
+    /// `true` result is a conservative, allocation-free proof that the two
+    /// compact component images are byte-identical.
+    ///
+    /// This is an optimization witness, not semantic equality: independently
+    /// constructed equal bags deliberately return `false`.
+    pub fn shares_storage_with(&self, other: &Self) -> bool { Arc::ptr_eq(&self.aux, &other.aux) }
 
     #[inline]
     fn aux_for_mutation(&mut self) -> &mut ParBagAux {
@@ -3071,6 +3167,32 @@ mod fast_key_tests {
                     Some(true)
                 );
             }
+        }
+    }
+
+    #[test]
+    fn bulk_unary_elist_wraps_an_arbitrary_terminal_byte_identically() {
+        for depth in [0, 1, 4, 32] {
+            let terminal = Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::GString("terminal".to_owned())),
+            }]);
+            let mut expected = terminal.clone();
+            for _ in 0..depth {
+                expected = Par::default().with_exprs(vec![Expr {
+                    expr_instance: Some(ExprInstance::EListBody(EList {
+                        ps: vec![expected],
+                        ..EList::default()
+                    })),
+                }]);
+            }
+
+            let direct = Par::wrap_unary_elist(depth, terminal)
+                .expect("the requested unary-list depth is representable");
+            assert_eq!(direct, expected);
+            assert_eq!(
+                protobuf_encoder::encode_to_vec(&direct),
+                protobuf_encoder::encode_to_vec(&expected)
+            );
         }
     }
 

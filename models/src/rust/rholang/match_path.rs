@@ -27,13 +27,56 @@ pub(super) use rspace_plus_plus::rspace::rho_path::{
 
 use super::match_schema::{RhoPathCursor, RhoPathEvent, RhoScalarRef};
 use super::match_schema_tables::ParCursor;
-use crate::rhoapi::Par;
+use crate::rhoapi::{
+    Bundle, Connective, Expr, GUnforgeable, If, Match, New, Par, Receive, Send as RhoSend,
+};
 use crate::rust::epathmap_trie_codec::EPathMapRepr;
 use crate::rust::par_bag::ParBag;
 use crate::rust::rhoapi_ext::EPathMap;
 
 /// Encode one `Par` as a complete-schema structural RSpace search path.
 pub fn encode_par_match_path(value: &Par) -> Vec<u8> { encode_match_path(ParCursor::from(value)) }
+
+/// Decode the sole expression of a `Par` whose authoritative component Bag
+/// contains exactly that one occurrence and no other component family.
+///
+/// This projection is intentionally limited to the candidate-index boundary:
+/// it exposes ordered structure beneath the compact ParBag token without
+/// restoring a retained `Vec<Par>` representation.
+pub fn is_single_expr_match_carrier(value: &Par) -> bool {
+    value.family_cardinality::<RhoSend>() == 0
+        && value.family_cardinality::<Receive>() == 0
+        && value.family_cardinality::<New>() == 0
+        && value.family_cardinality::<Expr>() == 1
+        && value.family_cardinality::<Match>() == 0
+        && value.family_cardinality::<GUnforgeable>() == 0
+        && value.family_cardinality::<Bundle>() == 0
+        && value.family_cardinality::<Connective>() == 0
+        && value.family_cardinality::<If>() == 0
+}
+
+pub fn single_expr_match_component(value: &Par) -> Option<Expr> {
+    if !is_single_expr_match_carrier(value) {
+        return None;
+    }
+    value
+        .first::<Expr>()
+        .expect("Par invariant: stored Expr keys are canonical")
+        .map(|(expr, _)| expr)
+}
+
+/// Candidate-index projection for a `Par` atom.
+///
+/// A sole expression is encoded from its generated `Expr` cursor so ordered
+/// holes nested below EList/ETuple can retain a useful trie prefix. Every other
+/// Par remains the compact, byte-native ParBag token. The authoritative matcher
+/// and full bincode identity still operate on the complete Par.
+pub fn encode_par_match_atom(value: &Par) -> Vec<u8> {
+    match single_expr_match_component(value) {
+        Some(expr) => encode_match_path(ParCursor::from(&expr)),
+        None => encode_par_match_path(value),
+    }
+}
 
 /// Encode any generated rhoapi cursor as a complete-schema structural path.
 pub fn encode_match_path(root: ParCursor<'_>) -> Vec<u8> {
@@ -43,6 +86,59 @@ pub fn encode_match_path(root: ParCursor<'_>) -> Vec<u8> {
         append_match_path_event(&mut output, event);
     }
     output
+}
+
+/// Prove that two generated-schema values have the same canonical bincode
+/// image without constructing that image.
+///
+/// The lockstep walk compares every scalar, field/sequence/map boundary, and
+/// oneof discriminator. Opaque PathMap-backed fields are accepted only when
+/// they retain the same immutable CoW root. A `true` result is therefore a
+/// sound byte-identity witness; `false` merely means that callers must use the
+/// ordinary encoder/key lookup. The walk is iterative and constant-stack.
+pub fn shares_cow_bincode_identity(left: ParCursor<'_>, right: ParCursor<'_>) -> bool {
+    let mut left = RhoPathCursor::new(left);
+    let mut right = RhoPathCursor::new(right);
+
+    loop {
+        let equal = match (left.next(), right.next()) {
+            (None, None) => return true,
+            (
+                Some(RhoPathEvent::EnterNode { program: left, .. }),
+                Some(RhoPathEvent::EnterNode { program: right, .. }),
+            ) => left.type_id == right.type_id,
+            (Some(RhoPathEvent::LeaveNode), Some(RhoPathEvent::LeaveNode)) => true,
+            (Some(RhoPathEvent::EnterField(left)), Some(RhoPathEvent::EnterField(right))) => {
+                left.tag == right.tag
+            }
+            (Some(RhoPathEvent::LeaveField), Some(RhoPathEvent::LeaveField)) => true,
+            (Some(RhoPathEvent::Scalar(left)), Some(RhoPathEvent::Scalar(right))) => left == right,
+            (Some(RhoPathEvent::Absent), Some(RhoPathEvent::Absent)) => true,
+            (Some(RhoPathEvent::EnterSequence(left)), Some(RhoPathEvent::EnterSequence(right))) => {
+                left == right
+            }
+            (Some(RhoPathEvent::LeaveSequence), Some(RhoPathEvent::LeaveSequence)) => true,
+            (Some(RhoPathEvent::EnterMap(left)), Some(RhoPathEvent::EnterMap(right))) => {
+                left == right
+            }
+            (Some(RhoPathEvent::MapKey(left)), Some(RhoPathEvent::MapKey(right))) => left == right,
+            (Some(RhoPathEvent::LeaveMap), Some(RhoPathEvent::LeaveMap)) => true,
+            (Some(RhoPathEvent::EnterOneof(left)), Some(RhoPathEvent::EnterOneof(right))) => {
+                left.protobuf_tag == right.protobuf_tag && left.serde_index == right.serde_index
+            }
+            (Some(RhoPathEvent::LeaveOneof), Some(RhoPathEvent::LeaveOneof)) => true,
+            (Some(RhoPathEvent::ParBag(left)), Some(RhoPathEvent::ParBag(right))) => {
+                left.shares_storage_with(right)
+            }
+            (Some(RhoPathEvent::PathMap(left)), Some(RhoPathEvent::PathMap(right))) => {
+                left.shares_storage_with(right)
+            }
+            _ => false,
+        };
+        if !equal {
+            return false;
+        }
+    }
 }
 
 /// Append one generated cursor event to an `RMP1` byte stream.

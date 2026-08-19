@@ -27,15 +27,15 @@
 //! binding node `N` with `n` binders and body `B`, they derive the body's
 //! pre-binding member set from the source fixture, apply
 //! `from(n).map(_ - n)` **in index space**, re-render, and require
-//! `N.locally_free` to equal it byte for byte. This is source-derived because
-//! `New` and `Receive` deliberately transfer the body cache into the binding
-//! node and clear the nested duplicate; `MatchCase` retains its nested cache.
+//! `N.locally_free` to equal it byte for byte. Each binding node derives its
+//! shifted cache from the body while retaining the body's own cache unchanged,
+//! exactly as the historical recursive normalizer did.
 //!
 //! The decode (`members_of`) and the shift (`escapes`) are the only two things
 //! the test computes, and neither mentions `filter_and_adjust_bitset`. The
-//! fixtures additionally pin whether the nested cache is transferred or
-//! retained. Thus the expectation and the value under test cannot move with
-//! either the shift implementation or the cache-ownership implementation.
+//! fixtures additionally pin that the nested cache remains byte-identical.
+//! Thus the expectation and the value under test cannot move with either the
+//! shift implementation or the cache-ownership implementation.
 //!
 //! ⚠ Every row additionally asserts that the node's **other** contributions —
 //! the channel/source it listens on, the patterns it binds, a `match`'s target —
@@ -45,12 +45,11 @@
 //!
 //! # The byte-visibility row is separate on purpose
 //!
-//! `locally_free` is blanked on the **bincode** path (`models/build.rs` injects
-//! `serialize_with = serialize_as_empty_bytes`, and `bincode_schema.rs` gives it a
-//! dedicated `FieldKind::EmptyBytes`), and RETAINED on the **protobuf** path
-//! (`protobuf_schema.rs` §B.1). Those are two different consensus lanes with two
-//! different answers, and the last two tests here measure each rather than
-//! asserting either.
+//! Root `Par::locally_free` is blanked on its historical **bincode** serde
+//! field, but nested component metadata is already inside the authoritative
+//! ParBag bytes and remains visible there. The **protobuf** path retains both
+//! root and nested metadata (`protobuf_schema.rs` §B.1). The last two tests
+//! measure those lanes explicitly rather than conflating them.
 
 use std::collections::BTreeSet;
 
@@ -170,18 +169,7 @@ struct Row {
     body_before_binding: Vec<u8>,
     /// Cache stored on the nested body after the binding node is assembled.
     stored_body: Vec<u8>,
-    body_cache_policy: BodyCachePolicy,
     bound_count: usize,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum BodyCachePolicy {
-    /// `New` and `Receive` move the cache to the enclosing node, avoiding a
-    /// duplicate allocation on the nested body.
-    Transferred,
-    /// `MatchCase` keeps the cache on its source as well as using it to derive
-    /// the enclosing `Match` cache.
-    Retained,
 }
 
 impl Row {
@@ -193,7 +181,6 @@ impl Row {
             node,
             body_before_binding,
             stored_body,
-            body_cache_policy,
             bound_count,
         } = self;
         assert_eq!(
@@ -206,13 +193,9 @@ impl Row {
             escapes(&members_of(body_before_binding), *bound_count),
             members_of(node),
         );
-        let expected_stored_body = match body_cache_policy {
-            BodyCachePolicy::Transferred => Vec::new(),
-            BodyCachePolicy::Retained => body_before_binding.clone(),
-        };
         assert_eq!(
-            stored_body, &expected_stored_body,
-            "{what}: nested body cache ownership must be {body_cache_policy:?}"
+            stored_body, body_before_binding,
+            "{what}: the enclosing binder must not erase the nested body's historical cache"
         );
     }
 
@@ -243,7 +226,6 @@ fn new_row() -> Row {
         node: node.locally_free.clone(),
         body_before_binding: vec![0, 1],
         stored_body: inner.locally_free.clone(),
-        body_cache_policy: BodyCachePolicy::Transferred,
         bound_count: node.bind_count as usize,
     }
 }
@@ -276,7 +258,6 @@ fn for_row() -> Row {
         node: node.locally_free.clone(),
         body_before_binding: vec![0, 1],
         stored_body: inner.locally_free.clone(),
-        body_cache_policy: BodyCachePolicy::Transferred,
         bound_count: node.bind_count as usize,
     }
 }
@@ -310,7 +291,6 @@ fn contract_row() -> Row {
         node: node.locally_free.clone(),
         body_before_binding: vec![0, 1],
         stored_body: inner.locally_free.clone(),
-        body_cache_policy: BodyCachePolicy::Transferred,
         bound_count: node.bind_count as usize,
     }
 }
@@ -350,7 +330,6 @@ fn match_row() -> Row {
             .expect("MatchCase.source")
             .locally_free
             .clone(),
-        body_cache_policy: BodyCachePolicy::Retained,
         bound_count: case.free_count as usize,
     }
 }
@@ -486,21 +465,21 @@ fn the_protobuf_lane_sees_the_bitset() {
     );
 }
 
-/// ★ Lane B (bincode / the RSpace channel-hash preimage) does NOT see it.
-/// `models/build.rs:162-170` injects `serialize_with =
-/// serialize_as_empty_bytes` on every `locally_free` declaration and asserts its
-/// own rewrite count against the schema-code generator's `EmptyBytes` count, so
-/// the blanking is total rather than per-message.
+/// ★ Lane B now sees nested component metadata as part of the authoritative
+/// ParBag image. Root serde metadata retains the historical empty-byte
+/// normalization, but decoding every component merely to blank nested
+/// `locally_free` fields would defeat direct PathMap serialization and recreate
+/// the removed recursive AST shadow.
 #[test]
-fn the_bincode_lane_does_not_see_the_bitset() {
+fn the_bincode_lane_sees_nested_parbag_component_metadata() {
     let par = compile(r#"for (@x <- @"c") { for (@y <- @"d") { @"o"!(x) } }"#);
     let pre_fix = with_nested_receive_bitset(&par, vec![0]);
 
     let stable = |p: &Par| bincode::serialize(p).expect("a Par must bincode-serialize");
-    assert_eq!(
+    assert_ne!(
         stable(&par),
         stable(&pre_fix),
-        "`locally_free` is blanked on the serde path, so the two readings of the binder shift \
-         are indistinguishable in an RSpace channel-hash preimage"
+        "nested `locally_free` is carried by canonical ParBag component bytes in the direct \
+         RSpace channel-hash preimage"
     );
 }

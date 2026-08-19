@@ -365,11 +365,8 @@ fn outer_epathmap_len(par: &Par) -> usize {
 /// verdict (`Equal` / `Less` / "hashes differ") that only a full descent can
 /// produce.
 fn nested_list_leaf(depth: usize, leaf: i64) -> Par {
-    let mut p = new_gint_par(leaf, vec![], false);
-    for _ in 0..depth {
-        p = elist(vec![p]);
-    }
-    p
+    Par::wrap_unary_elist(depth, new_gint_par(leaf, vec![], false))
+        .expect("the requested unary-list depth is addressable")
 }
 
 /// `[0, 1, …, width-1]` — the WIDTH counterpart of [`nested_list`].
@@ -830,8 +827,9 @@ fn subject(name: &str) -> fn(usize) {
         //
         // Five traversals over the `Par` family that this gate had never
         // measured at S0. All five have since moved into `CONVERTED_DEPTH`:
-        // generated PDAs now implement Eq, Hash, Ord, Debug, and protobuf
-        // decode. Historical absence meant UNMEASURED, never FLAT.
+        // generated PDAs implement Eq, Hash, Ord, and protobuf decode; the
+        // external PathMap-backed `Par` implements an O(1), trie-native Debug
+        // summary. Historical absence meant UNMEASURED, never FLAT.
         //
         // They are deliberately in NEITHER register list: `four_quadrant_s0_
         // baseline` measures them and records the numbers, it does not yet claim
@@ -1054,11 +1052,10 @@ const CONVERTED_DEPTH: &[&str] = &[
     // oracle is test-only; the generated differential and this gate cover
     // semantic equivalence and native-stack flatness through depth 4,096.
     "ord",
-    // Stage F-6 — `<Par as Debug>::fmt`. `models/build.rs` injects prost's
-    // `skip_debug` exactly at the descriptor-derived feedback vertex set and
-    // `models/codegen/schema.rs` emits a declaration-order formatting PDA.
-    // A generated recursive builder oracle checks both compact and alternate
-    // output on a shallow corpus; this gate checks stack flatness through 4,096.
+    // External-`Par` Stage F-6 — `<Par as Debug>::fmt` reads only the
+    // authoritative PathMap/Bag summaries. It does not reconstruct the removed
+    // repeated-field AST shadow; the pretty-printer owns full term rendering.
+    // This gate checks that diagnostics remain flat through depth 4,096.
     "debug",
     // ★★ Stage F-4, SECOND ORDER — `Env::get`'s deep splice. It LEFT
     // `TRIPWIRE_DEPTH` below by being CONVERTED, never by having a ceiling
@@ -3087,21 +3084,22 @@ fn ord_body(depth: usize) {
     dismantle(larger);
 }
 
-/// `<Par as Debug>::fmt` — now generated as a declaration-order explicit-
-/// worklist formatter at the schema feedback vertex set. The declaration order
-/// remains prost-derive compatible; the generated shallow differential checks
-/// the output, while this subject measures the deep walk.
+/// `<Par as Debug>::fmt` — an O(1), trie-native structural summary.
+///
+/// `Par` is now an external PathMap-backed type, so rebuilding the historical
+/// prost field lists merely for diagnostics would recreate a recursive shadow
+/// AST and re-enter generated child `Debug` implementations. Full source-like
+/// output belongs to the stack-safe pretty-printer; this subject proves that
+/// ordinary diagnostics do not descend through encoded component bodies.
 fn debug_body(depth: usize) {
     let term = nested_list(depth);
     assert_carries("the debug input's nesting", par_depth(&term), depth);
     let rendered = format!("{:?}", term);
-    // Every `EList` level contributes at least its `EListBody(EList { ps: [` —
-    // far more than one byte — so a collapsed fixture cannot reach this bound.
     assert!(
-        rendered.len() >= depth,
-        "VACUOUS PROBE: `Debug` of a depth-{} term rendered only {} characters",
-        depth,
-        rendered.len()
+        rendered.starts_with("Par { components: ParBag {")
+            && rendered.contains("family_cardinalities:")
+            && rendered.ends_with("connective_used: false }"),
+        "VACUOUS PROBE: trie-native `Debug` did not report the authoritative ParBag: {rendered}"
     );
     dismantle(term);
 }
@@ -3158,6 +3156,16 @@ fn assert_carries(what: &str, actual: usize, claimed: usize) {
 
 /// Count `[[…[x]…]]` nesting levels ITERATIVELY.
 fn par_depth(p: &Par) -> usize {
+    if p.family_cardinality::<Expr>() == 1 {
+        let mut encoded_depth = None;
+        p.visit_encoded::<Expr>(|entry| {
+            encoded_depth = entry.canonical_unary_elist_depth();
+        });
+        if let Some(depth) = encoded_depth {
+            return depth;
+        }
+    }
+
     let mut n = 0usize;
     let mut cur = p.clone();
     loop {

@@ -97,15 +97,16 @@ pub(crate) fn combine_p_new<'ast>(
     value: NormVal,
     env: &HashMap<String, Par>,
 ) -> Result<Step<'ast>, InterpreterError> {
-    let mut body_result = value.into_proc();
+    let body_result = value.into_proc();
 
     // TODO: we should build btree_map with real values, not a copied references from env: ref &HashMap
     let btree_map: BTreeMap<String, Par> =
         env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
-    // Transfer the cache to `New::locally_free`, matching the recursive
-    // implementation. The nested body must not retain a duplicate cache.
-    let body_locally_free = body_result.par.take_locally_free();
+    // The recursive implementation cloned the body before consuming its
+    // cache, so the nested body retained the same bytes. Copy only the shallow
+    // cache vector and move the PathMap-backed body.
+    let body_locally_free = body_result.par.locally_free().to_vec();
     let result_new = New {
         bind_count: new_count as i32,
         p: Some(body_result.par),
@@ -393,33 +394,33 @@ mod tests {
         });
 
         assert_eq!(result.clone().unwrap().par, expected_result);
+        let mut send_locally_free = result.clone().unwrap().par.decode_occurrences::<New>()[0]
+            .p
+            .clone()
+            .unwrap()
+            .decode_occurrences::<RhoSend>()
+            .iter()
+            .map(|send| send.locally_free.clone())
+            .collect::<Vec<_>>();
+        send_locally_free.sort();
+        let mut expected_locally_free = (0..5)
+            .map(|index| create_bit_vector(&vec![index]))
+            .collect::<Vec<_>>();
+        expected_locally_free.sort();
         assert_eq!(
-            result.clone().unwrap().par.decode_occurrences::<New>()[0]
-                .p
-                .clone()
-                .unwrap()
-                .decode_occurrences::<RhoSend>()
-                .iter()
-                .map(|x| x.locally_free.clone())
-                .collect::<Vec<Vec<u8>>>(),
-            vec![
-                create_bit_vector(&vec![2]),
-                create_bit_vector(&vec![0]),
-                create_bit_vector(&vec![1]),
-                create_bit_vector(&vec![3]),
-                create_bit_vector(&vec![4])
-            ]
+            send_locally_free, expected_locally_free,
+            "every bound send must retain its own locally-free cache; ParBag trie order is not source order"
         );
-        // The child aggregate is transferred to `New::locally_free` and then
-        // adjusted for the five newly bound names. Individual sends retain
-        // their own caches; the nested `Par` must not duplicate the aggregate.
+        // The child aggregate is copied into `New::locally_free` and adjusted
+        // for the five newly bound names. The recursive implementation cloned
+        // the body first, so the nested `Par` retains the original cache.
         assert_eq!(
             result.unwrap().par.decode_occurrences::<New>()[0]
                 .p
                 .clone()
                 .unwrap()
                 .locally_free,
-            Vec::<u8>::new()
+            create_bit_vector(&vec![0, 1, 2, 3, 4])
         );
     }
 }

@@ -618,7 +618,7 @@ pub(crate) fn normalize_name_recursive<'ast>(
 // declared rename; re-derived and compared by
 // `rholang/tests/normalize_oracle_provenance.rs`.
 //
-// ⚠ ONE DECLARED DEVIATION beyond the rename, and the only one in this file:
+// ⚠ THREE DECLARED DEVIATIONS beyond the rename:
 // `fold_match_map`'s `remainder` parameter is spelled
 // `Option<models::rhoapi::Var>` where the source spelled it `Option<Var>`.
 // Merging this block with `name_normalize_matcher.rs`'s made the bare name
@@ -626,9 +626,13 @@ pub(crate) fn normalize_name_recursive<'ast>(
 // `models::rhoapi::Var` and `name_normalize_matcher.rs` to
 // `rholang_parser::ast::Var`. It is a type ANNOTATION; no expression, no
 // control flow and no value is touched, and the annotated type is the one the
-// source file's own imports resolved to. It is registered as data in
+// source file's own imports resolved to. The other two avoid recursively
+// cloning a whole `Par`: the cited code cloned each child into the collection
+// and then consumed metadata from the original, so the inserted child retained
+// its metadata. The oracle shallow-clones those metadata bytes and moves the
+// whole child. All three are registered as data in
 // `normalize_oracle_provenance.rs::DECLARED_DEVIATIONS`, so it cannot be
-// widened, and no second deviation can be added, without the test saying so.
+// widened without the test saying so.
 // ===========================================================================
 fn normalize_collection_recursive<'ast>(
     proc: &'ast Collection<'ast>,
@@ -662,13 +666,10 @@ fn normalize_collection_recursive<'ast>(
                 parser,
             )?;
 
-            let mut result_par = result.par;
-            connective_used |= result_par.connective_used;
-            locally_free = union(
-                locally_free,
-                std::mem::take(&mut result_par.locally_free),
-            );
-            acc_pars.push(result_par);
+            let child_locally_free = result.par.locally_free.clone();
+            connective_used |= result.par.connective_used;
+            locally_free = union(locally_free, child_locally_free);
+            acc_pars.push(result.par);
             result_known_free = result.free_map;
         }
 
@@ -716,17 +717,15 @@ fn normalize_collection_recursive<'ast>(
                 parser,
             )?;
 
-            let mut key_par = key_result.par;
-            let mut value_par = value_result.par;
-            connective_used |= key_par.connective_used || value_par.connective_used;
+            let key_locally_free = key_result.par.locally_free.clone();
+            let value_locally_free = value_result.par.locally_free.clone();
+            connective_used |=
+                key_result.par.connective_used || value_result.par.connective_used;
             locally_free = union(
                 locally_free,
-                union(
-                    std::mem::take(&mut key_par.locally_free),
-                    std::mem::take(&mut value_par.locally_free),
-                ),
+                union(key_locally_free, value_locally_free),
             );
-            acc_pairs.push((key_par, value_par));
+            acc_pairs.push((key_result.par, value_result.par));
             result_known_free = value_result.free_map;
         }
 
@@ -1809,7 +1808,7 @@ fn normalize_p_new_recursive<'ast>(
     let new_env: BoundMapChain<VarSort> = input.bound_map_chain.put_all_pos(new_bindings);
     let new_count: usize = new_env.get_count() - input.bound_map_chain.get_count();
 
-    let mut body_result = normalize_ann_proc_recursive(
+    let body_result = normalize_ann_proc_recursive(
         proc,
         ProcVisitInputs {
             par: Par::default(),
@@ -1824,10 +1823,8 @@ fn normalize_p_new_recursive<'ast>(
     let btree_map: BTreeMap<String, Par> =
         env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
-    let body_locally_free = filter_and_adjust_bitset(
-        std::mem::take(&mut body_result.par.locally_free),
-        new_count,
-    );
+    let body_locally_free =
+        filter_and_adjust_bitset(body_result.par.locally_free.clone(), new_count);
     let result_new = New {
         bind_count: new_count as i32,
         p: Some(body_result.par),
@@ -1903,7 +1900,7 @@ fn normalize_p_contr_recursive<'ast>(
     let new_enw = input.bound_map_chain.absorb_free_span(&remainder_result.1);
     let bound_count = remainder_result.1.count_no_wildcards();
 
-    let mut body_result = normalize_ann_proc_recursive(
+    let body_result = normalize_ann_proc_recursive(
         body,
         ProcVisitInputs {
             par: Par::default(),
@@ -1915,10 +1912,8 @@ fn normalize_p_contr_recursive<'ast>(
     )?;
 
     let body_connective_used = body_result.par.connective_used;
-    let body_locally_free = filter_and_adjust_bitset(
-        std::mem::take(&mut body_result.par.locally_free),
-        bound_count,
-    );
+    let body_locally_free =
+        filter_and_adjust_bitset(body_result.par.locally_free.clone(), bound_count);
     let receive = Receive {
         binds: vec![ReceiveBind {
             patterns: init_acc.0.clone().into_iter().rev().collect(),
@@ -2915,7 +2910,7 @@ fn normalize_p_input_recursive<'ast>(
         };
 
         // Process body
-        let mut proc_visit_outputs = normalize_ann_proc_recursive(
+        let proc_visit_outputs = normalize_ann_proc_recursive(
             body,
             ProcVisitInputs {
                 par: Par::default(),
@@ -2942,7 +2937,7 @@ fn normalize_p_input_recursive<'ast>(
             .unwrap_or(false);
 
         let body_connective_used = proc_visit_outputs.par.connective_used;
-        let body_locally_free = std::mem::take(&mut proc_visit_outputs.par.locally_free);
+        let body_locally_free = proc_visit_outputs.par.locally_free.clone();
 
         Ok(ProcVisitOutputs {
             par: input.par.clone().prepend_receive(Receive {

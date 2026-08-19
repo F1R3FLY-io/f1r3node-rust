@@ -3604,6 +3604,7 @@ mod differential {
     use models::rust::rhoapi_ext::EPathMap;
     use models::rust::test_utils::test_utils::{assert_generator_not_vacuous, generate_par};
     use proptest::prelude::*;
+    use prost::Message;
 
     use super::{NewBindRange, PpNode, PrettyPrinter, UNPRINTABLE_ANY};
 
@@ -4019,13 +4020,27 @@ mod differential {
     //
     // # The two assertions
     //
-    // 1. ★ the term's `Debug` equals the corpus text, character for character. Without it a
-    //    promoted test could quietly assert the differential over a term nobody recorded,
-    //    and pass forever. Nothing is normalised here — unlike the MeTTaIL corpora these
-    //    terms contain no `UniqueId` and no hash-ordered container, so the comparison is
-    //    literal.
+    // 1. ★ the term's canonical protobuf bytes equal the promoted fixture exactly. `Debug`
+    //    is presentation-only and deliberately became a constant-space ParBag summary; it
+    //    cannot serve as a structural fingerprint. The protobuf preimage is deterministic,
+    //    consensus-relevant, and round-tripped here before the differential is exercised.
     // 2. the differential the corpus exists to protect: both printer entry points, both
     //    forms, byte-identical.
+
+    fn assert_promoted_corpus_term(term: &Par, expected_hex: &str) {
+        let encoded = term.encode_to_vec();
+        assert_eq!(
+            hex::encode(&encoded),
+            expected_hex,
+            "the reconstructed term's canonical protobuf bytes differ from the promoted corpus fixture"
+        );
+        let decoded = Par::decode(encoded.as_slice())
+            .expect("the promoted corpus term's canonical protobuf bytes must decode");
+        assert_eq!(
+            decoded, *term,
+            "the promoted corpus fixture must round-trip to the reconstructed term"
+        );
+    }
 
     /// Entry 0 — `cc c8930bdff03532829e702037cb79d414440a203926038d21b137ae60cf253995`.
     ///
@@ -4044,16 +4059,7 @@ mod differential {
             ..Default::default()
         };
 
-        assert_eq!(
-            format!("{term:?}"),
-            "Par { sends: [], receives: [], news: [New { bind_count: 3, p: Some(Par { sends: \
-             [], receives: [], news: [], exprs: [], matches: [], unforgeables: [], bundles: \
-             [], connectives: [], conditionals: [], locally_free: [], connective_used: false \
-             }), uri: [], injections: {}, locally_free: [] }], exprs: [], matches: [], \
-             unforgeables: [], bundles: [], connectives: [], conditionals: [], locally_free: \
-             [], connective_used: false }",
-            "the reconstructed term is not the one the corpus recorded"
-        );
+        assert_promoted_corpus_term(&term, "220408061200");
 
         agree("corpus entry 0", &term);
     }
@@ -4083,19 +4089,7 @@ mod differential {
             ..Default::default()
         };
 
-        assert_eq!(
-            format!("{term:?}"),
-            "Par { sends: [], receives: [], news: [], exprs: [], matches: [], unforgeables: \
-             [], bundles: [Bundle { body: Some(Par { sends: [], receives: [], news: [New { \
-             bind_count: 1, p: Some(Par { sends: [], receives: [], news: [], exprs: [], \
-             matches: [], unforgeables: [], bundles: [], connectives: [], conditionals: [], \
-             locally_free: [], connective_used: false }), uri: [], injections: {}, \
-             locally_free: [] }], exprs: [], matches: [], unforgeables: [], bundles: [], \
-             connectives: [], conditionals: [], locally_free: [], connective_used: false }), \
-             write_flag: false, read_flag: false }], connectives: [], conditionals: [], \
-             locally_free: [], connective_used: false }",
-            "the reconstructed term is not the one the corpus recorded"
-        );
+        assert_promoted_corpus_term(&term, "5a080a06220408021200");
 
         agree("corpus entry 1", &term);
     }
@@ -4130,19 +4124,7 @@ mod differential {
             ..Default::default()
         };
 
-        assert_eq!(
-            format!("{term:?}"),
-            "Par { sends: [], receives: [], news: [New { bind_count: -389915091, p: Some(Par \
-             { sends: [], receives: [], news: [New { bind_count: 1, p: Some(Par { sends: [], \
-             receives: [], news: [], exprs: [], matches: [], unforgeables: [], bundles: [], \
-             connectives: [], conditionals: [], locally_free: [], connective_used: false }), \
-             uri: [], injections: {}, locally_free: [] }], exprs: [], matches: [], \
-             unforgeables: [], bundles: [], connectives: [], conditionals: [], locally_free: \
-             [], connective_used: false }), uri: [], injections: {}, locally_free: [] }], \
-             exprs: [], matches: [], unforgeables: [], bundles: [], connectives: [], \
-             conditionals: [], locally_free: [], connective_used: false }",
-            "the reconstructed term is not the one the corpus recorded"
-        );
+        assert_promoted_corpus_term(&term, "220e08a587edf3021206220408021200");
 
         agree("corpus entry 2", &term);
 

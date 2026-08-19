@@ -23,7 +23,9 @@ use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rhoapi_ext::{EntryTrie, OwnedEPathMapEntry};
 use models::rust::rholang::bincode_encoder;
 use models::rust::rholang::implicits::{single_expr, vector_par};
-use models::rust::rholang::match_path::encode_match_path;
+use models::rust::rholang::match_path::{
+    encode_match_path, encode_par_match_atom, shares_cow_bincode_identity,
+};
 use models::rust::rholang::match_schema_tables::ParCursor;
 use models::rust::utils::*;
 use pathmap::PathMap;
@@ -1264,16 +1266,56 @@ enum MatchValue {
 }
 
 impl MatchValue {
+    fn shares_cow_bincode_identity(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Par(left), Self::Par(right)) => {
+                shares_cow_bincode_identity(ParCursor::from(left), ParCursor::from(right))
+            }
+            (Self::ParPair((left_key, left_value)), Self::ParPair((right_key, right_value))) => {
+                shares_cow_bincode_identity(ParCursor::from(left_key), ParCursor::from(right_key))
+                    && shares_cow_bincode_identity(
+                        ParCursor::from(left_value),
+                        ParCursor::from(right_value),
+                    )
+            }
+            (Self::Send(left), Self::Send(right)) => {
+                shares_cow_bincode_identity(ParCursor::from(left), ParCursor::from(right))
+            }
+            (Self::Receive(left), Self::Receive(right)) => {
+                shares_cow_bincode_identity(ParCursor::from(left), ParCursor::from(right))
+            }
+            (Self::New(left), Self::New(right)) => {
+                shares_cow_bincode_identity(ParCursor::from(left), ParCursor::from(right))
+            }
+            (Self::Expr(left), Self::Expr(right)) => {
+                shares_cow_bincode_identity(ParCursor::from(left), ParCursor::from(right))
+            }
+            (Self::Match(left), Self::Match(right)) => {
+                shares_cow_bincode_identity(ParCursor::from(left), ParCursor::from(right))
+            }
+            (Self::Bundle(left), Self::Bundle(right)) => {
+                shares_cow_bincode_identity(ParCursor::from(left), ParCursor::from(right))
+            }
+            (Self::Unforgeable(left), Self::Unforgeable(right)) => {
+                shares_cow_bincode_identity(ParCursor::from(left), ParCursor::from(right))
+            }
+            (Self::ReceiveBind(left), Self::ReceiveBind(right)) => {
+                shares_cow_bincode_identity(ParCursor::from(left), ParCursor::from(right))
+            }
+            _ => false,
+        }
+    }
+
     fn rho_path_structure(&self) -> Vec<u8> {
         let mut output = StructuralSequenceEncoder::with_capacity(match self {
             Self::ParPair(_) => 2,
             _ => 1,
         });
         match self {
-            Self::Par(value) => output.push(&encode_match_path(ParCursor::from(value))),
+            Self::Par(value) => output.push(&encode_par_match_atom(value)),
             Self::ParPair((key, value)) => {
-                output.push(&encode_match_path(ParCursor::from(key)));
-                output.push(&encode_match_path(ParCursor::from(value)));
+                output.push(&encode_par_match_atom(key));
+                output.push(&encode_par_match_atom(value));
             }
             Self::Send(value) => output.push(&encode_match_path(ParCursor::from(value))),
             Self::Receive(value) => output.push(&encode_match_path(ParCursor::from(value))),
@@ -1809,15 +1851,14 @@ impl ListTargetIndex {
             let position = u64::try_from(position).ok()?;
 
             // Canonically normalized AC fields place byte-identical terms next
-            // to one another. Their generated `Ord` is itself a stack-safe
-            // worklist traversal and, unlike Rholang's AlwaysEqual
-            // `PartialEq`, includes transient `locally_free` metadata. Thus
-            // `Equal` here proves both RMP1 structure and canonical bincode
-            // identity can be reused. The ordinary exact-key lookup below
-            // remains authoritative for identical values that are not
-            // adjacent.
+            // to one another. Semantic `Ord`/`Eq` cannot prove wire identity:
+            // in particular, `Par` intentionally ignores root `locally_free`.
+            // The generated lockstep cursor instead compares every scalar and
+            // accepts opaque Bag/PathMap fields only when they share an
+            // immutable CoW root. The ordinary exact-key lookup below remains
+            // authoritative when that conservative proof is unavailable.
             if let Some((previous_target, id)) = previous {
-                if previous_target.cmp(target) == Ordering::Equal {
+                if previous_target.shares_cow_bincode_identity(target) {
                     let group_index = usize::try_from(id.0.get() - 1).ok()?;
                     let group = groups.get_mut(group_index)?;
                     bag.insert(&group.key).ok()?;

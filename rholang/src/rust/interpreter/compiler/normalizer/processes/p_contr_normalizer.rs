@@ -79,7 +79,7 @@ pub(crate) fn combine_p_contr<'ast>(
         k.acc_locally_free = union(std::mem::take(&mut k.acc_locally_free), formal_locally_free);
     } else {
         // The BODY has just finished.
-        let mut body_result = value.into_proc();
+        let body_result = value.into_proc();
         let ContrK {
             name_out,
             acc_patterns,
@@ -92,11 +92,12 @@ pub(crate) fn combine_p_contr<'ast>(
         let name_match_result =
             name_out.expect("combine_p_contr: the contract name is filled before the body");
 
-        // The source-name cache is copied in the recursive implementation;
-        // the body cache is transferred to `Receive::locally_free`.
+        // The recursive implementation cloned the body before consuming its
+        // cache, so both the nested body and `Receive::locally_free` retain the
+        // bytes. Copy only the shallow cache vector and move the ParBag body.
         let name_locally_free = name_match_result.par.locally_free().to_vec();
         let name_connective_used = name_match_result.par.connective_used();
-        let body_locally_free = body_result.par.take_locally_free();
+        let body_locally_free = body_result.par.locally_free().to_vec();
         let body_connective_used = body_result.par.connective_used();
         let receive = Receive {
             binds: vec![ReceiveBind {

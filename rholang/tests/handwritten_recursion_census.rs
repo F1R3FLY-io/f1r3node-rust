@@ -242,6 +242,25 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
         Disposition::Measured("gate subject `encode`"),
     ),
     (
+        "models/src/rust/par.rs",
+        Disposition::Measured(
+            "external PathMap-backed `Par::fmt` is an O(1) trie-native structural summary; \
+             gate subject `debug` drives a depth-4,096 witness on 256 KiB. The reported \
+             `encoded_len`/`protobuf_encoded_len` edge is a conservative same-name merge: \
+             the prost trait wrapper calls the bounded ParBag byte-length computation, which \
+             does not call back into the trait wrapper",
+        ),
+    ),
+    (
+        "models/src/rust/par_bag.rs",
+        Disposition::NotATermDepthCycle(
+            "the scanner merges unrelated generic `append_key_suffix` implementations and \
+             PathMap's `contains` with `ParBag::contains`. Score-atom appenders form a finite \
+             downward call graph; `with_component_key` invokes exactly one selected component \
+             implementation, and no callee calls back into it",
+        ),
+    ),
+    (
         "models/src/rust/rhoapi_ext.rs",
         Disposition::Measured(
             "`epathmap_epm1_snapshot::epm1_round_trip_is_stack_safe_at_depth_4096_on_a_256_kib_stack` \
@@ -281,6 +300,13 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
         "rho-pure-eval/src/eval.rs",
         Disposition::Measured("gate subject `eval_with_nots`"),
     ),
+    (
+        "rho-pure-eval/src/error.rs",
+        Disposition::NotATermDepthCycle(
+            "the `EvalError::fmt` arm delegates `BagError` formatting through a qualified \
+             trait method; neither formatter contains a child `EvalError` or calls upward",
+        ),
+    ),
     // ── metering ───────────────────────────────────────────────────────────────────
     (
         "rholang/src/rust/interpreter/accounting/mod.rs",
@@ -293,6 +319,15 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
              `signature_algebra_operations_are_stack_safe_at_depth_twenty_thousand` and \
              `token_and_signed_process_lifecycles_are_stack_safe` drive Clone, equality, \
              compact Debug, and Drop at depth 20,000 on a 128 KiB stack",
+        ),
+    ),
+    (
+        "rholang/src/rust/interpreter/matcher/has_locally_free.rs",
+        Disposition::NotATermDepthCycle(
+            "the scanner coalesces eleven `HasLocallyFree<T>::connective_used` overloads. \
+             Every Par edge reads the PathMap-backed Par's cached root bit through the \
+             inherent accessor; Var/VarInstance delegation is bounded by the oneof shell. \
+             No overload recursively descends a Par term",
         ),
     ),
     // ── test and API surfaces ──────────────────────────────────────────────────────

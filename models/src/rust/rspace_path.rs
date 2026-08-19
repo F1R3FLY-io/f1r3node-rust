@@ -2,7 +2,7 @@ use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize
 use rspace_plus_plus::rspace::rho_path::{RhoPathEncode, StructuralSequenceEncoder};
 
 use super::canonical_path::encode_trie_path;
-use super::rholang::match_path::encode_par_match_path;
+use super::rholang::match_path::encode_par_match_atom;
 use crate::rhoapi::{ListParWithRandom, Par};
 
 impl RhoPathEncode for Par {
@@ -15,7 +15,7 @@ impl RhoPathEncode for ListParWithRandom {
     fn rho_path_structure(&self) -> Vec<u8> {
         let mut output = StructuralSequenceEncoder::with_capacity(self.pars.len());
         for par in &self.pars {
-            output.push(&encode_par_match_path(par));
+            output.push(&encode_par_match_atom(par));
         }
         output.finish()
     }

@@ -15,11 +15,10 @@
 //! `bound_map_chain` exactly as those two do) did not. These tests assert the
 //! three agree, on the **bitset value** — never on the absence of an error.
 //!
-//! `Receive` is also a cache-ownership boundary: normalization transfers the
-//! root `Par::locally_free` cache of its body into `Receive::locally_free` and
-//! clears that nested duplicate. The tests therefore distinguish semantic
-//! propagation (carrier and `Receive` caches) from storage ownership (the
-//! retained body root is empty after transfer).
+//! `Receive` is a semantic cache boundary: normalization derives its shifted
+//! `Receive::locally_free` from the body while retaining the body root's cache
+//! in that body's own index space. The tests pin both layers, matching the
+//! historical recursive normalizer byte for byte.
 //!
 //! ⚠ `connective_used` is the OTHER half of the same trait and is deliberately
 //! NOT symmetric: its contract is about *concreteness*, a `matches` pattern is
@@ -169,8 +168,8 @@ fn a_matches_pattern_var_ref_reaches_the_enclosing_par() {
         "the Send carrying it must report index 0 free"
     );
     assert_eq!(
-        body.locally_free, CLOSED,
-        "the body-root cache is transferred into the enclosing Receive"
+        body.locally_free, IDX_0,
+        "the body-root retains its own cache while the enclosing Receive derives its shifted cache"
     );
 
     // The binder that owns index 0 is where it is discharged, not before.
@@ -193,10 +192,7 @@ fn b_match_case_pattern_var_ref_reaches_the_enclosing_par() {
     assert_eq!(match_case_pattern(&datum).locally_free, IDX_0);
     assert_eq!(only_match(&datum).locally_free, IDX_0);
     assert_eq!(datum.locally_free, IDX_0);
-    assert_eq!(
-        body.locally_free, CLOSED,
-        "Receive owns the body-root cache"
-    );
+    assert_eq!(body.locally_free, IDX_0, "the body-root cache is retained");
     assert_eq!(only_receive(&par).locally_free, CLOSED);
 }
 
@@ -212,10 +208,7 @@ fn c_receive_bind_pattern_var_ref_reaches_the_enclosing_par() {
         "`=x` in a `for` pattern names index 0"
     );
     assert_eq!(inner.locally_free, IDX_0);
-    assert_eq!(
-        body.locally_free, CLOSED,
-        "Receive owns the body-root cache"
-    );
+    assert_eq!(body.locally_free, IDX_0, "the body-root cache is retained");
     assert_eq!(only_receive(&par).locally_free, CLOSED);
 }
 
@@ -276,8 +269,8 @@ fn e_matches_pattern_var_ref_escapes_an_intervening_binder() {
         "the EMatches carrier retains the semantic bit"
     );
     assert_eq!(
-        inner_body.locally_free, CLOSED,
-        "the inner Receive owns the transferred body-root cache"
+        inner_body.locally_free, IDX_1,
+        "the inner body retains the pre-shift cache in its own index space"
     );
     assert_eq!(
         inner.locally_free, ADJUSTED_PAST_ONE_BINDER,
@@ -285,8 +278,8 @@ fn e_matches_pattern_var_ref_escapes_an_intervening_binder() {
          `[]`, i.e. the inner `for` claimed to be closed"
     );
     assert_eq!(
-        outer_body.locally_free, CLOSED,
-        "the outer Receive owns the transferred outer-body cache"
+        outer_body.locally_free, ADJUSTED_PAST_ONE_BINDER,
+        "the outer body retains the inner Receive's shifted cache"
     );
     assert_eq!(
         only_receive(&par).locally_free,
@@ -296,8 +289,8 @@ fn e_matches_pattern_var_ref_escapes_an_intervening_binder() {
 }
 
 /// ★ The whole stored-cache chain of the two escaping programs must be
-/// BYTE-EQUAL, including the intentional empty body-root slots at each
-/// `Receive` ownership boundary.
+/// BYTE-EQUAL, including each retained body-root cache at the `Receive`
+/// boundaries.
 ///
 /// This is the strongest form of the differential and the one that does not
 /// depend on `filter_and_adjust_bitset` being right: whatever it computes, the
@@ -306,8 +299,8 @@ fn e_matches_pattern_var_ref_escapes_an_intervening_binder() {
 /// `EMatches` node up.
 #[test]
 fn e_f_the_matches_and_match_chains_are_byte_equal() {
-    /// `(EMatches-or-Match carrier, transferred inner body root, inner
-    /// Receive, transferred outer body root, outer Receive)`, as bitsets.
+    /// `(EMatches-or-Match carrier, retained inner body root, inner Receive,
+    /// retained outer body root, outer Receive)`, as bitsets.
     fn chain(src: &str) -> Vec<Vec<u8>> {
         let par = compile(src);
         let outer_body = only_receive_body(&par);
@@ -335,9 +328,9 @@ fn e_f_the_matches_and_match_chains_are_byte_equal() {
         via_matches,
         vec![
             IDX_1.to_vec(),
-            CLOSED.to_vec(),
+            IDX_1.to_vec(),
             ADJUSTED_PAST_ONE_BINDER.to_vec(),
-            CLOSED.to_vec(),
+            ADJUSTED_PAST_ONE_BINDER.to_vec(),
             CLOSED.to_vec(),
         ],
         "the shared chain, spelled out"
@@ -358,9 +351,9 @@ fn f_match_case_pattern_var_ref_escapes_an_intervening_binder() {
         IDX_1
     );
     assert_eq!(only_sent_datum(&inner_body).locally_free, IDX_1);
-    assert_eq!(inner_body.locally_free, CLOSED);
+    assert_eq!(inner_body.locally_free, IDX_1);
     assert_eq!(inner.locally_free, ADJUSTED_PAST_ONE_BINDER);
-    assert_eq!(outer_body.locally_free, CLOSED);
+    assert_eq!(outer_body.locally_free, ADJUSTED_PAST_ONE_BINDER);
     assert_eq!(only_receive(&par).locally_free, CLOSED);
 }
 
@@ -396,10 +389,7 @@ fn h_an_ordinary_bound_reference_is_still_reported() {
         IDX_0,
         "a plain `x` is a BoundVar at index 0 and must be reported"
     );
-    assert_eq!(
-        body.locally_free, CLOSED,
-        "Receive owns the body-root cache"
-    );
+    assert_eq!(body.locally_free, IDX_0, "the body-root cache is retained");
     assert_eq!(only_receive(&par).locally_free, CLOSED);
 }
 

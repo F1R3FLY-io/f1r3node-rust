@@ -10,10 +10,11 @@ use models::rhoapi::connective::ConnectiveInstance::{
 };
 use models::rhoapi::expr::ExprInstance::EPathmapBody;
 use models::rhoapi::{
-    Connective, ConnectiveBody, DeployId, DeployerId, EPathMap, ETuple, Expr, KeyValuePair, New,
-    PCost, Par, Receive, ReceiveBind, Send,
+    Bundle, Connective, ConnectiveBody, DeployId, DeployerId, EPathMap, ETuple, Expr, GUnforgeable,
+    If, KeyValuePair, Match, New, PCost, Par, Receive, ReceiveBind, Send,
 };
-use models::rust::rholang::match_path::{encode_match_path, encode_par_match_path};
+use models::rust::par_bag::ParBag;
+use models::rust::rholang::match_path::{encode_match_path, encode_par_match_atom};
 use models::rust::rholang::match_schema::{RhoPathCursor, RhoPathEvent};
 use models::rust::rholang::match_schema_tables::{ParCursor, RHO_MATCH_REGISTRY};
 use models::rust::utils::{
@@ -43,7 +44,7 @@ fn compare(label: &str, target: Par, pattern: Par) {
     if recursive_verdict {
         let mut captures = PathMap::new();
         if let Some(atom) = rho_path_query_atom(&pattern, &mut captures) {
-            let encoded_target = encode_par_match_path(&target);
+            let encoded_target = encode_par_match_atom(&target);
             let target_structure = encode_structural_sequence([encoded_target.as_slice()]);
             let query = RhoPathQuery::structural_sequence([atom], false);
             assert!(
@@ -64,25 +65,87 @@ fn cover_generated_query_root(
     root: ParCursor<'_>,
     observed: &mut BTreeSet<&'static str>,
     compiled: &mut usize,
+    pending_bag_components: &mut Vec<OwnedGeneratedQueryRoot>,
 ) {
     for event in RhoPathCursor::new(root) {
-        let RhoPathEvent::EnterNode { cursor, program } = event else {
-            continue;
-        };
-        observed.insert(program.type_name);
-        let encoded = encode_match_path(cursor);
-        let structure = encode_structural_sequence([encoded.as_slice()]);
-        let mut captures = PathMap::new();
-        let atom = rho_path_query_cursor_atom(cursor, true, &mut captures)
-            .unwrap_or_else(|| panic!("{case}/{}: exact cursor query", program.type_name));
-        let query = RhoPathQuery::structural_sequence([atom], false);
-        assert!(
-            query.matches_structure(&structure),
-            "{case}/{}: exact generated cursor identity",
-            program.type_name
-        );
-        *compiled += 1;
+        match event {
+            RhoPathEvent::EnterNode { cursor, program } => {
+                observed.insert(program.type_name);
+                let encoded = encode_match_path(cursor);
+                let structure = encode_structural_sequence([encoded.as_slice()]);
+                let mut captures = PathMap::new();
+                let atom = rho_path_query_cursor_atom(cursor, true, &mut captures)
+                    .unwrap_or_else(|| panic!("{case}/{}: exact cursor query", program.type_name));
+                let query = RhoPathQuery::structural_sequence([atom], false);
+                assert!(
+                    query.matches_structure(&structure),
+                    "{case}/{}: exact generated cursor identity",
+                    program.type_name
+                );
+                *compiled += 1;
+            }
+            RhoPathEvent::ParBag(bag) => {
+                enqueue_par_bag_components(bag, pending_bag_components);
+            }
+            _ => {}
+        }
     }
+}
+
+/// Owned roots decoded one endpoint at a time from an opaque ParBag event.
+/// RMP1 deliberately treats a ParBag as one compact token in production, but
+/// the generated-query coverage proof must still exercise every schema program
+/// hidden behind those tokens. This explicit heap queue follows that ownership
+/// boundary without reintroducing recursive test traversal or a retained
+/// component vector in production.
+enum OwnedGeneratedQueryRoot {
+    Send(Send),
+    Receive(Receive),
+    New(New),
+    Expr(Expr),
+    Match(Match),
+    Unforgeable(GUnforgeable),
+    Connective(Connective),
+    Bundle(Bundle),
+    If(If),
+}
+
+impl OwnedGeneratedQueryRoot {
+    fn cursor(&self) -> ParCursor<'_> {
+        match self {
+            Self::Send(value) => ParCursor::from(value),
+            Self::Receive(value) => ParCursor::from(value),
+            Self::New(value) => ParCursor::from(value),
+            Self::Expr(value) => ParCursor::from(value),
+            Self::Match(value) => ParCursor::from(value),
+            Self::Unforgeable(value) => ParCursor::from(value),
+            Self::Connective(value) => ParCursor::from(value),
+            Self::Bundle(value) => ParCursor::from(value),
+            Self::If(value) => ParCursor::from(value),
+        }
+    }
+}
+
+fn enqueue_par_bag_components(bag: &ParBag, pending: &mut Vec<OwnedGeneratedQueryRoot>) {
+    macro_rules! enqueue {
+        ($ty:ty, $variant:ident) => {
+            bag.try_visit_decoded::<$ty, std::convert::Infallible>(|value, _multiplicity| {
+                pending.push(OwnedGeneratedQueryRoot::$variant(value));
+                Ok(())
+            })
+            .expect("an authoritative ParBag contains canonical component keys");
+        };
+    }
+
+    enqueue!(Send, Send);
+    enqueue!(Receive, Receive);
+    enqueue!(New, New);
+    enqueue!(Expr, Expr);
+    enqueue!(Match, Match);
+    enqueue!(GUnforgeable, Unforgeable);
+    enqueue!(Connective, Connective);
+    enqueue!(Bundle, Bundle);
+    enqueue!(If, If);
 }
 
 #[test]
@@ -93,6 +156,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
         .collect::<BTreeSet<_>>();
     let mut observed = BTreeSet::new();
     let mut compiled = 0usize;
+    let mut pending_bag_components = Vec::new();
 
     for (case, par) in par_corpus::par_corpus() {
         cover_generated_query_root(
@@ -100,6 +164,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
             ParCursor::from(&par),
             &mut observed,
             &mut compiled,
+            &mut pending_bag_components,
         );
     }
     for (case, root) in par_corpus::list_par_with_random_corpus() {
@@ -108,6 +173,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
             ParCursor::from(&root),
             &mut observed,
             &mut compiled,
+            &mut pending_bag_components,
         );
     }
     for (case, root) in par_corpus::bind_pattern_corpus() {
@@ -116,6 +182,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
             ParCursor::from(&root),
             &mut observed,
             &mut compiled,
+            &mut pending_bag_components,
         );
     }
     for (case, root) in par_corpus::tagged_continuation_corpus() {
@@ -124,6 +191,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
             ParCursor::from(&root),
             &mut observed,
             &mut compiled,
+            &mut pending_bag_components,
         );
     }
     for (case, root) in par_corpus::par_with_random_corpus() {
@@ -132,6 +200,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
             ParCursor::from(&root),
             &mut observed,
             &mut compiled,
+            &mut pending_bag_components,
         );
     }
     for (case, root) in par_corpus::list_bind_patterns_corpus() {
@@ -140,6 +209,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
             ParCursor::from(&root),
             &mut observed,
             &mut compiled,
+            &mut pending_bag_components,
         );
     }
 
@@ -149,6 +219,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
         ParCursor::from(&cost),
         &mut observed,
         &mut compiled,
+        &mut pending_bag_components,
     );
     let deploy_id = DeployId::default();
     cover_generated_query_root(
@@ -156,6 +227,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
         ParCursor::from(&deploy_id),
         &mut observed,
         &mut compiled,
+        &mut pending_bag_components,
     );
     let deployer_id = DeployerId::default();
     cover_generated_query_root(
@@ -163,7 +235,19 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
         ParCursor::from(&deployer_id),
         &mut observed,
         &mut compiled,
+        &mut pending_bag_components,
     );
+
+    while let Some(root) = pending_bag_components.pop() {
+        let case = format!("ParBag/{}", root.cursor().program().type_name);
+        cover_generated_query_root(
+            &case,
+            root.cursor(),
+            &mut observed,
+            &mut compiled,
+            &mut pending_bag_components,
+        );
+    }
 
     assert_eq!(
         observed, expected,
@@ -192,6 +276,26 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
             true,
         ),
     );
+}
+
+#[test]
+fn declined_nonlinear_query_does_not_publish_speculative_captures() {
+    let repeated = list(
+        vec![
+            new_freevar_par(0, Vec::new()),
+            new_freevar_par(0, Vec::new()),
+        ],
+        true,
+    );
+    let mut captures = PathMap::new();
+    assert!(rho_path_query_atom(&repeated, &mut captures).is_none());
+    assert!(
+        captures.is_empty(),
+        "a declined query must roll back its speculative capture branch"
+    );
+
+    assert!(rho_path_query_atom(&new_freevar_par(0, Vec::new()), &mut captures).is_some());
+    assert_eq!(captures.val_count(), 1);
 }
 
 fn list(ps: Vec<Par>, connective_used: bool) -> Par {
@@ -928,9 +1032,10 @@ fn production_list_pda_reuses_adjacent_duplicate_bag_identity() {
     assert_eq!(stats.target_index_builds, 1);
     assert_eq!(stats.target_key_encodes, 1);
 
-    // AlwaysEqual deliberately ignores `locally_free`, while RMP1 retains it.
-    // The reuse guard must therefore use the generated, stack-safe total order
-    // rather than semantic equality or these two distinct trie keys collapse.
+    // AlwaysEqual and Par's semantic order deliberately ignore
+    // `locally_free`, while RMP1 and bincode identity retain it. The reuse
+    // guard must therefore use the generated CoW byte-identity proof or these
+    // two distinct trie keys collapse.
     let first = send_value(
         new_gint_par(7, Vec::new(), false),
         vec![new_gint_par(11, Vec::new(), false)],
@@ -943,7 +1048,7 @@ fn production_list_pda_reuses_adjacent_duplicate_bag_identity() {
         .expect("the Send channel exists")
         .locally_free = vec![1];
     assert_eq!(first, second);
-    assert_ne!(first.cmp(&second), std::cmp::Ordering::Equal);
+    assert_eq!(first.cmp(&second), std::cmp::Ordering::Equal);
 
     assert_eq!(send_target_index_shape(vec![first, second]), (2, 2));
 }

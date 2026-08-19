@@ -105,14 +105,13 @@ const ORACLE: &str = "rholang/tests/support/normalize_recursive.rs";
 ///
 /// Six narrowly mechanical deviations are required after merging the cited
 /// files. One disambiguates the two source files' different `Var` imports. The
-/// other five preserve the cited code's *destructive* cache transfers after
-/// `Par` gained a custom iterative `Drop`: move the whole `Par` first, then
-/// extract `locally_free` with `mem::take`, and finally move that emptied
-/// `Par` into its parent. Rust E0509 forbids the cited partial-field moves.
-///
-/// A clone-only spelling is not equivalent: it leaves a second cache inside
-/// the nested `Par` and changes canonical protobuf bytes. The differential
-/// gate caught exactly that error while this relocation was being validated.
+/// other five preserve the cited code's exact clone-then-read semantics after
+/// `Par` gained a custom iterative `Drop`, without recursively cloning a whole
+/// `Par`: shallow-copy the root `locally_free` bytes, then move the PathMap-
+/// backed `Par` into its parent. The cited parent received a full clone before
+/// metadata was consumed from the original, so the nested clone retained its
+/// metadata. Emptying the moved child with `mem::take` is therefore *not*
+/// equivalent and changes canonical protobuf bytes.
 ///
 /// Keeping this as a table rather than as a special case in the comparison has
 /// a specific purpose: a maintainer cannot quietly widen a deviation, or add a
@@ -131,24 +130,150 @@ const DECLARED_DEVIATIONS: &[Deviation] = &[
                  resolved to, so the block's meaning is unchanged.",
     },
     Deviation {
+        path: "normalizer/processes/p_send_normalizer.rs",
+        from: r#"            name_match_result.par.clone().locally_free(
+                name_match_result.par.clone(),
+                input.bound_map_chain.depth() as i32,
+            ),
+            acc.2,
+        ),
+        connective_used: name_match_result
+            .par
+            .connective_used(name_match_result.par.clone())
+            || acc.3,
+"#,
+        to: r#"            <Par as HasLocallyFree<Par>>::locally_free(
+                &name_match_result.par,
+                name_match_result.par.clone(),
+                input.bound_map_chain.depth() as i32,
+            ),
+            acc.2,
+        ),
+        connective_used: <Par as HasLocallyFree<Par>>::connective_used(
+            &name_match_result.par,
+            name_match_result.par.clone(),
+        )
+            || acc.3,
+"#,
+        reason: "`Par` now has zero-argument PathMap-backed metadata accessors with the same \
+                 names as the legacy consuming `HasLocallyFree` methods. UFCS selects the \
+                 cited trait operations explicitly without changing their inputs or results.",
+    },
+    Deviation {
+        path: "normalizer/processes/p_method_normalizer.rs",
+        from: r#"            target.locally_free(target.clone(), input.bound_map_chain.depth() as i32),
+            arg_results.2,
+        ),
+        connective_used: target.connective_used(target.clone()) || arg_results.3,
+"#,
+        to: r#"            <Par as HasLocallyFree<Par>>::locally_free(
+                &target,
+                target.clone(),
+                input.bound_map_chain.depth() as i32,
+            ),
+            arg_results.2,
+        ),
+        connective_used: <Par as HasLocallyFree<Par>>::connective_used(
+            &target,
+            target.clone(),
+        ) || arg_results.3,
+"#,
+        reason: "UFCS disambiguates the cited consuming metadata methods from the new \
+                 zero-argument PathMap-backed accessors; the receiver, clone, depth, and \
+                 returned metadata remain identical.",
+    },
+    Deviation {
+        path: "normalizer/processes/p_bundle_normalizer.rs",
+        from: "    let res = if !target_result.clone().par.connectives.is_empty() {",
+        to: "    let res = if target_result\n        .clone()\n        .par\n        .family_cardinality::<Connective>()\n        != 0\n    {",
+        reason: "authoritative `ParBag` removed the public `connectives` Vec. The family \
+                 cardinality query is exactly the former non-emptiness predicate while \
+                 remaining trie-native and avoiding a decoded projection.",
+    },
+    Deviation {
+        path: "normalizer/processes/p_if_normalizer.rs",
+        from: "    mut input: ProcVisitInputs,",
+        to: "    input: ProcVisitInputs,",
+        reason: "the cited parameter is never mutated. Removing the stale `mut` is a \
+                 compiler-facing binding annotation change only; ownership and values are \
+                 unchanged.",
+    },
+    Deviation {
+        path: "normalizer/processes/p_contr_normalizer.rs",
+        from: r#"            result.par.locally_free(
+                result.par.clone(),
+                (input.bound_map_chain.depth() + 1) as i32,
+            ),
+"#,
+        to: r#"            <Par as HasLocallyFree<Par>>::locally_free(
+                &result.par,
+                result.par.clone(),
+                (input.bound_map_chain.depth() + 1) as i32,
+            ),
+"#,
+        reason: "UFCS disambiguates the legacy consuming locally-free calculation from \
+                 `Par`'s zero-argument root-cache accessor without changing the operand or \
+                 binder depth.",
+    },
+    Deviation {
+        path: "normalizer/processes/p_input_normalizer.rs",
+        from: r#"                locally_free = union(
+                    locally_free,
+                    par.locally_free(par.clone(), input.bound_map_chain.depth() as i32),
+                );
+                connective_used = connective_used || par.clone().connective_used(par);
+"#,
+        to: r#"                locally_free = union(
+                    locally_free,
+                    <Par as HasLocallyFree<Par>>::locally_free(
+                        &par,
+                        par.clone(),
+                        input.bound_map_chain.depth() as i32,
+                    ),
+                );
+                connective_used = connective_used
+                    || <Par as HasLocallyFree<Par>>::connective_used(&par, par.clone());
+"#,
+        reason: "the receive-source fold uses UFCS to select the cited consuming metadata \
+                 methods after zero-argument Par accessors acquired the same names. Clone \
+                 placement changes only which equal owned value supplies the trait call.",
+    },
+    Deviation {
+        path: "normalizer/processes/p_input_normalizer.rs",
+        from: r#"                        locally_free = union(
+                            locally_free,
+                            par.locally_free(par.clone(), input.bound_map_chain.depth() as i32 + 1),
+                        );
+"#,
+        to: r#"                        locally_free = union(
+                            locally_free,
+                            <Par as HasLocallyFree<Par>>::locally_free(
+                                &par,
+                                par.clone(),
+                                input.bound_map_chain.depth() as i32 + 1,
+                            ),
+                        );
+"#,
+        reason: "the receive-pattern fold requires the same UFCS disambiguation at its \
+                 one-binder-deeper traversal; operand and depth are unchanged.",
+    },
+    Deviation {
         path: "normalizer/collection_normalize_matcher.rs",
         from: r#"            acc_pars.push(result.par.clone());
             result_known_free = result.free_map.clone();
             locally_free = union(locally_free, result.par.locally_free);
             connective_used = connective_used || result.par.connective_used;
 "#,
-        to: r#"            let mut result_par = result.par;
-            connective_used |= result_par.connective_used;
-            locally_free = union(
-                locally_free,
-                std::mem::take(&mut result_par.locally_free),
-            );
-            acc_pars.push(result_par);
+        to: r#"            let child_locally_free = result.par.locally_free.clone();
+            connective_used |= result.par.connective_used;
+            locally_free = union(locally_free, child_locally_free);
+            acc_pars.push(result.par);
             result_known_free = result.free_map;
 "#,
-        reason: "moving the whole normalized Par makes the cited destructive locally-free cache \
-                 transfer legal under custom Drop. `mem::take` preserves the cited state change: \
-                 the child inserted into the collection no longer retains a duplicate cache.",
+        reason: "the cited code cloned the child into the collection before consuming metadata \
+                 from the original, so the inserted child retained its cache. Shallow-copying \
+                 that root cache and moving the PathMap-backed Par preserves the exact bytes \
+                 without a recursive whole-Par clone.",
     },
     Deviation {
         path: "normalizer/collection_normalize_matcher.rs",
@@ -162,21 +287,20 @@ const DECLARED_DEVIATIONS: &[Deviation] = &[
                 || key_result.par.connective_used
                 || value_result.par.connective_used;
 "#,
-        to: r#"            let mut key_par = key_result.par;
-            let mut value_par = value_result.par;
-            connective_used |= key_par.connective_used || value_par.connective_used;
+        to: r#"            let key_locally_free = key_result.par.locally_free.clone();
+            let value_locally_free = value_result.par.locally_free.clone();
+            connective_used |=
+                key_result.par.connective_used || value_result.par.connective_used;
             locally_free = union(
                 locally_free,
-                union(
-                    std::mem::take(&mut key_par.locally_free),
-                    std::mem::take(&mut value_par.locally_free),
-                ),
+                union(key_locally_free, value_locally_free),
             );
-            acc_pairs.push((key_par, value_par));
+            acc_pairs.push((key_result.par, value_result.par));
             result_known_free = value_result.free_map;
 "#,
-        reason: "the two whole-Par moves plus `mem::take` preserve the cited map fold's \
-                 destructive cache transfer and ordering while remaining legal under custom Drop.",
+        reason: "the cited map fold cloned both children before consuming their originals. \
+                 Shallow-copying both root caches and moving the PathMap-backed children \
+                 preserves the nested bytes and ordering without recursive clones.",
     },
     Deviation {
         path: "normalizer/processes/p_new_normalizer.rs",
@@ -208,7 +332,7 @@ const DECLARED_DEVIATIONS: &[Deviation] = &[
         free_map: body_result.free_map.clone(),
     })
 "#,
-        to: r#"    let mut body_result = normalize_ann_proc_recursive(
+        to: r#"    let body_result = normalize_ann_proc_recursive(
         proc,
         ProcVisitInputs {
             par: Par::default(),
@@ -223,10 +347,8 @@ const DECLARED_DEVIATIONS: &[Deviation] = &[
     let btree_map: BTreeMap<String, Par> =
         env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
-    let body_locally_free = filter_and_adjust_bitset(
-        std::mem::take(&mut body_result.par.locally_free),
-        new_count,
-    );
+    let body_locally_free =
+        filter_and_adjust_bitset(body_result.par.locally_free.clone(), new_count);
     let result_new = New {
         bind_count: new_count as i32,
         p: Some(body_result.par),
@@ -240,9 +362,9 @@ const DECLARED_DEVIATIONS: &[Deviation] = &[
         free_map: body_result.free_map,
     })
 "#,
-        reason: "the body cache is transferred into `New::locally_free` and removed from the \
-                 nested body before that body is moved. This is byte-identical to the cited \
-                 partial move and legal for a Par with custom Drop.",
+        reason: "the cited code cloned the body into `New` before reading its root cache, so \
+                 the nested body retained that cache. A shallow cache clone plus whole-Par \
+                 move is byte-identical without recursively cloning the body.",
     },
     Deviation {
         path: "normalizer/processes/p_contr_normalizer.rs",
@@ -285,7 +407,7 @@ const DECLARED_DEVIATIONS: &[Deviation] = &[
         condition: None,
     };
 "#,
-        to: r#"    let mut body_result = normalize_ann_proc_recursive(
+        to: r#"    let body_result = normalize_ann_proc_recursive(
         body,
         ProcVisitInputs {
             par: Par::default(),
@@ -297,10 +419,8 @@ const DECLARED_DEVIATIONS: &[Deviation] = &[
     )?;
 
     let body_connective_used = body_result.par.connective_used;
-    let body_locally_free = filter_and_adjust_bitset(
-        std::mem::take(&mut body_result.par.locally_free),
-        bound_count,
-    );
+    let body_locally_free =
+        filter_and_adjust_bitset(body_result.par.locally_free.clone(), bound_count);
     let receive = Receive {
         binds: vec![ReceiveBind {
             patterns: init_acc.0.clone().into_iter().rev().collect(),
@@ -313,7 +433,8 @@ const DECLARED_DEVIATIONS: &[Deviation] = &[
         peek: false,
         bind_count: bound_count as i32,
         locally_free: union(
-            name_match_result.par.locally_free(
+            <Par as HasLocallyFree<Par>>::locally_free(
+                &name_match_result.par,
                 name_match_result.par.clone(),
                 input.bound_map_chain.depth() as i32,
             ),
@@ -322,15 +443,18 @@ const DECLARED_DEVIATIONS: &[Deviation] = &[
                 body_locally_free,
             ),
         ),
-        connective_used: name_match_result
-            .par
-            .connective_used(name_match_result.par.clone())
+        connective_used: <Par as HasLocallyFree<Par>>::connective_used(
+            &name_match_result.par,
+            name_match_result.par.clone(),
+        )
             || body_connective_used,
         condition: None,
     };
 "#,
-        reason: "the contract body cache and connective bit are read before the whole body Par is \
-                 moved into Receive. `mem::take` preserves the cited cache transfer exactly.",
+        reason: "the cited contract cloned the body into Receive before reading its metadata. \
+                 Reading the connective bit and shallow-cloning the cache before moving the \
+                 whole body preserves that exact nested representation. UFCS disambiguates \
+                 the legacy consuming trait methods from the new zero-argument accessors.",
     },
     Deviation {
         path: "normalizer/processes/p_input_normalizer.rs",
@@ -392,7 +516,7 @@ const DECLARED_DEVIATIONS: &[Deviation] = &[
             free_map: proc_visit_outputs.free_map,
         })
 "#,
-        to: r#"        let mut proc_visit_outputs = normalize_ann_proc_recursive(
+        to: r#"        let proc_visit_outputs = normalize_ann_proc_recursive(
             body,
             ProcVisitInputs {
                 par: Par::default(),
@@ -419,7 +543,7 @@ const DECLARED_DEVIATIONS: &[Deviation] = &[
             .unwrap_or(false);
 
         let body_connective_used = proc_visit_outputs.par.connective_used;
-        let body_locally_free = std::mem::take(&mut proc_visit_outputs.par.locally_free);
+        let body_locally_free = proc_visit_outputs.par.locally_free.clone();
 
         Ok(ProcVisitOutputs {
             par: input.par.clone().prepend_receive(Receive {
@@ -453,8 +577,9 @@ const DECLARED_DEVIATIONS: &[Deviation] = &[
             free_map: proc_visit_outputs.free_map,
         })
 "#,
-        reason: "the receive body cache is taken before the body Par is moved, preserving the \
-                 cited partial-move semantics and preventing a duplicate serialized cache.",
+        reason: "the cited receive cloned its body into the parent before consuming metadata \
+                 from the original, so the nested body retained its cache. Shallow-copying the \
+                 cache before the whole-Par move preserves the exact serialized form.",
     },
 ];
 
@@ -1005,6 +1130,154 @@ const PP_DEVIATIONS: &[Deviation] = &[
                  or key/value pairs, and returns the same element string consumed \
                  by the untouched pre-conversion remainder/bracketing logic. \
                  Appears twice — EPathmapBody and EZipperBody.",
+    },
+    // Authoritative ParBag replaced the eight public repeated fields. These
+    // adaptations preserve the copied printer's family order and per-family
+    // iteration while obtaining values from the trie-backed representation.
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: r#"                                Ok(par) => match par
+                                    .exprs
+                                    .first()
+                                    .and_then(|ex| ex.expr_instance.as_ref())
+"#,
+        to: r#"                                Ok(par) => match par
+                                    .first::<Expr>()
+                                    .ok()
+                                    .flatten()
+                                    .and_then(|(ex, multiplicity)| {
+                                        (multiplicity.get() == 1).then_some(ex.expr_instance)
+                                    })
+                                    .flatten()
+"#,
+        reason: "REPRESENTATION-FORCED. The historical branch required exactly one Expr \
+                 because it read `Vec::first` after decoding a one-element framed path. \
+                 The ParBag lookup selects the Expr family, requires multiplicity one, and \
+                 projects the same optional instance without reconstructing a Vec.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: r#"            let is_bound_new = match p.exprs.as_slice() {
+                [x] => match &x.expr_instance {
+                    Some(instance) => match instance {
+                        ExprInstance::EVarBody(EVar { v }) => match v {
+                            Some(v) => match &v.var_instance {
+                                Some(instance) => match instance {
+                                    VarInstance::BoundVar(level) => PrettyPrinter::is_new_var(
+                                        level,
+                                        news_shift_indices,
+                                        bound_shift,
+                                    ),
+                                    _ => false,
+                                },
+                                None => false,
+                            },
+                            None => false,
+                        },
+
+                        _ => false,
+                    },
+                    None => false,
+                },
+                _ => false,
+            };
+"#,
+        to: r#"            let expression = (p.family_cardinality::<Expr>() == 1)
+                .then(|| p.first::<Expr>().ok().flatten().map(|(expr, _)| expr))
+                .flatten();
+            let is_bound_new = match expression.as_ref() {
+                Some(x) => match &x.expr_instance {
+                    Some(instance) => match instance {
+                        ExprInstance::EVarBody(EVar { v }) => match v {
+                            Some(v) => match &v.var_instance {
+                                Some(instance) => match instance {
+                                    VarInstance::BoundVar(level) => PrettyPrinter::is_new_var(
+                                        level,
+                                        news_shift_indices,
+                                        bound_shift,
+                                    ),
+                                    _ => false,
+                                },
+                                None => false,
+                            },
+                            None => false,
+                        },
+
+                        _ => false,
+                    },
+                    None => false,
+                },
+                None => false,
+            };
+"#,
+        reason: "REPRESENTATION-FORCED. `[x]` meant cardinality exactly one in the Expr \
+                 family. The trie-native predicate and first lookup enforce the same condition \
+                 and feed the untouched bound-variable decision without allocating a Vec.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "                let mut result = String::new();\n\n                // Process bundles",
+        to: "                let mut result = String::new();\n                let bundles = p.decode_occurrences::<Bundle>();\n                let sends = p.decode_occurrences::<RhoSend>();\n                let receives = p.decode_occurrences::<Receive>();\n                let news = p.decode_occurrences::<New>();\n                let exprs = p.decode_occurrences::<Expr>();\n                let matches = p.decode_occurrences::<Match>();\n                let unforgeables = p.decode_occurrences::<GUnforgeable>();\n                let connectives = p.decode_occurrences::<Connective>();\n\n                // Process bundles",
+        reason: "REPRESENTATION-FORCED. Decode each authoritative ParBag family once, in the \
+                 historical family order, so the copied loop structure can retain its exact \
+                 separators and ordering. This is a presentation boundary; production storage \
+                 remains a trie and no Vec projection is persisted or serialized.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "p.bundles",
+        to: "bundles",
+        reason: "All three bundle-family reads use the one decoded presentation vector declared \
+                 immediately above; the loop, indices, and separators are unchanged.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "p.sends",
+        to: "sends",
+        reason: "All send-family reads use the one decoded presentation vector; iteration \
+                 semantics and family position are unchanged.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "p.receives",
+        to: "receives",
+        reason: "All receive-family reads use the one decoded presentation vector; iteration \
+                 semantics and family position are unchanged.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "p.news",
+        to: "news",
+        reason: "All New-family reads use the one decoded presentation vector; iteration \
+                 semantics and family position are unchanged.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "p.exprs",
+        to: "exprs",
+        reason: "All Expr-family reads use the one decoded presentation vector; multiplicities \
+                 are expanded exactly as the former repeated field represented them.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "p.matches",
+        to: "matches",
+        reason: "All Match-family reads use the one decoded presentation vector; iteration \
+                 semantics and family position are unchanged.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "p.unforgeables",
+        to: "unforgeables",
+        reason: "All unforgeable-family reads use the one decoded presentation vector; \
+                 iteration semantics and family position are unchanged.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "p.connectives",
+        to: "connectives",
+        reason: "All connective-family reads use the one decoded presentation vector; \
+                 iteration semantics and family position are unchanged.",
     },
     // ── GROUP 3: the SEMANTIC deviations, each marked at its own site ─────
     //

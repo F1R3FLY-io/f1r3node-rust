@@ -2838,6 +2838,18 @@ impl EPathMap {
     /// `clone()`ing it is a refcount bump.
     pub fn entry_trie(&self) -> &EntryTrie { &self.ps }
 
+    /// Conservative proof that two values retain the same immutable trie root
+    /// and the same enclosing wire metadata. [`EntryTrie::clone`] shares its
+    /// snapshot cell and every successful mutation replaces it; pointer
+    /// identity therefore avoids forcing either snapshot while remaining
+    /// sound. Independently constructed equal maps may return `false`.
+    pub fn shares_storage_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.ps.trie_snapshot, &other.ps.trie_snapshot)
+            && self.locally_free == other.locally_free
+            && self.connective_used == other.connective_used
+            && self.remainder == other.remainder
+    }
+
     pub fn representation(&self) -> &EPathMapRepr<Par> { self.ps.representation() }
 
     pub fn mode(&self) -> EPathMapMode { self.ps.mode() }
