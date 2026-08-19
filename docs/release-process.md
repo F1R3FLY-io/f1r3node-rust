@@ -1,7 +1,7 @@
 # Release Process and Deployment Train Strategy
 
 **Status:** Proposed for maintainer ratification  
-**Last updated:** 2026-08-16
+**Last updated:** 2026-08-19
 
 ## 1. Purpose
 
@@ -454,6 +454,32 @@ Implementation adds or changes these components.
 | `.github/deployment-trains/` | Store reviewed train manifests |
 
 Exact script boundaries can change after test design. The release invariants must not change without maintainer ratification.
+
+### 17.1 Workflow triggers and durations
+
+This table defines the target state after the Section 17 workflow changes are complete. The Basis column states whether time, an event, or an operator starts the workflow. Durations marked *measured* are medians of recent successful runs. Durations marked *estimated* have no run history yet.
+
+| Workflow | Trigger | Basis | Typical duration | Role |
+|---|---|---|---|---|
+| `ci.yml` | `push` (dev, master, tags), `pull_request`, `workflow_dispatch` | Event + manual | 25–65 min *measured*; approval gates and runner queues can extend wall time to hours | Full CI; publishes the immutable canary on release-eligible `master` runs |
+| `ci-fork-pr.yml` | `pull_request_target` (dev, master) | Event | Seconds, then the gated pipeline after maintainer approval | Fork lane into the gated pipeline |
+| `_integration-pipeline.yml` | `workflow_call` | Called by ci.yml and ci-fork-pr.yml | 35–50 min *measured* | Heavy pipeline: image build, ephemeral runners, integration matrix, smoke tests |
+| `merge-recovery-soak.yml` | `schedule` 02:30 and 03:30 UTC (self-suppressing fallback; the OCI Function scheduler is the primary dispatcher), `workflow_dispatch` | Time + manual | 22 h dev integration soak; 60 h stability soak; preflight-only runs cap at about 3 h | Runs both soaks; release-eligible runs use candidate artifact mode |
+| `soak-checkpoint-publish.yml` | `workflow_dispatch` from soak tooling | Tooling | About 1 min *measured* | Mid-run checkpoint publication |
+| `soak-dashboard-pages.yml` | `push` to master (dashboard paths), `workflow_dispatch` | Event + manual | 1–2 min *measured* | Dashboard shell redeploys |
+| `soak-preflight-status.yml`, `soak-signal.yml` | `workflow_dispatch` | Tooling + manual | About 1 min *measured* | Preflight status and operator signals |
+| `oci-validation.yml` | `workflow_dispatch` (pull-request mode and trusted exact-candidate mode) | Manual | 1–3 h *estimated*; the OCI daily VM quota can defer a run one day | Full OCI validation |
+| `reusable-oci-validation.yml` | `workflow_call` | Called by oci-validation.yml | Contained in the caller duration | OCI validation implementation; consumes the candidate digest |
+| `slashing-tests.yml` | `push`, `pull_request`, `schedule` 06:30 UTC daily, `workflow_dispatch` | Event + time + manual | 10–15 min *measured*; the nightly exhaustive tier exceeds 20 min | Slashing suite |
+| `release-evidence.yml` | `workflow_dispatch` (ci_run_id) | Manual | 10–20 min *estimated* (30-min cap) | Exact-run candidate evidence |
+| `release.yml` | `workflow_dispatch`; promotion resumes automatically after a missing gate completes | Manual start, automatic resume | 5–15 min *estimated* (no builds; copy and verify only) | Exact-candidate stable promotion |
+| `soak-in.yml` | `release` (stable tag published), `workflow_dispatch` | Event (one enrollment per stable release) + manual | Enrollment takes minutes; the soak-in period itself runs in the quorum, not in Actions | Shard soak-in enrollment |
+| `deployment-train.yml` | `workflow_dispatch` (manifest path) | Manual | Minutes for setup *estimated*; the started gates run in their own workflows | Train validation and setup |
+| `testbed-quality-gate.yml` | `workflow_dispatch`, including dispatch from train manifest gates | Manual + tooling | No measured runs | Feature-specific train gate |
+| `deny-schedule.yml` | `schedule` Mondays 06:00 UTC, `workflow_dispatch` | Time + manual | About 1 min *measured* | Weekly advisory sweep |
+| `ci-runner-reaper.yml` | `schedule` every 30 min, `workflow_dispatch` | Time + manual | 1–2 min *measured* | Ephemeral-runner leak reaper |
+
+Only the soak, the slashing nightly tier, the advisory sweep, and the reaper are time-based. The release chain is manual through Phase 1 and gains its event triggers in later phases. The `deployment-train.yml` row will be updated after its initial runs produce measured durations.
 
 ## 18. Migration plan
 
