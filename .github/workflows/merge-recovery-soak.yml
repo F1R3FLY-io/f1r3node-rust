@@ -25,7 +25,7 @@ on:
         default: dev
         type: string
       duration:
-        description: Requested soak duration (ignored when window_end_epoch is set)
+        description: Requested soak duration; weekend-60h is the 60h stability soak, daily-24h the dev integration soak (ignored when window_end_epoch is set)
         required: true
         default: daily-24h
         type: choice
@@ -49,8 +49,8 @@ on:
         type: string
       series:
         description: >-
-          Restart mode: which published series (daily | weekend) the run
-          belongs to. Required alongside window_end_epoch — a remainder span
+          Restart mode: which published series the run belongs to (daily =
+          dev integration soak | weekend = 60h stability soak). Required alongside window_end_epoch — a remainder span
           no longer identifies the series by duration.
         required: false
         default: ""

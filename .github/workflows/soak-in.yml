@@ -1,6 +1,6 @@
-name: Soak-in Enrollment
+name: Shard Soak-in Enrollment
 
-run-name: Soak-in Enrollment [${{ inputs.stable_tag }}]
+run-name: Shard Soak-in Enrollment [${{ inputs.stable_tag }}]
 
 on:
   workflow_dispatch:
@@ -14,7 +14,7 @@ permissions: {}
 
 jobs:
   held:
-    name: Soak-in Enrollment Held
+    name: Shard Soak-in Enrollment Held
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -34,12 +34,12 @@ jobs:
         shell: bash -euo pipefail {0}
         run: |
           {
-            echo "### Soak-in enrollment is held"
+            echo "### Shard soak-in enrollment is held"
             echo
             echo "The requested stable tag has a valid format: \`$STABLE_TAG\`."
             echo
-            echo "The Soak-in quorum infrastructure is not provisioned yet."
-            echo "docs/release-process.md section 12 defines the Soak-in phase."
+            echo "The Shard soak-in quorum infrastructure is not provisioned yet."
+            echo "docs/release-process.md section 12 defines the Shard soak-in phase."
             echo "Section 18 Phase 6 defines the enrollment migration steps."
             echo "This workflow did not deploy a node, change a quorum, or grant an Anchor role."
           } >> "$GITHUB_STEP_SUMMARY"
