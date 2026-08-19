@@ -225,10 +225,10 @@ fn par_should_use_sorted_subtrees_and_their_scores_in_results() {
         ParSortMatcher::sort_match(&p12).term,
         "p12 is not returned as sorted itself"
     );
-    assert_ne!(
+    assert_eq!(
         p21,
         ParSortMatcher::sort_match(&p21).term,
-        "p21 is returned as sorted itself"
+        "PathMap-backed Par construction must already canonicalize sibling order"
     );
 
     assert_eq!(

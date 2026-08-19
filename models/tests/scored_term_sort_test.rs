@@ -161,21 +161,12 @@ fn scored_term_should_sort_so_that_smaller_nodes_are_put_first() {
 // ===========================================================================
 //
 // Three tests used to live here. Each asserted, in different words, the
-// **iff**
-//
-//     sort_match(x).term == sort_match(y).term   ⟺   x == y
-//
-// and each was driven by five draws from `generate_*(2)`. The forward
-// direction is true and is exactly what consensus needs. **The reverse
-// direction is false**, and directly so:
-//
-//     Par { exprs: [GInt 1, GInt 2] }  ≠  Par { exprs: [GInt 2, GInt 1] }
-//
-// — `Par`'s derived `PartialEq` compares `exprs` as an *ordered* `Vec` — yet
-// the two sort to **equal terms with equal scores**, because putting siblings
-// into canonical order is the sorter's entire job. That is not a defect; it is
-// the definition of a canonical form, and `reduce.rs` relies on it (two
-// permuted `Par`s must COMM-match interchangeably).
+// **iff** between raw generated component order and canonical output. Since
+// `Par` became an authoritative `ParBag`, construction itself canonicalizes
+// commutative siblings: the old raw repeated-field witness no longer exists.
+// This is intentional. Equal processes now compare equal before the legacy
+// sorter is entered, while the sorter remains the compatibility normalizer for
+// component types whose public constructors can still carry source order.
 //
 // The old tests passed only because two independent draws are unlikely to be
 // permutations of one another — and after Leg-2 Stage A fixed
@@ -583,7 +574,7 @@ fn equal_canonical_terms_carry_equal_scores() {
 /// *for*: it is why `@x!(1 | 2)` and `@x!(2 | 1)` are the same process, and
 /// why two structurally-permuted `Par`s COMM-match interchangeably.
 #[test]
-fn the_sorter_is_a_normalizer_and_is_therefore_not_injective() {
+fn pathmap_backed_par_canonicalizes_permutations_at_construction() {
     let ascending = models::par_from_default! {
         exprs: vec![
             Expr {
@@ -607,10 +598,9 @@ fn the_sorter_is_a_normalizer_and_is_therefore_not_injective() {
         ..Default::default()
     };
 
-    assert_ne!(
+    assert_eq!(
         ascending, descending,
-        "`Par`'s derived PartialEq compares `exprs` as an ORDERED Vec, so these two must be \
-         unequal — the whole point of the witness"
+        "PathMap-backed Par equality must identify commutative sibling permutations"
     );
 
     let a = ParSortMatcher::sort_match(&ascending);
@@ -627,8 +617,8 @@ fn the_sorter_is_a_normalizer_and_is_therefore_not_injective() {
     );
 
     // The same statement at the level the sorter's own comparator sees: the
-    // comparator returns `Equal` for these, which is exactly why `sort_vec`
-    // must stay a STABLE sort (`sort_by`, never `sort_unstable_by`).
+    // comparator returns `Equal` for these because they are already the same
+    // canonical ParBag value.
     assert_eq!(
         compare_score(&a.score, &d.score),
         std::cmp::Ordering::Equal,
@@ -664,7 +654,10 @@ fn permutation_collapse_survives_nesting() {
         ..Default::default()
     });
 
-    assert_ne!(ascending, shuffled);
+    assert_eq!(
+        ascending, shuffled,
+        "nested PathMap-backed Par construction must canonicalize permutations"
+    );
     let a = ParSortMatcher::sort_match(&ascending);
     let s = ParSortMatcher::sort_match(&shuffled);
     assert!(

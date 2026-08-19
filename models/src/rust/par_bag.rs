@@ -1049,10 +1049,43 @@ fn score_node_start_is(actual: &[u8], at: &mut usize, constructor: i32) -> bool 
 /// zero, and a non-matching shape falls through to the complete generated
 /// validator. `Some(false)` means the protobuf is this exact canonical spine
 /// but its claimed score key is noncanonical.
-fn canonical_unary_elist(payload: &[u8]) -> Option<(usize, i64)> {
-    // Expr.e_list_body = field 20, wire type 2; EList.ps = field 1, wire type
-    // 2; Par.exprs = field 5, wire type 2.
-    const EXPR_ELIST_KEY: u64 = (20 << 3) | 2;
+#[derive(Clone, Copy)]
+enum CanonicalUnaryOrderedKind {
+    EList,
+    ETuple,
+}
+
+impl CanonicalUnaryOrderedKind {
+    const fn expr_key(self) -> u64 {
+        let tag = match self {
+            Self::EList => 20,
+            Self::ETuple => 21,
+        };
+        (tag << 3) | 2
+    }
+
+    const fn expr_tag(self) -> u32 {
+        match self {
+            Self::EList => 20,
+            Self::ETuple => 21,
+        }
+    }
+
+    const fn score(self) -> i32 {
+        match self {
+            Self::EList => Score::ELIST,
+            Self::ETuple => Score::ETUPLE,
+        }
+    }
+}
+
+fn canonical_unary_ordered_expr(
+    payload: &[u8],
+    kind: CanonicalUnaryOrderedKind,
+) -> Option<(usize, i64)> {
+    // EList.ps and ETuple.ps are both field 1, wire type 2; Par.exprs is
+    // field 5, wire type 2. The exact single-field parser also proves that
+    // collection metadata and the EList remainder are absent.
     const ELIST_PAR_KEY: u64 = (1 << 3) | 2;
     const PAR_EXPR_KEY: u64 = (5 << 3) | 2;
     const EXPR_GINT_KEY: u64 = 2 << 3;
@@ -1064,10 +1097,43 @@ fn canonical_unary_elist(payload: &[u8]) -> Option<(usize, i64)> {
             let value = ((zigzag >> 1) as i64) ^ -((zigzag & 1) as i64);
             return Some((depth, value));
         }
-        let list = canonical_single_delimited_field(current, EXPR_ELIST_KEY)?;
+        let list = canonical_single_delimited_field(current, kind.expr_key())?;
         let par = canonical_single_delimited_field(list, ELIST_PAR_KEY)?;
         current = canonical_single_delimited_field(par, PAR_EXPR_KEY)?;
         depth = depth.checked_add(1)?;
+    }
+}
+
+fn canonical_unary_elist(payload: &[u8]) -> Option<(usize, i64)> {
+    canonical_unary_ordered_expr(payload, CanonicalUnaryOrderedKind::EList)
+}
+
+fn canonical_unary_etuple(payload: &[u8]) -> Option<(usize, i64)> {
+    canonical_unary_ordered_expr(payload, CanonicalUnaryOrderedKind::ETuple)
+}
+
+/// Recognize an exact canonical `ENot(Par(ENot(...)))` spine ending in the
+/// empty `Par`, directly in the protobuf body of its outer `Expr`.
+///
+/// `ENot` cannot be used as a canonical PathMap path, so this recognizer does
+/// not claim stability. Its purpose is narrower: the resident `ParBag` stores
+/// the complete outer Expr as one endpoint, and need not construct, hash, and
+/// dismantle every recursively nested suffix merely to reach that state.
+fn canonical_unary_enot(payload: &[u8]) -> Option<usize> {
+    const EXPR_ENOT_KEY: u64 = (5 << 3) | 2;
+    const ENOT_PAR_KEY: u64 = (1 << 3) | 2;
+    const PAR_EXPR_KEY: u64 = (5 << 3) | 2;
+
+    let mut current = payload;
+    let mut depth = 0usize;
+    loop {
+        let enot = canonical_single_delimited_field(current, EXPR_ENOT_KEY)?;
+        let child_par = canonical_single_delimited_field(enot, ENOT_PAR_KEY)?;
+        depth = depth.checked_add(1)?;
+        if child_par.is_empty() {
+            return Some(depth);
+        }
+        current = canonical_single_delimited_field(child_par, PAR_EXPR_KEY)?;
     }
 }
 
@@ -1078,8 +1144,11 @@ fn canonical_unary_elist(payload: &[u8]) -> Option<(usize, i64)> {
 /// inward.  This is the same two-pass discipline as the generated protobuf
 /// encoder, specialized to the three-field recurrence in this shape; no
 /// intermediate nested `Par` or component trie is constructed.
-fn encode_canonical_unary_elist_expr(depth: usize, terminal: i64) -> Option<Vec<u8>> {
-    const EXPR_ELIST_TAG: u32 = 20;
+fn encode_canonical_unary_ordered_expr(
+    kind: CanonicalUnaryOrderedKind,
+    depth: usize,
+    terminal: i64,
+) -> Option<Vec<u8>> {
     const ELIST_PAR_TAG: u32 = 1;
     const PAR_EXPR_TAG: u32 = 5;
     const EXPR_GINT_TAG: u32 = 2;
@@ -1095,7 +1164,7 @@ fn encode_canonical_unary_elist_expr(depth: usize, terminal: i64) -> Option<Vec<
         let list_len = key_len(ELIST_PAR_TAG)
             .checked_add(encoded_len_varint(par_len as u64))?
             .checked_add(par_len)?;
-        expr_len = key_len(EXPR_ELIST_TAG)
+        expr_len = key_len(kind.expr_tag())
             .checked_add(encoded_len_varint(list_len as u64))?
             .checked_add(list_len)?;
         frames.push((list_len, par_len, child_expr_len));
@@ -1103,7 +1172,7 @@ fn encode_canonical_unary_elist_expr(depth: usize, terminal: i64) -> Option<Vec<
 
     let mut out = Vec::with_capacity(expr_len);
     for &(list_len, par_len, child_expr_len) in frames.iter().rev() {
-        encode_key(EXPR_ELIST_TAG, WireType::LengthDelimited, &mut out);
+        encode_key(kind.expr_tag(), WireType::LengthDelimited, &mut out);
         prost::encoding::encode_varint(list_len as u64, &mut out);
         encode_key(ELIST_PAR_TAG, WireType::LengthDelimited, &mut out);
         prost::encoding::encode_varint(par_len as u64, &mut out);
@@ -1116,13 +1185,26 @@ fn encode_canonical_unary_elist_expr(depth: usize, terminal: i64) -> Option<Vec<
     Some(out)
 }
 
+fn encode_canonical_unary_elist_expr(depth: usize, terminal: i64) -> Option<Vec<u8>> {
+    encode_canonical_unary_ordered_expr(CanonicalUnaryOrderedKind::EList, depth, terminal)
+}
+
+fn encode_canonical_unary_etuple_expr(depth: usize, terminal: i64) -> Option<Vec<u8>> {
+    encode_canonical_unary_ordered_expr(CanonicalUnaryOrderedKind::ETuple, depth, terminal)
+}
+
 /// Adopt one already-proved canonical unary `EList` expression as the sole
 /// endpoint of a `ParBag`.
 ///
 /// The score and protobuf body are written directly into the final trie key.
 /// This avoids the quadratic sequence of constructing, hashing, and dropping
 /// every nested suffix trie while preserving the exact `RPB\x03` key language.
-fn import_canonical_unary_elist_expr(expr_body: &[u8], depth: usize, terminal: i64) -> Option<Par> {
+fn import_canonical_unary_ordered_expr(
+    expr_body: &[u8],
+    kind: CanonicalUnaryOrderedKind,
+    depth: usize,
+    terminal: i64,
+) -> Option<Par> {
     let score_capacity = 32usize.checked_add(depth.checked_mul(44)?)?;
     let mut key = Vec::with_capacity(
         PAR_BAG_KEY_HEADER_LEN
@@ -1133,8 +1215,10 @@ fn import_canonical_unary_elist_expr(expr_body: &[u8], depth: usize, terminal: i
     key.extend_from_slice(&component_prefix(ParComponentTag::Expr));
     let score_start = key.len();
     for _ in 0..depth {
-        begin_score_node(&mut key, Score::ELIST);
-        append_int_score_atom(&mut key, -1);
+        begin_score_node(&mut key, kind.score());
+        if matches!(kind, CanonicalUnaryOrderedKind::EList) {
+            append_int_score_atom(&mut key, -1);
+        }
         begin_score_node(&mut key, Score::PAR);
     }
     begin_score_node(&mut key, Score::INT);
@@ -1158,6 +1242,77 @@ fn import_canonical_unary_elist_expr(expr_body: &[u8], depth: usize, terminal: i
     Some(Par::from_parts(components, Vec::new(), false))
 }
 
+fn import_canonical_unary_elist_expr(expr_body: &[u8], depth: usize, terminal: i64) -> Option<Par> {
+    import_canonical_unary_ordered_expr(
+        expr_body,
+        CanonicalUnaryOrderedKind::EList,
+        depth,
+        terminal,
+    )
+}
+
+fn import_canonical_unary_etuple_expr(
+    expr_body: &[u8],
+    depth: usize,
+    terminal: i64,
+) -> Option<Par> {
+    import_canonical_unary_ordered_expr(
+        expr_body,
+        CanonicalUnaryOrderedKind::ETuple,
+        depth,
+        terminal,
+    )
+}
+
+/// Write the complete authoritative ParBag key for one already-proved
+/// canonical unary `ENot` expression, without constructing its suffix Pars.
+fn canonical_unary_enot_key(expr_body: &[u8], depth: usize) -> Option<Vec<u8>> {
+    (depth != 0).then_some(())?;
+    let score_capacity = 24usize.checked_add(depth.checked_mul(34)?)?;
+    let mut key = Vec::with_capacity(
+        PAR_BAG_KEY_HEADER_LEN
+            .checked_add(score_capacity)?
+            .checked_add(expr_body.len())?
+            .checked_add(PAR_BAG_SCORE_LEN_BYTES)?,
+    );
+    key.extend_from_slice(&component_prefix(ParComponentTag::Expr));
+    let score_start = key.len();
+
+    // Each ENot score contains its child Par score. The deepest child is the
+    // empty Par; every outer child Par additionally contains the next ENot
+    // occurrence before its connective-used flag.
+    for _ in 0..depth {
+        begin_score_node(&mut key, Score::ENOT);
+        begin_score_node(&mut key, Score::PAR);
+    }
+    append_int_score_atom(&mut key, 0);
+    end_score_node(&mut key);
+    for level in 0..depth {
+        end_score_node(&mut key);
+        if level + 1 < depth {
+            append_int_score_atom(&mut key, 0);
+            end_score_node(&mut key);
+        }
+    }
+
+    let score_len = u64::try_from(key.len().checked_sub(score_start)?)
+        .expect("one allocated canonical score length fits in u64");
+    key.extend_from_slice(expr_body);
+    key.extend_from_slice(&score_len.to_be_bytes());
+    Some(key)
+}
+
+/// Adopt one already-proved canonical unary `ENot` expression as the sole
+/// endpoint of a `ParBag`, without constructing its nested suffix Pars.
+fn import_canonical_unary_enot_expr(expr_body: &[u8], depth: usize) -> Option<Par> {
+    let key = canonical_unary_enot_key(expr_body, depth)?;
+    let mut components = ParBag::new();
+    components
+        .insert_bytes(ParComponentTag::Expr, &key, Multiplicity::ONE, Some(false))
+        .expect("one validated singleton component cannot overflow multiplicity");
+    Some(Par::from_parts(components, Vec::new(), false))
+}
+
 /// Construct the resident canonical unary-list `Par` directly from its two
 /// scalar parameters.  Canonical-path decoding uses this after its byte cursor
 /// has proved the structural path image.
@@ -1166,15 +1321,72 @@ pub(crate) fn import_canonical_unary_elist_par(depth: usize, terminal: i64) -> O
     import_canonical_unary_elist_expr(&expr_body, depth, terminal)
 }
 
+pub(crate) fn import_canonical_unary_etuple_par(depth: usize, terminal: i64) -> Option<Par> {
+    let expr_body = encode_canonical_unary_etuple_expr(depth, terminal)?;
+    import_canonical_unary_etuple_expr(&expr_body, depth, terminal)
+}
+
 fn validate_unary_elist_key(score: &[u8], payload: &[u8]) -> Option<bool> {
-    let (depth, terminal) = canonical_unary_elist(payload)?;
+    validate_unary_ordered_key(
+        score,
+        payload,
+        CanonicalUnaryOrderedKind::EList,
+        canonical_unary_elist,
+    )
+}
+
+fn validate_unary_etuple_key(score: &[u8], payload: &[u8]) -> Option<bool> {
+    validate_unary_ordered_key(
+        score,
+        payload,
+        CanonicalUnaryOrderedKind::ETuple,
+        canonical_unary_etuple,
+    )
+}
+
+fn validate_unary_enot_key(score: &[u8], payload: &[u8]) -> Option<bool> {
+    let depth = canonical_unary_enot(payload)?;
+    let mut at = 0usize;
+    for _ in 0..depth {
+        if !score_node_start_is(score, &mut at, Score::ENOT)
+            || !score_node_start_is(score, &mut at, Score::PAR)
+        {
+            return Some(false);
+        }
+    }
+    if !score_int_is(score, &mut at, 0) || !score_segment_is(score, &mut at, &[0]) {
+        return Some(false);
+    }
+    for level in 0..depth {
+        if !score_segment_is(score, &mut at, &[0]) {
+            return Some(false);
+        }
+        if level + 1 < depth
+            && (!score_int_is(score, &mut at, 0) || !score_segment_is(score, &mut at, &[0]))
+        {
+            return Some(false);
+        }
+    }
+    Some(at == score.len())
+}
+
+fn validate_unary_ordered_key(
+    score: &[u8],
+    payload: &[u8],
+    kind: CanonicalUnaryOrderedKind,
+    recognize: fn(&[u8]) -> Option<(usize, i64)>,
+) -> Option<bool> {
+    let (depth, terminal) = recognize(payload)?;
 
     let mut at = 0usize;
     for _ in 0..depth {
-        if !score_node_start_is(score, &mut at, Score::ELIST)
-            || !score_int_is(score, &mut at, -1)
-            || !score_node_start_is(score, &mut at, Score::PAR)
-        {
+        if !score_node_start_is(score, &mut at, kind.score()) {
+            return Some(false);
+        }
+        if matches!(kind, CanonicalUnaryOrderedKind::EList) && !score_int_is(score, &mut at, -1) {
+            return Some(false);
+        }
+        if !score_node_start_is(score, &mut at, Score::PAR) {
             return Some(false);
         }
     }
@@ -1397,9 +1609,21 @@ pub(crate) fn import_canonical_parbag_fast_path(protobuf: &[u8]) -> Option<Par> 
         let (depth, terminal) = canonical_unary_elist(expr_body)?;
         import_canonical_unary_elist_expr(expr_body, depth, terminal)
     };
+    let unary_tuple = || {
+        let expr_body = canonical_single_delimited_field(protobuf, PAR_EXPR_KEY)?;
+        let (depth, terminal) = canonical_unary_etuple(expr_body)?;
+        import_canonical_unary_etuple_expr(expr_body, depth, terminal)
+    };
+    let unary_not = || {
+        let expr_body = canonical_single_delimited_field(protobuf, PAR_EXPR_KEY)?;
+        let depth = canonical_unary_enot(expr_body)?;
+        import_canonical_unary_enot_expr(expr_body, depth)
+    };
 
     import_canonical_singleton_epathmap_par(protobuf)
         .or_else(unary)
+        .or_else(unary_tuple)
+        .or_else(unary_not)
         .or_else(|| import_canonical_singleton_eset_unary_elist_par(protobuf))
 }
 
@@ -1427,6 +1651,18 @@ fn validate_key(path: &[u8]) -> Result<(ParComponentTag, usize, bool), ParBagCod
         if let Some(matches) = validate_unary_elist_key(score, payload) {
             if matches {
                 return Ok((tag, payload.len(), true));
+            }
+            return Err(ParBagCodecError::NonCanonicalComponent { tag });
+        }
+        if let Some(matches) = validate_unary_etuple_key(score, payload) {
+            if matches {
+                return Ok((tag, payload.len(), true));
+            }
+            return Err(ParBagCodecError::NonCanonicalComponent { tag });
+        }
+        if let Some(matches) = validate_unary_enot_key(score, payload) {
+            if matches {
+                return Ok((tag, payload.len(), false));
             }
             return Err(ParBagCodecError::NonCanonicalComponent { tag });
         }
@@ -1500,6 +1736,12 @@ impl EncodedParComponent<'_, Expr> {
     /// image without decoding any suffix `ParBag`.
     pub(crate) fn canonical_unary_elist_parts(self) -> Option<(usize, i64)> {
         canonical_unary_elist(self.payload)
+    }
+
+    /// Return both scalar parameters of the exact canonical unary-tuple shape
+    /// without decoding any nested ParBag suffix.
+    pub(crate) fn canonical_unary_etuple_parts(self) -> Option<(usize, i64)> {
+        canonical_unary_etuple(self.payload)
     }
 }
 
@@ -1947,6 +2189,22 @@ impl ParBag {
     #[inline]
     pub fn count_key<T: ParBagComponent>(&self, key: &CanonicalParBagKey<T>) -> u64 {
         self.components.count(key.as_bytes())
+    }
+
+    /// Merge an exact canonical Expr protobuf body through a byte-native
+    /// specialization when one is available. `None` means the caller must use
+    /// the complete generated semantic decoder; `Some` has consumed no input
+    /// but reports the authoritative Bag insertion result.
+    pub(crate) fn insert_canonical_expr_protobuf_fast_path(
+        &mut self,
+        expr_body: &[u8],
+    ) -> Option<Result<(), BagError>> {
+        let depth = canonical_unary_enot(expr_body)?;
+        let key = canonical_unary_enot_key(expr_body, depth)?;
+        Some(
+            self.insert_bytes(ParComponentTag::Expr, &key, Multiplicity::ONE, Some(false))
+                .map(|_| ()),
+        )
     }
 
     pub fn insert<T: ParBagComponent>(&mut self, value: &T) -> Result<Multiplicity, BagError> {
@@ -2719,6 +2977,42 @@ mod fast_key_tests {
             .expect("the outer Par contains exactly one Expr")
     }
 
+    fn unary_etuple_expr(depth: usize, terminal: i64) -> Expr {
+        let mut current = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(terminal)),
+        }]);
+        for _ in 0..depth {
+            current = Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::ETupleBody(crate::rhoapi::ETuple {
+                    ps: vec![current],
+                    ..crate::rhoapi::ETuple::default()
+                })),
+            }]);
+        }
+        current
+            .decode_occurrences::<Expr>()
+            .into_iter()
+            .next()
+            .expect("the outer Par contains exactly one Expr")
+    }
+
+    fn unary_enot_expr(depth: usize) -> Expr {
+        assert_ne!(depth, 0, "a unary ENot spine contains at least one arm");
+        let mut current = Par::default();
+        for _ in 0..depth {
+            current = Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::ENotBody(crate::rhoapi::ENot {
+                    p: Some(current),
+                })),
+            }]);
+        }
+        current
+            .decode_occurrences::<Expr>()
+            .into_iter()
+            .next()
+            .expect("the outer Par contains exactly one Expr")
+    }
+
     #[test]
     fn byte_native_unary_elist_validator_accepts_its_exact_canonical_key() {
         for terminal in [i64::MIN, -1, 0, 1, i64::MAX] {
@@ -2777,6 +3071,59 @@ mod fast_key_tests {
                     Some(true)
                 );
             }
+        }
+    }
+
+    #[test]
+    fn direct_unary_etuple_import_is_byte_score_and_term_identical() {
+        for depth in [1, 32, 256] {
+            for terminal in [i64::MIN, -1, 0, 1, i64::MAX] {
+                let value = unary_etuple_expr(depth, terminal);
+                with_component_key(&value, |key| {
+                    let (tag, score, payload) = split_key_parts(key).expect("canonical tuple key");
+                    assert_eq!(tag, ParComponentTag::Expr);
+                    assert_eq!(validate_unary_etuple_key(score, payload), Some(true));
+                });
+                let expected = Par::default().with_exprs(vec![value]);
+                let protobuf = protobuf_encoder::encode_to_vec(&expected);
+
+                let from_protobuf = import_canonical_parbag_fast_path(&protobuf)
+                    .expect("the canonical unary-tuple protobuf shape is imported");
+                let direct = import_canonical_unary_etuple_par(depth, terminal)
+                    .expect("the scalar unary-tuple parameters are representable");
+
+                assert_eq!(from_protobuf, expected);
+                assert_eq!(direct, expected);
+                assert_eq!(protobuf_encoder::encode_to_vec(&from_protobuf), protobuf);
+                assert_eq!(protobuf_encoder::encode_to_vec(&direct), protobuf);
+                assert_eq!(
+                    direct.components().cached_canonical_path_stability(),
+                    Some(true)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn direct_unary_enot_import_is_byte_score_and_term_identical() {
+        for depth in [1, 32, 256] {
+            let value = unary_enot_expr(depth);
+            with_component_key(&value, |key| {
+                let (tag, score, payload) = split_key_parts(key).expect("canonical ENot key");
+                assert_eq!(tag, ParComponentTag::Expr);
+                assert_eq!(validate_unary_enot_key(score, payload), Some(true));
+            });
+            let expected = Par::default().with_exprs(vec![value]);
+            let protobuf = protobuf_encoder::encode_to_vec(&expected);
+            let imported = import_canonical_parbag_fast_path(&protobuf)
+                .expect("the canonical unary-ENot protobuf shape is imported");
+
+            assert_eq!(imported, expected);
+            assert_eq!(protobuf_encoder::encode_to_vec(&imported), protobuf);
+            assert_eq!(
+                imported.components().cached_canonical_path_stability(),
+                Some(false)
+            );
         }
     }
 

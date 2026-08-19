@@ -103,6 +103,15 @@ impl Par {
         insert_component(&mut self.components, value)
     }
 
+    fn merge_canonical_expr_protobuf_fast_path(
+        &mut self,
+        expr_body: &[u8],
+    ) -> Option<Result<(), DecodeError>> {
+        self.components
+            .insert_canonical_expr_protobuf_fast_path(expr_body)
+            .map(|result| result.map_err(|error| par_decode_error(error.to_string())))
+    }
+
     pub(crate) fn merge_protobuf_locally_free<B: Buf>(
         &mut self,
         wire_type: WireType,
@@ -849,7 +858,19 @@ impl Message for Par {
                 crate::rust::rholang::protobuf_decoder::decode_receive
             ),
             4 => merge_component!(New, crate::rust::rholang::protobuf_decoder::decode_new),
-            5 => merge_component!(Expr, crate::rust::rholang::protobuf_decoder::decode_expr),
+            5 => {
+                let mut body = take_length_delimited_component(wire_type, buf)?;
+                let direct = (body.chunk().len() == body.remaining())
+                    .then(|| self.merge_canonical_expr_protobuf_fast_path(body.chunk()))
+                    .flatten();
+                if let Some(result) = direct {
+                    let remaining = body.remaining();
+                    body.advance(remaining);
+                    return result;
+                }
+                let value = crate::rust::rholang::protobuf_decoder::decode_expr(body)?;
+                self.merge_protobuf_component(&value)
+            }
             6 => merge_component!(Match, crate::rust::rholang::protobuf_decoder::decode_match),
             7 => merge_component!(
                 GUnforgeable,

@@ -455,6 +455,26 @@ fn encoded_unary_elist_parts(par: &Par) -> Option<(usize, i64)> {
     result
 }
 
+/// Recognize an exact unary `ETuple` spine in the authoritative ParBag bytes.
+/// The cursor is borrowed and linear; no nested Par suffix is materialized.
+fn encoded_unary_etuple_parts(par: &Par) -> Option<(usize, i64)> {
+    if !par.locally_free().is_empty()
+        || par.connective_used()
+        || par.cardinality() != 1
+        || par.family_cardinality::<Expr>() != 1
+    {
+        return None;
+    }
+
+    let mut result = None;
+    par.visit_encoded::<Expr>(|entry| {
+        if entry.multiplicity().get() == 1 {
+            result = entry.canonical_unary_etuple_parts();
+        }
+    });
+    result
+}
+
 fn epathmap_carrier(repr: EPathMapRepr<Par>) -> Par {
     let mut map = EPathMap::default();
     map.replace_decoded_representation_deferred_key_validation(repr)
@@ -553,6 +573,15 @@ impl<'p> EncMachine<'p> {
     fn emit_unary_elist_segment(&mut self, depth: usize, terminal: i64) -> Result<(), CodecError> {
         for _ in 0..depth {
             self.emit_byte(tag::ELIST)?;
+            self.emit_uv(1)?;
+        }
+        self.emit_byte(tag::GINT)?;
+        self.emit_uv(zigzag64(terminal))
+    }
+
+    fn emit_unary_etuple_segment(&mut self, depth: usize, terminal: i64) -> Result<(), CodecError> {
+        for _ in 0..depth {
+            self.emit_byte(tag::ETUPLE)?;
             self.emit_uv(1)?;
         }
         self.emit_byte(tag::GINT)?;
@@ -712,6 +741,9 @@ impl<'p> EncMachine<'p> {
         }
         if let Some((depth, terminal)) = encoded_unary_elist_parts(par_ref) {
             return self.emit_unary_elist_segment(depth, terminal);
+        }
+        if let Some((depth, terminal)) = encoded_unary_etuple_parts(par_ref) {
+            return self.emit_unary_etuple_segment(depth, terminal);
         }
         match (
             par_ref.family_cardinality::<Expr>(),
@@ -1602,12 +1634,32 @@ fn canonical_unary_elist_path(path: &[u8]) -> Option<(usize, i64)> {
     Some((nested.checked_add(1)?, unzigzag64(encoded)))
 }
 
+/// Parse the exact canonical path image of a non-empty unary `ETuple` spine
+/// ending in `GInt`, without constructing any nested semantic node.
+fn canonical_unary_etuple_path(path: &[u8]) -> Option<(usize, i64)> {
+    let mut cursor = 0usize;
+    let mut depth = 0usize;
+    while cursor < path.len() && path[cursor] == tag::ETUPLE {
+        cursor += 1;
+        if read_uv(path, &mut cursor, path.len()).ok()? != 1 {
+            return None;
+        }
+        depth = depth.checked_add(1)?;
+    }
+    if depth == 0 || cursor >= path.len() || path[cursor] != tag::GINT {
+        return None;
+    }
+    cursor += 1;
+    let encoded = read_uv(path, &mut cursor, path.len()).ok()?;
+    (cursor == path.len()).then_some((depth, unzigzag64(encoded)))
+}
+
 /// Validate a canonical path and every EPathMap key/value body reachable from
 /// it with one explicit global worklist. Nested ACT line keys remain borrowed
 /// subranges of the root buffer, so a depth-N one-entry map chain touches each
 /// encoded byte at its owning layer instead of rebuilding N suffix tries.
 pub(crate) fn validate_canonical_path(path: &[u8]) -> Result<CanonicalPathMetadata, CodecError> {
-    if canonical_unary_elist_path(path).is_some() {
+    if canonical_unary_elist_path(path).is_some() || canonical_unary_etuple_path(path).is_some() {
         return Ok(CanonicalPathMetadata {
             stable: true,
             reducer_eval_identity: true,
@@ -1733,6 +1785,10 @@ pub(crate) fn validate_canonical_path(path: &[u8]) -> Result<CanonicalPathMetada
 pub(crate) fn decode_trie_path_after_validation(path: &[u8]) -> Result<Par, CodecError> {
     if let Some((depth, terminal)) = canonical_unary_elist_path(path) {
         return crate::rust::par_bag::import_canonical_unary_elist_par(depth, terminal)
+            .ok_or(CodecError::Truncated);
+    }
+    if let Some((depth, terminal)) = canonical_unary_etuple_path(path) {
+        return crate::rust::par_bag::import_canonical_unary_etuple_par(depth, terminal)
             .ok_or(CodecError::Truncated);
     }
     DecMachine::new(path, DecMode::Semantic).run_path()

@@ -2,7 +2,10 @@ mod par_corpus;
 
 use std::collections::BTreeSet;
 
-use models::rhoapi::{DeployId, DeployerId, PCost};
+use models::rhoapi::{
+    Bundle, Connective, DeployId, DeployerId, Expr, GUnforgeable, If, Match, New, PCost, Receive,
+    Send,
+};
 use models::rust::rholang::bincode_schema_tables::{
     CONNECTIVE_INSTANCE_VARIANTS, EXPR_INSTANCE_VARIANTS, TAGGED_CONT_VARIANTS,
     UNF_INSTANCE_VARIANTS, VAR_INSTANCE_VARIANTS,
@@ -49,11 +52,11 @@ fn generated_program_registry_covers_the_descriptor_closure() {
                 "{name}: duplicate type identifier {}",
                 program.type_id
             );
-            let mut previous = 0;
+            let mut previous = None;
             let mut names = BTreeSet::new();
             for field in program.fields {
                 assert!(
-                    field.tag > previous,
+                    previous.is_none_or(|previous| field.tag > previous),
                     "{name}: tags must be strictly ascending"
                 );
                 assert!(
@@ -92,7 +95,7 @@ fn generated_program_registry_covers_the_descriptor_closure() {
                     }
                     _ => {}
                 }
-                previous = field.tag;
+                previous = Some(field.tag);
             }
             *name
         })
@@ -126,6 +129,30 @@ fn exhaustive_corpus_visits_every_message_and_oneof_variant() {
     for (_, value) in par_corpus::list_bind_patterns_corpus() {
         record(ParCursor::from(&value), &mut types, &mut variants);
     }
+
+    // `Par` is deliberately one native `ParBag` token in production. Walking
+    // a Par must not decode its prefix-compressed endpoints back into the old
+    // repeated-field tree merely to populate a search key. Exercise each
+    // component family directly here so the generated descriptor programs
+    // retain exhaustive test coverage without weakening that production
+    // boundary.
+    let all = par_corpus::all_par_fields();
+    macro_rules! record_components {
+        ($component:ty) => {
+            for value in all.decode_occurrences::<$component>() {
+                record(ParCursor::from(&value), &mut types, &mut variants);
+            }
+        };
+    }
+    record_components!(Send);
+    record_components!(Receive);
+    record_components!(New);
+    record_components!(Expr);
+    record_components!(Match);
+    record_components!(GUnforgeable);
+    record_components!(Bundle);
+    record_components!(Connective);
+    record_components!(If);
     record(
         ParCursor::from(&PCost::default()),
         &mut types,
@@ -185,10 +212,22 @@ fn deep_and_wide_cursor_walks_fit_a_small_native_stack() {
         .stack_size(256 * 1024)
         .spawn(|| {
             let deep = par_corpus::deep_par(20_000);
-            let deep_nodes = RhoPathCursor::par(&deep)
-                .filter(|event| matches!(event, RhoPathEvent::EnterNode { .. }))
-                .count();
-            assert!(deep_nodes > 20_000);
+            let deep_events = RhoPathCursor::par(&deep).collect::<Vec<_>>();
+            assert_eq!(
+                deep_events
+                    .iter()
+                    .filter(|event| matches!(event, RhoPathEvent::EnterNode { .. }))
+                    .count(),
+                1,
+                "native ParBag traversal must not decode nested Par endpoints"
+            );
+            assert_eq!(
+                deep_events
+                    .iter()
+                    .filter(|event| matches!(event, RhoPathEvent::ParBag(_)))
+                    .count(),
+                1
+            );
 
             let mut wide = par_corpus::all_par_fields();
             let mut exprs = wide.decode_occurrences::<models::rhoapi::Expr>();
@@ -196,10 +235,21 @@ fn deep_and_wide_cursor_walks_fit_a_small_native_stack() {
             let seed = exprs[0].clone();
             exprs.extend(std::iter::repeat_n(seed, 20_000));
             wide.replace_exprs(exprs);
-            let wide_nodes = RhoPathCursor::par(&wide)
-                .filter(|event| matches!(event, RhoPathEvent::EnterNode { .. }))
-                .count();
-            assert!(wide_nodes > 20_000);
+            let wide_events = RhoPathCursor::par(&wide).collect::<Vec<_>>();
+            assert_eq!(
+                wide_events
+                    .iter()
+                    .filter(|event| matches!(event, RhoPathEvent::EnterNode { .. }))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                wide_events
+                    .iter()
+                    .filter(|event| matches!(event, RhoPathEvent::ParBag(_)))
+                    .count(),
+                1
+            );
         })
         .expect("spawn small-stack cursor worker")
         .join()

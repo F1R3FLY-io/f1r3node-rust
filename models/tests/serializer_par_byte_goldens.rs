@@ -451,26 +451,33 @@ mod pinned {
     //! shrank by exactly 423 bytes. The new SHA-256 values below were emitted by
     //! the blessing path under a 1 GiB RSS cap and are then checked in ordinary
     //! assertion mode.
+    //!
+    //! ★★ **CBR-054 re-pin — `Par` becomes the authoritative RPB2 ParBag.**
+    //! Repeated component vectors are no longer serialized as independent
+    //! bincode fields. Each Par contributes one canonical, multiplicity-bearing
+    //! PathMap snapshot plus the two retained metadata fields. The three
+    //! production cold-store roots below are re-derived together; the ordinary
+    //! test remains the non-blessing assertion gate.
 
     /// `encode_datum(fixture_datum())` — the models-typed cold-store leaf.
     /// Captured 2026-07-27 at `18419514` on the DERIVED encoder, before any
     /// line of `bincode_decoder.rs` existed; re-pinned 4,153 → 4,199 by
     /// CBR-042 and 4,199 → 3,776 by CBR-044.
-    pub const PAR_DATUM_LEN: usize = 3776;
+    pub const PAR_DATUM_LEN: usize = 2974;
     pub const PAR_DATUM_DIGEST_HEX: &str =
-        "f08ae1fe1e096865ac8d852c2cf4fcdd83936a1b102f41d39454589fb29c49c0";
+        "298cc1c5c128c6b5196157aef8af48546c873d970d489fd569cc380d14eb88dd";
 
     /// `encode_datums([fixture_datum(), fixture_datum_persist()])`.
     /// Re-pinned 4,285 → 4,331 by CBR-042 and 4,331 → 3,908 by CBR-044.
-    pub const PAR_DATUMS_LEN: usize = 3908;
+    pub const PAR_DATUMS_LEN: usize = 3106;
     pub const PAR_DATUMS_DIGEST_HEX: &str =
-        "66aae76545af74d6204766f46d6fd48e241845ad2aee01d3d930509946640c01";
+        "cadb31f6554f4579a8048dfb9fdc452bbc1c117d627219ad872a928f11472364";
 
     /// `encode_continuations([par_body, scala_ref])`.
     /// Re-pinned 4,529 → 4,575 by CBR-042 and 4,575 → 4,152 by CBR-044.
-    pub const PAR_CONTS_LEN: usize = 4152;
+    pub const PAR_CONTS_LEN: usize = 3353;
     pub const PAR_CONTS_DIGEST_HEX: &str =
-        "852dd38e7f0f1e3855bd9e4b18c12629016ec63508cd9e8357ca972e02eec4ce";
+        "dd8f62a5e0d1da2237ab8797c0418dc2250cddb4c76af7f8d0aebaee7c0cb336";
 }
 
 fn bless() -> bool { std::env::var_os("PAR_GOLDEN_BLESS").is_some() }

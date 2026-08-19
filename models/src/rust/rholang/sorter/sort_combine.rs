@@ -64,7 +64,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-use super::score_tree::{Score, ScoreAtom, ScoredTerm, Tree};
+use super::score_tree::{EmittedBytes, Score, ScoreAtom, ScoredTerm, Tree};
 use crate::rhoapi::connective::ConnectiveInstance;
 use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::g_unforgeable::UnfInstance;
@@ -369,7 +369,22 @@ fn extend_emap_children<'t>(emap: &'t crate::rhoapi::EMap, out: &mut Vec<&'t Par
     for pair in &emap.kvs {
         let key = pair.key.as_ref().expect("KeyValuePair.key");
         let value = pair.value.as_ref().expect("KeyValuePair.value");
-        unique.insert(key, value);
+        unique
+            .entry(key)
+            .and_modify(|current| {
+                // `Par` equality is canonical PathMap equality. Two source
+                // keys can therefore compare equal even when their former
+                // repeated-field spellings differed. Preserve the exact
+                // winner `combine_emap` obtains by sorting complete pairs by
+                // `(key score, KeyValuePair bytes)` and taking the last equal
+                // key: with equal key bytes, that is the value with greatest
+                // emitted bytes. Input order and HashMap seeding cannot affect
+                // the result, and bytes are allocated only on a real collision.
+                if value.emitted_bytes() > current.emitted_bytes() {
+                    *current = value;
+                }
+            })
+            .or_insert(value);
     }
     out.reserve(unique.len() * 2);
     for (key, value) in unique {

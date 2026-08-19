@@ -4,10 +4,15 @@ use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
 
 use crypto::rust::hash::blake2b256::Blake2b256;
-use models::rust::rholang::match_path::{encode_par_match_path, RHO_MATCH_PATH_VERSION};
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::Expr;
+use models::rust::rholang::match_path::{
+    encode_match_path, encode_par_match_path, RHO_MATCH_PATH_VERSION,
+};
 use models::rust::rholang::match_path_cursor::{
     validate_match_path, EncodedRhoMatchPathCursor, RhoMatchPathScalar, RhoMatchPathToken,
 };
+use models::rust::rholang::match_schema_tables::ParCursor;
 
 fn corpus_golden_manifest() -> String {
     let mut output = String::from("# RMP1 corpus v1: name\tencoded-bytes\tblake2b-256\n");
@@ -71,8 +76,14 @@ fn decoded_tokens_canonically_reencode_every_schema_shape() {
 
 #[test]
 fn canonical_corpus_matches_the_platform_independent_golden_manifest() {
-    let expected = include_str!("fixtures/goldens/rmp1-corpus-v1.tsv");
     let actual = corpus_golden_manifest();
+    if std::env::var_os("UPDATE_RMP1_GOLDEN").is_some() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/goldens/rmp1-corpus-v1.tsv");
+        std::fs::write(path, actual).expect("write reviewed RMP1 golden manifest");
+        return;
+    }
+    let expected = include_str!("fixtures/goldens/rmp1-corpus-v1.tsv");
     assert_eq!(
         actual, expected,
         "RMP1 bytes drifted; review the schema/codec change and update the committed golden only \
@@ -127,7 +138,17 @@ fn malformed_tokens_lengths_fields_and_nesting_are_rejected() {
         .copy_from_slice(&0u16.to_be_bytes());
     assert!(validate_match_path(&unknown_type).is_err());
 
-    let nested_node = spans
+    // A production Par path intentionally contains one opaque native ParBag
+    // token. Use a direct generated component root for structural token
+    // corruption so this test does not demand that matching decode the trie
+    // back into the retired repeated-field representation.
+    let bind_patterns = par_corpus::bind_pattern_corpus();
+    let nested_encoded = encode_match_path(ParCursor::from(&bind_patterns[1].1));
+    let nested_spans = EncodedRhoMatchPathCursor::new(&nested_encoded)
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let nested_node = nested_spans
         .iter()
         .filter_map(|span| match span.token {
             RhoMatchPathToken::NodeStart { program } => Some((span, program.type_id)),
@@ -136,7 +157,7 @@ fn malformed_tokens_lengths_fields_and_nesting_are_rejected() {
         .nth(1)
         .expect("all-fields corpus has nested messages");
     let replacement_type_id: u16 = if nested_node.1 == 1 { 2 } else { 1 };
-    let mut wrong_nested_type = encoded.clone();
+    let mut wrong_nested_type = nested_encoded.clone();
     wrong_nested_type[nested_node.0.start + 1..nested_node.0.end]
         .copy_from_slice(&replacement_type_id.to_be_bytes());
     assert!(validate_match_path(&wrong_nested_type).is_err());
@@ -149,15 +170,23 @@ fn malformed_tokens_lengths_fields_and_nesting_are_rejected() {
     wrong_field[field.end - 1] ^= 1;
     assert!(validate_match_path(&wrong_field).is_err());
 
-    let sequence = spans
+    let sequence = nested_spans
         .iter()
         .find(|span| matches!(span.token, RhoMatchPathToken::SequenceStart(_)))
         .unwrap();
-    let mut wrong_count = encoded.clone();
+    let mut wrong_count = nested_encoded.clone();
     wrong_count[sequence.end - 1] = wrong_count[sequence.end - 1].wrapping_add(1);
     assert!(validate_match_path(&wrong_count).is_err());
 
-    let boolean = spans
+    let bool_expr = Expr {
+        expr_instance: Some(ExprInstance::GBool(true)),
+    };
+    let bool_encoded = encode_match_path(ParCursor::from(&bool_expr));
+    let bool_spans = EncodedRhoMatchPathCursor::new(&bool_encoded)
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let boolean = bool_spans
         .iter()
         .find(|span| {
             matches!(
@@ -166,31 +195,45 @@ fn malformed_tokens_lengths_fields_and_nesting_are_rejected() {
             )
         })
         .unwrap();
-    let mut invalid_bool = encoded.clone();
+    let mut invalid_bool = bool_encoded.clone();
     invalid_bool[boolean.end - 1] = 2;
     assert!(validate_match_path(&invalid_bool).is_err());
 
-    let string = spans
+    let string_expr = Expr {
+        expr_instance: Some(ExprInstance::GString("valid UTF-8".to_string())),
+    };
+    let string_encoded = encode_match_path(ParCursor::from(&string_expr));
+    let string_spans = EncodedRhoMatchPathCursor::new(&string_encoded)
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let string = string_spans
         .iter()
         .find(|span| matches!(span.token, RhoMatchPathToken::Scalar(RhoMatchPathScalar::String(value)) if !value.is_empty()))
         .unwrap();
-    let mut invalid_utf8 = encoded.clone();
+    let mut invalid_utf8 = string_encoded.clone();
     invalid_utf8[string.start + 9] = 0xFF;
     assert!(validate_match_path(&invalid_utf8).is_err());
 
-    let pathmap = spans
+    let pathmap_value = par_corpus::ground_pathmap();
+    let pathmap_encoded = encode_match_path(ParCursor::from(&pathmap_value));
+    let pathmap_spans = EncodedRhoMatchPathCursor::new(&pathmap_encoded)
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let pathmap = pathmap_spans
         .iter()
         .find(|span| matches!(span.token, RhoMatchPathToken::PathMap { .. }))
         .unwrap();
-    let mut invalid_mode = encoded.clone();
+    let mut invalid_mode = pathmap_encoded.clone();
     invalid_mode[pathmap.start + 1] = u8::MAX;
     assert!(validate_match_path(&invalid_mode).is_err());
 
-    let oneof = spans
+    let oneof = bool_spans
         .iter()
         .find(|span| matches!(span.token, RhoMatchPathToken::OneofStart(_)))
-        .expect("all-fields corpus has oneofs");
-    let mut invalid_oneof_tag = encoded.clone();
+        .expect("direct Expr corpus has a oneof");
+    let mut invalid_oneof_tag = bool_encoded.clone();
     invalid_oneof_tag[oneof.start + 1..oneof.end].copy_from_slice(&u32::MAX.to_be_bytes());
     assert!(validate_match_path(&invalid_oneof_tag).is_err());
 

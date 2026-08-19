@@ -104,21 +104,19 @@ fn the_frame_is_two_words() {
     );
 }
 
-/// ★★ **`lens` is Θ(message NODES) — the space side of the Θ(d²) → Θ(n) trade.**
+/// ★★ **An external PathMap-backed `Par` occupies one length-table slot.**
 ///
-/// This is the quantity the whole two-pass design exists to buy. `encoded_len` is Θ(d²)
-/// because `encode_to_vec` calls it once and then `message::encode` calls it *again* per
-/// nested message; the memoised table computes each subtree length once. The price is one
-/// `u32` per message node, and **pricing it is the point** — a trade whose cost is unmeasured
-/// is not a trade, it is a hope.
-///
-/// ⚠ Asserted as a linear RELATIONSHIP across two rungs rather than as a constant. A single
-/// figure would pin an implementation detail (how many nodes a level happens to produce) and
-/// would have to be edited by any legitimate change to the schema; the *shape* is the claim.
+/// The generated encoder treats `.rhoapi.Par` as the schema's external
+/// feedback vertex and delegates its byte-native encoding to the repository
+/// implementation. Nested AST depth therefore must not expand the generated
+/// encoder's `u32` length table. The delegated Par encoder has its own linear
+/// worklists and depth gates; recreating one generated table entry per decoded
+/// component here would discard the native ParBag boundary.
 #[test]
-fn the_length_table_is_linear_in_message_nodes() {
+fn external_pathmap_backed_par_uses_constant_length_table_space() {
     let small = len_table_size(&nested_list(64));
     let large = len_table_size(&nested_list(256));
+    let deepest = len_table_size(&nested_list(1_024));
 
     assert!(
         small > 0 && large > 0,
@@ -127,25 +125,18 @@ fn the_length_table_is_linear_in_message_nodes() {
          mean the memoised pass is not running at all."
     );
 
-    // 4× the depth ⇒ ~4× the nodes. Bounded on BOTH sides: a table that grew faster than
-    // linear would be the quadratic returning in space, and one that grew slower would mean
-    // nodes are being skipped.
-    let ratio = large as f64 / small as f64;
-    assert!(
-        (3.0..=5.0).contains(&ratio),
-        "LENGTH TABLE IS NOT LINEAR IN NODES: {small} entries at depth 64, {large} at depth \
-         256 — a ratio of {ratio:.2} where 4× the depth should give ~4× the nodes.\n\n\
-         Above 5×: the Θ(n) space claim is false and the quadratic has returned on the space \
-         axis instead of the time one.\n\
-         Below 3×: message nodes are being SKIPPED, and a length table with holes produces \
-         wrong length prefixes — which is a consensus fault, not a performance one."
+    assert_eq!(
+        small, large,
+        "Par AST depth leaked into the generated table"
     );
-
-    // The trade, priced: 4 bytes per message node.
-    let bytes_at_4096 = len_table_size(&nested_list(1024)) * std::mem::size_of::<u32>();
+    assert_eq!(
+        large, deepest,
+        "Par AST depth leaked into the generated table"
+    );
+    let table_bytes = deepest * std::mem::size_of::<u32>();
     println!(
-        "  prost length table: {small} entries @ depth 64, {large} @ 256; \
-         {bytes_at_4096} B for a depth-1,024 chain (4 B per message node)"
+        "  prost external-Par length table: {small} entries @ depth 64, {large} @ 256, \
+         {deepest} @ 1,024; {table_bytes} B independent of Par AST depth"
     );
 }
 
