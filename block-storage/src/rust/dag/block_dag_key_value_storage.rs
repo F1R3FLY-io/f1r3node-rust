@@ -35,7 +35,7 @@
 // See block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockDagKeyValueStorage.scala
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use models::rust::block_hash::{self, BlockHash, BlockHashSerde};
@@ -719,6 +719,7 @@ pub struct BlockDagKeyValueStorage {
     /// Monotonically increasing counter incremented on every successful block insert.
     /// Used by caches to detect when the DAG has changed.
     pub(crate) dag_generation: Arc<AtomicU64>,
+    pub(crate) ft_lower_bound: Arc<AtomicU32>,
 }
 
 impl BlockDagKeyValueStorage {
@@ -779,6 +780,7 @@ impl BlockDagKeyValueStorage {
             lifecycle: Arc::new(PlRwLock::new(lifecycle_tables)),
             latest_messages_index: latest_messages_db,
             dag_generation: Arc::new(AtomicU64::new(0)),
+            ft_lower_bound: Arc::new(AtomicU32::new(0.0f32.to_bits())),
         })
     }
 
@@ -847,6 +849,7 @@ impl BlockDagKeyValueStorage {
             equivocation_tracker_index,
             lifecycle: Arc::new(PlRwLock::new(DeployLifecycleTables::in_memory())),
             dag_generation,
+            ft_lower_bound: Arc::new(AtomicU32::new(0.0f32.to_bits())),
         }
     }
 
@@ -1273,7 +1276,17 @@ impl BlockDagKeyValueStorage {
                     directly_finalized_hash.clone(),
                     indirectly_finalized,
                     ft_value,
-                )
+                )?;
+                drop(block_metadata_index_guard);
+
+                // These blocks enter at `ft_value`, possibly below what earlier
+                // rounds propagated — the bound has to follow them down.
+                let _ = self.ft_lower_bound.fetch_update(
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                    |bits| (ft_value < f32::from_bits(bits)).then(|| ft_value.to_bits()),
+                );
+                Ok(())
             };
 
         let mut effect_applied: HashSet<BlockHash> = HashSet::new();
@@ -1336,12 +1349,32 @@ impl BlockDagKeyValueStorage {
         // P2-12: mutates `block_metadata_index`; exclusive lock.
         let _lock_guard = self.global_lock.write();
 
+        // Nothing is below the bound and this scan only raises, so it would
+        // rewrite nothing. Skipping keeps `global_lock` off an O(finalized) walk.
+        if ft_value <= f32::from_bits(self.ft_lower_bound.load(Ordering::Relaxed)) {
+            metrics::counter!("propagate_ft.skipped", "source" => "f1r3fly.casper.block-dag")
+                .increment(1);
+            return Ok(());
+        }
+
         // Update ALL finalized blocks with lower FT, not just ancestors of the
         // current LFB. In a multi-parent DAG, finalized blocks on orphaned
         // branches are not reachable via the ancestor chain of the new LFB.
+        let scan_started = std::time::Instant::now();
         let mut block_metadata_index_guard = self.block_metadata_index.write();
         let finalized_hashes = block_metadata_index_guard.finalized_block_hashes();
-        block_metadata_index_guard.update_ft_if_higher(finalized_hashes, ft_value)
+        let scanned = finalized_hashes.len();
+        block_metadata_index_guard.update_ft_if_higher(finalized_hashes, ft_value)?;
+        drop(block_metadata_index_guard);
+        metrics::histogram!("propagate_ft.scan.time", "source" => "f1r3fly.casper.block-dag")
+            .record(scan_started.elapsed().as_secs_f64());
+        metrics::histogram!("propagate_ft.scan.blocks", "source" => "f1r3fly.casper.block-dag")
+            .record(scanned as f64);
+
+        // Every finalized block is now at or above `ft_value`.
+        self.ft_lower_bound
+            .store(ft_value.to_bits(), Ordering::Relaxed);
+        Ok(())
     }
 }
 

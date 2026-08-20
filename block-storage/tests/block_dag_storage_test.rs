@@ -1234,3 +1234,87 @@ fn insert_projects_lifecycle_events_from_valid_bodies_only() {
         );
     });
 }
+
+// The bound has to follow blocks admitted at a LOWER value back down: tracking
+// the highest value seen instead would skip a scan those blocks still need.
+#[tokio::test]
+async fn a_lower_finalization_round_does_not_block_a_later_raise() {
+    init_logger();
+
+    let genesis = genesis_block();
+    let dag_storage = create_dag_storage(&genesis).await;
+
+    let mut chain = vec![genesis.clone()];
+    for n in 1..=3 {
+        let parent = chain.last().unwrap().block_hash.clone();
+        let block = get_random_block(
+            Some(n),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![parent]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        dag_storage
+            .insert(
+                &block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+            )
+            .unwrap();
+        chain.push(block);
+    }
+
+    let ft_of = |storage: &BlockDagKeyValueStorage, hash: &BlockHash| {
+        storage
+            .get_representation()
+            .expect("dag representation")
+            .lookup_unsafe(hash)
+            .expect("metadata")
+            .fault_tolerance_value
+    };
+
+    // Round 1: a high value. Every finalized block ends at or above it.
+    dag_storage
+        .record_directly_finalized(chain[1].block_hash.clone(), 0.9, |_| async { Ok(()) })
+        .await
+        .unwrap();
+    assert_eq!(ft_of(&dag_storage, &chain[1].block_hash), 0.9);
+
+    // Round 2: a lower value. It admits b2 at 0.4 and must not drag b1 down.
+    dag_storage
+        .record_directly_finalized(chain[2].block_hash.clone(), 0.4, |_| async { Ok(()) })
+        .await
+        .unwrap();
+    assert_eq!(
+        ft_of(&dag_storage, &chain[1].block_hash),
+        0.9,
+        "a lower round must never lower an already-higher value"
+    );
+    assert_eq!(ft_of(&dag_storage, &chain[2].block_hash), 0.4);
+
+    // Round 3: above round 2 but below round 1. b2 sits at 0.4 and must be
+    // raised — this is the scan that a highest-value-seen bound would skip.
+    dag_storage
+        .record_directly_finalized(chain[3].block_hash.clone(), 0.5, |_| async { Ok(()) })
+        .await
+        .unwrap();
+    assert_eq!(
+        ft_of(&dag_storage, &chain[2].block_hash),
+        0.5,
+        "the block admitted at 0.4 must be raised to 0.5"
+    );
+    assert_eq!(ft_of(&dag_storage, &chain[3].block_hash), 0.5);
+    assert_eq!(
+        ft_of(&dag_storage, &chain[1].block_hash),
+        0.9,
+        "the highest value still stands"
+    );
+}
