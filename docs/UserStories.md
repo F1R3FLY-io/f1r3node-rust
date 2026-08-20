@@ -1,7 +1,7 @@
 ---
 doc_type: user_stories
 version: "1.1"
-last_updated: 2026-08-13
+last_updated: 2026-08-19
 ---
 
 # User Stories
@@ -42,6 +42,22 @@ This document captures user stories that drive feature development. User stories
 ---
 
 ## Planned Stories
+
+#### US-005: Congruent Casper test infrastructure
+
+> As a **consensus developer writing Casper specs**, I want **one canonical test-node and test-network fixture tree with a common-caller interface** so that **specs exercise production-shaped behavior without duplicated helpers that drift apart and silently lose capabilities**.
+
+**Implemented in:** EPIC-015
+
+**Status:** Planned
+
+**Acceptance Criteria:**
+- [ ] A common caller creates a standalone test node or a configured test network without learning storage, runtime, transport, or consensus-construction details
+- [ ] Features that exist only in the duplicate `casper/tests` helper tree are ported to the canonical fixtures before the duplicate tree collapses to re-exports
+- [ ] The duplicate helper tree is removed and the two fixture trees can no longer diverge
+- [ ] Behavioral variation (parent limits, synchrony, read-only nodes, bootstrap selection, empty blocks, deploy lifespan) is explicit configuration with behavior tests
+
+---
 
 #### US-001: System-Integration Compatibility
 
