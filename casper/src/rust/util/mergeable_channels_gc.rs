@@ -72,7 +72,15 @@ pub async fn collect_garbage(
     enumerate_newly_in_range(sweep, dag, &floor, casper_shard_conf);
     metrics::gauge!("mergeable_channels_gc_pending").set(sweep.pending.len() as f64);
 
-    let common_strict_ancestors = common_strict_main_chain_ancestors(dag);
+    // Bounds the single chain walk below. A block whose height cannot be read is
+    // left out of the bound rather than lowering it, which can only shorten the
+    // walk and so can only withhold deletion.
+    let common_strict_ancestors = sweep
+        .pending
+        .iter()
+        .filter_map(|block_hash| block_height(dag, block_hash))
+        .min()
+        .and_then(|lowest_needed| common_main_chain_below_all_validators(dag, lowest_needed));
     let mut collected = Vec::new();
 
     for block_hash in sweep.pending.iter() {
@@ -234,79 +242,311 @@ fn extend_pending_to_ceiling(
     sweep.swept_height = Some(ceiling);
 }
 
-fn common_strict_main_chain_ancestors(
+/// The blocks every validator has moved strictly past, as a set the deletion
+/// predicate can test membership against.
+///
+/// Main-parent chains are linear, so each validator's strict ancestors form a
+/// path to genesis and the intersection of those paths is simply the path below
+/// their deepest common point. Finding that point and walking one chain costs a
+/// single traversal rather than one per validator, and the walk stops at the
+/// lowest block still awaiting collection instead of running to genesis.
+fn common_main_chain_below_all_validators(
     dag: &KeyValueDagRepresentation,
+    lowest_needed: i64,
 ) -> Option<HashSet<BlockHash>> {
-    common_strict_ancestors(
+    let anchor = deepest_common_strict_ancestor(
         dag.latest_message_hashes().values().cloned(),
         |block_hash| dag.main_parent(block_hash),
-    )
+        |block_hash| block_height(dag, block_hash),
+    )?;
+
+    Some(main_chain_set_from(
+        anchor,
+        |block_hash| dag.main_parent(block_hash),
+        |block_hash| block_height(dag, block_hash),
+        lowest_needed,
+    ))
 }
 
-fn common_strict_ancestors(
+fn block_height(dag: &KeyValueDagRepresentation, block_hash: &BlockHash) -> Option<i64> {
+    dag.lookup_unsafe(block_hash)
+        .ok()
+        .map(|meta| meta.block_number)
+}
+
+/// The deepest block that is a strict main-chain ancestor of every latest
+/// message, or `None` when there is no such block.
+///
+/// Each walk starts at a latest message's main parent rather than at the message
+/// itself, which is what makes the result strict: a validator sitting on a block
+/// has not moved past it, so that block must not qualify.
+///
+/// Convergence advances only the highest frontier entries, so the work is
+/// proportional to how far the validators have diverged — a few blocks when
+/// healthy, and bounded by the stall when not — rather than to the chain length.
+fn deepest_common_strict_ancestor(
     latest_messages: impl IntoIterator<Item = BlockHash>,
     main_parent: impl Fn(&BlockHash) -> Option<BlockHash>,
-) -> Option<HashSet<BlockHash>> {
-    latest_messages
+    height_of: impl Fn(&BlockHash) -> Option<i64>,
+) -> Option<BlockHash> {
+    let mut frontier: Vec<BlockHash> = latest_messages
         .into_iter()
-        .map(|latest_message| {
-            let mut ancestors = HashSet::new();
-            let mut current = latest_message;
-            while let Some(parent) = main_parent(&current) {
-                if !ancestors.insert(parent.clone()) {
-                    break;
-                }
-                current = parent;
+        .map(|latest_message| main_parent(&latest_message))
+        .collect::<Option<Vec<_>>>()?;
+
+    if frontier.is_empty() {
+        return None;
+    }
+
+    loop {
+        if frontier.iter().all(|hash| *hash == frontier[0]) {
+            return frontier.into_iter().next();
+        }
+
+        // A height this walk cannot read leaves the frontier unable to advance,
+        // so refuse rather than spin.
+        let heights: Vec<i64> = frontier
+            .iter()
+            .map(&height_of)
+            .collect::<Option<Vec<_>>>()?;
+        let deepest_to_advance = *heights.iter().max()?;
+
+        for (slot, height) in frontier.iter_mut().zip(heights) {
+            if height == deepest_to_advance {
+                *slot = main_parent(&*slot)?;
             }
-            ancestors
-        })
-        .reduce(|common, ancestors| common.intersection(&ancestors).cloned().collect())
+        }
+    }
+}
+
+/// The anchor and its main-chain ancestors, stopping once the walk reaches
+/// `lowest_needed` — no candidate sits below that, so nothing deeper can change
+/// an answer.
+fn main_chain_set_from(
+    anchor: BlockHash,
+    main_parent: impl Fn(&BlockHash) -> Option<BlockHash>,
+    height_of: impl Fn(&BlockHash) -> Option<i64>,
+    lowest_needed: i64,
+) -> HashSet<BlockHash> {
+    let mut chain = HashSet::new();
+    let mut current = Some(anchor);
+
+    while let Some(block_hash) = current {
+        let at_or_below_lowest = height_of(&block_hash).is_some_and(|h| h <= lowest_needed);
+
+        if !chain.insert(block_hash.clone()) || at_or_below_lowest {
+            break;
+        }
+
+        current = main_parent(&block_hash);
+    }
+
+    chain
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
+    use proptest::prelude::*;
+
     /// Named hashes for the ancestor tests, which care about chain shape rather
     /// than height; the height-keyed fixtures below use `hash(n)` instead.
     fn named_hash(value: &'static [u8]) -> BlockHash { BlockHash::from_static(value) }
 
-    #[test]
-    fn intersects_strict_main_chain_ancestors() {
-        let genesis = named_hash(b"genesis");
-        let common = named_hash(b"common");
-        let left = named_hash(b"left");
-        let right = named_hash(b"right");
+    /// genesis(0) <- common(1) <- {left(2), right(2)}, a two-validator fork.
+    fn forked_chain() -> (HashMap<BlockHash, BlockHash>, HashMap<BlockHash, i64>) {
         let parents = HashMap::from([
-            (common.clone(), genesis.clone()),
-            (left.clone(), common.clone()),
-            (right.clone(), common.clone()),
+            (named_hash(b"common"), named_hash(b"genesis")),
+            (named_hash(b"left"), named_hash(b"common")),
+            (named_hash(b"right"), named_hash(b"common")),
         ]);
-
-        let ancestors =
-            common_strict_ancestors([left, right], |block_hash| parents.get(block_hash).cloned());
-
-        assert_eq!(ancestors, Some(HashSet::from([common, genesis])));
+        let heights = HashMap::from([
+            (named_hash(b"genesis"), 0),
+            (named_hash(b"common"), 1),
+            (named_hash(b"left"), 2),
+            (named_hash(b"right"), 2),
+        ]);
+        (parents, heights)
     }
 
     #[test]
-    fn excludes_latest_messages_from_strict_ancestors() {
+    fn converges_on_the_deepest_block_every_validator_is_past() {
+        let (parents, heights) = forked_chain();
+
+        let anchor = deepest_common_strict_ancestor(
+            [named_hash(b"left"), named_hash(b"right")],
+            |block_hash| parents.get(block_hash).cloned(),
+            |block_hash| heights.get(block_hash).copied(),
+        );
+
+        // Both forks descend from `common`, and both are strictly above it.
+        assert_eq!(anchor, Some(named_hash(b"common")));
+    }
+
+    #[test]
+    fn a_validator_sitting_on_a_block_keeps_it_out_of_the_answer() {
+        let (parents, heights) = forked_chain();
+
+        // One validator is still on `common` itself, so it has not moved past
+        // it and `common` must not qualify — the answer drops to its parent.
+        let anchor = deepest_common_strict_ancestor(
+            [named_hash(b"left"), named_hash(b"common")],
+            |block_hash| parents.get(block_hash).cloned(),
+            |block_hash| heights.get(block_hash).copied(),
+        );
+
+        assert_eq!(anchor, Some(named_hash(b"genesis")));
+    }
+
+    #[test]
+    fn excludes_a_latest_message_from_its_own_answer() {
         let genesis = named_hash(b"genesis");
         let latest = named_hash(b"latest");
         let parents = HashMap::from([(latest.clone(), genesis.clone())]);
+        let heights = HashMap::from([(genesis.clone(), 0), (latest.clone(), 1)]);
 
-        let ancestors =
-            common_strict_ancestors([latest], |block_hash| parents.get(block_hash).cloned());
+        let anchor = deepest_common_strict_ancestor(
+            [latest],
+            |block_hash| parents.get(block_hash).cloned(),
+            |block_hash| heights.get(block_hash).copied(),
+        );
 
-        assert_eq!(ancestors, Some(HashSet::from([genesis])));
+        assert_eq!(anchor, Some(genesis));
     }
 
     #[test]
     fn returns_none_without_latest_messages() {
         let latest_messages: [BlockHash; 0] = [];
-        let ancestors = common_strict_ancestors(latest_messages, |_| None);
 
-        assert_eq!(ancestors, None);
+        let anchor = deepest_common_strict_ancestor(latest_messages, |_| None, |_| None);
+
+        assert_eq!(anchor, None);
+    }
+
+    #[test]
+    fn returns_none_when_a_latest_message_has_no_parent() {
+        // A validator sitting on genesis has moved past nothing.
+        let anchor =
+            deepest_common_strict_ancestor([named_hash(b"genesis")], |_| None, |_| Some(0));
+
+        assert_eq!(anchor, None);
+    }
+
+    /// The definition the anchor walk implements: materialise every validator's
+    /// strict ancestors and intersect them. Slow, and obviously correct.
+    ///
+    /// Kept as the oracle for the differential property below, which is a
+    /// standing constraint rather than a one-time proof — it is what tells
+    /// anyone editing the convergence loop or the walk bound that they have
+    /// changed which blocks are admitted.
+    fn intersect_strict_ancestors(
+        latest_messages: impl IntoIterator<Item = BlockHash>,
+        main_parent: impl Fn(&BlockHash) -> Option<BlockHash>,
+    ) -> Option<HashSet<BlockHash>> {
+        latest_messages
+            .into_iter()
+            .map(|latest_message| {
+                let mut ancestors = HashSet::new();
+                let mut current = latest_message;
+                while let Some(parent) = main_parent(&current) {
+                    if !ancestors.insert(parent.clone()) {
+                        break;
+                    }
+                    current = parent;
+                }
+                ancestors
+            })
+            .reduce(|common, ancestors| common.intersection(&ancestors).cloned().collect())
+    }
+
+    fn block(index: usize) -> BlockHash { BlockHash::from(format!("b{}", index).into_bytes()) }
+
+    prop_compose! {
+        /// A random main-parent forest: each block picks any earlier block as its
+        /// main parent, so shapes from a single straight chain to a wide fan are
+        /// all reachable, and latest messages may sit anywhere in it — including
+        /// on genesis, or on one another's ancestors.
+        fn main_parent_dag()(
+            parent_picks in prop::collection::vec(0usize..64, 1..16),
+            latest_picks in prop::collection::vec(0usize..64, 1..5),
+        ) -> (HashMap<BlockHash, BlockHash>, HashMap<BlockHash, i64>, Vec<BlockHash>) {
+            let count = parent_picks.len() + 1;
+            let mut parents = HashMap::new();
+            let mut heights = HashMap::from([(block(0), 0i64)]);
+
+            for (offset, pick) in parent_picks.iter().enumerate() {
+                let child = offset + 1;
+                let parent = pick % child;
+                parents.insert(block(child), block(parent));
+                heights.insert(block(child), heights[&block(parent)] + 1);
+            }
+
+            let latest = latest_picks.iter().map(|pick| block(pick % count)).collect();
+            (parents, heights, latest)
+        }
+    }
+
+    proptest! {
+        /// The equivalence the anchor walk rests on: intersecting every
+        /// validator's strict ancestors and walking the chain below their
+        /// deepest common one must admit exactly the same blocks.
+        ///
+        /// A counterexample here means the optimisation changed behaviour, and
+        /// the walk should be reverted rather than patched — computing the same
+        /// set more cheaply was the entire argument for it.
+        ///
+        /// Membership is compared rather than the containers themselves. A
+        /// validator sitting on genesis has no strict ancestors, which the
+        /// intersection reports as an empty set and the walk reports as no
+        /// anchor at all; both admit nothing, which is what the predicate reads.
+        #[test]
+        fn the_anchor_walk_admits_what_intersecting_every_validator_admits(
+            (parents, heights, latest) in main_parent_dag()
+        ) {
+            let parent_of = |block_hash: &BlockHash| parents.get(block_hash).cloned();
+            let height_of = |block_hash: &BlockHash| heights.get(block_hash).copied();
+
+            let intersected = intersect_strict_ancestors(latest.clone(), parent_of);
+            let walked = deepest_common_strict_ancestor(latest.clone(), parent_of, height_of)
+                .map(|anchor| main_chain_set_from(anchor, parent_of, height_of, 0));
+
+            for candidate in heights.keys() {
+                let by_intersection =
+                    intersected.as_ref().is_some_and(|set| set.contains(candidate));
+                let by_walk = walked.as_ref().is_some_and(|set| set.contains(candidate));
+                prop_assert_eq!(
+                    by_intersection,
+                    by_walk,
+                    "disagreement on {:?}: intersection said {}, walk said {}",
+                    candidate,
+                    by_intersection,
+                    by_walk
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_chain_walk_stops_at_the_lowest_block_still_pending() {
+        // A linear chain h5 <- h4 <- ... <- h0, walked from h5.
+        let parents: HashMap<BlockHash, BlockHash> =
+            (1..=5).map(|n| (at_height(n), at_height(n - 1))).collect();
+        let heights: HashMap<BlockHash, i64> = (0..=5).map(|n| (at_height(n), n)).collect();
+
+        let chain = main_chain_set_from(
+            at_height(5),
+            |block_hash| parents.get(block_hash).cloned(),
+            |block_hash| heights.get(block_hash).copied(),
+            3,
+        );
+
+        // Stops on reaching height 3: nothing below it is a candidate, so
+        // walking to genesis would be wasted work.
+        assert_eq!(chain.len(), 3);
+        assert!(chain.contains(&at_height(5)));
+        assert!(chain.contains(&at_height(3)));
+        assert!(!chain.contains(&at_height(2)));
     }
 
     /// One block per height, hash `b"h<n>"`, for heights `0..=top`.
@@ -521,8 +761,10 @@ mod tests {
     ) -> Result<bool, KvStoreError> {
         // Derived from the DAG exactly as `collect_garbage` does, so the depth
         // clause is exercised against a real citation set rather than a stub
-        // that could refuse for the wrong reason.
-        let common_strict_ancestors = common_strict_main_chain_ancestors(dag);
+        // that could refuse for the wrong reason. The bound is genesis here:
+        // these fixtures are a handful of blocks, so nothing is saved by
+        // stopping the walk early.
+        let common_strict_ancestors = common_main_chain_below_all_validators(dag, 0);
         is_safe_to_delete(
             dag,
             block_hash,
@@ -530,6 +772,172 @@ mod tests {
             conf,
             common_strict_ancestors.as_ref(),
         )
+    }
+
+    /// The spine of `linear_chain_dag`, plus a two-block branch off height 4 that
+    /// a second validator sits on.
+    ///
+    /// `linear_chain_dag` has one validator on one chain, so every block is an
+    /// ancestor of the only latest message and the citation clause cannot be
+    /// observed rejecting anything. Here validator B is on `side6`, so the
+    /// deepest block both validators have moved past is block 4 — everything
+    /// above it on the spine is still cited by A but not by B.
+    fn forked_chain_dag() -> KeyValueDagRepresentation {
+        const FORK_POINT: u8 = 4;
+        let store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
+        let mut bms = BlockMetadataStore::new(store);
+        let validator_a = Bytes::from(vec![0xEEu8; 65]);
+        let validator_b = Bytes::from(vec![0xDDu8; 65]);
+        let side = |n: u8| Bytes::from(format!("side{}", n).into_bytes());
+
+        let mut dag_set = imbl::HashSet::new();
+        let mut block_number_map = imbl::HashMap::new();
+        let mut main_parent_map = imbl::HashMap::new();
+        let mut child_map: imbl::HashMap<Bytes, imbl::HashSet<Bytes>> = imbl::HashMap::new();
+        let mut height_map: imbl::OrdMap<i64, imbl::HashSet<Bytes>> = imbl::OrdMap::new();
+        let mut finalized_blocks_set = imbl::HashSet::new();
+
+        let record = |hash: Bytes,
+                      parent: Option<Bytes>,
+                      height: i64,
+                      sender: Bytes,
+                      bms: &mut BlockMetadataStore,
+                      dag_set: &mut imbl::HashSet<Bytes>,
+                      block_number_map: &mut imbl::HashMap<Bytes, i64>,
+                      main_parent_map: &mut imbl::HashMap<Bytes, Bytes>,
+                      child_map: &mut imbl::HashMap<Bytes, imbl::HashSet<Bytes>>,
+                      height_map: &mut imbl::OrdMap<i64, imbl::HashSet<Bytes>>,
+                      finalized: &mut imbl::HashSet<Bytes>| {
+            dag_set.insert(hash.clone());
+            block_number_map.insert(hash.clone(), height);
+            finalized.insert(hash.clone());
+            let mut at_height = height_map.get(&height).cloned().unwrap_or_default();
+            at_height.insert(hash.clone());
+            height_map.insert(height, at_height);
+
+            let parents = match parent {
+                Some(parent) => {
+                    main_parent_map.insert(hash.clone(), parent.clone());
+                    let mut kids = child_map.get(&parent).cloned().unwrap_or_default();
+                    kids.insert(hash.clone());
+                    child_map.insert(parent, kids);
+                    vec![main_parent_map[&hash].clone()]
+                }
+                None => Vec::new(),
+            };
+
+            bms.add(BlockMetadata {
+                block_hash: hash,
+                parents,
+                sender,
+                justifications: vec![],
+                weight_map: BTreeMap::new(),
+                block_number: height,
+                sequence_number: height as i32,
+                invalid: false,
+                directly_finalized: true,
+                finalized: true,
+                fault_tolerance_value: 1.0,
+                merge_base: Bytes::new(),
+            })
+            .expect("add metadata");
+        };
+
+        for n in 0..=TOP {
+            let parent = (n > 0).then(|| hash(n - 1));
+            record(
+                hash(n),
+                parent,
+                n as i64,
+                validator_a.clone(),
+                &mut bms,
+                &mut dag_set,
+                &mut block_number_map,
+                &mut main_parent_map,
+                &mut child_map,
+                &mut height_map,
+                &mut finalized_blocks_set,
+            );
+        }
+
+        for n in 5..=6u8 {
+            let parent = if n == 5 {
+                hash(FORK_POINT)
+            } else {
+                side(n - 1)
+            };
+            record(
+                side(n),
+                Some(parent),
+                n as i64,
+                validator_b.clone(),
+                &mut bms,
+                &mut dag_set,
+                &mut block_number_map,
+                &mut main_parent_map,
+                &mut child_map,
+                &mut height_map,
+                &mut finalized_blocks_set,
+            );
+        }
+
+        let mut latest_messages_map = imbl::HashMap::new();
+        latest_messages_map.insert(validator_a, hash(TOP));
+        latest_messages_map.insert(validator_b, side(6));
+
+        KeyValueDagRepresentation {
+            dag_set,
+            latest_messages_map,
+            child_map,
+            height_map,
+            block_number_map,
+            main_parent_map,
+            self_justification_map: imbl::HashMap::new(),
+            invalid_blocks_set: imbl::HashSet::new(),
+            last_finalized_block_hash: hash(TOP),
+            finalized_blocks_set,
+            block_metadata_index: Arc::new(PlRwLock::new(bms)),
+            floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            lifecycle: Arc::new(parking_lot::RwLock::new(
+                block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(
+                ),
+            )),
+        }
+    }
+
+    #[test]
+    fn below_a_fork_both_validators_are_past_the_block_and_it_collects() {
+        let dag = forked_chain_dag();
+        assert!(
+            is_safe_to_delete_at_floor(&dag, &hash(3), &floor_at(TOP), &conf())
+                .expect("safety check"),
+            "block 3 is below the fork point, so both validators have moved past it"
+        );
+    }
+
+    #[test]
+    fn above_a_fork_one_validator_is_still_behind_and_the_block_is_kept() {
+        let dag = forked_chain_dag();
+        // Deep enough and finalized, so only the citation clause can refuse it:
+        // validator B branched at 4 and has never cited block 6.
+        assert!(
+            !is_safe_to_delete_at_floor(&dag, &hash(6), &floor_at(TOP), &conf())
+                .expect("safety check"),
+            "validator B sits on the side branch, so it has not moved past block 6 \
+             and a merge from its view still reads that data"
+        );
+    }
+
+    #[test]
+    fn a_side_branch_block_is_kept_even_though_it_is_deep() {
+        let dag = forked_chain_dag();
+        let side5 = Bytes::from(b"side5".to_vec());
+        assert!(
+            !is_safe_to_delete_at_floor(&dag, &side5, &floor_at(TOP), &conf())
+                .expect("safety check"),
+            "validator A never left the spine, so it has not moved past the branch"
+        );
     }
 
     /// THE regression. Mergeable data serves merges, and a merge reads it for
