@@ -36,7 +36,6 @@ itertools = { workspace = true }
 regex = { workspace = true }
 thiserror = { workspace = true }
 # LFS Block Requester dependencies
-num_cpus = "1.0"
 async-stream = "0.3"
 tokio-stream = { workspace = true }
 humantime = { workspace = true }
