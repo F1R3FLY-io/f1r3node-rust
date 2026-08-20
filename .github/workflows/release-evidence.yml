@@ -1,0 +1,157 @@
+name: Release Evidence
+
+run-name: Release Evidence [CI run ${{ inputs.ci_run_id }}]
+
+on:
+  workflow_dispatch:
+    inputs:
+      ci_run_id:
+        description: Successful master CI workflow run ID
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: release-evidence-${{ inputs.ci_run_id }}
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    name: Generate Exact-Run Evidence
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout trusted release controls
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: ci-control
+          persist-credentials: false
+
+      - name: Resolve CI run
+        id: run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_RUN_ID: ${{ inputs.ci_run_id }}
+        shell: bash -euo pipefail {0}
+        run: |
+          if ! [[ "$CI_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::ci_run_id must be a positive integer"
+            exit 1
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CI_RUN_ID}" > "$RUNNER_TEMP/ci-run.json"
+          source_sha="$(jq -r '.head_sha' "$RUNNER_TEMP/ci-run.json")"
+          if ! [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::CI run does not identify a full source SHA"
+            exit 1
+          fi
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" '
+            .path == ".github/workflows/ci.yml"
+            and .event == "push"
+            and .head_branch == "master"
+            and .status == "completed"
+            and .conclusion == "success"
+            and .repository.full_name == $repository
+          ' "$RUNNER_TEMP/ci-run.json" >/dev/null || {
+            echo "::error::CI run must be a successful master push in this repository"
+            exit 1
+          }
+          run_attempt="$(jq -r '.run_attempt' "$RUNNER_TEMP/ci-run.json")"
+          if ! [[ "$run_attempt" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::CI run attempt must be a positive integer"
+            exit 1
+          fi
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "run_attempt=$run_attempt" >> "$GITHUB_OUTPUT"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CI_RUN_ID}/attempts/${run_attempt}/jobs?per_page=100" \
+            --paginate --jq '.jobs[]' | jq -s '{jobs: .}' > "$RUNNER_TEMP/ci-jobs.json"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CI_RUN_ID}/artifacts?per_page=100" \
+            --paginate --jq '.artifacts[]' | jq -s '{artifacts: .}' > "$RUNNER_TEMP/ci-artifacts.json"
+
+      - name: Checkout exact source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ steps.run.outputs.source_sha }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify source release eligibility
+        shell: bash -euo pipefail {0}
+        run: |
+          ci-control/.github/scripts/release-evidence.sh inspect-source candidate \
+            | tee "$RUNNER_TEMP/source-release-state.json"
+          jq -e '.release_eligible == true' "$RUNNER_TEMP/source-release-state.json" >/dev/null || {
+            echo "::error::source version is not eligible for a release candidate"
+            exit 1
+          }
+
+      - name: Download exact CI artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.ci_run_id }}
+          pattern: artifacts-docker-*
+          path: /tmp/candidate-artifacts
+
+      - name: Extract tested binaries
+        env:
+          DOCKER_IMAGE_NAME: f1r3flyindustries/f1r3fly-rust
+        shell: bash -euo pipefail {0}
+        run: |
+          mkdir -p /tmp/candidate-artifacts/release
+          zcat /tmp/candidate-artifacts/artifacts-docker-amd64/rust-node-docker.tar.gz | docker image load
+          amd64_container="$(docker create "${DOCKER_IMAGE_NAME}:amd64")"
+          docker cp "$amd64_container:/opt/docker/bin/node" /tmp/candidate-artifacts/release/f1r3node-linux-amd64
+          docker rm "$amd64_container"
+          zcat /tmp/candidate-artifacts/artifacts-docker-arm64/rust-node-docker.tar.gz | docker image load
+          arm64_container="$(docker create --platform linux/arm64 "${DOCKER_IMAGE_NAME}:arm64")"
+          docker cp "$arm64_container:/opt/docker/bin/node" /tmp/candidate-artifacts/release/f1r3node-linux-arm64
+          docker rm "$arm64_container"
+          test -s /tmp/candidate-artifacts/release/f1r3node-linux-amd64
+          test -s /tmp/candidate-artifacts/release/f1r3node-linux-arm64
+
+      - name: Generate and validate evidence
+        shell: bash -euo pipefail {0}
+        run: |
+          mkdir -p "$RUNNER_TEMP/release-evidence"
+          ci-control/.github/scripts/release-evidence.sh generate \
+            candidate \
+            "$GITHUB_REPOSITORY" \
+            "$RUNNER_TEMP/ci-run.json" \
+            "$RUNNER_TEMP/ci-jobs.json" \
+            "$RUNNER_TEMP/ci-artifacts.json" \
+            /tmp/candidate-artifacts \
+            "$RUNNER_TEMP/release-evidence/release-evidence.json"
+          ci-control/.github/scripts/release-evidence.sh validate \
+            "$RUNNER_TEMP/release-evidence/release-evidence.json"
+          sha256sum "$RUNNER_TEMP/release-evidence/release-evidence.json" \
+            > "$RUNNER_TEMP/release-evidence/release-evidence.json.sha256"
+          jq . "$RUNNER_TEMP/release-evidence/release-evidence.json"
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-evidence-${{ steps.run.outputs.source_sha }}-${{ inputs.ci_run_id }}-${{ steps.run.outputs.run_attempt }}
+          path: ${{ runner.temp }}/release-evidence/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Report evidence result
+        shell: bash -euo pipefail {0}
+        run: |
+          evidence="$RUNNER_TEMP/release-evidence/release-evidence.json"
+          {
+            echo "### Evidence-only release candidate"
+            echo
+            printf -- '- Candidate tag: `%s`\n' "$(jq -r '.candidate_tag' "$evidence")"
+            printf -- '- Source SHA: `%s`\n' "$(jq -r '.source_sha' "$evidence")"
+            printf -- '- CI run: `%s`, attempt `%s`\n' "$(jq -r '.ci.run_id' "$evidence")" "$(jq -r '.ci.run_attempt' "$evidence")"
+            printf -- '- Publication mode: `%s`\n' "$(jq -r '.publication_mode' "$evidence")"
+          } >> "$GITHUB_STEP_SUMMARY"

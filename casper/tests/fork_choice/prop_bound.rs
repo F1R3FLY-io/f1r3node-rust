@@ -112,6 +112,7 @@ async fn build_two_tip_dag(
         None,
         None,
         None,
+        None,
     );
     let b_b = create_block(
         block_store,
@@ -121,6 +122,7 @@ async fn build_two_tip_dag(
         Some(v2.clone()),
         Some(bonds.clone()),
         Some(just.clone()),
+        None,
         None,
         None,
         None,

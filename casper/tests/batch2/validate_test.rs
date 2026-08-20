@@ -2,7 +2,9 @@
 
 use std::collections::HashMap;
 
-use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use block_storage::rust::dag::block_dag_key_value_storage::{
+    InsertMode, KeyValueDagRepresentation,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
@@ -72,6 +74,7 @@ fn create_chain(
             None,
             None,
             None,
+            None,
         )
     });
 
@@ -116,6 +119,7 @@ fn create_chain_with_round_robin_validators(
                 Some(creator.clone()),
                 None,
                 Some(latest_messages.clone()),
+                None,
                 None,
                 None,
                 None,
@@ -934,10 +938,11 @@ async fn repeat_deploy_validation_should_return_valid_for_empty_blocks() {
             .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
-        let result1 = Validate::repeat_deploy(&block, &mut casper_snapshot, &block_store, 50);
+        let result1 = Validate::repeat_deploy(&block, &mut casper_snapshot, &block_store, 50, None);
         assert_eq!(result1, Either::Right(ValidBlock::Valid));
 
-        let result2 = Validate::repeat_deploy(&block2, &mut casper_snapshot, &block_store, 50);
+        let result2 =
+            Validate::repeat_deploy(&block2, &mut casper_snapshot, &block_store, 50, None);
         assert_eq!(result2, Either::Right(ValidBlock::Valid));
     })
     .await
@@ -976,6 +981,7 @@ async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deplo
             None,
             None,
             None,
+            None,
         );
 
         let dag = block_dag_storage
@@ -983,7 +989,7 @@ async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deplo
             .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
-        let result = Validate::repeat_deploy(&block1, &mut casper_snapshot, &block_store, 50);
+        let result = Validate::repeat_deploy(&block1, &mut casper_snapshot, &block_store, 50, None);
         assert_eq!(
             result,
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
@@ -992,10 +998,10 @@ async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deplo
     .await
 }
 
-/// The deploy-index fast path, production order: the candidate is validated
-/// BEFORE insertion, so its own sigs are not yet indexed, and deploys never
-/// included in any inserted block clear validation without the parent-scope
-/// scan or the ancestor traversal.
+/// Production order: a candidate is validated BEFORE insertion, so its own
+/// deploys are not yet in any inserted block, and fresh deploys must clear
+/// the repeat check — the parent-scope scan and the ancestor traversal have
+/// nothing to find for them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn repeat_deploy_accepts_fresh_deploys_in_block_not_yet_inserted() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
@@ -1032,25 +1038,25 @@ async fn repeat_deploy_accepts_fresh_deploys_in_block_not_yet_inserted() {
             .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
-        let result = Validate::repeat_deploy(&candidate, &mut casper_snapshot, &block_store, 50);
+        let result =
+            Validate::repeat_deploy(&candidate, &mut casper_snapshot, &block_store, 50, None);
         assert_eq!(result, Either::Right(ValidBlock::Valid));
     })
     .await
 }
 
-/// Pins the fast path's contract from both sides. Same repeat shape as
-/// `repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deploy`
-/// but in production order (candidate built, not inserted): while the sig is
-/// indexed, the fallback ancestor scan flags the repeat; deleting the index
-/// entry flips the verdict to Valid, proving the index probe is consulted
-/// and that the skip rests on the completeness invariant (every inserted
-/// block's sigs reach `deploy_index` — see `insert_internal`).
+/// The duplicate scan walks the block's ancestry, and a storage failure during
+/// that walk used to be swallowed: the expansion returned nothing, the walk ended
+/// early, and the block passed. So a DAG that cannot be read all the way down —
+/// a truncated one, or a damaged one — silently ADMITS the repeat deploy the scan
+/// exists to reject. A validator that cannot read the set it must scan has to
+/// refuse the verdict, not return the one that absence produces.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn repeat_deploy_fast_path_short_circuits_on_deploy_index_absence() {
-    use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
-
+async fn repeat_deploy_validation_should_surface_a_storage_failure_not_admit_the_deploy() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+
+        // Genesis carries the deploy: it is the duplicate the scan must find.
         let genesis = create_genesis_block(
             &mut block_store,
             &mut block_dag_storage,
@@ -1064,66 +1070,154 @@ async fn repeat_deploy_fast_path_short_circuits_on_deploy_index_absence() {
             None,
         );
 
-        let candidate = build_block(
-            vec![genesis.block_hash.clone()],
+        // Reaching genesis means expanding this block's parents, and one of them
+        // is not in the DAG — so the expansion fails and the walk stops here.
+        let mid = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![
+                genesis.block_hash.clone(),
+                Bytes::from(b"ancestor-absent-from-this-dag".to_vec()),
+            ],
+            &genesis,
             None,
-            1786500000000,
-            None,
-            None,
-            Some(vec![deploy.clone()]),
             None,
             None,
             None,
-            Some(1),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let head = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![mid.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![deploy]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
 
         let dag = block_dag_storage
             .get_representation()
             .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
-        let result = Validate::repeat_deploy(&candidate, &mut casper_snapshot, &block_store, 50);
-        assert_eq!(
-            result,
-            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
+
+        let result = Validate::repeat_deploy(&head, &mut casper_snapshot, &block_store, 50, None);
+        assert!(
+            matches!(result, Either::Left(BlockError::Undecidable(_))),
+            "an ancestry this node cannot read must name the block it is missing, not be \
+             swallowed (which admits the repeated deploy genesis carries) and not be \
+             reported as a storage fault (which becomes a slashable verdict). Validation \
+             reports the gap; whether this node may act on it is decided by the block \
+             processor, which alone knows if its own history is cut short. Got {:?}",
+            result
         );
-
-        {
-            let deploy_index_handle = block_dag_storage.deploy_index_for_tests();
-            let deploy_index_guard = deploy_index_handle.write();
-            deploy_index_guard
-                .delete(vec![deploy.deploy.sig.to_vec()])
-                .expect("delete deploy-index entry");
-        }
-
-        let dag = block_dag_storage
-            .get_representation()
-            .expect("dag representation");
-        let mut casper_snapshot = mk_casper_snapshot(dag);
-        let result = Validate::repeat_deploy(&candidate, &mut casper_snapshot, &block_store, 50);
-        assert_eq!(result, Either::Right(ValidBlock::Valid));
     })
     .await
 }
 
-/// Regression test for `repeat_deploy`'s `rejected_in_scope` exemption.
-///
-/// Without the exemption, validation rejects any block that re-includes a
-/// sig already present in an ancestor's `body.deploys` — including the
-/// legitimate recovery path where a deploy was rejected by a descendant
-/// merge and is re-proposed through `RejectedDeployBuffer` to land its
-/// effects in canonical state.
-///
-/// Setup models a true recovery scenario with the ON-CHAIN disposition
-/// record the deterministic exemption reads: the deploy's only inclusion
-/// (block_x) is followed by a merge block whose `rejected_deploys` names
-/// the sig — the record every real merge writes and every node sees
-/// identically. The exemption is a pure function of the block's parent
-/// scope, never of the validator's live view.
+/// The scan reads each ancestor's body to test it for the deploy signature, and
+/// an ancestor the DAG knows about may not be in the block store — that is the
+/// normal shape after an LFS restore, which fills the DAG from the sync window.
+/// Killing the validator thread on that read turns a recoverable storage gap
+/// into a crash; it belongs in the same typed failure as the walk itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_validation_should_surface_an_unreadable_ancestor_body() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // In the DAG, absent from the block store: inserted through the DAG-only
+        // path, the way an LFS restore populates metadata it has no body for.
+        let ghost = get_random_block(
+            Some(1),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![genesis.block_hash.clone()]),
+            None,
+            None,
+            None,
+            None,
+            Some(SHARD_ID.to_string()),
+            None,
+        );
+        block_dag_storage
+            .insert(&ghost, InsertMode::Normal)
+            .expect("dag-only insert");
+
+        let head = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![ghost.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![deploy]),
+            None,
+            None,
+            None,
+            Some(2),
+            None,
+            None,
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut casper_snapshot = mk_casper_snapshot(dag);
+
+        let result = Validate::repeat_deploy(&head, &mut casper_snapshot, &block_store, 50, None);
+        assert!(
+            matches!(result, Either::Left(BlockError::BlockException(_))),
+            "an ancestor whose body is missing must be a typed failure, not a panic; got {:?}",
+            result
+        );
+    })
+    .await
+}
+
+/// The retry gate at the validity layer: a re-inclusion whose kept
+/// rejection is LIVE (above the block's frozen floor) is
+/// `PrematureDeployRetry` — never a legal recovery, never
+/// `InvalidRepeatDeploy` (which would misread the retry as a plain
+/// duplicate and slash-classify differently).
 ///
 /// DAG: genesis (no deploys) → block_x (body.deploys=[deploy]) →
 /// block_m (rejected_deploys=[deploy]) → block_w (body.deploys=[deploy],
-/// the re-inclusion). Latest canonical disposition in block_w's parent
-/// scope is the rejection at block_m, so re-inclusion is legal recovery.
+/// the re-inclusion). The floor derived at ftt=1.0 (nothing witnessed)
+/// is genesis, so the rejection at block_m is NOT settled — the latest
+/// canonical disposition in block_w's parent scope is a rejection, the
+/// gate is closed, and the verdict is the non-slashable premature-retry
+/// arm on every node. The gate-OPEN half (settled rejection → Valid) is
+/// pinned by the retry-gate e2e spec and the proposer-side lib test.
 ///
 /// Companion test:
 /// `repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in_scope`
@@ -1131,7 +1225,7 @@ async fn repeat_deploy_fast_path_short_circuits_on_deploy_index_absence() {
 /// parent scope is a WIN (clean inclusion, never rejected) and the
 /// recovery exemption must NOT apply.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope() {
+async fn repeat_deploy_rejects_premature_retry_of_a_live_rejection() {
     use std::sync::Arc;
 
     use dashmap::DashSet;
@@ -1173,6 +1267,7 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
             None,
             None,
             None,
+            None,
         );
 
         // block_m is the merge that rejected the deploy: its on-chain
@@ -1184,6 +1279,7 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
             &mut block_dag_storage,
             vec![block_x.block_hash.clone()],
             &genesis,
+            None,
             None,
             None,
             None,
@@ -1223,9 +1319,12 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
             None,
             None,
             None,
+            None,
         );
 
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let mut snapshot = mk_casper_snapshot(dag);
 
         // The snapshot flag mirrors what the recovery pipeline derives from
@@ -1235,40 +1334,46 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
         rejected.insert(deploy_sig);
         snapshot.rejected_in_scope = Arc::new(rejected);
 
-        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50);
+        let ctx = casper::rust::finality::floor_context::FloorContext::derive(
+            &snapshot.dag,
+            &block_store,
+            std::slice::from_ref(&block_m.block_hash),
+            &std::collections::BTreeMap::new(),
+            casper::rust::safety::clique_oracle::FtThreshold::from_f32_lossy(1.0),
+        )
+        .await
+        .expect("derive floor context");
+        assert_eq!(
+            ctx.floor.hash, genesis.block_hash,
+            "staging precondition: with nothing witnessed the floor is genesis, \
+             so the rejection at block_m is live"
+        );
+
+        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50, Some(&ctx));
         assert_eq!(
             result,
-            Either::Right(ValidBlock::Valid),
-            "recovery re-inclusion of a rejected-in-scope sig with status=Pending must validate; got {:?}",
+            Either::Left(BlockError::Invalid(InvalidBlock::PrematureDeployRetry)),
+            "re-inclusion against a live rejection is a premature retry on \
+             every node; got {:?}",
             result,
         );
     })
     .await
 }
 
-/// Companion to `repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope`.
-/// Tests the symmetric case the recovery exemption must NOT cover: a sig
-/// that is in `rejected_in_scope` but ALSO has a clean canonical
-/// inclusion (status `Finalized`). Re-including a Finalized sig is
-/// double-execution, not recovery — the catchup gate
-/// (`should_admit_to_rejected_buffer`) is the primary defense, but the
-/// repeat-deploy validator must serve as a second line in case the gate
-/// misses.
+/// Companion to `repeat_deploy_rejects_premature_retry_of_a_live_rejection`.
+/// Tests the case the recovery exemption must NOT cover: a sig whose
+/// canonical inclusion in the block's parent scope is CLEAN. The
+/// exemption reads the sig's latest canonical disposition, and a clean
+/// win is never a kept rejection — so the sig stays in the check set and
+/// the ancestor scan flags the duplicate, regardless of any
+/// `rejected_in_scope` membership. Re-including a cleanly-won sig is
+/// double-execution, not recovery.
 ///
-/// DAG: genesis (body.deploys=[deploy], LFB) → block_w
-/// (body.deploys=[deploy], re-inclusion). Genesis IS the LFB so the
-/// resolver finds a clean canonical inclusion of `deploy` in genesis
-/// and returns `Finalized`. The recovery exemption must therefore NOT
-/// apply, and the repeat check must catch the duplicate inclusion.
-///
-/// Pre-fix: the rejected_in_scope filter in `repeat_deploy` exempts
-/// the sig unconditionally → returns `Valid` → double-execution slips
-/// through. This test fails.
-///
-/// Post-fix: the filter is gated on `status != Finalized`. The sig is
-/// Finalized, so it is NOT exempted; ancestor scan finds the clean
-/// inclusion in genesis and returns `InvalidRepeatDeploy`. This test
-/// passes.
+/// DAG: genesis (body.deploys=[deploy], clean) → block_w
+/// (body.deploys=[deploy], re-inclusion). No rejection record names the
+/// sig anywhere in scope, so no exemption applies and the repeat check
+/// must return `InvalidRepeatDeploy`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in_scope() {
     use std::sync::Arc;
@@ -1294,8 +1399,8 @@ async fn repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in
             None,
         );
 
-        // block_w re-includes the deploy. ancestor scan would find genesis's
-        // clean inclusion if not exempted by the rejected_in_scope filter.
+        // block_w re-includes the deploy. The ancestor scan finds genesis's
+        // clean inclusion; no rejection disposition exists to exempt it.
         let block_w = create_block(
             &mut block_store,
             &mut block_dag_storage,
@@ -1310,20 +1415,20 @@ async fn repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in
             None,
             None,
             None,
+            None,
         );
 
         let dag = block_dag_storage.get_representation().expect("dag representation");
         let mut snapshot = mk_casper_snapshot(dag);
 
-        // Same `rejected_in_scope` membership as the recovery test — the
-        // gap is exactly that the repeat_deploy filter cannot distinguish
-        // "rejected somewhere, recoverable" from "finalized somewhere,
-        // non-recoverable" via this set alone.
+        // `rejected_in_scope` membership is set to show it is NOT what
+        // decides: the exemption reads the parent-scope canonical
+        // disposition, and this sig's disposition is a clean win.
         let rejected: DashSet<Bytes> = DashSet::new();
         rejected.insert(deploy_sig);
         snapshot.rejected_in_scope = Arc::new(rejected);
 
-        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50);
+        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50, None);
         assert_eq!(
             result,
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)),
@@ -1467,6 +1572,7 @@ async fn parent_validation_should_allow_empty_block_when_new_parents_exist() {
             None,
             Some(1),
             None,
+            None,
         );
 
         // v1 creates a block (inserted into DAG - represents a block v0 receives)
@@ -1483,6 +1589,7 @@ async fn parent_validation_should_allow_empty_block_when_new_parents_exist() {
             None,
             None,
             Some(1),
+            None,
             None,
         );
 
@@ -1569,6 +1676,7 @@ async fn parent_validation_progress_verdict_is_independent_of_finality_markers()
             None,
             Some(1),
             None,
+            None,
         );
         let b2 = create_block(
             &mut block_store,
@@ -1584,6 +1692,7 @@ async fn parent_validation_progress_verdict_is_independent_of_finality_markers()
             None,
             Some(2),
             None,
+            None,
         );
         let b3 = create_block(
             &mut block_store,
@@ -1598,6 +1707,7 @@ async fn parent_validation_progress_verdict_is_independent_of_finality_markers()
             None,
             None,
             Some(3),
+            None,
             None,
         );
         let _ = &b3;
@@ -1696,6 +1806,7 @@ async fn parent_validation_should_reject_empty_block_when_no_new_parents_exist()
             None,
             Some(1),
             None,
+            None,
         );
 
         let now = std::time::SystemTime::now()
@@ -1768,6 +1879,7 @@ async fn parent_validation_should_allow_block_with_user_deploys_regardless_of_pa
             None,
             None,
             Some(1),
+            None,
             None,
         );
 
@@ -1907,6 +2019,7 @@ async fn parent_validation_should_enforce_max_number_of_parents_constraint() {
             None,
             Some(1),
             None,
+            None,
         );
 
         let b2 = create_block(
@@ -1923,6 +2036,7 @@ async fn parent_validation_should_enforce_max_number_of_parents_constraint() {
             None,
             Some(1),
             None,
+            None,
         );
 
         let b3 = create_block(
@@ -1938,6 +2052,7 @@ async fn parent_validation_should_enforce_max_number_of_parents_constraint() {
             None,
             None,
             Some(1),
+            None,
             None,
         );
 
@@ -2089,6 +2204,7 @@ async fn justification_follow_validation_should_return_valid_for_proper_justific
             None,
             None,
             None,
+            None,
         );
 
         let b3 = create_block(
@@ -2102,6 +2218,7 @@ async fn justification_follow_validation_should_return_valid_for_proper_justific
                 (v1.clone(), genesis.block_hash.clone()),
                 (v2.clone(), genesis.block_hash.clone()),
             ])),
+            None,
             None,
             None,
             None,
@@ -2127,6 +2244,7 @@ async fn justification_follow_validation_should_return_valid_for_proper_justific
             None,
             None,
             None,
+            None,
         );
 
         let b5 = create_block(
@@ -2140,6 +2258,7 @@ async fn justification_follow_validation_should_return_valid_for_proper_justific
                 (v1.clone(), b3.block_hash.clone()),
                 (v2.clone(), b2.block_hash.clone()),
             ])),
+            None,
             None,
             None,
             None,
@@ -2165,6 +2284,7 @@ async fn justification_follow_validation_should_return_valid_for_proper_justific
             None,
             None,
             None,
+            None,
         );
 
         let b7 = create_block(
@@ -2184,6 +2304,7 @@ async fn justification_follow_validation_should_return_valid_for_proper_justific
             None,
             None,
             None,
+            None,
         );
 
         let _b8 = create_block(
@@ -2197,6 +2318,7 @@ async fn justification_follow_validation_should_return_valid_for_proper_justific
                 (v1.clone(), b7.block_hash.clone()),
                 (v2.clone(), b4.block_hash.clone()),
             ])),
+            None,
             None,
             None,
             None,
@@ -2555,6 +2677,7 @@ async fn bonds_cache_validation_should_succeed_on_a_valid_block_and_fail_on_modi
             &runtime_manager,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -2750,6 +2873,7 @@ fn build_linear_chain(
             None,
             None,
             Some(i as i32),
+            None,
             None,
         );
         chain.push(block);
@@ -3155,16 +3279,19 @@ async fn parent_validation_enforces_max_parent_depth_horizon() {
             &mut block_store, &mut block_dag_storage, vec![genesis.block_hash.clone()],
             &genesis, Some(v0.clone()), Some(bonds.clone()),
             None, None, None, None, None, Some(1), None,
+            None,
         );
         let b2 = create_block(
             &mut block_store, &mut block_dag_storage, vec![b1.block_hash.clone()],
             &genesis, Some(v0.clone()), Some(bonds.clone()),
             None, None, None, None, None, Some(2), None,
+            None,
         );
         let b3 = create_block(
             &mut block_store, &mut block_dag_storage, vec![b2.block_hash.clone()],
             &genesis, Some(v0.clone()), Some(bonds.clone()),
             None, None, None, None, None, Some(3), None,
+            None,
         );
 
         let now = std::time::SystemTime::now()
@@ -3272,6 +3399,7 @@ async fn bonds_cache_from_floor_uses_floor_state_for_child_block_bonds() {
             &runtime_manager,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -3301,6 +3429,7 @@ async fn bonds_cache_from_floor_uses_floor_state_for_child_block_bonds() {
             None,
             Some(floor_bonds),
             Some(justifications),
+            None,
             None,
             None,
             None,
@@ -3401,6 +3530,7 @@ async fn validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_depl
             &runtime_manager,
             None,
             None,
+            None,
         )
         .await
         .expect("checkpoint (baseline)");
@@ -3425,6 +3555,7 @@ async fn validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_depl
             &block_store,
             &mut snap_pre,
             &runtime_manager,
+            None,
             None,
             None,
         )
@@ -3454,6 +3585,7 @@ async fn validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_depl
             &block_store,
             &mut snap_rej,
             &runtime_manager,
+            None,
             None,
             None,
         )

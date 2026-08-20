@@ -74,9 +74,6 @@ fn recoverable_propose_failure_message(status: &ProposeStatus) -> Option<String>
         ProposeStatus::Failure(ProposeFailure::NoNewDeploys) => {
             Some("No new deploys to propose.".to_string())
         }
-        ProposeStatus::Failure(ProposeFailure::RecoveryDeferred) => {
-            Some("Rejected deploy recovery deferred to selected leader.".to_string())
-        }
         ProposeStatus::Failure(ProposeFailure::CheckConstraintsFailure(
             CheckProposeConstraintsFailure::NotEnoughNewBlocks,
         )) => Some("No new blocks from peers yet; synchronize with network first.".to_string()),
@@ -1423,7 +1420,10 @@ impl BlockAPI {
 
         if let Some(casper) = eng.with_casper() {
             let dag = casper.block_dag().await?;
-            let maybe_block_hash = dag.lookup_by_deploy_id(deploy_id)?;
+            // The sig's most recent canonical appearance, from the
+            // lifecycle rows — a pure function of the DAG's bodies, never
+            // of node-local insertion order.
+            let maybe_block_hash = dag.deploy_canonical_appearance(deploy_id)?;
 
             match maybe_block_hash {
                 Some(block_hash) => {
@@ -1735,9 +1735,6 @@ impl BlockAPI {
     ///
     /// Thin wrapper around
     /// `deploy_finalization_status::resolve` that unwraps the engine cell.
-    /// The pure resolver is reused by the catchup gate in
-    /// `compute_parents_post_state` to avoid gating buffer population on
-    /// already-finalized sigs.
     pub async fn deploy_finalization_status(
         engine_cell: &EngineCell,
         sig: &[u8],
@@ -1759,20 +1756,22 @@ impl BlockAPI {
         };
 
         let dag = casper.block_dag().await?;
-        match crate::rust::api::deploy_finalization_status::resolve_with_known_block(
+        // A pure LOOKUP over the deploy-lifecycle register: terminal
+        // verdicts were determined at their threshold crossings by
+        // `finality::deploy_lifecycle` and persisted write-once — no
+        // per-query parameters.
+        match crate::rust::api::deploy_finalization_status::resolve(
             &dag,
             casper.block_store(),
-            casper.casper_shard_conf().deploy_lifespan,
             sig,
             known_block_hash,
         ) {
             Ok(status) => Ok(status),
             Err(err) => {
-                // Convert deploy-index inconsistency to `pending_unknown`
-                // so HTTP/gRPC callers see a tractable response. The
-                // resolver returns `Err` so the consensus path
-                // (`repeat_deploy`) conservative-fails on the same
-                // inconsistency. Genuine I/O failures keep propagating.
+                // Convert the known-block inconsistency (a caller-claimed
+                // block whose body does not list the sig) to
+                // `pending_unknown` so HTTP/gRPC callers see a tractable
+                // response. Genuine I/O failures keep propagating.
                 if err
                     .downcast_ref::<crate::rust::api::deploy_finalization_status::DeployFinalizationCorruption>()
                     .is_some()

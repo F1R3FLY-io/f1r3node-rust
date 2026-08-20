@@ -80,6 +80,7 @@ impl InitializingSpec {
 
             ApprovedBlock {
                 candidate: approved_block_candidate,
+                floor_seed: None,
                 sigs: vec![Signature {
                     public_key: validator_pk.bytes.clone(),
                     algorithm: "secp256k1".to_string(),
@@ -424,6 +425,7 @@ async fn create_initializing_engine(
         fixture.runtime_manager.clone(),
         fixture.estimator.clone(),
         casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
+        None,
     )))
 }
 
@@ -502,6 +504,78 @@ async fn proactively_request_approved_block_on_init() {
     InitializingSpec::after_each(&fixture);
 }
 
+/// An LFS restore that fails must ask again, not go quiet.
+///
+/// The restore runs inside a per-message task the transport layer spawned; when
+/// it returns an error, that task logs and drops it. Nothing tells the engine,
+/// the ApprovedBlock it was handed is already consumed, and `start_requester` is
+/// false, so no later ApprovedBlock is accepted either. The node then sits in
+/// Initializing indefinitely, answering heartbeats, looking alive. Observed: a
+/// joiner whose replay hit a missing rspace root at 04:55:38 was still idle two
+/// hours later, having reported nothing since.
+#[tokio::test]
+async fn a_failed_restore_requests_the_approved_block_again() {
+    use casper::rust::engine::engine::Engine;
+    use models::casper::ApprovedBlockRequestProto;
+    use models::routing::protocol::Message as ProtocolMessage;
+    use prost::Message;
+
+    let fixture = TestFixture::new().await;
+    InitializingSpec::before_each(&fixture);
+
+    let the_init = Arc::new(|| {
+        Box::pin(async { Ok(()) }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+    });
+    let engine_cell = Arc::new(EngineCell::init());
+    let initializing_engine = create_initializing_engine(&fixture, the_init, engine_cell.clone())
+        .await
+        .expect("Failed to create Initializing engine");
+
+    initializing_engine
+        .init()
+        .await
+        .expect("init should succeed");
+
+    // Only the retry should be visible from here on.
+    fixture.transport_layer.reset();
+    fixture
+        .transport_layer
+        .set_responses(|_peer, _protocol| Ok(()));
+
+    initializing_engine
+        .recover_from_restore_failure(CasperError::RuntimeError(
+            "simulated restore failure".to_string(),
+        ))
+        .await
+        .expect("a restore failure must be handled, not propagated into the void");
+
+    let expected_content = prost::bytes::Bytes::from(
+        ApprovedBlockRequestProto {
+            identifier: "".to_string(),
+            trim_state: true,
+        }
+        .encode_to_vec(),
+    );
+    let requests = fixture.transport_layer.get_all_requests();
+    let asked_again = requests.iter().any(|req| {
+        if let Some(ProtocolMessage::Packet(packet)) = &req.msg.message {
+            packet.content == expected_content
+        } else {
+            false
+        }
+    });
+
+    assert!(
+        asked_again,
+        "a failed restore must re-request the approved state so the node can try \
+         again; staying silent leaves it wedged in Initializing forever. Requests \
+         sent: {:?}",
+        requests.iter().map(|r| &r.msg).collect::<Vec<_>>()
+    );
+
+    InitializingSpec::after_each(&fixture);
+}
+
 #[test]
 fn transition_to_initializing_invokes_init_immediately() {
     use models::casper::ApprovedBlockRequestProto;
@@ -558,6 +632,7 @@ fn transition_to_initializing_invokes_init_immediately() {
                     &fixture.runtime_manager,
                     &fixture.estimator,
                     &heartbeat_signal_ref,
+                    None,
                 )
                 .await
                 .expect("transition_to_initializing should succeed");

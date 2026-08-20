@@ -34,24 +34,6 @@ impl IndexedBlockDagStorage {
         self.underlying.get_representation_internal()
     }
 
-    /// Passthrough to the underlying storage's test-only deploy-index
-    /// accessor, so tests built on this fixture can manipulate index
-    /// entries (same rationale as `BlockDagKeyValueStorage`'s accessor).
-    #[cfg(any(test, feature = "test-internals"))]
-    #[doc(hidden)]
-    pub fn deploy_index_for_tests(
-        &self,
-    ) -> Arc<
-        parking_lot::RwLock<
-            shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl<
-                crate::rust::dag::block_dag_key_value_storage::DeployId,
-                models::rust::block_hash::BlockHashSerde,
-            >,
-        >,
-    > {
-        self.underlying.deploy_index_for_tests()
-    }
-
     pub fn insert(
         &mut self,
         block: &BlockMessage,

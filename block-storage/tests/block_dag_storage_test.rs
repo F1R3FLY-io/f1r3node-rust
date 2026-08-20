@@ -572,33 +572,113 @@ fn dag_storage_should_advance_latest_message_to_invalid_block_from_same_sender()
     );
 }
 
+/// Inserting an OLDER block by a sender must not move that sender's latest
+/// message backward. Settled-history admission inserts old blocks at runtime
+/// — a straggler a joiner's restore missed, arriving while the sender's real
+/// latest message is a hundred blocks ahead — so the sequence-monotone guard
+/// on the latest-message update is what keeps admission from rewriting any
+/// validator's position. (Insertion ORDER is an optimization, not what this
+/// depends on.)
 #[test]
-fn dag_storage_should_be_able_to_restore_deploy_index_on_startup() {
+fn dag_storage_keeps_latest_message_when_an_older_block_arrives() {
+    let genesis = genesis_block();
+    let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
+
+    let newer = get_random_block(
+        Some(5),
+        Some(5),
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    dag_storage
+        .insert(
+            &newer,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
+
+    let older = get_random_block(
+        Some(2),
+        Some(2),
+        None,
+        None,
+        Some(newer.sender.clone()),
+        None,
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    dag_storage
+        .insert(
+            &older,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
+
+    let dag = dag_storage
+        .get_representation()
+        .expect("dag representation");
+    assert_eq!(
+        dag.latest_message_hash(&newer.sender),
+        Some(newer.block_hash.clone()),
+        "an old block arriving late must not regress its sender's latest message"
+    );
+}
+
+/// Every deploy in a VALID inserted body resolves to its carrier; invalid
+/// bodies are not canonical history and resolve to nothing.
+#[test]
+fn deploy_appearance_resolves_valid_bodies_and_ignores_invalid_ones() {
     let genesis = genesis_block();
     proptest!(proptest_config(), |(block_elements in block_elements_with_parents_gen(genesis.clone(), 0, 10))| {
-      let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
+      for mode in [
+          block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+          block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid,
+      ] {
+          let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
 
-      for block_element in &block_elements {
-        dag_storage.insert(block_element, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid).unwrap();
-      }
-
-      let dag = dag_storage.get_representation().expect("dag representation");
-      let mut deploy_sigs = Vec::new();
-      let mut block_hashes = Vec::new();
-
-      for block in &block_elements {
-          for deploy in &block.body.deploys {
-              deploy_sigs.push(deploy.deploy.sig.clone());
-              block_hashes.push(block.block_hash.clone());
+          for block_element in &block_elements {
+            dag_storage.insert(block_element, mode).unwrap();
           }
+
+          let dag = dag_storage.get_representation().expect("dag representation");
+          let mut deploy_sigs = Vec::new();
+          let mut block_hashes = Vec::new();
+
+          for block in &block_elements {
+              for deploy in &block.body.deploys {
+                  deploy_sigs.push(deploy.deploy.sig.clone());
+                  block_hashes.push(block.block_hash.clone());
+              }
+          }
+
+          let deploy_lookups: Vec<Option<BlockHash>> = deploy_sigs
+              .iter()
+              .map(|sig| dag.deploy_canonical_appearance(sig).unwrap())
+              .collect();
+
+          let expected: Vec<Option<BlockHash>> = match mode {
+              block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid =>
+                  vec![None; deploy_sigs.len()],
+              _ => block_hashes.iter().map(|h| Some(h.clone())).collect(),
+          };
+          assert_eq!(deploy_lookups, expected, "mode {:?}", mode);
       }
-
-      let deploy_lookups: Vec<Option<BlockHash>> = deploy_sigs
-          .iter()
-          .map(|sig| dag.lookup_by_deploy_id(&sig.to_vec()).unwrap())
-          .collect();
-
-      assert_eq!(deploy_lookups, block_hashes.iter().map(|h| Some(h.clone())).collect::<Vec<_>>());
     });
 }
 
@@ -867,5 +947,290 @@ fn find_returns_ok_none_for_unknown_valid_prefix() {
             }
             Err(e) => panic!("find() returned Err for valid hex prefix: {e:?}"),
         }
+    });
+}
+
+/// A re-included sig's canonical appearance is a function of the DAG, not
+/// of node-local insertion order: whichever order the two carriers arrive
+/// in, the answer is the latest inclusion by (height, hash).
+#[test]
+fn deploy_appearance_is_insertion_order_independent() {
+    use models::rust::block_implicits::processed_deploy_gen;
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut runner = TestRunner::default();
+        let deploy = processed_deploy_gen()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
+
+        for reversed in [false, true] {
+            let genesis = genesis_block();
+            let dag_storage = create_dag_storage(&genesis).await;
+            let mk = |height: i64| {
+                get_random_block(
+                    Some(height),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(vec![genesis.block_hash.clone()]),
+                    None,
+                    Some(vec![deploy.clone()]),
+                    None,
+                    Some(vec![]),
+                    None,
+                    None,
+                )
+            };
+            let early = mk(1);
+            let late = mk(2);
+            let order = if reversed {
+                [&late, &early]
+            } else {
+                [&early, &late]
+            };
+            for b in order {
+                dag_storage
+                    .insert(
+                        b,
+                        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+                    )
+                    .expect("insert carrier");
+            }
+            let dag = dag_storage
+                .get_representation()
+                .expect("dag representation");
+            assert_eq!(
+                dag.deploy_canonical_appearance(&deploy.deploy.sig)
+                    .expect("appearance lookup"),
+                Some(late.block_hash.clone()),
+                "reversed={}: the canonical appearance is the latest \
+                 inclusion by (height, hash), independent of which carrier \
+                 this node inserted first",
+                reversed
+            );
+        }
+    });
+}
+
+/// An appearance is a block that CARRIES the deploy. A rejection record
+/// event at a greater height than the inclusion must not become the
+/// canonical appearance: the record's block does not hold the deploy, and
+/// naming it sends every consumer that fetches the block looking for a
+/// deploy that is not in its deploy list.
+#[test]
+fn canonical_appearance_is_the_latest_inclusion_never_a_record_carrier() {
+    use models::rust::block_implicits::processed_deploy_gen;
+    use models::rust::casper::protocol::casper_message::RejectedDeploy;
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut runner = TestRunner::default();
+        let deploy = processed_deploy_gen()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
+
+        let genesis = genesis_block();
+        let dag_storage = create_dag_storage(&genesis).await;
+
+        let inclusion = get_random_block(
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![genesis.block_hash.clone()]),
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            Some(vec![]),
+            None,
+            None,
+        );
+        let mut rejecting_merge = get_random_block(
+            Some(2),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![inclusion.block_hash.clone()]),
+            None,
+            Some(vec![]),
+            None,
+            Some(vec![]),
+            None,
+            None,
+        );
+        rejecting_merge.body.rejected_deploys = vec![RejectedDeploy {
+            sig: deploy.deploy.sig.clone(),
+            duplicate: false,
+            carrier: inclusion.block_hash.clone(),
+        }];
+
+        for b in [&inclusion, &rejecting_merge] {
+            dag_storage
+                .insert(
+                    b,
+                    block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+                )
+                .expect("insert block");
+        }
+
+        let dag = dag_storage
+            .get_representation()
+            .expect("dag representation");
+        assert_eq!(
+            dag.deploy_canonical_appearance(&deploy.deploy.sig)
+                .expect("appearance lookup"),
+            Some(inclusion.block_hash.clone()),
+            "the record event at height 2 outranks the inclusion by height, \
+             but its block does not carry the deploy — the appearance must \
+             stay on the inclusion carrier"
+        );
+    });
+}
+
+/// The lifecycle event ingest rides `insert`'s body pass: a valid block's
+/// executions and records project into per-sig rows; an invalid block's
+/// body contributes nothing (it is not canonical history).
+#[test]
+fn insert_projects_lifecycle_events_from_valid_bodies_only() {
+    use models::rust::block_implicits::processed_deploy_gen;
+    use models::rust::casper::protocol::casper_message::RejectedDeploy;
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let genesis = genesis_block();
+        let dag_storage = create_dag_storage(&genesis).await;
+
+        let mut runner = TestRunner::default();
+        let executed = processed_deploy_gen()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
+        let rejected_sig = prost::bytes::Bytes::from(vec![0xAA; 70]);
+        let carrier = prost::bytes::Bytes::from(vec![0xBB; 32]);
+
+        let mut valid_block = get_random_block(
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![genesis.block_hash.clone()]),
+            None,
+            Some(vec![executed.clone()]),
+            None,
+            Some(vec![]),
+            None,
+            None,
+        );
+        valid_block.body.rejected_deploys = vec![RejectedDeploy {
+            sig: rejected_sig.clone(),
+            duplicate: true,
+            carrier: carrier.clone(),
+        }];
+        dag_storage
+            .insert(
+                &valid_block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+            )
+            .expect("insert valid block");
+
+        let invalid_deploy = processed_deploy_gen()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
+        let invalid_block = get_random_block(
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![genesis.block_hash.clone()]),
+            None,
+            Some(vec![invalid_deploy.clone()]),
+            None,
+            Some(vec![]),
+            None,
+            None,
+        );
+        dag_storage
+            .insert(
+                &invalid_block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid,
+            )
+            .expect("insert invalid block");
+
+        let dag = dag_storage
+            .get_representation()
+            .expect("dag representation");
+
+        let included_row = dag
+            .deploy_lifecycle_events(&executed.deploy.sig)
+            .expect("read row")
+            .expect("executed deploy has a row");
+        assert_eq!(
+            included_row.valid_after,
+            Some(executed.deploy.data.valid_after_block_number),
+            "the first inclusion records the deploy's window start"
+        );
+        assert!(
+            matches!(
+                included_row.events.as_slice(),
+                [block_storage::rust::dag::deploy_lifecycle_types::LifecycleEvent {
+                    height: 1,
+                    kind: block_storage::rust::dag::deploy_lifecycle_types::LifecycleEventKind::Included { is_failed: false },
+                    ..
+                }]
+            ),
+            "one Included event at the block's height; got {:?}",
+            included_row.events
+        );
+
+        let rejected_row = dag
+            .deploy_lifecycle_events(&rejected_sig)
+            .expect("read row")
+            .expect("rejected sig has a row");
+        assert!(
+            matches!(
+                rejected_row.events.as_slice(),
+                [block_storage::rust::dag::deploy_lifecycle_types::LifecycleEvent {
+                    kind: block_storage::rust::dag::deploy_lifecycle_types::LifecycleEventKind::Rejected { duplicate: true, .. },
+                    ..
+                }]
+            ),
+            "one Rejected event carrying the record's duplicate flag; got {:?}",
+            rejected_row.events
+        );
+
+        assert!(
+            dag.deploy_lifecycle_events(&invalid_deploy.deploy.sig)
+                .expect("read row")
+                .is_none(),
+            "an invalid block's body must contribute no lifecycle events"
+        );
     });
 }

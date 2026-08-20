@@ -194,6 +194,7 @@ pub async fn equivocate_block(
         invalid_blocks,
         Some(&producing_node.rejected_deploy_buffer),
         None,
+        None,
     )
     .await?;
 
@@ -204,6 +205,8 @@ pub async fn equivocate_block(
         rejected_deploys,
         system_deploys: processed_system_deploys,
         bonds: new_bonds,
+        applied_from_scope,
+        merge_base,
     } = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
@@ -226,6 +229,8 @@ pub async fn equivocate_block(
         rejected_deploys,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
+        applied_from_scope,
+        merge_base: merge_base.unwrap_or_default(),
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
@@ -328,6 +333,7 @@ pub async fn propose_with_explicit_justifications(
         invalid_blocks,
         Some(&producing_node.rejected_deploy_buffer),
         None,
+        None,
     )
     .await?;
 
@@ -338,6 +344,8 @@ pub async fn propose_with_explicit_justifications(
         rejected_deploys,
         system_deploys: processed_system_deploys,
         bonds: new_bonds,
+        applied_from_scope,
+        merge_base,
     } = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
@@ -356,6 +364,8 @@ pub async fn propose_with_explicit_justifications(
         rejected_deploys,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
+        applied_from_scope,
+        merge_base: merge_base.unwrap_or_default(),
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
@@ -496,6 +506,7 @@ pub async fn propose_with_block_mutation(
         invalid_blocks,
         Some(&producing_node.rejected_deploy_buffer),
         None,
+        None,
     )
     .await?;
 
@@ -506,6 +517,8 @@ pub async fn propose_with_block_mutation(
         rejected_deploys,
         system_deploys: processed_system_deploys,
         bonds: new_bonds,
+        applied_from_scope,
+        merge_base,
     } = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
@@ -524,6 +537,8 @@ pub async fn propose_with_block_mutation(
         rejected_deploys,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
+        applied_from_scope,
+        merge_base: merge_base.unwrap_or_default(),
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
@@ -639,6 +654,7 @@ pub async fn propose_neglecting_block(
         invalid_blocks,
         Some(&producing_node.rejected_deploy_buffer),
         None,
+        None,
     )
     .await?;
 
@@ -649,6 +665,8 @@ pub async fn propose_neglecting_block(
         rejected_deploys,
         system_deploys: processed_system_deploys,
         bonds: new_bonds,
+        applied_from_scope,
+        merge_base,
     } = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
@@ -667,6 +685,8 @@ pub async fn propose_neglecting_block(
         rejected_deploys,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
+        applied_from_scope,
+        merge_base: merge_base.unwrap_or_default(),
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),

@@ -528,6 +528,7 @@ async fn e1c_re_issues_merge_rejected_slash() {
             .on_chain_state
             .shard_conf
             .disable_late_block_filtering,
+        buffer_populated: true,
     };
 
     let latest_messages: std::collections::BTreeMap<_, _> = snapshot
@@ -543,6 +544,7 @@ async fn e1c_re_issues_merge_rejected_slash() {
         &latest_messages,
         None,
         Some(&nodes[1].rejected_deploy_buffer),
+        None,
         None,
     )
     .await
@@ -713,6 +715,7 @@ async fn rejected_slash_recovery_keeps_empty_proposer_alive() {
             .on_chain_state
             .shard_conf
             .disable_late_block_filtering,
+        buffer_populated: true,
     };
 
     let latest_messages: std::collections::BTreeMap<_, _> = snapshot
@@ -728,6 +731,7 @@ async fn rejected_slash_recovery_keeps_empty_proposer_alive() {
         &latest_messages,
         None,
         Some(&nodes[1].rejected_deploy_buffer),
+        None,
         None,
     )
     .await

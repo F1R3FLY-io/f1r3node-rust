@@ -243,11 +243,11 @@ async fn test_case(
                 history_repo.clone(),
                 prost::bytes::Bytes::from(vec![0xAAu8; 32]),
                 1,
-                &deploy_index
+                deploy_index
                     .0
                     .iter()
                     .map(|d| (d.deploy_id.clone(), 0))
-                    .collect::<std::collections::HashMap<_, _>>(),
+                    .collect(),
             )
             .unwrap()
         })
@@ -264,11 +264,11 @@ async fn test_case(
                 history_repo.clone(),
                 prost::bytes::Bytes::from(vec![0xBBu8; 32]),
                 2,
-                &deploy_index
+                deploy_index
                     .0
                     .iter()
                     .map(|d| (d.deploy_id.clone(), 0))
-                    .collect::<std::collections::HashMap<_, _>>(),
+                    .collect(),
             )
             .unwrap()
         })
