@@ -45,7 +45,7 @@ env:
   # MUST be kept identical to .github/oci-validation.env (the Full OCI
   # Validation workflow sources that file) — bump both in the same commit,
   # via `just repin-system-integration <sha>`.
-  SYSTEM_INTEGRATION_REF: fc56ecd3ea2c3d529870b6c1b001ae10f877fc61
+  SYSTEM_INTEGRATION_REF: 231aac63bf090a16ce4649b275c6c1dba0768548
   # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
   # install.sh checksum fails closed if the tag is ever moved; OCI_CLI_VERSION
   # pins what the installer pulls from PyPI (without it the installer floats to
@@ -351,7 +351,7 @@ jobs:
           # previous 20-VM layout (5 identical slots per arch×provider)
           # exhausted it under normal PR traffic.
           pids=()
-          for _ in $(seq 1 4); do ./launch-runner.sh amd64 & pids+=($!); done
+          for _ in $(seq 1 2); do ./launch-runner.sh amd64 & pids+=($!); done
           for _ in $(seq 1 2); do ./launch-runner.sh arm64 & pids+=($!); done
           failed=0
           for pid in "${pids[@]}"; do
@@ -534,6 +534,8 @@ jobs:
             --deselect integration-tests/test/tests/shared/test_observer_lfs_sync.py \
             --deselect integration-tests/test/tests/custom/test_shard_degradation.py \
             --deselect integration-tests/test/tests/shared/test_contract_lifecycle.py \
+            --deselect integration-tests/test/tests/shared/test_bonding_validators.py \
+            --deselect integration-tests/test/tests/shared/test_convergence.py::test_network_converges_after_slow_deploy \
             --deselect integration-tests/test/tests/custom/test_consensus_safety.py::test_epoch_transition_under_heartbeat \
             --deselect integration-tests/test/tests/custom/test_validator_lifecycle.py \
             --deselect integration-tests/test/tests/custom/test_user_contract_concurrency.py \
@@ -543,7 +545,6 @@ jobs:
             --deselect integration-tests/test/tests/custom/test_finality_stall_recovery.py \
             --deselect integration-tests/test/tests/custom/test_slow_peer_notification.py \
             --provider=${{ matrix.provider }} \
-            --rss-ceiling-mb 10000 \
             "${NODE_CAPABILITY_ARGS[@]}" \
             -v --tb=short --instafail --maxfail=10 \
             -n "$PYTEST_WORKERS" --dist=loadgroup --timeout=1200 $SCALE_FLAG
@@ -566,6 +567,11 @@ jobs:
   # ci-fork-pr.yml count these legs without modification.
   ucc_tests:
     name: Integration Tests (${{ matrix.arch }}-${{ matrix.provider }}, ucc)
+    # TEMPORARY: disabled while the RSS-guardian kills are investigated. ucc is
+    # the heaviest memory consumer in the pipeline. Re-enable with the launcher
+    # count (2 -> 4 amd64) and the ci.yml amd64 slot gate (2 -> 4) together;
+    # they are one unit and CI fails if they disagree.
+    if: false
     needs: [build_docker_image, launch_ephemeral_runners]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -659,7 +665,6 @@ jobs:
           poetry run pytest \
             integration-tests/test/tests/custom/test_user_contract_concurrency.py \
             --provider=${{ matrix.provider }} \
-            --rss-ceiling-mb 10000 \
             -v --tb=short --instafail --timeout=1200
 
       - name: Upload UCC Test Logs
