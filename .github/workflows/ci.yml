@@ -431,8 +431,8 @@ jobs:
             --paginate \
             --jq '.jobs[] | select(.name | contains("Integration Tests (amd64-")) | "\(.conclusion // "pending")\t\(.name)"')
           slot_count=$(printf '%s\n' "$slots" | grep -c . || true)
-          if [ "$slot_count" -ne 2 ]; then
-            echo "Expected 2 amd64 integration test slots (docker, subprocess), but found $slot_count:"
+          if [ "$slot_count" -ne 4 ]; then
+            echo "Expected 4 amd64 integration test slots (docker, subprocess, ucc-docker, ucc-subprocess), but found $slot_count:"
             printf '%s\n' "$slots"
             exit 1
           fi

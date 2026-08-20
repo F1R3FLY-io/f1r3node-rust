@@ -45,7 +45,7 @@ env:
   # MUST be kept identical to .github/oci-validation.env (the Full OCI
   # Validation workflow sources that file) — bump both in the same commit,
   # via `just repin-system-integration <sha>`.
-  SYSTEM_INTEGRATION_REF: 56884ab896a8d37d7fa7cba8eed2a0ffef9c1b6a
+  SYSTEM_INTEGRATION_REF: 86a5fa108d4996d690eef71d28889859c9cdfd4d
   # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
   # install.sh checksum fails closed if the tag is ever moved; OCI_CLI_VERSION
   # pins what the installer pulls from PyPI (without it the installer floats to
@@ -351,7 +351,7 @@ jobs:
           # previous 20-VM layout (5 identical slots per arch×provider)
           # exhausted it under normal PR traffic.
           pids=()
-          for _ in $(seq 1 2); do ./launch-runner.sh amd64 & pids+=($!); done
+          for _ in $(seq 1 4); do ./launch-runner.sh amd64 & pids+=($!); done
           for _ in $(seq 1 2); do ./launch-runner.sh arm64 & pids+=($!); done
           failed=0
           for pid in "${pids[@]}"; do
@@ -567,11 +567,6 @@ jobs:
   # ci-fork-pr.yml count these legs without modification.
   ucc_tests:
     name: Integration Tests (${{ matrix.arch }}-${{ matrix.provider }}, ucc)
-    # TEMPORARY: disabled while the RSS-guardian kills are investigated. ucc is
-    # the heaviest memory consumer in the pipeline. Re-enable with the launcher
-    # count (2 -> 4 amd64) and the ci.yml amd64 slot gate (2 -> 4) together;
-    # they are one unit and CI fails if they disagree.
-    if: false
     needs: [build_docker_image, launch_ephemeral_runners]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
