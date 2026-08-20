@@ -110,7 +110,13 @@ env:
   # iterations) and the orchestrator host guardian (every iteration) use it.
   SOAK_HOST_FREE_FLOOR_MB: "8192"
   # Third pin site; keep identical to the other two — bump via scripts/repin-system-integration.sh.
-  SYSTEM_INTEGRATION_REF: 56884ab896a8d37d7fa7cba8eed2a0ffef9c1b6a
+  # 2026-08-20: 56884ab -> 3757cab (system-integration PR #124 branch, NOT yet
+  # main): validator-lifecycle payout bounds made race-proof (pre-withdraw
+  # baselines, fee-aware phase-8 owed). Verified by three consecutive local
+  # full passes (lifecycle runs 19/21/22) and a green local mirror of the
+  # arm64-subprocess integration leg (92 passed). Re-pin to the merged main
+  # SHA once this branch's CI proves the pin green.
+  SYSTEM_INTEGRATION_REF: 3757cabaab79c898787e7897157e1e0e264c92bc
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
